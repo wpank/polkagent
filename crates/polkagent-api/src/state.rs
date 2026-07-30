@@ -4,21 +4,63 @@
 //! `AppState` is an `Arc`-wrapped struct so that cloning the state for each
 //! request is cheap (pointer copy only). All inner fields are themselves
 //! `Arc`-wrapped or otherwise `Send + Sync`.
+//!
+//! # Storage abstraction
+//!
+//! The [`AgentStore`] trait abstracts over agent persistence. The in-memory
+//! [`InMemoryAgentStore`] is used for tests and local development. A durable
+//! SQLite-backed implementation can be injected in production.
 
 use std::sync::Arc;
 use std::time::Instant;
 
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use polkagent_config::Config;
+use polkagent_core::{AgentId, agent::AgentSpec};
+use polkagent_event::EventBus;
 use polkagent_store_trait::EffectStore;
 
-use crate::run::RunManager;
+use crate::run::RunManagerTrait;
 
 // ---------------------------------------------------------------------------
-// AgentRegistry — in-process store for AgentSpec
+// AgentStore trait
 // ---------------------------------------------------------------------------
 
-use chrono::{DateTime, Utc};
-use polkagent_core::{AgentId, agent::AgentSpec};
+/// Async storage trait for agent specs.
+///
+/// Implementations must be `Send + Sync` so that `Arc<dyn AgentStore>` can be
+/// shared across Axum handlers. The in-memory implementation is
+/// [`InMemoryAgentStore`]; a durable SQLite-backed implementation can be
+/// provided by the `polkagent-store-sqlite` crate.
+#[async_trait]
+pub trait AgentStore: Send + Sync {
+    /// Insert or replace an agent spec.
+    async fn insert(&self, spec: AgentSpec);
+
+    /// Retrieve an agent spec by ID, returning `None` if not found.
+    async fn get(&self, id: AgentId) -> Option<AgentSpec>;
+
+    /// Remove an agent spec by ID; returns `true` if it existed.
+    async fn remove(&self, id: AgentId) -> bool;
+
+    /// Paginate agent specs sorted by `created_at` ascending.
+    ///
+    /// Returns `(page, has_more)`.
+    async fn list_page(
+        &self,
+        after: Option<AgentId>,
+        limit: usize,
+    ) -> (Vec<AgentSpec>, bool);
+
+    /// Return the number of stored agents.
+    async fn count(&self) -> usize;
+}
+
+// ---------------------------------------------------------------------------
+// InMemoryAgentStore — in-process store for AgentSpec
+// ---------------------------------------------------------------------------
+
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
@@ -28,47 +70,44 @@ use tokio::sync::RwLock;
 /// version allows the API crate to function without a database dependency in
 /// tests and during early development.
 #[derive(Debug, Default)]
-pub struct AgentRegistry {
+pub struct InMemoryAgentStore {
     agents: RwLock<HashMap<AgentId, AgentSpec>>,
 }
 
-impl AgentRegistry {
-    /// Create an empty registry.
+impl InMemoryAgentStore {
+    /// Create an empty store.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Insert or replace an agent spec.
-    pub async fn insert(&self, spec: AgentSpec) {
-        let mut guard = self.agents.write().await;
-        guard.insert(spec.id, spec);
-    }
-
-    /// Retrieve an agent spec by ID.
-    pub async fn get(&self, id: AgentId) -> Option<AgentSpec> {
-        let guard = self.agents.read().await;
-        guard.get(&id).cloned()
-    }
-
-    /// Remove an agent spec by ID; returns `true` if it existed.
-    pub async fn remove(&self, id: AgentId) -> bool {
-        let mut guard = self.agents.write().await;
-        guard.remove(&id).is_some()
-    }
-
     /// Return all agent specs, sorted by `created_at` ascending.
-    pub async fn list_sorted(&self) -> Vec<AgentSpec> {
+    async fn list_sorted(&self) -> Vec<AgentSpec> {
         let guard = self.agents.read().await;
         let mut all: Vec<AgentSpec> = guard.values().cloned().collect();
         all.sort_by_key(|s: &AgentSpec| s.created_at);
         all
     }
+}
 
-    /// Paginate the sorted list using an optional cursor ID and page limit.
-    ///
-    /// Returns `(page, has_more)`.
-    pub async fn list_page(
+#[async_trait]
+impl AgentStore for InMemoryAgentStore {
+    async fn insert(&self, spec: AgentSpec) {
+        let mut guard = self.agents.write().await;
+        guard.insert(spec.id, spec);
+    }
+
+    async fn get(&self, id: AgentId) -> Option<AgentSpec> {
+        let guard = self.agents.read().await;
+        guard.get(&id).cloned()
+    }
+
+    async fn remove(&self, id: AgentId) -> bool {
+        let mut guard = self.agents.write().await;
+        guard.remove(&id).is_some()
+    }
+
+    async fn list_page(
         &self,
         after: Option<AgentId>,
         limit: usize,
@@ -96,8 +135,7 @@ impl AgentRegistry {
         (page, has_more)
     }
 
-    /// Return the number of stored agents.
-    pub async fn count(&self) -> usize {
+    async fn count(&self) -> usize {
         self.agents.read().await.len()
     }
 }
@@ -109,16 +147,20 @@ impl AgentRegistry {
 /// Shared state for every API request.
 ///
 /// Cloned cheaply (all fields are `Arc`-wrapped) for each Axum request handler.
+/// Storage backends are injected as trait objects, enabling tests to use
+/// in-memory implementations while production uses durable stores.
 #[derive(Clone)]
 pub struct AppState {
     /// Active platform configuration.
     pub config: Arc<Config>,
-    /// Agent spec registry (in-process).
-    pub agents: Arc<AgentRegistry>,
-    /// Run lifecycle manager.
-    pub run_manager: Arc<RunManager>,
+    /// Agent spec store (trait object — can be in-memory or durable).
+    pub agents: Arc<dyn AgentStore>,
+    /// Run lifecycle manager (trait object — can be in-memory or durable).
+    pub run_manager: Arc<dyn RunManagerTrait>,
     /// Effect/outbox store (used for database readiness checks).
     pub effect_store: Arc<dyn EffectStore>,
+    /// In-process event bus for real-time event streaming (PRD-14 WebSocket).
+    pub event_bus: EventBus,
     /// Monotonic clock marking when the server was started.
     pub started_at: Instant,
     /// UTC wall-clock time the server started (for the system/info endpoint).
@@ -126,17 +168,28 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Construct a new `AppState`.
+    /// Construct a new `AppState` with injectable storage backends.
+    ///
+    /// # Arguments
+    ///
+    /// - `config`: the active platform configuration.
+    /// - `agents`: the agent spec store (in-memory or durable).
+    /// - `run_manager`: manages run lifecycle operations.
+    /// - `effect_store`: the durable effect/outbox store (used for readiness checks).
+    /// - `event_bus`: the in-process event bus for real-time WebSocket streaming.
     pub fn new(
         config: Config,
-        run_manager: RunManager,
+        agents: Arc<dyn AgentStore>,
+        run_manager: Arc<dyn RunManagerTrait>,
         effect_store: Arc<dyn EffectStore>,
+        event_bus: EventBus,
     ) -> Self {
         Self {
             config: Arc::new(config),
-            agents: Arc::new(AgentRegistry::new()),
-            run_manager: Arc::new(run_manager),
+            agents,
+            run_manager,
             effect_store,
+            event_bus,
             started_at: Instant::now(),
             started_at_utc: Utc::now(),
         }

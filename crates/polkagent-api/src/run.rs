@@ -1,4 +1,5 @@
-//! Run record types and the `RunManager` used by the API layer.
+//! Run record types, the [`RunManagerTrait`] abstraction, and an in-memory
+//! implementation.
 //!
 //! These types are self-contained within `polkagent-api` to avoid taking a
 //! dependency on `polkagent-run` (which has transitive dependencies not yet
@@ -8,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use polkagent_core::{AgentId, RunId};
 use polkagent_core::run::RunState;
@@ -81,7 +83,7 @@ impl Default for ListRunsParams {
 // RunError
 // ---------------------------------------------------------------------------
 
-/// Errors produced by the [`RunManager`].
+/// Errors produced by run manager implementations.
 #[derive(Debug, Error)]
 pub enum RunError {
     /// A run with the given ID was not found.
@@ -102,32 +104,67 @@ pub enum RunError {
 }
 
 // ---------------------------------------------------------------------------
-// RunManager
+// RunManagerTrait
 // ---------------------------------------------------------------------------
 
-/// Manages the full lifecycle of [`RunRecord`]s.
+/// Async trait abstracting over run lifecycle management.
+///
+/// Implementations must be `Send + Sync` so that `Arc<dyn RunManagerTrait>`
+/// can be shared across Axum handlers. The in-memory implementation is
+/// [`InMemoryRunManager`]; a durable SQLite-backed implementation can be
+/// provided by an adapter crate.
+#[async_trait]
+pub trait RunManagerTrait: Send + Sync {
+    /// Create and immediately start a run for the given agent.
+    async fn create_run(
+        &self,
+        agent_id: AgentId,
+        input: serde_json::Value,
+    ) -> Result<RunRecord, RunError>;
+
+    /// Retrieve a single run by ID.
+    async fn get_run(&self, run_id: RunId) -> Result<RunRecord, RunError>;
+
+    /// Cancel a run, transitioning it to `Cancelled`.
+    ///
+    /// Returns `RunError::InvalidTransition` if the run is already terminal.
+    async fn cancel_run(&self, run_id: RunId) -> Result<RunRecord, RunError>;
+
+    /// List runs, applying filter and cursor-based pagination from `params`.
+    ///
+    /// Returns `(page, has_more)`.
+    async fn list_runs(
+        &self,
+        params: ListRunsParams,
+    ) -> Result<(Vec<RunRecord>, bool), RunError>;
+}
+
+// ---------------------------------------------------------------------------
+// InMemoryRunManager
+// ---------------------------------------------------------------------------
+
+/// In-memory run manager for tests and local development.
 ///
 /// State is kept in a `RwLock<HashMap>` so that multiple concurrent handlers
 /// can read runs without blocking writers. A production implementation would
-/// delegate to a durable `RunStore`; this in-memory version is sufficient for
-/// the API layer in tests and local mode.
-pub struct RunManager {
+/// delegate to a durable store.
+pub struct InMemoryRunManager {
     runs: Arc<RwLock<HashMap<RunId, RunRecord>>>,
 }
 
-impl std::fmt::Debug for RunManager {
+impl std::fmt::Debug for InMemoryRunManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunManager").finish_non_exhaustive()
+        f.debug_struct("InMemoryRunManager").finish_non_exhaustive()
     }
 }
 
-impl Default for RunManager {
+impl Default for InMemoryRunManager {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RunManager {
+impl InMemoryRunManager {
     /// Create a new, empty manager.
     #[must_use]
     pub fn new() -> Self {
@@ -135,10 +172,12 @@ impl RunManager {
             runs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+}
 
-    /// Create and immediately start a run for the given agent.
+#[async_trait]
+impl RunManagerTrait for InMemoryRunManager {
     #[instrument(skip(self, input), fields(agent_id = %agent_id))]
-    pub async fn create_run(
+    async fn create_run(
         &self,
         agent_id: AgentId,
         input: serde_json::Value,
@@ -166,8 +205,7 @@ impl RunManager {
         Ok(record)
     }
 
-    /// Retrieve a single run by ID.
-    pub async fn get_run(&self, run_id: RunId) -> Result<RunRecord, RunError> {
+    async fn get_run(&self, run_id: RunId) -> Result<RunRecord, RunError> {
         let guard = self.runs.read().await;
         guard
             .get(&run_id)
@@ -175,11 +213,8 @@ impl RunManager {
             .ok_or(RunError::NotFound(run_id))
     }
 
-    /// Cancel a run, transitioning it to `Cancelled`.
-    ///
-    /// Returns `RunError::InvalidTransition` if the run is already terminal.
     #[instrument(skip(self), fields(run_id = %run_id))]
-    pub async fn cancel_run(&self, run_id: RunId) -> Result<RunRecord, RunError> {
+    async fn cancel_run(&self, run_id: RunId) -> Result<RunRecord, RunError> {
         let mut guard = self.runs.write().await;
         let record = guard
             .get_mut(&run_id)
@@ -202,10 +237,7 @@ impl RunManager {
         Ok(record.clone())
     }
 
-    /// List runs, applying filter and cursor-based pagination from `params`.
-    ///
-    /// Returns `(page, has_more)`.
-    pub async fn list_runs(
+    async fn list_runs(
         &self,
         params: ListRunsParams,
     ) -> Result<(Vec<RunRecord>, bool), RunError> {

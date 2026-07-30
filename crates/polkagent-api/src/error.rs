@@ -23,6 +23,7 @@ use uuid::Uuid;
 pub enum ErrorCode {
     AgentNotFound,
     RunNotFound,
+    NotFound,
     InvalidState,
     ValidationError,
     InternalError,
@@ -34,6 +35,7 @@ impl ErrorCode {
         match self {
             Self::AgentNotFound => "AGENT_NOT_FOUND",
             Self::RunNotFound => "RUN_NOT_FOUND",
+            Self::NotFound => "NOT_FOUND",
             Self::InvalidState => "INVALID_STATE",
             Self::ValidationError => "VALIDATION_ERROR",
             Self::InternalError => "INTERNAL_ERROR",
@@ -43,7 +45,7 @@ impl ErrorCode {
 
     fn http_status(self) -> StatusCode {
         match self {
-            Self::AgentNotFound | Self::RunNotFound => StatusCode::NOT_FOUND,
+            Self::AgentNotFound | Self::RunNotFound | Self::NotFound => StatusCode::NOT_FOUND,
             Self::InvalidState => StatusCode::CONFLICT,
             Self::ValidationError => StatusCode::UNPROCESSABLE_ENTITY,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
@@ -71,6 +73,10 @@ pub enum ApiError {
     #[error("run not found: {0}")]
     RunNotFound(String),
 
+    /// A generic resource was not found.
+    #[error("not found: {0}")]
+    NotFound(String),
+
     /// The request would cause an invalid state transition.
     #[error("invalid state: {0}")]
     InvalidState(String),
@@ -93,6 +99,7 @@ impl ApiError {
         match self {
             Self::AgentNotFound(_) => ErrorCode::AgentNotFound,
             Self::RunNotFound(_) => ErrorCode::RunNotFound,
+            Self::NotFound(_) => ErrorCode::NotFound,
             Self::InvalidState(_) => ErrorCode::InvalidState,
             Self::ValidationError(_) => ErrorCode::ValidationError,
             Self::InternalError(_) => ErrorCode::InternalError,

@@ -17,6 +17,13 @@
 //!   GET    /runs
 //!   GET    /runs/:id
 //!   POST   /runs/:id/cancel
+//!   GET    /runs/:run_id/effects
+//!
+//!   GET    /effects/:id
+//!   POST   /effects/:id/approve
+//!   POST   /effects/:id/deny
+//!
+//!   GET    /events/stream          (WebSocket)
 //!
 //!   GET    /system/info
 //!
@@ -27,6 +34,8 @@
 //! ```
 
 pub mod agents;
+pub mod effects;
+pub mod events;
 pub mod health;
 pub mod runs;
 pub mod system;
@@ -67,6 +76,13 @@ pub fn register(state: AppState) -> Router {
         .route("/runs", get(runs::list_runs))
         .route("/runs/{id}", get(runs::get_run))
         .route("/runs/{id}/cancel", post(runs::cancel_run))
+        // Effects
+        .route("/runs/{run_id}/effects", get(effects::list_effects))
+        .route("/effects/{id}", get(effects::get_effect))
+        .route("/effects/{id}/approve", post(effects::approve_effect))
+        .route("/effects/{id}/deny", post(effects::deny_effect))
+        // Events (WebSocket)
+        .route("/events/stream", get(events::event_stream))
         // System
         .route("/system/info", get(system::system_info));
 

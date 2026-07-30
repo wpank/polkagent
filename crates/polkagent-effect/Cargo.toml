@@ -35,4 +35,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+uuid = { workspace = true }

@@ -24,8 +24,19 @@ use crate::error::{StoreError, StoreResult};
 /// The full text of the initial schema.  Embedded as a compile-time constant.
 const SCHEMA_V1: &str = include_str!("schema.sql");
 
+/// V2: Event store tables (durable_events, diagnostic_events, global counter).
+const SCHEMA_V2: &str = include_str!("v2_event_store.sql");
+
+/// V3: Columns required by the `EffectStore` trait (state, retry_class,
+/// worker_id, payload_json, attempt_id, run_id, consumed).
+const SCHEMA_V3: &str = include_str!("v3_effect_store.sql");
+
 /// Each entry is `(version, description, sql)`.
-const MIGRATIONS: &[(u32, &str, &str)] = &[(1, "initial schema", SCHEMA_V1)];
+const MIGRATIONS: &[(u32, &str, &str)] = &[
+    (1, "initial schema", SCHEMA_V1),
+    (2, "event store tables", SCHEMA_V2),
+    (3, "effect store trait columns", SCHEMA_V3),
+];
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -155,11 +166,11 @@ mod tests {
     }
 
     #[test]
-    fn migrate_applies_v1_cleanly() {
+    fn migrate_applies_all_cleanly() {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 1);
+        assert_eq!(version, 3);
     }
 
     #[test]
@@ -168,7 +179,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 1);
+        assert_eq!(version, 3);
     }
 
     #[test]

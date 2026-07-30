@@ -8,11 +8,15 @@
 //! ```no_run
 //! use std::sync::Arc;
 //! use polkagent_api::server::ApiServer;
-//! use polkagent_api::RunManager;
+//! use polkagent_api::{InMemoryRunManager, InMemoryAgentStore};
 //! use polkagent_config::Config;
+//! use polkagent_event::EventBus;
 //!
 //! # async fn example(store: Arc<dyn polkagent_store_trait::EffectStore>) {
-//! let server = ApiServer::new(Config::default(), RunManager::new(), store);
+//! let agents = Arc::new(InMemoryAgentStore::new());
+//! let run_manager = Arc::new(InMemoryRunManager::new());
+//! let event_bus = EventBus::with_default_capacity();
+//! let server = ApiServer::new(Config::default(), agents, run_manager, store, event_bus);
 //! server.serve("127.0.0.1:4840").await.expect("server failed");
 //! # }
 //! ```
@@ -28,9 +32,11 @@ use tower_http::{
 use tracing::{info, Level};
 
 use polkagent_config::Config;
+use polkagent_event::EventBus;
 use polkagent_store_trait::EffectStore;
 
-use crate::run::RunManager;
+use crate::run::RunManagerTrait;
+use crate::state::AgentStore;
 
 use crate::{routes, state::AppState};
 
@@ -75,19 +81,23 @@ pub struct ApiServer {
 }
 
 impl ApiServer {
-    /// Construct a new `ApiServer`.
+    /// Construct a new `ApiServer` with injectable storage backends.
     ///
     /// # Arguments
     ///
     /// - `config`: the active platform configuration.
+    /// - `agents`: the agent spec store (in-memory or durable).
     /// - `run_manager`: manages run lifecycle operations.
     /// - `effect_store`: the durable effect/outbox store (used for readiness checks).
+    /// - `event_bus`: the in-process event bus for real-time WebSocket streaming.
     pub fn new(
         config: Config,
-        run_manager: RunManager,
+        agents: Arc<dyn AgentStore>,
+        run_manager: Arc<dyn RunManagerTrait>,
         effect_store: Arc<dyn EffectStore>,
+        event_bus: EventBus,
     ) -> Self {
-        let state = AppState::new(config, run_manager, effect_store);
+        let state = AppState::new(config, agents, run_manager, effect_store, event_bus);
         Self { state }
     }
 
@@ -117,10 +127,15 @@ impl ApiServer {
     /// # async fn main() {
     /// # use std::sync::Arc;
     /// # let store: Arc<dyn polkagent_store_trait::EffectStore> = unimplemented!();
+    /// # let agents = Arc::new(polkagent_api::InMemoryAgentStore::new());
+    /// # let run_mgr = Arc::new(polkagent_api::InMemoryRunManager::new());
+    /// # let event_bus = polkagent_event::EventBus::with_default_capacity();
     /// # let server = polkagent_api::server::ApiServer::new(
     /// #     polkagent_config::Config::default(),
-    /// #     polkagent_api::RunManager::new(),
+    /// #     agents,
+    /// #     run_mgr,
     /// #     store,
+    /// #     event_bus,
     /// # );
     /// server.serve("127.0.0.1:4840").await.unwrap();
     /// # }

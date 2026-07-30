@@ -7,10 +7,19 @@
 //! - [`SqliteArtifactStore`] — content-addressed artifact metadata and bodies.
 //! - [`SqliteEventStore`] — ordered durable run events.
 
+use std::time::Duration;
+
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 use uuid::Uuid;
+
+use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, WorkerId};
+use polkagent_store_trait::{
+    EffectStore, StoredIntent, StoredOutcome, StoreRetryClass,
+    StoreError as TraitStoreError,
+};
 
 use crate::error::{StoreError, StoreResult};
 use crate::pool::SqlitePool;
@@ -1248,5 +1257,1415 @@ impl SqliteEventStore {
             |r| r.get(0),
         )?;
         Ok(max.map_or(1, |m| m + 1))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EffectStore trait implementation on SqlitePool
+// ---------------------------------------------------------------------------
+
+/// Parse a `StoreRetryClass` from its stored text representation.
+fn parse_retry_class(s: &str) -> StoreRetryClass {
+    match s {
+        "check_before_retry" => StoreRetryClass::CheckBeforeRetry,
+        "no_auto_retry" => StoreRetryClass::NoAutoRetry,
+        // "idempotent" and any unrecognised value default to Idempotent.
+        _ => StoreRetryClass::Idempotent,
+    }
+}
+
+/// Serialize a `StoreRetryClass` to its stored text representation.
+fn retry_class_to_str(rc: StoreRetryClass) -> &'static str {
+    match rc {
+        StoreRetryClass::Idempotent => "idempotent",
+        StoreRetryClass::CheckBeforeRetry => "check_before_retry",
+        StoreRetryClass::NoAutoRetry => "no_auto_retry",
+    }
+}
+
+/// Parse an RFC-3339 timestamp string into a `DateTime<Utc>`.
+fn parse_ts(s: &str) -> Result<DateTime<Utc>, TraitStoreError> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("invalid timestamp '{s}': {e}"),
+        })
+}
+
+/// Parse a UUID string into a typed ID, returning a `TraitStoreError` on failure.
+fn parse_id<T: From<Uuid>>(s: &str, resource_type: &'static str) -> Result<T, TraitStoreError> {
+    Uuid::parse_str(s)
+        .map(T::from)
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("invalid {resource_type} UUID '{s}': {e}"),
+        })
+}
+
+/// Map a `rusqlite::Error` to the appropriate `TraitStoreError` variant.
+fn map_sqlite_err(e: rusqlite::Error) -> TraitStoreError {
+    TraitStoreError::Internal {
+        message: format!("sqlite error: {e}"),
+    }
+}
+
+
+/// Read a `StoredIntent` from a row.  The SELECT columns must be:
+///
+/// 0: id, 1: `run_id`, 2: `step_id`, 3: state, 4: `claimed_by`, 5: `claimed_until`,
+/// 6: `retry_class`, 7: kind, 8: `params_json`, 9: `idempotency_key`, 10: `created_at`
+fn row_to_stored_intent(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredIntentRaw> {
+    Ok(StoredIntentRaw {
+        id: r.get(0)?,
+        run_id: r.get(1)?,
+        step_id: r.get(2)?,
+        state: r.get(3)?,
+        claimed_by: r.get(4)?,
+        claimed_until: r.get(5)?,
+        retry_class: r.get(6)?,
+        kind: r.get(7)?,
+        params_json: r.get(8)?,
+        idempotency_key: r.get(9)?,
+        created_at: r.get(10)?,
+    })
+}
+
+/// Intermediate raw row before parsing into `StoredIntent`.
+struct StoredIntentRaw {
+    id: String,
+    run_id: String,
+    step_id: Option<String>,
+    state: String,
+    claimed_by: Option<String>,
+    claimed_until: Option<String>,
+    retry_class: String,
+    kind: String,
+    params_json: String,
+    idempotency_key: String,
+    created_at: String,
+}
+
+impl StoredIntentRaw {
+    fn into_stored_intent(self) -> Result<StoredIntent, TraitStoreError> {
+        let payload_inner: serde_json::Value =
+            serde_json::from_str(&self.params_json).map_err(|e| TraitStoreError::Serialisation {
+                message: format!("intent params_json: {e}"),
+            })?;
+
+        // Build the payload as { "kind": "<kind>", "params": <params_json> }
+        let payload = serde_json::json!({
+            "kind": self.kind,
+            "params": payload_inner,
+        });
+
+        let lease_owner = self
+            .claimed_by
+            .map(|s| parse_id::<WorkerId>(&s, "WorkerId"))
+            .transpose()?;
+
+        let lease_expires = self
+            .claimed_until
+            .map(|s| parse_ts(&s))
+            .transpose()?;
+
+        let step_id = self
+            .step_id
+            .as_deref()
+            .map(|s| parse_id::<StepId>(s, "StepId"))
+            .transpose()?
+            // If no step_id is stored, generate a nil/default one.
+            .unwrap_or_else(StepId::new);
+
+        Ok(StoredIntent {
+            id: parse_id(&self.id, "EffectId")?,
+            run_id: parse_id(&self.run_id, "RunId")?,
+            step_id,
+            state: self.state,
+            lease_owner,
+            lease_expires,
+            retry_class: parse_retry_class(&self.retry_class),
+            payload,
+            idempotency_key: self.idempotency_key,
+            created_at: parse_ts(&self.created_at)?,
+        })
+    }
+}
+
+/// The SELECT clause used by all intent queries.
+const INTENT_SELECT: &str =
+    "SELECT id, run_id, step_id, state, claimed_by, claimed_until, \
+            retry_class, kind, params_json, idempotency_key, created_at \
+     FROM effect_intents";
+
+#[async_trait]
+impl EffectStore for SqlitePool {
+    // ------------------------------------------------------------------
+    // Intent lifecycle
+    // ------------------------------------------------------------------
+
+    async fn propose_intent(&self, intent: StoredIntent) -> Result<(), TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let id_str = intent.id.to_string();
+            let run_id_str = intent.run_id.to_string();
+            let step_id_str = intent.step_id.to_string();
+            let created_at_str = intent.created_at.to_rfc3339();
+            let retry_class_str = retry_class_to_str(intent.retry_class);
+
+            // Extract kind and params from the payload envelope.
+            let kind = intent
+                .payload
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let params = intent
+                .payload
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            let params_json = serde_json::to_string(&params).map_err(|e| {
+                TraitStoreError::Serialisation {
+                    message: format!("params: {e}"),
+                }
+            })?;
+
+            let writer = pool.writer();
+            writer
+                .execute(
+                    "INSERT INTO effect_intents \
+                     (id, run_id, step_id, kind, params_json, idempotency_key, \
+                      created_at, state, retry_class) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        id_str,
+                        run_id_str,
+                        step_id_str,
+                        kind,
+                        params_json,
+                        intent.idempotency_key,
+                        created_at_str,
+                        intent.state,
+                        retry_class_str,
+                    ],
+                )
+                .map_err(|e| {
+                    if StoreError::is_unique_violation(&e) {
+                        TraitStoreError::Conflict {
+                            resource_type: "EffectIntent",
+                            id: id_str.clone(),
+                        }
+                    } else {
+                        map_sqlite_err(e)
+                    }
+                })?;
+
+            debug!(intent_id = %id_str, %kind, "effect intent proposed via EffectStore");
+            Ok(())
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn claim_intent(
+        &self,
+        worker_id: WorkerId,
+        lease_duration: Duration,
+    ) -> Result<Option<StoredIntent>, TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let worker_str = worker_id.to_string();
+            let lease_until = (Utc::now() + chrono::Duration::from_std(lease_duration)
+                .map_err(|e| TraitStoreError::Internal {
+                    message: format!("duration conversion: {e}"),
+                })?)
+            .to_rfc3339();
+
+            let writer = pool.writer();
+
+            // BEGIN IMMEDIATE to serialise concurrent writers.
+            writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
+
+            let result = (|| -> Result<Option<StoredIntent>, TraitStoreError> {
+                // Find the first pending intent.
+                let maybe_id: Option<String> = writer
+                    .query_row(
+                        "SELECT id FROM effect_intents \
+                         WHERE state = 'pending' \
+                         ORDER BY created_at ASC LIMIT 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map(Some)
+                    .or_else(|e| {
+                        if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                            Ok(None)
+                        } else {
+                            Err(map_sqlite_err(e))
+                        }
+                    })?;
+
+                let Some(intent_id) = maybe_id else {
+                    return Ok(None);
+                };
+
+                // Claim it.
+                writer
+                    .execute(
+                        "UPDATE effect_intents \
+                         SET state = 'claimed', claimed_by = ?1, claimed_until = ?2 \
+                         WHERE id = ?3 AND state = 'pending'",
+                        rusqlite::params![worker_str, lease_until, intent_id],
+                    )
+                    .map_err(map_sqlite_err)?;
+
+                // Read back the full row.
+                let raw = writer
+                    .query_row(
+                        &format!("{INTENT_SELECT} WHERE id = ?1"),
+                        [&intent_id],
+                        row_to_stored_intent,
+                    )
+                    .map_err(map_sqlite_err)?;
+
+                Ok(Some(raw.into_stored_intent()?))
+            })();
+
+            match &result {
+                Ok(_) => writer.execute_batch("COMMIT").map_err(map_sqlite_err)?,
+                Err(_) => {
+                    let _ = writer.execute_batch("ROLLBACK");
+                }
+            }
+
+            result
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn claim_intent_by_id(
+        &self,
+        intent_id: EffectId,
+        worker_id: WorkerId,
+        lease_duration: Duration,
+    ) -> Result<StoredIntent, TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let id_str = intent_id.to_string();
+            let worker_str = worker_id.to_string();
+            let lease_until = (Utc::now() + chrono::Duration::from_std(lease_duration)
+                .map_err(|e| TraitStoreError::Internal {
+                    message: format!("duration conversion: {e}"),
+                })?)
+            .to_rfc3339();
+            let now_str = Utc::now().to_rfc3339();
+
+            let writer = pool.writer();
+            writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
+
+            let result = (|| -> Result<StoredIntent, TraitStoreError> {
+                // Attempt to claim: only if pending, or the lease has expired.
+                let n = writer
+                    .execute(
+                        "UPDATE effect_intents \
+                         SET state = 'claimed', claimed_by = ?1, claimed_until = ?2 \
+                         WHERE id = ?3 \
+                           AND (state = 'pending' OR (state = 'claimed' AND claimed_until < ?4))",
+                        rusqlite::params![worker_str, lease_until, id_str, now_str],
+                    )
+                    .map_err(map_sqlite_err)?;
+
+                if n == 0 {
+                    // Check if the intent exists at all.
+                    let exists: bool = writer
+                        .query_row(
+                            "SELECT COUNT(*) FROM effect_intents WHERE id = ?1",
+                            [&id_str],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .map(|c| c > 0)
+                        .map_err(map_sqlite_err)?;
+
+                    if !exists {
+                        return Err(TraitStoreError::NotFound {
+                            resource_type: "EffectIntent",
+                            id: id_str.clone(),
+                        });
+                    }
+                    return Err(TraitStoreError::InvalidTransition {
+                        message: format!(
+                            "intent {id_str} is not claimable (already claimed or resolved)"
+                        ),
+                    });
+                }
+
+                let raw = writer
+                    .query_row(
+                        &format!("{INTENT_SELECT} WHERE id = ?1"),
+                        [&id_str],
+                        row_to_stored_intent,
+                    )
+                    .map_err(map_sqlite_err)?;
+
+                raw.into_stored_intent()
+            })();
+
+            match &result {
+                Ok(_) => writer.execute_batch("COMMIT").map_err(map_sqlite_err)?,
+                Err(_) => {
+                    let _ = writer.execute_batch("ROLLBACK");
+                }
+            }
+
+            result
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn release_claim(
+        &self,
+        intent_id: EffectId,
+        worker_id: WorkerId,
+    ) -> Result<(), TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let id_str = intent_id.to_string();
+            let worker_str = worker_id.to_string();
+            let writer = pool.writer();
+
+            // No-op if already resolved or owned by a different worker.
+            writer
+                .execute(
+                    "UPDATE effect_intents \
+                     SET state = 'pending', claimed_by = NULL, claimed_until = NULL \
+                     WHERE id = ?1 AND claimed_by = ?2 AND state = 'claimed'",
+                    rusqlite::params![id_str, worker_str],
+                )
+                .map_err(map_sqlite_err)?;
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let id_str = intent_id.to_string();
+            let writer = pool.writer();
+
+            let raw = writer
+                .query_row(
+                    &format!("{INTENT_SELECT} WHERE id = ?1"),
+                    [&id_str],
+                    row_to_stored_intent,
+                )
+                .map_err(|e| {
+                    if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                        TraitStoreError::NotFound {
+                            resource_type: "EffectIntent",
+                            id: id_str.clone(),
+                        }
+                    } else {
+                        map_sqlite_err(e)
+                    }
+                })?;
+
+            raw.into_stored_intent()
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let run_str = run_id.to_string();
+            let writer = pool.writer();
+
+            let mut stmt = writer
+                .prepare(&format!("{INTENT_SELECT} WHERE run_id = ?1 ORDER BY created_at ASC"))
+                .map_err(map_sqlite_err)?;
+
+            let raw_rows: Vec<StoredIntentRaw> = stmt
+                .query_map([&run_str], row_to_stored_intent)
+                .map_err(map_sqlite_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_sqlite_err)?;
+
+            raw_rows
+                .into_iter()
+                .map(StoredIntentRaw::into_stored_intent)
+                .collect()
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn expired_leases(
+        &self,
+        cutoff: polkagent_core::Timestamp,
+    ) -> Result<Vec<StoredIntent>, TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let cutoff_str = cutoff.to_rfc3339();
+            let writer = pool.writer();
+
+            let mut stmt = writer
+                .prepare(&format!(
+                    "{INTENT_SELECT} WHERE state = 'claimed' AND claimed_until < ?1 \
+                     ORDER BY claimed_until ASC"
+                ))
+                .map_err(map_sqlite_err)?;
+
+            let raw_rows: Vec<StoredIntentRaw> = stmt
+                .query_map([&cutoff_str], row_to_stored_intent)
+                .map_err(map_sqlite_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_sqlite_err)?;
+
+            raw_rows
+                .into_iter()
+                .map(StoredIntentRaw::into_stored_intent)
+                .collect()
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    // ------------------------------------------------------------------
+    // Attempt lifecycle
+    // ------------------------------------------------------------------
+
+    async fn record_attempt_start(
+        &self,
+        attempt_id: EffectAttemptId,
+        intent_id: EffectId,
+        worker_id: WorkerId,
+        payload: serde_json::Value,
+    ) -> Result<(), TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let attempt_str = attempt_id.to_string();
+            let intent_str = intent_id.to_string();
+            let worker_str = worker_id.to_string();
+            let payload_json = serde_json::to_string(&payload).map_err(|e| {
+                TraitStoreError::Serialisation {
+                    message: format!("attempt payload: {e}"),
+                }
+            })?;
+            let now = now_rfc3339();
+
+            let writer = pool.writer();
+
+            // Determine the next attempt_number for this intent.
+            let attempt_number: i64 = writer
+                .query_row(
+                    "SELECT COALESCE(MAX(attempt_number), 0) + 1 \
+                     FROM effect_attempts WHERE intent_id = ?1",
+                    [&intent_str],
+                    |r| r.get(0),
+                )
+                .map_err(map_sqlite_err)?;
+
+            writer
+                .execute(
+                    "INSERT INTO effect_attempts \
+                     (id, intent_id, attempt_number, started_at, worker_id, payload_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        attempt_str,
+                        intent_str,
+                        attempt_number,
+                        now,
+                        worker_str,
+                        payload_json,
+                    ],
+                )
+                .map_err(|e| {
+                    if StoreError::is_unique_violation(&e) {
+                        TraitStoreError::Conflict {
+                            resource_type: "EffectAttempt",
+                            id: attempt_str.clone(),
+                        }
+                    } else {
+                        map_sqlite_err(e)
+                    }
+                })?;
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    // ------------------------------------------------------------------
+    // Outcome lifecycle
+    // ------------------------------------------------------------------
+
+    async fn record_outcome(&self, outcome: StoredOutcome) -> Result<(), TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let id_str = outcome.id.to_string();
+            let intent_str = outcome.intent_id.to_string();
+            let attempt_str = outcome.attempt_id.to_string();
+            let run_str = outcome.run_id.to_string();
+            let observed_at_str = outcome.observed_at.to_rfc3339();
+            let payload_json = serde_json::to_string(&outcome.payload).map_err(|e| {
+                TraitStoreError::Serialisation {
+                    message: format!("outcome payload: {e}"),
+                }
+            })?;
+
+            // Derive status from the payload (look for a "status" field).
+            let status = outcome
+                .payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+
+            let consumed_int: i32 = i32::from(outcome.consumed);
+
+            let writer = pool.writer();
+            writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
+
+            let result = (|| -> Result<(), TraitStoreError> {
+                writer
+                    .execute(
+                        "INSERT INTO effect_outcomes \
+                         (id, intent_id, status, result_json, created_at, \
+                          attempt_id, run_id, consumed) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        rusqlite::params![
+                            id_str,
+                            intent_str,
+                            status,
+                            payload_json,
+                            observed_at_str,
+                            attempt_str,
+                            run_str,
+                            consumed_int,
+                        ],
+                    )
+                    .map_err(|e| {
+                        if StoreError::is_unique_violation(&e) {
+                            TraitStoreError::Conflict {
+                                resource_type: "EffectOutcome",
+                                id: id_str.clone(),
+                            }
+                        } else {
+                            map_sqlite_err(e)
+                        }
+                    })?;
+
+                // Transition the intent to resolved.
+                writer
+                    .execute(
+                        "UPDATE effect_intents SET state = 'resolved' WHERE id = ?1",
+                        [&intent_str],
+                    )
+                    .map_err(map_sqlite_err)?;
+
+                Ok(())
+            })();
+
+            match &result {
+                Ok(()) => writer.execute_batch("COMMIT").map_err(map_sqlite_err)?,
+                Err(_) => {
+                    let _ = writer.execute_batch("ROLLBACK");
+                }
+            }
+
+            debug!(outcome_id = %outcome.id, intent_id = %intent_str, "outcome recorded via EffectStore");
+            result
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn unconsumed_outcomes(
+        &self,
+        run_id: RunId,
+    ) -> Result<Vec<StoredOutcome>, TraitStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let run_str = run_id.to_string();
+            let writer = pool.writer();
+
+            let mut stmt = writer
+                .prepare(
+                    "SELECT id, intent_id, attempt_id, run_id, consumed, result_json, created_at \
+                     FROM effect_outcomes \
+                     WHERE run_id = ?1 AND consumed = 0 \
+                     ORDER BY created_at ASC",
+                )
+                .map_err(map_sqlite_err)?;
+
+            let rows: Vec<StoredOutcome> = stmt
+                .query_map([&run_str], |r| {
+                    let id_s: String = r.get(0)?;
+                    let intent_id_s: String = r.get(1)?;
+                    let attempt_id_s: Option<String> = r.get(2)?;
+                    let run_id_s: Option<String> = r.get(3)?;
+                    let consumed_i: i32 = r.get(4)?;
+                    let result_json_s: String = r.get(5)?;
+                    let created_at_s: String = r.get(6)?;
+                    Ok((
+                        id_s,
+                        intent_id_s,
+                        attempt_id_s,
+                        run_id_s,
+                        consumed_i,
+                        result_json_s,
+                        created_at_s,
+                    ))
+                })
+                .map_err(map_sqlite_err)?
+                .map(|row_result| {
+                    let (id_s, intent_id_s, attempt_id_s, run_id_s, consumed_i, result_json_s, created_at_s) =
+                        row_result.map_err(map_sqlite_err)?;
+                    let payload: serde_json::Value =
+                        serde_json::from_str(&result_json_s).map_err(|e| {
+                            TraitStoreError::Serialisation {
+                                message: format!("outcome result_json: {e}"),
+                            }
+                        })?;
+                    Ok(StoredOutcome {
+                        id: parse_id(&id_s, "EffectOutcomeId")?,
+                        intent_id: parse_id(&intent_id_s, "EffectId")?,
+                        attempt_id: parse_id(
+                            attempt_id_s.as_deref().unwrap_or(&EffectAttemptId::new().to_string()),
+                            "EffectAttemptId",
+                        )?,
+                        run_id: parse_id(
+                            run_id_s.as_deref().unwrap_or(&run_str),
+                            "RunId",
+                        )?,
+                        consumed: consumed_i != 0,
+                        payload,
+                        observed_at: parse_ts(&created_at_s)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(rows)
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn mark_outcomes_consumed(
+        &self,
+        outcome_ids: &[EffectOutcomeId],
+    ) -> Result<(), TraitStoreError> {
+        let ids: Vec<String> = outcome_ids.iter().map(ToString::to_string).collect();
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            for id_str in &ids {
+                writer
+                    .execute(
+                        "UPDATE effect_outcomes SET consumed = 1 WHERE id = ?1",
+                        [id_str],
+                    )
+                    .map_err(map_sqlite_err)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — EffectStore trait on SqlitePool
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod effect_store_tests {
+    use super::*;
+    use crate::migrations;
+    use polkagent_store_trait::EffectStore;
+
+    /// Create an in-memory pool with all migrations applied and FK-parent rows
+    /// inserted so that effect rows satisfy foreign-key constraints.
+    fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::open_in_memory().expect("open in-memory pool");
+        {
+            let writer = pool.writer();
+            migrations::migrate(&writer).expect("migrate");
+            writer
+                .execute(
+                    "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at) \
+                     VALUES ('test-agent', 'Test Agent', 'active', '{}', \
+                             '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                    [],
+                )
+                .expect("insert test agent");
+        }
+        pool
+    }
+
+    /// Scaffolding row IDs returned by `insert_run_scaffold`.
+    struct TestScaffold {
+        run_id: RunId,
+        step_id: StepId,
+    }
+
+    /// Insert the full FK chain: run -> turn -> step.
+    /// Returns the run and step IDs for use in intent construction.
+    fn insert_run_scaffold(pool: &SqlitePool, run_id: RunId) -> TestScaffold {
+        let turn_id = uuid::Uuid::now_v7().to_string();
+        let step_id = StepId::new();
+        let writer = pool.writer();
+        writer
+            .execute(
+                "INSERT INTO runs (id, agent_id, state, params_json, created_at, updated_at) \
+                 VALUES (?1, 'test-agent', 'created', '{}', \
+                         '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                rusqlite::params![run_id.to_string()],
+            )
+            .expect("insert test run");
+        writer
+            .execute(
+                "INSERT INTO turns (id, run_id, sequence, role, started_at) \
+                 VALUES (?1, ?2, 1, 'assistant', '2024-01-01T00:00:00Z')",
+                rusqlite::params![turn_id, run_id.to_string()],
+            )
+            .expect("insert test turn");
+        writer
+            .execute(
+                "INSERT INTO steps (id, turn_id, sequence, kind, started_at) \
+                 VALUES (?1, ?2, 1, 'tool_call', '2024-01-01T00:00:00Z')",
+                rusqlite::params![step_id.to_string(), turn_id],
+            )
+            .expect("insert test step");
+        TestScaffold { run_id, step_id }
+    }
+
+    /// Build a minimal `StoredIntent` for testing, using the scaffold's step_id.
+    fn make_intent(scaffold: &TestScaffold) -> StoredIntent {
+        StoredIntent {
+            id: EffectId::new(),
+            run_id: scaffold.run_id,
+            step_id: scaffold.step_id,
+            state: "pending".to_string(),
+            lease_owner: None,
+            lease_expires: None,
+            retry_class: StoreRetryClass::Idempotent,
+            payload: serde_json::json!({
+                "kind": "tool",
+                "params": { "name": "read_file", "path": "/tmp/test" },
+            }),
+            idempotency_key: format!("key-{}", uuid::Uuid::now_v7()),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // propose_intent
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn propose_and_get_intent() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose_intent");
+
+        let fetched = EffectStore::get_intent(&pool, intent_id)
+            .await
+            .expect("get_intent");
+
+        assert_eq!(fetched.id, intent_id);
+        assert_eq!(fetched.run_id, run_id);
+        assert_eq!(fetched.state, "pending");
+        assert_eq!(fetched.retry_class, StoreRetryClass::Idempotent);
+        assert!(fetched.lease_owner.is_none());
+        assert!(fetched.lease_expires.is_none());
+    }
+
+    #[tokio::test]
+    async fn propose_intent_duplicate_returns_conflict() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        EffectStore::propose_intent(&pool, intent.clone())
+            .await
+            .expect("first propose");
+
+        let err = EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect_err("duplicate should fail");
+
+        assert!(
+            matches!(err, TraitStoreError::Conflict { .. }),
+            "expected Conflict, got: {err:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // claim_intent
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn claim_intent_returns_first_pending() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let worker = WorkerId::new();
+        let claimed = EffectStore::claim_intent(&pool, worker, Duration::from_secs(60))
+            .await
+            .expect("claim_intent");
+
+        assert!(claimed.is_some());
+        let claimed = claimed.expect("just asserted Some");
+        assert_eq!(claimed.id, intent_id);
+        assert_eq!(claimed.state, "claimed");
+        assert_eq!(claimed.lease_owner, Some(worker));
+        assert!(claimed.lease_expires.is_some());
+    }
+
+    #[tokio::test]
+    async fn claim_intent_returns_none_when_empty() {
+        let pool = test_pool();
+        let worker = WorkerId::new();
+
+        let claimed = EffectStore::claim_intent(&pool, worker, Duration::from_secs(60))
+            .await
+            .expect("claim_intent");
+
+        assert!(claimed.is_none());
+    }
+
+    #[tokio::test]
+    async fn claim_intent_skips_already_claimed() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let w1 = WorkerId::new();
+        let w2 = WorkerId::new();
+
+        // First worker claims.
+        let c1 = EffectStore::claim_intent(&pool, w1, Duration::from_secs(600))
+            .await
+            .expect("claim 1");
+        assert!(c1.is_some());
+
+        // Second worker finds nothing.
+        let c2 = EffectStore::claim_intent(&pool, w2, Duration::from_secs(600))
+            .await
+            .expect("claim 2");
+        assert!(c2.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // claim_intent_by_id
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn claim_intent_by_id_succeeds() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let worker = WorkerId::new();
+        let claimed =
+            EffectStore::claim_intent_by_id(&pool, intent_id, worker, Duration::from_secs(60))
+                .await
+                .expect("claim_intent_by_id");
+
+        assert_eq!(claimed.id, intent_id);
+        assert_eq!(claimed.state, "claimed");
+        assert_eq!(claimed.lease_owner, Some(worker));
+    }
+
+    #[tokio::test]
+    async fn claim_intent_by_id_not_found() {
+        let pool = test_pool();
+        let worker = WorkerId::new();
+        let missing_id = EffectId::new();
+
+        let err =
+            EffectStore::claim_intent_by_id(&pool, missing_id, worker, Duration::from_secs(60))
+                .await
+                .expect_err("should fail");
+
+        assert!(
+            matches!(err, TraitStoreError::NotFound { .. }),
+            "expected NotFound, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_intent_by_id_already_claimed() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let w1 = WorkerId::new();
+        let w2 = WorkerId::new();
+
+        EffectStore::claim_intent_by_id(&pool, intent_id, w1, Duration::from_secs(600))
+            .await
+            .expect("first claim");
+
+        let err =
+            EffectStore::claim_intent_by_id(&pool, intent_id, w2, Duration::from_secs(600))
+                .await
+                .expect_err("second claim should fail");
+
+        assert!(
+            matches!(err, TraitStoreError::InvalidTransition { .. }),
+            "expected InvalidTransition, got: {err:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // release_claim
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn release_claim_returns_to_pending() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let worker = WorkerId::new();
+        EffectStore::claim_intent_by_id(&pool, intent_id, worker, Duration::from_secs(60))
+            .await
+            .expect("claim");
+
+        EffectStore::release_claim(&pool, intent_id, worker)
+            .await
+            .expect("release_claim");
+
+        let fetched = EffectStore::get_intent(&pool, intent_id)
+            .await
+            .expect("get_intent");
+        assert_eq!(fetched.state, "pending");
+        assert!(fetched.lease_owner.is_none());
+    }
+
+    #[tokio::test]
+    async fn release_claim_is_noop_for_different_worker() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let owner = WorkerId::new();
+        let other = WorkerId::new();
+        EffectStore::claim_intent_by_id(&pool, intent_id, owner, Duration::from_secs(60))
+            .await
+            .expect("claim");
+
+        // Release by a different worker should be a no-op.
+        EffectStore::release_claim(&pool, intent_id, other)
+            .await
+            .expect("release_claim by other");
+
+        let fetched = EffectStore::get_intent(&pool, intent_id)
+            .await
+            .expect("get_intent");
+        assert_eq!(fetched.state, "claimed");
+        assert_eq!(fetched.lease_owner, Some(owner));
+    }
+
+    // ------------------------------------------------------------------
+    // get_by_run
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_by_run_returns_all_intents() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        for _ in 0..3 {
+            EffectStore::propose_intent(&pool, make_intent(&scaffold))
+                .await
+                .expect("propose");
+        }
+
+        let intents = EffectStore::get_by_run(&pool, run_id)
+            .await
+            .expect("get_by_run");
+        assert_eq!(intents.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn get_by_run_excludes_other_runs() {
+        let pool = test_pool();
+        let r1 = RunId::new();
+        let r2 = RunId::new();
+        let s1 = insert_run_scaffold(&pool, r1);
+        let s2 = insert_run_scaffold(&pool, r2);
+
+        EffectStore::propose_intent(&pool, make_intent(&s1))
+            .await
+            .expect("propose r1");
+        EffectStore::propose_intent(&pool, make_intent(&s2))
+            .await
+            .expect("propose r2");
+
+        let intents = EffectStore::get_by_run(&pool, r1)
+            .await
+            .expect("get_by_run r1");
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].run_id, r1);
+    }
+
+    // ------------------------------------------------------------------
+    // expired_leases
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn expired_leases_finds_expired_claims() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let worker = WorkerId::new();
+        // Claim with a very short lease (1 ms effectively already expired).
+        EffectStore::claim_intent_by_id(&pool, intent_id, worker, Duration::from_millis(1))
+            .await
+            .expect("claim");
+
+        // Small sleep to ensure the lease expires.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let cutoff = chrono::Utc::now();
+        let expired = EffectStore::expired_leases(&pool, cutoff)
+            .await
+            .expect("expired_leases");
+
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].id, intent_id);
+    }
+
+    // ------------------------------------------------------------------
+    // record_attempt_start
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_attempt_start_succeeds() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let attempt_id = EffectAttemptId::new();
+        let worker = WorkerId::new();
+        let payload = serde_json::json!({"strategy": "direct"});
+
+        EffectStore::record_attempt_start(&pool, attempt_id, intent_id, worker, payload)
+            .await
+            .expect("record_attempt_start");
+
+        // Verify the attempt is in the database.
+        let writer = pool.writer();
+        let count: i64 = writer
+            .query_row(
+                "SELECT COUNT(*) FROM effect_attempts WHERE id = ?1",
+                [attempt_id.to_string()],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 1);
+    }
+
+    // ------------------------------------------------------------------
+    // record_outcome
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_outcome_transitions_to_resolved() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let attempt_id = EffectAttemptId::new();
+        let worker = WorkerId::new();
+        EffectStore::record_attempt_start(
+            &pool,
+            attempt_id,
+            intent_id,
+            worker,
+            serde_json::json!({}),
+        )
+        .await
+        .expect("record_attempt_start");
+
+        let outcome = StoredOutcome {
+            id: EffectOutcomeId::new(),
+            intent_id,
+            attempt_id,
+            run_id,
+            consumed: false,
+            payload: serde_json::json!({"status": "success", "data": 42}),
+            observed_at: chrono::Utc::now(),
+        };
+
+        EffectStore::record_outcome(&pool, outcome)
+            .await
+            .expect("record_outcome");
+
+        // Intent should now be resolved.
+        let fetched = EffectStore::get_intent(&pool, intent_id)
+            .await
+            .expect("get_intent");
+        assert_eq!(fetched.state, "resolved");
+    }
+
+    #[tokio::test]
+    async fn record_outcome_duplicate_returns_conflict() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let attempt_id = EffectAttemptId::new();
+        let worker = WorkerId::new();
+        EffectStore::record_attempt_start(
+            &pool,
+            attempt_id,
+            intent_id,
+            worker,
+            serde_json::json!({}),
+        )
+        .await
+        .expect("record_attempt_start");
+
+        let outcome = StoredOutcome {
+            id: EffectOutcomeId::new(),
+            intent_id,
+            attempt_id,
+            run_id,
+            consumed: false,
+            payload: serde_json::json!({"status": "success"}),
+            observed_at: chrono::Utc::now(),
+        };
+
+        EffectStore::record_outcome(&pool, outcome.clone())
+            .await
+            .expect("first outcome");
+
+        // Second outcome for the same intent should conflict (UNIQUE on intent_id).
+        let outcome2 = StoredOutcome {
+            id: EffectOutcomeId::new(),
+            ..outcome
+        };
+        let err = EffectStore::record_outcome(&pool, outcome2)
+            .await
+            .expect_err("duplicate outcome should fail");
+
+        assert!(
+            matches!(err, TraitStoreError::Conflict { .. }),
+            "expected Conflict, got: {err:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // unconsumed_outcomes / mark_outcomes_consumed
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn unconsumed_outcomes_and_mark_consumed() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+
+        let attempt_id = EffectAttemptId::new();
+        let worker = WorkerId::new();
+        EffectStore::record_attempt_start(
+            &pool,
+            attempt_id,
+            intent_id,
+            worker,
+            serde_json::json!({}),
+        )
+        .await
+        .expect("record_attempt_start");
+
+        let outcome_id = EffectOutcomeId::new();
+        let outcome = StoredOutcome {
+            id: outcome_id,
+            intent_id,
+            attempt_id,
+            run_id,
+            consumed: false,
+            payload: serde_json::json!({"status": "success", "value": "hello"}),
+            observed_at: chrono::Utc::now(),
+        };
+
+        EffectStore::record_outcome(&pool, outcome)
+            .await
+            .expect("record_outcome");
+
+        // Should appear as unconsumed.
+        let unconsumed = EffectStore::unconsumed_outcomes(&pool, run_id)
+            .await
+            .expect("unconsumed_outcomes");
+        assert_eq!(unconsumed.len(), 1);
+        assert_eq!(unconsumed[0].id, outcome_id);
+        assert!(!unconsumed[0].consumed);
+
+        // Mark consumed.
+        EffectStore::mark_outcomes_consumed(&pool, &[outcome_id])
+            .await
+            .expect("mark_outcomes_consumed");
+
+        // Should now be empty.
+        let unconsumed = EffectStore::unconsumed_outcomes(&pool, run_id)
+            .await
+            .expect("unconsumed after mark");
+        assert!(unconsumed.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // get_intent not found
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_intent_not_found() {
+        let pool = test_pool();
+        let missing = EffectId::new();
+
+        let err = EffectStore::get_intent(&pool, missing)
+            .await
+            .expect_err("should not find");
+
+        assert!(
+            matches!(err, TraitStoreError::NotFound { .. }),
+            "expected NotFound, got: {err:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Retry class round-trip
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn retry_class_round_trips() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+
+        for rc in [
+            StoreRetryClass::Idempotent,
+            StoreRetryClass::CheckBeforeRetry,
+            StoreRetryClass::NoAutoRetry,
+        ] {
+            let mut intent = make_intent(&scaffold);
+            intent.retry_class = rc;
+
+            let id = intent.id;
+            EffectStore::propose_intent(&pool, intent)
+                .await
+                .expect("propose");
+
+            let fetched = EffectStore::get_intent(&pool, id)
+                .await
+                .expect("get");
+            assert_eq!(fetched.retry_class, rc);
+        }
     }
 }

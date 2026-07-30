@@ -62,9 +62,12 @@
 //! - `cache_size = -65536` — 64 MiB page cache per connection.
 //! - `mmap_size = 268435456` — 256 MiB memory-mapped I/O.
 
+pub mod artifact_store_impl;
 pub mod error;
+pub mod event_store;
 pub mod migrations;
 pub mod pool;
+pub mod run_store_impl;
 pub mod store;
 
 // Re-export the most commonly used types at the crate root.

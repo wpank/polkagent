@@ -4,15 +4,33 @@
 //! All endpoints live under `/api/v1alpha1`. Health probes are available at
 //! `/health/{live,ready,startup}` without the versioned prefix.
 //!
+//! # Storage abstraction
+//!
+//! The API layer is decoupled from any specific storage backend via trait
+//! objects:
+//!
+//! - [`state::AgentStore`] — agent spec persistence.
+//! - [`run::RunManagerTrait`] — run lifecycle management.
+//! - [`polkagent_store_trait::EffectStore`] — effect pipeline persistence.
+//!
+//! In-memory implementations ([`state::InMemoryAgentStore`] and
+//! [`run::InMemoryRunManager`]) are provided for tests and local development.
+//! Production deployments inject durable SQLite-backed implementations.
+//!
 //! # Quick start
 //!
 //! ```no_run
 //! use std::sync::Arc;
-//! use polkagent_api::{ApiServer, RunManager};
+//! use polkagent_api::{ApiServer, InMemoryRunManager};
+//! use polkagent_api::state::InMemoryAgentStore;
 //! use polkagent_config::Config;
+//! use polkagent_event::EventBus;
 //!
 //! # async fn example(store: Arc<dyn polkagent_store_trait::EffectStore>) {
-//! let server = ApiServer::new(Config::default(), RunManager::new(), store);
+//! let agents = Arc::new(InMemoryAgentStore::new());
+//! let run_manager = Arc::new(InMemoryRunManager::new());
+//! let event_bus = EventBus::with_default_capacity();
+//! let server = ApiServer::new(Config::default(), agents, run_manager, store, event_bus);
 //! server.serve("127.0.0.1:4840").await.expect("server error");
 //! # }
 //! ```
@@ -35,6 +53,6 @@ pub mod server;
 pub mod state;
 
 // Convenient re-exports for consumers that construct the server.
-pub use run::RunManager;
+pub use run::{InMemoryRunManager, RunManagerTrait};
 pub use server::ApiServer;
-pub use state::AppState;
+pub use state::{AgentStore, AppState, InMemoryAgentStore};

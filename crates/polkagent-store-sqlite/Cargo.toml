@@ -10,7 +10,11 @@ description = "SQLite storage adapter for Polkagent with WAL mode and forward-on
 [dependencies]
 # Internal
 polkagent-core = { path = "../polkagent-core" }
+polkagent-artifact = { path = "../polkagent-artifact" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
+
+# Crypto
+blake3 = { workspace = true }
 
 # Database
 rusqlite = { workspace = true }
@@ -24,6 +28,7 @@ chrono = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+async-trait = { workspace = true }
 
 # Observability
 tracing = { workspace = true }

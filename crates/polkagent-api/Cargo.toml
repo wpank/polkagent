@@ -12,6 +12,7 @@ description = "REST API server for the Polkagent platform"
 polkagent-core = { path = "../polkagent-core" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 polkagent-config = { path = "../polkagent-config" }
+polkagent-event = { path = "../polkagent-event" }
 
 # Web
 axum = { workspace = true }
@@ -24,6 +25,8 @@ serde_json = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
 
 # Observability
 tracing = { workspace = true }

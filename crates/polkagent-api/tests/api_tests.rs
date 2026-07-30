@@ -14,8 +14,9 @@ use polkagent_store_trait::{
 };
 use serde_json::json;
 
-use polkagent_api::{RunManager, server::ApiServer};
+use polkagent_api::{InMemoryRunManager, InMemoryAgentStore, server::ApiServer};
 use polkagent_config::Config;
+use polkagent_event::EventBus;
 
 // ---------------------------------------------------------------------------
 // In-memory EffectStore for tests
@@ -111,10 +112,13 @@ impl EffectStore for NoopEffectStore {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/// Build a `TestServer` backed by the full Axum router.
+/// Build a `TestServer` backed by the full Axum router with in-memory stores.
 fn test_server() -> TestServer {
+    let agents = Arc::new(InMemoryAgentStore::new());
+    let run_manager = Arc::new(InMemoryRunManager::new());
     let store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
-    let server = ApiServer::new(Config::default(), RunManager::new(), store);
+    let event_bus = EventBus::with_default_capacity();
+    let server = ApiServer::new(Config::default(), agents, run_manager, store, event_bus);
     TestServer::new(server.into_router())
 }
 
