@@ -1,0 +1,40 @@
+[package]
+name = "polkagent-run"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Run/Turn/Step lifecycle manager for the Polkagent platform"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+polkagent-store-trait = { path = "../polkagent-store-trait" }
+polkagent-event = { path = "../polkagent-event" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+async-trait = { workspace = true }
+
+[lints]
+workspace = true

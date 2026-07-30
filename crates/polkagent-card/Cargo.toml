@@ -1,0 +1,32 @@
+[package]
+name = "polkagent-card"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ActionCard — canonical UX surface for irreversible on-chain effects"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+# TUI
+ratatui = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+chrono = { workspace = true }

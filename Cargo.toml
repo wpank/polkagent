@@ -1,0 +1,100 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/polkagent-core",
+    "crates/polkagent-store-trait",
+    "crates/polkagent-executor-trait",
+    "crates/polkagent-signer-trait",
+    "crates/polkagent-chain-trait",
+    "crates/polkagent-transport-trait",
+    "crates/polkagent-run",
+    "crates/polkagent-effect",
+    "crates/polkagent-grant",
+    "crates/polkagent-artifact",
+    "crates/polkagent-event",
+    "crates/polkagent-config",
+    "crates/polkagent-outbox",
+    "crates/polkagent-card",
+    "crates/polkagent-store-sqlite",
+    "crates/polkagent-executor-fake",
+    "crates/polkagent-signer-fake",
+    "crates/polkagent-transport-fake",
+    "crates/polkagent-api",
+    "crates/polkagent-cli",
+    "crates/polkagent-test-fixtures",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+repository = "https://github.com/nicovince/polkagent"
+
+[workspace.dependencies]
+# Async
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging / Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
+
+# Crypto
+blake3 = "1"
+zeroize = { version = "1", features = ["derive"] }
+
+# Web
+axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utils
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+parking_lot = "0.12"
+bytes = "1"
+dirs = "5"
+
+# Testing
+proptest = "1"
+tempfile = "3"
+criterion = "0.5"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

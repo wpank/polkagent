@@ -1,0 +1,51 @@
+[package]
+name = "polkagent-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Polkagent command-line interface and terminal UI (ROSEDUST)"
+
+[[bin]]
+name = "polkagent"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+polkagent-core   = { path = "../polkagent-core" }
+polkagent-config = { path = "../polkagent-config" }
+
+# CLI
+clap = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# TUI
+ratatui   = { workspace = true }
+crossterm = { workspace = true }
+
+# Serialization
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+# Observability
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Config parsing
+toml = { workspace = true }
+
+# Database (direct SQLite access for TUI data queries)
+rusqlite    = { workspace = true }
+parking_lot = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,499 @@
+//! Main TUI application shell.
+//!
+//! Owns the terminal state machine, drives the render loop, dispatches
+//! [`TuiAction`]s, and coordinates background data refreshes.
+//!
+//! # Frame budget (target 60 fps, flush every 6 frames → ~10 fps effective)
+//!
+//! | Phase            | Budget    |
+//! |------------------|-----------|
+//! | Input poll       | ~0.1 ms   |
+//! | Data refresh     | ~2.0 ms   |
+//! | Render           | ~4.0 ms   |
+//! | Terminal flush   | ~2.0 ms   |
+//! | **Total**        | **~8 ms** |
+
+use std::io::Stdout;
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{
+    Frame, Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
+    widgets::Block,
+};
+
+use crate::tui::{
+    input::{InputMode, TuiAction, key_to_action},
+    state::TuiState,
+    theme::Theme,
+    views,
+    widgets::{header_bar, status_bar},
+};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Internal tick rate.
+pub const TARGET_FPS: u64 = 60;
+/// Duration of one frame.
+pub const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
+/// Flush the terminal every N frames (10 fps effective).
+pub const FLUSH_DIVISOR: u64 = 6;
+/// Flush divisor used when the TUI has been idle for 5 seconds (5 fps).
+pub const FLUSH_DIVISOR_IDLE: u64 = 12;
+/// Refresh database data every N seconds.
+pub const REFRESH_INTERVAL_SECS: u64 = 5;
+
+// ---------------------------------------------------------------------------
+// Tab
+// ---------------------------------------------------------------------------
+
+/// Top-level region tab (F1–F4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    /// F1 — Overview: agent grid, run summary, system health.
+    #[default]
+    Dashboard,
+    /// F2 — Agent list and detail.
+    Agents,
+    /// F3 — Run list and detail.
+    Runs,
+    /// F4 — System health and configuration.
+    System,
+}
+
+impl Tab {
+    /// Display name used in the header bar and status bar.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dashboard => "DASHBOARD",
+            Self::Agents    => "AGENTS",
+            Self::Runs      => "RUNS",
+            Self::System    => "SYSTEM",
+        }
+    }
+
+    /// F-key indicator shown next to the tab name.
+    pub fn fkey_label(self) -> &'static str {
+        match self {
+            Self::Dashboard => "[F1]",
+            Self::Agents    => "[F2]",
+            Self::Runs      => "[F3]",
+            Self::System    => "[F4]",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
+/// Primary TUI application shell.
+///
+/// Owns terminal state, navigation, theme, and all mutable data. The render
+/// path reads only `&self` — zero I/O in the hot path.
+pub struct App {
+    // -- Navigation ----------------------------------------------------------
+    pub active_tab: Tab,
+
+    // -- State ---------------------------------------------------------------
+    pub tui_state: TuiState,
+    pub theme: Theme,
+
+    // -- Input ---------------------------------------------------------------
+    pub input_mode: InputMode,
+
+    // -- Loop control --------------------------------------------------------
+    pub running: bool,
+    pub frame_counter: u64,
+    pub last_input: Instant,
+    pub last_refresh: Instant,
+
+    // -- Data source ---------------------------------------------------------
+    pub db_path: String,
+}
+
+impl App {
+    /// Create a new `App` with the given theme and database path.
+    pub fn new(theme: Theme, db_path: String) -> Self {
+        Self {
+            active_tab: Tab::default(),
+            tui_state: TuiState::default(),
+            theme,
+            input_mode: InputMode::default(),
+            running: true,
+            frame_counter: 0,
+            last_input: Instant::now(),
+            last_refresh: Instant::now()
+                .checked_sub(Duration::from_secs(REFRESH_INTERVAL_SECS + 1))
+                .unwrap_or_else(Instant::now),
+            db_path,
+        }
+    }
+
+    // ── Event loop ──────────────────────────────────────────────────────────
+
+    /// Run the main event loop until `self.running` becomes `false`.
+    pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+        let mut last_frame = Instant::now();
+
+        // Initial data load.
+        self.refresh_data();
+
+        loop {
+            let frame_start = Instant::now();
+
+            // 1. Poll input (non-blocking).
+            let timeout = FRAME_DURATION.saturating_sub(last_frame.elapsed());
+            if crossterm::event::poll(timeout)? {
+                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                    self.last_input = Instant::now();
+                    if let Some(action) = key_to_action(key, self.input_mode) {
+                        self.apply_action(action);
+                    }
+                } else if let crossterm::event::Event::Resize(w, h) = crossterm::event::read()? {
+                    self.apply_action(TuiAction::Resize(w, h));
+                }
+            }
+
+            // 2. Background data refresh (every REFRESH_INTERVAL_SECS).
+            if self.last_refresh.elapsed().as_secs() >= REFRESH_INTERVAL_SECS {
+                self.refresh_data();
+                self.last_refresh = Instant::now();
+            }
+
+            // 3. Render (throttled to effective ~10 fps, or ~5 fps when idle).
+            self.frame_counter = self.frame_counter.wrapping_add(1);
+            let idle = self.last_input.elapsed().as_secs() > 5;
+            let divisor = if idle { FLUSH_DIVISOR_IDLE } else { FLUSH_DIVISOR };
+            if self.frame_counter % divisor == 0 || self.tui_state.dirty {
+                terminal.draw(|frame| self.render(frame))?;
+                self.tui_state.dirty = false;
+            }
+
+            // 4. Exit check.
+            if !self.running {
+                break;
+            }
+
+            last_frame = frame_start;
+        }
+
+        Ok(())
+    }
+
+    // ── Action dispatch ─────────────────────────────────────────────────────
+
+    /// Apply a [`TuiAction`] to `self`, mutating `TuiState` as needed.
+    pub fn apply_action(&mut self, action: TuiAction) {
+        match action {
+            TuiAction::NavigateTab(tab) => {
+                self.active_tab = tab;
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::NavigateUp => {
+                match self.active_tab {
+                    Tab::Agents => {
+                        self.tui_state.agents_scroll.up();
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Runs => {
+                        self.tui_state.runs_scroll.up();
+                        self.tui_state.mark_dirty();
+                    }
+                    _ => {}
+                }
+            }
+
+            TuiAction::NavigateDown => {
+                let visible = 20usize; // conservative; actual rows computed on render
+                match self.active_tab {
+                    Tab::Agents => {
+                        let total = self.tui_state.agents.len();
+                        self.tui_state.agents_scroll.down(total, visible);
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Runs => {
+                        let total = self.tui_state.runs.len();
+                        self.tui_state.runs_scroll.down(total, visible);
+                        self.tui_state.mark_dirty();
+                    }
+                    _ => {}
+                }
+            }
+
+            TuiAction::ScrollUp(n) => {
+                for _ in 0..n {
+                    match self.active_tab {
+                        Tab::Agents => self.tui_state.agents_scroll.up(),
+                        Tab::Runs   => self.tui_state.runs_scroll.up(),
+                        _ => {}
+                    }
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::ScrollDown(n) => {
+                let visible = 20usize;
+                for _ in 0..n {
+                    match self.active_tab {
+                        Tab::Agents => {
+                            let t = self.tui_state.agents.len();
+                            self.tui_state.agents_scroll.down(t, visible);
+                        }
+                        Tab::Runs => {
+                            let t = self.tui_state.runs.len();
+                            self.tui_state.runs_scroll.down(t, visible);
+                        }
+                        _ => {}
+                    }
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::Select => {
+                // Drill-down: for now, ensure the scroll selection is set.
+                match self.active_tab {
+                    Tab::Agents => {
+                        if self.tui_state.agents_scroll.selected.is_none() {
+                            self.tui_state.agents_scroll.selected = Some(0);
+                        }
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Runs => {
+                        if self.tui_state.runs_scroll.selected.is_none() {
+                            self.tui_state.runs_scroll.selected = Some(0);
+                        }
+                        self.tui_state.mark_dirty();
+                    }
+                    _ => {}
+                }
+            }
+
+            TuiAction::Back => {
+                match self.active_tab {
+                    Tab::Agents => {
+                        self.tui_state.agents_scroll.selected = None;
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Runs => {
+                        self.tui_state.runs_scroll.selected = None;
+                        self.tui_state.mark_dirty();
+                    }
+                    _ => self.active_tab = Tab::Dashboard,
+                }
+            }
+
+            TuiAction::Quit => {
+                self.running = false;
+            }
+
+            TuiAction::Refresh => {
+                self.refresh_data();
+                self.last_refresh = Instant::now();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::Resize(_w, _h) => {
+                self.tui_state.mark_dirty();
+            }
+        }
+    }
+
+    // ── Data refresh ────────────────────────────────────────────────────────
+
+    /// Load fresh data from the database into `tui_state`.
+    ///
+    /// Errors are stored in `tui_state.last_error` rather than propagated so
+    /// that the TUI keeps running even if the database is temporarily unavailable.
+    fn refresh_data(&mut self) {
+        use crate::tui::db::TuiDb;
+
+        match TuiDb::open(&self.db_path) {
+            Ok(db) => {
+                // Agents.
+                match db.agents() {
+                    Ok(agents) => self.tui_state.agents = agents,
+                    Err(e) => {
+                        self.tui_state.last_error = Some(format!("agents: {e}"));
+                    }
+                }
+
+                // Recent runs (up to 100).
+                match db.recent_runs(100) {
+                    Ok(runs) => self.tui_state.runs = runs,
+                    Err(e) => {
+                        self.tui_state.last_error = Some(format!("runs: {e}"));
+                    }
+                }
+
+                // System health.
+                match db.system_health(&self.db_path) {
+                    Ok(health) => self.tui_state.health = health,
+                    Err(e) => {
+                        self.tui_state.last_error = Some(format!("health: {e}"));
+                    }
+                }
+
+                // Clear error if all queries succeeded.
+                if self.tui_state.last_error.is_none() {
+                    self.tui_state.last_error = None;
+                }
+                self.tui_state.last_refresh = Some(chrono::Utc::now());
+                self.tui_state.mark_dirty();
+            }
+            Err(e) => {
+                // Can't open DB — update health to reflect the failure.
+                self.tui_state.health.db_ok = false;
+                self.tui_state.last_error = Some(format!("db: {e}"));
+                self.tui_state.mark_dirty();
+            }
+        }
+    }
+
+    // ── Render pipeline ─────────────────────────────────────────────────────
+
+    /// Render the full TUI frame.
+    ///
+    /// Called from `terminal.draw(|frame| self.render(frame))`. Zero I/O.
+    fn render(&self, frame: &mut Frame) {
+        let size = frame.area();
+
+        // Fill the entire terminal with the void background.
+        let bg = Block::default().style(Style::default().bg(self.theme.bg_void));
+        frame.render_widget(bg, size);
+
+        // Compute layout regions.
+        let layout = compute_layout(size);
+
+        // Chrome.
+        header_bar::render(frame, layout.header, self.active_tab, &self.theme);
+        status_bar::render(
+            frame,
+            layout.status,
+            self.active_tab,
+            self.input_mode,
+            self.tui_state.last_error.as_deref(),
+            &self.theme,
+        );
+
+        // Tab bar (F1–F4 indicators at the very bottom of the header area).
+        self.render_tab_bar(frame, layout.tab_bar);
+
+        // Active view.
+        match self.active_tab {
+            Tab::Dashboard => {
+                views::dashboard::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
+            Tab::Agents => {
+                views::agents::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
+            Tab::Runs => {
+                views::runs::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
+            Tab::System => {
+                views::system::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
+        }
+    }
+
+    /// Render the horizontal tab indicator row.
+    fn render_tab_bar(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::{
+            style::Modifier,
+            text::{Line, Span},
+            widgets::Paragraph,
+        };
+
+        let tabs = [
+            (Tab::Dashboard, "F1 Dashboard"),
+            (Tab::Agents,    "F2 Agents"),
+            (Tab::Runs,      "F3 Runs"),
+            (Tab::System,    "F4 System"),
+        ];
+
+        let mut spans = Vec::with_capacity(tabs.len() * 2);
+        for (tab, label) in &tabs {
+            let style = if *tab == self.active_tab {
+                Style::default()
+                    .fg(self.theme.rose_bright)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.theme.text_dim)
+            };
+            spans.push(Span::styled(format!("  {label}  "), style));
+        }
+
+        let bar_bg = Block::default().style(Style::default().bg(self.theme.bg_raised));
+        frame.render_widget(bar_bg, area);
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layout computation
+// ---------------------------------------------------------------------------
+
+/// Computed layout regions for the TUI frame.
+struct TuiLayout {
+    header:  Rect,
+    tab_bar: Rect,
+    main:    Rect,
+    status:  Rect,
+}
+
+fn compute_layout(area: Rect) -> TuiLayout {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // header bar
+            Constraint::Length(1), // tab bar
+            Constraint::Min(5),    // main content
+            Constraint::Length(1), // status bar
+        ])
+        .split(area);
+
+    TuiLayout {
+        header:  rows[0],
+        tab_bar: rows[1],
+        main:    rows[2],
+        status:  rows[3],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal init / teardown
+// ---------------------------------------------------------------------------
+
+/// Enter alternate screen mode and return a configured terminal.
+pub fn enter_tui() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    Ok(terminal)
+}
+
+/// Restore the terminal to its previous state.
+pub fn exit_tui(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    Ok(())
+}

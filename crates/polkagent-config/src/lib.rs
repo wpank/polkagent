@@ -1,0 +1,57 @@
+//! TOML configuration loading with environment variable overrides for the
+//! Polkagent platform.
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! use polkagent_config::{ConfigLoader, validate};
+//!
+//! // Load and merge all config layers (defaults -> global -> project -> env vars).
+//! let config = ConfigLoader::new().load().expect("failed to load config");
+//!
+//! // Validate the resolved config before using it.
+//! validate::validate(&config).expect("invalid configuration");
+//!
+//! println!("log level: {}", config.log.level);
+//! println!("api bind: {}", config.api.bind_address);
+//! ```
+//!
+//! # Config file locations
+//!
+//! The loader automatically searches the following paths (later layers win):
+//!
+//! 1. Built-in defaults (compiled into the binary)
+//! 2. `~/.config/polkagent/polkagent.toml` (global user config)
+//! 3. `.polkagent/polkagent.toml` in the CWD or any ancestor directory
+//!    (project-local config)
+//! 4. `POLKAGENT_*` environment variables
+//!
+//! # Environment variable overrides
+//!
+//! All settings can be overridden via `POLKAGENT_*` environment variables.
+//! See the [`env`] module for the full mapping.
+//!
+//! # Secrets
+//!
+//! API keys and database credentials must **never** appear in config files.
+//! Use the environment variables listed in the [`env`] module instead.
+
+pub mod env;
+pub mod error;
+pub mod loader;
+pub mod schema;
+pub mod validate;
+
+// ---------------------------------------------------------------------------
+// Re-exports
+// ---------------------------------------------------------------------------
+
+pub use error::{ConfigError, Result};
+pub use loader::{merge, ConfigLoader};
+pub use schema::{
+    ApiConfig, BudgetConfig, Config, DatabaseBackend, DatabaseConfig, ExecutionConfig,
+    LogConfig, LogFormat, MemoryConfig, MetaConfig, PolicyConfig, PostgresConfig,
+    ProviderConfig, SqliteConfig, TuiConfig, TuiTheme, CURRENT_SCHEMA_VERSION,
+    DEFAULT_CONFIG_TEMPLATE,
+};
+pub use validate::ValidationError;

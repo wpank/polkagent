@@ -1,0 +1,24 @@
+[package]
+name = "polkagent-test-fixtures"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared test fixtures and builder helpers for the Polkagent workspace"
+
+[dependencies]
+polkagent-core = { path = "../polkagent-core" }
+polkagent-executor-trait = { path = "../polkagent-executor-trait" }
+polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+polkagent-transport-trait = { path = "../polkagent-transport-trait" }
+
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true
