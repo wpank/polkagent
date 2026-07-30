@@ -1,11 +1,11 @@
 [package]
-name = "polkagent-signer-fake"
+name = "polkagent-signer-external"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Deterministic fake Signer adapter for testing"
+description = "External signer adapter for browser extensions and signing services"
 
 [dependencies]
 polkagent-core = { path = "../polkagent-core" }
@@ -13,12 +13,15 @@ polkagent-signer-trait = { path = "../polkagent-signer-trait" }
 
 async-trait = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 thiserror = { workspace = true }
+reqwest = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-polkagent-signer-trait = { path = "../polkagent-signer-trait", features = ["test-contracts"] }
 
 [lints]
 workspace = true

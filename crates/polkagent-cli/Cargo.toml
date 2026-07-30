@@ -13,8 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 # Internal crates
-polkagent-core   = { path = "../polkagent-core" }
-polkagent-config = { path = "../polkagent-config" }
+polkagent-core          = { path = "../polkagent-core" }
+polkagent-config        = { path = "../polkagent-config" }
+polkagent-store-sqlite  = { path = "../polkagent-store-sqlite" }
+polkagent-store-trait   = { path = "../polkagent-store-trait" }
 
 # CLI
 clap = { workspace = true }

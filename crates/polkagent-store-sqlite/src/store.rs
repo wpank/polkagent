@@ -250,6 +250,90 @@ impl SqliteRunStore {
         Ok(())
     }
 
+    /// List agents, excluding archived unless `include_archived` is true.
+    ///
+    /// An optional `state_filter` narrows to rows whose `state` column
+    /// matches the given value.
+    pub fn list_agents(
+        &self,
+        state_filter: Option<&str>,
+        include_archived: bool,
+    ) -> StoreResult<Vec<AgentRow>> {
+        let writer = self.pool.writer();
+
+        // Build the query dynamically based on filter options.
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            match (state_filter, include_archived) {
+                (Some(filter), _) => (
+                    "SELECT id, name, description, state, spec_json, created_at, updated_at \
+                     FROM agents WHERE state = ?1 ORDER BY name ASC"
+                        .to_string(),
+                    vec![Box::new(filter.to_string()) as Box<dyn rusqlite::types::ToSql>],
+                ),
+                (None, true) => (
+                    "SELECT id, name, description, state, spec_json, created_at, updated_at \
+                     FROM agents ORDER BY name ASC"
+                        .to_string(),
+                    vec![],
+                ),
+                (None, false) => (
+                    "SELECT id, name, description, state, spec_json, created_at, updated_at \
+                     FROM agents WHERE state != 'archived' ORDER BY name ASC"
+                        .to_string(),
+                    vec![],
+                ),
+            };
+
+        let mut stmt = writer.prepare(&sql)?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |r| {
+                Ok(AgentRow {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    description: r.get(2)?,
+                    state: r.get(3)?,
+                    spec_json: r.get(4)?,
+                    created_at: r.get(5)?,
+                    updated_at: r.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Look up an agent by either its UUID id or its name.
+    ///
+    /// Returns the first matching row, or `StoreError::NotFound`.
+    pub fn get_agent_by_name_or_id(&self, identifier: &str) -> StoreResult<AgentRow> {
+        let writer = self.pool.writer();
+        writer
+            .query_row(
+                "SELECT id, name, description, state, spec_json, created_at, updated_at
+                 FROM agents WHERE (id = ?1 OR name = ?1) LIMIT 1",
+                [identifier],
+                |r| {
+                    Ok(AgentRow {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        description: r.get(2)?,
+                        state: r.get(3)?,
+                        spec_json: r.get(4)?,
+                        created_at: r.get(5)?,
+                        updated_at: r.get(6)?,
+                    })
+                },
+            )
+            .map_err(|e| {
+                if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                    StoreError::NotFound(format!("agent {identifier}"))
+                } else {
+                    StoreError::Sqlite(e)
+                }
+            })
+    }
+
     // ------------------------------------------------------------------
     // Runs
     // ------------------------------------------------------------------

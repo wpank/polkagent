@@ -1,24 +1,27 @@
 [package]
-name = "polkagent-signer-fake"
+name = "polkagent-executor-openai"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Deterministic fake Signer adapter for testing"
+description = "OpenAI-compatible Chat Completions API adapter for the ModelExecutor trait"
 
 [dependencies]
 polkagent-core = { path = "../polkagent-core" }
-polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+polkagent-executor-trait = { path = "../polkagent-executor-trait" }
 
 async-trait = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
-chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-polkagent-signer-trait = { path = "../polkagent-signer-trait", features = ["test-contracts"] }
 
 [lints]
 workspace = true

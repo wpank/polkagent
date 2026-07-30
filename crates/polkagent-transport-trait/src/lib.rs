@@ -17,6 +17,9 @@
 //!   policy evaluation, and content inspection happen in the application layer.
 //! - Implementations must be `Send + Sync + 'static`.
 
+#[cfg(feature = "test-contracts")]
+pub mod contracts;
+
 use std::time::Duration;
 
 use async_trait::async_trait;

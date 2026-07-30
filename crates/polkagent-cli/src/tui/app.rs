@@ -30,6 +30,8 @@ use ratatui::{
     widgets::Block,
 };
 
+use polkagent_store_sqlite::SqlitePool;
+
 use crate::tui::{
     input::{InputMode, TuiAction, key_to_action},
     state::TuiState,
@@ -119,12 +121,12 @@ pub struct App {
     pub last_refresh: Instant,
 
     // -- Data source ---------------------------------------------------------
-    pub db_path: String,
+    pub pool: SqlitePool,
 }
 
 impl App {
-    /// Create a new `App` with the given theme and database path.
-    pub fn new(theme: Theme, db_path: String) -> Self {
+    /// Create a new `App` with the given theme and database pool.
+    pub fn new(theme: Theme, pool: SqlitePool) -> Self {
         Self {
             active_tab: Tab::default(),
             tui_state: TuiState::default(),
@@ -136,7 +138,7 @@ impl App {
             last_refresh: Instant::now()
                 .checked_sub(Duration::from_secs(REFRESH_INTERVAL_SECS + 1))
                 .unwrap_or_else(Instant::now),
-            db_path,
+            pool,
         }
     }
 
@@ -319,7 +321,9 @@ impl App {
     fn refresh_data(&mut self) {
         use crate::tui::db::TuiDb;
 
-        match TuiDb::open(&self.db_path) {
+        let db_path_display = self.pool.path().display().to_string();
+
+        match TuiDb::from_pool(&self.pool) {
             Ok(db) => {
                 // Agents.
                 match db.agents() {
@@ -338,7 +342,7 @@ impl App {
                 }
 
                 // System health.
-                match db.system_health(&self.db_path) {
+                match db.system_health(&db_path_display) {
                     Ok(health) => self.tui_state.health = health,
                     Err(e) => {
                         self.tui_state.last_error = Some(format!("health: {e}"));
@@ -353,7 +357,7 @@ impl App {
                 self.tui_state.mark_dirty();
             }
             Err(e) => {
-                // Can't open DB — update health to reflect the failure.
+                // Can't open reader — update health to reflect the failure.
                 self.tui_state.health.db_ok = false;
                 self.tui_state.last_error = Some(format!("db: {e}"));
                 self.tui_state.mark_dirty();

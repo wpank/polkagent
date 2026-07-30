@@ -9,9 +9,11 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions, clippy::missing_errors_doc)]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
+
+use polkagent_store_sqlite::SqlitePool;
 
 mod cli;
 mod commands;
@@ -39,38 +41,47 @@ async fn main() -> Result<()> {
     // Initialise tracing subscriber (before any command runs).
     init_tracing(cli.verbose);
 
-    // Resolve the database path.
+    // Commands that do not require database access.
+    match &cli.command {
+        Some(Commands::Init(cmd)) => {
+            return commands::init::run(cmd);
+        }
+        Some(Commands::Config(cmd)) => {
+            return commands::config::run(cmd);
+        }
+        Some(Commands::Version) => {
+            print_version();
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // Resolve the database path, open the pool, and run migrations.
     let db_path = resolve_db_path(cli.config.as_ref().map(|p| p.as_path()));
+    let pool = open_pool(&db_path)?;
 
     // Dispatch to the appropriate handler.
     match &cli.command {
         None => {
             // Default: launch TUI.
-            launch_tui(&db_path)?;
+            launch_tui(pool)?;
         }
 
         Some(Commands::Tui(_cmd)) => {
-            launch_tui(&db_path)?;
-        }
-
-        Some(Commands::Init(cmd)) => {
-            commands::init::run(cmd)?;
+            launch_tui(pool)?;
         }
 
         Some(Commands::Run(cmd)) => {
-            commands::run::run(cmd, &db_path)?;
+            commands::run::run(cmd, &pool)?;
         }
 
         Some(Commands::Agent(cmd)) => {
-            commands::agent::run(cmd, &db_path)?;
+            commands::agent::run(cmd, &pool)?;
         }
 
-        Some(Commands::Config(cmd)) => {
-            commands::config::run(cmd)?;
-        }
-
-        Some(Commands::Version) => {
-            print_version();
+        // Already handled above; listed here to satisfy exhaustiveness.
+        Some(Commands::Init(_) | Commands::Config(_) | Commands::Version) => {
+            unreachable!()
         }
     }
 
@@ -78,16 +89,48 @@ async fn main() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Database pool setup
+// ---------------------------------------------------------------------------
+
+/// Open (or create) the SQLite database pool and run migrations.
+///
+/// Ensures the parent directory exists so that brand-new databases created
+/// from the default path work out of the box.
+fn open_pool(db_path: &str) -> Result<SqlitePool> {
+    use polkagent_store_sqlite::migrations;
+
+    let expanded = expand_tilde(db_path);
+
+    // Ensure the parent directory exists.
+    if let Some(parent) = std::path::Path::new(&expanded).parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating database directory {}", parent.display()))?;
+    }
+
+    let pool = SqlitePool::open(&expanded)
+        .with_context(|| format!("opening database at {expanded}"))?;
+
+    // Apply any pending schema migrations (idempotent).
+    {
+        let writer = pool.writer();
+        migrations::migrate(&writer)
+            .with_context(|| "running database migrations")?;
+    }
+
+    Ok(pool)
+}
+
+// ---------------------------------------------------------------------------
 // TUI launcher
 // ---------------------------------------------------------------------------
 
 /// Launch the interactive ROSEDUST TUI and ensure teardown on exit.
-fn launch_tui(db_path: &str) -> Result<()> {
+fn launch_tui(pool: SqlitePool) -> Result<()> {
     use crate::tui::app::{App, enter_tui, exit_tui};
     use crate::tui::theme::Theme;
 
     let theme = Theme::from_env();
-    let mut app = App::new(theme, db_path.to_owned());
+    let mut app = App::new(theme, pool);
 
     let mut terminal = enter_tui()?;
 
@@ -196,4 +239,18 @@ fn resolve_db_path(config_override: Option<&std::path::Path>) -> String {
 
     // 3. Default.
     format!("{home}/.local/share/polkagent/polkagent.db")
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Expand a leading `~` in a path using the HOME environment variable.
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    path.to_owned()
 }

@@ -18,13 +18,17 @@ members = [
     "crates/polkagent-store-sqlite",
     "crates/polkagent-executor-fake",
     "crates/polkagent-executor-anthropic",
+    "crates/polkagent-executor-openai",
+    "crates/polkagent-executor-local",
     "crates/polkagent-signer-fake",
+    "crates/polkagent-signer-external",
     "crates/polkagent-transport-fake",
     "crates/polkagent-api",
     "crates/polkagent-cli",
     "crates/polkagent-test-fixtures",
     "crates/polkagent-metadata",
     "crates/polkagent-integration-tests",
+    "crates/polkagent-memory",
 ]
 
 [workspace.package]

@@ -9,7 +9,9 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
+
+use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::state::{AgentSummary, RunSummary, SystemHealth};
 
@@ -23,20 +25,11 @@ pub struct TuiDb {
 }
 
 impl TuiDb {
-    /// Open the database at `path` in read-only mode.
-    pub fn open(path: &str) -> Result<Self> {
-        let expanded = expand_tilde(path);
-        let conn = Connection::open_with_flags(
-            &expanded,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-        )
-        .with_context(|| format!("opening database at {expanded}"))?;
-
-        // Enable WAL reader and optimise for read-heavy workload.
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .ok(); // Ignore — we may be read-only on a WAL file.
-        conn.pragma_update(None, "temp_store", "MEMORY").ok();
-
+    /// Open a read-only connection from the pool.
+    pub fn from_pool(pool: &SqlitePool) -> Result<Self> {
+        let conn = pool
+            .reader()
+            .with_context(|| "opening read-only connection from pool")?;
         Ok(Self { conn })
     }
 
@@ -176,16 +169,6 @@ impl TuiDb {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Expand a leading `~` in a path using the HOME environment variable.
-fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
-    }
-    path.to_owned()
-}
 
 /// Parse an ISO-8601 / RFC-3339 datetime string.
 fn parse_datetime(s: &str) -> Option<DateTime<Utc>> {

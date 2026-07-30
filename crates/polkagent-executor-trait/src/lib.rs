@@ -19,6 +19,9 @@
 //!   seeds, or `SecretForbidden`-classified data into any field of
 //!   [`InferenceRequest`].
 
+#[cfg(feature = "test-contracts")]
+pub mod contracts;
+
 use async_trait::async_trait;
 use futures::Stream;
 use serde::{Deserialize, Serialize};

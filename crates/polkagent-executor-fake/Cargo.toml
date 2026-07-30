@@ -20,6 +20,7 @@ futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+polkagent-executor-trait = { path = "../polkagent-executor-trait", features = ["test-contracts"] }
 
 [lints]
 workspace = true

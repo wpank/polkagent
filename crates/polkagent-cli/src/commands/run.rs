@@ -6,69 +6,46 @@
 use anyhow::Result;
 use tracing::info;
 
+use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
+
 use crate::cli::RunCmd;
 
 /// Execute the `run` subcommand.
-pub fn run(cmd: &RunCmd, db_path: &str) -> Result<()> {
-    let conn = open_db(db_path)?;
+pub fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
+    let store = SqliteRunStore::new(pool.clone());
 
-    // Resolve agent by name or ID.
-    let agent_row: Option<(String, String)> = conn
-        .query_row(
-            "SELECT id, name FROM agents WHERE (id = ?1 OR name = ?1) AND state NOT IN ('archived','deactivated') LIMIT 1",
-            [&cmd.agent_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .ok();
+    // Resolve agent by name or ID (must be active/configured, not archived).
+    let agent = store
+        .get_agent_by_name_or_id(&cmd.agent_id)
+        .map_err(|_| anyhow::anyhow!("Agent not found or not active: {}", cmd.agent_id))?;
 
-    let (agent_id, agent_name) = match agent_row {
-        Some(r) => r,
-        None => anyhow::bail!("Agent not found or not active: {}", cmd.agent_id),
-    };
+    if matches!(agent.state.as_str(), "archived" | "deactivated") {
+        anyhow::bail!("Agent not found or not active: {}", cmd.agent_id);
+    }
 
-    // Create a run record.
-    use polkagent_core::ids::RunId;
-    let run_id = RunId::new();
-    let now = chrono::Utc::now().to_rfc3339();
+    // Create a run record via the store.
     let params_json = serde_json::json!({ "prompt": cmd.prompt }).to_string();
-
-    conn.execute(
-        "INSERT INTO runs (id, agent_id, state, params_json, created_at, updated_at)
-         VALUES (?1, ?2, 'created', ?3, ?4, ?4)",
-        rusqlite::params![run_id.to_string(), agent_id, params_json, now],
-    )?;
+    let run_row = store
+        .create_run(&agent.id, None, &params_json)
+        .map_err(|e| anyhow::anyhow!("creating run: {e}"))?;
 
     if cmd.json {
         let out = serde_json::json!({
-            "run_id":   run_id.to_string(),
-            "agent_id": agent_id,
-            "state":    "created",
+            "run_id":   run_row.id,
+            "agent_id": agent.id,
+            "state":    run_row.state,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         println!("Run submitted:");
-        println!("  Run ID: {run_id}");
-        println!("  Agent:  {agent_name} ({agent_id})");
-        println!("  State:  created");
+        println!("  Run ID: {}", run_row.id);
+        println!("  Agent:  {} ({})", agent.name, agent.id);
+        println!("  State:  {}", run_row.state);
         println!();
         println!("Note: A polkagent-serve daemon is required to execute the run.");
         println!("      Use `polkagent tui` to monitor run status.");
     }
 
-    info!(run_id = %run_id, agent_id = %agent_id, "run created");
+    info!(run_id = %run_row.id, agent_id = %agent.id, "run created");
     Ok(())
-}
-
-fn open_db(path: &str) -> anyhow::Result<rusqlite::Connection> {
-    let expanded = if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            format!("{home}/{rest}")
-        } else {
-            path.to_owned()
-        }
-    } else {
-        path.to_owned()
-    };
-    rusqlite::Connection::open(&expanded)
-        .map_err(|e| anyhow::anyhow!("opening database at {expanded}: {e}"))
 }

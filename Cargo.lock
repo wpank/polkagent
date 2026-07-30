@@ -1565,6 +1565,8 @@ dependencies = [
  "parking_lot",
  "polkagent-config",
  "polkagent-core",
+ "polkagent-store-sqlite",
+ "polkagent-store-trait",
  "ratatui",
  "rusqlite",
  "serde",
@@ -1668,6 +1670,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-executor-local"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "polkagent-core",
+ "polkagent-executor-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "polkagent-executor-openai"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "polkagent-core",
+ "polkagent-executor-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-executor-trait"
 version = "0.1.0"
 dependencies = [
@@ -1677,6 +1711,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
@@ -1717,6 +1752,25 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "polkagent-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "chrono",
+ "parking_lot",
+ "polkagent-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1767,6 +1821,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-signer-external"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "polkagent-core",
+ "polkagent-signer-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-signer-fake"
 version = "0.1.0"
 dependencies = [
@@ -1788,6 +1858,7 @@ dependencies = [
  "polkagent-core",
  "serde",
  "thiserror 2.0.19",
+ "tokio",
  "zeroize",
 ]
 
@@ -1862,6 +1933,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]

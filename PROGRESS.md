@@ -10,10 +10,10 @@
 |-------|--------|-------|-------------|
 | `polkagent-core` | Done | 170 | IDs, state machines, effect/event/artifact types + 59 proptest |
 | `polkagent-store-trait` | Done | 7 | RunStore, EffectStore, ArtifactStore, EventStore traits |
-| `polkagent-executor-trait` | Done | 8 | ModelExecutor trait with streaming |
-| `polkagent-signer-trait` | Done | 8 | Signer trait with INV-01 enforcement |
+| `polkagent-executor-trait` | Done | 8+4 | ModelExecutor trait + port contract suite |
+| `polkagent-signer-trait` | Done | 8+4 | Signer trait + port contract suite |
 | `polkagent-chain-trait` | Done | 0 | ChainClient trait (interface only) |
-| `polkagent-transport-trait` | Done | 9 | Transport trait with ack-exactly-once |
+| `polkagent-transport-trait` | Done | 9+2 | Transport trait + port contract suite |
 | `polkagent-effect` | Done | 64 | Crash-safe effect pipeline + 11 proptest |
 | `polkagent-event` | Done | 39 | Event bus, recorder, projections, monotonic sequences |
 | `polkagent-run` | Done | 76 | RunManager, state machine, timeout, turn manager |
@@ -22,16 +22,11 @@
 | `polkagent-config` | Done | 43 | TOML loader, env overrides, validation |
 | `polkagent-card` | Done | 35 | Action cards, canonical/narrative sections |
 | `polkagent-outbox` | Done | 33 | Durable ordered delivery, deduplication |
-| `polkagent-store-sqlite` | Done | 91 | WAL-mode SQLite + RunStore/EffectStore/EventStore/ArtifactStore impls |
-| `polkagent-executor-fake` | Done | 15 | Cycling responses, streaming |
-| `polkagent-signer-fake` | Done | 13 | Deterministic signatures, expiry |
-| `polkagent-transport-fake` | Done | 15 | Channel-based, fault injection |
+| `polkagent-store-sqlite` | Done | 137 | WAL-mode SQLite + all 4 store trait impls + 46 contract tests |
+| `polkagent-executor-fake` | Done | 19 | Cycling responses, streaming + contract tests |
+| `polkagent-signer-fake` | Done | 17 | Deterministic signatures + contract tests |
+| `polkagent-transport-fake` | Done | 17 | Channel-based, fault injection + contract tests |
 | `polkagent-test-fixtures` | Done | 26 | Builders and factory functions |
-| `polkagent-api` | Done | 32 | REST server + WebSocket streaming + effect endpoints |
-| `polkagent-cli` | Done | 0 | ROSEDUST TUI (4 views), clap CLI, TEA architecture |
-| `polkagent-integration-tests` | Done | 30 | Cross-crate e2e tests (lifecycle, effects, grants, artifacts, config) |
-
-**Total: 982 tests, 0 failures, 0 warnings**
 
 ### Phase 1 Acceptance Criteria
 
@@ -55,26 +50,29 @@
 
 | Crate | Status | Tests | Description |
 |-------|--------|-------|-------------|
-| `polkagent-store-sqlite` | Done | 91 | All 4 store traits implemented on SqlitePool (RunStore, EffectStore, EventStore, ArtifactStore) |
-| `polkagent-api` | Done | 32 | Trait-object stores, WebSocket event streaming, effect endpoints |
-| `polkagent-cli` | Needs work | — | Wire commands to real stores; interactive approval flow |
+| `polkagent-store-sqlite` | Done | 137 | All 4 store traits + 46 contract tests |
+| `polkagent-api` | Done | 32 | Trait-object stores, WebSocket streaming, effect endpoints |
+| `polkagent-cli` | Done | 0 | Wired to SqlitePool, migrations on startup, all commands use store traits |
 
 ### Phase 2b: Real Adapters
 
 | Crate | Status | Tests | Description |
 |-------|--------|-------|-------------|
-| `polkagent-executor-anthropic` | Done | 60 | Anthropic Messages API with streaming, tool calls, retries, token tracking |
+| `polkagent-executor-anthropic` | Done | 60 | Anthropic Messages API with streaming, tool calls, retries |
+| `polkagent-executor-openai` | Done | 57 | OpenAI-compatible API (OpenAI, Azure, vLLM, Ollama) |
+| `polkagent-executor-local` | Done | 42 | Local models via Ollama API, no auth, graceful degradation |
 | `polkagent-metadata` | Done | 68 | Metadata cache, pinning, drift detection, service facade |
-| `polkagent-chain-subxt` | Not started | — | Subxt static+dynamic decode, CheckMetadataHash, submit/finality |
-| `polkagent-signer-external` | Not started | — | Browser extension signing protocol |
+| `polkagent-memory` | Done | 27 | Episodic/semantic/procedural memory with FTS5 + provenance |
+| `polkagent-signer-external` | Done | 42 | External signer with INV-01 enforcement, approval callbacks |
+| `polkagent-chain-subxt` | Not started | — | Subxt static+dynamic decode, CheckMetadataHash |
 
 ### Phase 2c: End-to-End Flows
 
 | Flow | Status | Description |
 |------|--------|-------------|
 | Explain Before Sign | Not started | Decode extrinsic → action card → signer handoff → finality |
-| CLI `polkagent run` | Needs work | Create run with real executor, observe via TUI |
-| API event streaming | Done | WebSocket streaming with run_id/kind filtering, ping/pong keepalive |
+| CLI `polkagent run` | Partial | Commands wired, needs real executor integration |
+| API event streaming | Done | WebSocket with run_id/kind filtering, ping/pong keepalive |
 
 ### Phase 2d: Testing Infrastructure
 
@@ -84,8 +82,9 @@
 | Property tests (effect) | Done | 11 | Proptest for idempotency keys, effect kinds, priorities |
 | Property tests (grant) | Done | 18 | Proptest for policies, budgets, gate composition |
 | Integration tests | Done | 30 | Cross-crate e2e lifecycle, effects, grants, artifacts, config |
+| Port contract tests | Done | 10 | Executor, signer, transport conformance suites |
+| Store contract tests | Done | 46 | RunStore, EffectStore, EventStore, ArtifactStore on SQLite |
 | Fuzz test harnesses | Not started | — | cargo-fuzz targets per PRD-15 |
-| Contract test suites | Not started | — | Port conformance tests |
 
 ### Phase 2 Acceptance Criteria
 
@@ -100,15 +99,15 @@
 
 ---
 
-## Phase 3: Read-Only Value — NOT STARTED
+## Phase 3: Read-Only Value — PARTIALLY STARTED
 
 **Goal:** Useful read-only workflows without write authority.
 
 | Deliverable | Status | Description |
 |-------------|--------|-------------|
-| Memory system | Not started | Episodic, semantic, procedural storage with provenance |
-| OpenAI executor | Not started | OpenAI-compatible executor adapter |
-| Local executor | Not started | Ollama/llama.cpp integration |
+| Memory system | Done | polkagent-memory: SQLite FTS5 + provenance tracking |
+| OpenAI executor | Done | polkagent-executor-openai: OpenAI/Azure/vLLM compatible |
+| Local executor | Done | polkagent-executor-local: Ollama API adapter |
 | PCA transport | Not started | PCA encrypted chat transport |
 | OpenGov research | Not started | Governance research copilot tools |
 | Treasury research | Not started | Portfolio/treasury analysis tools |
@@ -133,10 +132,10 @@
 
 | Metric | Count |
 |--------|-------|
-| Crates | 25 |
-| Source files | ~170 |
-| Tests | 982 |
-| Lines of Rust | ~45,000 |
+| Crates | 29 |
+| Source files | ~200 |
+| Tests | 1,206 |
+| Lines of Rust | ~55,000 |
 
 ## Build Commands
 
@@ -152,6 +151,9 @@ cargo test -p polkagent-core
 
 # Run only property tests
 cargo test -p polkagent-core --test proptests
+
+# Run store contract tests
+cargo test -p polkagent-store-sqlite --test store_contracts
 
 # Build release binary
 cargo build --release -p polkagent-cli

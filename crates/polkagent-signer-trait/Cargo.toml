@@ -15,6 +15,17 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 zeroize = { workspace = true }
 
+[features]
+test-contracts = ["tokio", "chrono"]
+
+[dependencies.tokio]
+workspace = true
+optional = true
+
+[dependencies.chrono]
+workspace = true
+optional = true
+
 [dev-dependencies]
 chrono = { workspace = true }
 

@@ -22,6 +22,9 @@
 //! - The [`CanonicalSignRequest`] struct must not be extended with fields
 //!   sourced from model output or conversation data.
 
+#[cfg(feature = "test-contracts")]
+pub mod contracts;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

@@ -16,5 +16,12 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 
+[features]
+test-contracts = ["tokio"]
+
+[dependencies.tokio]
+workspace = true
+optional = true
+
 [lints]
 workspace = true
