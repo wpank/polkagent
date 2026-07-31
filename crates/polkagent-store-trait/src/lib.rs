@@ -14,6 +14,9 @@
 
 pub mod event;
 
+#[cfg(feature = "test-contracts")]
+pub mod conformance;
+
 use async_trait::async_trait;
 use polkagent_core::{ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, WorkerId};
 use serde::{Deserialize, Serialize};

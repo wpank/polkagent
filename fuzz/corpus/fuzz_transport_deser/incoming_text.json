@@ -1,0 +1,1 @@
+{"delivery_id":"d-abc-001","conversation_id":"01900000-0000-7000-8000-000000000001","sender":{"user_id":"user-42","display_name":"Alice","trust_tier":"authenticated"},"body":{"kind":"text","content":"Hello, agent!"},"received_at":"2024-01-15T10:30:00Z"}

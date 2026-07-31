@@ -147,6 +147,31 @@ fn show(cmd: &InboxShowCmd, pool: &SqlitePool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn approve(cmd: &InboxApproveCmd, pool: &SqlitePool) -> Result<()> {
+    // Fetch and print effect details before applying.
+    let reader = pool.reader()?;
+    let effect: Option<(String, String, String, String)> = reader
+        .query_row(
+            "SELECT id, run_id, kind, params_json FROM effect_intents WHERE id = ?1",
+            rusqlite::params![cmd.effect_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map(Some)
+        .unwrap_or(None);
+    drop(reader);
+
+    let Some((id, run_id, kind, params_json)) = effect else {
+        anyhow::bail!("Effect not found: {}", cmd.effect_id);
+    };
+
+    println!("Effect to approve:");
+    println!("  ID:     {id}");
+    println!("  Run:    {run_id}");
+    println!("  Kind:   {kind}");
+    let params: serde_json::Value =
+        serde_json::from_str(&params_json).unwrap_or(serde_json::Value::Null);
+    println!("  Params: {}", serde_json::to_string_pretty(&params)?);
+    println!();
+
     let writer = pool.writer();
     let rows = writer.execute(
         "UPDATE effect_intents SET claimed_by = 'cli-approved' WHERE id = ?1 AND claimed_by IS NULL",
@@ -160,8 +185,34 @@ fn approve(cmd: &InboxApproveCmd, pool: &SqlitePool) -> Result<()> {
         );
     }
 
+    // Record an approval event in the run_events table.
+    let event_id = uuid::Uuid::now_v7().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let event_payload = serde_json::json!({
+        "effect_id": id,
+        "kind": kind,
+        "approved_by": "cli",
+        "timestamp": now,
+    })
+    .to_string();
+
+    // Determine the next sequence number for this run.
+    let next_seq: i64 = writer
+        .query_row(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id = ?1",
+            rusqlite::params![run_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
+
+    let _ = writer.execute(
+        "INSERT INTO run_events (id, run_id, sequence, event_type, payload_json, created_at)
+         VALUES (?1, ?2, ?3, 'effect.approved', ?4, ?5)",
+        rusqlite::params![event_id, run_id, next_seq, event_payload, now],
+    );
+
     println!("Effect '{}' approved.", cmd.effect_id);
-    info!(effect_id = %cmd.effect_id, "effect approved via CLI");
+    info!(effect_id = %cmd.effect_id, kind = %kind, "effect approved via CLI");
     Ok(())
 }
 
@@ -171,6 +222,33 @@ fn approve(cmd: &InboxApproveCmd, pool: &SqlitePool) -> Result<()> {
 
 fn deny(cmd: &InboxDenyCmd, pool: &SqlitePool) -> Result<()> {
     let reason = cmd.reason.as_deref().unwrap_or("denied via CLI");
+
+    // Fetch and print effect details before applying.
+    let reader = pool.reader()?;
+    let effect: Option<(String, String, String, String)> = reader
+        .query_row(
+            "SELECT id, run_id, kind, params_json FROM effect_intents WHERE id = ?1",
+            rusqlite::params![cmd.effect_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map(Some)
+        .unwrap_or(None);
+    drop(reader);
+
+    let Some((id, run_id, kind, params_json)) = effect else {
+        anyhow::bail!("Effect not found: {}", cmd.effect_id);
+    };
+
+    println!("Effect to deny:");
+    println!("  ID:     {id}");
+    println!("  Run:    {run_id}");
+    println!("  Kind:   {kind}");
+    let params: serde_json::Value =
+        serde_json::from_str(&params_json).unwrap_or(serde_json::Value::Null);
+    println!("  Params: {}", serde_json::to_string_pretty(&params)?);
+    println!("  Reason: {reason}");
+    println!();
+
     let writer = pool.writer();
     let rows = writer.execute(
         "UPDATE effect_intents SET claimed_by = 'cli-denied' WHERE id = ?1 AND claimed_by IS NULL",
@@ -184,8 +262,34 @@ fn deny(cmd: &InboxDenyCmd, pool: &SqlitePool) -> Result<()> {
         );
     }
 
+    // Record a denial event in the run_events table.
+    let event_id = uuid::Uuid::now_v7().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let event_payload = serde_json::json!({
+        "effect_id": id,
+        "kind": kind,
+        "denied_by": "cli",
+        "reason": reason,
+        "timestamp": now,
+    })
+    .to_string();
+
+    let next_seq: i64 = writer
+        .query_row(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id = ?1",
+            rusqlite::params![run_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
+
+    let _ = writer.execute(
+        "INSERT INTO run_events (id, run_id, sequence, event_type, payload_json, created_at)
+         VALUES (?1, ?2, ?3, 'effect.denied', ?4, ?5)",
+        rusqlite::params![event_id, run_id, next_seq, event_payload, now],
+    );
+
     println!("Effect '{}' denied. Reason: {reason}", cmd.effect_id);
-    info!(effect_id = %cmd.effect_id, reason = reason, "effect denied via CLI");
+    info!(effect_id = %cmd.effect_id, kind = %kind, reason = reason, "effect denied via CLI");
     Ok(())
 }
 

@@ -12,6 +12,10 @@
 //!   GET    /agents
 //!   GET    /agents/:id
 //!   DELETE /agents/:id
+//!   POST   /agents/:id/start
+//!   POST   /agents/:id/stop
+//!   POST   /agents/:id/pause
+//!   POST   /agents/:id/resume
 //!
 //!   POST   /agents/:agent_id/runs
 //!   GET    /runs
@@ -37,9 +41,30 @@
 //!
 //!   GET    /providers
 //!   GET    /providers/:id
+//!   GET    /providers/:provider_id/models
+//!
+//!   GET    /models
+//!   GET    /models/:model_id
+//!
+//!   GET    /skills
+//!   GET    /skills/:skill_id
+//!   POST   /skills/install
+//!   POST   /skills/:skill_id/uninstall
+//!   PUT    /skills/:skill_id/config
+//!
+//!   GET    /tools
+//!   GET    /tools/:tool_id
+//!   GET    /tools/:tool_id/grants
+//!
+//!   GET    /payments/balance
+//!   GET    /payments/usage
+//!   GET    /payments/receipts
+//!   GET    /payments/receipts/:receipt_id
 //!
 //!   POST   /memory/query
 //!   GET    /memory/stats
+//!   POST   /memory/forget
+//!   GET    /memory/entries/:entry_id
 //!
 //!   GET    /system/info
 //!
@@ -56,12 +81,16 @@ pub mod events;
 pub mod events_rest;
 pub mod health;
 pub mod memory;
+pub mod models;
+pub mod payments;
 pub mod providers;
 pub mod runs;
+pub mod skills;
 pub mod system;
+pub mod tools;
 
 use axum::{
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 
@@ -85,12 +114,17 @@ pub fn register(state: AppState) -> Router {
     // v1alpha1 API routes
     // -----------------------------------------------------------------------
     let api_routes = Router::new()
-        // Agents
+        // Agents CRUD
         .route("/agents", post(agents::create_agent).get(agents::list_agents))
         .route(
             "/agents/{id}",
             get(agents::get_agent).delete(agents::delete_agent),
         )
+        // Agent lifecycle
+        .route("/agents/{id}/start", post(runs::start_agent))
+        .route("/agents/{id}/stop", post(runs::stop_agent))
+        .route("/agents/{id}/pause", post(runs::pause_agent))
+        .route("/agents/{id}/resume", post(runs::resume_agent))
         // Runs (agent-scoped creation + top-level query)
         .route("/agents/{agent_id}/runs", post(runs::create_run))
         .route("/runs", get(runs::list_runs))
@@ -116,9 +150,30 @@ pub fn register(state: AppState) -> Router {
         // Providers
         .route("/providers", get(providers::list_providers))
         .route("/providers/{id}", get(providers::get_provider))
+        .route("/providers/{provider_id}/models", get(models::list_provider_models))
+        // Models
+        .route("/models", get(models::list_all_models))
+        .route("/models/{model_id}", get(models::get_model))
+        // Skills
+        .route("/skills", get(skills::list_skills))
+        .route("/skills/install", post(skills::install_skill))
+        .route("/skills/{skill_id}", get(skills::get_skill))
+        .route("/skills/{skill_id}/uninstall", post(skills::uninstall_skill))
+        .route("/skills/{skill_id}/config", put(skills::update_skill_config))
+        // Tools
+        .route("/tools", get(tools::list_tools))
+        .route("/tools/{tool_id}", get(tools::get_tool))
+        .route("/tools/{tool_id}/grants", get(tools::get_tool_grants))
+        // Payments
+        .route("/payments/balance", get(payments::get_balance))
+        .route("/payments/usage", get(payments::get_usage))
+        .route("/payments/receipts", get(payments::list_receipts))
+        .route("/payments/receipts/{receipt_id}", get(payments::get_receipt))
         // Memory
         .route("/memory/query", post(memory::query_memory))
         .route("/memory/stats", get(memory::memory_stats))
+        .route("/memory/forget", post(memory::forget_memory))
+        .route("/memory/entries/{entry_id}", get(memory::get_memory_entry))
         // System
         .route("/system/info", get(system::system_info));
 

@@ -55,6 +55,8 @@ impl MemoryService {
             accessed_at: now,
             access_count: 0,
             relevance_score: 1.0,
+            confidence: 1.0,
+            classification: crate::classification::Classification::Internal,
         };
 
         debug!(
@@ -251,6 +253,8 @@ mod tests {
                 accessed_at: now,
                 access_count: 0,
                 relevance_score: 1.0,
+                confidence: 1.0,
+                classification: crate::classification::Classification::Internal,
             };
             svc.store.store_memory(&entry).await.unwrap();
         }

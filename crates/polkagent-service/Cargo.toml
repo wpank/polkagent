@@ -20,14 +20,22 @@ polkagent-grant = { path = "../polkagent-grant" }
 polkagent-artifact = { path = "../polkagent-artifact" }
 polkagent-config = { path = "../polkagent-config" }
 polkagent-tool = { path = "../polkagent-tool" }
+polkagent-memory = { path = "../polkagent-memory" }
+polkagent-payment = { path = "../polkagent-payment" }
+polkagent-skill = { path = "../polkagent-skill" }
+polkagent-conversation = { path = "../polkagent-conversation" }
+polkagent-identity = { path = "../polkagent-identity" }
 
 # Async
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 async-trait = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
 
 # Observability
 tracing = { workspace = true }
@@ -37,8 +45,8 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
-chrono = { workspace = true }
 futures = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

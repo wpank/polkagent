@@ -10,7 +10,8 @@ use chrono::Utc;
 
 use polkagent_core::AgentId;
 use polkagent_memory::{
-    MemoryEntry, MemoryId, MemoryProvenance, MemoryService, MemoryType, SqliteMemoryStore,
+    Classification, MemoryEntry, MemoryId, MemoryProvenance, MemoryService, MemoryType,
+    SqliteMemoryStore,
 };
 
 // ---------------------------------------------------------------------------
@@ -143,6 +144,8 @@ async fn episodic_memory_start_add_end() {
             accessed_at: now,
             access_count: 0,
             relevance_score: 1.0,
+            confidence: 1.0,
+            classification: Classification::Internal,
         };
         // Use the inner store handle exposed by the service's summarize_episode path.
         // For this test we just go through remember and then summarize.

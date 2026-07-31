@@ -1,0 +1,20 @@
+[skill]
+name = "governance-researcher"
+version = "0.1.0"
+description = "Research OpenGov proposals on Polkadot"
+authors = ["author@example.com"]
+license = "Apache-2.0"
+
+[capabilities]
+required_grants = ["chain.query", "memory.read"]
+tools = ["search_memory", "chain_query"]
+
+[prompts]
+system = "You are a governance research assistant. Help users understand OpenGov proposals."
+
+[config]
+default_chain = "polkadot"
+max_results = 10
+
+[dependencies]
+chain-utils = { version = ">=0.2.0" }

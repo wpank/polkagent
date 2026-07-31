@@ -16,6 +16,7 @@ use tracing::debug;
 
 use polkagent_core::ids::AgentId;
 
+use crate::classification::Classification;
 use crate::error::{MemoryError, MemoryResult};
 use crate::store::MemoryStore;
 use crate::types::{
@@ -39,13 +40,16 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at      TEXT NOT NULL,
     accessed_at     TEXT NOT NULL,
     access_count    INTEGER NOT NULL DEFAULT 0,
-    relevance_score REAL NOT NULL DEFAULT 1.0
+    relevance_score REAL NOT NULL DEFAULT 1.0,
+    confidence      REAL NOT NULL DEFAULT 1.0,
+    classification  TEXT NOT NULL DEFAULT 'internal'
 );
 
 CREATE INDEX IF NOT EXISTS idx_memories_agent_id ON memories(agent_id);
 CREATE INDEX IF NOT EXISTS idx_memories_episode_id ON memories(episode_id);
 CREATE INDEX IF NOT EXISTS idx_memories_memory_type ON memories(memory_type);
 CREATE INDEX IF NOT EXISTS idx_memories_relevance ON memories(relevance_score DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
 
 CREATE TABLE IF NOT EXISTS episodes (
     id          TEXT PRIMARY KEY,
@@ -197,8 +201,8 @@ impl MemoryStore for SqliteMemoryStore {
         conn.execute(
             "INSERT INTO memories (id, agent_id, episode_id, memory_type, content, embedding,
                                    metadata, provenance, created_at, accessed_at, access_count,
-                                   relevance_score)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                   relevance_score, confidence, classification)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 entry.id.to_string(),
                 entry.agent_id.to_string(),
@@ -212,6 +216,8 @@ impl MemoryStore for SqliteMemoryStore {
                 entry.accessed_at.to_rfc3339(),
                 entry.access_count,
                 entry.relevance_score,
+                entry.confidence,
+                entry.classification.to_string(),
             ],
         )?;
 
@@ -248,7 +254,7 @@ impl MemoryStore for SqliteMemoryStore {
         conn.query_row(
             "SELECT id, agent_id, episode_id, memory_type, content, embedding,
                     metadata, provenance, created_at, accessed_at, access_count,
-                    relevance_score
+                    relevance_score, confidence, classification
              FROM memories WHERE id = ?1",
             params![id.to_string()],
             row_to_memory,
@@ -261,9 +267,23 @@ impl MemoryStore for SqliteMemoryStore {
         let conn = self.inner.conn.lock();
 
         if self.inner.fts_available && !query.query_text.is_empty() {
-            search_fts(&conn, query)
+            search_fts(&conn, query, None)
         } else {
-            search_like(&conn, query)
+            search_like(&conn, query, None)
+        }
+    }
+
+    async fn search_with_classification(
+        &self,
+        query: &MemoryQuery,
+        max_classification: Classification,
+    ) -> MemoryResult<Vec<MemoryEntry>> {
+        let conn = self.inner.conn.lock();
+
+        if self.inner.fts_available && !query.query_text.is_empty() {
+            search_fts(&conn, query, Some(max_classification))
+        } else {
+            search_like(&conn, query, Some(max_classification))
         }
     }
 
@@ -289,6 +309,31 @@ impl MemoryStore for SqliteMemoryStore {
             return Err(MemoryError::NotFound(format!("memory {id}")));
         }
         Ok(())
+    }
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    async fn count_entries(&self, agent_id: &AgentId) -> MemoryResult<usize> {
+        let conn = self.inner.conn.lock();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE agent_id = ?1",
+            params![agent_id.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
+    async fn delete_by_age(
+        &self,
+        agent_id: &AgentId,
+        max_age: chrono::Duration,
+    ) -> MemoryResult<usize> {
+        let cutoff = (Utc::now() - max_age).to_rfc3339();
+        let conn = self.inner.conn.lock();
+        let rows = conn.execute(
+            "DELETE FROM memories WHERE agent_id = ?1 AND created_at < ?2",
+            params![agent_id.to_string(), cutoff],
+        )?;
+        Ok(rows)
     }
 
     async fn create_episode(&self, episode: &Episode) -> MemoryResult<EpisodeId> {
@@ -376,6 +421,8 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryResult<Memor
     let accessed_str: String = row.get(9)?;
     let access_count: u64 = row.get(10)?;
     let relevance_score: f64 = row.get(11)?;
+    let confidence: f64 = row.get(12)?;
+    let classification_str: String = row.get(13)?;
 
     Ok((|| -> MemoryResult<MemoryEntry> {
         let id = id_str.parse::<MemoryId>()?;
@@ -405,6 +452,9 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryResult<Memor
             .transpose()?;
         let created_at = parse_timestamp(&created_str)?;
         let accessed_at = parse_timestamp(&accessed_str)?;
+        let classification: Classification = classification_str
+            .parse()
+            .map_err(MemoryError::InvalidOperation)?;
 
         Ok(MemoryEntry {
             id,
@@ -419,6 +469,8 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryResult<Memor
             accessed_at,
             access_count,
             relevance_score,
+            confidence,
+            classification,
         })
     })())
 }
@@ -464,6 +516,25 @@ fn parse_timestamp(s: &str) -> MemoryResult<DateTime<Utc>> {
 }
 
 // ---------------------------------------------------------------------------
+// Classification helper
+// ---------------------------------------------------------------------------
+
+/// Returns the string labels for all Classification variants that are
+/// numerically `<=` `max`. Used to build SQL `IN (...)` clauses.
+fn classifications_up_to(max: Classification) -> Vec<&'static str> {
+    const ALL: &[(Classification, &str)] = &[
+        (Classification::Public, "public"),
+        (Classification::Internal, "internal"),
+        (Classification::Confidential, "confidential"),
+        (Classification::Restricted, "restricted"),
+    ];
+    ALL.iter()
+        .filter(|(c, _)| *c <= max)
+        .map(|(_, s)| *s)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Search helpers
 // ---------------------------------------------------------------------------
 
@@ -471,12 +542,13 @@ fn parse_timestamp(s: &str) -> MemoryResult<DateTime<Utc>> {
 fn search_fts(
     conn: &Connection,
     query: &MemoryQuery,
+    max_classification: Option<Classification>,
 ) -> MemoryResult<Vec<MemoryEntry>> {
     // Build the FTS5 query. We join through the FTS table to get ranked results.
     let mut sql = String::from(
         "SELECT m.id, m.agent_id, m.episode_id, m.memory_type, m.content, m.embedding,
                 m.metadata, m.provenance, m.created_at, m.accessed_at, m.access_count,
-                m.relevance_score
+                m.relevance_score, m.confidence, m.classification
          FROM memories m
          JOIN memories_fts fts ON m.rowid = fts.rowid
          WHERE fts.memories_fts MATCH ?1
@@ -517,6 +589,23 @@ fn search_fts(
     if let Some(ref ep_id) = query.episode_id {
         extra_params.push(ep_id.to_string());
         let _ = write!(sql, " AND m.episode_id = ?{param_idx}");
+        param_idx += 1;
+    }
+
+    if let Some(max_cls) = max_classification {
+        let allowed = classifications_up_to(max_cls);
+        if !allowed.is_empty() {
+            let placeholders: Vec<String> = allowed
+                .iter()
+                .map(|c| {
+                    extra_params.push((*c).to_string());
+                    let p = format!("?{param_idx}");
+                    param_idx += 1;
+                    p
+                })
+                .collect();
+            let _ = write!(sql, " AND m.classification IN ({})", placeholders.join(", "));
+        }
     }
 
     sql.push_str(" ORDER BY m.relevance_score DESC, rank LIMIT ?100");
@@ -553,11 +642,12 @@ fn search_fts(
 fn search_like(
     conn: &Connection,
     query: &MemoryQuery,
+    max_classification: Option<Classification>,
 ) -> MemoryResult<Vec<MemoryEntry>> {
     let mut sql = String::from(
         "SELECT id, agent_id, episode_id, memory_type, content, embedding,
                 metadata, provenance, created_at, accessed_at, access_count,
-                relevance_score
+                relevance_score, confidence, classification
          FROM memories
          WHERE agent_id = ?1",
     );
@@ -600,6 +690,23 @@ fn search_like(
     if let Some(ref ep_id) = query.episode_id {
         extra_params.push(ep_id.to_string());
         let _ = write!(sql, " AND episode_id = ?{param_idx}");
+        param_idx += 1;
+    }
+
+    if let Some(max_cls) = max_classification {
+        let allowed = classifications_up_to(max_cls);
+        if !allowed.is_empty() {
+            let placeholders: Vec<String> = allowed
+                .iter()
+                .map(|c| {
+                    extra_params.push((*c).to_string());
+                    let p = format!("?{param_idx}");
+                    param_idx += 1;
+                    p
+                })
+                .collect();
+            let _ = write!(sql, " AND classification IN ({})", placeholders.join(", "));
+        }
     }
 
     sql.push_str(" ORDER BY relevance_score DESC LIMIT ?100");
@@ -657,6 +764,8 @@ mod tests {
             accessed_at: now,
             access_count: 0,
             relevance_score: 1.0,
+            confidence: 1.0,
+            classification: Classification::default(),
         }
     }
 
@@ -850,6 +959,8 @@ mod tests {
             accessed_at: now,
             access_count: 0,
             relevance_score: 1.0,
+            confidence: 0.9,
+            classification: Classification::default(),
         };
         let id = entry.id;
 
@@ -883,6 +994,8 @@ mod tests {
             accessed_at: now,
             access_count: 0,
             relevance_score: 1.0,
+            confidence: 1.0,
+            classification: Classification::default(),
         };
         let id = entry.id;
 
@@ -912,5 +1025,106 @@ mod tests {
         let store2 = SqliteMemoryStore::open(&db_path).unwrap();
         let retrieved = store2.get_memory(id).await.unwrap();
         assert_eq!(retrieved.content, "persistent memory");
+    }
+
+    #[tokio::test]
+    async fn count_entries_returns_correct_count() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+
+        assert_eq!(store.count_entries(&agent).await.unwrap(), 0);
+
+        store.store_memory(&make_entry(agent, "one", MemoryType::Semantic)).await.unwrap();
+        store.store_memory(&make_entry(agent, "two", MemoryType::Semantic)).await.unwrap();
+        store.store_memory(&make_entry(agent, "three", MemoryType::Semantic)).await.unwrap();
+
+        assert_eq!(store.count_entries(&agent).await.unwrap(), 3);
+
+        let other = make_agent_id();
+        assert_eq!(store.count_entries(&other).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn delete_by_age_removes_old_entries() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+        let now = Utc::now();
+
+        // Insert an old entry (3 days ago).
+        let old = MemoryEntry {
+            id: MemoryId::new(),
+            agent_id: agent,
+            episode_id: None,
+            memory_type: MemoryType::Semantic,
+            content: "old memory".to_string(),
+            embedding: None,
+            metadata: serde_json::json!({}),
+            provenance: None,
+            created_at: now - chrono::Duration::days(3),
+            accessed_at: now,
+            access_count: 0,
+            relevance_score: 1.0,
+            confidence: 1.0,
+            classification: Classification::default(),
+        };
+
+        let recent = make_entry(agent, "recent memory", MemoryType::Semantic);
+
+        store.store_memory(&old).await.unwrap();
+        store.store_memory(&recent).await.unwrap();
+
+        // Delete entries older than 1 day.
+        let deleted = store
+            .delete_by_age(&agent, chrono::Duration::days(1))
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 1);
+        assert_eq!(store.count_entries(&agent).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_with_classification_filters_restricted() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+        let now = Utc::now();
+
+        let public_entry = MemoryEntry {
+            classification: Classification::Public,
+            content: "public information about Rust".to_string(),
+            ..make_entry(agent, "", MemoryType::Semantic)
+        };
+        // Fix the created_at so the entry is valid.
+        let public_entry = MemoryEntry { created_at: now, accessed_at: now, ..public_entry };
+
+        let restricted_entry = MemoryEntry {
+            classification: Classification::Restricted,
+            content: "restricted information about Rust".to_string(),
+            ..make_entry(agent, "", MemoryType::Semantic)
+        };
+        let restricted_entry =
+            MemoryEntry { created_at: now, accessed_at: now, ..restricted_entry };
+
+        store.store_memory(&public_entry).await.unwrap();
+        store.store_memory(&restricted_entry).await.unwrap();
+
+        let query = MemoryQuery {
+            agent_id: agent,
+            query_text: "Rust".to_string(),
+            memory_types: None,
+            limit: 10,
+            min_relevance: None,
+            since: None,
+            episode_id: None,
+        };
+
+        let results = store
+            .search_with_classification(&query, Classification::Internal)
+            .await
+            .unwrap();
+
+        // Only Public should be visible under an Internal clearance.
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].classification, Classification::Public);
     }
 }

@@ -7,6 +7,8 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::tui::views::audit::AuditFilter;
+
 // ---------------------------------------------------------------------------
 // Agent summary
 // ---------------------------------------------------------------------------
@@ -234,6 +236,66 @@ pub struct ApprovalItem {
 }
 
 // ---------------------------------------------------------------------------
+// Memory entry
+// ---------------------------------------------------------------------------
+
+/// A single memory entry shown in the memory browser view.
+#[derive(Debug, Clone)]
+pub struct MemoryEntry {
+    /// Primary key (UUID string).
+    pub id: String,
+    /// Memory type: "episodic", "semantic", "working", "procedural".
+    pub memory_type: String,
+    /// Agent that owns this memory.
+    pub agent_name: String,
+    /// Relevance / importance score in [0.0, 1.0].
+    pub relevance_score: f64,
+    /// Full text content.
+    pub content: String,
+    /// When the entry was created.
+    pub created_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Audit event
+// ---------------------------------------------------------------------------
+
+/// A single audit log event shown in the audit log view.
+#[derive(Debug, Clone)]
+pub struct AuditEvent {
+    /// Primary key.
+    pub id: String,
+    /// Severity level: "info", "warn", "error", "debug".
+    pub severity: String,
+    /// Event kind / category.
+    pub kind: String,
+    /// Agent name associated with this event.
+    pub agent_name: String,
+    /// Run ID (if relevant).
+    pub run_id: Option<String>,
+    /// Human-readable message.
+    pub message: String,
+    /// When the event occurred.
+    pub timestamp: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Confirmation dialog state
+// ---------------------------------------------------------------------------
+
+/// Tracks whether a confirm/deny dialog is shown for the approvals view.
+#[derive(Debug, Clone, Default)]
+pub enum ConfirmDialog {
+    /// No dialog is active.
+    #[default]
+    None,
+    /// User pressed 'a' — confirm approval for the given effect_id.
+    ConfirmApprove(String),
+    /// User pressed 'd' — confirm denial for the given effect_id.
+    ConfirmDeny(String),
+}
+
+// ---------------------------------------------------------------------------
 // System health
 // ---------------------------------------------------------------------------
 
@@ -347,6 +409,21 @@ pub struct TuiState {
     /// Pending effects awaiting approval (approval queue view).
     pub pending_approvals: Vec<ApprovalItem>,
 
+    /// Memory entries for the memory browser view.
+    pub memory_entries: Vec<MemoryEntry>,
+
+    /// Current FTS search query for the memory browser.
+    pub memory_search_query: String,
+
+    /// Audit log events.
+    pub audit_log: Vec<AuditEvent>,
+
+    /// Active filter for the audit log view.
+    pub audit_filter: AuditFilter,
+
+    /// Confirmation dialog state for approve/deny actions.
+    pub confirm_dialog: ConfirmDialog,
+
     // -- Scroll / selection --------------------------------------------------
     /// Scroll state for the agents list.
     pub agents_scroll: ScrollState,
@@ -359,6 +436,12 @@ pub struct TuiState {
 
     /// Scroll state for the approval queue.
     pub approvals_scroll: ScrollState,
+
+    /// Scroll state for the memory browser.
+    pub memory_scroll: ScrollState,
+
+    /// Scroll state for the audit log.
+    pub audit_scroll: ScrollState,
 
     /// Which sub-panel is focused in the run detail view (0 = info, 1 = turns).
     pub detail_panel_index: usize,

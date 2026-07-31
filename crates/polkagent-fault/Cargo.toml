@@ -1,0 +1,32 @@
+[package]
+name = "polkagent-fault"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fault injection framework for testing crash safety and resilience"
+publish = false
+
+[dependencies]
+polkagent-core = { path = "../polkagent-core" }
+polkagent-executor-trait = { path = "../polkagent-executor-trait" }
+polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+polkagent-transport-trait = { path = "../polkagent-transport-trait" }
+polkagent-store-trait = { path = "../polkagent-store-trait" }
+
+async-trait = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+polkagent-transport-fake = { path = "../polkagent-transport-fake" }
+
+[lints]
+workspace = true

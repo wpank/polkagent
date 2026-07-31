@@ -4,14 +4,16 @@
 //! widget rendering (using ratatui's TestBackend), and responsive layout
 //! breakpoints.
 
+use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
 use polkagent_cli::tui::{
     app::Tab,
     input::{InputMode, TuiAction, key_to_action},
-    state::{ScrollState, TuiState},
+    state::{ApprovalItem, AuditEvent, ConfirmDialog, MemoryEntry, ScrollState, TuiState},
     theme::Theme,
+    views::audit::AuditFilter,
     widgets::{header_bar, status_bar},
 };
 
@@ -464,12 +466,20 @@ fn test_tab_navigation() {
     assert_eq!(tab, Tab::Timeline);
     tab = tab.next(); // Approvals
     assert_eq!(tab, Tab::Approvals);
+    tab = tab.next(); // Memory
+    assert_eq!(tab, Tab::Memory);
+    tab = tab.next(); // Audit
+    assert_eq!(tab, Tab::Audit);
     tab = tab.next(); // Dashboard (wrap)
-    assert_eq!(tab, Tab::Dashboard, "next() should wrap from Approvals to Dashboard");
+    assert_eq!(tab, Tab::Dashboard, "next() should wrap from Audit to Dashboard");
 
     // Go backward through all tabs.
+    tab = tab.prev(); // Audit
+    assert_eq!(tab, Tab::Audit, "prev() should wrap from Dashboard to Audit");
+    tab = tab.prev(); // Memory
+    assert_eq!(tab, Tab::Memory);
     tab = tab.prev(); // Approvals
-    assert_eq!(tab, Tab::Approvals, "prev() should wrap from Dashboard to Approvals");
+    assert_eq!(tab, Tab::Approvals);
     tab = tab.prev(); // Timeline
     assert_eq!(tab, Tab::Timeline);
     tab = tab.prev(); // System
@@ -482,7 +492,7 @@ fn test_tab_navigation() {
     assert_eq!(tab, Tab::Dashboard);
 
     // Tab::ALL should list all tabs.
-    assert_eq!(Tab::ALL.len(), 6, "There should be exactly 6 tabs");
+    assert_eq!(Tab::ALL.len(), 8, "There should be exactly 8 tabs");
 }
 
 // =========================================================================
@@ -652,5 +662,545 @@ fn test_dashboard_wide_layout() {
     assert!(
         text.contains("HEALTH"),
         "Wide dashboard should show HEALTH sidebar, got: {text:?}"
+    );
+}
+
+// =========================================================================
+// 6. Memory view tests
+// =========================================================================
+
+fn make_memory_entry(id: &str, memory_type: &str, relevance: f64, content: &str) -> MemoryEntry {
+    MemoryEntry {
+        id: id.to_owned(),
+        memory_type: memory_type.to_owned(),
+        agent_name: "test-agent".to_owned(),
+        relevance_score: relevance,
+        content: content.to_owned(),
+        created_at: Utc::now(),
+    }
+}
+
+fn render_memory_view(width: u16, height: u16, entries: Vec<MemoryEntry>) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("failed to create test terminal");
+    let theme = Theme::dark();
+    let mut state = TuiState::default();
+    state.memory_entries = entries;
+
+    terminal
+        .draw(|frame| {
+            let area = Rect::new(0, 0, width, height);
+            polkagent_cli::tui::views::memory::render(frame, area, &state, &theme);
+        })
+        .expect("memory render failed");
+
+    buffer_text(&terminal)
+}
+
+#[test]
+fn test_memory_view_empty() {
+    let text = render_memory_view(80, 24, vec![]);
+    assert!(
+        text.contains("MEMORY BROWSER"),
+        "Empty memory view should show MEMORY BROWSER header, got: {text:?}"
+    );
+    assert!(
+        text.contains("No memory entries"),
+        "Empty memory view should show 'No memory entries' message, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_memory_view_with_entries() {
+    let entries = vec![
+        make_memory_entry("e1", "episodic", 0.9, "Agent helped with a transfer"),
+        make_memory_entry("e2", "semantic", 0.5, "Polkadot is a blockchain"),
+        make_memory_entry("e3", "working", 0.2, "User address is 5GrwvaEF"),
+    ];
+    let text = render_memory_view(80, 24, entries);
+    assert!(
+        text.contains("MEMORY BROWSER"),
+        "Memory view with entries should show MEMORY BROWSER header, got: {text:?}"
+    );
+    // The entry types should appear.
+    assert!(
+        text.contains("episodic") || text.contains("semantic") || text.contains("working"),
+        "Memory entry types should appear in the list, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_memory_view_search_bar() {
+    let text = render_memory_view(80, 24, vec![]);
+    // Search bar should always be present.
+    assert!(
+        text.contains("SEARCH") || text.contains("Search") || text.contains("search"),
+        "Memory view should show search bar, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_memory_view_detail_pane_wide() {
+    // >= 100 cols with a selected entry should show the detail pane.
+    let entries = vec![make_memory_entry(
+        "detail-test",
+        "semantic",
+        0.85,
+        "The agent learned that DOT transfers require approval.",
+    )];
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = Theme::dark();
+    let mut state = TuiState::default();
+    state.memory_entries = entries;
+    state.memory_scroll.selected = Some(0);
+
+    terminal
+        .draw(|frame| {
+            let area = Rect::new(0, 0, 120, 30);
+            polkagent_cli::tui::views::memory::render(frame, area, &state, &theme);
+        })
+        .expect("memory render failed");
+
+    let text = buffer_text(&terminal);
+    // With a selection in wide mode, the detail pane should appear with "Memory:".
+    assert!(
+        text.contains("Memory:") || text.contains("Content:") || text.contains("semantic"),
+        "Wide memory view with selection should show detail pane, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_memory_entry_no_panic_minimal() {
+    // Minimal 20x5 terminal — must not panic.
+    let entries = vec![make_memory_entry("x", "episodic", 0.5, "test")];
+    let text = render_memory_view(20, 5, entries);
+    // Just check it rendered something.
+    assert!(!text.trim().is_empty(), "Minimal memory view should render something");
+}
+
+// =========================================================================
+// 7. Audit log view tests
+// =========================================================================
+
+fn make_audit_event(id: &str, severity: &str, kind: &str, message: &str) -> AuditEvent {
+    AuditEvent {
+        id: id.to_owned(),
+        severity: severity.to_owned(),
+        kind: kind.to_owned(),
+        agent_name: "test-agent".to_owned(),
+        run_id: Some("run-1234".to_owned()),
+        message: message.to_owned(),
+        timestamp: Utc::now(),
+    }
+}
+
+fn render_audit_view(width: u16, height: u16, events: Vec<AuditEvent>, filter: AuditFilter) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = Theme::dark();
+    let mut state = TuiState::default();
+    state.audit_log = events;
+    state.audit_filter = filter;
+
+    terminal
+        .draw(|frame| {
+            let area = Rect::new(0, 0, width, height);
+            polkagent_cli::tui::views::audit::render(frame, area, &state, &theme);
+        })
+        .expect("audit render failed");
+
+    buffer_text(&terminal)
+}
+
+#[test]
+fn test_audit_view_empty() {
+    let text = render_audit_view(80, 24, vec![], AuditFilter::None);
+    assert!(
+        text.contains("AUDIT LOG"),
+        "Empty audit view should show AUDIT LOG header, got: {text:?}"
+    );
+    assert!(
+        text.contains("No audit events"),
+        "Empty audit view should show 'No audit events' message, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_audit_view_with_info_events() {
+    let events = vec![
+        make_audit_event("a1", "info", "AgentStarted", "Agent started successfully"),
+        make_audit_event("a2", "info", "RunCreated", "New run was created"),
+    ];
+    let text = render_audit_view(100, 24, events, AuditFilter::None);
+    assert!(
+        text.contains("AUDIT LOG"),
+        "Audit view should show AUDIT LOG header, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_audit_view_with_mixed_severity() {
+    let events = vec![
+        make_audit_event("b1", "info", "RunCreated", "Run started"),
+        make_audit_event("b2", "warn", "TokenLimit", "Approaching token limit"),
+        make_audit_event("b3", "error", "RunFailed", "Run failed with error"),
+    ];
+    let text = render_audit_view(100, 30, events, AuditFilter::None);
+    // The filter bar should show "ALL".
+    assert!(
+        text.contains("ALL") || text.contains("Filter"),
+        "Audit view should show filter bar, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_audit_view_filter_warn() {
+    let events = vec![
+        make_audit_event("c1", "info", "RunCreated", "Run started"),
+        make_audit_event("c2", "warn", "HighTokenUsage", "Token usage high"),
+    ];
+    let text = render_audit_view(100, 30, events, AuditFilter::BySeverity("warn".to_owned()));
+    // Filter indicator should show "warn".
+    assert!(
+        text.contains("warn") || text.contains("severity"),
+        "Audit view should show warn filter indicator, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_audit_view_filter_none_no_crash() {
+    // Switching filter to None should not crash.
+    let events = vec![make_audit_event("d1", "info", "Test", "Test event")];
+    let text = render_audit_view(80, 20, events, AuditFilter::None);
+    assert!(!text.trim().is_empty(), "Audit view with None filter should render something");
+}
+
+#[test]
+fn test_audit_view_footer_hints() {
+    let text = render_audit_view(100, 24, vec![], AuditFilter::None);
+    // Should show key hints.
+    assert!(
+        text.contains('g') || text.contains('G') || text.contains("top"),
+        "Audit view should show navigation key hints, got: {text:?}"
+    );
+}
+
+// =========================================================================
+// 8. System view tests
+// =========================================================================
+
+fn render_system_view(width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = Theme::dark();
+    let state = TuiState::default();
+
+    terminal
+        .draw(|frame| {
+            let area = Rect::new(0, 0, width, height);
+            polkagent_cli::tui::views::system::render(frame, area, &state, &theme);
+        })
+        .expect("system render failed");
+
+    buffer_text(&terminal)
+}
+
+#[test]
+fn test_system_view_health_section() {
+    let text = render_system_view(80, 30);
+    assert!(
+        text.contains("SYSTEM HEALTH"),
+        "System view should show SYSTEM HEALTH section, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_system_view_configuration_section() {
+    let text = render_system_view(80, 30);
+    assert!(
+        text.contains("CONFIGURATION"),
+        "System view should show CONFIGURATION section, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_system_view_statistics_section() {
+    let text = render_system_view(100, 30);
+    assert!(
+        text.contains("STATISTICS") || text.contains("HEALTH"),
+        "System view should show STATISTICS section, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_system_view_wide_layout() {
+    // Wide layout >= 100 cols should show all three panels.
+    let text = render_system_view(140, 40);
+    assert!(
+        text.contains("SYSTEM HEALTH"),
+        "Wide system view should show SYSTEM HEALTH, got: {text:?}"
+    );
+    assert!(
+        text.contains("CONFIGURATION"),
+        "Wide system view should show CONFIGURATION, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_system_view_keybindings_shown() {
+    // Use a wide terminal to guarantee the config panel is fully visible.
+    let text = render_system_view(140, 50);
+    // Should show keybinding hints — check for the 'q' binding.
+    assert!(
+        text.contains('q') || text.contains("quit") || text.contains("Quit"),
+        "System view should show quit keybinding, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_system_view_narrow_no_panic() {
+    // Very narrow terminal should not panic.
+    let text = render_system_view(40, 20);
+    assert!(!text.trim().is_empty(), "Narrow system view should render something");
+}
+
+// =========================================================================
+// 9. Approval flow tests
+// =========================================================================
+
+fn make_approval_item(effect_id: &str, kind: &str) -> ApprovalItem {
+    ApprovalItem {
+        effect_id: effect_id.to_owned(),
+        kind: kind.to_owned(),
+        run_id: "run-abcdef12".to_owned(),
+        agent_name: "test-agent".to_owned(),
+        created_at: Utc::now(),
+        state: "pending".to_owned(),
+    }
+}
+
+fn render_approvals_view(width: u16, height: u16, items: Vec<ApprovalItem>, confirm: ConfirmDialog) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = Theme::dark();
+    let mut state = TuiState::default();
+    state.pending_approvals = items;
+    state.confirm_dialog = confirm;
+
+    terminal
+        .draw(|frame| {
+            let area = Rect::new(0, 0, width, height);
+            polkagent_cli::tui::views::approvals::render(frame, area, &state, &theme);
+        })
+        .expect("approvals render failed");
+
+    buffer_text(&terminal)
+}
+
+#[test]
+fn test_approvals_empty_queue() {
+    let text = render_approvals_view(80, 24, vec![], ConfirmDialog::None);
+    assert!(
+        text.contains("APPROVAL QUEUE"),
+        "Empty approvals view should show APPROVAL QUEUE header, got: {text:?}"
+    );
+    assert!(
+        text.contains("No pending") || text.contains("pending"),
+        "Empty approvals view should mention 'pending', got: {text:?}"
+    );
+}
+
+#[test]
+fn test_approvals_with_items() {
+    let items = vec![
+        make_approval_item("eff-0001-2345-6789-abcd", "sign"),
+        make_approval_item("eff-0002-2345-6789-abcd", "broadcast"),
+    ];
+    let text = render_approvals_view(100, 30, items, ConfirmDialog::None);
+    assert!(
+        text.contains("APPROVAL QUEUE"),
+        "Approvals view should show APPROVAL QUEUE header, got: {text:?}"
+    );
+    // Kind labels should appear.
+    assert!(
+        text.contains("sign") || text.contains("broadcast"),
+        "Approval item kinds should appear in the list, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_approvals_confirm_approve_dialog() {
+    let items = vec![make_approval_item("eff-abc123def456", "sign")];
+    let dialog = ConfirmDialog::ConfirmApprove("eff-abc123def456".to_owned());
+    let text = render_approvals_view(100, 30, items, dialog);
+    // The confirmation dialog should appear.
+    assert!(
+        text.contains("Confirm") || text.contains("APPROVE") || text.contains("approve"),
+        "Approve dialog should appear in the approvals view, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_approvals_confirm_deny_dialog() {
+    let items = vec![make_approval_item("eff-abc123def456", "sign")];
+    let dialog = ConfirmDialog::ConfirmDeny("eff-abc123def456".to_owned());
+    let text = render_approvals_view(100, 30, items, dialog);
+    assert!(
+        text.contains("DENY") || text.contains("deny") || text.contains("Confirm"),
+        "Deny dialog should appear in the approvals view, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_approvals_key_hints() {
+    let text = render_approvals_view(80, 24, vec![], ConfirmDialog::None);
+    // Should show 'a' and 'd' key hints somewhere.
+    assert!(
+        text.contains('a') || text.contains("approve"),
+        "Approvals view should show approve hint, got: {text:?}"
+    );
+}
+
+#[test]
+fn test_approvals_keybinding_approve_produces_action() {
+    // Press 'a' in Normal mode => ApproveEffect action.
+    let action = key_to_action(key(KeyCode::Char('a')), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::ApproveEffect)),
+        "'a' in Normal mode should produce ApproveEffect, got: {action:?}"
+    );
+}
+
+#[test]
+fn test_approvals_keybinding_deny_produces_action() {
+    // Press 'd' in Normal mode => DenyEffect action.
+    let action = key_to_action(key(KeyCode::Char('d')), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::DenyEffect)),
+        "'d' in Normal mode should produce DenyEffect, got: {action:?}"
+    );
+}
+
+// =========================================================================
+// 10. New tab navigation tests
+// =========================================================================
+
+#[test]
+fn test_tab_navigation_includes_memory_and_audit() {
+    // Tab::ALL should now include Memory and Audit.
+    let all = Tab::ALL;
+    assert_eq!(all.len(), 8, "Tab::ALL should contain 8 tabs (including Memory and Audit)");
+    assert!(all.contains(&Tab::Memory), "Tab::ALL should include Memory");
+    assert!(all.contains(&Tab::Audit), "Tab::ALL should include Audit");
+}
+
+#[test]
+fn test_tab_next_audit_wraps_to_dashboard() {
+    assert_eq!(Tab::Audit.next(), Tab::Dashboard,
+        "next() on Audit should wrap to Dashboard");
+}
+
+#[test]
+fn test_tab_prev_dashboard_goes_to_audit() {
+    assert_eq!(Tab::Dashboard.prev(), Tab::Audit,
+        "prev() on Dashboard should go to Audit");
+}
+
+#[test]
+fn test_tab_f7_maps_to_memory() {
+    let action = key_to_action(key(KeyCode::F(7)), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::NavigateTab(Tab::Memory))),
+        "F7 should switch to Memory tab, got: {action:?}"
+    );
+}
+
+#[test]
+fn test_tab_f8_maps_to_audit() {
+    let action = key_to_action(key(KeyCode::F(8)), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::NavigateTab(Tab::Audit))),
+        "F8 should switch to Audit tab, got: {action:?}"
+    );
+}
+
+#[test]
+fn test_key_7_maps_to_memory() {
+    let action = key_to_action(key(KeyCode::Char('7')), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::NavigateTab(Tab::Memory))),
+        "'7' should switch to Memory tab, got: {action:?}"
+    );
+}
+
+#[test]
+fn test_key_8_maps_to_audit() {
+    let action = key_to_action(key(KeyCode::Char('8')), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::NavigateTab(Tab::Audit))),
+        "'8' should switch to Audit tab, got: {action:?}"
+    );
+}
+
+#[test]
+fn test_key_g_maps_to_scroll_to_top() {
+    let action = key_to_action(key(KeyCode::Char('g')), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::ScrollToTop)),
+        "'g' should produce ScrollToTop, got: {action:?}"
+    );
+}
+
+#[test]
+fn test_key_capital_g_maps_to_scroll_to_bottom() {
+    use crossterm::event::KeyModifiers;
+    let action = key_to_action(
+        KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE),
+        InputMode::Normal,
+    );
+    assert!(
+        matches!(action, Some(TuiAction::ScrollToBottom)),
+        "'G' should produce ScrollToBottom, got: {action:?}"
+    );
+}
+
+#[test]
+fn test_key_delete_maps_to_delete_entry() {
+    let action = key_to_action(key(KeyCode::Delete), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::DeleteEntry)),
+        "Delete key should produce DeleteEntry, got: {action:?}"
+    );
+}
+
+#[test]
+fn test_key_f_maps_to_cycle_filter() {
+    let action = key_to_action(key(KeyCode::Char('f')), InputMode::Normal);
+    assert!(
+        matches!(action, Some(TuiAction::CycleFilter)),
+        "'f' key should produce CycleFilter, got: {action:?}"
+    );
+}
+
+// =========================================================================
+// 11. Confirm dialog state tests
+// =========================================================================
+
+#[test]
+fn test_confirm_dialog_default_is_none() {
+    let dialog = ConfirmDialog::default();
+    assert!(
+        matches!(dialog, ConfirmDialog::None),
+        "Default ConfirmDialog should be None"
+    );
+}
+
+#[test]
+fn test_audit_filter_default_is_none() {
+    let filter = AuditFilter::default();
+    assert!(
+        matches!(filter, AuditFilter::None),
+        "Default AuditFilter should be None"
     );
 }

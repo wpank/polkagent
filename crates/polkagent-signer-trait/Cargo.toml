@@ -16,13 +16,17 @@ async-trait = { workspace = true }
 zeroize = { workspace = true }
 
 [features]
-test-contracts = ["tokio", "chrono"]
+test-contracts = ["tokio", "chrono", "serde_json"]
 
 [dependencies.tokio]
 workspace = true
 optional = true
 
 [dependencies.chrono]
+workspace = true
+optional = true
+
+[dependencies.serde_json]
 workspace = true
 optional = true
 

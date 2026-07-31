@@ -1,0 +1,36 @@
+[package]
+name = "polkagent-feed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cursor-backed durable event feed processing, triggers, and recipes for the Polkagent platform"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

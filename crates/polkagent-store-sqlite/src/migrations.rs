@@ -31,11 +31,19 @@ const SCHEMA_V2: &str = include_str!("v2_event_store.sql");
 /// worker_id, payload_json, attempt_id, run_id, consumed).
 const SCHEMA_V3: &str = include_str!("v3_effect_store.sql");
 
+/// V4: Payment store tables (payment_intents, payment_receipts, cost_records).
+const SCHEMA_V4: &str = include_str!("v4_payment_store.sql");
+
+/// V5: Conversation store tables (conversations, conversation_messages).
+const SCHEMA_V5: &str = include_str!("v5_conversation_store.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
     (2, "event store tables", SCHEMA_V2),
     (3, "effect store trait columns", SCHEMA_V3),
+    (4, "payment store tables", SCHEMA_V4),
+    (5, "conversation store tables", SCHEMA_V5),
 ];
 
 // ---------------------------------------------------------------------------
@@ -170,7 +178,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 3);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -179,7 +187,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 3);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -216,6 +224,11 @@ mod tests {
             "artifact_bodies",
             "artifact_lineage",
             "run_events",
+            "payment_intents",
+            "payment_receipts",
+            "cost_records",
+            "conversations",
+            "conversation_messages",
         ];
 
         for table in &tables {

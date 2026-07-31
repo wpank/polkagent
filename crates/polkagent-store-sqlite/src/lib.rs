@@ -63,9 +63,11 @@
 //! - `mmap_size = 268435456` — 256 MiB memory-mapped I/O.
 
 pub mod artifact_store_impl;
+pub mod conversation_store_impl;
 pub mod error;
 pub mod event_store;
 pub mod migrations;
+pub mod payment_store_impl;
 pub mod pool;
 pub mod run_store_impl;
 pub mod store;

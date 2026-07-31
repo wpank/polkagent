@@ -22,6 +22,9 @@
 #[cfg(feature = "test-contracts")]
 pub mod contracts;
 
+#[cfg(feature = "test-contracts")]
+pub mod conformance;
+
 use async_trait::async_trait;
 use futures::Stream;
 use serde::{Deserialize, Serialize};

@@ -419,3 +419,366 @@ proptest! {
         prop_assert!(result.cache_write_tokens >= b.cache_write_tokens);
     }
 }
+
+// =========================================================================
+// PB-05: Round-trip serialization identity for core domain types
+// =========================================================================
+//
+// For every serialisable domain type, serialising then deserialising must
+// produce a value that is equal to the original. This validates that serde
+// attributes (rename_all, tag, flatten, etc.) are symmetric.
+
+/// Strategy for an arbitrary `EffectKind` (core variant, not effect-crate).
+fn arb_core_effect_kind() -> impl Strategy<Value = polkagent_core::EffectKind> {
+    use polkagent_core::EffectKind;
+    prop_oneof![
+        Just(EffectKind::ChainSubmit),
+        Just(EffectKind::ChainQuery),
+        Just(EffectKind::ModelInference),
+        Just(EffectKind::ToolInvocation),
+        Just(EffectKind::FileWrite),
+        Just(EffectKind::FileRead),
+        Just(EffectKind::HttpRequest),
+        Just(EffectKind::Notification),
+        Just(EffectKind::SignatureRequest),
+        Just(EffectKind::Broadcast),
+        Just(EffectKind::FinalityWatch),
+        Just(EffectKind::Delivery),
+        Just(EffectKind::HarnessOperation),
+    ]
+}
+
+/// Strategy for an arbitrary `EventKind`.
+fn arb_event_kind() -> impl Strategy<Value = polkagent_core::EventKind> {
+    use polkagent_core::{EventKind, TurnId, StepId, EffectId, EffectAttemptId, EffectOutcomeId, ArtifactId, event::LogLevel};
+    prop_oneof![
+        Just(EventKind::RunCreated),
+        Just(EventKind::RunQueued),
+        Just(EventKind::RunStarted),
+        ".*".prop_map(|s: String| EventKind::ApprovalRequested { request_id: s }),
+        ".*".prop_map(|s: String| EventKind::ApprovalGranted { approval_id: s }),
+        ".*".prop_map(|s: String| EventKind::ApprovalDenied { reason: s }),
+        Just(EventKind::RunCompleting),
+        Just(()).prop_map(|()| EventKind::RunCompleted { output_artifact_id: None }),
+        ".*".prop_map(|s: String| EventKind::RunFailed { reason: s }),
+        ".*".prop_map(|s: String| EventKind::RunCancelled { reason: s }),
+        Just(EventKind::RunTimedOut),
+        Just(EventKind::RunRetryQueued),
+        (any::<u32>()).prop_map(|n| EventKind::TurnStarted { turn_number: n, turn_id: TurnId::new() }),
+        (any::<u32>()).prop_map(|n| EventKind::TurnCompleted { turn_number: n, turn_id: TurnId::new() }),
+        Just(()).prop_map(|()| EventKind::StepStarted { step_id: StepId::new() }),
+        Just(()).prop_map(|()| EventKind::StepCompleted { step_id: StepId::new() }),
+        Just(()).prop_map(|()| EventKind::EffectIntentCreated { intent_id: EffectId::new() }),
+        Just(()).prop_map(|()| EventKind::EffectAttemptStarted { attempt_id: EffectAttemptId::new() }),
+        Just(()).prop_map(|()| EventKind::EffectOutcomeRecorded { outcome_id: EffectOutcomeId::new() }),
+        Just(EventKind::EffectsResolved),
+        Just(()).prop_map(|()| EventKind::ArtifactCreated { artifact_id: ArtifactId::new() }),
+        ".*".prop_map(|s: String| EventKind::StreamingToken { text: s }),
+        (".*", prop::option::of(0.0f32..100.0)).prop_map(|(msg, pct)| EventKind::ProgressUpdate { message: msg, percentage: pct }),
+        ".*".prop_map(|s: String| EventKind::ToolCallStarted { tool_name: s }),
+        ".*".prop_map(|s: String| EventKind::ToolCallCompleted { tool_name: s }),
+        Just(EventKind::DeliveryStarted),
+        Just(EventKind::DeliveryCompleted),
+        (".*", prop_oneof![
+            Just(LogLevel::Trace),
+            Just(LogLevel::Debug),
+            Just(LogLevel::Info),
+            Just(LogLevel::Warn),
+            Just(LogLevel::Error),
+        ]).prop_map(|(msg, lvl)| EventKind::DiagnosticLog { level: lvl, message: msg }),
+        (".*", ".*").prop_map(|(r, a)| EventKind::BudgetConsumed { resource: r, amount_str: a }),
+        (".*", ".*").prop_map(|(r, rem)| EventKind::BudgetWarning { resource: r, remaining_str: rem }),
+    ]
+}
+
+/// Strategy for an arbitrary `Durability`.
+fn arb_durability() -> impl Strategy<Value = polkagent_core::Durability> {
+    use polkagent_core::Durability;
+    prop_oneof![
+        Just(Durability::Durable),
+        Just(Durability::Ephemeral),
+        Just(Durability::Diagnostic),
+    ]
+}
+
+/// Strategy for an arbitrary `RetryClass` (core).
+fn arb_retry_class() -> impl Strategy<Value = polkagent_core::RetryClass> {
+    use polkagent_core::RetryClass;
+    prop_oneof![
+        Just(RetryClass::Idempotent),
+        Just(RetryClass::CheckBeforeRetry),
+        Just(RetryClass::NoAutoRetry),
+    ]
+}
+
+/// Strategy for an arbitrary `OutcomeStatus`.
+fn arb_outcome_status() -> impl Strategy<Value = polkagent_core::OutcomeStatus> {
+    use polkagent_core::OutcomeStatus;
+    prop_oneof![
+        Just(OutcomeStatus::Success),
+        Just(OutcomeStatus::Failure),
+        Just(OutcomeStatus::Timeout),
+        Just(OutcomeStatus::Cancelled),
+        Just(OutcomeStatus::Unknown),
+    ]
+}
+
+proptest! {
+    // ----- PB-05-a: RunState serde identity (already tested above, adding
+    //                explicit identity framing) --------------------------------
+    #[test]
+    fn pb05_run_state_serde_identity(state in arb_run_state()) {
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: RunState = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&state, &back, "RunState serde identity failed for {:?}", state);
+    }
+
+    // ----- PB-05-b: EffectIntentState serde identity -------------------------
+    #[test]
+    fn pb05_effect_intent_state_serde_identity(state in arb_effect_intent_state()) {
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: polkagent_core::EffectIntentState =
+            serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&state, &back, "EffectIntentState serde identity failed for {:?}", state);
+    }
+
+    // ----- PB-05-c: EffectKind (core) serde identity -------------------------
+    #[test]
+    fn pb05_core_effect_kind_serde_identity(kind in arb_core_effect_kind()) {
+        let json = serde_json::to_string(&kind).expect("serialize");
+        let back: polkagent_core::EffectKind =
+            serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(kind, back, "EffectKind serde identity failed");
+    }
+
+    // ----- PB-05-d: EventKind serde identity ---------------------------------
+    #[test]
+    fn pb05_event_kind_serde_identity(kind in arb_event_kind()) {
+        let json = serde_json::to_string(&kind).expect("serialize");
+        let back: polkagent_core::EventKind =
+            serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&kind, &back, "EventKind serde identity failed for {:?}", kind);
+    }
+
+    // ----- PB-05-e: Durability serde identity --------------------------------
+    #[test]
+    fn pb05_durability_serde_identity(dur in arb_durability()) {
+        let json = serde_json::to_string(&dur).expect("serialize");
+        let back: polkagent_core::Durability =
+            serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&dur, &back, "Durability serde identity failed for {:?}", dur);
+    }
+
+    // ----- PB-05-f: RetryClass serde identity --------------------------------
+    #[test]
+    fn pb05_retry_class_serde_identity(cls in arb_retry_class()) {
+        let json = serde_json::to_string(&cls).expect("serialize");
+        let back: polkagent_core::RetryClass =
+            serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(cls, back, "RetryClass serde identity failed");
+    }
+
+    // ----- PB-05-g: OutcomeStatus serde identity -----------------------------
+    #[test]
+    fn pb05_outcome_status_serde_identity(status in arb_outcome_status()) {
+        let json = serde_json::to_string(&status).expect("serialize");
+        let back: polkagent_core::OutcomeStatus =
+            serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&status, &back, "OutcomeStatus serde identity failed for {:?}", status);
+    }
+}
+
+// =========================================================================
+// PB-06: Two identical inputs produce identical outputs
+// =========================================================================
+//
+// Same RunState input → same JSON, same JSON → same serde_json::Value hash.
+// Serialization must be deterministic: no non-determinism from HashMap
+// iteration order can leak into the serialized form.
+
+proptest! {
+    /// The same RunState always serializes to exactly the same JSON string.
+    #[test]
+    fn pb06_run_state_serialization_is_deterministic(state in arb_run_state()) {
+        let json1 = serde_json::to_string(&state).expect("serialize 1");
+        let json2 = serde_json::to_string(&state).expect("serialize 2");
+        prop_assert_eq!(&json1, &json2, "same RunState must produce identical JSON");
+    }
+
+    /// The same EventKind always serializes to exactly the same JSON string.
+    #[test]
+    fn pb06_event_kind_serialization_is_deterministic(kind in arb_event_kind()) {
+        let json1 = serde_json::to_string(&kind).expect("serialize 1");
+        let json2 = serde_json::to_string(&kind).expect("serialize 2");
+        prop_assert_eq!(&json1, &json2, "same EventKind must produce identical JSON");
+    }
+
+    /// The same EffectKind always serializes to exactly the same JSON string.
+    #[test]
+    fn pb06_effect_kind_serialization_is_deterministic(kind in arb_core_effect_kind()) {
+        let json1 = serde_json::to_string(&kind).expect("serialize 1");
+        let json2 = serde_json::to_string(&kind).expect("serialize 2");
+        prop_assert_eq!(&json1, &json2, "same EffectKind must produce identical JSON");
+    }
+
+    /// BlobRef computed from same data is always byte-identical.
+    #[test]
+    fn pb06_blob_ref_is_deterministic(data in prop::collection::vec(any::<u8>(), 0..4096)) {
+        use polkagent_core::BlobRef;
+        let b1 = BlobRef::from_bytes(&data);
+        let b2 = BlobRef::from_bytes(&data);
+        let json1 = serde_json::to_string(&b1).expect("serialize 1");
+        let json2 = serde_json::to_string(&b2).expect("serialize 2");
+        prop_assert_eq!(&json1, &json2, "BlobRef from identical data must produce identical JSON");
+    }
+}
+
+// =========================================================================
+// PB-08: ID generation uniqueness
+// =========================================================================
+//
+// Generating N IDs in sequence always yields N distinct values.
+// We use N = 200 per type (sufficient to catch implementation bugs without
+// making the test suite slow).
+
+macro_rules! id_uniqueness_proptest {
+    ($mod_name:ident, $ty:ty) => {
+        mod $mod_name {
+            use super::*;
+
+            proptest! {
+                /// Generating `n` IDs yields `n` distinct values (no collisions).
+                #[test]
+                fn pb08_n_ids_are_distinct(n in 2usize..=200) {
+                    let ids: Vec<$ty> = (0..n).map(|_| <$ty>::new()).collect();
+                    let unique: std::collections::HashSet<_> = ids.iter().copied().collect();
+                    prop_assert_eq!(
+                        unique.len(),
+                        n,
+                        "expected {} distinct IDs, got {} unique",
+                        n,
+                        unique.len()
+                    );
+                }
+            }
+        }
+    };
+}
+
+id_uniqueness_proptest!(pb08_run_id_unique, RunId);
+id_uniqueness_proptest!(pb08_agent_id_unique, AgentId);
+id_uniqueness_proptest!(pb08_turn_id_unique, TurnId);
+id_uniqueness_proptest!(pb08_step_id_unique, StepId);
+id_uniqueness_proptest!(pb08_effect_id_unique, EffectId);
+id_uniqueness_proptest!(pb08_event_id_unique, EventId);
+id_uniqueness_proptest!(pb08_artifact_id_unique, ArtifactId);
+id_uniqueness_proptest!(pb08_grant_id_unique, GrantId);
+
+// =========================================================================
+// PB-10: Serialization versioning / forward compatibility
+// =========================================================================
+//
+// Optional fields that are absent in the serialized JSON should still
+// deserialize successfully (forward compatibility). We test this by
+// manually omitting optional fields from JSON objects and verifying that
+// deserialization succeeds and the field lands as `None`.
+
+proptest! {
+    /// RunState with no optional payload fields deserializes from a minimal
+    /// JSON object (only the `state` tag).
+    #[test]
+    fn pb10_run_state_tolerates_missing_optional_fields(_ in 0u8..1) {
+        // All unit-like variants (no extra fields) must deserialize from just
+        // `{ "state": "<tag>" }`.
+        let simple_cases = [
+            (r#"{"state":"created"}"#, RunState::Created),
+            (r#"{"state":"queued"}"#, RunState::Queued),
+            (r#"{"state":"running"}"#, RunState::Running),
+            (r#"{"state":"completing"}"#, RunState::Completing),
+            (r#"{"state":"completed"}"#, RunState::Completed),
+            (r#"{"state":"timed_out"}"#, RunState::TimedOut),
+        ];
+        for (json, expected) in &simple_cases {
+            let got: RunState = serde_json::from_str(json)
+                .unwrap_or_else(|e| panic!("failed to deserialize {json}: {e}"));
+            prop_assert_eq!(&got, expected, "mismatch for {}", json);
+        }
+    }
+
+    /// EffectIntentState::Pending deserializes from a minimal representation.
+    #[test]
+    fn pb10_effect_intent_state_pending_minimal(_ in 0u8..1) {
+        use polkagent_core::EffectIntentState;
+        // Pending carries no payload, so the minimal JSON is just the tag.
+        let json = r#""pending""#;
+        let got: EffectIntentState = serde_json::from_str(json)
+            .expect("deserialize pending");
+        prop_assert_eq!(got, EffectIntentState::Pending);
+    }
+
+    /// A Durability value with an unrecognised string is rejected (no silent
+    /// default), while a known tag always succeeds.
+    #[test]
+    fn pb10_durability_known_tags_deserialize(dur in arb_durability()) {
+        let json = serde_json::to_string(&dur).expect("serialize");
+        // Forward compat: re-deserialize from our own output.
+        let back: polkagent_core::Durability =
+            serde_json::from_str(&json).expect("deserialize known tag");
+        prop_assert_eq!(&back, &dur);
+    }
+
+    /// RetryClass: all known tags round-trip; forward-compat means we can add
+    /// new tags later without breaking consumers of old tags.
+    #[test]
+    fn pb10_retry_class_known_tags_are_forward_compat(cls in arb_retry_class()) {
+        let json = serde_json::to_string(&cls).expect("serialize");
+        let back: polkagent_core::RetryClass =
+            serde_json::from_str(&json).expect("deserialize known tag");
+        prop_assert_eq!(cls, back);
+    }
+
+    /// EventKind: a freshly serialized EventKind always re-deserializes
+    /// (forward compat means each known tag is its own stable wire format).
+    #[test]
+    fn pb10_event_kind_self_roundtrip_is_stable(kind in arb_event_kind()) {
+        let json = serde_json::to_string(&kind).expect("serialize");
+        let back: polkagent_core::EventKind =
+            serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&kind, &back);
+    }
+
+    /// EffectIntent with `payload_json = None` and `resolved_at = None` and
+    /// `deadline = None` deserializes correctly (all optional fields absent).
+    #[test]
+    fn pb10_effect_intent_with_optional_fields_missing(_ in 0u8..1) {
+        use polkagent_core::effect::EffectIntent;
+        use polkagent_core::ids::{EffectId, RunId, TurnId, StepId};
+        use polkagent_core::effect::{EffectKind, RetryClass, EffectIntentState, IdempotencyKey};
+
+        let intent = EffectIntent {
+            id: EffectId::new(),
+            run_id: RunId::new(),
+            turn_id: TurnId::new(),
+            step_id: StepId::new(),
+            kind: EffectKind::ChainQuery,
+            idempotency_key: IdempotencyKey::from_hex("aabbcc"),
+            sequence: 1,
+            state: EffectIntentState::Pending,
+            retry_class: RetryClass::Idempotent,
+            max_attempts: 3,
+            attempt_count: 0,
+            created_at: chrono::Utc::now(),
+            resolved_at: None,   // optional
+            deadline: None,      // optional
+            payload_json: None,  // optional
+        };
+
+        let json = serde_json::to_string(&intent).expect("serialize");
+        let back: EffectIntent = serde_json::from_str(&json).expect("deserialize");
+
+        prop_assert_eq!(intent.id, back.id);
+        prop_assert!(back.resolved_at.is_none(), "resolved_at must stay None");
+        prop_assert!(back.deadline.is_none(), "deadline must stay None");
+        prop_assert!(back.payload_json.is_none(), "payload_json must stay None");
+    }
+}

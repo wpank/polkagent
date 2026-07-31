@@ -10,6 +10,11 @@
 //! POLKAGENT_LOG_LEVEL           → config.log.level
 //! POLKAGENT_DATABASE_BACKEND    → config.database.backend
 //! POLKAGENT_API_BIND            → config.api.bind_address
+//! POLKAGENT_SERVER_BIND         → config.server.bind_address
+//! POLKAGENT_AUTH_ENABLED        → config.auth.enabled
+//! POLKAGENT_SECURITY_SANDBOX    → config.security.sandbox_enabled
+//! POLKAGENT_SKILLS_DIR          → config.skills.directories (single path appended)
+//! POLKAGENT_OTLP_ENDPOINT       → config.observability.otlp_endpoint
 //! ```
 //!
 //! # API keys
@@ -26,6 +31,7 @@
 //! config loader records only whether they are present, never their values.
 
 use std::env;
+use std::path::PathBuf;
 
 use tracing::debug;
 
@@ -46,6 +52,13 @@ pub fn apply_env_overrides(config: &mut Config) {
     apply_tui_overrides(config);
     apply_memory_overrides(config);
     apply_policy_overrides(config);
+    apply_server_overrides(config);
+    apply_auth_overrides(config);
+    apply_security_overrides(config);
+    apply_skills_overrides(config);
+    apply_harness_overrides(config);
+    apply_artifact_overrides(config);
+    apply_observability_overrides(config);
     check_api_key_env_vars();
 }
 
@@ -272,6 +285,210 @@ fn apply_policy_overrides(config: &mut Config) {
 }
 
 // ---------------------------------------------------------------------------
+// Server  (PRD-14 §1)
+// ---------------------------------------------------------------------------
+
+fn apply_server_overrides(config: &mut Config) {
+    if let Some(addr) = env_str("POLKAGENT_SERVER_BIND") {
+        debug!(variable = "POLKAGENT_SERVER_BIND", value = %addr, "applying env override");
+        config.server.bind_address = addr;
+    }
+
+    if let Some(rps) = env_parse::<u32>("POLKAGENT_SERVER_RATE_LIMIT_RPS") {
+        debug!(variable = "POLKAGENT_SERVER_RATE_LIMIT_RPS", value = rps, "applying env override");
+        config.server.rate_limit.requests_per_second = rps;
+    }
+
+    if let Some(burst) = env_parse::<u32>("POLKAGENT_SERVER_RATE_LIMIT_BURST") {
+        debug!(
+            variable = "POLKAGENT_SERVER_RATE_LIMIT_BURST",
+            value = burst,
+            "applying env override"
+        );
+        config.server.rate_limit.burst = burst;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auth  (PRD-14 §2)
+// ---------------------------------------------------------------------------
+
+fn apply_auth_overrides(config: &mut Config) {
+    if let Some(enabled) = env_parse::<bool>("POLKAGENT_AUTH_ENABLED") {
+        debug!(variable = "POLKAGENT_AUTH_ENABLED", value = enabled, "applying env override");
+        config.auth.enabled = enabled;
+    }
+
+    if let Some(env_name) = env_str("POLKAGENT_AUTH_JWT_SECRET_ENV") {
+        debug!(variable = "POLKAGENT_AUTH_JWT_SECRET_ENV", value = %env_name, "applying env override");
+        config.auth.jwt_secret_env = Some(env_name);
+    }
+
+    if let Some(secs) = env_parse::<u64>("POLKAGENT_AUTH_SESSION_TIMEOUT_SECS") {
+        debug!(
+            variable = "POLKAGENT_AUTH_SESSION_TIMEOUT_SECS",
+            value = secs,
+            "applying env override"
+        );
+        config.auth.session_timeout_secs = secs;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Security  (PRD-14 §3)
+// ---------------------------------------------------------------------------
+
+fn apply_security_overrides(config: &mut Config) {
+    if let Some(enabled) = env_parse::<bool>("POLKAGENT_SECURITY_SANDBOX") {
+        debug!(variable = "POLKAGENT_SECURITY_SANDBOX", value = enabled, "applying env override");
+        config.security.sandbox_enabled = enabled;
+    }
+
+    if let Some(bytes) = env_parse::<u64>("POLKAGENT_SECURITY_MAX_FILE_SIZE_BYTES") {
+        debug!(
+            variable = "POLKAGENT_SECURITY_MAX_FILE_SIZE_BYTES",
+            value = bytes,
+            "applying env override"
+        );
+        config.security.max_file_size_bytes = bytes;
+    }
+
+    if let Some(mb) = env_parse::<u64>("POLKAGENT_SECURITY_MAX_MEMORY_MB") {
+        debug!(variable = "POLKAGENT_SECURITY_MAX_MEMORY_MB", value = mb, "applying env override");
+        config.security.max_memory_mb = mb;
+    }
+
+    if let Some(secs) = env_parse::<u64>("POLKAGENT_SECURITY_MAX_CPU_SECONDS") {
+        debug!(
+            variable = "POLKAGENT_SECURITY_MAX_CPU_SECONDS",
+            value = secs,
+            "applying env override"
+        );
+        config.security.max_cpu_seconds = secs;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Skills  (PRD-14 §4)
+// ---------------------------------------------------------------------------
+
+fn apply_skills_overrides(config: &mut Config) {
+    // POLKAGENT_SKILLS_DIR sets a single skill directory, replacing any
+    // file-based `directories` list. For multi-path setups use the config file.
+    if let Some(dir) = env_str("POLKAGENT_SKILLS_DIR") {
+        debug!(variable = "POLKAGENT_SKILLS_DIR", value = %dir, "applying env override");
+        config.skills.directories = vec![PathBuf::from(dir)];
+    }
+
+    if let Some(auto) = env_parse::<bool>("POLKAGENT_SKILLS_AUTO_LOAD") {
+        debug!(variable = "POLKAGENT_SKILLS_AUTO_LOAD", value = auto, "applying env override");
+        config.skills.auto_load = auto;
+    }
+
+    if let Some(url) = env_str("POLKAGENT_SKILLS_REGISTRY_URL") {
+        debug!(variable = "POLKAGENT_SKILLS_REGISTRY_URL", value = %url, "applying env override");
+        config.skills.registry_url = Some(url);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Harness  (PRD-14 §5)
+// ---------------------------------------------------------------------------
+
+fn apply_harness_overrides(config: &mut Config) {
+    if let Some(harness_type) = env_str("POLKAGENT_HARNESS_TYPE") {
+        debug!(variable = "POLKAGENT_HARNESS_TYPE", value = %harness_type, "applying env override");
+        config.harness.harness_type = harness_type;
+    }
+
+    if let Some(secs) = env_parse::<u64>("POLKAGENT_HARNESS_TIMEOUT_SECS") {
+        debug!(variable = "POLKAGENT_HARNESS_TIMEOUT_SECS", value = secs, "applying env override");
+        config.harness.timeout_secs = secs;
+    }
+
+    if let Some(max) = env_parse::<u32>("POLKAGENT_HARNESS_MAX_CONCURRENT") {
+        debug!(variable = "POLKAGENT_HARNESS_MAX_CONCURRENT", value = max, "applying env override");
+        config.harness.max_concurrent = max;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts  (PRD-14 §6)
+// ---------------------------------------------------------------------------
+
+fn apply_artifact_overrides(config: &mut Config) {
+    if let Some(bytes) = env_parse::<u64>("POLKAGENT_ARTIFACTS_MAX_SIZE_BYTES") {
+        debug!(
+            variable = "POLKAGENT_ARTIFACTS_MAX_SIZE_BYTES",
+            value = bytes,
+            "applying env override"
+        );
+        config.artifacts.max_size_bytes = bytes;
+    }
+
+    if let Some(days) = env_parse::<u32>("POLKAGENT_ARTIFACTS_RETENTION_DAYS") {
+        debug!(
+            variable = "POLKAGENT_ARTIFACTS_RETENTION_DAYS",
+            value = days,
+            "applying env override"
+        );
+        config.artifacts.retention_days = days;
+    }
+
+    if let Some(enabled) = env_parse::<bool>("POLKAGENT_ARTIFACTS_COMPRESSION_ENABLED") {
+        debug!(
+            variable = "POLKAGENT_ARTIFACTS_COMPRESSION_ENABLED",
+            value = enabled,
+            "applying env override"
+        );
+        config.artifacts.compression_enabled = enabled;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observability  (PRD-14 §7)
+// ---------------------------------------------------------------------------
+
+fn apply_observability_overrides(config: &mut Config) {
+    if let Some(endpoint) = env_str("POLKAGENT_OTLP_ENDPOINT") {
+        debug!(variable = "POLKAGENT_OTLP_ENDPOINT", value = %endpoint, "applying env override");
+        config.observability.otlp_endpoint = Some(endpoint);
+    }
+
+    if let Some(protocol) = env_str("POLKAGENT_OTLP_PROTOCOL") {
+        debug!(variable = "POLKAGENT_OTLP_PROTOCOL", value = %protocol, "applying env override");
+        config.observability.otlp_protocol = protocol;
+    }
+
+    if let Some(enabled) = env_parse::<bool>("POLKAGENT_OBSERVABILITY_METRICS_ENABLED") {
+        debug!(
+            variable = "POLKAGENT_OBSERVABILITY_METRICS_ENABLED",
+            value = enabled,
+            "applying env override"
+        );
+        config.observability.metrics_enabled = enabled;
+    }
+
+    if let Some(enabled) = env_parse::<bool>("POLKAGENT_OBSERVABILITY_TRACES_ENABLED") {
+        debug!(
+            variable = "POLKAGENT_OBSERVABILITY_TRACES_ENABLED",
+            value = enabled,
+            "applying env override"
+        );
+        config.observability.traces_enabled = enabled;
+    }
+
+    if let Some(name) = env_str("POLKAGENT_OBSERVABILITY_SERVICE_NAME") {
+        debug!(
+            variable = "POLKAGENT_OBSERVABILITY_SERVICE_NAME",
+            value = %name,
+            "applying env override"
+        );
+        config.observability.service_name = name;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // API key presence check
 // ---------------------------------------------------------------------------
 
@@ -348,6 +565,10 @@ mod tests {
             None => env::remove_var(key),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Existing tests — must continue to pass
+    // -----------------------------------------------------------------------
 
     #[test]
     fn log_level_override() {
@@ -454,5 +675,201 @@ mod tests {
         let mut cfg = Config::default();
         apply_env_overrides(&mut cfg);
         assert_eq!(cfg.log.level, "info");
+    }
+
+    // -----------------------------------------------------------------------
+    // New env var override tests (PRD-14)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn server_bind_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_SERVER_BIND", "0.0.0.0:9090", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.server.bind_address, "0.0.0.0:9090");
+    }
+
+    #[test]
+    fn server_rate_limit_rps_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_SERVER_RATE_LIMIT_RPS", "50", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.server.rate_limit.requests_per_second, 50);
+    }
+
+    #[test]
+    fn server_rate_limit_burst_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_SERVER_RATE_LIMIT_BURST", "500", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.server.rate_limit.burst, 500);
+    }
+
+    #[test]
+    fn auth_enabled_override() {
+        let mut cfg = Config::default();
+        assert!(!cfg.auth.enabled);
+        with_env("POLKAGENT_AUTH_ENABLED", "true", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert!(cfg.auth.enabled);
+    }
+
+    #[test]
+    fn auth_jwt_secret_env_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_AUTH_JWT_SECRET_ENV", "MY_JWT_SECRET", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.auth.jwt_secret_env, Some("MY_JWT_SECRET".to_owned()));
+    }
+
+    #[test]
+    fn auth_session_timeout_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_AUTH_SESSION_TIMEOUT_SECS", "7200", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.auth.session_timeout_secs, 7200);
+    }
+
+    #[test]
+    fn security_sandbox_override() {
+        let mut cfg = Config::default();
+        assert!(!cfg.security.sandbox_enabled);
+        with_env("POLKAGENT_SECURITY_SANDBOX", "true", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert!(cfg.security.sandbox_enabled);
+    }
+
+    #[test]
+    fn security_max_file_size_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_SECURITY_MAX_FILE_SIZE_BYTES", "1048576", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.security.max_file_size_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn security_max_memory_mb_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_SECURITY_MAX_MEMORY_MB", "256", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.security.max_memory_mb, 256);
+    }
+
+    #[test]
+    fn skills_dir_override_replaces_directories() {
+        let mut cfg = Config::default();
+        cfg.skills.directories = vec![PathBuf::from("/old/path")];
+        with_env("POLKAGENT_SKILLS_DIR", "/new/skills", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.skills.directories, vec![PathBuf::from("/new/skills")]);
+    }
+
+    #[test]
+    fn skills_auto_load_override() {
+        let mut cfg = Config::default();
+        assert!(cfg.skills.auto_load);
+        with_env("POLKAGENT_SKILLS_AUTO_LOAD", "false", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert!(!cfg.skills.auto_load);
+    }
+
+    #[test]
+    fn skills_registry_url_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_SKILLS_REGISTRY_URL", "https://registry.example.com", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(
+            cfg.skills.registry_url,
+            Some("https://registry.example.com".to_owned())
+        );
+    }
+
+    #[test]
+    fn harness_type_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_HARNESS_TYPE", "custom", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.harness.harness_type, "custom");
+    }
+
+    #[test]
+    fn harness_timeout_secs_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_HARNESS_TIMEOUT_SECS", "600", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.harness.timeout_secs, 600);
+    }
+
+    #[test]
+    fn harness_max_concurrent_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_HARNESS_MAX_CONCURRENT", "4", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.harness.max_concurrent, 4);
+    }
+
+    #[test]
+    fn artifacts_retention_days_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_ARTIFACTS_RETENTION_DAYS", "30", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.artifacts.retention_days, 30);
+    }
+
+    #[test]
+    fn artifacts_compression_disabled_override() {
+        let mut cfg = Config::default();
+        assert!(cfg.artifacts.compression_enabled);
+        with_env("POLKAGENT_ARTIFACTS_COMPRESSION_ENABLED", "false", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert!(!cfg.artifacts.compression_enabled);
+    }
+
+    #[test]
+    fn otlp_endpoint_override() {
+        let mut cfg = Config::default();
+        assert!(cfg.observability.otlp_endpoint.is_none());
+        with_env("POLKAGENT_OTLP_ENDPOINT", "http://localhost:4317", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(
+            cfg.observability.otlp_endpoint,
+            Some("http://localhost:4317".to_owned())
+        );
+    }
+
+    #[test]
+    fn otlp_protocol_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_OTLP_PROTOCOL", "http/protobuf", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.observability.otlp_protocol, "http/protobuf");
+    }
+
+    #[test]
+    fn observability_service_name_override() {
+        let mut cfg = Config::default();
+        with_env("POLKAGENT_OBSERVABILITY_SERVICE_NAME", "my-service", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert_eq!(cfg.observability.service_name, "my-service");
     }
 }

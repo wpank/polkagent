@@ -5,7 +5,10 @@ use tracing::info;
 
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
-use crate::cli::{AgentCmd, AgentCreateCmd, AgentDeleteCmd, AgentListCmd, AgentShowCmd};
+use crate::cli::{
+    AgentCmd, AgentCreateCmd, AgentDeleteCmd, AgentListCmd, AgentPauseCmd, AgentResumeCmd,
+    AgentShowCmd, AgentStartCmd, AgentStopCmd,
+};
 
 /// Dispatch the agent subcommand.
 pub fn run(cmd: &AgentCmd, pool: &SqlitePool) -> Result<()> {
@@ -15,6 +18,10 @@ pub fn run(cmd: &AgentCmd, pool: &SqlitePool) -> Result<()> {
         AgentCmd::List(c)   => list(c, &store),
         AgentCmd::Show(c)   => show(c, &store),
         AgentCmd::Delete(c) => delete(c, &store),
+        AgentCmd::Start(c)  => start(c, &store),
+        AgentCmd::Stop(c)   => stop(c, &store),
+        AgentCmd::Pause(c)  => pause(c, &store),
+        AgentCmd::Resume(c) => resume(c, &store),
     }
 }
 
@@ -190,5 +197,124 @@ fn delete(cmd: &AgentDeleteCmd, store: &SqliteRunStore) -> Result<()> {
 
     println!("Agent '{}' archived.", cmd.agent);
     info!(agent = %cmd.agent, "agent archived");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// start
+// ---------------------------------------------------------------------------
+
+fn start(cmd: &AgentStartCmd, store: &SqliteRunStore) -> Result<()> {
+    let agent = store
+        .get_agent_by_name_or_id(&cmd.agent)
+        .map_err(|_| anyhow::anyhow!("Agent not found: {}", cmd.agent))?;
+
+    if agent.state == "archived" {
+        anyhow::bail!("Cannot start archived agent: {}", cmd.agent);
+    }
+
+    if agent.state == "active" {
+        println!("Agent '{}' is already active.", cmd.agent);
+        return Ok(());
+    }
+
+    store
+        .update_agent_state(&agent.id, "active")
+        .map_err(|e| anyhow::anyhow!("starting agent: {e}"))?;
+
+    println!("Agent '{}' started.", cmd.agent);
+    println!("  ID:    {}", agent.id);
+    println!("  State: active");
+    info!(agent_id = %agent.id, "agent started");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// stop
+// ---------------------------------------------------------------------------
+
+fn stop(cmd: &AgentStopCmd, store: &SqliteRunStore) -> Result<()> {
+    let agent = store
+        .get_agent_by_name_or_id(&cmd.agent)
+        .map_err(|_| anyhow::anyhow!("Agent not found: {}", cmd.agent))?;
+
+    if agent.state == "archived" {
+        anyhow::bail!("Cannot stop archived agent: {}", cmd.agent);
+    }
+
+    if agent.state == "configured" {
+        println!("Agent '{}' is already stopped.", cmd.agent);
+        return Ok(());
+    }
+
+    store
+        .update_agent_state(&agent.id, "configured")
+        .map_err(|e| anyhow::anyhow!("stopping agent: {e}"))?;
+
+    println!("Agent '{}' stopped.", cmd.agent);
+    println!("  ID:    {}", agent.id);
+    println!("  State: configured");
+    info!(agent_id = %agent.id, "agent stopped");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// pause
+// ---------------------------------------------------------------------------
+
+fn pause(cmd: &AgentPauseCmd, store: &SqliteRunStore) -> Result<()> {
+    let agent = store
+        .get_agent_by_name_or_id(&cmd.agent)
+        .map_err(|_| anyhow::anyhow!("Agent not found: {}", cmd.agent))?;
+
+    if agent.state == "archived" {
+        anyhow::bail!("Cannot pause archived agent: {}", cmd.agent);
+    }
+
+    if agent.state == "paused" {
+        println!("Agent '{}' is already paused.", cmd.agent);
+        return Ok(());
+    }
+
+    store
+        .update_agent_state(&agent.id, "paused")
+        .map_err(|e| anyhow::anyhow!("pausing agent: {e}"))?;
+
+    println!("Agent '{}' paused.", cmd.agent);
+    println!("  ID:    {}", agent.id);
+    println!("  State: paused");
+    info!(agent_id = %agent.id, "agent paused");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// resume
+// ---------------------------------------------------------------------------
+
+fn resume(cmd: &AgentResumeCmd, store: &SqliteRunStore) -> Result<()> {
+    let agent = store
+        .get_agent_by_name_or_id(&cmd.agent)
+        .map_err(|_| anyhow::anyhow!("Agent not found: {}", cmd.agent))?;
+
+    if agent.state == "archived" {
+        anyhow::bail!("Cannot resume archived agent: {}", cmd.agent);
+    }
+
+    if agent.state != "paused" {
+        println!(
+            "Agent '{}' is not paused (current state: {}). Use `agent start` instead.",
+            cmd.agent, agent.state
+        );
+        return Ok(());
+    }
+
+    store
+        .update_agent_state(&agent.id, "active")
+        .map_err(|e| anyhow::anyhow!("resuming agent: {e}"))?;
+
+    println!("Agent '{}' resumed.", cmd.agent);
+    println!("  ID:    {}", agent.id);
+    println!("  State: active");
+    info!(agent_id = %agent.id, "agent resumed");
     Ok(())
 }

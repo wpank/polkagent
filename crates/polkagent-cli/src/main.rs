@@ -17,6 +17,8 @@ use polkagent_store_sqlite::SqlitePool;
 
 mod cli;
 mod commands;
+mod exit_codes;
+mod output;
 mod tui;
 
 use cli::{Cli, Commands};
@@ -40,6 +42,11 @@ async fn main() -> Result<()> {
 
     // Initialise tracing subscriber (before any command runs).
     init_tracing(cli.verbose);
+
+    // Collect global flags for passing to handlers.
+    let format = cli.format;
+    let dry_run = cli.dry_run;
+    let yes = cli.yes;
 
     // Commands that do not require database access.
     match &cli.command {
@@ -71,6 +78,12 @@ async fn main() -> Result<()> {
         _ => {}
     }
 
+    // Suppress unused variable warnings for global flags not yet threaded
+    // into all handlers. They are available for future use.
+    let _ = format;
+    let _ = dry_run;
+    let _ = yes;
+
     // Resolve the database path, open the pool, and run migrations.
     let db_path = resolve_db_path(cli.config.as_ref().map(|p| p.as_path()));
     let pool = open_pool(&db_path)?;
@@ -94,8 +107,20 @@ async fn main() -> Result<()> {
             commands::agent::run(cmd, &pool)?;
         }
 
+        Some(Commands::Skill(cmd)) => {
+            commands::skill::run(cmd, &pool)?;
+        }
+
         Some(Commands::Inbox(cmd)) => {
             commands::inbox::run(cmd, &pool)?;
+        }
+
+        Some(Commands::Status(cmd)) => {
+            commands::status::run(cmd, &pool)?;
+        }
+
+        Some(Commands::Logs(cmd)) => {
+            commands::logs::run(cmd, &pool)?;
         }
 
         // Already handled above; listed here to satisfy exhaustiveness.

@@ -29,6 +29,21 @@ polkagent-signer-trait = { path = "../polkagent-signer-trait", features = ["test
 polkagent-signer-fake = { path = "../polkagent-signer-fake" }
 polkagent-memory = { path = "../polkagent-memory" }
 polkagent-metadata = { path = "../polkagent-metadata" }
+polkagent-fault = { path = "../polkagent-fault" }
+polkagent-transport-fake = { path = "../polkagent-transport-fake" }
+# IT-04: Outbox delivery tests
+polkagent-outbox = { path = "../polkagent-outbox" }
+# IT-06: Executor streaming tests (already have polkagent-executor-fake above)
+# IT-08: Signer integration tests (already have polkagent-signer-fake above)
+# Tool execution tests
+polkagent-tool = { path = "../polkagent-tool" }
+# Skill resolution tests
+polkagent-skill = { path = "../polkagent-skill" }
+# Conversation flow tests
+polkagent-conversation = { path = "../polkagent-conversation" }
+# Service lifecycle tests
+polkagent-service = { path = "../polkagent-service" }
+polkagent-payment = { path = "../polkagent-payment" }
 
 # Async
 tokio = { workspace = true, features = ["full", "test-util"] }
@@ -38,6 +53,9 @@ futures = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# UUIDs (used directly in several test files)
+uuid = { workspace = true }
 
 # Time
 chrono = { workspace = true }

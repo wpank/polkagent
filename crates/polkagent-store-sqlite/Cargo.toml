@@ -11,6 +11,8 @@ description = "SQLite storage adapter for Polkagent with WAL mode and forward-on
 # Internal
 polkagent-core = { path = "../polkagent-core" }
 polkagent-artifact = { path = "../polkagent-artifact" }
+polkagent-conversation = { path = "../polkagent-conversation" }
+polkagent-payment = { path = "../polkagent-payment" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 
 # Crypto
@@ -45,6 +47,10 @@ uuid = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+polkagent-store-trait = { path = "../polkagent-store-trait", features = ["test-contracts"] }
+uuid = { workspace = true }
+rusqlite = { workspace = true }
+chrono = { workspace = true }
 
 [lints]
 workspace = true

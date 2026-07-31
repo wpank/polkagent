@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 use polkagent_core::ids::AgentId;
 
+use crate::classification::Classification;
+
 // ---------------------------------------------------------------------------
 // MemoryId
 // ---------------------------------------------------------------------------
@@ -202,11 +204,11 @@ pub struct MemoryEntry {
     pub agent_id: AgentId,
     /// Optional episode this memory belongs to.
     pub episode_id: Option<EpisodeId>,
-    /// Classification of the memory.
+    /// Classification of the memory (episodic / semantic / procedural).
     pub memory_type: MemoryType,
     /// The textual content of the memory.
     pub content: String,
-    /// Optional embedding vector for semantic search.
+    /// Optional embedding vector for future vector search support.
     pub embedding: Option<Vec<f32>>,
     /// Arbitrary key-value metadata.
     pub metadata: serde_json::Value,
@@ -220,6 +222,24 @@ pub struct MemoryEntry {
     pub access_count: u64,
     /// Relevance score (higher = more relevant, decays over time).
     pub relevance_score: f64,
+    /// Confidence in the accuracy of this memory (0.0 – 1.0).
+    ///
+    /// Defaults to `1.0` (fully confident). Used by admission control to
+    /// reject low-quality memories before they reach the store.
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
+    /// Security / sensitivity classification for this memory.
+    ///
+    /// Defaults to [`Classification::Internal`]. Used by [`ClassificationFilter`]
+    /// at query time to restrict results to the caller's clearance level.
+    ///
+    /// [`ClassificationFilter`]: crate::classification::ClassificationFilter
+    #[serde(default)]
+    pub classification: Classification,
+}
+
+fn default_confidence() -> f64 {
+    1.0
 }
 
 // ---------------------------------------------------------------------------

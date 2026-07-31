@@ -8,5 +8,8 @@ pub mod doctor;
 pub mod explain;
 pub mod inbox;
 pub mod init;
+pub mod logs;
 pub mod memory;
 pub mod run;
+pub mod skill;
+pub mod status;

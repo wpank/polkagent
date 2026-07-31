@@ -15,5 +15,16 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 
+[features]
+test-contracts = ["tokio", "chrono"]
+
+[dependencies.tokio]
+workspace = true
+optional = true
+
+[dependencies.chrono]
+workspace = true
+optional = true
+
 [lints]
 workspace = true

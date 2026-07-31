@@ -17,6 +17,9 @@ polkagent-card = { path = "../crates/polkagent-card" }
 polkagent-effect = { path = "../crates/polkagent-effect" }
 polkagent-grant = { path = "../crates/polkagent-grant" }
 polkagent-event = { path = "../crates/polkagent-event" }
+polkagent-transport-trait = { path = "../crates/polkagent-transport-trait" }
+polkagent-skill = { path = "../crates/polkagent-skill" }
+polkagent-api = { path = "../crates/polkagent-api" }
 serde_json = "1"
 toml = "0.8"
 uuid = { version = "1", features = ["v7"] }
@@ -50,3 +53,15 @@ path = "fuzz_targets/id_parse.rs"
 [[bin]]
 name = "fuzz_event_kind"
 path = "fuzz_targets/event_kind.rs"
+
+[[bin]]
+name = "fuzz_transport_deser"
+path = "fuzz_targets/transport_deser.rs"
+
+[[bin]]
+name = "fuzz_skill_manifest"
+path = "fuzz_targets/skill_manifest.rs"
+
+[[bin]]
+name = "fuzz_api_request"
+path = "fuzz_targets/api_request.rs"

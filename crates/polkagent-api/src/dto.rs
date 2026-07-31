@@ -489,3 +489,233 @@ pub struct MemoryStatsResponse {
     /// Number of distinct namespaces.
     pub namespaces: u32,
 }
+
+/// Request body for `POST /memory/forget`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryForgetRequest {
+    /// IDs of entries to delete.
+    pub entry_ids: Vec<String>,
+}
+
+/// Response body for `POST /memory/forget`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryForgetResponse {
+    /// API version.
+    pub version: String,
+    /// Number of entries actually deleted.
+    pub deleted: u32,
+}
+
+/// Response body for `GET /memory/entries/:entry_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEntryResponse {
+    /// API version.
+    pub version: String,
+    /// The memory entry.
+    pub data: MemoryResult,
+}
+
+// ---------------------------------------------------------------------------
+// Models — responses
+// ---------------------------------------------------------------------------
+
+/// Capability flags for a model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelCapabilities {
+    /// Whether the model supports vision/image input.
+    pub vision: bool,
+    /// Whether the model supports function/tool calling.
+    pub tool_use: bool,
+    /// Whether the model supports streaming responses.
+    pub streaming: bool,
+}
+
+/// Response body for a single model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelResponse {
+    /// API version.
+    pub version: String,
+    /// Unique model identifier (e.g. `"claude-opus-4-6"`).
+    pub id: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Provider that hosts this model.
+    pub provider: String,
+    /// Maximum context window in tokens.
+    pub context_window: u32,
+    /// Model capability flags.
+    pub capabilities: ModelCapabilities,
+}
+
+/// Response body for `GET /models` and `GET /providers/:id/models`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListModelsResponse {
+    /// API version.
+    pub version: String,
+    /// List of models.
+    pub data: Vec<ModelResponse>,
+}
+
+// ---------------------------------------------------------------------------
+// Skills — requests and responses
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /skills/install`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallSkillRequest {
+    /// Filesystem path to the skill package directory.
+    pub path: String,
+}
+
+/// Request body for `PUT /skills/:skill_id/config`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSkillConfigRequest {
+    /// Configuration key-value pairs to merge into the skill config.
+    pub config: serde_json::Value,
+}
+
+/// Response body for a single skill.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillResponse {
+    /// API version.
+    pub version: String,
+    /// Unique skill identifier (`name@version`).
+    pub id: String,
+    /// Skill package name.
+    pub name: String,
+    /// Semver version string.
+    pub skill_version: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Required grant patterns.
+    pub required_grants: Vec<String>,
+    /// Required tool names.
+    pub tools: Vec<String>,
+    /// Whether the skill is currently active.
+    pub active: bool,
+}
+
+/// Response body for `GET /skills`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListSkillsResponse {
+    /// API version.
+    pub version: String,
+    /// List of skills.
+    pub data: Vec<SkillResponse>,
+}
+
+// ---------------------------------------------------------------------------
+// Tools — responses
+// ---------------------------------------------------------------------------
+
+/// Response body for a single tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResponse {
+    /// API version.
+    pub version: String,
+    /// Unique tool name (e.g. `"polkagent.file.read"`).
+    pub id: String,
+    /// Human-readable description.
+    pub description: String,
+    /// JSON Schema for input parameters.
+    pub input_schema: serde_json::Value,
+    /// Required grant pattern, if any.
+    pub required_grant: Option<String>,
+    /// Output data classification.
+    pub output_classification: String,
+}
+
+/// Response body for `GET /tools`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListToolsResponse {
+    /// API version.
+    pub version: String,
+    /// List of tools.
+    pub data: Vec<ToolResponse>,
+}
+
+/// Response body for `GET /tools/:tool_id/grants`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolGrantsResponse {
+    /// API version.
+    pub version: String,
+    /// The tool name.
+    pub tool_id: String,
+    /// Required grant pattern, if any.
+    pub required_grant: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Payments — responses
+// ---------------------------------------------------------------------------
+
+/// Response body for `GET /payments/balance`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentBalanceResponse {
+    /// API version.
+    pub version: String,
+    /// Available balance information.
+    pub balance: serde_json::Value,
+    /// Current budget configuration.
+    pub budget: serde_json::Value,
+}
+
+/// Response body for `GET /payments/usage`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentUsageResponse {
+    /// API version.
+    pub version: String,
+    /// Total number of runs in this period.
+    pub total_runs: u64,
+    /// Total tokens consumed.
+    pub total_tokens: u64,
+    /// Estimated USD cost.
+    pub estimated_usd: f64,
+    /// Start of the reporting period.
+    pub period_start: String,
+    /// End of the reporting period.
+    pub period_end: String,
+}
+
+/// Response body for a single payment receipt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentReceiptResponse {
+    /// API version.
+    pub version: String,
+    /// The intent ID fulfilled by this receipt.
+    pub intent_id: String,
+    /// On-chain transaction hash.
+    pub tx_hash: String,
+    /// Block number of confirmation.
+    pub block_number: u64,
+    /// Fee paid (human-readable).
+    pub fee_paid: String,
+    /// When the confirmation was observed.
+    pub confirmed_at: String,
+}
+
+/// Response body for `GET /payments/receipts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListPaymentReceiptsResponse {
+    /// API version.
+    pub version: String,
+    /// List of receipts.
+    pub data: Vec<PaymentReceiptResponse>,
+}
+
+// ---------------------------------------------------------------------------
+// Agent lifecycle — requests
+// ---------------------------------------------------------------------------
+
+/// Response body for agent lifecycle actions (start/stop/pause/resume).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentLifecycleResponse {
+    /// API version.
+    pub version: String,
+    /// The agent ID.
+    pub agent_id: String,
+    /// The action that was requested.
+    pub action: String,
+    /// The resulting status message.
+    pub status: String,
+}

@@ -16,6 +16,8 @@
 //! The `api_key_env` field on [`ProviderConfig`] names the environment variable
 //! from which the runtime should read the key.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -47,6 +49,20 @@ pub struct Config {
     pub api: ApiConfig,
     /// Terminal UI settings.
     pub tui: TuiConfig,
+    /// gRPC/HTTP server settings (separate from the REST API server).
+    pub server: ServerConfig,
+    /// Authentication and authorisation settings.
+    pub auth: AuthConfig,
+    /// Sandbox and resource-limit settings.
+    pub security: SecurityConfig,
+    /// Skill discovery and loading settings.
+    pub skills: SkillsConfig,
+    /// Agent harness settings.
+    pub harness: HarnessConfig,
+    /// Artifact storage settings.
+    pub artifacts: ArtifactConfig,
+    /// OpenTelemetry observability settings.
+    pub observability: ObservabilityConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +419,299 @@ pub enum TuiTheme {
 }
 
 // ---------------------------------------------------------------------------
+// Server  (PRD-14 §1)
+// ---------------------------------------------------------------------------
+
+/// gRPC / HTTP server settings (distinct from the REST `[api]` server).
+///
+/// Binds the primary agent-facing RPC endpoint with optional TLS, CORS, and
+/// rate-limiting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// Socket address the server binds to. Default: `"127.0.0.1:9090"`.
+    pub bind_address: String,
+    /// Optional TLS configuration. When `None` the server runs in plain-text
+    /// mode (suitable for loopback-only deployments).
+    pub tls: Option<TlsConfig>,
+    /// Allowed CORS origins. Default: `["*"]` (all origins).
+    pub cors_origins: Vec<String>,
+    /// Request rate-limiting configuration.
+    pub rate_limit: RateLimitConfig,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: "127.0.0.1:9090".to_owned(),
+            tls: None,
+            cors_origins: vec!["*".to_owned()],
+            rate_limit: RateLimitConfig::default(),
+        }
+    }
+}
+
+/// TLS certificate and key paths for the server.
+///
+/// All paths are optional so that a partial TLS configuration can be expressed
+/// without validation errors during loading; the validator will reject
+/// incomplete TLS configurations before the server starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TlsConfig {
+    /// Path to the PEM-encoded TLS certificate file.
+    pub cert_path: Option<PathBuf>,
+    /// Path to the PEM-encoded private key file.
+    pub key_path: Option<PathBuf>,
+    /// Path to the CA certificate bundle used for mutual TLS client
+    /// authentication. `None` disables mTLS.
+    pub ca_path: Option<PathBuf>,
+}
+
+/// Token-bucket rate-limiting parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RateLimitConfig {
+    /// Steady-state request rate allowed per second. Default: `100`.
+    pub requests_per_second: u32,
+    /// Maximum burst above the steady-state rate. Default: `200`.
+    pub burst: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_second: 100,
+            burst: 200,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auth  (PRD-14 §2)
+// ---------------------------------------------------------------------------
+
+/// Authentication and authorisation settings.
+///
+/// API keys stored here are **hashed digests**, not plaintext secrets. The
+/// actual keys are distributed out-of-band and hashed before being added to
+/// this list. JWT secrets are never stored here; `jwt_secret_env` names the
+/// environment variable that holds the secret at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuthConfig {
+    /// Whether authentication is required. Default: `false` (open access).
+    pub enabled: bool,
+    /// List of accepted API key hashes (not the plaintext keys themselves).
+    /// Default: empty (no pre-shared keys configured).
+    pub api_keys: Vec<String>,
+    /// Name of the environment variable that holds the JWT signing secret.
+    /// Example: `"POLKAGENT_JWT_SECRET"`. `None` disables JWT authentication.
+    pub jwt_secret_env: Option<String>,
+    /// How long a session remains valid after issuance, in seconds.
+    /// Default: `3600` (1 hour).
+    pub session_timeout_secs: u64,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_keys: Vec::new(),
+            jwt_secret_env: None,
+            session_timeout_secs: 3600,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Security  (PRD-14 §3)
+// ---------------------------------------------------------------------------
+
+/// Sandbox and resource-limit settings.
+///
+/// Controls filesystem access, memory consumption, and CPU time available to
+/// agent runs. `allowed_paths` and `denied_paths` work as a whitelist/blacklist
+/// pair: access is granted to paths in `allowed_paths` (empty = all), then
+/// refined by denying anything in `denied_paths`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecurityConfig {
+    /// Whether the process-level sandbox is active. Default: `false`.
+    pub sandbox_enabled: bool,
+    /// Maximum file size an agent may read or write, in bytes.
+    /// Default: `10_485_760` (10 MiB).
+    pub max_file_size_bytes: u64,
+    /// Filesystem paths the agent is allowed to access.
+    /// Empty list means all paths are allowed (subject to `denied_paths`).
+    pub allowed_paths: Vec<PathBuf>,
+    /// Filesystem paths the agent is explicitly denied access to.
+    /// Default: common sensitive system paths.
+    pub denied_paths: Vec<PathBuf>,
+    /// Maximum RSS memory an agent may use, in mebibytes. Default: `512`.
+    pub max_memory_mb: u64,
+    /// Maximum wall-clock CPU seconds an agent may consume. Default: `300`.
+    pub max_cpu_seconds: u64,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            sandbox_enabled: false,
+            max_file_size_bytes: 10 * 1024 * 1024, // 10 MiB
+            allowed_paths: Vec::new(),
+            denied_paths: vec![
+                PathBuf::from("/etc/shadow"),
+                PathBuf::from("/etc/passwd"),
+                PathBuf::from("/etc/sudoers"),
+                PathBuf::from("/root"),
+                PathBuf::from("/proc"),
+                PathBuf::from("/sys"),
+            ],
+            max_memory_mb: 512,
+            max_cpu_seconds: 300,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Skills  (PRD-14 §4)
+// ---------------------------------------------------------------------------
+
+/// Skill discovery and loading settings.
+///
+/// Polkagent searches `directories` for skill bundles at startup. If
+/// `auto_load` is `true`, all discovered skills are loaded immediately;
+/// otherwise they are registered but not activated until explicitly requested.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillsConfig {
+    /// Directories to search for skill bundles. Tilde expansion is applied.
+    /// Default: empty (no extra skill paths).
+    pub directories: Vec<PathBuf>,
+    /// Automatically load all discovered skills at startup. Default: `true`.
+    pub auto_load: bool,
+    /// URL of a remote skill registry. `None` disables registry integration.
+    pub registry_url: Option<String>,
+    /// Local directory used to cache downloaded skill bundles.
+    /// `None` uses a platform-appropriate default.
+    pub cache_dir: Option<PathBuf>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            directories: Vec::new(),
+            auto_load: true,
+            registry_url: None,
+            cache_dir: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Harness  (PRD-14 §5)
+// ---------------------------------------------------------------------------
+
+/// Agent harness settings.
+///
+/// The harness is the subprocess or in-process executor that runs agent code.
+/// `harness_type` selects the backend; `binary_path` overrides the harness
+/// executable location when the type requires an external binary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HarnessConfig {
+    /// Harness backend identifier. Default: `"claude"`.
+    pub harness_type: String,
+    /// Path to the harness executable. `None` resolves the binary from `PATH`.
+    pub binary_path: Option<PathBuf>,
+    /// Maximum seconds a single harness invocation may run. Default: `300`.
+    pub timeout_secs: u64,
+    /// Maximum number of harness processes that may run simultaneously.
+    /// Default: `1`.
+    pub max_concurrent: u32,
+}
+
+impl Default for HarnessConfig {
+    fn default() -> Self {
+        Self {
+            harness_type: "claude".to_owned(),
+            binary_path: None,
+            timeout_secs: 300,
+            max_concurrent: 1,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts  (PRD-14 §6)
+// ---------------------------------------------------------------------------
+
+/// Artifact storage settings.
+///
+/// Controls how run outputs (files, logs, results) are stored, how large they
+/// may be, and how long they are retained before automatic cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArtifactConfig {
+    /// Maximum size of a single artifact, in bytes.
+    /// Default: `104_857_600` (100 MiB).
+    pub max_size_bytes: u64,
+    /// Number of days artifacts are retained before automatic deletion.
+    /// Default: `90`.
+    pub retention_days: u32,
+    /// Whether artifacts are compressed before storage. Default: `true`.
+    pub compression_enabled: bool,
+}
+
+impl Default for ArtifactConfig {
+    fn default() -> Self {
+        Self {
+            max_size_bytes: 100 * 1024 * 1024, // 100 MiB
+            retention_days: 90,
+            compression_enabled: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observability  (PRD-14 §7)
+// ---------------------------------------------------------------------------
+
+/// OpenTelemetry observability settings.
+///
+/// Controls export of metrics and traces to an OTLP-compatible collector
+/// (e.g. OpenTelemetry Collector, Jaeger, Grafana Alloy). When
+/// `otlp_endpoint` is `None`, telemetry export is disabled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ObservabilityConfig {
+    /// OTLP collector endpoint URL.
+    /// Example: `"http://localhost:4317"`. `None` disables export.
+    pub otlp_endpoint: Option<String>,
+    /// OTLP transport protocol: `"grpc"` or `"http/protobuf"`. Default: `"grpc"`.
+    pub otlp_protocol: String,
+    /// Whether metric export is active. Default: `true`.
+    pub metrics_enabled: bool,
+    /// Whether trace export is active. Default: `true`.
+    pub traces_enabled: bool,
+    /// Service name reported in telemetry. Default: `"polkagent"`.
+    pub service_name: String,
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            otlp_endpoint: None,
+            otlp_protocol: "grpc".to_owned(),
+            metrics_enabled: true,
+            traces_enabled: true,
+            service_name: "polkagent".to_owned(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Template
 // ---------------------------------------------------------------------------
 
@@ -506,6 +815,87 @@ cors_origins = ["http://localhost:*"]
 [tui]
 theme = "dark"                # dark | no_color | high_contrast
 atmospheric_effects = true
+
+# ─── Server ──────────────────────────────────────────────────────────────────
+# gRPC/HTTP agent-facing server (distinct from the REST [api] server above).
+# Override bind address: POLKAGENT_SERVER_BIND=0.0.0.0:9090
+
+[server]
+bind_address = "127.0.0.1:9090"
+cors_origins = ["*"]
+
+[server.rate_limit]
+requests_per_second = 100
+burst = 200
+
+# TLS is disabled by default. Uncomment to enable:
+# [server.tls]
+# cert_path = "/etc/polkagent/tls/cert.pem"
+# key_path  = "/etc/polkagent/tls/key.pem"
+# ca_path   = "/etc/polkagent/tls/ca.pem"   # required only for mTLS
+
+# ─── Auth ────────────────────────────────────────────────────────────────────
+# Override: POLKAGENT_AUTH_ENABLED=true
+# JWT secret: set POLKAGENT_JWT_SECRET in your environment (never in this file)
+
+[auth]
+enabled = false
+# api_keys contains HASHED key digests, not plaintext secrets.
+api_keys = []
+# jwt_secret_env = "POLKAGENT_JWT_SECRET"
+session_timeout_secs = 3600
+
+# ─── Security ────────────────────────────────────────────────────────────────
+# Override sandbox: POLKAGENT_SECURITY_SANDBOX=true
+
+[security]
+sandbox_enabled = false
+max_file_size_bytes = 10485760   # 10 MiB
+allowed_paths = []               # empty = all paths allowed
+denied_paths = [
+  "/etc/shadow",
+  "/etc/passwd",
+  "/etc/sudoers",
+  "/root",
+  "/proc",
+  "/sys",
+]
+max_memory_mb = 512
+max_cpu_seconds = 300
+
+# ─── Skills ──────────────────────────────────────────────────────────────────
+# Override skill dir: POLKAGENT_SKILLS_DIR=/path/to/skills
+
+[skills]
+directories = []    # extra skill search paths
+auto_load = true
+# registry_url = "https://registry.polkagent.dev"
+# cache_dir = "~/.cache/polkagent/skills"
+
+# ─── Harness ─────────────────────────────────────────────────────────────────
+
+[harness]
+harness_type = "claude"   # claude | custom
+# binary_path = "/usr/local/bin/polkagent-harness"
+timeout_secs = 300
+max_concurrent = 1
+
+# ─── Artifacts ───────────────────────────────────────────────────────────────
+
+[artifacts]
+max_size_bytes = 104857600   # 100 MiB
+retention_days = 90
+compression_enabled = true
+
+# ─── Observability ───────────────────────────────────────────────────────────
+# Override OTLP endpoint: POLKAGENT_OTLP_ENDPOINT=http://localhost:4317
+
+[observability]
+# otlp_endpoint = "http://localhost:4317"
+otlp_protocol = "grpc"     # grpc | http/protobuf
+metrics_enabled = true
+traces_enabled = true
+service_name = "polkagent"
 "#;
 
 // ---------------------------------------------------------------------------
@@ -515,6 +905,10 @@ atmospheric_effects = true
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Existing tests — must continue to pass
+    // -----------------------------------------------------------------------
 
     #[test]
     fn default_config_has_expected_values() {
@@ -573,5 +967,292 @@ mod tests {
         assert_eq!(parsed.meta.schema_version, CURRENT_SCHEMA_VERSION);
         // Template includes one provider entry.
         assert_eq!(parsed.providers.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // ServerConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn server_config_defaults() {
+        let cfg = ServerConfig::default();
+        assert_eq!(cfg.bind_address, "127.0.0.1:9090");
+        assert!(cfg.tls.is_none());
+        assert_eq!(cfg.cors_origins, vec!["*".to_owned()]);
+        assert_eq!(cfg.rate_limit.requests_per_second, 100);
+        assert_eq!(cfg.rate_limit.burst, 200);
+    }
+
+    #[test]
+    fn tls_config_defaults_all_none() {
+        let tls = TlsConfig::default();
+        assert!(tls.cert_path.is_none());
+        assert!(tls.key_path.is_none());
+        assert!(tls.ca_path.is_none());
+    }
+
+    #[test]
+    fn rate_limit_config_serde_round_trip() {
+        let original = RateLimitConfig { requests_per_second: 50, burst: 100 };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let back: RateLimitConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn server_config_with_tls_round_trip() {
+        let original = ServerConfig {
+            bind_address: "0.0.0.0:9090".to_owned(),
+            tls: Some(TlsConfig {
+                cert_path: Some(PathBuf::from("/etc/tls/cert.pem")),
+                key_path: Some(PathBuf::from("/etc/tls/key.pem")),
+                ca_path: None,
+            }),
+            cors_origins: vec!["https://example.com".to_owned()],
+            rate_limit: RateLimitConfig { requests_per_second: 200, burst: 400 },
+        };
+        let toml = toml::to_string_pretty(&original).expect("serialize");
+        let back: ServerConfig = toml::from_str(&toml).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // AuthConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn auth_config_defaults() {
+        let cfg = AuthConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.api_keys.is_empty());
+        assert!(cfg.jwt_secret_env.is_none());
+        assert_eq!(cfg.session_timeout_secs, 3600);
+    }
+
+    #[test]
+    fn auth_config_serde_round_trip() {
+        let original = AuthConfig {
+            enabled: true,
+            api_keys: vec!["hash1".to_owned(), "hash2".to_owned()],
+            jwt_secret_env: Some("MY_JWT_SECRET".to_owned()),
+            session_timeout_secs: 7200,
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let back: AuthConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // SecurityConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn security_config_defaults() {
+        let cfg = SecurityConfig::default();
+        assert!(!cfg.sandbox_enabled);
+        assert_eq!(cfg.max_file_size_bytes, 10 * 1024 * 1024);
+        assert!(cfg.allowed_paths.is_empty());
+        assert!(!cfg.denied_paths.is_empty(), "should have default denied paths");
+        assert_eq!(cfg.max_memory_mb, 512);
+        assert_eq!(cfg.max_cpu_seconds, 300);
+    }
+
+    #[test]
+    fn security_config_serde_round_trip() {
+        let original = SecurityConfig {
+            sandbox_enabled: true,
+            max_file_size_bytes: 1024,
+            allowed_paths: vec![PathBuf::from("/tmp")],
+            denied_paths: vec![PathBuf::from("/etc/shadow")],
+            max_memory_mb: 256,
+            max_cpu_seconds: 60,
+        };
+        let toml = toml::to_string_pretty(&original).expect("serialize");
+        let back: SecurityConfig = toml::from_str(&toml).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // SkillsConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn skills_config_defaults() {
+        let cfg = SkillsConfig::default();
+        assert!(cfg.directories.is_empty());
+        assert!(cfg.auto_load);
+        assert!(cfg.registry_url.is_none());
+        assert!(cfg.cache_dir.is_none());
+    }
+
+    #[test]
+    fn skills_config_serde_round_trip() {
+        let original = SkillsConfig {
+            directories: vec![PathBuf::from("/opt/skills"), PathBuf::from("~/skills")],
+            auto_load: false,
+            registry_url: Some("https://registry.example.com".to_owned()),
+            cache_dir: Some(PathBuf::from("~/.cache/polkagent/skills")),
+        };
+        let toml = toml::to_string_pretty(&original).expect("serialize");
+        let back: SkillsConfig = toml::from_str(&toml).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // HarnessConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn harness_config_defaults() {
+        let cfg = HarnessConfig::default();
+        assert_eq!(cfg.harness_type, "claude");
+        assert!(cfg.binary_path.is_none());
+        assert_eq!(cfg.timeout_secs, 300);
+        assert_eq!(cfg.max_concurrent, 1);
+    }
+
+    #[test]
+    fn harness_config_serde_round_trip() {
+        let original = HarnessConfig {
+            harness_type: "custom".to_owned(),
+            binary_path: Some(PathBuf::from("/usr/local/bin/my-harness")),
+            timeout_secs: 600,
+            max_concurrent: 4,
+        };
+        let toml = toml::to_string_pretty(&original).expect("serialize");
+        let back: HarnessConfig = toml::from_str(&toml).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // ArtifactConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn artifact_config_defaults() {
+        let cfg = ArtifactConfig::default();
+        assert_eq!(cfg.max_size_bytes, 100 * 1024 * 1024);
+        assert_eq!(cfg.retention_days, 90);
+        assert!(cfg.compression_enabled);
+    }
+
+    #[test]
+    fn artifact_config_serde_round_trip() {
+        let original = ArtifactConfig {
+            max_size_bytes: 50 * 1024 * 1024,
+            retention_days: 30,
+            compression_enabled: false,
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let back: ArtifactConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // ObservabilityConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn observability_config_defaults() {
+        let cfg = ObservabilityConfig::default();
+        assert!(cfg.otlp_endpoint.is_none());
+        assert_eq!(cfg.otlp_protocol, "grpc");
+        assert!(cfg.metrics_enabled);
+        assert!(cfg.traces_enabled);
+        assert_eq!(cfg.service_name, "polkagent");
+    }
+
+    #[test]
+    fn observability_config_serde_round_trip() {
+        let original = ObservabilityConfig {
+            otlp_endpoint: Some("http://localhost:4317".to_owned()),
+            otlp_protocol: "http/protobuf".to_owned(),
+            metrics_enabled: false,
+            traces_enabled: true,
+            service_name: "my-service".to_owned(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let back: ObservabilityConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // Full Config TOML round-trip with new sections
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn full_config_with_new_sections_toml_round_trip() {
+        let mut original = Config::default();
+        original.server.bind_address = "0.0.0.0:9090".to_owned();
+        original.auth.enabled = true;
+        original.security.sandbox_enabled = true;
+        original.skills.auto_load = false;
+        original.harness.max_concurrent = 2;
+        original.artifacts.retention_days = 30;
+        original.observability.otlp_endpoint = Some("http://otel:4317".to_owned());
+
+        let serialized = toml::to_string_pretty(&original).expect("serialize");
+        let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(original, deserialized);
+    }
+
+    // -----------------------------------------------------------------------
+    // Template includes new sections
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn template_includes_server_section() {
+        assert!(
+            DEFAULT_CONFIG_TEMPLATE.contains("[server]"),
+            "template must contain [server] section"
+        );
+    }
+
+    #[test]
+    fn template_includes_auth_section() {
+        assert!(
+            DEFAULT_CONFIG_TEMPLATE.contains("[auth]"),
+            "template must contain [auth] section"
+        );
+    }
+
+    #[test]
+    fn template_includes_security_section() {
+        assert!(
+            DEFAULT_CONFIG_TEMPLATE.contains("[security]"),
+            "template must contain [security] section"
+        );
+    }
+
+    #[test]
+    fn template_includes_skills_section() {
+        assert!(
+            DEFAULT_CONFIG_TEMPLATE.contains("[skills]"),
+            "template must contain [skills] section"
+        );
+    }
+
+    #[test]
+    fn template_includes_harness_section() {
+        assert!(
+            DEFAULT_CONFIG_TEMPLATE.contains("[harness]"),
+            "template must contain [harness] section"
+        );
+    }
+
+    #[test]
+    fn template_includes_artifacts_section() {
+        assert!(
+            DEFAULT_CONFIG_TEMPLATE.contains("[artifacts]"),
+            "template must contain [artifacts] section"
+        );
+    }
+
+    #[test]
+    fn template_includes_observability_section() {
+        assert!(
+            DEFAULT_CONFIG_TEMPLATE.contains("[observability]"),
+            "template must contain [observability] section"
+        );
     }
 }

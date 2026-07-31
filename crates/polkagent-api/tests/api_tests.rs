@@ -1483,3 +1483,392 @@ async fn multiple_agents_independent_run_counts() {
     let body_b: serde_json::Value = resp_b.json();
     assert_eq!(body_b["data"].as_array().expect("data").len(), 1);
 }
+
+// ===========================================================================
+// Models endpoint tests
+// ===========================================================================
+
+#[tokio::test]
+async fn list_all_models_empty_without_providers() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/models").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert!(body["data"].as_array().expect("data").is_empty());
+}
+
+#[tokio::test]
+async fn list_all_models_returns_one_per_provider() {
+    let mut config = Config::default();
+    config.providers = vec![
+        ProviderConfig {
+            id: "anthropic-1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            base_url: "https://api.anthropic.com".to_owned(),
+            default_model: "claude-opus-4-6".to_owned(),
+            timeout_secs: 60,
+            max_retries: 2,
+        },
+        ProviderConfig {
+            id: "openai-1".to_owned(),
+            provider_type: "openai_compatible".to_owned(),
+            api_key_env: "KEY2".to_owned(),
+            base_url: "https://api.openai.com/v1".to_owned(),
+            default_model: "gpt-4o".to_owned(),
+            timeout_secs: 60,
+            max_retries: 2,
+        },
+    ];
+    let server = test_server_with_config(config);
+    let resp = server.get("/api/v1alpha1/models").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let models = body["data"].as_array().expect("data");
+    assert_eq!(models.len(), 2);
+
+    // All models should have the expected fields.
+    for model in models {
+        assert!(model["id"].is_string());
+        assert!(model["name"].is_string());
+        assert!(model["provider"].is_string());
+        assert!(model["context_window"].is_number());
+        assert!(model["capabilities"].is_object());
+        assert_eq!(model["version"], "v1alpha1");
+    }
+}
+
+#[tokio::test]
+async fn get_model_by_id_returns_correct_details() {
+    let mut config = Config::default();
+    config.providers = vec![ProviderConfig {
+        id: "anthropic-default".to_owned(),
+        provider_type: "anthropic".to_owned(),
+        api_key_env: "KEY".to_owned(),
+        base_url: "https://api.anthropic.com".to_owned(),
+        default_model: "claude-opus-4-6".to_owned(),
+        timeout_secs: 60,
+        max_retries: 2,
+    }];
+    let server = test_server_with_config(config);
+    let resp = server.get("/api/v1alpha1/models/claude-opus-4-6").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["id"], "claude-opus-4-6");
+    assert_eq!(body["provider"], "anthropic-default");
+    assert_eq!(body["version"], "v1alpha1");
+    // Claude opus should have a large context window.
+    let ctx = body["context_window"].as_u64().expect("context_window");
+    assert!(ctx >= 100_000, "claude should have >= 100k context window");
+    // Claude supports vision and tool use.
+    assert_eq!(body["capabilities"]["tool_use"], true);
+    assert_eq!(body["capabilities"]["streaming"], true);
+}
+
+#[tokio::test]
+async fn get_model_not_found_returns_404() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/models/nonexistent-model").await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn list_provider_models_returns_models_for_provider() {
+    let mut config = Config::default();
+    config.providers = vec![ProviderConfig {
+        id: "test-provider".to_owned(),
+        provider_type: "anthropic".to_owned(),
+        api_key_env: "KEY".to_owned(),
+        base_url: "https://api.anthropic.com".to_owned(),
+        default_model: "claude-sonnet-4-6".to_owned(),
+        timeout_secs: 60,
+        max_retries: 2,
+    }];
+    let server = test_server_with_config(config);
+    let resp = server
+        .get("/api/v1alpha1/providers/test-provider/models")
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    let models = body["data"].as_array().expect("data");
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["id"], "claude-sonnet-4-6");
+    assert_eq!(models[0]["provider"], "test-provider");
+}
+
+#[tokio::test]
+async fn list_provider_models_returns_404_for_unknown_provider() {
+    let server = test_server();
+    let resp = server
+        .get("/api/v1alpha1/providers/nonexistent/models")
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+}
+
+// ===========================================================================
+// Skills endpoint tests
+// ===========================================================================
+
+#[tokio::test]
+async fn list_skills_returns_501_without_registry() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/skills").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn get_skill_returns_501_without_registry() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/skills/my-skill").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn install_skill_returns_501() {
+    let server = test_server();
+    let resp = server
+        .post("/api/v1alpha1/skills/install")
+        .json(&json!({ "path": "/tmp/my-skill" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn uninstall_skill_returns_501() {
+    let server = test_server();
+    let resp = server
+        .post("/api/v1alpha1/skills/my-skill/uninstall")
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn update_skill_config_returns_501() {
+    let server = test_server();
+    let resp = server
+        .put("/api/v1alpha1/skills/my-skill/config")
+        .json(&json!({ "config": { "chain": "polkadot" } }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+// ===========================================================================
+// Tools endpoint tests
+// ===========================================================================
+
+#[tokio::test]
+async fn list_tools_returns_501_without_registry() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/tools").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn get_tool_returns_501_without_registry() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/tools/polkagent.file.read").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn get_tool_grants_returns_501_without_registry() {
+    let server = test_server();
+    let resp = server
+        .get("/api/v1alpha1/tools/polkagent.file.read/grants")
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+// ===========================================================================
+// Payments endpoint tests
+// ===========================================================================
+
+#[tokio::test]
+async fn payment_balance_returns_501_without_store() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/payments/balance").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn payment_usage_returns_501_without_store() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/payments/usage").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn payment_receipts_returns_501_without_store() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/payments/receipts").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn payment_receipt_by_id_returns_501_without_store() {
+    let server = test_server();
+    let resp = server
+        .get("/api/v1alpha1/payments/receipts/some-receipt-id")
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+// ===========================================================================
+// Memory new endpoint tests
+// ===========================================================================
+
+#[tokio::test]
+async fn memory_forget_returns_501_without_store() {
+    let server = test_server();
+    let resp = server
+        .post("/api/v1alpha1/memory/forget")
+        .json(&json!({ "entry_ids": ["id-1", "id-2"] }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn memory_get_entry_returns_501_without_store() {
+    let server = test_server();
+    let resp = server
+        .get("/api/v1alpha1/memory/entries/some-entry-id")
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+// ===========================================================================
+// Agent lifecycle endpoint tests
+// ===========================================================================
+
+#[tokio::test]
+async fn agent_start_returns_200_with_lifecycle_response() {
+    let server = test_server();
+    let agent_id = create_test_agent(&server).await;
+    let resp = server
+        .post(&format!("/api/v1alpha1/agents/{agent_id}/start"))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert_eq!(body["agent_id"], agent_id.as_str());
+    assert_eq!(body["action"], "start");
+    assert!(body["status"].is_string());
+}
+
+#[tokio::test]
+async fn agent_stop_returns_200_for_existing_agent() {
+    let server = test_server();
+    let agent_id = create_test_agent(&server).await;
+    let resp = server
+        .post(&format!("/api/v1alpha1/agents/{agent_id}/stop"))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert_eq!(body["action"], "stop");
+}
+
+#[tokio::test]
+async fn agent_stop_returns_404_for_nonexistent_agent() {
+    let server = test_server();
+    let fake_id = polkagent_core::AgentId::new().to_string();
+    let resp = server
+        .post(&format!("/api/v1alpha1/agents/{fake_id}/stop"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "AGENT_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn agent_pause_returns_200_for_existing_agent() {
+    let server = test_server();
+    let agent_id = create_test_agent(&server).await;
+    let resp = server
+        .post(&format!("/api/v1alpha1/agents/{agent_id}/pause"))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert_eq!(body["action"], "pause");
+}
+
+#[tokio::test]
+async fn agent_resume_returns_200_for_existing_agent() {
+    let server = test_server();
+    let agent_id = create_test_agent(&server).await;
+    let resp = server
+        .post(&format!("/api/v1alpha1/agents/{agent_id}/resume"))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert_eq!(body["action"], "resume");
+}
+
+#[tokio::test]
+async fn resume_run_returns_501_with_run_state_in_message() {
+    let server = test_server();
+    let agent_id = create_test_agent(&server).await;
+    let run_id = create_test_run(&server, &agent_id).await;
+
+    let resp = server
+        .post(&format!("/api/v1alpha1/runs/{run_id}/resume"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+    // Message should reference the run ID.
+    let message = body["error"]["message"].as_str().expect("message");
+    assert!(
+        message.contains(&run_id),
+        "501 message should reference the run ID"
+    );
+}
+
+#[tokio::test]
+async fn resume_run_returns_404_for_nonexistent_run() {
+    let server = test_server();
+    let fake_id = polkagent_core::RunId::new().to_string();
+    let resp = server
+        .post(&format!("/api/v1alpha1/runs/{fake_id}/resume"))
+        .await;
+    // Should be 404 since the run doesn't exist.
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "RUN_NOT_FOUND");
+}

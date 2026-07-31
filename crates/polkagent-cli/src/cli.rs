@@ -31,6 +31,18 @@ pub struct Cli {
     #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    /// Output format (human, json, json-pretty, table).
+    #[arg(long, global = true, value_name = "FORMAT", default_value = "human")]
+    pub format: crate::output::OutputFormat,
+
+    /// Show what would happen without actually executing (no writes).
+    #[arg(long, global = true)]
+    pub dry_run: bool,
+
+    /// Skip interactive approval prompts (assume yes).
+    #[arg(long, global = true)]
+    pub yes: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -47,9 +59,13 @@ pub enum Commands {
     /// Execute a run against an agent.
     Run(RunCmd),
 
-    /// Manage agents (create, list, show, delete).
+    /// Manage agents (create, list, show, delete, start, stop, pause, resume).
     #[command(subcommand)]
     Agent(AgentCmd),
+
+    /// Manage skills (list, install, update, remove, show).
+    #[command(subcommand)]
+    Skill(SkillCmd),
 
     /// Launch the interactive terminal UI.
     Tui(TuiCmd),
@@ -75,6 +91,12 @@ pub enum Commands {
     /// Manage agent memory (search, list, forget, stats).
     #[command(subcommand)]
     Memory(MemoryCmd),
+
+    /// Show agent count, active runs, effect queue depth, and memory usage.
+    Status(StatusCmd),
+
+    /// Tail the event log.
+    Logs(LogsCmd),
 
     /// Generate shell completion scripts.
     Completions(CompletionsCmd),
@@ -148,6 +170,18 @@ pub enum AgentCmd {
 
     /// Delete an agent (archives it; data is retained).
     Delete(AgentDeleteCmd),
+
+    /// Start an agent (transition to active state).
+    Start(AgentStartCmd),
+
+    /// Stop a running agent (transition to configured state).
+    Stop(AgentStopCmd),
+
+    /// Pause a running agent.
+    Pause(AgentPauseCmd),
+
+    /// Resume a paused agent.
+    Resume(AgentResumeCmd),
 }
 
 #[derive(Debug, Args)]
@@ -204,6 +238,144 @@ pub struct AgentDeleteCmd {
     /// Skip confirmation prompt.
     #[arg(long, short = 'y')]
     pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentStartCmd {
+    /// Agent name or UUID.
+    #[arg(value_name = "AGENT")]
+    pub agent: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentStopCmd {
+    /// Agent name or UUID.
+    #[arg(value_name = "AGENT")]
+    pub agent: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentPauseCmd {
+    /// Agent name or UUID.
+    #[arg(value_name = "AGENT")]
+    pub agent: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentResumeCmd {
+    /// Agent name or UUID.
+    #[arg(value_name = "AGENT")]
+    pub agent: String,
+}
+
+// ---------------------------------------------------------------------------
+// skill
+// ---------------------------------------------------------------------------
+
+/// Skill management subcommands.
+#[derive(Debug, Subcommand)]
+pub enum SkillCmd {
+    /// List all loaded skills.
+    List(SkillListCmd),
+
+    /// Install a skill from a local path (validates the manifest).
+    Install(SkillInstallCmd),
+
+    /// Update an already-installed skill.
+    Update(SkillUpdateCmd),
+
+    /// Uninstall a skill.
+    Remove(SkillRemoveCmd),
+
+    /// Show manifest details for a skill.
+    Show(SkillShowCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct SkillListCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillInstallCmd {
+    /// Local path to the skill directory or manifest file.
+    #[arg(value_name = "PATH")]
+    pub path: std::path::PathBuf,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillUpdateCmd {
+    /// Name of the skill to update.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillRemoveCmd {
+    /// Name of the skill to uninstall.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Skip confirmation prompt.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillShowCmd {
+    /// Name of the skill to inspect.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// status
+// ---------------------------------------------------------------------------
+
+/// Show system status: agent count, active runs, effect queue depth, memory usage.
+#[derive(Debug, Args)]
+pub struct StatusCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// logs
+// ---------------------------------------------------------------------------
+
+/// Tail the event log.
+#[derive(Debug, Args)]
+pub struct LogsCmd {
+    /// Follow the log stream (like `tail -f`).
+    #[arg(long, short = 'f')]
+    pub follow: bool,
+
+    /// Filter events for a specific run ID.
+    #[arg(long, value_name = "RUN_ID")]
+    pub run_id: Option<String>,
+
+    /// Minimum log level to show (trace, debug, info, warn, error).
+    #[arg(long, value_name = "LEVEL", default_value = "info")]
+    pub level: String,
+
+    /// Maximum number of lines to show (0 = no limit).
+    #[arg(long, value_name = "N", default_value_t = 100)]
+    pub lines: usize,
 }
 
 // ---------------------------------------------------------------------------

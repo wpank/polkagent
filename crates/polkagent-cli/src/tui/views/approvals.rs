@@ -7,17 +7,18 @@
 //! - Jade (success) — approved / succeeded
 //! - Crimson (danger) — denied / failed
 //!
-//! Keyboard: Enter to view detail, 'a' to approve, 'd' to deny (future).
+//! Keyboard: Enter to view detail, 'a' to approve, 'd' to deny.
+//! First press shows a confirmation dialog; second press executes.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table},
     Frame,
 };
 
-use crate::tui::state::{ApprovalItem, ScrollState, TuiState};
+use crate::tui::state::{ApprovalItem, ConfirmDialog, ScrollState, TuiState};
 use crate::tui::theme::Theme;
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,29 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
         }
     } else {
         render_list(frame, area, &state.pending_approvals, &state.approvals_scroll, theme);
+    }
+
+    // Render confirmation dialog overlay if active.
+    match &state.confirm_dialog {
+        ConfirmDialog::None => {}
+        ConfirmDialog::ConfirmApprove(effect_id) => {
+            render_confirm_dialog(
+                frame,
+                area,
+                effect_id,
+                true,
+                theme,
+            );
+        }
+        ConfirmDialog::ConfirmDeny(effect_id) => {
+            render_confirm_dialog(
+                frame,
+                area,
+                effect_id,
+                false,
+                theme,
+            );
+        }
     }
 }
 
@@ -179,7 +203,7 @@ fn render_list(
         };
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " Enter: detail  a: approve  j/k: navigate",
+                " Enter: detail  a: approve  d: deny  j/k: navigate  Esc: back",
                 Style::default().fg(theme.text_dim),
             )),
             footer_area,
@@ -243,9 +267,79 @@ fn render_detail(frame: &mut Frame, area: Rect, item: &ApprovalItem, theme: &The
             Span::styled("  Approve this effect", Style::default().fg(theme.text_dim)),
         ]),
         Line::from(vec![
+            Span::styled("    d", Style::default().fg(theme.danger).add_modifier(Modifier::BOLD)),
+            Span::styled("  Deny this effect", Style::default().fg(theme.text_dim)),
+        ]),
+        Line::from(vec![
             Span::styled("    Esc", Style::default().fg(theme.text_dim).add_modifier(Modifier::BOLD)),
             Span::styled("  Go back", Style::default().fg(theme.text_dim)),
         ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+// ---------------------------------------------------------------------------
+// Confirmation dialog
+// ---------------------------------------------------------------------------
+
+/// Render a modal confirmation dialog centered in `area`.
+fn render_confirm_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    effect_id: &str,
+    is_approve: bool,
+    theme: &Theme,
+) {
+    // Center the dialog: 50 cols x 8 rows.
+    let dialog_w: u16 = 52;
+    let dialog_h: u16 = 8;
+    let x = area.x + area.width.saturating_sub(dialog_w) / 2;
+    let y = area.y + area.height.saturating_sub(dialog_h) / 2;
+    let dialog_area = Rect { x, y, width: dialog_w, height: dialog_h };
+
+    let (action, action_color, key_hint) = if is_approve {
+        ("APPROVE", theme.success, "'a' again to confirm  Esc to cancel")
+    } else {
+        ("DENY", theme.danger, "'d' again to confirm  Esc to cancel")
+    };
+
+    let short_eid = &effect_id[..8.min(effect_id.len())];
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" Confirm: {action} "),
+            Style::default()
+                .fg(action_color)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(action_color))
+        .style(Style::default().bg(theme.bg_void));
+
+    let inner = block.inner(dialog_area);
+
+    // Clear the area first so the dialog appears on top.
+    frame.render_widget(Clear, dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Effect: ", Style::default().fg(theme.text_dim)),
+            Span::styled(short_eid.to_owned(), Style::default().fg(theme.bone)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  Press the key again to {action}."),
+            Style::default().fg(action_color).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {key_hint}"),
+            Style::default().fg(theme.text_dim),
+        )),
     ];
 
     frame.render_widget(Paragraph::new(lines), inner);

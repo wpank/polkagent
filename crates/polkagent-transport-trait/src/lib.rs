@@ -20,6 +20,9 @@
 #[cfg(feature = "test-contracts")]
 pub mod contracts;
 
+#[cfg(feature = "test-contracts")]
+pub mod conformance;
+
 use std::time::Duration;
 
 use async_trait::async_trait;

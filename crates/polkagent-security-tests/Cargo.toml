@@ -17,6 +17,9 @@ polkagent-config = { path = "../polkagent-config" }
 polkagent-executor-trait = { path = "../polkagent-executor-trait" }
 polkagent-signer-trait = { path = "../polkagent-signer-trait" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
+polkagent-metadata = { path = "../polkagent-metadata" }
+polkagent-identity = { path = "../polkagent-identity" }
+polkagent-outbox = { path = "../polkagent-outbox" }
 
 # Serialization
 serde = { workspace = true }
@@ -37,6 +40,9 @@ uuid = { workspace = true }
 
 # Crypto
 blake3 = { workspace = true }
+
+# Hex encoding (used in red_team.rs for address encoding tests)
+hex = "0.4"
 
 [lints]
 workspace = true

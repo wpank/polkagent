@@ -59,7 +59,7 @@ pub const REFRESH_INTERVAL_SECS: u64 = 5;
 // Tab
 // ---------------------------------------------------------------------------
 
-/// Top-level region tab (F1–F6) plus pseudo-tabs for drill-down views.
+/// Top-level region tab (F1–F8) plus pseudo-tabs for drill-down views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     /// F1 — Overview: agent grid, run summary, system health.
@@ -75,19 +75,25 @@ pub enum Tab {
     Timeline,
     /// F6 — Approval queue for pending effects.
     Approvals,
+    /// F7 — Memory browser.
+    Memory,
+    /// F8 — Audit log.
+    Audit,
     /// Run detail (entered from Runs via Enter; not a top-level F-key tab).
     RunDetail,
 }
 
 impl Tab {
     /// All tabs in display order (excludes pseudo-tabs like RunDetail).
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Dashboard,
         Tab::Agents,
         Tab::Runs,
         Tab::System,
         Tab::Timeline,
         Tab::Approvals,
+        Tab::Memory,
+        Tab::Audit,
     ];
 
     /// Display name used in the header bar and status bar.
@@ -99,6 +105,8 @@ impl Tab {
             Self::System    => "SYSTEM",
             Self::Timeline  => "TIMELINE",
             Self::Approvals => "APPROVALS",
+            Self::Memory    => "MEMORY",
+            Self::Audit     => "AUDIT",
             Self::RunDetail => "RUN DETAIL",
         }
     }
@@ -112,6 +120,8 @@ impl Tab {
             Self::System    => "[F4]",
             Self::Timeline  => "[F5]",
             Self::Approvals => "[F6]",
+            Self::Memory    => "[F7]",
+            Self::Audit     => "[F8]",
             Self::RunDetail => "[--]",
         }
     }
@@ -125,7 +135,9 @@ impl Tab {
             Self::Runs      => Self::System,
             Self::System    => Self::Timeline,
             Self::Timeline  => Self::Approvals,
-            Self::Approvals => Self::Dashboard,
+            Self::Approvals => Self::Memory,
+            Self::Memory    => Self::Audit,
+            Self::Audit     => Self::Dashboard,
             Self::RunDetail => Self::System,
         }
     }
@@ -134,12 +146,14 @@ impl Tab {
     /// RunDetail maps to its parent (Runs).
     pub fn prev(self) -> Self {
         match self {
-            Self::Dashboard => Self::Approvals,
+            Self::Dashboard => Self::Audit,
             Self::Agents    => Self::Dashboard,
             Self::Runs      => Self::Agents,
             Self::System    => Self::Runs,
             Self::Timeline  => Self::System,
             Self::Approvals => Self::Timeline,
+            Self::Memory    => Self::Approvals,
+            Self::Audit     => Self::Memory,
             Self::RunDetail => Self::Runs,
         }
     }
@@ -258,6 +272,14 @@ impl App {
                 if tab == Tab::Approvals {
                     self.refresh_approvals();
                 }
+                // When switching to memory, refresh memory entries.
+                if tab == Tab::Memory {
+                    self.refresh_memory();
+                }
+                // When switching to audit, refresh the audit log.
+                if tab == Tab::Audit {
+                    self.refresh_audit_log();
+                }
                 self.tui_state.mark_dirty();
             }
 
@@ -277,6 +299,14 @@ impl App {
                     }
                     Tab::Approvals => {
                         self.tui_state.approvals_scroll.up();
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Memory => {
+                        self.tui_state.memory_scroll.up();
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Audit => {
+                        self.tui_state.audit_scroll.up();
                         self.tui_state.mark_dirty();
                     }
                     _ => {}
@@ -306,6 +336,16 @@ impl App {
                         self.tui_state.approvals_scroll.down(total, visible);
                         self.tui_state.mark_dirty();
                     }
+                    Tab::Memory => {
+                        let total = self.tui_state.memory_entries.len();
+                        self.tui_state.memory_scroll.down(total, visible);
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Audit => {
+                        let total = self.tui_state.audit_log.len();
+                        self.tui_state.audit_scroll.down(total, visible);
+                        self.tui_state.mark_dirty();
+                    }
                     _ => {}
                 }
             }
@@ -317,6 +357,8 @@ impl App {
                         Tab::Runs      => self.tui_state.runs_scroll.up(),
                         Tab::Timeline  => self.tui_state.timeline_scroll.up(),
                         Tab::Approvals => self.tui_state.approvals_scroll.up(),
+                        Tab::Memory    => self.tui_state.memory_scroll.up(),
+                        Tab::Audit     => self.tui_state.audit_scroll.up(),
                         _ => {}
                     }
                 }
@@ -342,6 +384,14 @@ impl App {
                         Tab::Approvals => {
                             let t = self.tui_state.pending_approvals.len();
                             self.tui_state.approvals_scroll.down(t, visible);
+                        }
+                        Tab::Memory => {
+                            let t = self.tui_state.memory_entries.len();
+                            self.tui_state.memory_scroll.down(t, visible);
+                        }
+                        Tab::Audit => {
+                            let t = self.tui_state.audit_log.len();
+                            self.tui_state.audit_scroll.down(t, visible);
                         }
                         _ => {}
                     }
@@ -387,6 +437,24 @@ impl App {
                         }
                         self.tui_state.mark_dirty();
                     }
+                    Tab::Memory => {
+                        // Ensure a memory entry is selected for the detail panel.
+                        if self.tui_state.memory_scroll.selected.is_none()
+                            && !self.tui_state.memory_entries.is_empty()
+                        {
+                            self.tui_state.memory_scroll.selected = Some(0);
+                        }
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Audit => {
+                        // Ensure an audit event is selected.
+                        if self.tui_state.audit_scroll.selected.is_none()
+                            && !self.tui_state.audit_log.is_empty()
+                        {
+                            self.tui_state.audit_scroll.selected = Some(0);
+                        }
+                        self.tui_state.mark_dirty();
+                    }
                     _ => {}
                 }
             }
@@ -415,8 +483,27 @@ impl App {
                         self.tui_state.mark_dirty();
                     }
                     Tab::Approvals => {
-                        if self.tui_state.approvals_scroll.selected.is_some() {
+                        // Cancel any open confirmation dialog first.
+                        if !matches!(self.tui_state.confirm_dialog, crate::tui::state::ConfirmDialog::None) {
+                            self.tui_state.confirm_dialog = crate::tui::state::ConfirmDialog::None;
+                        } else if self.tui_state.approvals_scroll.selected.is_some() {
                             self.tui_state.approvals_scroll.selected = None;
+                        } else {
+                            self.active_tab = Tab::Dashboard;
+                        }
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Memory => {
+                        if self.tui_state.memory_scroll.selected.is_some() {
+                            self.tui_state.memory_scroll.selected = None;
+                        } else {
+                            self.active_tab = Tab::Dashboard;
+                        }
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Audit => {
+                        if self.tui_state.audit_scroll.selected.is_some() {
+                            self.tui_state.audit_scroll.selected = None;
                         } else {
                             self.active_tab = Tab::Dashboard;
                         }
@@ -446,13 +533,129 @@ impl App {
             }
 
             TuiAction::ApproveEffect => {
-                // Approval action: currently a no-op (requires write access).
-                // In a full implementation this would call an effect store method.
+                use crate::tui::state::ConfirmDialog;
+                if self.active_tab == Tab::Approvals {
+                    match &self.tui_state.confirm_dialog {
+                        ConfirmDialog::ConfirmApprove(effect_id) => {
+                            // User confirmed — execute approval.
+                            let effect_id = effect_id.clone();
+                            self.execute_approve(&effect_id);
+                            self.tui_state.confirm_dialog = ConfirmDialog::None;
+                        }
+                        ConfirmDialog::None => {
+                            // First press — show confirmation dialog.
+                            if let Some(sel) = self.tui_state.approvals_scroll.selected {
+                                if let Some(item) = self.tui_state.pending_approvals.get(sel) {
+                                    self.tui_state.confirm_dialog =
+                                        ConfirmDialog::ConfirmApprove(item.effect_id.clone());
+                                }
+                            }
+                        }
+                        _ => {
+                            // A deny dialog is open; cancel it, then set approve.
+                            self.tui_state.confirm_dialog = ConfirmDialog::None;
+                        }
+                    }
+                }
                 self.tui_state.mark_dirty();
             }
 
             TuiAction::DenyEffect => {
-                // Deny action: currently a no-op (requires write access).
+                use crate::tui::state::ConfirmDialog;
+                if self.active_tab == Tab::Approvals {
+                    match &self.tui_state.confirm_dialog {
+                        ConfirmDialog::ConfirmDeny(effect_id) => {
+                            // User confirmed denial.
+                            let effect_id = effect_id.clone();
+                            self.execute_deny(&effect_id);
+                            self.tui_state.confirm_dialog = ConfirmDialog::None;
+                        }
+                        ConfirmDialog::None => {
+                            // First press — show confirmation dialog.
+                            if let Some(sel) = self.tui_state.approvals_scroll.selected {
+                                if let Some(item) = self.tui_state.pending_approvals.get(sel) {
+                                    self.tui_state.confirm_dialog =
+                                        ConfirmDialog::ConfirmDeny(item.effect_id.clone());
+                                }
+                            }
+                        }
+                        _ => {
+                            // An approve dialog is open; cancel it, then set deny.
+                            self.tui_state.confirm_dialog = ConfirmDialog::None;
+                        }
+                    }
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::ScrollToBottom => {
+                match self.active_tab {
+                    Tab::Audit => {
+                        let total = self.tui_state.audit_log.len();
+                        if total > 0 {
+                            self.tui_state.audit_scroll.selected = Some(total - 1);
+                            self.tui_state.audit_scroll.offset = total.saturating_sub(20);
+                        }
+                    }
+                    Tab::Timeline => {
+                        let total = self.tui_state.run_events.len();
+                        if total > 0 {
+                            self.tui_state.timeline_scroll.selected = Some(total - 1);
+                            self.tui_state.timeline_scroll.offset = total.saturating_sub(20);
+                        }
+                    }
+                    _ => {}
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::ScrollToTop => {
+                match self.active_tab {
+                    Tab::Audit => {
+                        self.tui_state.audit_scroll.selected = Some(0);
+                        self.tui_state.audit_scroll.offset = 0;
+                    }
+                    Tab::Timeline => {
+                        self.tui_state.timeline_scroll.selected = Some(0);
+                        self.tui_state.timeline_scroll.offset = 0;
+                    }
+                    _ => {}
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::DeleteEntry => {
+                if self.active_tab == Tab::Memory {
+                    if let Some(sel) = self.tui_state.memory_scroll.selected {
+                        if sel < self.tui_state.memory_entries.len() {
+                            let entry_id = self.tui_state.memory_entries[sel].id.clone();
+                            self.execute_delete_memory(&entry_id);
+                            // Adjust selection after deletion.
+                            let new_len = self.tui_state.memory_entries.len();
+                            if new_len == 0 {
+                                self.tui_state.memory_scroll.selected = None;
+                            } else {
+                                let new_sel = sel.min(new_len - 1);
+                                self.tui_state.memory_scroll.selected = Some(new_sel);
+                            }
+                        }
+                    }
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::CycleFilter => {
+                if self.active_tab == Tab::Audit {
+                    use crate::tui::views::audit::AuditFilter;
+                    // Cycle through: None -> BySeverity("warn") -> BySeverity("error") -> None.
+                    self.tui_state.audit_filter = match &self.tui_state.audit_filter {
+                        AuditFilter::None => AuditFilter::BySeverity("warn".to_owned()),
+                        AuditFilter::BySeverity(s) if s == "warn" => {
+                            AuditFilter::BySeverity("error".to_owned())
+                        }
+                        _ => AuditFilter::None,
+                    };
+                }
                 self.tui_state.mark_dirty();
             }
 
@@ -607,6 +810,94 @@ impl App {
         }
     }
 
+    /// Refresh the memory browser entries.
+    fn refresh_memory(&mut self) {
+        use crate::tui::db::TuiDb;
+
+        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+            let query = if self.tui_state.memory_search_query.is_empty() {
+                None
+            } else {
+                Some(self.tui_state.memory_search_query.as_str())
+            };
+            match db.memory_entries(query, 200) {
+                Ok(entries) => self.tui_state.memory_entries = entries,
+                Err(e) => {
+                    self.tui_state.last_error = Some(format!("memory: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Refresh the audit log.
+    fn refresh_audit_log(&mut self) {
+        use crate::tui::db::TuiDb;
+
+        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+            match db.audit_events(500) {
+                Ok(events) => self.tui_state.audit_log = events,
+                Err(e) => {
+                    self.tui_state.last_error = Some(format!("audit: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Execute an approve action on an effect intent (write to DB).
+    ///
+    /// Inserts an effect outcome row with status='success'. Errors are stored
+    /// in `tui_state.last_error` rather than propagated.
+    fn execute_approve(&mut self, effect_id: &str) {
+        use crate::tui::db::TuiDb;
+
+        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+            match db.approve_effect(effect_id) {
+                Ok(()) => {
+                    // Remove from the local pending list immediately.
+                    self.tui_state.pending_approvals.retain(|a| a.effect_id != effect_id);
+                    self.tui_state.last_error = None;
+                }
+                Err(e) => {
+                    self.tui_state.last_error = Some(format!("approve: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Execute a deny action on an effect intent (write to DB).
+    fn execute_deny(&mut self, effect_id: &str) {
+        use crate::tui::db::TuiDb;
+
+        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+            match db.deny_effect(effect_id) {
+                Ok(()) => {
+                    self.tui_state.pending_approvals.retain(|a| a.effect_id != effect_id);
+                    self.tui_state.last_error = None;
+                }
+                Err(e) => {
+                    self.tui_state.last_error = Some(format!("deny: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Execute a delete action on a memory entry.
+    fn execute_delete_memory(&mut self, entry_id: &str) {
+        use crate::tui::db::TuiDb;
+
+        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+            match db.delete_memory_entry(entry_id) {
+                Ok(()) => {
+                    self.tui_state.memory_entries.retain(|m| m.id != entry_id);
+                    self.tui_state.last_error = None;
+                }
+                Err(e) => {
+                    self.tui_state.last_error = Some(format!("delete_memory: {e}"));
+                }
+            }
+        }
+    }
+
     // ── Render pipeline ─────────────────────────────────────────────────────
 
     /// Render the full TUI frame.
@@ -659,6 +950,12 @@ impl App {
             Tab::Approvals => {
                 views::approvals::render(frame, layout.main, &self.tui_state, &self.theme);
             }
+            Tab::Memory => {
+                views::memory::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
+            Tab::Audit => {
+                views::audit::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
         }
     }
 
@@ -677,6 +974,8 @@ impl App {
             (Tab::System,    "F4 System"),
             (Tab::Timeline,  "F5 Timeline"),
             (Tab::Approvals, "F6 Approvals"),
+            (Tab::Memory,    "F7 Memory"),
+            (Tab::Audit,     "F8 Audit"),
         ];
 
         let mut spans = Vec::with_capacity(tabs.len() * 2);

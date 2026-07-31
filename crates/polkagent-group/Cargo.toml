@@ -1,0 +1,39 @@
+[package]
+name = "polkagent-group"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Multi-agent group coordination for the Polkagent platform"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }
+serde_json = { workspace = true }

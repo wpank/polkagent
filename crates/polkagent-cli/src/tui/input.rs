@@ -63,6 +63,16 @@ pub enum TuiAction {
     /// Toggle between sub-panels (e.g. info/turns in run detail).
     TogglePanel,
 
+    // -- Memory / audit ------------------------------------------------------
+    /// Delete the selected memory entry.
+    DeleteEntry,
+    /// Scroll to the bottom of the active list (G in audit/timeline).
+    ScrollToBottom,
+    /// Scroll to the top of the active list (g in audit/timeline).
+    ScrollToTop,
+    /// Cycle the active filter (f in audit view).
+    CycleFilter,
+
     // -- Scroll --------------------------------------------------------------
     /// Scroll the active list up by `n` rows.
     ScrollUp(usize),
@@ -111,13 +121,15 @@ pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
 /// Key bindings active in Normal mode.
 fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
     match key.code {
-        // ── Tab navigation (F1–F6) ──────────────────────────────────────
+        // ── Tab navigation (F1–F8) ──────────────────────────────────────
         KeyCode::F(1) => Some(TuiAction::NavigateTab(Tab::Dashboard)),
         KeyCode::F(2) => Some(TuiAction::NavigateTab(Tab::Agents)),
         KeyCode::F(3) => Some(TuiAction::NavigateTab(Tab::Runs)),
         KeyCode::F(4) => Some(TuiAction::NavigateTab(Tab::System)),
         KeyCode::F(5) => Some(TuiAction::NavigateTab(Tab::Timeline)),
         KeyCode::F(6) => Some(TuiAction::NavigateTab(Tab::Approvals)),
+        KeyCode::F(7) => Some(TuiAction::NavigateTab(Tab::Memory)),
+        KeyCode::F(8) => Some(TuiAction::NavigateTab(Tab::Audit)),
 
         // ── Quick tab shortcuts ──────────────────────────────────────────
         KeyCode::Char('1') => Some(TuiAction::NavigateTab(Tab::Dashboard)),
@@ -126,6 +138,8 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
         KeyCode::Char('4') => Some(TuiAction::NavigateTab(Tab::System)),
         KeyCode::Char('5') => Some(TuiAction::NavigateTab(Tab::Timeline)),
         KeyCode::Char('6') => Some(TuiAction::NavigateTab(Tab::Approvals)),
+        KeyCode::Char('7') => Some(TuiAction::NavigateTab(Tab::Memory)),
+        KeyCode::Char('8') => Some(TuiAction::NavigateTab(Tab::Audit)),
 
         // ── Quit ─────────────────────────────────────────────────────────
         KeyCode::Char('q') | KeyCode::Char('Q') => Some(TuiAction::Quit),
@@ -144,6 +158,10 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
             Some(TuiAction::ScrollDown(5))
         }
 
+        // ── Jump to top / bottom (audit and timeline) ────────────────────
+        KeyCode::Char('G') => Some(TuiAction::ScrollToBottom),
+        KeyCode::Char('g') => Some(TuiAction::ScrollToTop),
+
         // ── Select / back ────────────────────────────────────────────────
         KeyCode::Enter => Some(TuiAction::Select),
         KeyCode::Esc | KeyCode::Backspace => Some(TuiAction::Back),
@@ -153,6 +171,11 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
 
         // ── Approval actions ─────────────────────────────────────────────
         KeyCode::Char('a') => Some(TuiAction::ApproveEffect),
+        KeyCode::Char('d') => Some(TuiAction::DenyEffect),
+
+        // ── Memory / audit actions ───────────────────────────────────────
+        KeyCode::Delete => Some(TuiAction::DeleteEntry),
+        KeyCode::Char('f') => Some(TuiAction::CycleFilter),
 
         // ── Data refresh ─────────────────────────────────────────────────
         KeyCode::Char('r') => Some(TuiAction::Refresh),

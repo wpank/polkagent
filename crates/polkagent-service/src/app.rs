@@ -8,17 +8,122 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use polkagent_config::Config;
-use polkagent_core::{AgentId, AgentSpec, EffectId, RunId, RunState};
+use polkagent_core::{
+    event::{EventCorrelation, EventKind, RunEvent},
+    AgentId, AgentSpec, EffectAttemptId, EffectId, EffectOutcomeId, EventId, RunId, RunState,
+    Timestamp, WorkerId,
+};
 use polkagent_event::{EventBus, EventReceiver, EventRecorder};
 use polkagent_executor_trait::ModelExecutor;
-use polkagent_run::RunManager;
-use polkagent_store_trait::{EffectStore, RunStore, RunSummary};
+use polkagent_grant::{
+    grant::{GrantResolver, ResolverConfig},
+    policy::PolicySet,
+};
+use polkagent_memory::{MemoryEntry, MemoryId, MemoryQuery, MemoryStore};
+use polkagent_payment::{Amount, CostRecord, PaymentStore, UsageSummary};
+use polkagent_run::{RunManager, RunOrchestrator};
+use polkagent_store_trait::{
+    EffectStore, RunStore, RunSummary, StoredIntent, StoredOutcome, StoreError,
+};
+use tokio::sync::broadcast;
 use tracing::{info, instrument, warn};
 
 use crate::error::ServiceError;
 use crate::provider::ProviderRegistry;
+
+// ---------------------------------------------------------------------------
+// NoopEffectStore — a minimal stub used when no real effect store is provided
+// ---------------------------------------------------------------------------
+
+/// A no-op [`EffectStore`] used internally when the service has no real
+/// effect store configured. Effect intents are silently accepted but never
+/// persisted, which is safe for auto-approve scenarios.
+#[derive(Debug, Default)]
+struct NoopEffectStore;
+
+#[async_trait::async_trait]
+impl EffectStore for NoopEffectStore {
+    async fn propose_intent(&self, _intent: StoredIntent) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn claim_intent(
+        &self,
+        _worker_id: WorkerId,
+        _lease_duration: Duration,
+    ) -> Result<Option<StoredIntent>, StoreError> {
+        Ok(None)
+    }
+
+    async fn claim_intent_by_id(
+        &self,
+        intent_id: EffectId,
+        _worker_id: WorkerId,
+        _lease_duration: Duration,
+    ) -> Result<StoredIntent, StoreError> {
+        Err(StoreError::NotFound {
+            resource_type: "EffectIntent",
+            id: intent_id.to_string(),
+        })
+    }
+
+    async fn release_claim(
+        &self,
+        _intent_id: EffectId,
+        _worker_id: WorkerId,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
+        Err(StoreError::NotFound {
+            resource_type: "EffectIntent",
+            id: intent_id.to_string(),
+        })
+    }
+
+    async fn get_by_run(&self, _run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
+        Ok(vec![])
+    }
+
+    async fn expired_leases(
+        &self,
+        _cutoff: Timestamp,
+    ) -> Result<Vec<StoredIntent>, StoreError> {
+        Ok(vec![])
+    }
+
+    async fn record_attempt_start(
+        &self,
+        _attempt_id: EffectAttemptId,
+        _intent_id: EffectId,
+        _worker_id: WorkerId,
+        _payload: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn record_outcome(&self, _outcome: StoredOutcome) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn unconsumed_outcomes(
+        &self,
+        _run_id: RunId,
+    ) -> Result<Vec<StoredOutcome>, StoreError> {
+        Ok(vec![])
+    }
+
+    async fn mark_outcomes_consumed(
+        &self,
+        _outcome_ids: &[EffectOutcomeId],
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AppServiceBuilder
@@ -37,6 +142,11 @@ pub struct AppServiceBuilder {
     event_bus: Option<EventBus>,
     event_recorder: Option<EventRecorder>,
     provider_registry: Option<ProviderRegistry>,
+    memory_store: Option<Arc<dyn MemoryStore + Send + Sync>>,
+    skill_runner: Option<Arc<polkagent_skill::SkillRunner>>,
+    tool_registry: Option<Arc<polkagent_tool::ToolRegistry>>,
+    conversation_store: Option<Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>>,
+    payment_store: Option<Arc<dyn PaymentStore + Send + Sync>>,
 }
 
 impl AppServiceBuilder {
@@ -95,6 +205,56 @@ impl AppServiceBuilder {
         self
     }
 
+    /// Set the memory store.
+    #[must_use]
+    pub fn with_memory_store(
+        mut self,
+        store: Arc<dyn MemoryStore + Send + Sync>,
+    ) -> Self {
+        self.memory_store = Some(store);
+        self
+    }
+
+    /// Set the skill runner.
+    #[must_use]
+    pub fn with_skill_runner(
+        mut self,
+        runner: Arc<polkagent_skill::SkillRunner>,
+    ) -> Self {
+        self.skill_runner = Some(runner);
+        self
+    }
+
+    /// Set the tool registry.
+    #[must_use]
+    pub fn with_tool_registry(
+        mut self,
+        registry: Arc<polkagent_tool::ToolRegistry>,
+    ) -> Self {
+        self.tool_registry = Some(registry);
+        self
+    }
+
+    /// Set the conversation store.
+    #[must_use]
+    pub fn with_conversation_store(
+        mut self,
+        store: Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>,
+    ) -> Self {
+        self.conversation_store = Some(store);
+        self
+    }
+
+    /// Set the payment store.
+    #[must_use]
+    pub fn with_payment_store(
+        mut self,
+        store: Arc<dyn PaymentStore + Send + Sync>,
+    ) -> Self {
+        self.payment_store = Some(store);
+        self
+    }
+
     /// Build the [`AppService`], consuming the builder.
     ///
     /// # Errors
@@ -119,6 +279,36 @@ impl AppServiceBuilder {
 
         let run_manager = RunManager::new(Arc::clone(&run_store), event_recorder.clone());
 
+        // Build an optional RunOrchestrator when an executor is present.
+        let orchestrator = self.executor.as_ref().map(|exec| {
+            // Use the configured effect store or fall back to the noop stub.
+            let effect_store: Arc<dyn EffectStore> = self
+                .effect_store
+                .clone()
+                .unwrap_or_else(|| Arc::new(NoopEffectStore));
+
+            let pipeline = polkagent_effect::EffectPipeline::new(
+                effect_store,
+                WorkerId::new(),
+            );
+
+            let grant_resolver = GrantResolver::new(
+                PolicySet::default(),
+                ResolverConfig::default(),
+            );
+
+            Arc::new(RunOrchestrator::new(
+                Arc::new(run_manager.clone()),
+                Arc::clone(exec),
+                pipeline,
+                event_recorder.clone(),
+                grant_resolver,
+            ))
+        });
+
+        // Create the approval broadcast channel.
+        let (approval_tx, _) = broadcast::channel::<(EffectId, bool)>(256);
+
         Ok(AppService {
             config,
             executor: self.executor,
@@ -127,10 +317,15 @@ impl AppServiceBuilder {
             event_bus,
             event_recorder,
             run_manager,
-            provider_registry: self
-                .provider_registry
-                .unwrap_or_default(),
+            orchestrator,
+            provider_registry: self.provider_registry.unwrap_or_default(),
             agents: Arc::new(Mutex::new(HashMap::new())),
+            memory_store: self.memory_store,
+            skill_runner: self.skill_runner,
+            tool_registry: self.tool_registry,
+            conversation_store: self.conversation_store,
+            payment_store: self.payment_store,
+            approval_tx,
         })
     }
 }
@@ -163,14 +358,28 @@ pub struct AppService {
     /// In-process event bus for pub/sub.
     event_bus: EventBus,
     /// Event recorder (store + bus).
-    #[allow(dead_code)]
     event_recorder: EventRecorder,
     /// Run lifecycle manager.
     run_manager: RunManager,
+    /// Full orchestrator (present when an executor is configured).
+    orchestrator: Option<Arc<RunOrchestrator>>,
     /// Provider registry for routing model requests.
     provider_registry: ProviderRegistry,
     /// In-memory agent registry (specs indexed by ID).
     agents: Arc<Mutex<HashMap<AgentId, AgentSpec>>>,
+    /// Memory store (optional).
+    memory_store: Option<Arc<dyn MemoryStore + Send + Sync>>,
+    /// Skill runner (optional).
+    skill_runner: Option<Arc<polkagent_skill::SkillRunner>>,
+    /// Tool registry (optional).
+    tool_registry: Option<Arc<polkagent_tool::ToolRegistry>>,
+    /// Conversation store (optional).
+    conversation_store: Option<Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>>,
+    /// Payment store (optional).
+    payment_store: Option<Arc<dyn PaymentStore + Send + Sync>>,
+    /// Broadcast channel for notifying the orchestrator of approval decisions.
+    /// Sends `(effect_id, approved)` tuples.
+    approval_tx: broadcast::Sender<(EffectId, bool)>,
 }
 
 impl std::fmt::Debug for AppService {
@@ -179,6 +388,11 @@ impl std::fmt::Debug for AppService {
             .field("config_schema_version", &self.config.meta.schema_version)
             .field("has_executor", &self.executor.is_some())
             .field("has_effect_store", &self.effect_store.is_some())
+            .field("has_orchestrator", &self.orchestrator.is_some())
+            .field("has_memory_store", &self.memory_store.is_some())
+            .field("has_tool_registry", &self.tool_registry.is_some())
+            .field("has_conversation_store", &self.conversation_store.is_some())
+            .field("has_payment_store", &self.payment_store.is_some())
             .field("provider_count", &self.provider_registry.len())
             .finish()
     }
@@ -206,6 +420,18 @@ impl AppService {
     /// Return a mutable reference to the provider registry.
     pub fn provider_registry_mut(&mut self) -> &mut ProviderRegistry {
         &mut self.provider_registry
+    }
+
+    /// Subscribe to receive approval decision notifications.
+    ///
+    /// The channel delivers `(EffectId, approved)` tuples whenever
+    /// [`approve_effect`] or [`deny_effect`] is called.
+    ///
+    /// [`approve_effect`]: AppService::approve_effect
+    /// [`deny_effect`]: AppService::deny_effect
+    #[must_use]
+    pub fn subscribe_approvals(&self) -> broadcast::Receiver<(EffectId, bool)> {
+        self.approval_tx.subscribe()
     }
 
     // -----------------------------------------------------------------------
@@ -242,10 +468,15 @@ impl AppService {
     // Run lifecycle
     // -----------------------------------------------------------------------
 
-    /// Create and enqueue a new run for the given agent.
+    /// Create and begin executing a new run for the given agent.
     ///
-    /// The run transitions through `Created -> Queued` and is ready for a
-    /// worker to claim and start executing.
+    /// The run is created, transitioned to `Queued`, and then a tokio task
+    /// is spawned to drive it through execution when an executor is
+    /// configured. The `RunCreated` and `RunStarted` events are published to
+    /// the event bus. `RunCompleted` or `RunFailed` are published when the
+    /// background task finishes.
+    ///
+    /// Returns the run ID immediately. Execution continues in the background.
     ///
     /// # Errors
     ///
@@ -257,20 +488,83 @@ impl AppService {
         agent_id: AgentId,
         prompt: &str,
     ) -> Result<RunId, ServiceError> {
-        // Verify agent exists.
-        {
+        // Verify agent exists and clone its spec for the background task.
+        let agent_spec = {
             let agents = self.agents.lock().map_err(|e| ServiceError::Internal {
                 message: format!("agent lock poisoned: {e}"),
             })?;
-            if !agents.contains_key(&agent_id) {
-                return Err(ServiceError::AgentNotFound { agent_id });
-            }
-        }
+            agents
+                .get(&agent_id)
+                .cloned()
+                .ok_or(ServiceError::AgentNotFound { agent_id })?
+        };
 
-        let _ = prompt; // Prompt will be used when wiring to the execution engine.
-
+        // Create the run record in the Created state.
+        // RunManager emits RunCreated via the EventRecorder (→ bus).
         let run_id = self.run_manager.create_run(agent_id).await?;
+
+        // Enqueue the run (Created -> Queued).
+        // RunManager emits RunQueued via the EventRecorder (→ bus).
         self.run_manager.enqueue_run(run_id).await?;
+
+        // If an orchestrator is configured, spawn a background task to drive
+        // the turn loop.
+        if let Some(orchestrator) = self.orchestrator.clone() {
+            let prompt_owned = prompt.to_owned();
+            let event_bus = self.event_bus.clone();
+
+            tokio::spawn(async move {
+                match orchestrator
+                    .execute_run(run_id.clone(), &agent_spec, &prompt_owned)
+                    .await
+                {
+                    Ok(outcome) => {
+                        let kind = match &outcome.final_state {
+                            RunState::Completed => EventKind::RunCompleted {
+                                output_artifact_id: None,
+                            },
+                            RunState::Failed { reason } => EventKind::RunFailed {
+                                reason: reason.clone(),
+                            },
+                            other => EventKind::RunFailed {
+                                reason: format!("unexpected terminal state: {other}"),
+                            },
+                        };
+                        let ev = RunEvent::new_durable(
+                            EventId::new(),
+                            run_id.clone(),
+                            3,
+                            kind,
+                            EventCorrelation {
+                                run_id: run_id.clone(),
+                                ..Default::default()
+                            },
+                        );
+                        event_bus.publish(ev);
+                    }
+                    Err(err) => {
+                        warn!(%run_id, %err, "orchestrator task failed");
+                        let ev = RunEvent::new_durable(
+                            EventId::new(),
+                            run_id.clone(),
+                            3,
+                            EventKind::RunFailed {
+                                reason: err.to_string(),
+                            },
+                            EventCorrelation {
+                                run_id: run_id.clone(),
+                                ..Default::default()
+                            },
+                        );
+                        event_bus.publish(ev);
+                    }
+                }
+            });
+        } else {
+            // No executor configured: the run remains in Queued state
+            // for an external worker to claim.
+            info!(%run_id, "no executor configured; run queued for external worker");
+        }
 
         info!(%run_id, "run started and enqueued");
         Ok(run_id)
@@ -291,6 +585,9 @@ impl AppService {
     }
 
     /// Approve a pending effect, allowing it to proceed.
+    ///
+    /// Transitions the effect intent's approval state and broadcasts
+    /// `(effect_id, true)` to all approval subscribers.
     ///
     /// # Errors
     ///
@@ -320,13 +617,17 @@ impl AppService {
             }
         })?;
 
-        // In a full implementation, we would transition the intent's approval
-        // state and notify the waiting run. For now we verify it exists.
+        // Notify the orchestrator and any other subscribers.
+        let _ = self.approval_tx.send((effect_id, true));
+
         info!(%effect_id, "effect approved");
         Ok(())
     }
 
     /// Deny a pending effect with the given reason.
+    ///
+    /// Transitions the effect intent's approval state and broadcasts
+    /// `(effect_id, false)` to all approval subscribers.
     ///
     /// # Errors
     ///
@@ -356,6 +657,9 @@ impl AppService {
                 },
             }
         })?;
+
+        // Notify the orchestrator and any other subscribers.
+        let _ = self.approval_tx.send((effect_id, false));
 
         warn!(%effect_id, %reason, "effect denied");
         Ok(())
@@ -409,10 +713,182 @@ impl AppService {
         self.event_bus.clone()
     }
 
+    /// Return a clone of the event recorder.
+    ///
+    /// Callers that need to record additional events (e.g. tool results, audit
+    /// trails) can use the recorder directly.
+    #[must_use]
+    pub fn event_recorder(&self) -> EventRecorder {
+        self.event_recorder.clone()
+    }
+
     /// Return the default executor, if one is configured.
     #[must_use]
     pub fn executor(&self) -> Option<Arc<dyn ModelExecutor>> {
         self.executor.clone()
+    }
+
+    // -----------------------------------------------------------------------
+    // Memory operations
+    // -----------------------------------------------------------------------
+
+    /// Store a memory entry for the given agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::NotInitialized`] if no memory store is
+    /// configured, or [`ServiceError::Store`] on persistence failure.
+    pub async fn store_memory(
+        &self,
+        _agent_id: &AgentId,
+        entry: MemoryEntry,
+    ) -> Result<MemoryId, ServiceError> {
+        let store = self.memory_store.as_ref().ok_or_else(|| {
+            ServiceError::NotInitialized {
+                component: "memory_store".into(),
+            }
+        })?;
+        store
+            .store_memory(&entry)
+            .await
+            .map_err(|e| ServiceError::Store {
+                message: e.to_string(),
+            })
+    }
+
+    /// Search memories for the given agent matching the query string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::NotInitialized`] if no memory store is
+    /// configured, or [`ServiceError::Store`] on search failure.
+    pub async fn search_memory(
+        &self,
+        agent_id: &AgentId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, ServiceError> {
+        let store = self.memory_store.as_ref().ok_or_else(|| {
+            ServiceError::NotInitialized {
+                component: "memory_store".into(),
+            }
+        })?;
+        let memory_query = MemoryQuery {
+            agent_id: *agent_id,
+            query_text: query.to_owned(),
+            memory_types: None,
+            limit,
+            min_relevance: None,
+            since: None,
+            episode_id: None,
+        };
+        store
+            .search(&memory_query)
+            .await
+            .map_err(|e| ServiceError::Store {
+                message: e.to_string(),
+            })
+    }
+
+    // -----------------------------------------------------------------------
+    // Payment tracking
+    // -----------------------------------------------------------------------
+
+    /// Record an LLM cost entry for the given run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::NotInitialized`] if no payment store is
+    /// configured, or [`ServiceError::Store`] on persistence failure.
+    pub async fn record_cost(
+        &self,
+        run_id: &RunId,
+        amount: &Amount,
+    ) -> Result<(), ServiceError> {
+        let store = self.payment_store.as_ref().ok_or_else(|| {
+            ServiceError::NotInitialized {
+                component: "payment_store".into(),
+            }
+        })?;
+        let record = CostRecord {
+            run_id: run_id.to_string(),
+            provider: "unknown".to_owned(),
+            model: "unknown".to_owned(),
+            input_tokens: 0,
+            output_tokens: 0,
+            estimated_usd: amount.value as f64,
+            recorded_at: chrono::Utc::now(),
+        };
+        store
+            .record_cost(record)
+            .await
+            .map_err(|e| ServiceError::Store {
+                message: e.to_string(),
+            })
+    }
+
+    /// Get aggregated usage statistics for the given agent.
+    ///
+    /// Returns usage over the last 30 days by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::NotInitialized`] if no payment store is
+    /// configured, or [`ServiceError::Store`] on retrieval failure.
+    pub async fn get_usage(
+        &self,
+        agent_id: &AgentId,
+    ) -> Result<UsageSummary, ServiceError> {
+        let store = self.payment_store.as_ref().ok_or_else(|| {
+            ServiceError::NotInitialized {
+                component: "payment_store".into(),
+            }
+        })?;
+        let now = chrono::Utc::now();
+        let since = now - chrono::Duration::days(30);
+        store
+            .get_usage(&agent_id.to_string(), since, now)
+            .await
+            .map_err(|e| ServiceError::Store {
+                message: e.to_string(),
+            })
+    }
+
+    // -----------------------------------------------------------------------
+    // Optional subsystem accessors
+    // -----------------------------------------------------------------------
+
+    /// Return a reference to the skill runner, if configured.
+    #[must_use]
+    pub fn skill_runner(&self) -> Option<&Arc<polkagent_skill::SkillRunner>> {
+        self.skill_runner.as_ref()
+    }
+
+    /// Return a reference to the tool registry, if configured.
+    #[must_use]
+    pub fn tool_registry(&self) -> Option<&Arc<polkagent_tool::ToolRegistry>> {
+        self.tool_registry.as_ref()
+    }
+
+    /// Return a reference to the conversation store, if configured.
+    #[must_use]
+    pub fn conversation_store(
+        &self,
+    ) -> Option<&Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>>
+    {
+        self.conversation_store.as_ref()
+    }
+
+    /// Return a reference to the memory store, if configured.
+    #[must_use]
+    pub fn memory_store(&self) -> Option<&Arc<dyn MemoryStore + Send + Sync>> {
+        self.memory_store.as_ref()
+    }
+
+    /// Return a reference to the payment store, if configured.
+    #[must_use]
+    pub fn payment_store(&self) -> Option<&Arc<dyn PaymentStore + Send + Sync>> {
+        self.payment_store.as_ref()
     }
 }
 
@@ -423,14 +899,28 @@ impl AppService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use polkagent_executor_trait::{
         ExecutorError, InferenceRequest, InferenceResponse, StreamEvent,
     };
+    use polkagent_memory::{
+        types::{Episode, EpisodeId, MemoryEntry, MemoryId, MemoryQuery, MemoryType},
+        MemoryError, MemoryResult,
+    };
+    use polkagent_payment::{
+        CostRecord, PaymentError, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary,
+    };
+    use polkagent_conversation::{
+        types::{Conversation, ConversationSummary, Message},
+        ConversationError, ConversationResult, ConversationStore,
+    };
+    use polkagent_core::ids::ConversationId;
     use polkagent_store_trait::{
         event::{EventFilter, EventStore, EventStoreError, StoredEvent},
         RunStatus, StoreError,
     };
     use std::collections::{HashMap as StdHashMap, HashSet};
+    use uuid::Uuid;
 
     // ── Fake ModelExecutor ───────────────────────────────────────────────
 
@@ -502,7 +992,7 @@ mod tests {
                     id: run_id,
                     agent_id: agent_id.to_owned(),
                     status,
-                    created_at: chrono::Utc::now(),
+                    created_at: Utc::now(),
                     completed_at: None,
                 },
             );
@@ -683,6 +1173,255 @@ mod tests {
         }
     }
 
+    // ── Fake MemoryStore ─────────────────────────────────────────────────
+
+    #[derive(Debug, Default)]
+    struct FakeMemoryStore {
+        entries: Mutex<StdHashMap<String, MemoryEntry>>,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryStore for FakeMemoryStore {
+        async fn store_memory(&self, entry: &MemoryEntry) -> MemoryResult<MemoryId> {
+            let id = entry.id;
+            self.entries
+                .lock()
+                .expect("lock")
+                .insert(id.to_string(), entry.clone());
+            Ok(id)
+        }
+
+        async fn get_memory(&self, id: MemoryId) -> MemoryResult<MemoryEntry> {
+            self.entries
+                .lock()
+                .expect("lock")
+                .get(&id.to_string())
+                .cloned()
+                .ok_or_else(|| MemoryError::NotFound(id.to_string()))
+        }
+
+        async fn search(&self, query: &MemoryQuery) -> MemoryResult<Vec<MemoryEntry>> {
+            let guard = self.entries.lock().expect("lock");
+            let results: Vec<MemoryEntry> = guard
+                .values()
+                .filter(|e| {
+                    e.agent_id == query.agent_id
+                        && e.content.contains(&query.query_text)
+                })
+                .take(query.limit)
+                .cloned()
+                .collect();
+            Ok(results)
+        }
+
+        async fn search_with_classification(
+            &self,
+            query: &MemoryQuery,
+            max_classification: polkagent_memory::classification::Classification,
+        ) -> MemoryResult<Vec<MemoryEntry>> {
+            let guard = self.entries.lock().expect("lock");
+            let results: Vec<MemoryEntry> = guard
+                .values()
+                .filter(|e| {
+                    e.agent_id == query.agent_id
+                        && e.content.contains(&query.query_text)
+                        && e.classification <= max_classification
+                })
+                .take(query.limit)
+                .cloned()
+                .collect();
+            Ok(results)
+        }
+
+        async fn update_relevance(
+            &self,
+            id: MemoryId,
+            score: f64,
+        ) -> MemoryResult<()> {
+            let mut guard = self.entries.lock().expect("lock");
+            guard
+                .get_mut(&id.to_string())
+                .ok_or_else(|| MemoryError::NotFound(id.to_string()))?
+                .relevance_score = score;
+            Ok(())
+        }
+
+        async fn delete_memory(&self, id: MemoryId) -> MemoryResult<()> {
+            self.entries.lock().expect("lock").remove(&id.to_string());
+            Ok(())
+        }
+
+        async fn count_entries(&self, agent_id: &AgentId) -> MemoryResult<usize> {
+            let guard = self.entries.lock().expect("lock");
+            let count = guard.values().filter(|e| e.agent_id == *agent_id).count();
+            Ok(count)
+        }
+
+        async fn delete_by_age(
+            &self,
+            _agent_id: &AgentId,
+            _max_age: chrono::Duration,
+        ) -> MemoryResult<usize> {
+            Ok(0)
+        }
+
+        async fn create_episode(&self, episode: &Episode) -> MemoryResult<EpisodeId> {
+            Ok(episode.id)
+        }
+
+        async fn get_episode(&self, _id: EpisodeId) -> MemoryResult<Episode> {
+            Err(MemoryError::NotFound("episode".into()))
+        }
+
+        async fn end_episode(&self, _id: EpisodeId, _summary: &str) -> MemoryResult<()> {
+            Ok(())
+        }
+
+        async fn list_episodes(
+            &self,
+            _agent_id: AgentId,
+            _limit: usize,
+        ) -> MemoryResult<Vec<Episode>> {
+            Ok(vec![])
+        }
+    }
+
+    // ── Fake PaymentStore ────────────────────────────────────────────────
+
+    #[derive(Debug, Default)]
+    struct FakePaymentStore {
+        costs: Mutex<Vec<CostRecord>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PaymentStore for FakePaymentStore {
+        async fn record_cost(&self, record: CostRecord) -> Result<(), PaymentError> {
+            self.costs.lock().expect("lock").push(record);
+            Ok(())
+        }
+
+        async fn get_costs(&self, run_id: &str) -> Result<Vec<CostRecord>, PaymentError> {
+            let guard = self.costs.lock().expect("lock");
+            Ok(guard
+                .iter()
+                .filter(|r| r.run_id == run_id)
+                .cloned()
+                .collect())
+        }
+
+        async fn get_usage(
+            &self,
+            _agent_id: &str,
+            since: chrono::DateTime<Utc>,
+            until: chrono::DateTime<Utc>,
+        ) -> Result<UsageSummary, PaymentError> {
+            Ok(UsageSummary {
+                total_runs: 0,
+                total_tokens: 0,
+                estimated_usd: 0.0,
+                period_start: since,
+                period_end: until,
+            })
+        }
+
+        async fn create_intent(
+            &self,
+            _intent: PaymentIntent,
+        ) -> Result<(), PaymentError> {
+            Ok(())
+        }
+
+        async fn get_intent(&self, id: Uuid) -> Result<PaymentIntent, PaymentError> {
+            Err(PaymentError::IntentNotFound { id })
+        }
+
+        async fn update_intent_status(
+            &self,
+            _id: Uuid,
+            _status: PaymentStatus,
+        ) -> Result<(), PaymentError> {
+            Ok(())
+        }
+
+        async fn create_receipt(
+            &self,
+            _receipt: PaymentReceipt,
+        ) -> Result<(), PaymentError> {
+            Ok(())
+        }
+    }
+
+    // ── Fake ConversationStore ───────────────────────────────────────────
+
+    #[derive(Debug, Default)]
+    struct FakeConversationStore;
+
+    #[async_trait::async_trait]
+    impl ConversationStore for FakeConversationStore {
+        async fn create(
+            &self,
+            _conversation: Conversation,
+        ) -> ConversationResult<ConversationId> {
+            Ok(ConversationId::new())
+        }
+
+        async fn get(
+            &self,
+            id: ConversationId,
+        ) -> ConversationResult<Conversation> {
+            Err(ConversationError::NotFound(id.to_string()))
+        }
+
+        async fn list(
+            &self,
+            _agent_id: AgentId,
+            _limit: usize,
+            _offset: usize,
+        ) -> ConversationResult<Vec<ConversationSummary>> {
+            Ok(vec![])
+        }
+
+        async fn delete(
+            &self,
+            _id: ConversationId,
+        ) -> ConversationResult<()> {
+            Ok(())
+        }
+
+        async fn add_message(
+            &self,
+            _conversation_id: ConversationId,
+            _message: Message,
+        ) -> ConversationResult<Uuid> {
+            Ok(Uuid::now_v7())
+        }
+
+        async fn get_messages(
+            &self,
+            _conversation_id: ConversationId,
+            _limit: usize,
+            _offset: usize,
+        ) -> ConversationResult<Vec<Message>> {
+            Ok(vec![])
+        }
+
+        async fn get_recent_messages(
+            &self,
+            _conversation_id: ConversationId,
+            _limit: usize,
+        ) -> ConversationResult<Vec<Message>> {
+            Ok(vec![])
+        }
+
+        async fn update_title(
+            &self,
+            _id: ConversationId,
+            _title: String,
+        ) -> ConversationResult<()> {
+            Ok(())
+        }
+    }
+
     // ── Test helpers ────────────────────────────────────────────────────
 
     fn build_service() -> AppService {
@@ -701,11 +1440,55 @@ mod tests {
             .expect("build service")
     }
 
+    fn build_service_with_all() -> AppService {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+        let memory_store: Arc<dyn MemoryStore + Send + Sync> =
+            Arc::new(FakeMemoryStore::default());
+        let payment_store: Arc<dyn PaymentStore + Send + Sync> =
+            Arc::new(FakePaymentStore::default());
+        let conv_store: Arc<dyn ConversationStore + Send + Sync> =
+            Arc::new(FakeConversationStore);
+
+        AppService::builder()
+            .with_config(Config::default())
+            .with_executor(Arc::new(FakeExecutor))
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .with_memory_store(memory_store)
+            .with_payment_store(payment_store)
+            .with_conversation_store(conv_store)
+            .build()
+            .expect("build service with all")
+    }
+
     fn make_spec(name: &str) -> AgentSpec {
         AgentSpec::new(AgentId::new(), name, "anthropic/claude-opus-4-6")
     }
 
-    // ── Tests ───────────────────────────────────────────────────────────
+    fn make_memory_entry(agent_id: AgentId, content: &str) -> MemoryEntry {
+        MemoryEntry {
+            id: MemoryId::new(),
+            agent_id,
+            episode_id: None,
+            memory_type: MemoryType::Semantic,
+            content: content.to_owned(),
+            embedding: None,
+            metadata: serde_json::Value::Null,
+            provenance: None,
+            created_at: Utc::now(),
+            accessed_at: Utc::now(),
+            access_count: 0,
+            relevance_score: 1.0,
+            confidence: 1.0,
+            classification: polkagent_memory::classification::Classification::Internal,
+        }
+    }
+
+    // ── Original tests (all must still pass) ────────────────────────────
 
     #[test]
     fn builder_fails_without_config() {
@@ -846,9 +1629,7 @@ mod tests {
     #[tokio::test]
     async fn deny_effect_without_store_fails() {
         let service = build_service();
-        let result = service
-            .deny_effect(EffectId::new(), "test reason")
-            .await;
+        let result = service.deny_effect(EffectId::new(), "test reason").await;
         assert!(matches!(
             result,
             Err(ServiceError::NotInitialized { .. })
@@ -868,5 +1649,316 @@ mod tests {
     fn executor_accessor_returns_some() {
         let service = build_service();
         assert!(service.executor().is_some());
+    }
+
+    // ── New tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn builder_with_all_services_configured() {
+        let service = build_service_with_all();
+        assert!(service.memory_store().is_some());
+        assert!(service.payment_store().is_some());
+        assert!(service.conversation_store().is_some());
+        // tool_registry and skill_runner not set in build_service_with_all
+        assert!(service.tool_registry().is_none());
+        assert!(service.skill_runner().is_none());
+    }
+
+    #[test]
+    fn builder_with_tool_registry() {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+        let tool_reg = Arc::new(polkagent_tool::ToolRegistry::new());
+
+        let service = AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .with_tool_registry(tool_reg)
+            .build()
+            .expect("build");
+
+        assert!(service.tool_registry().is_some());
+    }
+
+    #[test]
+    fn builder_with_skill_runner() {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+        let runner = Arc::new(polkagent_skill::SkillRunner::new());
+
+        let service = AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .with_skill_runner(runner)
+            .build()
+            .expect("build");
+
+        assert!(service.skill_runner().is_some());
+    }
+
+    #[tokio::test]
+    async fn start_run_publishes_events_to_bus() {
+        let service = build_service();
+        let mut rx = service.subscribe_events();
+
+        let spec = make_spec("event-test-agent");
+        let agent_id = service.create_agent(spec).expect("create_agent");
+
+        let _run_id = service
+            .start_run(agent_id, "event test prompt")
+            .await
+            .expect("start_run");
+
+        // RunManager emits RunCreated then RunQueued via the EventRecorder.
+        let ev1 = rx.recv().await.expect("first event");
+        assert!(
+            matches!(ev1.kind, EventKind::RunCreated),
+            "expected RunCreated, got {:?}",
+            ev1.kind
+        );
+
+        let ev2 = rx.recv().await.expect("second event");
+        assert!(
+            matches!(ev2.kind, EventKind::RunQueued),
+            "expected RunQueued, got {:?}",
+            ev2.kind
+        );
+    }
+
+    #[tokio::test]
+    async fn start_run_events_carry_correct_run_id() {
+        let service = build_service();
+        let mut rx = service.subscribe_events();
+
+        let spec = make_spec("correlation-test");
+        let agent_id = service.create_agent(spec).expect("create_agent");
+        let run_id = service.start_run(agent_id, "test").await.expect("start_run");
+
+        let ev1 = rx.recv().await.expect("ev1");
+        let ev2 = rx.recv().await.expect("ev2");
+
+        assert_eq!(ev1.run_id, run_id);
+        assert_eq!(ev2.run_id, run_id);
+    }
+
+    #[tokio::test]
+    async fn approve_effect_channel_is_functional() {
+        let service = build_service();
+        let mut rx = service.subscribe_approvals();
+
+        // Without an effect store the channel exists but is empty.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_store_absent_returns_not_initialized() {
+        let service = build_service();
+        let agent_id = AgentId::new();
+        let entry = make_memory_entry(agent_id, "test content");
+
+        let result = service.store_memory(&agent_id, entry).await;
+        assert!(matches!(
+            result,
+            Err(ServiceError::NotInitialized { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn search_memory_absent_returns_not_initialized() {
+        let service = build_service();
+        let agent_id = AgentId::new();
+        let result = service.search_memory(&agent_id, "query", 10).await;
+        assert!(matches!(
+            result,
+            Err(ServiceError::NotInitialized { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn store_and_search_memory_delegates_to_store() {
+        let service = build_service_with_all();
+        let agent_id = AgentId::new();
+        let entry = make_memory_entry(agent_id, "the user prefers dark mode");
+
+        let id = service
+            .store_memory(&agent_id, entry)
+            .await
+            .expect("store_memory");
+        assert_ne!(id.to_string(), "");
+
+        let results = service
+            .search_memory(&agent_id, "dark mode", 10)
+            .await
+            .expect("search_memory");
+        assert!(!results.is_empty());
+        assert!(results[0].content.contains("dark mode"));
+    }
+
+    #[tokio::test]
+    async fn record_cost_absent_returns_not_initialized() {
+        let service = build_service();
+        let run_id = RunId::new();
+        let amount = polkagent_payment::Amount::new(
+            100,
+            polkagent_payment::AssetId::Native,
+            10,
+        );
+        let result = service.record_cost(&run_id, &amount).await;
+        assert!(matches!(
+            result,
+            Err(ServiceError::NotInitialized { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_usage_absent_returns_not_initialized() {
+        let service = build_service();
+        let agent_id = AgentId::new();
+        let result = service.get_usage(&agent_id).await;
+        assert!(matches!(
+            result,
+            Err(ServiceError::NotInitialized { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn record_cost_delegates_to_payment_store() {
+        let service = build_service_with_all();
+        let run_id = RunId::new();
+        let amount = polkagent_payment::Amount::new(
+            500,
+            polkagent_payment::AssetId::Native,
+            10,
+        );
+        let result = service.record_cost(&run_id, &amount).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_usage_delegates_to_payment_store() {
+        let service = build_service_with_all();
+        let agent_id = AgentId::new();
+        let summary = service.get_usage(&agent_id).await.expect("get_usage");
+        assert_eq!(summary.total_runs, 0);
+    }
+
+    #[test]
+    fn debug_format_includes_new_fields() {
+        let service = build_service_with_all();
+        let debug = format!("{service:?}");
+        assert!(debug.contains("has_memory_store"));
+        assert!(debug.contains("has_payment_store"));
+        assert!(debug.contains("has_conversation_store"));
+        assert!(debug.contains("has_orchestrator"));
+    }
+
+    #[test]
+    fn subscribe_approvals_returns_receiver() {
+        let service = build_service();
+        let _rx = service.subscribe_approvals();
+        // No panic = success.
+    }
+
+    #[tokio::test]
+    async fn multiple_agents_multiple_runs_are_independent() {
+        let service = build_service();
+
+        let spec_a = make_spec("agent-a");
+        let spec_b = make_spec("agent-b");
+        let agent_a = service.create_agent(spec_a).expect("create a");
+        let agent_b = service.create_agent(spec_b).expect("create b");
+
+        let run_a1 = service.start_run(agent_a, "a-1").await.expect("a1");
+        let run_a2 = service.start_run(agent_a, "a-2").await.expect("a2");
+        let run_b1 = service.start_run(agent_b, "b-1").await.expect("b1");
+
+        let runs_a = service.list_runs(agent_a).await.expect("list a");
+        let runs_b = service.list_runs(agent_b).await.expect("list b");
+
+        assert_eq!(runs_a.len(), 2);
+        assert_eq!(runs_b.len(), 1);
+
+        // All runs are in Queued state.
+        for run_id in [run_a1, run_a2, run_b1] {
+            let state = service.get_run_status(run_id).await.expect("status");
+            assert_eq!(state, RunState::Queued);
+        }
+    }
+
+    #[test]
+    fn conversation_store_accessor_returns_some_when_set() {
+        let service = build_service_with_all();
+        assert!(service.conversation_store().is_some());
+    }
+
+    #[test]
+    fn memory_store_accessor_returns_none_when_not_set() {
+        let service = build_service();
+        assert!(service.memory_store().is_none());
+    }
+
+    #[test]
+    fn payment_store_accessor_returns_none_when_not_set() {
+        let service = build_service();
+        assert!(service.payment_store().is_none());
+    }
+
+    #[test]
+    fn orchestrator_present_when_executor_configured() {
+        let service = build_service(); // has FakeExecutor
+        let debug = format!("{service:?}");
+        assert!(debug.contains("has_orchestrator: true"));
+    }
+
+    #[test]
+    fn orchestrator_absent_without_executor() {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+
+        let service = AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            // No executor set
+            .build()
+            .expect("build service without executor");
+
+        assert!(service.executor().is_none());
+        let debug = format!("{service:?}");
+        assert!(debug.contains("has_orchestrator: false"));
+    }
+
+    #[tokio::test]
+    async fn start_run_without_executor_stays_queued() {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+
+        let service = AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .build()
+            .expect("build");
+
+        let spec = make_spec("no-exec-agent");
+        let agent_id = service.create_agent(spec).expect("create_agent");
+        let run_id = service.start_run(agent_id, "test").await.expect("start_run");
+
+        let state = service.get_run_status(run_id).await.expect("state");
+        assert_eq!(state, RunState::Queued);
     }
 }

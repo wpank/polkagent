@@ -71,6 +71,174 @@ proptest! {
 }
 
 // =========================================================================
+// PB-07: Outbox ordering preserves FIFO under concurrent enqueue
+// =========================================================================
+//
+// Items dequeued in insertion order even when messages come from multiple
+// different partition keys.  Within a partition the invariant is strict FIFO.
+// Across partitions we can only test the within-partition guarantee cleanly
+// without real concurrency (the outbox is single-threaded).
+
+proptest! {
+    /// Within a single partition, any number of messages are claimed in
+    /// strictly the same order they were enqueued.
+    #[test]
+    fn pb07_fifo_within_single_partition(count in 2..30usize) {
+        let mut ob = outbox_held();
+        let mut enqueued_ids = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let id = ob
+                .enqueue(msg("pb07-partition", &format!("pb07-key-{i}")))
+                .expect("enqueue");
+            enqueued_ids.push(id);
+        }
+
+        let mut claimed_ids = Vec::with_capacity(count);
+        for _ in 0..count {
+            let item = ob
+                .claim_next("pb07-consumer")
+                .expect("claim_next ok")
+                .expect("item available");
+            claimed_ids.push(item.id);
+            ob.acknowledge(item.id, "pb07-consumer").expect("ack");
+        }
+
+        prop_assert_eq!(
+            &enqueued_ids,
+            &claimed_ids,
+            "messages must come out in insertion (FIFO) order"
+        );
+    }
+
+    /// All items from multiple partitions are delivered in per-partition FIFO
+    /// order, even though cross-partition order is unspecified.
+    #[test]
+    fn pb07_fifo_per_partition_across_multiple_partitions(
+        partition_count in 2..5usize,
+        items_per_partition in 2..8usize,
+    ) {
+        let mut ob = outbox_held();
+
+        // Enqueue items round-robin across partitions.
+        // Track expected order per partition.
+        let mut expected: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+        for item_idx in 0..items_per_partition {
+            for part_idx in 0..partition_count {
+                let key = format!("part-{part_idx}");
+                let id = ob
+                    .enqueue(msg(&key, &format!("key-{part_idx}-{item_idx}")))
+                    .expect("enqueue");
+                expected.entry(key).or_default().push(id);
+            }
+        }
+
+        // Drain all items.
+        let total = partition_count * items_per_partition;
+        let mut delivered: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+        for _ in 0..total {
+            let item = ob
+                .claim_next("consumer")
+                .expect("claim_next ok")
+                .expect("item available");
+            let partition = item.message.partition_key.clone();
+            delivered.entry(partition).or_default().push(item.id);
+            ob.acknowledge(item.id, "consumer").expect("ack");
+        }
+
+        // Within every partition, delivered order must match enqueued order.
+        for (partition, exp_ids) in &expected {
+            let del_ids = delivered.get(partition).expect("partition was delivered");
+            prop_assert_eq!(
+                exp_ids,
+                del_ids,
+                "partition '{}': FIFO violated",
+                partition
+            );
+        }
+    }
+
+    /// After acknowledging all items, live_count() must be zero.
+    #[test]
+    fn pb07_all_acked_items_are_removed(count in 1..20usize) {
+        let mut ob = outbox_held();
+        for i in 0..count {
+            ob.enqueue(msg("p", &format!("k-{i}"))).expect("enqueue");
+        }
+        prop_assert_eq!(ob.live_count(), count, "live count should equal enqueued count");
+
+        for _ in 0..count {
+            let item = ob.claim_next("c").expect("ok").expect("some");
+            ob.acknowledge(item.id, "c").expect("ack");
+        }
+        prop_assert_eq!(ob.live_count(), 0, "all acked items must be gone");
+    }
+
+    /// Items are delivered in the same order as insertion (FIFO).
+    ///
+    /// We validate that the IDs come out in the same order as they went in.
+    /// Since `sequence` is private, we infer ordering from the fact that
+    /// insertion order = claim order within a partition.
+    #[test]
+    fn pb07_id_order_matches_enqueue_order(count in 2..20usize) {
+        let mut ob = outbox_held();
+        let mut enqueued: Vec<_> = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let id = ob.enqueue(msg("order-part", &format!("k-{i}"))).expect("enqueue");
+            enqueued.push(id);
+        }
+
+        let mut claimed: Vec<_> = Vec::with_capacity(count);
+        for _ in 0..count {
+            let item = ob.claim_next("c").expect("ok").expect("some");
+            claimed.push(item.id);
+            ob.acknowledge(item.id, "c").expect("ack");
+        }
+
+        prop_assert_eq!(&enqueued, &claimed, "insertion order must equal claim order");
+    }
+
+    /// Dead-lettered items are not returned by claim_next.
+    ///
+    /// We use nack() to exhaust retries. nack() does NOT require a valid lease,
+    /// so we can call it without first claiming the item.
+    #[test]
+    fn pb07_dead_lettered_items_invisible_to_consumers(max_retries in 0u32..3) {
+        // max_retries = N means: N+1 total nacks are needed before dead-letter
+        // (is_exhausted() returns true when retry_count > max_retries).
+        let mut ob = outbox_held();
+        let id = ob
+            .enqueue(OutboxMessage::new("p", "k", serde_json::json!(null), max_retries))
+            .expect("enqueue");
+
+        // Nack max_retries + 1 times to exhaust all retry budget.
+        // After each nack, retry_count is incremented.
+        // When retry_count > max_retries, is_exhausted() returns true and
+        // nack() moves the item to the dead-letter set.
+        for nack_num in 0..=(max_retries as usize) {
+            let nack_result = ob.nack(id);
+            if nack_num < max_retries as usize {
+                // Item should still be live.
+                prop_assert!(nack_result.is_ok(), "nack #{} should succeed", nack_num);
+            } else {
+                // Final nack should either succeed (triggering DLQ) or return
+                // DeadLettered if it was already moved.
+                let _ = nack_result; // May be Ok or DeadLettered — both are fine.
+            }
+        }
+
+        // After exhaustion, item must be dead-lettered.
+        prop_assert_eq!(ob.live_count(), 0, "dead-lettered item must not be in live queue");
+        prop_assert_eq!(ob.dead_letter_items().len(), 1, "dead-lettered item must be in DLQ");
+
+        // Attempting to claim returns nothing.
+        let next = ob.claim_next("c").expect("ok");
+        prop_assert!(next.is_none(), "dead-lettered item must not be claimable");
+    }
+}
+
+// =========================================================================
 // 2. Deduplication log rejects duplicate IDs
 // =========================================================================
 

@@ -13,6 +13,9 @@ polkagent-core = { path = "../polkagent-core" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 polkagent-config = { path = "../polkagent-config" }
 polkagent-event = { path = "../polkagent-event" }
+polkagent-skill = { path = "../polkagent-skill" }
+polkagent-tool = { path = "../polkagent-tool" }
+polkagent-payment = { path = "../polkagent-payment" }
 
 # Web
 axum = { workspace = true }

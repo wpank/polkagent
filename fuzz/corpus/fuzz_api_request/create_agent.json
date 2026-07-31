@@ -1,0 +1,1 @@
+{"name":"my-agent","model":"anthropic/claude-opus-4-6","description":"A test agent","tools":["search","file_read"],"system_prompt":"You are a helpful assistant."}

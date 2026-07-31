@@ -14,7 +14,8 @@ use rusqlite::Connection;
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::state::{
-    AgentSummary, ApprovalItem, EventSummary, RunDetail, RunSummary, SystemHealth, TurnSummary,
+    AgentSummary, ApprovalItem, AuditEvent, EventSummary, MemoryEntry as TuiMemoryEntry,
+    RunDetail, RunSummary, SystemHealth, TurnSummary,
 };
 
 // ---------------------------------------------------------------------------
@@ -384,6 +385,183 @@ impl TuiDb {
             active_run_count,
             sampled_at: Utc::now(),
         })
+    }
+
+    // ── Memory browser ───────────────────────────────────────────────────
+
+    /// Load memory entries from the memory SQLite database.
+    ///
+    /// When `query` is `None` all recent entries are returned ordered by
+    /// creation time descending. When a query is given, FTS/LIKE search is
+    /// performed.
+    pub fn memory_entries(
+        &self,
+        query: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<TuiMemoryEntry>> {
+        // The memory store lives in a separate database file; open it
+        // read-only here.
+        let home = std::env::var("HOME").unwrap_or_default();
+        let default_path = format!("{home}/.local/share/polkagent/memory.db");
+        let mem_path = std::env::var("POLKAGENT_MEMORY_DB_PATH").unwrap_or(default_path);
+
+        let mem_conn = Connection::open_with_flags(
+            &mem_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        );
+
+        let conn = match mem_conn {
+            Ok(c) => c,
+            // If the memory DB doesn't exist yet return an empty list.
+            Err(_) => return Ok(vec![]),
+        };
+
+        let sql = if let Some(q) = query {
+            format!(
+                "SELECT id, memory_type, agent_id, content, relevance_score, created_at
+                 FROM memories
+                 WHERE content LIKE '%{q}%'
+                 ORDER BY relevance_score DESC
+                 LIMIT {limit}",
+                q = q.replace('\'', "''"),
+                limit = limit,
+            )
+        } else {
+            format!(
+                "SELECT id, memory_type, agent_id, content, relevance_score, created_at
+                 FROM memories
+                 ORDER BY created_at DESC
+                 LIMIT {limit}",
+                limit = limit,
+            )
+        };
+
+        let mut stmt = conn.prepare(&sql)?;
+        let entries = stmt
+            .query_map([], |row| {
+                let created_str: String = row.get(5)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, f64>(4)?,
+                    created_str,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let parsed = entries
+            .into_iter()
+            .filter_map(|(id, memory_type, agent_name, content, relevance_score, created_str)| {
+                let created_at = DateTime::parse_from_rfc3339(&created_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .ok()?;
+                Some(TuiMemoryEntry {
+                    id,
+                    memory_type,
+                    agent_name,
+                    content,
+                    relevance_score,
+                    created_at,
+                })
+            })
+            .collect();
+
+        Ok(parsed)
+    }
+
+    /// Delete a memory entry by its string ID.
+    pub fn delete_memory_entry(&self, entry_id: &str) -> Result<()> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let default_path = format!("{home}/.local/share/polkagent/memory.db");
+        let mem_path = std::env::var("POLKAGENT_MEMORY_DB_PATH").unwrap_or(default_path);
+
+        let conn = Connection::open(&mem_path)
+            .with_context(|| format!("opening memory database at {mem_path}"))?;
+
+        conn.execute("DELETE FROM memories WHERE id = ?1", rusqlite::params![entry_id])?;
+        Ok(())
+    }
+
+    // ── Audit log ────────────────────────────────────────────────────────
+
+    /// Load recent audit events from the run_events table.
+    pub fn audit_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT id, run_id, event_type, payload_json, created_at
+             FROM run_events
+             ORDER BY sequence DESC
+             LIMIT {limit}",
+            limit = limit,
+        ))?;
+
+        let raw: Vec<(String, String, String, String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let events = raw
+            .into_iter()
+            .filter_map(|(id, run_id, kind, payload, ts_str)| {
+                let timestamp = DateTime::parse_from_rfc3339(&ts_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .ok()?;
+                let short_run = run_id[..run_id.len().min(8)].to_owned();
+                Some(AuditEvent {
+                    id,
+                    kind,
+                    run_id: Some(run_id),
+                    agent_name: format!("run:{short_run}"),
+                    message: payload,
+                    severity: "info".to_owned(),
+                    timestamp,
+                })
+            })
+            .collect();
+
+        Ok(events)
+    }
+
+    // ── Approvals (write) ─────────────────────────────────────────────────
+
+    /// Mark an effect intent as approved.
+    pub fn approve_effect(&self, effect_id: &str) -> Result<()> {
+        // We need a writer connection, but TuiDb only holds a reader.
+        // Open a separate writable connection to the same DB file.
+        let db_path = self.conn.path().unwrap_or_default().to_owned();
+        let writer = Connection::open(&db_path)
+            .with_context(|| "opening writable connection for approve")?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        writer.execute(
+            "UPDATE effect_intents SET claimed_by = 'tui-approved', claimed_until = ?1
+             WHERE id = ?2 AND claimed_by IS NULL",
+            rusqlite::params![now, effect_id],
+        )?;
+        Ok(())
+    }
+
+    /// Mark an effect intent as denied.
+    pub fn deny_effect(&self, effect_id: &str) -> Result<()> {
+        let db_path = self.conn.path().unwrap_or_default().to_owned();
+        let writer = Connection::open(&db_path)
+            .with_context(|| "opening writable connection for deny")?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        writer.execute(
+            "UPDATE effect_intents SET claimed_by = 'tui-denied', claimed_until = ?1
+             WHERE id = ?2 AND claimed_by IS NULL",
+            rusqlite::params![now, effect_id],
+        )?;
+        Ok(())
     }
 }
 

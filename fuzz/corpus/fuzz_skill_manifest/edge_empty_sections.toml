@@ -1,0 +1,17 @@
+[skill]
+name = "edge-case"
+version = "0.0.1"
+description = ""
+authors = []
+license = ""
+
+[capabilities]
+required_grants = []
+tools = []
+
+[prompts]
+system = ""
+
+[config]
+
+[dependencies]

@@ -21,6 +21,7 @@ members = [
     "crates/polkagent-executor-openai",
     "crates/polkagent-executor-local",
     "crates/polkagent-signer-fake",
+    "crates/polkagent-chain-fake",
     "crates/polkagent-signer-external",
     "crates/polkagent-transport-fake",
     "crates/polkagent-api",
@@ -40,6 +41,11 @@ members = [
     "crates/polkagent-payment",
     "crates/polkagent-conversation",
     "crates/polkagent-service",
+    "crates/polkagent-group",
+    "crates/polkagent-eval",
+    "crates/polkagent-codec",
+    "crates/polkagent-feed",
+    "crates/polkagent-fault",
 ]
 
 [workspace.package]

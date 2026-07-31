@@ -19,7 +19,7 @@
 | `polkagent-run` | Done | 135 | RunManager, state machine, timeout, turn manager, DAG engine, orchestrator |
 | `polkagent-grant` | Done | 88 | Policy evaluation, budget tracking, Cedar loader + 18 proptest |
 | `polkagent-artifact` | Done | 42 | BLAKE3 content-addressed storage, lineage DAG |
-| `polkagent-config` | Done | 63 | TOML loader, env overrides, validation, fixture tests |
+| `polkagent-config` | Done | 138 | TOML loader, 9 config sections, env overrides, full validation |
 | `polkagent-card` | Done | 35 | Action cards, canonical/narrative sections |
 | `polkagent-outbox` | Done | 33 | Durable ordered delivery, deduplication |
 | `polkagent-store-sqlite` | Done | 156 | WAL-mode SQLite + all 4 store trait impls + 46 contract tests |
@@ -50,10 +50,10 @@
 
 | Crate | Status | Tests | Description |
 |-------|--------|-------|-------------|
-| `polkagent-store-sqlite` | Done | 156 | All 4 store traits + 46 contract tests |
-| `polkagent-api` | Done | 75 | REST + WebSocket, trait-object stores, CRUD endpoints, event streaming |
-| `polkagent-cli` | Done | 19 | ROSEDUST TUI (8 widgets, 7 views), 10 commands, SqlitePool wiring |
-| `polkagent-service` | Done | 33 | AppService facade, ProviderRegistry, lifecycle management |
+| `polkagent-store-sqlite` | Done | 203 | All 6 store traits (+ payment, conversation) + conformance tests |
+| `polkagent-api` | Done | 93 | REST + WebSocket, models/skills/tools/payments routes, event streaming |
+| `polkagent-cli` | Done | 56 | ROSEDUST TUI (8 widgets, 10 views), 15 commands, approve/deny flow |
+| `polkagent-service` | Done | 54 | AppService facade wired to all subsystems, approval channel |
 
 ### Phase 2b: Real Adapters
 
@@ -63,7 +63,7 @@
 | `polkagent-executor-openai` | Done | 57 | OpenAI-compatible API (OpenAI, Azure, vLLM, Ollama) |
 | `polkagent-executor-local` | Done | 42 | Local models via Ollama API, no auth, graceful degradation |
 | `polkagent-metadata` | Done | 68 | Metadata cache, pinning, drift detection, service facade |
-| `polkagent-memory` | Done | 27 | Episodic/semantic/procedural memory with FTS5 + provenance |
+| `polkagent-memory` | Done | 97 | FTS5 memory + admission, retention, tenant isolation, classification |
 | `polkagent-signer-external` | Done | 42 | External signer with INV-01 enforcement, approval callbacks |
 | `polkagent-chain-subxt` | Not started | — | Subxt static+dynamic decode, CheckMetadataHash |
 
@@ -80,6 +80,12 @@
 | `polkagent-identity` | Done | 36 | AccountId32, SS58 encode/decode, NetworkId, AgentIdentity |
 | `polkagent-payment` | Done | 46 | Amount arithmetic, BudgetChecker, CostEstimator, PaymentStore |
 | `polkagent-conversation` | Done | 44 | Conversation/Message types, InMemoryStore, ContextWindow |
+| `polkagent-codec` | Done | 80 | Pure-Rust SCALE encode/decode, metadata parsing, call helpers |
+| `polkagent-chain-fake` | Done | 42 | Fake ChainClient with pre-seeded data, fault injection, call tracking |
+| `polkagent-eval` | Done | 71 | Eval framework: suites, scorer, regression detection, builtin safety corpus |
+| `polkagent-group` | Done | 85 | Multi-agent groups: quorum, grant intersection, budget, evidence |
+| `polkagent-feed` | Done | 72 | Feeds, triggers, recipes: cursor-backed processing, condition evaluation |
+| `polkagent-fault` | Done | 54 | Fault injection: crash/timeout/corrupt wrappers for all port traits |
 
 ### Phase 2d: End-to-End Flows
 
@@ -97,12 +103,16 @@
 | Property tests (effect) | Done | 11 | Proptest for idempotency keys, effect kinds, priorities |
 | Property tests (grant) | Done | 18 | Proptest for policies, budgets, gate composition |
 | Property tests (5 crates) | Done | 35 | Proptest for config, card, outbox, event, artifact |
-| Integration tests | Done | 108 | Cross-crate e2e lifecycle, effects, grants, artifacts, config |
+| Integration tests | Done | 317 | Cross-crate e2e: lifecycle, effects, grants, tools, skills, conversations, faults |
 | Port contract tests | Done | 10 | Executor, signer, transport conformance suites |
 | Store contract tests | Done | 46 | RunStore, EffectStore, EventStore, ArtifactStore on SQLite |
-| Security tests | Done | 90 | Secrets, classification, grants, effects, injection, cards |
+| Security tests | Done | 157 | Secrets, injection, cards + RT-02-12 red-team + MD-02/03/05 metadata |
 | TUI snapshot tests | Done | 19 | Widget rendering and view layout tests |
-| Fuzz test harnesses | Done | 7 | cargo-fuzz targets for config, card, policy, effect, JSON, ID, event |
+| Fuzz test harnesses | Done | 10 | cargo-fuzz targets: config, card, policy, effect, JSON, ID, event, transport, skill, API |
+| Red-team security tests | Done | 67 | RT-02 through RT-12, MD-02/03/05 metadata safety |
+| Port conformance suites | Done | 63 | Shared test functions for all 6 port traits |
+| Property tests (PB-01-10) | Done | 37 | Proptest for grant intersection, effect FSM, serialization, FIFO, budget |
+| Fault injection tests | Done | 57 | FaultInjector framework + FI-01/02/03 integration tests |
 
 ### Phase 2 Acceptance Criteria
 
@@ -164,10 +174,10 @@
 
 | Metric | Count |
 |--------|-------|
-| Crates | 39 |
-| Source files | ~242 |
-| Tests | 1,938 |
-| Lines of Rust | ~81,000 |
+| Crates | 45 |
+| Source files | ~326 |
+| Tests | 2,980 |
+| Lines of Rust | ~118,000 |
 
 ## Build Commands
 

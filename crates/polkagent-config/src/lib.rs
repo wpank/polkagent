@@ -49,9 +49,10 @@ pub mod validate;
 pub use error::{ConfigError, Result};
 pub use loader::{merge, ConfigLoader};
 pub use schema::{
-    ApiConfig, BudgetConfig, Config, DatabaseBackend, DatabaseConfig, ExecutionConfig,
-    LogConfig, LogFormat, MemoryConfig, MetaConfig, PolicyConfig, PostgresConfig,
-    ProviderConfig, SqliteConfig, TuiConfig, TuiTheme, CURRENT_SCHEMA_VERSION,
-    DEFAULT_CONFIG_TEMPLATE,
+    ApiConfig, ArtifactConfig, AuthConfig, BudgetConfig, Config, DatabaseBackend, DatabaseConfig,
+    ExecutionConfig, HarnessConfig, LogConfig, LogFormat, MemoryConfig, MetaConfig,
+    ObservabilityConfig, PolicyConfig, PostgresConfig, ProviderConfig, RateLimitConfig,
+    SecurityConfig, ServerConfig, SkillsConfig, SqliteConfig, TlsConfig, TuiConfig, TuiTheme,
+    CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
 };
 pub use validate::ValidationError;

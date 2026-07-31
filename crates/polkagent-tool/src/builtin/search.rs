@@ -269,5 +269,28 @@ mod tests {
         ) -> polkagent_memory::MemoryResult<Vec<polkagent_memory::types::Episode>> {
             Ok(vec![])
         }
+
+        async fn search_with_classification(
+            &self,
+            _query: &MemoryQuery,
+            _max_classification: polkagent_memory::Classification,
+        ) -> polkagent_memory::MemoryResult<Vec<polkagent_memory::types::MemoryEntry>> {
+            Ok(vec![])
+        }
+
+        async fn count_entries(
+            &self,
+            _agent_id: &polkagent_core::AgentId,
+        ) -> polkagent_memory::MemoryResult<usize> {
+            Ok(0)
+        }
+
+        async fn delete_by_age(
+            &self,
+            _agent_id: &polkagent_core::AgentId,
+            _max_age: chrono::TimeDelta,
+        ) -> polkagent_memory::MemoryResult<usize> {
+            Ok(0)
+        }
     }
 }

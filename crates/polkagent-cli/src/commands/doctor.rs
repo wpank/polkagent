@@ -20,6 +20,15 @@ pub fn run(cmd: &DoctorCmd) -> Result<()> {
     // 4. Disk space.
     checks.push(check_disk_space());
 
+    // 5. Signer URL.
+    checks.push(check_signer());
+
+    // 6. Chain RPC endpoint.
+    checks.push(check_chain_rpc());
+
+    // 7. Daemon (API bind address).
+    checks.push(check_daemon());
+
     // Output.
     if cmd.json {
         let items: Vec<serde_json::Value> = checks
@@ -251,6 +260,121 @@ fn check_disk_space() -> Check {
             },
         }
     }
+}
+
+fn check_signer() -> Check {
+    // Check if the signer URL environment variable is configured.
+    if let Ok(url) = std::env::var("POLKAGENT_SIGNER_URL") {
+        if !url.is_empty() {
+            return Check {
+                name: "Signer",
+                passed: true,
+                message: format!("POLKAGENT_SIGNER_URL is set: {url}"),
+            };
+        }
+    }
+
+    Check {
+        name: "Signer",
+        passed: false,
+        message: "POLKAGENT_SIGNER_URL is not set. On-chain signing will not be available. \
+                  Set this to your signer service URL (e.g. http://localhost:7474)."
+            .to_owned(),
+    }
+}
+
+fn check_chain_rpc() -> Check {
+    // Look for a configured RPC endpoint in env or config.
+    let rpc_url = std::env::var("POLKAGENT_CHAIN_RPC_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    if let Some(url) = rpc_url {
+        // Attempt a TCP connection to see if something is listening.
+        let reachable = probe_tcp(&url);
+        if reachable {
+            Check {
+                name: "Chain RPC",
+                passed: true,
+                message: format!("RPC endpoint reachable: {url}"),
+            }
+        } else {
+            Check {
+                name: "Chain RPC",
+                passed: false,
+                message: format!("RPC endpoint configured but not reachable: {url}"),
+            }
+        }
+    } else {
+        // Not configured — not a hard error, just informational.
+        Check {
+            name: "Chain RPC",
+            passed: true,
+            message: "No chain RPC endpoint configured (POLKAGENT_CHAIN_RPC_URL not set). \
+                      Chain interactions will be unavailable."
+                .to_owned(),
+        }
+    }
+}
+
+fn check_daemon() -> Check {
+    // Try to connect to the API bind address.
+    let bind_addr = std::env::var("POLKAGENT_API_BIND")
+        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
+
+    let reachable = probe_tcp_addr(&bind_addr);
+
+    if reachable {
+        Check {
+            name: "Daemon",
+            passed: true,
+            message: format!("polkagent-serve is running and reachable at {bind_addr}"),
+        }
+    } else {
+        Check {
+            name: "Daemon",
+            passed: false,
+            message: format!(
+                "polkagent-serve is not reachable at {bind_addr}. \
+                 Start the daemon with `polkagent-serve` or check POLKAGENT_API_BIND."
+            ),
+        }
+    }
+}
+
+/// Try to open a TCP connection to a URL's host:port. Returns true if the
+/// connection succeeds within 2 seconds.
+fn probe_tcp(url: &str) -> bool {
+    // Strip the scheme to get host:port.
+    let hostport = url
+        .trim_start_matches("ws://")
+        .trim_start_matches("wss://")
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or(url);
+
+    probe_tcp_addr(hostport)
+}
+
+/// Try to open a TCP connection to `host:port`. Returns true on success.
+fn probe_tcp_addr(addr: &str) -> bool {
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    // If the addr has no port, default to 80.
+    let addr = if addr.contains(':') {
+        addr.to_owned()
+    } else {
+        format!("{addr}:80")
+    };
+
+    TcpStream::connect_timeout(
+        &addr.parse().unwrap_or_else(|_| "127.0.0.1:80".parse().unwrap()),
+        Duration::from_secs(2),
+    )
+    .is_ok()
 }
 
 // ---------------------------------------------------------------------------

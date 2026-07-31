@@ -1733,7 +1733,10 @@ dependencies = [
  "polkagent-config",
  "polkagent-core",
  "polkagent-event",
+ "polkagent-payment",
+ "polkagent-skill",
  "polkagent-store-trait",
+ "polkagent-tool",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -1775,14 +1778,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "polkagent-chain-trait"
+name = "polkagent-chain-fake"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "parking_lot",
+ "polkagent-chain-trait",
  "polkagent-core",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "polkagent-chain-trait"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "polkagent-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
@@ -1810,6 +1829,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "polkagent-codec"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "serde",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1871,6 +1900,23 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "polkagent-eval"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "polkagent-core",
+ "polkagent-executor-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
  "uuid",
 ]
 
@@ -1967,6 +2013,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-fault"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "parking_lot",
+ "polkagent-core",
+ "polkagent-executor-trait",
+ "polkagent-signer-trait",
+ "polkagent-store-trait",
+ "polkagent-transport-fake",
+ "polkagent-transport-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "polkagent-feed"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "polkagent-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "polkagent-grant"
 version = "0.1.0"
 dependencies = [
@@ -1982,6 +2063,22 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "polkagent-group"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "parking_lot",
+ "polkagent-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
  "uuid",
 ]
 
@@ -2043,24 +2140,33 @@ dependencies = [
  "futures",
  "polkagent-artifact",
  "polkagent-config",
+ "polkagent-conversation",
  "polkagent-core",
  "polkagent-effect",
  "polkagent-event",
  "polkagent-executor-fake",
  "polkagent-executor-trait",
+ "polkagent-fault",
  "polkagent-grant",
  "polkagent-memory",
  "polkagent-metadata",
+ "polkagent-outbox",
+ "polkagent-payment",
  "polkagent-run",
+ "polkagent-service",
  "polkagent-signer-fake",
  "polkagent-signer-trait",
+ "polkagent-skill",
  "polkagent-store-trait",
  "polkagent-test-fixtures",
+ "polkagent-tool",
+ "polkagent-transport-fake",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "toml",
+ "uuid",
 ]
 
 [[package]]
@@ -2174,12 +2280,16 @@ dependencies = [
  "async-trait",
  "blake3",
  "chrono",
+ "hex",
  "polkagent-card",
  "polkagent-config",
  "polkagent-core",
  "polkagent-effect",
  "polkagent-executor-trait",
  "polkagent-grant",
+ "polkagent-identity",
+ "polkagent-metadata",
+ "polkagent-outbox",
  "polkagent-signer-trait",
  "polkagent-store-trait",
  "proptest",
@@ -2198,13 +2308,18 @@ dependencies = [
  "futures",
  "polkagent-artifact",
  "polkagent-config",
+ "polkagent-conversation",
  "polkagent-core",
  "polkagent-effect",
  "polkagent-event",
  "polkagent-executor-trait",
  "polkagent-grant",
+ "polkagent-identity",
+ "polkagent-memory",
+ "polkagent-payment",
  "polkagent-run",
  "polkagent-signer-trait",
+ "polkagent-skill",
  "polkagent-store-trait",
  "polkagent-tool",
  "serde",
@@ -2212,6 +2327,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2251,6 +2367,7 @@ dependencies = [
  "chrono",
  "polkagent-core",
  "serde",
+ "serde_json",
  "thiserror 2.0.19",
  "tokio",
  "zeroize",
@@ -2281,7 +2398,9 @@ dependencies = [
  "chrono",
  "parking_lot",
  "polkagent-artifact",
+ "polkagent-conversation",
  "polkagent-core",
+ "polkagent-payment",
  "polkagent-store-trait",
  "rusqlite",
  "serde",
@@ -2303,6 +2422,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

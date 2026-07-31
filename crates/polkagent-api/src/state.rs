@@ -19,10 +19,47 @@ use chrono::{DateTime, Utc};
 use polkagent_config::Config;
 use polkagent_core::{AgentId, agent::AgentSpec};
 use polkagent_event::EventBus;
+use polkagent_payment::PaymentStore;
+use polkagent_skill::manifest::SkillManifest;
 use polkagent_store_trait::{ArtifactStore, EffectStore};
 use polkagent_store_trait::event::EventStore;
+use polkagent_tool::ToolSpec;
 
 use crate::run::RunManagerTrait;
+
+// ---------------------------------------------------------------------------
+// SkillRegistry trait
+// ---------------------------------------------------------------------------
+
+/// Async registry trait for loaded skill manifests.
+///
+/// The API layer reads skills through this trait. A concrete implementation
+/// might load manifests from disk at startup and cache them in memory.
+#[async_trait]
+pub trait SkillRegistry: Send + Sync {
+    /// List all loaded skill manifests.
+    async fn list_skills(&self) -> Vec<SkillManifest>;
+
+    /// Look up a single skill by its name.
+    async fn get_skill(&self, name: &str) -> Option<SkillManifest>;
+}
+
+// ---------------------------------------------------------------------------
+// ToolRegistryStore trait
+// ---------------------------------------------------------------------------
+
+/// Async query trait for the tool registry.
+///
+/// This provides read-only access to tool specs so the API layer can expose
+/// them without owning the mutable `ToolRegistry` from `polkagent-tool`.
+#[async_trait]
+pub trait ToolRegistryStore: Send + Sync {
+    /// List all registered tool specs.
+    async fn list_tools(&self) -> Vec<ToolSpec>;
+
+    /// Look up a tool spec by name.
+    async fn get_tool(&self, name: &str) -> Option<ToolSpec>;
+}
 
 // ---------------------------------------------------------------------------
 // AgentStore trait
@@ -175,6 +212,14 @@ pub struct AppState {
     pub event_store: Option<Arc<dyn EventStore>>,
     /// Content-addressed artifact store (optional — returns 501 when not configured).
     pub artifact_store: Option<Arc<dyn ArtifactStore>>,
+    /// Skill registry (optional — returns 501 when not configured).
+    pub skill_registry: Option<Arc<dyn SkillRegistry>>,
+    /// Tool registry store (optional — returns 501 when not configured).
+    pub tool_registry: Option<Arc<dyn ToolRegistryStore>>,
+    /// Payment store (optional — returns 501 when not configured).
+    pub payment_store: Option<Arc<dyn PaymentStore>>,
+    /// Memory store (optional — returns 501 when not configured).
+    pub memory_store: Option<Arc<dyn crate::routes::memory::MemoryStore>>,
 }
 
 impl AppState {
@@ -204,6 +249,10 @@ impl AppState {
             started_at_utc: Utc::now(),
             event_store: None,
             artifact_store: None,
+            skill_registry: None,
+            tool_registry: None,
+            payment_store: None,
+            memory_store: None,
         }
     }
 
@@ -218,6 +267,37 @@ impl AppState {
     #[must_use]
     pub fn with_artifact_store(mut self, store: Arc<dyn ArtifactStore>) -> Self {
         self.artifact_store = Some(store);
+        self
+    }
+
+    /// Set the skill registry.
+    #[must_use]
+    pub fn with_skill_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
+        self.skill_registry = Some(registry);
+        self
+    }
+
+    /// Set the tool registry store.
+    #[must_use]
+    pub fn with_tool_registry(mut self, registry: Arc<dyn ToolRegistryStore>) -> Self {
+        self.tool_registry = Some(registry);
+        self
+    }
+
+    /// Set the payment store.
+    #[must_use]
+    pub fn with_payment_store(mut self, store: Arc<dyn PaymentStore>) -> Self {
+        self.payment_store = Some(store);
+        self
+    }
+
+    /// Set the memory store.
+    #[must_use]
+    pub fn with_memory_store(
+        mut self,
+        store: Arc<dyn crate::routes::memory::MemoryStore>,
+    ) -> Self {
+        self.memory_store = Some(store);
         self
     }
 

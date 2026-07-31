@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use polkagent_core::ids::AgentId;
 
+use crate::classification::Classification;
 use crate::error::MemoryResult;
 use crate::types::{Episode, EpisodeId, MemoryEntry, MemoryId, MemoryQuery};
 
@@ -25,11 +26,34 @@ pub trait MemoryStore: Send + Sync {
     /// for databases without FTS support.
     async fn search(&self, query: &MemoryQuery) -> MemoryResult<Vec<MemoryEntry>>;
 
+    /// Search memories matching the given query, filtered to entries whose
+    /// classification level does not exceed `max_classification`.
+    ///
+    /// Entries above the maximum classification are silently excluded; no error
+    /// is returned.
+    async fn search_with_classification(
+        &self,
+        query: &MemoryQuery,
+        max_classification: Classification,
+    ) -> MemoryResult<Vec<MemoryEntry>>;
+
     /// Update the relevance score for a memory.
     async fn update_relevance(&self, id: MemoryId, score: f64) -> MemoryResult<()>;
 
     /// Delete a memory entry by its identifier.
     async fn delete_memory(&self, id: MemoryId) -> MemoryResult<()>;
+
+    /// Return the total number of memory entries belonging to `agent_id`.
+    async fn count_entries(&self, agent_id: &AgentId) -> MemoryResult<usize>;
+
+    /// Delete all memories for `agent_id` that are older than `max_age`.
+    ///
+    /// Returns the number of entries deleted.
+    async fn delete_by_age(
+        &self,
+        agent_id: &AgentId,
+        max_age: chrono::Duration,
+    ) -> MemoryResult<usize>;
 
     /// Create a new episode and return its identifier.
     async fn create_episode(&self, episode: &Episode) -> MemoryResult<EpisodeId>;

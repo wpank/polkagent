@@ -7,4 +7,6 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions, clippy::missing_errors_doc)]
 
+pub mod exit_codes;
+pub mod output;
 pub mod tui;

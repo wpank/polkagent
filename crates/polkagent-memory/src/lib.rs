@@ -51,16 +51,23 @@
     clippy::missing_panics_doc
 )]
 
+pub mod admission;
+pub mod classification;
+pub mod conformance;
 pub mod error;
+pub mod export;
+pub mod retention;
 pub mod service;
 pub mod sqlite;
 pub mod store;
+pub mod tenant;
 pub mod types;
 
 // ---------------------------------------------------------------------------
 // Convenience re-exports
 // ---------------------------------------------------------------------------
 
+pub use classification::Classification;
 pub use error::{MemoryError, MemoryResult};
 pub use service::MemoryService;
 pub use sqlite::SqliteMemoryStore;
