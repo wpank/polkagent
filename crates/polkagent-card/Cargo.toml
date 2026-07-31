@@ -30,3 +30,4 @@ ratatui = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 chrono = { workspace = true }
+proptest = { workspace = true }

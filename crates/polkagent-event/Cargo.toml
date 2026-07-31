@@ -20,5 +20,9 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
+
 [lints]
 workspace = true

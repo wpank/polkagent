@@ -1,0 +1,42 @@
+[package]
+name = "polkagent-security-tests"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Security verification tests for the Polkagent platform (PRD-15)"
+
+[dependencies]
+# Internal crates under test
+polkagent-core = { path = "../polkagent-core" }
+polkagent-effect = { path = "../polkagent-effect" }
+polkagent-grant = { path = "../polkagent-grant" }
+polkagent-card = { path = "../polkagent-card" }
+polkagent-config = { path = "../polkagent-config" }
+polkagent-executor-trait = { path = "../polkagent-executor-trait" }
+polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+polkagent-store-trait = { path = "../polkagent-store-trait" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async
+tokio = { workspace = true, features = ["full", "test-util"] }
+async-trait = { workspace = true }
+
+# Testing
+proptest = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+# Crypto
+blake3 = { workspace = true }
+
+[lints]
+workspace = true

@@ -19,7 +19,8 @@ use chrono::{DateTime, Utc};
 use polkagent_config::Config;
 use polkagent_core::{AgentId, agent::AgentSpec};
 use polkagent_event::EventBus;
-use polkagent_store_trait::EffectStore;
+use polkagent_store_trait::{ArtifactStore, EffectStore};
+use polkagent_store_trait::event::EventStore;
 
 use crate::run::RunManagerTrait;
 
@@ -165,6 +166,15 @@ pub struct AppState {
     pub started_at: Instant,
     /// UTC wall-clock time the server started (for the system/info endpoint).
     pub started_at_utc: DateTime<Utc>,
+
+    // ------------------------------------------------------------------
+    // Optional stores — return 501 Not Implemented when None
+    // ------------------------------------------------------------------
+
+    /// Durable event store (optional — returns 501 when not configured).
+    pub event_store: Option<Arc<dyn EventStore>>,
+    /// Content-addressed artifact store (optional — returns 501 when not configured).
+    pub artifact_store: Option<Arc<dyn ArtifactStore>>,
 }
 
 impl AppState {
@@ -192,7 +202,23 @@ impl AppState {
             event_bus,
             started_at: Instant::now(),
             started_at_utc: Utc::now(),
+            event_store: None,
+            artifact_store: None,
         }
+    }
+
+    /// Set the durable event store.
+    #[must_use]
+    pub fn with_event_store(mut self, store: Arc<dyn EventStore>) -> Self {
+        self.event_store = Some(store);
+        self
+    }
+
+    /// Set the content-addressed artifact store.
+    #[must_use]
+    pub fn with_artifact_store(mut self, store: Arc<dyn ArtifactStore>) -> Self {
+        self.artifact_store = Some(store);
+        self
     }
 
     /// Seconds elapsed since the server started.

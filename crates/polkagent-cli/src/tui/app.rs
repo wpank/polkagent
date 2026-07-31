@@ -59,7 +59,7 @@ pub const REFRESH_INTERVAL_SECS: u64 = 5;
 // Tab
 // ---------------------------------------------------------------------------
 
-/// Top-level region tab (F1–F4).
+/// Top-level region tab (F1–F6) plus pseudo-tabs for drill-down views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     /// F1 — Overview: agent grid, run summary, system health.
@@ -71,9 +71,25 @@ pub enum Tab {
     Runs,
     /// F4 — System health and configuration.
     System,
+    /// F5 — Event timeline for selected run.
+    Timeline,
+    /// F6 — Approval queue for pending effects.
+    Approvals,
+    /// Run detail (entered from Runs via Enter; not a top-level F-key tab).
+    RunDetail,
 }
 
 impl Tab {
+    /// All tabs in display order (excludes pseudo-tabs like RunDetail).
+    pub const ALL: [Tab; 6] = [
+        Tab::Dashboard,
+        Tab::Agents,
+        Tab::Runs,
+        Tab::System,
+        Tab::Timeline,
+        Tab::Approvals,
+    ];
+
     /// Display name used in the header bar and status bar.
     pub fn label(self) -> &'static str {
         match self {
@@ -81,6 +97,9 @@ impl Tab {
             Self::Agents    => "AGENTS",
             Self::Runs      => "RUNS",
             Self::System    => "SYSTEM",
+            Self::Timeline  => "TIMELINE",
+            Self::Approvals => "APPROVALS",
+            Self::RunDetail => "RUN DETAIL",
         }
     }
 
@@ -91,6 +110,37 @@ impl Tab {
             Self::Agents    => "[F2]",
             Self::Runs      => "[F3]",
             Self::System    => "[F4]",
+            Self::Timeline  => "[F5]",
+            Self::Approvals => "[F6]",
+            Self::RunDetail => "[--]",
+        }
+    }
+
+    /// Return the next tab in display order (wraps around).
+    /// RunDetail maps to its parent (Runs).
+    pub fn next(self) -> Self {
+        match self {
+            Self::Dashboard => Self::Agents,
+            Self::Agents    => Self::Runs,
+            Self::Runs      => Self::System,
+            Self::System    => Self::Timeline,
+            Self::Timeline  => Self::Approvals,
+            Self::Approvals => Self::Dashboard,
+            Self::RunDetail => Self::System,
+        }
+    }
+
+    /// Return the previous tab in display order (wraps around).
+    /// RunDetail maps to its parent (Runs).
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Dashboard => Self::Approvals,
+            Self::Agents    => Self::Dashboard,
+            Self::Runs      => Self::Agents,
+            Self::System    => Self::Runs,
+            Self::Timeline  => Self::System,
+            Self::Approvals => Self::Timeline,
+            Self::RunDetail => Self::Runs,
         }
     }
 }
@@ -200,6 +250,14 @@ impl App {
         match action {
             TuiAction::NavigateTab(tab) => {
                 self.active_tab = tab;
+                // When switching to timeline, refresh events for the selected run.
+                if tab == Tab::Timeline {
+                    self.refresh_run_events();
+                }
+                // When switching to approvals, refresh the approval queue.
+                if tab == Tab::Approvals {
+                    self.refresh_approvals();
+                }
                 self.tui_state.mark_dirty();
             }
 
@@ -211,6 +269,14 @@ impl App {
                     }
                     Tab::Runs => {
                         self.tui_state.runs_scroll.up();
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Timeline => {
+                        self.tui_state.timeline_scroll.up();
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Approvals => {
+                        self.tui_state.approvals_scroll.up();
                         self.tui_state.mark_dirty();
                     }
                     _ => {}
@@ -230,6 +296,16 @@ impl App {
                         self.tui_state.runs_scroll.down(total, visible);
                         self.tui_state.mark_dirty();
                     }
+                    Tab::Timeline => {
+                        let total = self.tui_state.run_events.len();
+                        self.tui_state.timeline_scroll.down(total, visible);
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Approvals => {
+                        let total = self.tui_state.pending_approvals.len();
+                        self.tui_state.approvals_scroll.down(total, visible);
+                        self.tui_state.mark_dirty();
+                    }
                     _ => {}
                 }
             }
@@ -237,8 +313,10 @@ impl App {
             TuiAction::ScrollUp(n) => {
                 for _ in 0..n {
                     match self.active_tab {
-                        Tab::Agents => self.tui_state.agents_scroll.up(),
-                        Tab::Runs   => self.tui_state.runs_scroll.up(),
+                        Tab::Agents    => self.tui_state.agents_scroll.up(),
+                        Tab::Runs      => self.tui_state.runs_scroll.up(),
+                        Tab::Timeline  => self.tui_state.timeline_scroll.up(),
+                        Tab::Approvals => self.tui_state.approvals_scroll.up(),
                         _ => {}
                     }
                 }
@@ -257,6 +335,14 @@ impl App {
                             let t = self.tui_state.runs.len();
                             self.tui_state.runs_scroll.down(t, visible);
                         }
+                        Tab::Timeline => {
+                            let t = self.tui_state.run_events.len();
+                            self.tui_state.timeline_scroll.down(t, visible);
+                        }
+                        Tab::Approvals => {
+                            let t = self.tui_state.pending_approvals.len();
+                            self.tui_state.approvals_scroll.down(t, visible);
+                        }
                         _ => {}
                     }
                 }
@@ -264,7 +350,6 @@ impl App {
             }
 
             TuiAction::Select => {
-                // Drill-down: for now, ensure the scroll selection is set.
                 match self.active_tab {
                     Tab::Agents => {
                         if self.tui_state.agents_scroll.selected.is_none() {
@@ -273,8 +358,32 @@ impl App {
                         self.tui_state.mark_dirty();
                     }
                     Tab::Runs => {
-                        if self.tui_state.runs_scroll.selected.is_none() {
-                            self.tui_state.runs_scroll.selected = Some(0);
+                        // Select a run and drill into run detail.
+                        let sel = self.tui_state.runs_scroll.selected.unwrap_or(0);
+                        self.tui_state.runs_scroll.selected = Some(sel);
+                        if let Some(run) = self.tui_state.runs.get(sel) {
+                            self.tui_state.selected_run = Some(run.id.clone());
+                            self.refresh_run_detail();
+                            self.refresh_run_events();
+                            self.active_tab = Tab::RunDetail;
+                        }
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Timeline => {
+                        // Ensure an event is selected for the detail panel.
+                        if self.tui_state.timeline_scroll.selected.is_none()
+                            && !self.tui_state.run_events.is_empty()
+                        {
+                            self.tui_state.timeline_scroll.selected = Some(0);
+                        }
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Approvals => {
+                        // Ensure an approval item is selected for the detail panel.
+                        if self.tui_state.approvals_scroll.selected.is_none()
+                            && !self.tui_state.pending_approvals.is_empty()
+                        {
+                            self.tui_state.approvals_scroll.selected = Some(0);
                         }
                         self.tui_state.mark_dirty();
                     }
@@ -292,7 +401,66 @@ impl App {
                         self.tui_state.runs_scroll.selected = None;
                         self.tui_state.mark_dirty();
                     }
+                    Tab::RunDetail => {
+                        // Go back to runs list.
+                        self.active_tab = Tab::Runs;
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Timeline => {
+                        if self.tui_state.timeline_scroll.selected.is_some() {
+                            self.tui_state.timeline_scroll.selected = None;
+                        } else {
+                            self.active_tab = Tab::Dashboard;
+                        }
+                        self.tui_state.mark_dirty();
+                    }
+                    Tab::Approvals => {
+                        if self.tui_state.approvals_scroll.selected.is_some() {
+                            self.tui_state.approvals_scroll.selected = None;
+                        } else {
+                            self.active_tab = Tab::Dashboard;
+                        }
+                        self.tui_state.mark_dirty();
+                    }
                     _ => self.active_tab = Tab::Dashboard,
+                }
+            }
+
+            TuiAction::SelectRun => {
+                // Same as Select when on the Runs tab.
+                if self.active_tab == Tab::Runs {
+                    self.apply_action(TuiAction::Select);
+                }
+            }
+
+            TuiAction::ViewTimeline => {
+                self.active_tab = Tab::Timeline;
+                self.refresh_run_events();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::ViewApprovals => {
+                self.active_tab = Tab::Approvals;
+                self.refresh_approvals();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::ApproveEffect => {
+                // Approval action: currently a no-op (requires write access).
+                // In a full implementation this would call an effect store method.
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::DenyEffect => {
+                // Deny action: currently a no-op (requires write access).
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::TogglePanel => {
+                if self.active_tab == Tab::RunDetail {
+                    self.tui_state.detail_panel_index =
+                        (self.tui_state.detail_panel_index + 1) % 2;
+                    self.tui_state.mark_dirty();
                 }
             }
 
@@ -349,6 +517,32 @@ impl App {
                     }
                 }
 
+                // Pending approvals (always refresh — visible on dashboard too).
+                match db.pending_effects(100) {
+                    Ok(approvals) => self.tui_state.pending_approvals = approvals,
+                    Err(e) => {
+                        self.tui_state.last_error = Some(format!("approvals: {e}"));
+                    }
+                }
+
+                // If a run is selected, refresh its detail and events.
+                if let Some(run_id) = &self.tui_state.selected_run.clone() {
+                    match db.run_detail(run_id) {
+                        Ok(detail) => self.tui_state.run_detail = detail,
+                        Err(e) => {
+                            self.tui_state.last_error =
+                                Some(format!("run_detail: {e}"));
+                        }
+                    }
+                    match db.run_events(run_id, 500) {
+                        Ok(events) => self.tui_state.run_events = events,
+                        Err(e) => {
+                            self.tui_state.last_error =
+                                Some(format!("run_events: {e}"));
+                        }
+                    }
+                }
+
                 // Clear error if all queries succeeded.
                 if self.tui_state.last_error.is_none() {
                     self.tui_state.last_error = None;
@@ -361,6 +555,54 @@ impl App {
                 self.tui_state.health.db_ok = false;
                 self.tui_state.last_error = Some(format!("db: {e}"));
                 self.tui_state.mark_dirty();
+            }
+        }
+    }
+
+    /// Refresh only the run detail for the currently selected run.
+    fn refresh_run_detail(&mut self) {
+        use crate::tui::db::TuiDb;
+
+        let Some(run_id) = &self.tui_state.selected_run.clone() else {
+            return;
+        };
+        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+            match db.run_detail(run_id) {
+                Ok(detail) => self.tui_state.run_detail = detail,
+                Err(e) => {
+                    self.tui_state.last_error = Some(format!("run_detail: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Refresh only the events for the currently selected run.
+    fn refresh_run_events(&mut self) {
+        use crate::tui::db::TuiDb;
+
+        let Some(run_id) = &self.tui_state.selected_run.clone() else {
+            return;
+        };
+        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+            match db.run_events(run_id, 500) {
+                Ok(events) => self.tui_state.run_events = events,
+                Err(e) => {
+                    self.tui_state.last_error = Some(format!("run_events: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Refresh only the approval queue.
+    fn refresh_approvals(&mut self) {
+        use crate::tui::db::TuiDb;
+
+        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+            match db.pending_effects(100) {
+                Ok(approvals) => self.tui_state.pending_approvals = approvals,
+                Err(e) => {
+                    self.tui_state.last_error = Some(format!("approvals: {e}"));
+                }
             }
         }
     }
@@ -408,6 +650,15 @@ impl App {
             Tab::System => {
                 views::system::render(frame, layout.main, &self.tui_state, &self.theme);
             }
+            Tab::RunDetail => {
+                views::run_detail::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
+            Tab::Timeline => {
+                views::timeline::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
+            Tab::Approvals => {
+                views::approvals::render(frame, layout.main, &self.tui_state, &self.theme);
+            }
         }
     }
 
@@ -424,6 +675,8 @@ impl App {
             (Tab::Agents,    "F2 Agents"),
             (Tab::Runs,      "F3 Runs"),
             (Tab::System,    "F4 System"),
+            (Tab::Timeline,  "F5 Timeline"),
+            (Tab::Approvals, "F6 Approvals"),
         ];
 
         let mut spans = Vec::with_capacity(tabs.len() * 2);

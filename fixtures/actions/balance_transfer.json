@@ -1,0 +1,18 @@
+{
+  "canonical": {
+    "chain": "polkadot",
+    "pallet": "Balances",
+    "call": "transfer_keep_alive",
+    "args": {
+      "dest": "15oF4uVJwmo4TdGW7VfQxNLavjCXviqWrztPu6TA9q7y3MWQ",
+      "value": "10000000000"
+    },
+    "fee_estimate": "15700000",
+    "metadata_hash": "0xabc123..."
+  },
+  "narrative": {
+    "summary": "Transfer 1 DOT to the specified address",
+    "risks": ["This transfers real value on mainnet"]
+  },
+  "risk_level": "medium"
+}

@@ -23,10 +23,17 @@ polkagent-grant = { path = "../polkagent-grant" }
 polkagent-artifact = { path = "../polkagent-artifact" }
 polkagent-config = { path = "../polkagent-config" }
 polkagent-test-fixtures = { path = "../polkagent-test-fixtures" }
+polkagent-executor-trait = { path = "../polkagent-executor-trait", features = ["test-contracts"] }
+polkagent-executor-fake = { path = "../polkagent-executor-fake" }
+polkagent-signer-trait = { path = "../polkagent-signer-trait", features = ["test-contracts"] }
+polkagent-signer-fake = { path = "../polkagent-signer-fake" }
+polkagent-memory = { path = "../polkagent-memory" }
+polkagent-metadata = { path = "../polkagent-metadata" }
 
 # Async
 tokio = { workspace = true, features = ["full", "test-util"] }
 async-trait = { workspace = true }
+futures = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

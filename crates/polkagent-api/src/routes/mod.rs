@@ -17,13 +17,29 @@
 //!   GET    /runs
 //!   GET    /runs/:id
 //!   POST   /runs/:id/cancel
-//!   GET    /runs/:run_id/effects
+//!   GET    /runs/:id/turns
+//!   GET    /runs/:id/events
+//!   GET    /runs/:id/artifacts
+//!   GET    /runs/:id/effects
+//!   POST   /runs/:id/resume
 //!
 //!   GET    /effects/:id
 //!   POST   /effects/:id/approve
 //!   POST   /effects/:id/deny
 //!
+//!   GET    /artifacts/:id
+//!   GET    /artifacts/:id/content
+//!   GET    /artifacts/:id/provenance
+//!
+//!   GET    /events
+//!   GET    /events/:id
 //!   GET    /events/stream          (WebSocket)
+//!
+//!   GET    /providers
+//!   GET    /providers/:id
+//!
+//!   POST   /memory/query
+//!   GET    /memory/stats
 //!
 //!   GET    /system/info
 //!
@@ -34,9 +50,13 @@
 //! ```
 
 pub mod agents;
+pub mod artifacts;
 pub mod effects;
 pub mod events;
+pub mod events_rest;
 pub mod health;
+pub mod memory;
+pub mod providers;
 pub mod runs;
 pub mod system;
 
@@ -76,13 +96,29 @@ pub fn register(state: AppState) -> Router {
         .route("/runs", get(runs::list_runs))
         .route("/runs/{id}", get(runs::get_run))
         .route("/runs/{id}/cancel", post(runs::cancel_run))
+        .route("/runs/{id}/turns", get(runs::list_run_turns))
+        .route("/runs/{id}/events", get(runs::list_run_events))
+        .route("/runs/{id}/artifacts", get(runs::list_run_artifacts))
+        .route("/runs/{id}/effects", get(runs::list_run_effects))
+        .route("/runs/{id}/resume", post(runs::resume_run))
         // Effects
-        .route("/runs/{run_id}/effects", get(effects::list_effects))
         .route("/effects/{id}", get(effects::get_effect))
         .route("/effects/{id}/approve", post(effects::approve_effect))
         .route("/effects/{id}/deny", post(effects::deny_effect))
-        // Events (WebSocket)
+        // Artifacts
+        .route("/artifacts/{id}", get(artifacts::get_artifact))
+        .route("/artifacts/{id}/content", get(artifacts::get_artifact_content))
+        .route("/artifacts/{id}/provenance", get(artifacts::get_artifact_provenance))
+        // Events (REST + WebSocket)
+        .route("/events", get(events_rest::list_events))
+        .route("/events/{id}", get(events_rest::get_event))
         .route("/events/stream", get(events::event_stream))
+        // Providers
+        .route("/providers", get(providers::list_providers))
+        .route("/providers/{id}", get(providers::get_provider))
+        // Memory
+        .route("/memory/query", post(memory::query_memory))
+        .route("/memory/stats", get(memory::memory_stats))
         // System
         .route("/system/info", get(system::system_info));
 

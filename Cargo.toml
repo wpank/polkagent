@@ -29,6 +29,17 @@ members = [
     "crates/polkagent-metadata",
     "crates/polkagent-integration-tests",
     "crates/polkagent-memory",
+    "crates/polkagent-tool",
+    "crates/polkagent-skill",
+    "crates/polkagent-telemetry",
+    "crates/polkagent-harness-trait",
+    "crates/polkagent-harness-claude",
+    "crates/polkagent-security-tests",
+    "crates/polkagent-secret",
+    "crates/polkagent-identity",
+    "crates/polkagent-payment",
+    "crates/polkagent-conversation",
+    "crates/polkagent-service",
 ]
 
 [workspace.package]
@@ -83,6 +94,7 @@ dashmap = "6"
 parking_lot = "0.12"
 bytes = "1"
 dirs = "5"
+semver = { version = "1", features = ["serde"] }
 
 # Testing
 proptest = "1"

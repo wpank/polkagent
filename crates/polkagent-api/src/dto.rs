@@ -290,3 +290,202 @@ pub struct ListAgentsQuery {
     /// Cursor from the previous page.
     pub after: Option<AgentId>,
 }
+
+// ---------------------------------------------------------------------------
+// Turns — responses
+// ---------------------------------------------------------------------------
+
+/// Response body for a single turn summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnSummary {
+    /// Turn sequence number within the run.
+    pub sequence: u32,
+    /// When the turn started.
+    pub started_at: DateTime<Utc>,
+    /// When the turn completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// Response body for `GET /runs/{id}/turns`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListTurnsResponse {
+    /// API version.
+    pub version: String,
+    /// List of turn summaries.
+    pub data: Vec<TurnSummary>,
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts — responses
+// ---------------------------------------------------------------------------
+
+/// Response body for a single artifact's metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactResponse {
+    /// API version.
+    pub version: String,
+    /// Unique artifact identifier.
+    pub id: String,
+    /// Artifact kind tag (e.g. `"file"`, `"code"`).
+    pub kind: String,
+    /// Hash algorithm (e.g. `"blake3"`).
+    pub algorithm: String,
+    /// Hex-encoded content digest.
+    pub digest_hex: String,
+    /// Data classification (e.g. `"public"`, `"private"`).
+    pub classification: String,
+    /// The run that produced this artifact, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    /// When the artifact was created.
+    pub created_at: String,
+}
+
+/// Response body for `GET /runs/{id}/artifacts` and list operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListArtifactsResponse {
+    /// API version.
+    pub version: String,
+    /// List of artifact metadata.
+    pub data: Vec<ArtifactResponse>,
+}
+
+/// Response body for `GET /artifacts/{id}/provenance`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvenanceResponse {
+    /// API version.
+    pub version: String,
+    /// Ordered lineage chain (oldest ancestor first).
+    pub chain: Vec<ArtifactResponse>,
+}
+
+// ---------------------------------------------------------------------------
+// Events (REST) — responses
+// ---------------------------------------------------------------------------
+
+/// Response body for a single stored event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventResponse {
+    /// API version.
+    pub version: String,
+    /// The stored event record.
+    pub data: serde_json::Value,
+}
+
+/// Response body for `GET /events`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListEventsResponse {
+    /// API version.
+    pub version: String,
+    /// List of stored events.
+    pub data: Vec<serde_json::Value>,
+    /// Pagination cursor information.
+    pub cursor: CursorInfo,
+    /// Page metadata.
+    pub meta: PageMeta,
+}
+
+/// Query parameters for `GET /events`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListEventsQuery {
+    /// Filter by run ID.
+    pub run_id: Option<RunId>,
+    /// Filter by event type string.
+    pub event_type: Option<String>,
+    /// Return events with global_sequence >= since.
+    pub since: Option<u64>,
+    /// Maximum items per page (default 50, max 200).
+    pub limit: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// Providers — responses
+// ---------------------------------------------------------------------------
+
+/// Response body for a single provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderResponse {
+    /// API version.
+    pub version: String,
+    /// Stable provider identifier.
+    pub id: String,
+    /// Provider type (e.g. `"anthropic"`, `"openai_compatible"`).
+    pub provider_type: String,
+    /// Base URL for the provider API.
+    pub base_url: String,
+    /// Default model when none is specified.
+    pub default_model: String,
+    /// Per-request timeout in seconds.
+    pub timeout_secs: u64,
+    /// Maximum automatic retries on transient failures.
+    pub max_retries: u32,
+}
+
+/// Response body for `GET /providers`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListProvidersResponse {
+    /// API version.
+    pub version: String,
+    /// Configured providers.
+    pub data: Vec<ProviderResponse>,
+}
+
+// ---------------------------------------------------------------------------
+// Memory — requests and responses
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /memory/query`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryQueryRequest {
+    /// The search query string.
+    pub query: String,
+    /// Maximum number of results to return.
+    #[serde(default = "default_memory_limit")]
+    pub limit: u32,
+    /// Optional filter by memory type/namespace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
+fn default_memory_limit() -> u32 {
+    10
+}
+
+/// A single memory search result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryResult {
+    /// Memory item identifier.
+    pub id: String,
+    /// Content of the memory.
+    pub content: String,
+    /// Relevance score (0.0 to 1.0).
+    pub score: f64,
+    /// Namespace/type of the memory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// When the memory was created.
+    pub created_at: String,
+}
+
+/// Response body for `POST /memory/query`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryQueryResponse {
+    /// API version.
+    pub version: String,
+    /// Matching memory items.
+    pub data: Vec<MemoryResult>,
+}
+
+/// Response body for `GET /memory/stats`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryStatsResponse {
+    /// API version.
+    pub version: String,
+    /// Total number of stored memories.
+    pub total_memories: u64,
+    /// Total size in bytes of all stored memories.
+    pub total_bytes: u64,
+    /// Number of distinct namespaces.
+    pub namespaces: u32,
+}

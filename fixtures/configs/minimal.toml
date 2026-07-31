@@ -1,0 +1,7 @@
+[meta]
+api_version = "v1alpha1"
+
+[database]
+backend = "sqlite"
+[database.sqlite]
+path = "~/.local/share/polkagent/polkagent.db"

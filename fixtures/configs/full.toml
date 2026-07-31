@@ -1,0 +1,55 @@
+[meta]
+api_version = "v1alpha1"
+schema_version = 1
+
+[log]
+level = "info"
+format = "json"
+
+[database]
+backend = "sqlite"
+[database.sqlite]
+path = "~/.local/share/polkagent/polkagent.db"
+wal_mode = true
+busy_timeout_ms = 5000
+
+[execution]
+max_concurrent_runs = 4
+default_timeout_secs = 300
+[execution.budget]
+max_usd_per_run = 1.0
+max_usd_per_day = 10.0
+warn_threshold_percent = 80
+
+[[providers]]
+id = "anthropic"
+provider_type = "anthropic"
+api_key_env = "POLKAGENT_ANTHROPIC_API_KEY"
+default_model = "claude-sonnet-4-20250514"
+timeout_secs = 120
+max_retries = 3
+
+[[providers]]
+id = "openai"
+provider_type = "openai"
+api_key_env = "POLKAGENT_OPENAI_API_KEY"
+default_model = "gpt-4o"
+
+[[providers]]
+id = "local"
+provider_type = "openai"
+base_url = "http://localhost:11434/v1"
+default_model = "llama3.2"
+
+[policy]
+policy_dir = "~/.polkagent/policies"
+default_policy = "read-only"
+
+[api]
+enabled = true
+bind_address = "127.0.0.1:9090"
+cors_origins = ["http://localhost:3000"]
+
+[tui]
+theme = "dark"
+atmospheric_effects = true

@@ -1,0 +1,31 @@
+[package]
+name = "polkagent-identity"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Identity and account types for Polkadot chain integration"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Crypto
+blake3 = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# SS58 encoding
+base58 = "0.2"
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -35,6 +35,8 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+proptest = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

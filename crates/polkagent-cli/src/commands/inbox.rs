@@ -1,0 +1,254 @@
+//! `polkagent inbox` — manage pending effects awaiting approval.
+
+use anyhow::Result;
+use tracing::info;
+
+use polkagent_store_sqlite::SqlitePool;
+
+use crate::cli::{
+    InboxCmd, InboxApproveCmd, InboxDenyCmd, InboxHistoryCmd, InboxListCmd, InboxShowCmd,
+};
+
+/// Dispatch the inbox subcommand.
+pub fn run(cmd: &InboxCmd, pool: &SqlitePool) -> Result<()> {
+    match cmd {
+        InboxCmd::List(c)    => list(c, pool),
+        InboxCmd::Show(c)    => show(c, pool),
+        InboxCmd::Approve(c) => approve(c, pool),
+        InboxCmd::Deny(c)    => deny(c, pool),
+        InboxCmd::History(c) => history(c, pool),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// list
+// ---------------------------------------------------------------------------
+
+fn list(cmd: &InboxListCmd, pool: &SqlitePool) -> Result<()> {
+    let reader = pool.reader()?;
+    let mut stmt = reader.prepare(
+        "SELECT id, run_id, kind, params_json, created_at
+         FROM effect_intents
+         WHERE claimed_by IS NULL
+         ORDER BY created_at ASC",
+    )?;
+
+    let rows: Vec<(String, String, String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if cmd.json {
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(id, run_id, kind, _params, created)| {
+                serde_json::json!({
+                    "id": id,
+                    "run_id": run_id,
+                    "kind": kind,
+                    "created_at": created,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        println!("No pending effects in inbox.");
+        return Ok(());
+    }
+
+    println!("{:<36}  {:<36}  {:<18}  Created", "Effect ID", "Run ID", "Kind");
+    println!("{}", "-".repeat(110));
+    for (id, run_id, kind, _params, created) in &rows {
+        println!("{id:<36}  {run_id:<36}  {kind:<18}  {created}");
+    }
+    println!();
+    println!("{} pending effect(s)", rows.len());
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// show
+// ---------------------------------------------------------------------------
+
+fn show(cmd: &InboxShowCmd, pool: &SqlitePool) -> Result<()> {
+    let reader = pool.reader()?;
+    let row: Option<(String, String, String, String, String, Option<String>, Option<String>)> =
+        reader
+            .query_row(
+                "SELECT id, run_id, kind, params_json, created_at, claimed_by, claimed_until
+                 FROM effect_intents
+                 WHERE id = ?1",
+                rusqlite::params![cmd.effect_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .map(Some)
+            .unwrap_or(None);
+
+    let Some((id, run_id, kind, params_json, created, claimed_by, claimed_until)) = row else {
+        anyhow::bail!("Effect not found: {}", cmd.effect_id);
+    };
+
+    if cmd.json {
+        let params: serde_json::Value =
+            serde_json::from_str(&params_json).unwrap_or(serde_json::Value::Null);
+        let out = serde_json::json!({
+            "id": id,
+            "run_id": run_id,
+            "kind": kind,
+            "params": params,
+            "created_at": created,
+            "claimed_by": claimed_by,
+            "claimed_until": claimed_until,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        println!("Effect: {id}");
+        println!("  Run ID:       {run_id}");
+        println!("  Kind:         {kind}");
+        println!("  Created:      {created}");
+        if let Some(ref by) = claimed_by {
+            println!("  Claimed by:   {by}");
+        }
+        if let Some(ref until) = claimed_until {
+            println!("  Claimed until: {until}");
+        }
+        println!("  Params:");
+        let params: serde_json::Value =
+            serde_json::from_str(&params_json).unwrap_or(serde_json::Value::Null);
+        println!("{}", serde_json::to_string_pretty(&params)?);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// approve
+// ---------------------------------------------------------------------------
+
+fn approve(cmd: &InboxApproveCmd, pool: &SqlitePool) -> Result<()> {
+    let writer = pool.writer();
+    let rows = writer.execute(
+        "UPDATE effect_intents SET claimed_by = 'cli-approved' WHERE id = ?1 AND claimed_by IS NULL",
+        rusqlite::params![cmd.effect_id],
+    )?;
+
+    if rows == 0 {
+        anyhow::bail!(
+            "Effect not found or already claimed/approved: {}",
+            cmd.effect_id
+        );
+    }
+
+    println!("Effect '{}' approved.", cmd.effect_id);
+    info!(effect_id = %cmd.effect_id, "effect approved via CLI");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// deny
+// ---------------------------------------------------------------------------
+
+fn deny(cmd: &InboxDenyCmd, pool: &SqlitePool) -> Result<()> {
+    let reason = cmd.reason.as_deref().unwrap_or("denied via CLI");
+    let writer = pool.writer();
+    let rows = writer.execute(
+        "UPDATE effect_intents SET claimed_by = 'cli-denied' WHERE id = ?1 AND claimed_by IS NULL",
+        rusqlite::params![cmd.effect_id],
+    )?;
+
+    if rows == 0 {
+        anyhow::bail!(
+            "Effect not found or already claimed/denied: {}",
+            cmd.effect_id
+        );
+    }
+
+    println!("Effect '{}' denied. Reason: {reason}", cmd.effect_id);
+    info!(effect_id = %cmd.effect_id, reason = reason, "effect denied via CLI");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// history
+// ---------------------------------------------------------------------------
+
+fn history(cmd: &InboxHistoryCmd, pool: &SqlitePool) -> Result<()> {
+    let limit = cmd.limit;
+    let reader = pool.reader()?;
+    let mut stmt = reader.prepare(
+        "SELECT id, run_id, kind, claimed_by, created_at
+         FROM effect_intents
+         WHERE claimed_by IS NOT NULL
+         ORDER BY created_at DESC
+         LIMIT ?1",
+    )?;
+
+    #[allow(clippy::cast_possible_wrap)]
+    let rows: Vec<(String, String, String, String, String)> = stmt
+        .query_map(rusqlite::params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if cmd.json {
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(id, run_id, kind, status, created)| {
+                serde_json::json!({
+                    "id": id,
+                    "run_id": run_id,
+                    "kind": kind,
+                    "resolution": status,
+                    "created_at": created,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        println!("No resolved effects in history.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<36}  {:<36}  {:<18}  {:<16}  Created",
+        "Effect ID", "Run ID", "Kind", "Resolution"
+    );
+    println!("{}", "-".repeat(130));
+    for (id, run_id, kind, status, created) in &rows {
+        println!("{id:<36}  {run_id:<36}  {kind:<18}  {status:<16}  {created}");
+    }
+    println!();
+    println!("{} resolved effect(s)", rows.len());
+
+    Ok(())
+}

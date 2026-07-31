@@ -1,0 +1,52 @@
+[package]
+name = "polkagent-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+polkagent-core = { path = "../crates/polkagent-core" }
+polkagent-config = { path = "../crates/polkagent-config" }
+polkagent-card = { path = "../crates/polkagent-card" }
+polkagent-effect = { path = "../crates/polkagent-effect" }
+polkagent-grant = { path = "../crates/polkagent-grant" }
+polkagent-event = { path = "../crates/polkagent-event" }
+serde_json = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v7"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+
+[[bin]]
+name = "fuzz_config"
+path = "fuzz_targets/config.rs"
+
+[[bin]]
+name = "fuzz_card_render"
+path = "fuzz_targets/card_render.rs"
+
+[[bin]]
+name = "fuzz_policy_eval"
+path = "fuzz_targets/policy_eval.rs"
+
+[[bin]]
+name = "fuzz_effect_state"
+path = "fuzz_targets/effect_state.rs"
+
+[[bin]]
+name = "fuzz_json_deser"
+path = "fuzz_targets/json_deser.rs"
+
+[[bin]]
+name = "fuzz_id_parse"
+path = "fuzz_targets/id_parse.rs"
+
+[[bin]]
+name = "fuzz_event_kind"
+path = "fuzz_targets/event_kind.rs"

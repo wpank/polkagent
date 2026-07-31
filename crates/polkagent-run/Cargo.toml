@@ -12,6 +12,9 @@ description = "Run/Turn/Step lifecycle manager for the Polkagent platform"
 polkagent-core = { path = "../polkagent-core" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 polkagent-event = { path = "../polkagent-event" }
+polkagent-executor-trait = { path = "../polkagent-executor-trait" }
+polkagent-effect = { path = "../polkagent-effect" }
+polkagent-grant = { path = "../polkagent-grant" }
 
 # Serialization
 serde = { workspace = true }
@@ -35,6 +38,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 async-trait = { workspace = true }
+futures = { workspace = true }
 
 [lints]
 workspace = true

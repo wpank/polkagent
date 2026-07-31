@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "Polkagent command-line interface and terminal UI (ROSEDUST)"
 
+[lib]
+name = "polkagent_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "polkagent"
 path = "src/main.rs"
@@ -17,9 +21,11 @@ polkagent-core          = { path = "../polkagent-core" }
 polkagent-config        = { path = "../polkagent-config" }
 polkagent-store-sqlite  = { path = "../polkagent-store-sqlite" }
 polkagent-store-trait   = { path = "../polkagent-store-trait" }
+polkagent-memory        = { path = "../polkagent-memory" }
 
 # CLI
-clap = { workspace = true }
+clap           = { workspace = true }
+clap_complete  = "4"
 
 # Async
 tokio = { workspace = true }
@@ -45,9 +51,17 @@ chrono = { workspace = true }
 # Config parsing
 toml = { workspace = true }
 
+# IDs
+uuid = { workspace = true }
+
 # Database (direct SQLite access for TUI data queries)
 rusqlite    = { workspace = true }
 parking_lot = { workspace = true }
+
+[dev-dependencies]
+ratatui   = { workspace = true }
+crossterm = { workspace = true }
+proptest  = { workspace = true }
 
 [lints]
 workspace = true

@@ -49,6 +49,20 @@ pub enum TuiAction {
     /// Quit the TUI.
     Quit,
 
+    // -- Run detail / timeline / approvals -----------------------------------
+    /// Open the run detail view for the currently selected run.
+    SelectRun,
+    /// Switch to the event timeline for the selected run.
+    ViewTimeline,
+    /// Switch to the approval queue view.
+    ViewApprovals,
+    /// Approve the selected effect in the approval queue.
+    ApproveEffect,
+    /// Deny the selected effect in the approval queue.
+    DenyEffect,
+    /// Toggle between sub-panels (e.g. info/turns in run detail).
+    TogglePanel,
+
     // -- Scroll --------------------------------------------------------------
     /// Scroll the active list up by `n` rows.
     ScrollUp(usize),
@@ -97,17 +111,21 @@ pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
 /// Key bindings active in Normal mode.
 fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
     match key.code {
-        // ── Tab navigation (F1–F4) ──────────────────────────────────────
+        // ── Tab navigation (F1–F6) ──────────────────────────────────────
         KeyCode::F(1) => Some(TuiAction::NavigateTab(Tab::Dashboard)),
         KeyCode::F(2) => Some(TuiAction::NavigateTab(Tab::Agents)),
         KeyCode::F(3) => Some(TuiAction::NavigateTab(Tab::Runs)),
         KeyCode::F(4) => Some(TuiAction::NavigateTab(Tab::System)),
+        KeyCode::F(5) => Some(TuiAction::NavigateTab(Tab::Timeline)),
+        KeyCode::F(6) => Some(TuiAction::NavigateTab(Tab::Approvals)),
 
         // ── Quick tab shortcuts ──────────────────────────────────────────
         KeyCode::Char('1') => Some(TuiAction::NavigateTab(Tab::Dashboard)),
         KeyCode::Char('2') => Some(TuiAction::NavigateTab(Tab::Agents)),
         KeyCode::Char('3') => Some(TuiAction::NavigateTab(Tab::Runs)),
         KeyCode::Char('4') => Some(TuiAction::NavigateTab(Tab::System)),
+        KeyCode::Char('5') => Some(TuiAction::NavigateTab(Tab::Timeline)),
+        KeyCode::Char('6') => Some(TuiAction::NavigateTab(Tab::Approvals)),
 
         // ── Quit ─────────────────────────────────────────────────────────
         KeyCode::Char('q') | KeyCode::Char('Q') => Some(TuiAction::Quit),
@@ -130,8 +148,14 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
         KeyCode::Enter => Some(TuiAction::Select),
         KeyCode::Esc | KeyCode::Backspace => Some(TuiAction::Back),
 
+        // ── Panel toggle (Tab key) ───────────────────────────────────────
+        KeyCode::Tab => Some(TuiAction::TogglePanel),
+
+        // ── Approval actions ─────────────────────────────────────────────
+        KeyCode::Char('a') => Some(TuiAction::ApproveEffect),
+
         // ── Data refresh ─────────────────────────────────────────────────
-        KeyCode::Char('r') | KeyCode::F(5) => Some(TuiAction::Refresh),
+        KeyCode::Char('r') => Some(TuiAction::Refresh),
 
         _ => None,
     }

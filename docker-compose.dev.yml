@@ -1,0 +1,19 @@
+version: '3.8'
+services:
+  polkagent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    command: cargo run -p polkagent-cli -- serve --api
+    volumes:
+      - .:/build
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/build/target
+    environment:
+      - RUST_LOG=debug
+      - POLKAGENT_LOG_FORMAT=pretty
+
+volumes:
+  cargo-cache:
+  target-cache:

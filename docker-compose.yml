@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  polkagent:
+    build: .
+    ports:
+      - "9090:9090"
+    volumes:
+      - polkagent-data:/data
+      - ./fixtures:/fixtures:ro
+    environment:
+      - POLKAGENT_LOG_LEVEL=info
+      - POLKAGENT_API_ENABLED=true
+      - POLKAGENT_API_BIND=0.0.0.0:9090
+    restart: unless-stopped
+
+volumes:
+  polkagent-data:

@@ -1,0 +1,16 @@
+[skill]
+name = "balance-checker"
+version = "0.1.0"
+description = "Check token balances across chains"
+authors = ["team@polkagent.io"]
+license = "Apache-2.0"
+
+[capabilities]
+required_grants = ["chain.query"]
+tools = ["chain_query"]
+
+[prompts]
+system = "You check token balances. Query the chain for balance information and report it clearly."
+
+[config]
+default_chain = "polkadot"

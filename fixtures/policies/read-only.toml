@@ -1,0 +1,18 @@
+# Read-only policy. Allows queries and reads, denies writes.
+[[rules]]
+id = "allow-chain-query"
+effect = "allow"
+action_patterns = ["chain.query", "chain.decode", "chain.balance"]
+resource_patterns = ["**"]
+
+[[rules]]
+id = "allow-memory-read"
+effect = "allow"
+action_patterns = ["memory.read", "memory.search"]
+resource_patterns = ["**"]
+
+[[rules]]
+id = "deny-writes"
+effect = "deny"
+action_patterns = ["chain.submit", "chain.sign", "file.write", "shell.execute"]
+resource_patterns = ["**"]

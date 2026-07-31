@@ -85,9 +85,12 @@ pub fn render(
 /// Returns the key-binding hint string for each tab.
 fn key_hints(tab: Tab) -> &'static str {
     match tab {
-        Tab::Dashboard => "F1-F4:tabs  q:quit  r:refresh  j/k:scroll",
+        Tab::Dashboard => "F1-F6:tabs  q:quit  r:refresh  j/k:scroll",
         Tab::Agents    => "j/k:select  Enter:detail  r:refresh  q:quit",
         Tab::Runs      => "j/k:select  Enter:detail  r:refresh  q:quit",
         Tab::System    => "r:refresh  q:quit",
+        Tab::RunDetail => "Esc:back  Tab:panel  F5:timeline  r:refresh  q:quit",
+        Tab::Timeline  => "j/k:scroll  Enter:detail  Esc:back  r:refresh  q:quit",
+        Tab::Approvals => "j/k:select  Enter:detail  a:approve  r:refresh  q:quit",
     }
 }

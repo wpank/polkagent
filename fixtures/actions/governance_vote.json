@@ -1,0 +1,27 @@
+{
+  "canonical": {
+    "chain": "polkadot",
+    "pallet": "ConvictionVoting",
+    "call": "vote",
+    "args": {
+      "poll_index": 42,
+      "vote": {
+        "Standard": {
+          "vote": "Aye",
+          "balance": "50000000000",
+          "conviction": "Locked1x"
+        }
+      }
+    },
+    "fee_estimate": "12300000",
+    "metadata_hash": "0xdef456..."
+  },
+  "narrative": {
+    "summary": "Vote Aye on referendum #42 with 5 DOT and 1x conviction",
+    "risks": [
+      "Tokens will be locked for the conviction period",
+      "Vote is binding and affects governance outcome"
+    ]
+  },
+  "risk_level": "medium"
+}

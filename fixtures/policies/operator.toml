@@ -1,0 +1,19 @@
+# Operator policy. Full access with budget and rate limits.
+[[rules]]
+id = "allow-all-chains"
+effect = "allow"
+action_patterns = ["chain.*"]
+resource_patterns = ["**"]
+
+[[rules]]
+id = "allow-signing"
+effect = "allow"
+action_patterns = ["signer.sign"]
+resource_patterns = ["**"]
+conditions = { require_approval = "true", max_amount = "1000000000000" }
+
+[[rules]]
+id = "allow-memory"
+effect = "allow"
+action_patterns = ["memory.*"]
+resource_patterns = ["**"]

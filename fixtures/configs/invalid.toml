@@ -1,0 +1,11 @@
+[log]
+level = "invalid_level"
+
+[execution]
+max_concurrent_runs = 0
+default_timeout_secs = 1
+[execution.budget]
+warn_threshold_percent = 200
+
+[api]
+bind_address = "not-a-valid-address"

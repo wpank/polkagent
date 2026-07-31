@@ -1,0 +1,13 @@
+# Clippy configuration
+# Workspace-level lints are defined in Cargo.toml under [workspace.lints.clippy].
+# This file is for clippy configuration knobs that cannot be expressed as lints.
+
+# Raise the threshold for the cognitive-complexity lint (default 25).
+cognitive-complexity-threshold = 30
+
+# Maximum number of lines in a function body before triggering too-many-lines.
+too-many-lines-threshold = 150
+
+# Types that are allowed to have a large size on the stack.
+# Avoids false positives for domain types that are intentionally large.
+large-error-threshold = 256

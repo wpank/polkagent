@@ -4,6 +4,7 @@
 //! binary defaults to launching the interactive TUI (see `main.rs`).
 
 use clap::{Args, Parser, Subcommand};
+use clap_complete::Shell;
 
 // ---------------------------------------------------------------------------
 // Root CLI
@@ -56,6 +57,27 @@ pub enum Commands {
     /// Show or validate the current configuration.
     #[command(subcommand)]
     Config(ConfigCmd),
+
+    /// Decode and preview an extrinsic.
+    Explain(ExplainCmd),
+
+    /// Manage pending effects awaiting approval.
+    #[command(subcommand)]
+    Inbox(InboxCmd),
+
+    /// Chain interaction and inspection.
+    #[command(subcommand)]
+    Chain(ChainCmd),
+
+    /// Run system health checks.
+    Doctor(DoctorCmd),
+
+    /// Manage agent memory (search, list, forget, stats).
+    #[command(subcommand)]
+    Memory(MemoryCmd),
+
+    /// Generate shell completion scripts.
+    Completions(CompletionsCmd),
 
     /// Print version information and exit.
     Version,
@@ -226,4 +248,272 @@ pub struct ConfigValidateCmd {
     /// Path to validate (defaults to the auto-discovered config).
     #[arg(value_name = "PATH")]
     pub path: Option<std::path::PathBuf>,
+}
+
+// ---------------------------------------------------------------------------
+// explain
+// ---------------------------------------------------------------------------
+
+/// Decode and preview a hex-encoded extrinsic.
+#[derive(Debug, Args)]
+pub struct ExplainCmd {
+    /// Hex-encoded extrinsic to decode.
+    #[arg(value_name = "EXTRINSIC_HEX")]
+    pub extrinsic_hex: String,
+
+    /// Target chain (default: polkadot).
+    #[arg(long, default_value = "polkadot")]
+    pub chain: String,
+
+    /// Metadata version to use for decoding.
+    #[arg(long, value_name = "VERSION")]
+    pub metadata_version: Option<u32>,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// inbox
+// ---------------------------------------------------------------------------
+
+/// Manage pending effects awaiting approval.
+#[derive(Debug, Subcommand)]
+pub enum InboxCmd {
+    /// List pending effects awaiting approval.
+    List(InboxListCmd),
+
+    /// Show detailed information about an effect.
+    Show(InboxShowCmd),
+
+    /// Approve an effect for execution.
+    Approve(InboxApproveCmd),
+
+    /// Deny an effect (reject it from execution).
+    Deny(InboxDenyCmd),
+
+    /// Show recently resolved effects.
+    History(InboxHistoryCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct InboxListCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct InboxShowCmd {
+    /// Effect ID to show.
+    #[arg(value_name = "EFFECT_ID")]
+    pub effect_id: String,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct InboxApproveCmd {
+    /// Effect ID to approve.
+    #[arg(value_name = "EFFECT_ID")]
+    pub effect_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct InboxDenyCmd {
+    /// Effect ID to deny.
+    #[arg(value_name = "EFFECT_ID")]
+    pub effect_id: String,
+
+    /// Reason for denying the effect.
+    #[arg(long, value_name = "TEXT")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct InboxHistoryCmd {
+    /// Maximum number of resolved effects to show.
+    #[arg(long, value_name = "N", default_value_t = 20)]
+    pub limit: usize,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// chain
+// ---------------------------------------------------------------------------
+
+/// Chain interaction and inspection subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ChainCmd {
+    /// Show chain connection status.
+    Status(ChainStatusCmd),
+
+    /// Show current metadata version.
+    Metadata(ChainMetadataCmd),
+
+    /// Decode call data from hex.
+    Decode(ChainDecodeCmd),
+
+    /// Check account balance.
+    Balance(ChainBalanceCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct ChainStatusCmd {
+    /// Target chain.
+    #[arg(long, default_value = "polkadot")]
+    pub chain: String,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ChainMetadataCmd {
+    /// Target chain.
+    #[arg(long, default_value = "polkadot")]
+    pub chain: String,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ChainDecodeCmd {
+    /// Hex-encoded call data to decode.
+    #[arg(value_name = "HEX")]
+    pub hex: String,
+
+    /// Target chain.
+    #[arg(long, default_value = "polkadot")]
+    pub chain: String,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ChainBalanceCmd {
+    /// Account address to check.
+    #[arg(value_name = "ADDRESS")]
+    pub address: String,
+
+    /// Target chain.
+    #[arg(long, default_value = "polkadot")]
+    pub chain: String,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// doctor
+// ---------------------------------------------------------------------------
+
+/// Run system health checks and diagnostics.
+#[derive(Debug, Args)]
+pub struct DoctorCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// memory
+// ---------------------------------------------------------------------------
+
+/// Agent memory management subcommands.
+#[derive(Debug, Subcommand)]
+pub enum MemoryCmd {
+    /// Search memory entries.
+    Search(MemorySearchCmd),
+
+    /// List memory entries.
+    List(MemoryListCmd),
+
+    /// Delete a memory entry (forget it).
+    Forget(MemoryForgetCmd),
+
+    /// Show memory usage statistics.
+    Stats(MemoryStatsCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct MemorySearchCmd {
+    /// Search query text.
+    #[arg(value_name = "QUERY")]
+    pub query: String,
+
+    /// Maximum number of results.
+    #[arg(long, value_name = "N", default_value_t = 10)]
+    pub limit: usize,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct MemoryListCmd {
+    /// Filter by memory type.
+    #[arg(long, value_name = "TYPE", value_parser = parse_memory_type)]
+    pub memory_type: Option<polkagent_memory::types::MemoryType>,
+
+    /// Maximum number of entries to show.
+    #[arg(long, value_name = "N", default_value_t = 20)]
+    pub limit: usize,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct MemoryForgetCmd {
+    /// Memory ID to delete.
+    #[arg(value_name = "ID")]
+    pub memory_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct MemoryStatsCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Parse a memory type string into a `MemoryType`.
+fn parse_memory_type(s: &str) -> Result<polkagent_memory::types::MemoryType, String> {
+    s.parse()
+}
+
+// ---------------------------------------------------------------------------
+// completions
+// ---------------------------------------------------------------------------
+
+/// Generate shell completion scripts.
+///
+/// Output the completion script to stdout. Redirect to a file or pipe to
+/// `source` to install:
+///
+/// ```sh
+/// polkagent completions bash > ~/.local/share/bash-completion/completions/polkagent
+/// polkagent completions zsh > ~/.zfunc/_polkagent
+/// polkagent completions fish > ~/.config/fish/completions/polkagent.fish
+/// ```
+#[derive(Debug, Args)]
+pub struct CompletionsCmd {
+    /// Shell to generate completions for.
+    #[arg(value_name = "SHELL")]
+    pub shell: Shell,
 }

@@ -1,0 +1,6 @@
+# Default deny-all policy. All actions require explicit grants.
+[[rules]]
+id = "default-deny"
+effect = "deny"
+action_patterns = ["**"]
+resource_patterns = ["**"]

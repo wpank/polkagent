@@ -111,6 +111,129 @@ impl RunSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Run detail
+// ---------------------------------------------------------------------------
+
+/// Full detail of a single run, loaded when drilling into the run detail view.
+#[derive(Debug, Clone)]
+pub struct RunDetail {
+    /// UUID string -- primary key.
+    pub id: String,
+    /// Short display ID (first 8 chars of UUID).
+    pub short_id: String,
+    /// Agent name (joined at query time).
+    pub agent_name: String,
+    /// Run state string.
+    pub state: String,
+    /// When the run was created.
+    pub created_at: DateTime<Utc>,
+    /// When the run was last updated.
+    pub updated_at: DateTime<Utc>,
+    /// When the run completed (if terminal).
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Total turn count.
+    pub turn_count: u32,
+    /// Total input tokens across all turns.
+    pub input_tokens: u64,
+    /// Total output tokens across all turns.
+    pub output_tokens: u64,
+    /// Total effect intent count.
+    pub effect_count: u32,
+    /// Number of effects with a successful outcome.
+    pub effects_succeeded: u32,
+    /// Number of effects with a failed outcome.
+    pub effects_failed: u32,
+    /// Number of effects still pending (no outcome).
+    pub effects_pending: u32,
+    /// Per-turn summaries for the turn list panel.
+    pub turns: Vec<TurnSummary>,
+}
+
+impl RunDetail {
+    /// Duration string for completed runs, or elapsed for active ones.
+    pub fn duration_display(&self, now: DateTime<Utc>) -> String {
+        let end = self.completed_at.unwrap_or(now);
+        let secs = (end - self.created_at).num_seconds().max(0) as u64;
+        if secs < 60 {
+            format!("{secs}s")
+        } else if secs < 3600 {
+            format!("{}m {}s", secs / 60, secs % 60)
+        } else {
+            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+        }
+    }
+
+    /// State glyph.
+    pub fn state_glyph(&self) -> &'static str {
+        match self.state.as_str() {
+            "working" | "started" => "▶",
+            "completed" => "✓",
+            "failed" | "timed_out" => "✗",
+            "cancelled" => "▪",
+            "created" | "queued" => "◦",
+            _ => "?",
+        }
+    }
+}
+
+/// Compact summary of a single turn within a run.
+#[derive(Debug, Clone)]
+pub struct TurnSummary {
+    /// Turn sequence number (1-based).
+    pub sequence: u32,
+    /// Role of this turn (user, assistant, system, tool).
+    pub role: String,
+    /// When the turn started.
+    pub started_at: DateTime<Utc>,
+    /// When the turn completed (if finished).
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Input tokens for this turn.
+    pub input_tokens: u64,
+    /// Output tokens for this turn.
+    pub output_tokens: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Event summary
+// ---------------------------------------------------------------------------
+
+/// Compact summary of a run event for the timeline view.
+#[derive(Debug, Clone)]
+pub struct EventSummary {
+    /// Event ID.
+    pub id: String,
+    /// Timestamp of the event.
+    pub timestamp: DateTime<Utc>,
+    /// Event type / kind string.
+    pub event_type: String,
+    /// Brief human-readable description extracted from the payload.
+    pub description: String,
+    /// Raw JSON payload for the detail panel.
+    pub payload: String,
+}
+
+// ---------------------------------------------------------------------------
+// Approval item
+// ---------------------------------------------------------------------------
+
+/// An effect intent awaiting approval, shown in the approval queue.
+#[derive(Debug, Clone)]
+pub struct ApprovalItem {
+    /// Effect intent ID.
+    pub effect_id: String,
+    /// Effect kind (sign, broadcast, tool, etc.).
+    pub kind: String,
+    /// Run ID that originated this effect.
+    pub run_id: String,
+    /// Agent name for the owning run.
+    pub agent_name: String,
+    /// When the effect was created.
+    pub created_at: DateTime<Utc>,
+    /// Current state of the effect (pending, claimed, etc.).
+    pub state: String,
+}
+
+// ---------------------------------------------------------------------------
 // System health
 // ---------------------------------------------------------------------------
 
@@ -211,12 +334,34 @@ pub struct TuiState {
     /// System health snapshot.
     pub health: SystemHealth,
 
+    // -- Run detail / timeline / approvals -----------------------------------
+    /// Currently selected run ID (set when drilling into a run).
+    pub selected_run: Option<String>,
+
+    /// Full detail for the selected run.
+    pub run_detail: Option<RunDetail>,
+
+    /// Events for the selected run (timeline view).
+    pub run_events: Vec<EventSummary>,
+
+    /// Pending effects awaiting approval (approval queue view).
+    pub pending_approvals: Vec<ApprovalItem>,
+
     // -- Scroll / selection --------------------------------------------------
     /// Scroll state for the agents list.
     pub agents_scroll: ScrollState,
 
     /// Scroll state for the runs list.
     pub runs_scroll: ScrollState,
+
+    /// Scroll state for the event timeline.
+    pub timeline_scroll: ScrollState,
+
+    /// Scroll state for the approval queue.
+    pub approvals_scroll: ScrollState,
+
+    /// Which sub-panel is focused in the run detail view (0 = info, 1 = turns).
+    pub detail_panel_index: usize,
 
     // -- Refresh bookkeeping -------------------------------------------------
     /// Whether the state has changed since the last render (triggers a draw).

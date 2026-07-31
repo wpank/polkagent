@@ -16,13 +16,13 @@
 | `polkagent-transport-trait` | Done | 9+2 | Transport trait + port contract suite |
 | `polkagent-effect` | Done | 64 | Crash-safe effect pipeline + 11 proptest |
 | `polkagent-event` | Done | 39 | Event bus, recorder, projections, monotonic sequences |
-| `polkagent-run` | Done | 76 | RunManager, state machine, timeout, turn manager |
-| `polkagent-grant` | Done | 64 | Policy evaluation, budget tracking + 18 proptest |
+| `polkagent-run` | Done | 135 | RunManager, state machine, timeout, turn manager, DAG engine, orchestrator |
+| `polkagent-grant` | Done | 88 | Policy evaluation, budget tracking, Cedar loader + 18 proptest |
 | `polkagent-artifact` | Done | 42 | BLAKE3 content-addressed storage, lineage DAG |
-| `polkagent-config` | Done | 43 | TOML loader, env overrides, validation |
+| `polkagent-config` | Done | 63 | TOML loader, env overrides, validation, fixture tests |
 | `polkagent-card` | Done | 35 | Action cards, canonical/narrative sections |
 | `polkagent-outbox` | Done | 33 | Durable ordered delivery, deduplication |
-| `polkagent-store-sqlite` | Done | 137 | WAL-mode SQLite + all 4 store trait impls + 46 contract tests |
+| `polkagent-store-sqlite` | Done | 156 | WAL-mode SQLite + all 4 store trait impls + 46 contract tests |
 | `polkagent-executor-fake` | Done | 19 | Cycling responses, streaming + contract tests |
 | `polkagent-signer-fake` | Done | 17 | Deterministic signatures + contract tests |
 | `polkagent-transport-fake` | Done | 17 | Channel-based, fault injection + contract tests |
@@ -42,7 +42,7 @@
 
 ---
 
-## Phase 2: Build + Act + Reach Proof — IN PROGRESS
+## Phase 2: Build + Act + Reach Proof — MOSTLY COMPLETE
 
 **Goal:** One useful action from each pillar, projected through at least one surface.
 
@@ -50,9 +50,10 @@
 
 | Crate | Status | Tests | Description |
 |-------|--------|-------|-------------|
-| `polkagent-store-sqlite` | Done | 137 | All 4 store traits + 46 contract tests |
-| `polkagent-api` | Done | 32 | Trait-object stores, WebSocket streaming, effect endpoints |
-| `polkagent-cli` | Done | 0 | Wired to SqlitePool, migrations on startup, all commands use store traits |
+| `polkagent-store-sqlite` | Done | 156 | All 4 store traits + 46 contract tests |
+| `polkagent-api` | Done | 75 | REST + WebSocket, trait-object stores, CRUD endpoints, event streaming |
+| `polkagent-cli` | Done | 19 | ROSEDUST TUI (8 widgets, 7 views), 10 commands, SqlitePool wiring |
+| `polkagent-service` | Done | 33 | AppService facade, ProviderRegistry, lifecycle management |
 
 ### Phase 2b: Real Adapters
 
@@ -66,7 +67,21 @@
 | `polkagent-signer-external` | Done | 42 | External signer with INV-01 enforcement, approval callbacks |
 | `polkagent-chain-subxt` | Not started | — | Subxt static+dynamic decode, CheckMetadataHash |
 
-### Phase 2c: End-to-End Flows
+### Phase 2c: Domain Crates
+
+| Crate | Status | Tests | Description |
+|-------|--------|-------|-------------|
+| `polkagent-tool` | Done | 32 | ToolRegistry, ToolHandler trait, grant-checked execution, builtins |
+| `polkagent-skill` | Done | 55 | TOML manifests, SkillLoader, dependency resolution, semver |
+| `polkagent-telemetry` | Done | 31 | OpenTelemetry, Redacted<T>, MetricRecorder, JsonlWriter |
+| `polkagent-harness-trait` | Done | 22 | Harness port trait with session lifecycle |
+| `polkagent-harness-claude` | Done | 25 | Claude Code harness stub with state tracking |
+| `polkagent-secret` | Done | 49 | SecretValue (zeroize), env/file/chain stores, audit log |
+| `polkagent-identity` | Done | 36 | AccountId32, SS58 encode/decode, NetworkId, AgentIdentity |
+| `polkagent-payment` | Done | 46 | Amount arithmetic, BudgetChecker, CostEstimator, PaymentStore |
+| `polkagent-conversation` | Done | 44 | Conversation/Message types, InMemoryStore, ContextWindow |
+
+### Phase 2d: End-to-End Flows
 
 | Flow | Status | Description |
 |------|--------|-------------|
@@ -74,17 +89,20 @@
 | CLI `polkagent run` | Partial | Commands wired, needs real executor integration |
 | API event streaming | Done | WebSocket with run_id/kind filtering, ping/pong keepalive |
 
-### Phase 2d: Testing Infrastructure
+### Phase 2e: Testing Infrastructure
 
 | Component | Status | Tests | Description |
 |-----------|--------|-------|-------------|
 | Property tests (core) | Done | 59 | Proptest for IDs, states, BlobRef, artifacts, tokens |
 | Property tests (effect) | Done | 11 | Proptest for idempotency keys, effect kinds, priorities |
 | Property tests (grant) | Done | 18 | Proptest for policies, budgets, gate composition |
-| Integration tests | Done | 30 | Cross-crate e2e lifecycle, effects, grants, artifacts, config |
+| Property tests (5 crates) | Done | 35 | Proptest for config, card, outbox, event, artifact |
+| Integration tests | Done | 108 | Cross-crate e2e lifecycle, effects, grants, artifacts, config |
 | Port contract tests | Done | 10 | Executor, signer, transport conformance suites |
 | Store contract tests | Done | 46 | RunStore, EffectStore, EventStore, ArtifactStore on SQLite |
-| Fuzz test harnesses | Not started | — | cargo-fuzz targets per PRD-15 |
+| Security tests | Done | 90 | Secrets, classification, grants, effects, injection, cards |
+| TUI snapshot tests | Done | 19 | Widget rendering and view layout tests |
+| Fuzz test harnesses | Done | 7 | cargo-fuzz targets for config, card, policy, effect, JSON, ID, event |
 
 ### Phase 2 Acceptance Criteria
 
@@ -128,14 +146,28 @@
 
 ---
 
+## Infrastructure
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| CI/CD | Done | `.github/workflows/ci.yml` (check, test, MSRV), `nightly.yml` (audit, deny, fuzz) |
+| Docker | Done | `Dockerfile`, `Dockerfile.api`, `docker-compose.yml`, `docker-compose.dev.yml` |
+| Makefile | Done | build, test, check, lint, fmt, docker targets |
+| Policy fixtures | Done | `fixtures/policies/` — default-deny, read-only, developer, operator |
+| Config fixtures | Done | `fixtures/configs/` — minimal, full, invalid |
+| Security docs | Done | `SECURITY.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md` |
+| cargo-deny | Done | `deny.toml` — license/advisory config |
+
+---
+
 ## Workspace Summary
 
 | Metric | Count |
 |--------|-------|
-| Crates | 29 |
-| Source files | ~200 |
-| Tests | 1,206 |
-| Lines of Rust | ~55,000 |
+| Crates | 39 |
+| Source files | ~242 |
+| Tests | 1,938 |
+| Lines of Rust | ~81,000 |
 
 ## Build Commands
 
@@ -154,6 +186,12 @@ cargo test -p polkagent-core --test proptests
 
 # Run store contract tests
 cargo test -p polkagent-store-sqlite --test store_contracts
+
+# Run security tests
+cargo test -p polkagent-security-tests
+
+# Run fuzz targets
+cargo +nightly fuzz run fuzz_config -- -max_total_time=60
 
 # Build release binary
 cargo build --release -p polkagent-cli

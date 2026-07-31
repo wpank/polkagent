@@ -53,6 +53,21 @@ async fn main() -> Result<()> {
             print_version();
             return Ok(());
         }
+        Some(Commands::Explain(cmd)) => {
+            return commands::explain::run(cmd);
+        }
+        Some(Commands::Chain(cmd)) => {
+            return commands::chain::run(cmd);
+        }
+        Some(Commands::Doctor(cmd)) => {
+            return commands::doctor::run(cmd);
+        }
+        Some(Commands::Memory(cmd)) => {
+            return commands::memory::run(cmd);
+        }
+        Some(Commands::Completions(cmd)) => {
+            return commands::completions::run(cmd);
+        }
         _ => {}
     }
 
@@ -79,8 +94,21 @@ async fn main() -> Result<()> {
             commands::agent::run(cmd, &pool)?;
         }
 
+        Some(Commands::Inbox(cmd)) => {
+            commands::inbox::run(cmd, &pool)?;
+        }
+
         // Already handled above; listed here to satisfy exhaustiveness.
-        Some(Commands::Init(_) | Commands::Config(_) | Commands::Version) => {
+        Some(
+            Commands::Init(_)
+            | Commands::Config(_)
+            | Commands::Version
+            | Commands::Explain(_)
+            | Commands::Chain(_)
+            | Commands::Doctor(_)
+            | Commands::Memory(_)
+            | Commands::Completions(_),
+        ) => {
             unreachable!()
         }
     }

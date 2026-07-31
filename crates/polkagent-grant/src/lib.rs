@@ -63,6 +63,7 @@
 pub mod budget;
 pub mod gate;
 pub mod grant;
+pub mod loader;
 pub mod policy;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ pub use grant::{
     ActiveGrant, ApprovalRequirement, DeferReason, EffectSet, GrantDecision, GrantLimits,
     GrantResolver, PolicyDenial, ResolvedGrant, ResolverConfig, ResolverError,
 };
+pub use loader::{load_policy_dir, load_policy_file, merge_policy_sets, LoadError, PolicyFileRule};
 pub use policy::{
     evaluate, pattern_matches, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
 };

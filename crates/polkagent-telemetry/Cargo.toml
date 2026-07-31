@@ -1,0 +1,37 @@
+[package]
+name = "polkagent-telemetry"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OpenTelemetry tracing, structured logging, secret redaction, and JSONL event recording for Polkagent"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+opentelemetry = "0.27"
+opentelemetry_sdk = "0.27"
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+tracing-opentelemetry = "0.28"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Utils
+chrono = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+regex-lite = "0.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

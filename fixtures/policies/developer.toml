@@ -1,0 +1,25 @@
+# Developer policy. Allows most operations with budget limits.
+[[rules]]
+id = "allow-chain-ops"
+effect = "allow"
+action_patterns = ["chain.*"]
+resource_patterns = ["westend/**", "rococo/**"]
+
+[[rules]]
+id = "allow-file-ops"
+effect = "allow"
+action_patterns = ["file.*"]
+resource_patterns = ["workspace/**"]
+
+[[rules]]
+id = "allow-shell"
+effect = "allow"
+action_patterns = ["shell.execute"]
+resource_patterns = ["workspace/**"]
+conditions = { max_timeout = "30" }
+
+[[rules]]
+id = "deny-mainnet"
+effect = "deny"
+action_patterns = ["chain.submit", "chain.sign"]
+resource_patterns = ["polkadot/**", "kusama/**"]

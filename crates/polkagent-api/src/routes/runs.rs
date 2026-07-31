@@ -6,6 +6,11 @@
 //! | `GET` | `/runs` | [`list_runs`] |
 //! | `GET` | `/runs/:id` | [`get_run`] |
 //! | `POST` | `/runs/:id/cancel` | [`cancel_run`] |
+//! | `GET` | `/runs/:id/turns` | [`list_run_turns`] |
+//! | `GET` | `/runs/:id/events` | [`list_run_events`] |
+//! | `GET` | `/runs/:id/artifacts` | [`list_run_artifacts`] |
+//! | `GET` | `/runs/:id/effects` | [`list_run_effects`] |
+//! | `POST` | `/runs/:id/resume` | [`resume_run`] |
 
 use axum::{
     extract::{Path, Query, State},
@@ -156,4 +161,166 @@ pub async fn cancel_run(
 
     let response: RunResponse = record.into();
     Ok(Json(response))
+}
+
+// ---------------------------------------------------------------------------
+// GET /runs/:id/turns
+// ---------------------------------------------------------------------------
+
+/// List turns for a run.
+///
+/// **Stub:** Returns an empty list. Will be populated once the turn store
+/// is integrated.
+#[instrument(skip(state), fields(run_id = %id))]
+pub async fn list_run_turns(
+    State(state): State<AppState>,
+    Path(id): Path<RunId>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Verify the run exists.
+    let _record = state
+        .run_manager
+        .get_run(id)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(crate::dto::ListTurnsResponse {
+        version: API_VERSION.to_owned(),
+        data: vec![],
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /runs/:id/events
+// ---------------------------------------------------------------------------
+
+/// List events for a run from the durable event store.
+///
+/// Returns 501 if no event store is configured.
+#[instrument(skip(state), fields(run_id = %id))]
+pub async fn list_run_events(
+    State(state): State<AppState>,
+    Path(id): Path<RunId>,
+) -> Result<impl IntoResponse, ApiError> {
+    let event_store = state
+        .event_store
+        .as_ref()
+        .ok_or_else(|| ApiError::NotImplemented("event store not configured".to_owned()))?;
+
+    // Verify the run exists.
+    let _record = state
+        .run_manager
+        .get_run(id)
+        .await
+        .map_err(ApiError::from)?;
+
+    let events = event_store
+        .read_run_events(id)
+        .await
+        .map_err(|e| ApiError::InternalError(e.to_string()))?;
+
+    let data: Vec<serde_json::Value> = events
+        .into_iter()
+        .map(|evt| serde_json::to_value(&evt).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "version": API_VERSION,
+        "data": data,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /runs/:id/artifacts
+// ---------------------------------------------------------------------------
+
+/// List artifacts produced by a run.
+///
+/// Returns 501 if no artifact store is configured.
+#[instrument(skip(state), fields(run_id = %id))]
+pub async fn list_run_artifacts(
+    State(state): State<AppState>,
+    Path(id): Path<RunId>,
+) -> Result<impl IntoResponse, ApiError> {
+    let artifact_store = state
+        .artifact_store
+        .as_ref()
+        .ok_or_else(|| ApiError::NotImplemented("artifact store not configured".to_owned()))?;
+
+    // Verify the run exists.
+    let _record = state
+        .run_manager
+        .get_run(id)
+        .await
+        .map_err(ApiError::from)?;
+
+    let summaries = artifact_store
+        .list_for_run(id)
+        .await
+        .map_err(|e| ApiError::InternalError(e.to_string()))?;
+
+    let data: Vec<crate::dto::ArtifactResponse> = summaries
+        .into_iter()
+        .map(|s| crate::dto::ArtifactResponse {
+            version: API_VERSION.to_owned(),
+            id: s.id.to_string(),
+            kind: s.kind,
+            algorithm: s.algorithm,
+            digest_hex: s.digest_hex,
+            classification: s.classification,
+            run_id: s.run_id,
+            created_at: s.created_at.to_rfc3339(),
+        })
+        .collect();
+
+    Ok(Json(crate::dto::ListArtifactsResponse {
+        version: API_VERSION.to_owned(),
+        data,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /runs/:id/effects  (alias for the effects module endpoint)
+// ---------------------------------------------------------------------------
+
+/// List effects for a run (alias for `GET /runs/:run_id/effects`).
+///
+/// Delegates to the same underlying effect store query.
+#[instrument(skip(state), fields(run_id = %id))]
+pub async fn list_run_effects(
+    State(state): State<AppState>,
+    Path(id): Path<RunId>,
+) -> Result<impl IntoResponse, ApiError> {
+    let intents = state
+        .effect_store
+        .get_by_run(id)
+        .await
+        .map_err(|e| ApiError::InternalError(e.to_string()))?;
+
+    let data: Vec<serde_json::Value> = intents
+        .into_iter()
+        .map(|intent| serde_json::to_value(&intent).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "version": API_VERSION,
+        "data": data,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// POST /runs/:id/resume
+// ---------------------------------------------------------------------------
+
+/// Resume a paused run.
+///
+/// **Stub:** Returns 501 Not Implemented. Will be wired to the run
+/// lifecycle subsystem once pause/resume is supported.
+#[instrument(skip(_state), fields(run_id = %id))]
+pub async fn resume_run(
+    State(_state): State<AppState>,
+    Path(id): Path<RunId>,
+) -> Result<impl IntoResponse, ApiError> {
+    Err::<Json<()>, _>(ApiError::NotImplemented(format!(
+        "resume run {id} is not yet implemented"
+    )))
 }

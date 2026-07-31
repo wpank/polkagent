@@ -1,0 +1,19 @@
+# Similar but runs the API server
+FROM rust:1.80-bookworm as builder
+WORKDIR /build
+COPY . .
+RUN cargo build --release -p polkagent-cli
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/polkagent /usr/local/bin/polkagent
+RUN useradd -r -s /bin/false polkagent
+USER polkagent
+VOLUME /data
+ENV POLKAGENT_DATABASE_SQLITE_PATH=/data/polkagent.db
+ENV POLKAGENT_API_ENABLED=true
+ENV POLKAGENT_API_BIND=0.0.0.0:9090
+EXPOSE 9090
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["/usr/local/bin/polkagent", "doctor"]
+ENTRYPOINT ["polkagent"]
+CMD ["serve", "--api"]

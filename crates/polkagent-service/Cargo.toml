@@ -1,0 +1,44 @@
+[package]
+name = "polkagent-service"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Application service layer that wires together all Polkagent components"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+polkagent-store-trait = { path = "../polkagent-store-trait" }
+polkagent-executor-trait = { path = "../polkagent-executor-trait" }
+polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+polkagent-effect = { path = "../polkagent-effect" }
+polkagent-event = { path = "../polkagent-event" }
+polkagent-run = { path = "../polkagent-run" }
+polkagent-grant = { path = "../polkagent-grant" }
+polkagent-artifact = { path = "../polkagent-artifact" }
+polkagent-config = { path = "../polkagent-config" }
+polkagent-tool = { path = "../polkagent-tool" }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+chrono = { workspace = true }
+futures = { workspace = true }
+
+[lints]
+workspace = true
