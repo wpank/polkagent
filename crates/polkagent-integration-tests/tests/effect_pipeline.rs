@@ -32,6 +32,7 @@ fn make_spec(run_id: RunId, kind: EffectKind) -> EffectIntentSpec {
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     }
 }
 
@@ -164,6 +165,7 @@ async fn duplicate_idempotency_key_is_rejected() {
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     };
 
     // First propose should succeed.

@@ -530,6 +530,67 @@ impl TuiDb {
         Ok(events)
     }
 
+    // ── Token usage history ────────────────────────────────────────────────
+
+    /// Return per-turn total token counts (input + output) for a run, ordered
+    /// by sequence. Used by the TUI to draw usage sparklines.
+    #[allow(dead_code)]
+    pub fn token_usage_history(&self, run_id: &str) -> Result<Vec<u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT input_tokens + output_tokens AS total
+             FROM turns
+             WHERE run_id = ?1
+             ORDER BY sequence ASC",
+        )?;
+
+        let totals = stmt
+            .query_map([run_id], |row| row.get::<_, i64>(0).map(|v| v as u64))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(totals)
+    }
+
+    // ── Recent error count ───────────────────────────────────────────────
+
+    /// Count run events whose `event_type` contains "error" (case-insensitive).
+    /// Returns 0 on any DB error so it is safe to call in non-critical UI paths.
+    #[allow(dead_code)]
+    pub fn recent_error_count(&self) -> u32 {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM run_events WHERE LOWER(event_type) LIKE '%error%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0) as u32
+    }
+
+    // ── Budget status ────────────────────────────────────────────────────
+
+    /// Rough spend estimate: sums all token usage across turns and applies a
+    /// flat per-token rate. Returns `(spent_dollars, ceiling_dollars)`.
+    ///
+    /// The ceiling is a hardcoded default; there is no per-agent budget table
+    /// yet, so we simply return $10 as the default.
+    #[allow(dead_code)]
+    pub fn budget_status(&self) -> (f64, f64) {
+        const DOLLARS_PER_TOKEN: f64 = 0.000_003;
+        const DEFAULT_CEILING: f64 = 10.0;
+
+        let total_tokens: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        let spent = total_tokens as f64 * DOLLARS_PER_TOKEN;
+        (spent, DEFAULT_CEILING)
+    }
+
     // ── Approvals (write) ─────────────────────────────────────────────────
 
     /// Mark an effect intent as approved.
@@ -632,5 +693,253 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Create an in-memory SQLite database with the minimal schema needed for
+    /// the TUI query helpers.
+    fn in_memory_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "
+            CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                state TEXT NOT NULL,
+                spec_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE TABLE turns (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE effect_intents (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                claimed_by TEXT,
+                claimed_until TEXT
+            );
+            CREATE TABLE effect_outcomes (
+                id TEXT PRIMARY KEY,
+                intent_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE run_events (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                sequence INTEGER NOT NULL DEFAULT 0
+            );
+            ",
+        )
+        .expect("create schema");
+        conn
+    }
+
+    fn wrap(conn: Connection) -> TuiDb {
+        TuiDb { conn }
+    }
+
+    // ── token_usage_history ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_token_usage_history_empty_run() {
+        let db = wrap(in_memory_db());
+        let result = db.token_usage_history("nonexistent-run").unwrap();
+        assert!(result.is_empty(), "empty db should return empty history");
+    }
+
+    #[test]
+    fn test_token_usage_history_sums_turn_tokens() {
+        let db = wrap(in_memory_db());
+        let conn = &db.conn;
+
+        // Insert a run.
+        conn.execute(
+            "INSERT INTO runs (id, agent_id, state, created_at, updated_at) VALUES ('r1', 'a1', 'working', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        // Insert three turns with known token counts.
+        for (seq, inp, out) in [(1i64, 100i64, 50i64), (2, 200, 80), (3, 300, 120)] {
+            conn.execute(
+                "INSERT INTO turns (id, run_id, sequence, role, started_at, input_tokens, output_tokens) VALUES (?, 'r1', ?, 'assistant', '2024-01-01T00:00:00Z', ?, ?)",
+                rusqlite::params![format!("t{seq}"), seq, inp, out],
+            ).unwrap();
+        }
+
+        let history = db.token_usage_history("r1").unwrap();
+        assert_eq!(history, vec![150u64, 280, 420]);
+    }
+
+    #[test]
+    fn test_token_usage_history_ordered_by_sequence() {
+        let db = wrap(in_memory_db());
+        let conn = &db.conn;
+
+        conn.execute(
+            "INSERT INTO runs (id, agent_id, state, created_at, updated_at) VALUES ('r2', 'a1', 'working', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        // Insert in reverse sequence order.
+        for (seq, inp, out) in [(3i64, 300i64, 0i64), (1, 100, 0), (2, 200, 0)] {
+            conn.execute(
+                "INSERT INTO turns (id, run_id, sequence, role, started_at, input_tokens, output_tokens) VALUES (?, 'r2', ?, 'user', '2024-01-01T00:00:00Z', ?, ?)",
+                rusqlite::params![format!("t{seq}"), seq, inp, out],
+            ).unwrap();
+        }
+
+        let history = db.token_usage_history("r2").unwrap();
+        // Should come back in sequence order: 1, 2, 3.
+        assert_eq!(history, vec![100u64, 200, 300]);
+    }
+
+    // ── recent_error_count ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_recent_error_count_empty_db() {
+        let db = wrap(in_memory_db());
+        let count = db.recent_error_count();
+        assert_eq!(count, 0, "empty db should report 0 errors");
+    }
+
+    #[test]
+    fn test_recent_error_count_with_error_events() {
+        let db = wrap(in_memory_db());
+        let conn = &db.conn;
+
+        conn.execute(
+            "INSERT INTO runs (id, agent_id, state, created_at, updated_at) VALUES ('r3', 'a1', 'failed', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+
+        // Insert events — some are errors, some are not.
+        let now_iso = "2099-12-31T00:00:00Z"; // far future so within "last hour" check fails
+        // We use the current time so the window check passes.
+        let now = chrono::Utc::now().to_rfc3339();
+        for (id, event_type) in [("e1", "TurnError"), ("e2", "RunComplete"), ("e3", "ToolError")] {
+            conn.execute(
+                "INSERT INTO run_events (id, run_id, event_type, payload_json, created_at) VALUES (?, 'r3', ?, '{}', ?)",
+                rusqlite::params![id, event_type, now],
+            ).unwrap();
+        }
+        let _ = now_iso; // suppress unused warning
+
+        let count = db.recent_error_count();
+        // "TurnError" and "ToolError" both contain "error" (case-insensitive).
+        assert_eq!(count, 2);
+    }
+
+    // ── budget_status ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_budget_status_empty_db() {
+        let db = wrap(in_memory_db());
+        let (spent, ceiling) = db.budget_status();
+        assert_eq!(spent, 0.0, "no tokens = no spend");
+        assert_eq!(ceiling, 10.0, "default ceiling is $10");
+    }
+
+    #[test]
+    fn test_budget_status_with_tokens_charges_at_rate() {
+        let db = wrap(in_memory_db());
+        let conn = &db.conn;
+
+        conn.execute(
+            "INSERT INTO agents (id, name, state, updated_at) VALUES ('a1', 'agt', 'active', '2024-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        // Use a recent created_at so it falls within "last day".
+        let recent = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO runs (id, agent_id, state, created_at, updated_at) VALUES ('r4', 'a1', 'completed', ?, ?)",
+            rusqlite::params![recent, recent],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO turns (id, run_id, sequence, role, started_at, input_tokens, output_tokens) VALUES ('t1', 'r4', 1, 'assistant', ?, 1000000, 0)",
+            rusqlite::params![recent],
+        ).unwrap();
+
+        let (spent, ceiling) = db.budget_status();
+        // 1_000_000 tokens * 0.000_003 = 3.0
+        assert!((spent - 3.0).abs() < 0.001, "spent should be ~$3.00, got {spent}");
+        assert_eq!(ceiling, 10.0);
+    }
+
+    // ── humanize_event_type ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_humanize_event_type_pascal_case() {
+        assert_eq!(humanize_event_type("TurnCompleted"), "Turn Completed");
+        assert_eq!(humanize_event_type("RunStarted"), "Run Started");
+        assert_eq!(humanize_event_type("ToolError"), "Tool Error");
+    }
+
+    #[test]
+    fn test_humanize_event_type_single_word() {
+        assert_eq!(humanize_event_type("run"), "Run");
+        assert_eq!(humanize_event_type("error"), "Error");
+    }
+
+    // ── extract_json_string ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_json_string_simple() {
+        let json = r#"{"model":"claude-sonnet","role":"assistant"}"#;
+        assert_eq!(
+            extract_json_string(json, "model"),
+            Some("claude-sonnet".to_owned())
+        );
+        assert_eq!(
+            extract_json_string(json, "role"),
+            Some("assistant".to_owned())
+        );
+    }
+
+    #[test]
+    fn test_extract_json_string_missing_key() {
+        let json = r#"{"model":"claude-sonnet"}"#;
+        assert_eq!(extract_json_string(json, "missing"), None);
+    }
+
+    #[test]
+    fn test_extract_json_string_with_spaces() {
+        let json = r#"{"kind": "sign"}"#;
+        assert_eq!(
+            extract_json_string(json, "kind"),
+            Some("sign".to_owned())
+        );
     }
 }

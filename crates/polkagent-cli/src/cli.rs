@@ -43,6 +43,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub yes: bool,
 
+    /// Override the log file path. Use `-` for stderr only (no file logging).
+    ///
+    /// Default: `~/.polkagent/logs/events.jsonl`
+    #[arg(long, global = true, value_name = "PATH")]
+    pub log_file: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -103,6 +109,21 @@ pub enum Commands {
 
     /// Print version information and exit.
     Version,
+
+    /// Run, list, report, and compare evaluation suites.
+    #[command(subcommand)]
+    Eval(EvalCmd),
+
+    /// Manage API keys and authentication credentials.
+    #[command(subcommand)]
+    Auth(AuthCmd),
+
+    /// Show network endpoint status and infrastructure guidance.
+    #[command(subcommand)]
+    Network(NetworkCmd),
+
+    /// Start the API server (daemon mode).
+    Serve(ServeCmd),
 }
 
 // ---------------------------------------------------------------------------
@@ -147,8 +168,20 @@ pub struct RunCmd {
     #[arg(long, default_value_t = true)]
     pub wait: bool,
 
-    /// Maximum seconds to wait for run completion (0 = no limit).
-    #[arg(long, value_name = "SECS", default_value_t = 0)]
+    /// Override the model for this run (e.g. `anthropic/claude-opus-4-6`).
+    #[arg(long, short = 'm', value_name = "MODEL")]
+    pub model: Option<String>,
+
+    /// Stream live token output as it arrives (default: enabled).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]
+    pub stream: bool,
+
+    /// Disable streaming; wait for completion then print the final response.
+    #[arg(long = "no-stream", overrides_with = "stream", action = clap::ArgAction::SetFalse)]
+    pub no_stream: bool,
+
+    /// Cancel the run after this many seconds (0 = no limit, default: 300).
+    #[arg(long, value_name = "SECS", default_value_t = 300)]
     pub timeout: u64,
 }
 
@@ -201,6 +234,36 @@ pub struct AgentCreateCmd {
     /// Emit JSON output.
     #[arg(long)]
     pub json: bool,
+
+    // ------------------------------------------------------------------
+    // PRD-03 flags
+    // ------------------------------------------------------------------
+
+    /// Declare a capability for this agent (repeatable).
+    ///
+    /// Example: `--capability file.read --capability chain.query`
+    #[arg(long = "capability", value_name = "CAP", action = clap::ArgAction::Append)]
+    pub capabilities: Vec<String>,
+
+    /// Maximum number of agentic turns per run.
+    #[arg(long, value_name = "N")]
+    pub max_turns: Option<u32>,
+
+    /// Preferred model ID within the provider (e.g. `claude-opus-4-6`).
+    ///
+    /// Sets `model_preference.model_id`. Use `--model` (with provider prefix)
+    /// for the canonical model field; use this flag to specify just the model
+    /// ID within the provider selected at runtime.
+    #[arg(long = "preferred-model", value_name = "MODEL_ID")]
+    pub preferred_model: Option<String>,
+
+    /// Wall-clock timeout in seconds for each run.
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
+
+    /// Maximum tokens the model may generate in a single turn.
+    #[arg(long, value_name = "N")]
+    pub max_tokens_per_turn: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -618,6 +681,15 @@ pub enum MemoryCmd {
 
     /// Show memory usage statistics.
     Stats(MemoryStatsCmd),
+
+    /// Export all memories for an agent to a JSON archive file.
+    Export(MemoryExportCmd),
+
+    /// Import memories from a JSON archive file.
+    Import(MemoryImportCmd),
+
+    /// Run a retention sweep to remove old or low-relevance entries.
+    Sweep(MemorySweepCmd),
 }
 
 #[derive(Debug, Args)]
@@ -625,6 +697,10 @@ pub struct MemorySearchCmd {
     /// Search query text.
     #[arg(value_name = "QUERY")]
     pub query: String,
+
+    /// Agent ID to search within (searches all agents when omitted).
+    #[arg(long, value_name = "AGENT_ID")]
+    pub agent_id: Option<String>,
 
     /// Maximum number of results.
     #[arg(long, value_name = "N", default_value_t = 10)]
@@ -664,6 +740,62 @@ pub struct MemoryStatsCmd {
     pub json: bool,
 }
 
+/// Export memories for an agent to a JSON archive file.
+#[derive(Debug, Args)]
+pub struct MemoryExportCmd {
+    /// Agent ID whose memories to export.
+    #[arg(value_name = "AGENT_ID")]
+    pub agent_id: String,
+
+    /// Output file path for the JSON archive.
+    #[arg(value_name = "OUTPUT_PATH")]
+    pub output_path: std::path::PathBuf,
+
+    /// Emit structured JSON output (summary only).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Import memories from a JSON archive file.
+#[derive(Debug, Args)]
+pub struct MemoryImportCmd {
+    /// Input JSON archive file path.
+    #[arg(value_name = "INPUT_PATH")]
+    pub input_path: std::path::PathBuf,
+
+    /// Emit structured JSON output (summary only).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Run a retention sweep for an agent.
+#[derive(Debug, Args)]
+pub struct MemorySweepCmd {
+    /// Agent ID to sweep (required).
+    #[arg(value_name = "AGENT_ID")]
+    pub agent_id: String,
+
+    /// Show what would be deleted without actually deleting.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Maximum age in days before entries are deleted (default: 90).
+    #[arg(long, value_name = "DAYS", default_value_t = 90)]
+    pub max_age_days: u64,
+
+    /// Minimum relevance score; entries below this are deleted (default: 0.1).
+    #[arg(long, value_name = "SCORE", default_value_t = 0.1)]
+    pub min_relevance: f64,
+
+    /// Maximum entries to keep per agent (default: 10000).
+    #[arg(long, value_name = "N", default_value_t = 10_000)]
+    pub max_entries: usize,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Parse a memory type string into a `MemoryType`.
 fn parse_memory_type(s: &str) -> Result<polkagent_memory::types::MemoryType, String> {
     s.parse()
@@ -688,4 +820,215 @@ pub struct CompletionsCmd {
     /// Shell to generate completions for.
     #[arg(value_name = "SHELL")]
     pub shell: Shell,
+}
+
+// ---------------------------------------------------------------------------
+// eval
+// ---------------------------------------------------------------------------
+
+/// Evaluation suite subcommands.
+#[derive(Debug, Subcommand)]
+pub enum EvalCmd {
+    /// Run an evaluation suite against the configured executor.
+    Run(EvalRunCmd),
+
+    /// List available evaluation suites from the fixtures/evals/ directory.
+    List(EvalListCmd),
+
+    /// Display a previously saved evaluation report.
+    Report(EvalReportCmd),
+
+    /// Compare two evaluation reports for regressions.
+    Compare(EvalCompareCmd),
+}
+
+/// Run a single evaluation suite from a JSON file.
+#[derive(Debug, Args)]
+pub struct EvalRunCmd {
+    /// Path to the suite JSON file (or directory containing a suite.json).
+    #[arg(value_name = "SUITE_PATH")]
+    pub suite_path: std::path::PathBuf,
+
+    /// Save the JSON report to this path.
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<std::path::PathBuf>,
+
+    /// Maximum number of cases to run concurrently.
+    #[arg(long, value_name = "N", default_value_t = 4)]
+    pub concurrency: usize,
+
+    /// Model identifier to use for the executor.
+    #[arg(long, value_name = "MODEL", default_value = "claude-opus-4-6")]
+    pub model: String,
+
+    /// Emit the full JSON report to stdout instead of Markdown.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// List available evaluation suites under fixtures/evals/.
+#[derive(Debug, Args)]
+pub struct EvalListCmd {
+    /// Root directory to search for suites (defaults to fixtures/evals/).
+    #[arg(value_name = "DIR", default_value = "fixtures/evals")]
+    pub dir: std::path::PathBuf,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Display a previously saved evaluation report from a JSON file.
+#[derive(Debug, Args)]
+pub struct EvalReportCmd {
+    /// Path to the saved report JSON file.
+    #[arg(value_name = "REPORT_PATH")]
+    pub report_path: std::path::PathBuf,
+
+    /// Emit the raw JSON report instead of Markdown.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Compare two evaluation reports for regressions and improvements.
+#[derive(Debug, Args)]
+pub struct EvalCompareCmd {
+    /// Path to the baseline report JSON file.
+    #[arg(value_name = "BASELINE")]
+    pub baseline: std::path::PathBuf,
+
+    /// Path to the current report JSON file.
+    #[arg(value_name = "CURRENT")]
+    pub current: std::path::PathBuf,
+
+    /// Minimum absolute score delta to count as a regression or improvement.
+    #[arg(long, value_name = "DELTA", default_value_t = 0.001)]
+    pub min_delta: f64,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// auth
+// ---------------------------------------------------------------------------
+
+/// Authentication and credential management subcommands.
+#[derive(Debug, Subcommand)]
+pub enum AuthCmd {
+    /// Prompt for API keys and store them securely.
+    Login(AuthLoginCmd),
+
+    /// Remove stored credentials.
+    Logout(AuthLogoutCmd),
+
+    /// Show current identity: masked API keys, auth method, and agent identity.
+    Whoami(AuthWhoamiCmd),
+
+    /// Show which providers are configured and their auth method.
+    Status(AuthStatusCmd),
+}
+
+/// Log in: prompt for API keys and save them to `~/.polkagent/credentials`.
+#[derive(Debug, Args)]
+pub struct AuthLoginCmd {
+    /// Only prompt for the specified provider (e.g. `anthropic`, `openai`).
+    ///
+    /// When omitted, all supported providers are prompted in sequence.
+    #[arg(long, value_name = "PROVIDER")]
+    pub provider: Option<String>,
+
+    /// Show what would be stored without actually writing the credentials file.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Log out: remove the `~/.polkagent/credentials` file.
+#[derive(Debug, Args)]
+pub struct AuthLogoutCmd {
+    /// Show what would be removed without actually deleting the file.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Show identity and key configuration (all keys masked).
+#[derive(Debug, Args)]
+pub struct AuthWhoamiCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Show auth status: which providers have valid keys and where they come from.
+#[derive(Debug, Args)]
+pub struct AuthStatusCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// network
+// ---------------------------------------------------------------------------
+
+/// Network endpoint status and infrastructure guidance subcommands.
+#[derive(Debug, Subcommand)]
+pub enum NetworkCmd {
+    /// Show configured chain endpoints and their reachability.
+    Status(NetworkStatusCmd),
+
+    /// Print guidance on starting a local test network with zombienet/chopsticks.
+    Start(NetworkStartCmd),
+
+    /// Print guidance on stopping a local test network.
+    Stop(NetworkStopCmd),
+}
+
+/// Show configured chain endpoints and their reachability status.
+#[derive(Debug, Args)]
+pub struct NetworkStatusCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Print guidance on starting a local test network.
+#[derive(Debug, Args)]
+pub struct NetworkStartCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Print guidance on stopping a local test network.
+#[derive(Debug, Args)]
+pub struct NetworkStopCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// serve
+// ---------------------------------------------------------------------------
+
+/// Start the Polkagent HTTP API server.
+///
+/// Reads bind address, CORS, and database settings from the active
+/// configuration, then starts the Axum-backed server. Handles SIGTERM/SIGINT
+/// for graceful shutdown.
+#[derive(Debug, Args)]
+pub struct ServeCmd {
+    /// Override the TCP port (default: value from config, typically 4840).
+    #[arg(long, short = 'p', value_name = "PORT")]
+    pub port: Option<u16>,
+
+    /// Override the bind host (default: value from config, typically 127.0.0.1).
+    #[arg(long, value_name = "HOST")]
+    pub host: Option<String>,
+
+    /// Path to the configuration file to use.
+    #[arg(long, short = 'c', value_name = "PATH")]
+    pub config: Option<String>,
 }

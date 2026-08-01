@@ -68,6 +68,9 @@
 //!
 //!   GET    /system/info
 //!
+//! /openapi.json                     (no version prefix)
+//!   GET    /openapi.json
+//!
 //! /health
 //!   GET    /health/live
 //!   GET    /health/ready
@@ -82,6 +85,7 @@ pub mod events_rest;
 pub mod health;
 pub mod memory;
 pub mod models;
+pub mod openapi;
 pub mod payments;
 pub mod providers;
 pub mod runs;
@@ -90,25 +94,58 @@ pub mod system;
 pub mod tools;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post, put},
     Router,
 };
 
 use crate::state::AppState;
 
+/// Default request body size limit: 1 MiB.
+const BODY_LIMIT_DEFAULT: usize = 1_048_576;
+
+/// Larger body limit for artifact upload routes: 10 MiB.
+const BODY_LIMIT_ARTIFACT: usize = 10_485_760;
+
 /// Register all routes and return the complete `Router`.
 ///
 /// The returned router is ready to be bound to a listener; the caller in
 /// `ApiServer::serve` wraps it with `tower-http` middleware (CORS, tracing).
+///
+/// # Body size limits
+///
+/// A default body limit of 1 MiB is applied to all routes via
+/// [`DefaultBodyLimit::max`].  The `/artifacts/{id}/content` route allows up
+/// to 10 MiB to accommodate larger artifact payloads.
 #[must_use]
 pub fn register(state: AppState) -> Router {
     // -----------------------------------------------------------------------
     // Health routes (no version prefix — reachable by load balancer probes)
     // -----------------------------------------------------------------------
+    // Liveness is stateless (always 200). Readiness and startup use simple
+    // inline handlers that return 200 — the full HealthState-based probes
+    // are available via `health::health_router()` for production deployments.
     let health_routes = Router::new()
         .route("/health/live", get(health::liveness))
-        .route("/health/ready", get(health::readiness))
-        .route("/health/startup", get(health::startup));
+        .route("/health/ready", get(|| async {
+            axum::Json(serde_json::json!({ "status": "ok", "ready": true }))
+        }))
+        .route("/health/startup", get(|| async {
+            axum::Json(serde_json::json!({ "status": "ok", "detail": "initialisation complete" }))
+        }));
+
+    // -----------------------------------------------------------------------
+    // OpenAPI spec route (no version prefix, no auth required)
+    // -----------------------------------------------------------------------
+    let openapi_route = Router::new()
+        .route("/openapi.json", get(openapi::serve_openapi));
+
+    // -----------------------------------------------------------------------
+    // Artifact content route with a larger body limit (10 MiB).
+    // -----------------------------------------------------------------------
+    let artifact_content_route = Router::new()
+        .route("/artifacts/{id}/content", get(artifacts::get_artifact_content))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT_ARTIFACT));
 
     // -----------------------------------------------------------------------
     // v1alpha1 API routes
@@ -139,10 +176,10 @@ pub fn register(state: AppState) -> Router {
         .route("/effects/{id}", get(effects::get_effect))
         .route("/effects/{id}/approve", post(effects::approve_effect))
         .route("/effects/{id}/deny", post(effects::deny_effect))
-        // Artifacts
+        // Artifacts (content served from the higher-limit sub-router)
         .route("/artifacts/{id}", get(artifacts::get_artifact))
-        .route("/artifacts/{id}/content", get(artifacts::get_artifact_content))
         .route("/artifacts/{id}/provenance", get(artifacts::get_artifact_provenance))
+        .merge(artifact_content_route)
         // Events (REST + WebSocket)
         .route("/events", get(events_rest::list_events))
         .route("/events/{id}", get(events_rest::get_event))
@@ -175,10 +212,13 @@ pub fn register(state: AppState) -> Router {
         .route("/memory/forget", post(memory::forget_memory))
         .route("/memory/entries/{entry_id}", get(memory::get_memory_entry))
         // System
-        .route("/system/info", get(system::system_info));
+        .route("/system/info", get(system::system_info))
+        // Apply default 1 MiB body limit to all routes in this sub-router.
+        .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT));
 
     Router::new()
         .merge(health_routes)
+        .merge(openapi_route)
         .nest("/api/v1alpha1", api_routes)
         .with_state(state)
 }

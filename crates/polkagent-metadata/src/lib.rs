@@ -63,17 +63,20 @@
 )]
 
 pub mod cache;
+pub mod decode;
 pub mod drift;
 pub mod error;
 pub mod pin;
 pub mod service;
 pub mod types;
+pub mod validation;
 
 // ---------------------------------------------------------------------------
 // Convenience re-exports
 // ---------------------------------------------------------------------------
 
 pub use cache::MetadataCache;
+pub use decode::DecodeService;
 pub use drift::DriftDetector;
 pub use error::MetadataError;
 pub use pin::PinStore;
@@ -82,3 +85,4 @@ pub use types::{
     CallInfo, ChainId, MetadataDrift, MetadataHash, MetadataSnapshot, MetadataVersion,
     PalletInfo, PinnedMetadata,
 };
+pub use validation::validate_network;

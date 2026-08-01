@@ -66,6 +66,16 @@ pub struct TelemetryGuard {
     provider: Option<TracerProvider>,
 }
 
+impl TelemetryGuard {
+    /// Return a no-op guard that performs no shutdown on drop.
+    ///
+    /// Useful when telemetry initialisation fails non-fatally (e.g. a
+    /// subscriber is already installed in the current process).
+    pub fn no_op() -> Self {
+        Self { provider: None }
+    }
+}
+
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         if let Some(provider) = self.provider.take() {
@@ -222,7 +232,14 @@ mod tests {
 
     #[test]
     fn guard_drop_without_provider_does_not_panic() {
-        let guard = TelemetryGuard { provider: None };
+        let guard = TelemetryGuard::no_op();
+        drop(guard);
+    }
+
+    #[test]
+    fn guard_no_op_constructor() {
+        let guard = TelemetryGuard::no_op();
+        // Dropping a no-op guard must not panic.
         drop(guard);
     }
 }

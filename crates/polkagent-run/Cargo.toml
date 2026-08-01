@@ -15,6 +15,8 @@ polkagent-event = { path = "../polkagent-event" }
 polkagent-executor-trait = { path = "../polkagent-executor-trait" }
 polkagent-effect = { path = "../polkagent-effect" }
 polkagent-grant = { path = "../polkagent-grant" }
+polkagent-card = { path = "../polkagent-card" }
+polkagent-payment = { path = "../polkagent-payment", optional = true }
 
 # Serialization
 serde = { workspace = true }
@@ -35,10 +37,14 @@ thiserror = { workspace = true }
 # IDs
 uuid = { workspace = true }
 
+[features]
+payment = ["dep:polkagent-payment"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 async-trait = { workspace = true }
 futures = { workspace = true }
+polkagent-payment = { path = "../polkagent-payment" }
 
 [lints]
 workspace = true

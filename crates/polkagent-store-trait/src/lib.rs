@@ -290,6 +290,20 @@ pub trait EffectStore: Send + Sync {
         cutoff: Timestamp,
     ) -> Result<Vec<StoredIntent>, StoreError>;
 
+    /// Atomically update the state of an existing intent.
+    ///
+    /// Used by the approval subsystem to transition an intent between states
+    /// (e.g. `"pending"` → `"approved"` or `"pending"` → `"denied"`).
+    ///
+    /// Returns `StoreError::NotFound` if no intent with `intent_id` exists.
+    /// Returns `StoreError::InvalidTransition` if the requested transition is
+    /// not valid from the intent's current state.
+    async fn update_intent_state(
+        &self,
+        intent_id: EffectId,
+        new_state: &str,
+    ) -> Result<StoredIntent, StoreError>;
+
     // ------------------------------------------------------------------
     // Attempt lifecycle
     // ------------------------------------------------------------------

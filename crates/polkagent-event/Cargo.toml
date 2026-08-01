@@ -21,8 +21,14 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+criterion = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+
+[[bench]]
+name = "bus"
+harness = false
 
 [lints]
 workspace = true

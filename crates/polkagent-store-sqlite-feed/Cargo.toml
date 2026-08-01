@@ -1,0 +1,46 @@
+[package]
+name = "polkagent-store-sqlite-feed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SQLite FeedStore implementation, separated from polkagent-store-sqlite to avoid serde trait-solver recursion limits"
+
+[dependencies]
+# Internal
+polkagent-feed = { path = "../polkagent-feed" }
+polkagent-core = { path = "../polkagent-core" }
+polkagent-store-sqlite = { path = "../polkagent-store-sqlite" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Database
+rusqlite = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

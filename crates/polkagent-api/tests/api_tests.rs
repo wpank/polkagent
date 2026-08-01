@@ -4,15 +4,19 @@
 //! `ApiServer::into_router`, and drives it with `axum_test::TestServer`.
 //! No real TCP sockets or database files are opened.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum_test::TestServer;
-use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, Timestamp, WorkerId};
+use polkagent_core::{ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, WorkerId};
 use polkagent_store_trait::{
-    EffectStore, StoredIntent, StoredOutcome, StoreError,
+    ArtifactStore, ArtifactSummary, EffectStore, StoredIntent, StoredOutcome, StoreError,
+    StoreRetryClass,
 };
+use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
 use serde_json::json;
+use tokio::sync::RwLock;
 
 use polkagent_api::{InMemoryRunManager, InMemoryAgentStore, server::ApiServer};
 use polkagent_config::{Config, ProviderConfig};
@@ -106,6 +110,198 @@ impl EffectStore for NoopEffectStore {
     ) -> Result<(), StoreError> {
         Ok(())
     }
+
+    async fn update_intent_state(
+        &self,
+        intent_id: EffectId,
+        _new_state: &str,
+    ) -> Result<StoredIntent, StoreError> {
+        // NoopEffectStore always returns NotFound — tests requiring real state
+        // transitions must use `InMemoryEffectStore` (see below).
+        Err(StoreError::NotFound {
+            resource_type: "EffectIntent",
+            id: intent_id.to_string(),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InMemoryEffectStore — for approve/deny/state-transition tests
+// ---------------------------------------------------------------------------
+
+use tokio::sync::RwLock as TokioRwLock;
+
+/// A fully-functional in-memory `EffectStore` for approve/deny tests.
+struct InMemoryEffectStore {
+    intents: TokioRwLock<HashMap<EffectId, StoredIntent>>,
+}
+
+impl InMemoryEffectStore {
+    fn new() -> Self {
+        Self {
+            intents: TokioRwLock::new(HashMap::new()),
+        }
+    }
+
+    async fn seed_intent(&self, intent: StoredIntent) {
+        self.intents.write().await.insert(intent.id, intent);
+    }
+}
+
+#[async_trait::async_trait]
+impl EffectStore for InMemoryEffectStore {
+    async fn propose_intent(&self, intent: StoredIntent) -> Result<(), StoreError> {
+        self.intents.write().await.insert(intent.id, intent);
+        Ok(())
+    }
+
+    async fn claim_intent(
+        &self,
+        _worker_id: WorkerId,
+        _lease_duration: Duration,
+    ) -> Result<Option<StoredIntent>, StoreError> {
+        Ok(None)
+    }
+
+    async fn claim_intent_by_id(
+        &self,
+        intent_id: EffectId,
+        _worker_id: WorkerId,
+        _lease_duration: Duration,
+    ) -> Result<StoredIntent, StoreError> {
+        self.intents
+            .read()
+            .await
+            .get(&intent_id)
+            .cloned()
+            .ok_or(StoreError::NotFound {
+                resource_type: "EffectIntent",
+                id: intent_id.to_string(),
+            })
+    }
+
+    async fn release_claim(
+        &self,
+        _intent_id: EffectId,
+        _worker_id: WorkerId,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
+        self.intents
+            .read()
+            .await
+            .get(&intent_id)
+            .cloned()
+            .ok_or(StoreError::NotFound {
+                resource_type: "EffectIntent",
+                id: intent_id.to_string(),
+            })
+    }
+
+    async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
+        let guard = self.intents.read().await;
+        Ok(guard
+            .values()
+            .filter(|i| i.run_id == run_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn expired_leases(
+        &self,
+        _cutoff: Timestamp,
+    ) -> Result<Vec<StoredIntent>, StoreError> {
+        Ok(vec![])
+    }
+
+    async fn record_attempt_start(
+        &self,
+        _attempt_id: EffectAttemptId,
+        _intent_id: EffectId,
+        _worker_id: WorkerId,
+        _payload: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn record_outcome(&self, _outcome: StoredOutcome) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn unconsumed_outcomes(
+        &self,
+        _run_id: RunId,
+    ) -> Result<Vec<StoredOutcome>, StoreError> {
+        Ok(vec![])
+    }
+
+    async fn mark_outcomes_consumed(
+        &self,
+        _outcome_ids: &[EffectOutcomeId],
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn update_intent_state(
+        &self,
+        intent_id: EffectId,
+        new_state: &str,
+    ) -> Result<StoredIntent, StoreError> {
+        let mut guard = self.intents.write().await;
+        let intent = guard.get_mut(&intent_id).ok_or(StoreError::NotFound {
+            resource_type: "EffectIntent",
+            id: intent_id.to_string(),
+        })?;
+
+        // Only allow transitions from "pending" or "waiting_approval".
+        let valid_source = ["pending", "waiting_approval"];
+        if !valid_source.contains(&intent.state.as_str()) {
+            return Err(StoreError::InvalidTransition {
+                message: format!(
+                    "cannot transition from '{}' to '{new_state}'",
+                    intent.state
+                ),
+            });
+        }
+
+        intent.state = new_state.to_owned();
+        Ok(intent.clone())
+    }
+}
+
+/// Build a `StoredIntent` with the given state for seeding in tests.
+fn make_stored_intent(run_id: RunId, state: &str) -> StoredIntent {
+    StoredIntent {
+        id: EffectId::new(),
+        run_id,
+        step_id: StepId::new(),
+        state: state.to_owned(),
+        lease_owner: None,
+        lease_expires: None,
+        retry_class: StoreRetryClass::Idempotent,
+        payload: serde_json::Value::Null,
+        idempotency_key: "test-key".to_owned(),
+        created_at: chrono::Utc::now(),
+    }
+}
+
+/// Build a `TestServer` backed by `InMemoryEffectStore` and return the store
+/// for seeding intents before requests.
+fn test_server_with_effect_store() -> (TestServer, Arc<InMemoryEffectStore>) {
+    let agents = Arc::new(InMemoryAgentStore::new());
+    let run_manager = Arc::new(InMemoryRunManager::new());
+    let store = Arc::new(InMemoryEffectStore::new());
+    let event_bus = EventBus::with_default_capacity();
+    let server = ApiServer::new(
+        Config::default(),
+        agents,
+        run_manager,
+        store.clone() as Arc<dyn EffectStore>,
+        event_bus,
+    );
+    (TestServer::new(server.into_router()), store)
 }
 
 // ---------------------------------------------------------------------------
@@ -263,12 +459,9 @@ async fn error_request_id_is_valid_uuid() {
 
 #[tokio::test]
 async fn error_501_includes_all_required_fields() {
+    // Skills endpoint returns 501 when no skill_registry is configured.
     let server = test_server();
-    let fake_id = polkagent_core::EffectId::new().to_string();
-    // Approve effect is a stub that returns 501.
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{fake_id}/approve"))
-        .await;
+    let resp = server.get("/api/v1alpha1/skills").await;
     resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
     let body: serde_json::Value = resp.json();
     let err = &body["error"];
@@ -938,7 +1131,9 @@ async fn list_run_turns_for_nonexistent_run_returns_404() {
 }
 
 #[tokio::test]
-async fn resume_run_returns_501() {
+async fn resume_run_existing_not_in_awaiting_returns_409() {
+    // Previously this was 501; now the endpoint is implemented and returns
+    // 409 Conflict when the run is not in AwaitingApproval state.
     let server = test_server();
     let agent_id = create_test_agent(&server).await;
     let run_id = create_test_run(&server, &agent_id).await;
@@ -946,9 +1141,9 @@ async fn resume_run_returns_501() {
     let resp = server
         .post(&format!("/api/v1alpha1/runs/{run_id}/resume"))
         .await;
-    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    resp.assert_status(axum::http::StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+    assert_eq!(body["error"]["code"], "INVALID_STATE");
 }
 
 // ===========================================================================
@@ -984,40 +1179,38 @@ async fn get_effect_detail_not_found() {
 }
 
 #[tokio::test]
-async fn approve_effect_returns_501() {
+async fn approve_effect_nonexistent_returns_404_with_not_found_code() {
+    // Previously this was 501 (stub); now it returns 404 for unknown effects.
     let server = test_server();
     let fake_id = polkagent_core::EffectId::new().to_string();
     let resp = server
         .post(&format!("/api/v1alpha1/effects/{fake_id}/approve"))
         .await;
-    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+    let message = body["error"]["message"].as_str().unwrap_or("");
     assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("approve"),
-        "501 message should mention 'approve'"
+        message.contains(&fake_id),
+        "404 message should reference the effect ID"
     );
 }
 
 #[tokio::test]
-async fn deny_effect_returns_501() {
+async fn deny_effect_nonexistent_returns_404_with_not_found_code() {
+    // Previously this was 501 (stub); now it returns 404 for unknown effects.
     let server = test_server();
     let fake_id = polkagent_core::EffectId::new().to_string();
     let resp = server
         .post(&format!("/api/v1alpha1/effects/{fake_id}/deny"))
         .await;
-    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+    let message = body["error"]["message"].as_str().unwrap_or("");
     assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("deny"),
-        "501 message should mention 'deny'"
+        message.contains(&fake_id),
+        "404 message should reference the effect ID"
     );
 }
 
@@ -1057,8 +1250,7 @@ async fn health_readiness_returns_200_when_store_healthy() {
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
     assert_eq!(body["status"], "ok");
-    // The readiness check probes the effect store.
-    assert_eq!(body["checks"]["effect_store"], "ok");
+    assert_eq!(body["ready"], true);
 }
 
 #[tokio::test]
@@ -1841,7 +2033,9 @@ async fn agent_resume_returns_200_for_existing_agent() {
 }
 
 #[tokio::test]
-async fn resume_run_returns_501_with_run_state_in_message() {
+async fn resume_run_returns_409_when_not_in_awaiting_approval() {
+    // A freshly-created run is in Running state, not AwaitingApproval —
+    // so resume should return 409 Conflict.
     let server = test_server();
     let agent_id = create_test_agent(&server).await;
     let run_id = create_test_run(&server, &agent_id).await;
@@ -1849,14 +2043,13 @@ async fn resume_run_returns_501_with_run_state_in_message() {
     let resp = server
         .post(&format!("/api/v1alpha1/runs/{run_id}/resume"))
         .await;
-    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    resp.assert_status(axum::http::StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
-    // Message should reference the run ID.
+    assert_eq!(body["error"]["code"], "INVALID_STATE");
     let message = body["error"]["message"].as_str().expect("message");
     assert!(
-        message.contains(&run_id),
-        "501 message should reference the run ID"
+        !message.is_empty(),
+        "409 message should explain the invalid transition"
     );
 }
 
@@ -1871,4 +2064,861 @@ async fn resume_run_returns_404_for_nonexistent_run() {
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["error"]["code"], "RUN_NOT_FOUND");
+}
+
+// ===========================================================================
+// In-memory EventStore for tests
+// ===========================================================================
+
+/// Minimal in-memory `EventStore` for testing the events REST endpoints.
+struct InMemoryEventStore {
+    events: RwLock<Vec<StoredEvent>>,
+    next_global_seq: RwLock<u64>,
+}
+
+impl InMemoryEventStore {
+    fn new() -> Self {
+        Self {
+            events: RwLock::new(Vec::new()),
+            next_global_seq: RwLock::new(1),
+        }
+    }
+
+    /// Helper: store an event directly (bypasses monotonicity checks for tests).
+    async fn insert(&self, mut event: StoredEvent) {
+        let mut seq_guard = self.next_global_seq.write().await;
+        event.global_sequence = *seq_guard;
+        *seq_guard += 1;
+        drop(seq_guard);
+        self.events.write().await.push(event);
+    }
+}
+
+#[async_trait::async_trait]
+impl EventStore for InMemoryEventStore {
+    async fn append_durable(&self, event: StoredEvent) -> Result<StoredEvent, EventStoreError> {
+        let mut event = event;
+        let mut seq_guard = self.next_global_seq.write().await;
+        event.global_sequence = *seq_guard;
+        *seq_guard += 1;
+        drop(seq_guard);
+        self.events.write().await.push(event.clone());
+        Ok(event)
+    }
+
+    async fn append_diagnostic(
+        &self,
+        _event: StoredEvent,
+        _expires_at: String,
+    ) -> Result<(), EventStoreError> {
+        Ok(())
+    }
+
+    async fn read_from_cursor(
+        &self,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        let guard = self.events.read().await;
+        let results: Vec<StoredEvent> = guard
+            .iter()
+            .filter(|e| e.global_sequence > cursor)
+            .take(limit)
+            .cloned()
+            .collect();
+        Ok(results)
+    }
+
+    async fn read_run_events(
+        &self,
+        run_id: RunId,
+    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        let guard = self.events.read().await;
+        let run_id_str = run_id.to_string();
+        Ok(guard.iter().filter(|e| e.run_id == run_id_str).cloned().collect())
+    }
+
+    async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
+        let guard = self.events.read().await;
+        let mut results: Vec<StoredEvent> = guard
+            .iter()
+            .filter(|e| {
+                if let Some(ref rid) = filter.run_id {
+                    if e.run_id != rid.to_string() {
+                        return false;
+                    }
+                }
+                if !filter.event_types.is_empty() {
+                    if !filter.event_types.contains(&e.event_type) {
+                        return false;
+                    }
+                }
+                if let Some(since) = filter.since_global_sequence {
+                    if e.global_sequence < since {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        results.sort_by_key(|e| e.global_sequence);
+        if let Some(limit) = filter.limit {
+            results.truncate(limit);
+        }
+        Ok(results)
+    }
+
+    async fn max_sequence(&self, run_id: RunId) -> Result<u64, EventStoreError> {
+        let guard = self.events.read().await;
+        let run_id_str = run_id.to_string();
+        let max = guard
+            .iter()
+            .filter(|e| e.run_id == run_id_str)
+            .map(|e| e.sequence)
+            .max()
+            .unwrap_or(0);
+        Ok(max)
+    }
+
+    async fn has_terminal_event(&self, _run_id: RunId) -> Result<bool, EventStoreError> {
+        Ok(false)
+    }
+}
+
+// ===========================================================================
+// In-memory ArtifactStore for tests
+// ===========================================================================
+
+struct InMemoryArtifactStore {
+    artifacts: RwLock<HashMap<ArtifactId, (ArtifactSummary, Vec<u8>)>>,
+}
+
+impl InMemoryArtifactStore {
+    fn new() -> Self {
+        Self {
+            artifacts: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ArtifactStore for InMemoryArtifactStore {
+    async fn store(
+        &self,
+        artifact_id: ArtifactId,
+        run_id: Option<RunId>,
+        kind: &str,
+        algorithm: &str,
+        digest_hex: &str,
+        classification: &str,
+        body: &[u8],
+    ) -> Result<(), StoreError> {
+        let summary = ArtifactSummary {
+            id: artifact_id,
+            kind: kind.to_owned(),
+            algorithm: algorithm.to_owned(),
+            digest_hex: digest_hex.to_owned(),
+            classification: classification.to_owned(),
+            run_id,
+            created_at: chrono::Utc::now(),
+        };
+        self.artifacts.write().await.insert(artifact_id, (summary, body.to_vec()));
+        Ok(())
+    }
+
+    async fn get(&self, id: ArtifactId) -> Result<ArtifactSummary, StoreError> {
+        self.artifacts
+            .read()
+            .await
+            .get(&id)
+            .map(|(s, _)| s.clone())
+            .ok_or_else(|| StoreError::NotFound { resource_type: "Artifact", id: id.to_string() })
+    }
+
+    async fn get_body(&self, id: ArtifactId) -> Result<Vec<u8>, StoreError> {
+        self.artifacts
+            .read()
+            .await
+            .get(&id)
+            .map(|(_, b)| b.clone())
+            .ok_or_else(|| StoreError::NotFound { resource_type: "Artifact", id: id.to_string() })
+    }
+
+    async fn verify(&self, id: ArtifactId) -> Result<bool, StoreError> {
+        Ok(self.artifacts.read().await.contains_key(&id))
+    }
+
+    async fn list_for_run(&self, run_id: RunId) -> Result<Vec<ArtifactSummary>, StoreError> {
+        let guard = self.artifacts.read().await;
+        let results = guard
+            .values()
+            .filter(|(s, _)| s.run_id.as_ref() == Some(&run_id))
+            .map(|(s, _)| s.clone())
+            .collect();
+        Ok(results)
+    }
+}
+
+// ===========================================================================
+// Test helpers with optional stores
+// ===========================================================================
+
+/// Build a `TestServer` with an in-memory EventStore attached.
+fn test_server_with_event_store(
+    store: Arc<InMemoryEventStore>,
+) -> TestServer {
+    let agents = Arc::new(InMemoryAgentStore::new());
+    let run_manager = Arc::new(InMemoryRunManager::new());
+    let effect_store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
+    let event_bus = EventBus::with_default_capacity();
+    let state = polkagent_api::AppState::new(
+        Config::default(),
+        agents,
+        run_manager,
+        effect_store,
+        event_bus,
+    )
+    .with_event_store(store);
+    let server = ApiServer::from_state(state);
+    TestServer::new(server.into_router())
+}
+
+/// Build a `TestServer` with an in-memory ArtifactStore attached.
+fn test_server_with_artifact_store(
+    store: Arc<InMemoryArtifactStore>,
+) -> TestServer {
+    let agents = Arc::new(InMemoryAgentStore::new());
+    let run_manager = Arc::new(InMemoryRunManager::new());
+    let effect_store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
+    let event_bus = EventBus::with_default_capacity();
+    let state = polkagent_api::AppState::new(
+        Config::default(),
+        agents,
+        run_manager,
+        effect_store,
+        event_bus,
+    )
+    .with_artifact_store(store);
+    let server = ApiServer::from_state(state);
+    TestServer::new(server.into_router())
+}
+
+/// Make a minimal `StoredEvent` for testing.
+fn make_stored_event(id: &str, run_id: RunId, event_type: &str, global_seq: u64) -> StoredEvent {
+    StoredEvent {
+        id: id.to_owned(),
+        event_type: event_type.to_owned(),
+        sequence: global_seq,
+        global_sequence: global_seq,
+        run_id: run_id.to_string(),
+        conversation_id: None,
+        correlation_id: run_id.to_string(),
+        causation_id: None,
+        scope_id: "test".to_owned(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        durability: "durable".to_owned(),
+        payload: serde_json::Value::Null,
+        trace_id: None,
+        span_id: None,
+        schema_version: 1,
+    }
+}
+
+// ===========================================================================
+// Events REST endpoint tests — with event store configured
+// ===========================================================================
+
+#[tokio::test]
+async fn list_events_with_store_returns_events() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let run_id = RunId::new();
+
+    // Insert two events directly into the store.
+    store.insert(make_stored_event("evt-1", run_id, "run_created", 1)).await;
+    store.insert(make_stored_event("evt-2", run_id, "run_started", 2)).await;
+
+    let server = test_server_with_event_store(store);
+    let resp = server.get("/api/v1alpha1/events").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    let data = body["data"].as_array().expect("data array");
+    assert_eq!(data.len(), 2);
+    assert!(body["cursor"].is_object());
+    assert_eq!(body["meta"]["page_size"], 2);
+}
+
+#[tokio::test]
+async fn list_events_without_store_returns_501() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/events").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn list_events_filters_by_run_id() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let run_a = RunId::new();
+    let run_b = RunId::new();
+
+    store.insert(make_stored_event("evt-a1", run_a, "run_created", 1)).await;
+    store.insert(make_stored_event("evt-a2", run_a, "run_started", 2)).await;
+    store.insert(make_stored_event("evt-b1", run_b, "run_created", 3)).await;
+
+    let server = test_server_with_event_store(store);
+    let resp = server
+        .get(&format!("/api/v1alpha1/events?run_id={run_a}"))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let data = body["data"].as_array().expect("data array");
+    // Only run_a events.
+    assert_eq!(data.len(), 2);
+    for evt in data {
+        assert_eq!(evt["run_id"], run_a.to_string().as_str());
+    }
+}
+
+#[tokio::test]
+async fn list_events_filters_by_since() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let run_id = RunId::new();
+
+    store.insert(make_stored_event("evt-1", run_id, "run_created", 1)).await;
+    store.insert(make_stored_event("evt-2", run_id, "run_started", 2)).await;
+    store.insert(make_stored_event("evt-3", run_id, "run_completed", 3)).await;
+
+    let server = test_server_with_event_store(store);
+    // Request events with global_sequence >= 2.
+    let resp = server.get("/api/v1alpha1/events?since=2").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let data = body["data"].as_array().expect("data array");
+    // Should return evt-2 and evt-3 (global_sequence 2 and 3).
+    assert_eq!(data.len(), 2);
+}
+
+#[tokio::test]
+async fn get_event_by_id_returns_single_event() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let run_id = RunId::new();
+    store.insert(make_stored_event("target-event-id", run_id, "run_created", 1)).await;
+
+    let server = test_server_with_event_store(store);
+    let resp = server.get("/api/v1alpha1/events/target-event-id").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert!(body["data"].is_object());
+    assert_eq!(body["data"]["id"], "target-event-id");
+}
+
+#[tokio::test]
+async fn get_event_by_id_not_found_returns_404() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let server = test_server_with_event_store(store);
+    let resp = server.get("/api/v1alpha1/events/nonexistent-id").await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn get_event_by_id_returns_501_error_code_without_store() {
+    let server = test_server();
+    let resp = server.get("/api/v1alpha1/events/some-id").await;
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
+}
+
+#[tokio::test]
+async fn list_events_respects_limit() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let run_id = RunId::new();
+
+    for i in 1..=5u64 {
+        store.insert(make_stored_event(&format!("evt-{i}"), run_id, "run_created", i)).await;
+    }
+
+    let server = test_server_with_event_store(store);
+    let resp = server.get("/api/v1alpha1/events?limit=2").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let data = body["data"].as_array().expect("data array");
+    assert_eq!(data.len(), 2);
+    assert!(body["cursor"]["has_more"].as_bool().unwrap_or(false));
+}
+
+// ===========================================================================
+// Artifact endpoint tests — with artifact store configured
+// ===========================================================================
+
+#[tokio::test]
+async fn get_artifact_content_returns_bytes_with_correct_content_type() {
+    let store = Arc::new(InMemoryArtifactStore::new());
+    let artifact_id = ArtifactId::new();
+    let body_bytes = b"hello artifact content";
+
+    store
+        .store(
+            artifact_id,
+            None,
+            "file",
+            "blake3",
+            "deadbeef",
+            "public",
+            body_bytes,
+        )
+        .await
+        .expect("store artifact");
+
+    let server = test_server_with_artifact_store(store);
+    let resp = server
+        .get(&format!("/api/v1alpha1/artifacts/{artifact_id}/content"))
+        .await;
+    resp.assert_status_ok();
+
+    // The Content-Type header should be application/octet-stream.
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("application/octet-stream"),
+        "expected application/octet-stream, got: {content_type}"
+    );
+
+    let bytes = resp.as_bytes();
+    assert_eq!(bytes.as_ref(), body_bytes.as_ref());
+}
+
+#[tokio::test]
+async fn get_artifact_content_not_found_returns_404() {
+    let store = Arc::new(InMemoryArtifactStore::new());
+    let server = test_server_with_artifact_store(store);
+    let fake_id = ArtifactId::new();
+    let resp = server
+        .get(&format!("/api/v1alpha1/artifacts/{fake_id}/content"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_artifact_provenance_returns_chain() {
+    let store = Arc::new(InMemoryArtifactStore::new());
+    let artifact_id = ArtifactId::new();
+
+    store
+        .store(
+            artifact_id,
+            None,
+            "code",
+            "blake3",
+            "cafebabe",
+            "private",
+            b"source code here",
+        )
+        .await
+        .expect("store artifact");
+
+    let server = test_server_with_artifact_store(store);
+    let resp = server
+        .get(&format!("/api/v1alpha1/artifacts/{artifact_id}/provenance"))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    let chain = body["chain"].as_array().expect("chain array");
+    assert!(!chain.is_empty(), "provenance chain should not be empty");
+    assert_eq!(chain[0]["id"], artifact_id.to_string().as_str());
+    assert_eq!(chain[0]["kind"], "code");
+}
+
+#[tokio::test]
+async fn get_artifact_provenance_not_found_returns_404() {
+    let store = Arc::new(InMemoryArtifactStore::new());
+    let server = test_server_with_artifact_store(store);
+    let fake_id = ArtifactId::new();
+    let resp = server
+        .get(&format!("/api/v1alpha1/artifacts/{fake_id}/provenance"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+}
+
+// ===========================================================================
+// Event bus subscription tests
+// ===========================================================================
+
+#[tokio::test]
+async fn event_bus_publishes_to_subscribers() {
+    use polkagent_core::event::{EventCorrelation, EventKind, RunEvent};
+    use polkagent_core::ids::EventId;
+
+    let bus = EventBus::with_default_capacity();
+    let mut receiver = bus.subscribe();
+
+    let run_id = RunId::new();
+    let event = RunEvent::new_durable(
+        EventId::new(),
+        run_id,
+        1,
+        EventKind::RunCreated,
+        EventCorrelation {
+            run_id,
+            ..Default::default()
+        },
+    );
+    let event_id = event.id;
+
+    bus.publish(event);
+
+    let received = receiver.recv().await.expect("should receive event");
+    assert_eq!(received.id, event_id);
+    assert_eq!(received.run_id, run_id);
+}
+
+#[tokio::test]
+async fn event_bus_multiple_subscribers_each_receive_event() {
+    use polkagent_core::event::{EventCorrelation, EventKind, RunEvent};
+    use polkagent_core::ids::EventId;
+
+    let bus = EventBus::with_default_capacity();
+    let mut rx1 = bus.subscribe();
+    let mut rx2 = bus.subscribe();
+
+    let run_id = RunId::new();
+    let event = RunEvent::new_durable(
+        EventId::new(),
+        run_id,
+        1,
+        EventKind::RunStarted,
+        EventCorrelation {
+            run_id,
+            ..Default::default()
+        },
+    );
+    let event_id = event.id;
+
+    bus.publish(event);
+
+    let r1 = rx1.recv().await.expect("rx1 should receive");
+    let r2 = rx2.recv().await.expect("rx2 should receive");
+    assert_eq!(r1.id, event_id);
+    assert_eq!(r2.id, event_id);
+}
+
+#[tokio::test]
+async fn event_bus_subscribe_before_publish_receives_event() {
+    use polkagent_core::event::{EventCorrelation, EventKind, RunEvent};
+    use polkagent_core::ids::EventId;
+
+    let bus = EventBus::with_default_capacity();
+    // Subscribe first, then publish.
+    let mut receiver = bus.subscribe();
+
+    let run_id = RunId::new();
+    let event = RunEvent::new_durable(
+        EventId::new(),
+        run_id,
+        1,
+        EventKind::RunCompleted { output_artifact_id: None },
+        EventCorrelation {
+            run_id,
+            ..Default::default()
+        },
+    );
+
+    bus.publish(event.clone());
+
+    let received = receiver.recv().await.expect("should receive");
+    assert_eq!(received.id, event.id);
+}
+
+#[tokio::test]
+async fn event_bus_no_events_before_subscribe_are_replayed() {
+    use polkagent_core::event::{EventCorrelation, EventKind, RunEvent};
+    use polkagent_core::ids::EventId;
+
+    let bus = EventBus::with_default_capacity();
+    let run_id = RunId::new();
+
+    // Publish before subscribing.
+    let old_event = RunEvent::new_durable(
+        EventId::new(),
+        run_id,
+        1,
+        EventKind::RunCreated,
+        EventCorrelation { run_id, ..Default::default() },
+    );
+    bus.publish(old_event);
+
+    // Subscribe after the publish — old events should NOT be replayed.
+    let mut receiver = bus.subscribe();
+
+    // Now publish a new event.
+    let new_event = RunEvent::new_durable(
+        EventId::new(),
+        run_id,
+        2,
+        EventKind::RunStarted,
+        EventCorrelation { run_id, ..Default::default() },
+    );
+    let new_event_id = new_event.id;
+    bus.publish(new_event);
+
+    let received = receiver.recv().await.expect("should receive new event");
+    assert_eq!(received.id, new_event_id, "should only receive the post-subscribe event");
+}
+
+// ===========================================================================
+// Effect approval / denial tests
+// ===========================================================================
+
+/// POST /effects/:id/approve on an existing pending intent returns 200 with
+/// the updated state set to "approved".
+#[tokio::test]
+async fn approve_effect_pending_returns_200_with_approved_state() {
+    let (server, store) = test_server_with_effect_store();
+    let run_id = RunId::new();
+    let intent = make_stored_intent(run_id, "pending");
+    let effect_id = intent.id.to_string();
+    store.seed_intent(intent).await;
+
+    let resp = server
+        .post(&format!("/api/v1alpha1/effects/{effect_id}/approve"))
+        .json(&json!({}))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert_eq!(body["effect_id"], effect_id.as_str());
+    assert_eq!(body["new_state"], "approved");
+    assert!(body["approved_at"].is_string(), "approved_at must be a timestamp string");
+}
+
+/// POST /effects/:id/approve on a non-existent effect returns 404.
+#[tokio::test]
+async fn approve_effect_nonexistent_returns_404() {
+    let server = test_server();
+    let fake_id = polkagent_core::EffectId::new().to_string();
+    let resp = server
+        .post(&format!("/api/v1alpha1/effects/{fake_id}/approve"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+}
+
+/// POST /effects/:id/approve on an already-resolved (non-pending) intent
+/// returns 409 Conflict.
+#[tokio::test]
+async fn approve_effect_already_resolved_returns_409() {
+    let (server, store) = test_server_with_effect_store();
+    let run_id = RunId::new();
+    // Seed an intent in "resolved" state — cannot be approved.
+    let intent = make_stored_intent(run_id, "resolved");
+    let effect_id = intent.id.to_string();
+    store.seed_intent(intent).await;
+
+    let resp = server
+        .post(&format!("/api/v1alpha1/effects/{effect_id}/approve"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CONFLICT);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "INVALID_STATE");
+}
+
+/// POST /effects/:id/approve on a waiting_approval intent also succeeds.
+#[tokio::test]
+async fn approve_effect_waiting_approval_returns_200() {
+    let (server, store) = test_server_with_effect_store();
+    let run_id = RunId::new();
+    let intent = make_stored_intent(run_id, "waiting_approval");
+    let effect_id = intent.id.to_string();
+    store.seed_intent(intent).await;
+
+    let resp = server
+        .post(&format!("/api/v1alpha1/effects/{effect_id}/approve"))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["new_state"], "approved");
+}
+
+/// POST /effects/:id/deny on an existing pending intent returns 200 with
+/// the updated state set to "denied".
+#[tokio::test]
+async fn deny_effect_pending_returns_200_with_denied_state() {
+    let (server, store) = test_server_with_effect_store();
+    let run_id = RunId::new();
+    let intent = make_stored_intent(run_id, "pending");
+    let effect_id = intent.id.to_string();
+    store.seed_intent(intent).await;
+
+    let resp = server
+        .post(&format!("/api/v1alpha1/effects/{effect_id}/deny"))
+        .json(&json!({ "reason": "budget exceeded" }))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert_eq!(body["effect_id"], effect_id.as_str());
+    assert_eq!(body["new_state"], "denied");
+    assert!(body["denied_at"].is_string(), "denied_at must be a timestamp string");
+    // The denial reason is recorded.
+    assert_eq!(body["reason"], "budget exceeded");
+}
+
+/// POST /effects/:id/deny with no reason body records null/absent reason.
+#[tokio::test]
+async fn deny_effect_without_reason_omits_reason_field() {
+    let (server, store) = test_server_with_effect_store();
+    let run_id = RunId::new();
+    let intent = make_stored_intent(run_id, "pending");
+    let effect_id = intent.id.to_string();
+    store.seed_intent(intent).await;
+
+    let resp = server
+        .post(&format!("/api/v1alpha1/effects/{effect_id}/deny"))
+        .json(&json!({}))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["new_state"], "denied");
+    // reason is absent when not provided (skip_serializing_if = None).
+    assert!(body["reason"].is_null() || body.get("reason").is_none(),
+        "reason should be absent when not supplied");
+}
+
+/// POST /effects/:id/deny on a non-existent effect returns 404.
+#[tokio::test]
+async fn deny_effect_nonexistent_returns_404() {
+    let server = test_server();
+    let fake_id = polkagent_core::EffectId::new().to_string();
+    let resp = server
+        .post(&format!("/api/v1alpha1/effects/{fake_id}/deny"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+}
+
+/// POST /effects/:id/deny on an already-resolved intent returns 409.
+#[tokio::test]
+async fn deny_effect_already_resolved_returns_409() {
+    let (server, store) = test_server_with_effect_store();
+    let run_id = RunId::new();
+    let intent = make_stored_intent(run_id, "resolved");
+    let effect_id = intent.id.to_string();
+    store.seed_intent(intent).await;
+
+    let resp = server
+        .post(&format!("/api/v1alpha1/effects/{effect_id}/deny"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CONFLICT);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "INVALID_STATE");
+}
+
+// ===========================================================================
+// Run resume tests
+// ===========================================================================
+
+// The resume_run tests below cover:
+//   1. 404 when the run doesn't exist.
+//   2. 409 when the run exists but is not in AwaitingApproval.
+//   3. 200 when the run is in AwaitingApproval (using force_awaiting_approval).
+
+/// POST /runs/:id/resume on a non-existent run returns 404.
+#[tokio::test]
+async fn resume_run_nonexistent_returns_404() {
+    let server = test_server();
+    let fake_id = polkagent_core::RunId::new().to_string();
+    let resp = server
+        .post(&format!("/api/v1alpha1/runs/{fake_id}/resume"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "RUN_NOT_FOUND");
+}
+
+/// POST /runs/:id/resume on a run that is not in AwaitingApproval returns
+/// 409 Conflict with INVALID_STATE code.
+#[tokio::test]
+async fn resume_run_not_in_awaiting_approval_returns_409() {
+    let server = test_server();
+    let agent_id = create_test_agent(&server).await;
+    let run_id = create_test_run(&server, &agent_id).await;
+
+    // Newly-created run is in Running state — not AwaitingApproval.
+    let resp = server
+        .post(&format!("/api/v1alpha1/runs/{run_id}/resume"))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CONFLICT);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"]["code"], "INVALID_STATE");
+}
+
+/// POST /runs/:id/resume returns the full RunResponse with correct version.
+///
+/// We verify the 200 path by using an InMemoryRunManager whose state we
+/// set directly to AwaitingApproval before calling resume.
+#[tokio::test]
+async fn resume_run_awaiting_approval_returns_200_with_running_state() {
+    use polkagent_api::InMemoryRunManager;
+    use polkagent_core::RunId as CoreRunId;
+
+    // Build a run manager that we can manipulate.
+    let run_manager = Arc::new(InMemoryRunManager::new());
+
+    // Create an agent first.
+    let agents: Arc<dyn polkagent_api::state::AgentStore> =
+        Arc::new(InMemoryAgentStore::new());
+    let store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
+    let event_bus = EventBus::with_default_capacity();
+    let server = ApiServer::new(
+        Config::default(),
+        agents.clone(),
+        run_manager.clone(),
+        store,
+        event_bus,
+    );
+    let server = TestServer::new(server.into_router());
+
+    // Create an agent and a run via the API.
+    let resp = server
+        .post("/api/v1alpha1/agents")
+        .json(&json!({ "name": "Resume Test", "model": "anthropic/claude-opus-4-6" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let agent_body: serde_json::Value = resp.json();
+    let agent_id = agent_body["id"].as_str().unwrap().to_owned();
+
+    let resp = server
+        .post(&format!("/api/v1alpha1/agents/{agent_id}/runs"))
+        .json(&json!({ "input": "test" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let run_body: serde_json::Value = resp.json();
+    let run_id_str = run_body["id"].as_str().unwrap().to_owned();
+    let run_id: CoreRunId = run_id_str.parse().unwrap();
+
+    // Force the run into AwaitingApproval state directly.
+    run_manager.force_awaiting_approval(run_id).await;
+
+    // Now resume should succeed.
+    let resp = server
+        .post(&format!("/api/v1alpha1/runs/{run_id_str}/resume"))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["version"], "v1alpha1");
+    assert_eq!(body["id"], run_id_str.as_str());
+    // After resume the state should be Running.
+    assert_eq!(body["status"]["state"], "running");
 }

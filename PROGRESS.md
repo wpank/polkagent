@@ -17,12 +17,12 @@
 | `polkagent-effect` | Done | 64 | Crash-safe effect pipeline + 11 proptest |
 | `polkagent-event` | Done | 39 | Event bus, recorder, projections, monotonic sequences |
 | `polkagent-run` | Done | 135 | RunManager, state machine, timeout, turn manager, DAG engine, orchestrator |
-| `polkagent-grant` | Done | 88 | Policy evaluation, budget tracking, Cedar loader + 18 proptest |
+| `polkagent-grant` | Done | 115 | Policy evaluation, budget tracking, Cedar loader, ABAC conditions, policy templates + 18 proptest |
 | `polkagent-artifact` | Done | 42 | BLAKE3 content-addressed storage, lineage DAG |
 | `polkagent-config` | Done | 138 | TOML loader, 9 config sections, env overrides, full validation |
 | `polkagent-card` | Done | 35 | Action cards, canonical/narrative sections |
 | `polkagent-outbox` | Done | 33 | Durable ordered delivery, deduplication |
-| `polkagent-store-sqlite` | Done | 156 | WAL-mode SQLite + all 4 store trait impls + 46 contract tests |
+| `polkagent-store-sqlite` | Done | 156 | WAL-mode SQLite + run/effect/artifact/event/payment/conversation store impls |
 | `polkagent-executor-fake` | Done | 19 | Cycling responses, streaming + contract tests |
 | `polkagent-signer-fake` | Done | 17 | Deterministic signatures + contract tests |
 | `polkagent-transport-fake` | Done | 17 | Channel-based, fault injection + contract tests |
@@ -42,7 +42,7 @@
 
 ---
 
-## Phase 2: Build + Act + Reach Proof — MOSTLY COMPLETE
+## Phase 2: Build + Act + Reach Proof — SUBSTANTIALLY COMPLETE
 
 **Goal:** One useful action from each pillar, projected through at least one surface.
 
@@ -51,8 +51,9 @@
 | Crate | Status | Tests | Description |
 |-------|--------|-------|-------------|
 | `polkagent-store-sqlite` | Done | 203 | All 6 store traits (+ payment, conversation) + conformance tests |
-| `polkagent-api` | Done | 93 | REST + WebSocket, models/skills/tools/payments routes, event streaming |
-| `polkagent-cli` | Done | 56 | ROSEDUST TUI (8 widgets, 10 views), 15 commands, approve/deny flow |
+| `polkagent-store-sqlite-group` | Done | 41 | Dedicated GroupStore SQLite impl (isolated from store-sqlite for serde recursion) |
+| `polkagent-api` | Done | 120 | REST + WebSocket, health endpoints, models/skills/tools/payments routes, event streaming |
+| `polkagent-cli` | Done | 127 | ROSEDUST TUI (8 widgets, 10 views), 15 commands, approve/deny flow, TUI db wiring |
 | `polkagent-service` | Done | 54 | AppService facade wired to all subsystems, approval channel |
 
 ### Phase 2b: Real Adapters
@@ -62,43 +63,38 @@
 | `polkagent-executor-anthropic` | Done | 60 | Anthropic Messages API with streaming, tool calls, retries |
 | `polkagent-executor-openai` | Done | 57 | OpenAI-compatible API (OpenAI, Azure, vLLM, Ollama) |
 | `polkagent-executor-local` | Done | 42 | Local models via Ollama API, no auth, graceful degradation |
-| `polkagent-metadata` | Done | 68 | Metadata cache, pinning, drift detection, service facade |
+| `polkagent-metadata` | Done | 68 | Metadata cache, pinning, drift detection, service facade, validation, decode |
 | `polkagent-memory` | Done | 97 | FTS5 memory + admission, retention, tenant isolation, classification |
 | `polkagent-signer-external` | Done | 42 | External signer with INV-01 enforcement, approval callbacks |
-| `polkagent-chain-subxt` | Not started | — | Subxt static+dynamic decode, CheckMetadataHash |
+| `polkagent-chain-fake` | Done | 42 | Fake ChainClient with pre-seeded data, fault injection, call tracking |
+| `polkagent-chain-subxt` | Done | 90 | JSON-RPC chain client, SCALE decode via polkagent-codec, multi-profile |
+| `polkagent-transport-pca` | Done | 77 | X25519 + ChaCha20-Poly1305 encrypted transport |
 
 ### Phase 2c: Domain Crates
 
 | Crate | Status | Tests | Description |
 |-------|--------|-------|-------------|
 | `polkagent-tool` | Done | 32 | ToolRegistry, ToolHandler trait, grant-checked execution, builtins |
+| `polkagent-tool-governance` | Done | 67 | OpenGov governance research tools (referendum, track, voter, delegation, treasury) |
+| `polkagent-tool-treasury` | Done | 65 | Portfolio/balance/staking/transfer/vesting analysis tools |
 | `polkagent-skill` | Done | 55 | TOML manifests, SkillLoader, dependency resolution, semver |
 | `polkagent-telemetry` | Done | 31 | OpenTelemetry, Redacted<T>, MetricRecorder, JsonlWriter |
 | `polkagent-harness-trait` | Done | 22 | Harness port trait with session lifecycle |
 | `polkagent-harness-claude` | Done | 25 | Claude Code harness stub with state tracking |
-| `polkagent-secret` | Done | 49 | SecretValue (zeroize), env/file/chain stores, audit log |
+| `polkagent-secret` | Done | 66 | SecretValue (zeroize), env/file/chain stores, audit log, secret scanning/redaction |
 | `polkagent-identity` | Done | 36 | AccountId32, SS58 encode/decode, NetworkId, AgentIdentity |
 | `polkagent-payment` | Done | 46 | Amount arithmetic, BudgetChecker, CostEstimator, PaymentStore |
 | `polkagent-conversation` | Done | 44 | Conversation/Message types, InMemoryStore, ContextWindow |
 | `polkagent-codec` | Done | 80 | Pure-Rust SCALE encode/decode, metadata parsing, call helpers |
-| `polkagent-chain-fake` | Done | 42 | Fake ChainClient with pre-seeded data, fault injection, call tracking |
-| `polkagent-eval` | Done | 71 | Eval framework: suites, scorer, regression detection, builtin safety corpus |
 | `polkagent-group` | Done | 85 | Multi-agent groups: quorum, grant intersection, budget, evidence |
 | `polkagent-feed` | Done | 72 | Feeds, triggers, recipes: cursor-backed processing, condition evaluation |
-| `polkagent-fault` | Done | 54 | Fault injection: crash/timeout/corrupt wrappers for all port traits |
 
-### Phase 2d: End-to-End Flows
-
-| Flow | Status | Description |
-|------|--------|-------------|
-| Explain Before Sign | Not started | Decode extrinsic → action card → signer handoff → finality |
-| CLI `polkagent run` | Partial | Commands wired, needs real executor integration |
-| API event streaming | Done | WebSocket with run_id/kind filtering, ping/pong keepalive |
-
-### Phase 2e: Testing Infrastructure
+### Phase 2d: Testing Infrastructure
 
 | Component | Status | Tests | Description |
 |-----------|--------|-------|-------------|
+| `polkagent-eval` | Done | 71 | Eval framework: suites, scorer, regression detection, builtin safety corpus |
+| `polkagent-fault` | Done | 54 | Fault injection: crash/timeout/corrupt wrappers for all port traits |
 | Property tests (core) | Done | 59 | Proptest for IDs, states, BlobRef, artifacts, tokens |
 | Property tests (effect) | Done | 11 | Proptest for idempotency keys, effect kinds, priorities |
 | Property tests (grant) | Done | 18 | Proptest for policies, budgets, gate composition |
@@ -114,10 +110,19 @@
 | Property tests (PB-01-10) | Done | 37 | Proptest for grant intersection, effect FSM, serialization, FIFO, budget |
 | Fault injection tests | Done | 57 | FaultInjector framework + FI-01/02/03 integration tests |
 
+### Phase 2e: End-to-End Flows
+
+| Flow | Status | Description |
+|------|--------|-------------|
+| Explain Before Sign | Partial | ExplainBeforeSign pipeline in polkagent-service (decode → card → approve → sign) |
+| CLI `polkagent run` | Partial | Commands wired, needs real executor integration |
+| API event streaming | Done | WebSocket with run_id/kind filtering, ping/pong keepalive |
+
+
 ### Phase 2 Acceptance Criteria
 
-- [ ] AC-P2-001: Extrinsic decoded correctly against pinned metadata
-- [ ] AC-P2-002: Action card displays canonical fields, model text visually separate
+- [ ] AC-P2-001: Extrinsic decoded correctly against pinned metadata (validation wired in polkagent-metadata)
+- [x] AC-P2-002: Action card displays canonical fields, model text visually separate (polkagent-card complete with render.rs)
 - [ ] AC-P2-003: Signer receives exact bytes, never sees model-modified data
 - [ ] AC-P2-004: Stale metadata produces explicit error, not wrong decode
 - [ ] AC-P2-005: Wrong-network extrinsic rejected before signing
@@ -127,18 +132,18 @@
 
 ---
 
-## Phase 3: Read-Only Value — PARTIALLY STARTED
+## Phase 3: Read-Only Value — SUBSTANTIALLY COMPLETE
 
 **Goal:** Useful read-only workflows without write authority.
 
 | Deliverable | Status | Description |
 |-------------|--------|-------------|
-| Memory system | Done | polkagent-memory: SQLite FTS5 + provenance tracking |
+| Memory system | Done | polkagent-memory: SQLite FTS5 + admission control, retention policies, tenant isolation, classification, export/import |
 | OpenAI executor | Done | polkagent-executor-openai: OpenAI/Azure/vLLM compatible |
 | Local executor | Done | polkagent-executor-local: Ollama API adapter |
-| PCA transport | Not started | PCA encrypted chat transport |
-| OpenGov research | Not started | Governance research copilot tools |
-| Treasury research | Not started | Portfolio/treasury analysis tools |
+| PCA transport | Done | polkagent-transport-pca: X25519 + ChaCha20-Poly1305 encrypted peer-to-peer transport |
+| OpenGov research | Done | polkagent-tool-governance: referendum, track, voter, delegation, treasury tools |
+| Treasury research | Done | polkagent-tool-treasury: portfolio, balance, staking, transfer, vesting analysis |
 
 ---
 
@@ -156,17 +161,36 @@
 
 ---
 
-## Infrastructure
+## Infrastructure Crates
+
+| Crate | Status | Tests | Description |
+|-------|--------|-------|-------------|
+| `polkagent-health` | Done | 54 | Health aggregation, liveness/readiness/startup probes, dependency checks |
+| `polkagent-scheduler` | Done | 84 | Cron expressions, task scheduling, in-memory store, runner |
+| `polkagent-cache` | Done | 45 | LRU cache with TTL, cache-aside pattern, BLAKE3 key hashing, stats |
+| `polkagent-retry` | Done | 54 | Retry policies, exponential/linear backoff, circuit breaker, bulkhead, timeout |
+| `polkagent-batch` | Done | 53 | Batch processing: sequential/parallel execution, error policies, collector |
+| `polkagent-plugin` | Done | 94 | TOML manifest loading, capability-based sandboxing, dependency resolution |
+| `polkagent-rate-limit` | Done | 50 | Token bucket, sliding window, leaky bucket, composite, keyed, tower middleware |
+| `polkagent-audit` | Done | 68 | Append-only audit log with BLAKE3 integrity chain, query builder, formatters |
+| `polkagent-context` | Done | 71 | Context assembly, token budget, template engine, truncation strategies |
+| `polkagent-migration` | Done | 63 | Standalone migration CLI, BLAKE3 checksums, lock file, generator |
+| `polkagent-surface-webhook` | Done | 52 | HMAC-signed webhook delivery, registry, delivery store |
+
+## Build Infrastructure
 
 | Component | Status | Description |
 |-----------|--------|-------------|
 | CI/CD | Done | `.github/workflows/ci.yml` (check, test, MSRV), `nightly.yml` (audit, deny, fuzz) |
 | Docker | Done | `Dockerfile`, `Dockerfile.api`, `docker-compose.yml`, `docker-compose.dev.yml` |
 | Makefile | Done | build, test, check, lint, fmt, docker targets |
-| Policy fixtures | Done | `fixtures/policies/` — default-deny, read-only, developer, operator |
+| Policy fixtures | Done | `fixtures/policies/` — default-deny, read-only, developer, operator, time-limited |
 | Config fixtures | Done | `fixtures/configs/` — minimal, full, invalid |
 | Security docs | Done | `SECURITY.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md` |
 | cargo-deny | Done | `deny.toml` — license/advisory config |
+| Eval corpus | Done | polkagent-eval with builtin safety corpus and regression detection |
+| OpenAPI spec | Done | Wired through polkagent-api, auto-documented routes |
+| Benchmarks | Done | Store benchmarks, effect pipeline benchmarks |
 
 ---
 
@@ -174,10 +198,10 @@
 
 | Metric | Count |
 |--------|-------|
-| Crates | 45 |
-| Source files | ~326 |
-| Tests | 2,980 |
-| Lines of Rust | ~118,000 |
+| Crates | 62 |
+| Workspace members | 61 (1 excluded: store-sqlite-feed due to serde recursion) |
+| Tests | 4,640 |
+| Lines of Rust | ~160,000 |
 
 ## Build Commands
 

@@ -1,0 +1,20 @@
+# Time-limited policy. Allows chain and memory operations only during business hours.
+# The ABAC condition checks a typed context attribute "environment.time_window" for
+# the value "business_hours". Writes (chain.submit, chain.sign) are denied unconditionally.
+
+[[rules]]
+id = "time-allow-in-window"
+effect = "allow"
+action_patterns = ["chain.*", "memory.*"]
+resource_patterns = ["**"]
+
+[rules.abac_condition]
+op = "equals"
+attr = "environment.time_window"
+value = "business_hours"
+
+[[rules]]
+id = "time-deny-writes"
+effect = "deny"
+action_patterns = ["chain.submit", "chain.sign"]
+resource_patterns = ["**"]

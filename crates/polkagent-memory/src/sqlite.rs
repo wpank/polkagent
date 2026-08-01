@@ -322,6 +322,38 @@ impl MemoryStore for SqliteMemoryStore {
         Ok(count.max(0) as usize)
     }
 
+    #[allow(clippy::cast_possible_wrap)]
+    async fn list_entries(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        offset: usize,
+    ) -> MemoryResult<Vec<MemoryEntry>> {
+        let conn = self.inner.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, episode_id, memory_type, content, embedding,
+                    metadata, provenance, created_at, accessed_at, access_count,
+                    relevance_score, confidence, classification
+             FROM memories
+             WHERE agent_id = ?1
+             ORDER BY created_at ASC
+             LIMIT ?2 OFFSET ?3",
+        )?;
+
+        let rows = stmt
+            .query_map(
+                params![agent_id.to_string(), limit as i64, offset as i64],
+                row_to_memory,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut entries = Vec::new();
+        for r in rows {
+            entries.push(r?);
+        }
+        Ok(entries)
+    }
+
     async fn delete_by_age(
         &self,
         agent_id: &AgentId,
@@ -1081,6 +1113,140 @@ mod tests {
 
         assert_eq!(deleted, 1);
         assert_eq!(store.count_entries(&agent).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_entries_returns_all_for_agent() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+
+        for i in 0..5 {
+            store
+                .store_memory(&make_entry(agent, &format!("entry {i}"), MemoryType::Semantic))
+                .await
+                .unwrap();
+        }
+
+        let entries = store.list_entries(&agent, 100, 0).await.unwrap();
+        assert_eq!(entries.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn list_entries_pagination_limit() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+
+        for i in 0..10 {
+            store
+                .store_memory(&make_entry(agent, &format!("entry {i}"), MemoryType::Semantic))
+                .await
+                .unwrap();
+        }
+
+        let page1 = store.list_entries(&agent, 4, 0).await.unwrap();
+        assert_eq!(page1.len(), 4);
+
+        let page2 = store.list_entries(&agent, 4, 4).await.unwrap();
+        assert_eq!(page2.len(), 4);
+
+        let page3 = store.list_entries(&agent, 4, 8).await.unwrap();
+        assert_eq!(page3.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_entries_pagination_non_overlapping() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+
+        for i in 0..6 {
+            store
+                .store_memory(&make_entry(agent, &format!("entry {i}"), MemoryType::Semantic))
+                .await
+                .unwrap();
+        }
+
+        let page1 = store.list_entries(&agent, 3, 0).await.unwrap();
+        let page2 = store.list_entries(&agent, 3, 3).await.unwrap();
+
+        let ids1: std::collections::HashSet<_> = page1.iter().map(|e| e.id).collect();
+        let ids2: std::collections::HashSet<_> = page2.iter().map(|e| e.id).collect();
+
+        // No overlap between pages.
+        assert!(ids1.is_disjoint(&ids2));
+        // Together they cover all 6 entries.
+        assert_eq!(ids1.len() + ids2.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn list_entries_ordered_by_created_at_asc() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+        let now = Utc::now();
+
+        // Insert entries with descending timestamps so we can verify ordering.
+        for i in (0..5_i64).rev() {
+            let entry = MemoryEntry {
+                id: MemoryId::new(),
+                agent_id: agent,
+                episode_id: None,
+                memory_type: MemoryType::Semantic,
+                content: format!("entry at t-{i}"),
+                embedding: None,
+                metadata: serde_json::json!({}),
+                provenance: None,
+                created_at: now - chrono::Duration::seconds(i * 10),
+                accessed_at: now,
+                access_count: 0,
+                relevance_score: 1.0,
+                confidence: 1.0,
+                classification: Classification::default(),
+            };
+            store.store_memory(&entry).await.unwrap();
+        }
+
+        let entries = store.list_entries(&agent, 10, 0).await.unwrap();
+        assert_eq!(entries.len(), 5);
+
+        // Verify ascending order.
+        for window in entries.windows(2) {
+            assert!(
+                window[0].created_at <= window[1].created_at,
+                "list_entries should return entries ordered by created_at ASC"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn list_entries_excludes_other_agents() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent_a = make_agent_id();
+        let agent_b = make_agent_id();
+
+        store
+            .store_memory(&make_entry(agent_a, "agent A entry", MemoryType::Semantic))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent_b, "agent B entry", MemoryType::Semantic))
+            .await
+            .unwrap();
+
+        let a_entries = store.list_entries(&agent_a, 10, 0).await.unwrap();
+        assert_eq!(a_entries.len(), 1);
+        assert_eq!(a_entries[0].content, "agent A entry");
+
+        let b_entries = store.list_entries(&agent_b, 10, 0).await.unwrap();
+        assert_eq!(b_entries.len(), 1);
+        assert_eq!(b_entries[0].content, "agent B entry");
+    }
+
+    #[tokio::test]
+    async fn list_entries_empty_store_returns_empty() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+
+        let entries = store.list_entries(&agent, 10, 0).await.unwrap();
+        assert!(entries.is_empty());
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ description = "Metadata service for Polkadot chain metadata fetching, caching, p
 
 [dependencies]
 polkagent-core = { path = "../polkagent-core" }
+polkagent-codec = { path = "../polkagent-codec" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 blake3 = { workspace = true }

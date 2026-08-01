@@ -1,0 +1,1005 @@
+//! Property-based tests for serialization round-trips and invariant checking
+//! across the Polkagent workspace.
+//!
+//! Uses `proptest` to generate arbitrary domain values and verify that:
+//! - Serialization round-trips preserve equality.
+//! - Arithmetic invariants hold for all reasonable inputs.
+//! - Deterministic functions produce stable outputs.
+//! - Policy evaluation obeys deny-overrides semantics.
+//!
+//! # Prerequisites
+//!
+//! `proptest` must be a dependency of this crate. Add to Cargo.toml:
+//!
+//! ```toml
+//! proptest = { workspace = true }
+//! ```
+
+use std::collections::HashMap;
+
+use proptest::prelude::*;
+
+use chrono::Utc;
+
+use polkagent_core::agent::{AgentSpec, MemoryConfig, ModelPreference, ResourceLimits};
+use polkagent_core::artifact::{Artifact, ArtifactKind, BlobRef};
+use polkagent_core::config::{AutonomyLevel, DataClassification};
+use polkagent_core::effect::{EffectIntent, EffectIntentState, EffectKind, IdempotencyKey, RetryClass};
+use polkagent_core::event::{EventCorrelation, EventKind, RunEvent};
+use polkagent_core::ids::{AgentId, ArtifactId, EffectId, EventId, RunId, StepId, TurnId};
+
+use polkagent_card::builder::ActionCardBuilder;
+use polkagent_card::card::ActionCard;
+use polkagent_card::sections::{
+    CanonicalSection, NarrativeSection, RiskFlag, RiskFlagType, SectionSource, Severity,
+};
+
+use polkagent_grant::policy::{
+    Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet, evaluate,
+};
+
+use polkagent_payment::{Amount, AssetId, BudgetConfig};
+
+// ===========================================================================
+// Proptest strategies
+// ===========================================================================
+
+/// Generate a non-empty printable ASCII string of bounded length, suitable
+/// for use as identifiers, names, and short text fields.
+fn arb_name(max_len: usize) -> impl Strategy<Value = String> {
+    prop::string::string_regex(&format!("[A-Za-z0-9_-]{{1,{max_len}}}"))
+        .expect("valid regex")
+}
+
+/// Generate a valid-looking model identifier.
+fn arb_model() -> impl Strategy<Value = String> {
+    prop::string::string_regex("[a-z]{2,8}/[a-z0-9-]{3,20}")
+        .expect("valid regex")
+}
+
+/// Generate an AutonomyLevel.
+fn arb_autonomy_level() -> impl Strategy<Value = AutonomyLevel> {
+    prop_oneof![
+        Just(AutonomyLevel::FullySupervised),
+        Just(AutonomyLevel::Supervised),
+        Just(AutonomyLevel::AssistedAutonomous),
+        Just(AutonomyLevel::FullyAutonomous),
+    ]
+}
+
+/// Generate a DataClassification.
+fn arb_data_classification() -> impl Strategy<Value = DataClassification> {
+    prop_oneof![
+        Just(DataClassification::Public),
+        Just(DataClassification::Internal),
+        Just(DataClassification::Private),
+        Just(DataClassification::Sensitive),
+        Just(DataClassification::SecretForbidden),
+    ]
+}
+
+/// Generate optional ResourceLimits.
+fn arb_resource_limits() -> impl Strategy<Value = Option<ResourceLimits>> {
+    prop_oneof![
+        Just(None),
+        (
+            proptest::option::of(1u32..100_000),
+            proptest::option::of(1u32..1000),
+            proptest::option::of(1u64..86_400),
+            proptest::option::of(1u32..64),
+        )
+            .prop_map(|(tokens, turns, timeout, concurrent)| {
+                Some(ResourceLimits {
+                    max_tokens_per_turn: tokens,
+                    max_turns: turns,
+                    timeout_secs: timeout,
+                    max_concurrent_effects: concurrent,
+                })
+            }),
+    ]
+}
+
+/// Generate optional ModelPreference.
+fn arb_model_preference() -> impl Strategy<Value = Option<ModelPreference>> {
+    prop_oneof![
+        Just(None),
+        (
+            proptest::option::of(arb_name(20)),
+            proptest::option::of(arb_name(30)),
+            proptest::option::of(0.0f64..2.0),
+            proptest::option::of(arb_name(100)),
+        )
+            .prop_map(|(provider, model_id, temperature, system_prompt)| {
+                Some(ModelPreference {
+                    provider,
+                    model_id,
+                    temperature,
+                    system_prompt,
+                })
+            }),
+    ]
+}
+
+/// Generate optional MemoryConfig.
+fn arb_memory_config() -> impl Strategy<Value = Option<MemoryConfig>> {
+    prop_oneof![
+        Just(None),
+        (
+            any::<bool>(),
+            proptest::option::of(1usize..10_000),
+            proptest::option::of(1u32..365),
+            proptest::option::of(arb_name(20)),
+        )
+            .prop_map(|(enabled, max_entries, retention, classification)| {
+                Some(MemoryConfig {
+                    enabled,
+                    max_entries,
+                    retention_days: retention,
+                    classification_default: classification,
+                })
+            }),
+    ]
+}
+
+/// Generate an AgentSpec with arbitrary (but valid) field values.
+fn arb_agent_spec() -> impl Strategy<Value = AgentSpec> {
+    (
+        arb_name(50),
+        proptest::option::of(arb_name(200)),
+        arb_model(),
+        prop::collection::vec(arb_name(30), 0..5),
+        proptest::option::of(arb_name(200)),
+        arb_autonomy_level(),
+        prop::collection::vec(arb_name(30), 0..5),
+        prop::collection::vec(arb_name(50), 0..3),
+        arb_resource_limits(),
+        arb_model_preference(),
+        arb_memory_config(),
+        prop::collection::vec(arb_name(10), 0..4),
+    )
+        .prop_map(
+            |(
+                name,
+                description,
+                model,
+                tools,
+                system_prompt,
+                autonomy_level,
+                capabilities,
+                policy_refs,
+                resource_limits,
+                model_preference,
+                memory_config,
+                surface_bindings,
+            )| {
+                let now = Utc::now();
+                AgentSpec {
+                    id: AgentId::new(),
+                    name,
+                    description,
+                    model,
+                    tools,
+                    system_prompt,
+                    autonomy_level,
+                    created_at: now,
+                    updated_at: now,
+                    declared_capabilities: capabilities,
+                    policy_refs,
+                    resource_limits,
+                    model_preference,
+                    memory_config,
+                    surface_bindings,
+                }
+            },
+        )
+}
+
+/// Generate an AssetId (native or token).
+fn arb_asset_id() -> impl Strategy<Value = AssetId> {
+    prop_oneof![
+        Just(AssetId::Native),
+        (arb_name(20), arb_name(6), 0u8..18).prop_map(|(chain, symbol, decimals)| {
+            AssetId::Token {
+                chain,
+                symbol,
+                decimals,
+            }
+        }),
+    ]
+}
+
+/// Generate an Amount with a reasonable value range.
+fn arb_amount() -> impl Strategy<Value = Amount> {
+    (0u128..10u128.pow(18), 0u8..18).prop_map(|(value, decimals)| {
+        Amount::new(value, AssetId::Native, decimals)
+    })
+}
+
+/// Generate a BudgetConfig with arbitrary limits.
+fn arb_budget_config() -> impl Strategy<Value = BudgetConfig> {
+    (
+        proptest::option::of(arb_amount()),
+        proptest::option::of(arb_amount()),
+        proptest::option::of(arb_amount()),
+        0u8..100,
+    )
+        .prop_map(|(per_run, per_day, per_month, warn_pct)| BudgetConfig {
+            max_per_run: per_run,
+            max_per_day: per_day,
+            max_per_month: per_month,
+            warn_at_percent: warn_pct,
+        })
+}
+
+/// Generate an EffectKind.
+fn arb_effect_kind() -> impl Strategy<Value = EffectKind> {
+    prop_oneof![
+        Just(EffectKind::ChainSubmit),
+        Just(EffectKind::ChainQuery),
+        Just(EffectKind::ModelInference),
+        Just(EffectKind::ToolInvocation),
+        Just(EffectKind::FileWrite),
+        Just(EffectKind::FileRead),
+        Just(EffectKind::HttpRequest),
+        Just(EffectKind::Notification),
+        Just(EffectKind::SignatureRequest),
+        Just(EffectKind::Broadcast),
+        Just(EffectKind::FinalityWatch),
+        Just(EffectKind::Delivery),
+        Just(EffectKind::HarnessOperation),
+    ]
+}
+
+/// Generate a RetryClass.
+fn arb_retry_class() -> impl Strategy<Value = RetryClass> {
+    prop_oneof![
+        Just(RetryClass::Idempotent),
+        Just(RetryClass::CheckBeforeRetry),
+        Just(RetryClass::NoAutoRetry),
+    ]
+}
+
+/// Generate an EffectIntent.
+fn arb_effect_intent() -> impl Strategy<Value = EffectIntent> {
+    (
+        arb_effect_kind(),
+        arb_name(64),
+        1u64..100_000,
+        arb_retry_class(),
+        1u32..10,
+        proptest::option::of(arb_name(500)),
+    )
+        .prop_map(|(kind, idem_key, sequence, retry_class, max_attempts, payload)| {
+            EffectIntent {
+                id: EffectId::new(),
+                run_id: RunId::new(),
+                turn_id: TurnId::new(),
+                step_id: StepId::new(),
+                kind,
+                idempotency_key: IdempotencyKey::from_hex(idem_key),
+                sequence,
+                state: EffectIntentState::Pending,
+                retry_class,
+                max_attempts,
+                attempt_count: 0,
+                created_at: Utc::now(),
+                resolved_at: None,
+                deadline: None,
+                payload_json: payload,
+            }
+        })
+}
+
+/// Generate a SectionSource.
+fn arb_section_source() -> impl Strategy<Value = SectionSource> {
+    prop_oneof![
+        Just(SectionSource::Metadata),
+        Just(SectionSource::Chain),
+        Just(SectionSource::Simulation),
+    ]
+}
+
+/// Generate a RiskFlagType.
+fn arb_risk_flag_type() -> impl Strategy<Value = RiskFlagType> {
+    prop_oneof![
+        Just(RiskFlagType::HighValue),
+        Just(RiskFlagType::FirstTimeRecipient),
+        Just(RiskFlagType::UnverifiedAddress),
+        Just(RiskFlagType::StaleMetadata),
+        Just(RiskFlagType::LargeApproval),
+    ]
+}
+
+/// Generate a Severity.
+fn arb_severity() -> impl Strategy<Value = Severity> {
+    prop_oneof![Just(Severity::Medium), Just(Severity::High),]
+}
+
+// ===========================================================================
+// Property tests
+// ===========================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    // -----------------------------------------------------------------------
+    // 1. AgentSpec serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn agent_spec_serde_round_trip(spec in arb_agent_spec()) {
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let back: AgentSpec = serde_json::from_str(&json).expect("deserialize");
+
+        prop_assert_eq!(&spec.id, &back.id);
+        prop_assert_eq!(&spec.name, &back.name);
+        prop_assert_eq!(&spec.model, &back.model);
+        prop_assert_eq!(&spec.description, &back.description);
+        prop_assert_eq!(&spec.tools, &back.tools);
+        prop_assert_eq!(&spec.system_prompt, &back.system_prompt);
+        prop_assert_eq!(&spec.autonomy_level, &back.autonomy_level);
+        prop_assert_eq!(&spec.declared_capabilities, &back.declared_capabilities);
+        prop_assert_eq!(&spec.policy_refs, &back.policy_refs);
+        prop_assert_eq!(&spec.resource_limits, &back.resource_limits);
+        prop_assert_eq!(&spec.model_preference, &back.model_preference);
+        prop_assert_eq!(&spec.memory_config, &back.memory_config);
+        prop_assert_eq!(&spec.surface_bindings, &back.surface_bindings);
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. AutonomyLevel ordering: distinct levels have distinct Display values
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn autonomy_level_ordering_implies_distinct_display(
+        a in arb_autonomy_level(),
+        b in arb_autonomy_level(),
+    ) {
+        if a < b {
+            prop_assert_ne!(a.to_string(), b.to_string());
+        }
+        if a == b {
+            prop_assert_eq!(a.to_string(), b.to_string());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Amount checked_add: a + b >= a for same-asset, reasonable values
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_add_no_undercount(
+        a_val in 0u128..10u128.pow(15),
+        b_val in 0u128..10u128.pow(15),
+    ) {
+        let asset = AssetId::Native;
+        let a = Amount::new(a_val, asset.clone(), 10);
+        let b = Amount::new(b_val, asset, 10);
+        let sum = a.checked_add(&b).expect("should not overflow for reasonable values");
+        prop_assert!(sum.value >= a.value, "sum {} must be >= a {}", sum.value, a.value);
+        prop_assert!(sum.value >= b.value, "sum {} must be >= b {}", sum.value, b.value);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. BudgetConfig serialization round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn budget_config_serde_round_trip(config in arb_budget_config()) {
+        let json = serde_json::to_string(&config).expect("serialize");
+        let back: BudgetConfig = serde_json::from_str(&json).expect("deserialize");
+
+        prop_assert_eq!(config.warn_at_percent, back.warn_at_percent);
+        // Amount does not implement PartialEq for BudgetConfig (only derived),
+        // so we compare the optional values individually.
+        prop_assert_eq!(config.max_per_run.is_some(), back.max_per_run.is_some());
+        prop_assert_eq!(config.max_per_day.is_some(), back.max_per_day.is_some());
+        prop_assert_eq!(config.max_per_month.is_some(), back.max_per_month.is_some());
+
+        if let (Some(ref orig), Some(ref parsed)) = (&config.max_per_run, &back.max_per_run) {
+            prop_assert_eq!(orig.value, parsed.value);
+            prop_assert_eq!(orig.decimals, parsed.decimals);
+        }
+        if let (Some(ref orig), Some(ref parsed)) = (&config.max_per_day, &back.max_per_day) {
+            prop_assert_eq!(orig.value, parsed.value);
+            prop_assert_eq!(orig.decimals, parsed.decimals);
+        }
+        if let (Some(ref orig), Some(ref parsed)) = (&config.max_per_month, &back.max_per_month) {
+            prop_assert_eq!(orig.value, parsed.value);
+            prop_assert_eq!(orig.decimals, parsed.decimals);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. EffectIntent idempotency key: same inputs produce same key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn idempotency_key_deterministic(
+        hex_input in prop::string::string_regex("[0-9a-f]{8,64}").expect("valid regex"),
+    ) {
+        let key1 = IdempotencyKey::from_hex(&hex_input);
+        let key2 = IdempotencyKey::from_hex(&hex_input);
+        prop_assert_eq!(key1.as_str(), key2.as_str());
+        prop_assert_eq!(key1, key2);
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. PolicyRule evaluation: deny always beats allow at same priority
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deny_always_beats_allow(
+        action in arb_name(30),
+        resource in arb_name(30),
+    ) {
+        // Build a PolicySet with one Allow and one Deny for the same patterns.
+        let allow_rule = PolicyRule {
+            id: "allow-all".to_string(),
+            effect: Effect::Allow,
+            action_patterns: vec!["**".to_string()],
+            resource_patterns: vec!["**".to_string()],
+            conditions: HashMap::new(),
+            abac_condition: None,
+        };
+        let deny_rule = PolicyRule {
+            id: "deny-all".to_string(),
+            effect: Effect::Deny,
+            action_patterns: vec!["**".to_string()],
+            resource_patterns: vec!["**".to_string()],
+            conditions: HashMap::new(),
+            abac_condition: None,
+        };
+
+        // Deny first (deny-overrides in standard order).
+        let set_deny_first = PolicySet::new(vec![deny_rule.clone(), allow_rule.clone()]);
+        let decision = evaluate(&set_deny_first, &action, &resource, &EvaluationContext::default());
+        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
+            "deny-first: expected Deny, got {decision:?}");
+
+        // Allow first, deny second (deny-overrides should still deny).
+        let set_allow_first = PolicySet::new(vec![allow_rule, deny_rule]);
+        let decision = evaluate(&set_allow_first, &action, &resource, &EvaluationContext::default());
+        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
+            "allow-first: expected Deny, got {decision:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. SS58 address round-trip (using AccountId32 as 32-byte array)
+    //
+    //    We encode a 32-byte public key as a hex string using std formatting,
+    //    then decode back. This is a simplified stand-in for SS58 since the
+    //    actual SS58 codec is not in scope -- we test the hex-encode -> decode
+    //    round-trip of the underlying AccountId representation.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn account_id_hex_round_trip(bytes in prop::array::uniform32(any::<u8>())) {
+        // Encode each byte as two hex digits.
+        let hex_encoded: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        prop_assert_eq!(hex_encoded.len(), 64, "32 bytes -> 64 hex chars");
+
+        // Decode back from hex pairs.
+        let decoded: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&hex_encoded[i * 2..i * 2 + 2], 16).expect("valid hex"))
+            .collect();
+        let decoded_bytes: [u8; 32] = decoded.try_into().expect("32 bytes");
+        prop_assert_eq!(bytes, decoded_bytes);
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. ActionCard sections: card with N canonical + M narrative sections
+    //    serializes to JSON with correct counts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn action_card_section_counts(
+        n_canonical in 0usize..10,
+        n_narrative in 0usize..10,
+    ) {
+        let mut builder = ActionCardBuilder::new("Test Transfer")
+            .with_payload_hash("deadbeef");
+
+        for i in 0..n_canonical {
+            builder = builder.add_canonical(
+                format!("field_{i}"),
+                format!("value_{i}"),
+                SectionSource::Metadata,
+            );
+        }
+        for i in 0..n_narrative {
+            builder = builder.add_narrative(
+                format!("narrative_{i}"),
+                format!("explanation_{i}"),
+            );
+        }
+
+        let card = builder.build();
+
+        // Verify section counts.
+        prop_assert_eq!(card.canonical_sections.len(), n_canonical,
+            "expected {n_canonical} canonical sections, got {}", card.canonical_sections.len());
+        prop_assert_eq!(card.narrative_sections.len(), n_narrative,
+            "expected {n_narrative} narrative sections, got {}", card.narrative_sections.len());
+
+        // Serialize and check counts are preserved.
+        let json = serde_json::to_string(&card).expect("serialize");
+        let back: ActionCard = serde_json::from_str(&json).expect("deserialize");
+
+        prop_assert_eq!(back.canonical_sections.len(), n_canonical);
+        prop_assert_eq!(back.narrative_sections.len(), n_narrative);
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. EventSequence monotonicity: sequence numbers are strictly increasing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn event_sequence_strictly_increasing(
+        count in 2usize..50,
+    ) {
+        let run_id = RunId::new();
+        let correlation = EventCorrelation {
+            run_id: run_id.clone(),
+            ..Default::default()
+        };
+
+        let events: Vec<RunEvent> = (1..=count as u64)
+            .map(|seq| {
+                RunEvent::new_durable(
+                    EventId::new(),
+                    run_id.clone(),
+                    seq,
+                    EventKind::RunCreated,
+                    correlation.clone(),
+                )
+            })
+            .collect();
+
+        for window in events.windows(2) {
+            prop_assert!(window[0].sequence < window[1].sequence,
+                "sequence {} must be < {}", window[0].sequence, window[1].sequence);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. ArtifactDigest: BLAKE3(body) matches stored digest for all bodies
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn artifact_digest_matches_body(body in prop::collection::vec(any::<u8>(), 0..4096)) {
+        let blob_ref = BlobRef::from_bytes(&body);
+        prop_assert!(blob_ref.verify(&body), "BlobRef must verify against its own bytes");
+
+        // The digest must be deterministic.
+        let blob_ref2 = BlobRef::from_bytes(&body);
+        prop_assert_eq!(&blob_ref.blake3_hex, &blob_ref2.blake3_hex);
+
+        // Size must match.
+        prop_assert_eq!(blob_ref.size_bytes, body.len() as u64);
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. AutonomyLevel serde round-trip for all variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn autonomy_level_serde_round_trip(level in arb_autonomy_level()) {
+        let json = serde_json::to_string(&level).expect("serialize");
+        let back: AutonomyLevel = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(level, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 12. DataClassification serde round-trip for all variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn data_classification_serde_round_trip(cls in arb_data_classification()) {
+        let json = serde_json::to_string(&cls).expect("serialize");
+        let back: DataClassification = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(cls, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 13. DataClassification ordering invariant: higher classification is
+    //     more restricted
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn data_classification_ordering(
+        a in arb_data_classification(),
+        b in arb_data_classification(),
+    ) {
+        if a < b {
+            prop_assert_ne!(a.to_string(), b.to_string());
+        }
+        // The Ord is total, so exactly one of a < b, a == b, a > b holds.
+        prop_assert!(a <= b || a > b);
+    }
+
+    // -----------------------------------------------------------------------
+    // 14. EffectKind serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effect_kind_serde_round_trip(kind in arb_effect_kind()) {
+        let json = serde_json::to_string(&kind).expect("serialize");
+        let back: EffectKind = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(kind, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 15. RetryClass serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn retry_class_serde_round_trip(cls in arb_retry_class()) {
+        let json = serde_json::to_string(&cls).expect("serialize");
+        let back: RetryClass = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(cls, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. EffectIntent serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effect_intent_serde_round_trip(intent in arb_effect_intent()) {
+        let json = serde_json::to_string(&intent).expect("serialize");
+        let back: EffectIntent = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&intent.id, &back.id);
+        prop_assert_eq!(&intent.kind, &back.kind);
+        prop_assert_eq!(intent.sequence, back.sequence);
+        prop_assert_eq!(&intent.retry_class, &back.retry_class);
+        prop_assert_eq!(intent.max_attempts, back.max_attempts);
+        prop_assert_eq!(&intent.payload_json, &back.payload_json);
+        prop_assert_eq!(&intent.idempotency_key, &back.idempotency_key);
+    }
+
+    // -----------------------------------------------------------------------
+    // 17. Amount serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_serde_round_trip(amt in arb_amount()) {
+        let json = serde_json::to_string(&amt).expect("serialize");
+        let back: Amount = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(amt.value, back.value);
+        prop_assert_eq!(amt.decimals, back.decimals);
+    }
+
+    // -----------------------------------------------------------------------
+    // 18. AssetId serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn asset_id_serde_round_trip(asset in arb_asset_id()) {
+        let json = serde_json::to_string(&asset).expect("serialize");
+        let back: AssetId = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(asset, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 19. Amount arithmetic: checked_sub(a, b) + b == a when a >= b
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_sub_then_add_identity(
+        a_val in 0u128..10u128.pow(15),
+        b_val in 0u128..10u128.pow(15),
+    ) {
+        let asset = AssetId::Native;
+        let a = Amount::new(a_val, asset.clone(), 10);
+        let b = Amount::new(b_val, asset, 10);
+
+        if a_val >= b_val {
+            let diff = a.checked_sub(&b).expect("a >= b so no underflow");
+            let restored = diff.checked_add(&b).expect("restoring should not overflow");
+            prop_assert_eq!(restored.value, a.value, "sub then add should restore original");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 20. Artifact from_bytes preserves integrity check
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn artifact_integrity_preserved(body in prop::collection::vec(any::<u8>(), 0..2048)) {
+        let artifact = Artifact::from_bytes(
+            ArtifactId::new(),
+            ArtifactKind::Custom { type_uri: "test://v1".to_string() },
+            &body,
+        );
+
+        prop_assert!(artifact.verify_integrity(&body), "artifact must verify its own body");
+
+        // Flipping any byte should break integrity (unless body is empty).
+        if !body.is_empty() {
+            let mut tampered = body.clone();
+            tampered[0] = tampered[0].wrapping_add(1);
+            prop_assert!(!artifact.verify_integrity(&tampered), "tampered body must not verify");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 21. PolicyRule: no-match on empty action patterns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn policy_rule_empty_patterns_never_match(
+        action in arb_name(30),
+        resource in arb_name(30),
+    ) {
+        let rule = PolicyRule {
+            id: "empty-action".to_string(),
+            effect: Effect::Allow,
+            action_patterns: vec![],
+            resource_patterns: vec!["**".to_string()],
+            conditions: HashMap::new(),
+            abac_condition: None,
+        };
+        let ctx = EvaluationContext::default();
+        prop_assert!(!rule.matches(&action, &resource, &ctx),
+            "empty action_patterns must never match");
+
+        let rule2 = PolicyRule {
+            id: "empty-resource".to_string(),
+            effect: Effect::Allow,
+            action_patterns: vec!["**".to_string()],
+            resource_patterns: vec![],
+            conditions: HashMap::new(),
+            abac_condition: None,
+        };
+        prop_assert!(!rule2.matches(&action, &resource, &ctx),
+            "empty resource_patterns must never match");
+    }
+
+    // -----------------------------------------------------------------------
+    // 22. ActionCard narrative sections always carry AI disclaimer
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn narrative_sections_always_have_disclaimer(
+        n_sections in 1usize..8,
+    ) {
+        let mut builder = ActionCardBuilder::new("Test")
+            .with_payload_hash("aabb");
+
+        for i in 0..n_sections {
+            builder = builder.add_narrative(
+                format!("heading_{i}"),
+                format!("body_{i}"),
+            );
+        }
+
+        let card = builder.build();
+        for section in &card.narrative_sections {
+            prop_assert_eq!(&section.disclaimer, "AI-generated explanation",
+                "every narrative section must carry the AI disclaimer");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 23. RunEvent serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_event_serde_round_trip(seq in 1u64..100_000) {
+        let run_id = RunId::new();
+        let correlation = EventCorrelation {
+            run_id: run_id.clone(),
+            ..Default::default()
+        };
+        let event = RunEvent::new_durable(
+            EventId::new(),
+            run_id,
+            seq,
+            EventKind::RunCreated,
+            correlation,
+        );
+
+        let json = serde_json::to_string(&event).expect("serialize");
+        let back: RunEvent = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&event.id, &back.id);
+        prop_assert_eq!(event.sequence, back.sequence);
+        prop_assert_eq!(&event.durability, &back.durability);
+    }
+
+    // -----------------------------------------------------------------------
+    // 24. Amount display_human contains asset name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_display_contains_asset(value in 0u128..10u128.pow(15)) {
+        let native = Amount::new(value, AssetId::Native, 10);
+        let display = native.display_human();
+        prop_assert!(display.contains("NATIVE"), "display '{}' must contain NATIVE", display);
+
+        let token = Amount::new(value, AssetId::Token {
+            chain: "polkadot".to_string(),
+            symbol: "USDT".to_string(),
+            decimals: 6,
+        }, 6);
+        let display2 = token.display_human();
+        prop_assert!(display2.contains("USDT"), "display '{}' must contain USDT", display2);
+    }
+
+    // -----------------------------------------------------------------------
+    // 25. BlobRef size_bytes matches input length
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn blob_ref_size_matches_input(body in prop::collection::vec(any::<u8>(), 0..8192)) {
+        let blob = BlobRef::from_bytes(&body);
+        prop_assert_eq!(blob.size_bytes, body.len() as u64,
+            "size_bytes must equal input length");
+    }
+
+    // -----------------------------------------------------------------------
+    // 26. Idempotency key Display matches as_str
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn idempotency_key_display_matches_as_str(
+        hex in prop::string::string_regex("[0-9a-f]{8,64}").expect("valid regex"),
+    ) {
+        let key = IdempotencyKey::from_hex(&hex);
+        prop_assert_eq!(key.to_string(), key.as_str(),
+            "Display output must match as_str()");
+    }
+
+    // -----------------------------------------------------------------------
+    // 27. Amount checked_mul: a * k >= a for k >= 1
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_mul_preserves_minimum(
+        a_val in 0u128..10u128.pow(12),
+        k in 1u128..1000,
+    ) {
+        let a = Amount::new(a_val, AssetId::Native, 10);
+        let product = a.checked_mul(k).expect("should not overflow for small values");
+        prop_assert!(product.value >= a.value,
+            "product {} must be >= original {}", product.value, a.value);
+    }
+
+    // -----------------------------------------------------------------------
+    // 28. Policy default-deny: empty PolicySet always denies
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn empty_policy_set_always_denies(
+        action in arb_name(30),
+        resource in arb_name(30),
+    ) {
+        let empty_set = PolicySet::new(vec![]);
+        let ctx = EvaluationContext::default();
+        let decision = evaluate(&empty_set, &action, &resource, &ctx);
+        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
+            "empty policy set must deny, got {decision:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 29. RiskFlag serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn risk_flag_serde_round_trip(
+        flag_type in arb_risk_flag_type(),
+        message in arb_name(100),
+        severity in arb_severity(),
+    ) {
+        let flag = RiskFlag::new(flag_type, &message, severity);
+        let json = serde_json::to_string(&flag).expect("serialize");
+        let back: RiskFlag = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(flag, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 30. CanonicalSection serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn canonical_section_serde_round_trip(
+        label in arb_name(30),
+        value in arb_name(50),
+        source in arb_section_source(),
+        verified in any::<bool>(),
+    ) {
+        let section = CanonicalSection::new(&label, &value, source, verified);
+        let json = serde_json::to_string(&section).expect("serialize");
+        let back: CanonicalSection = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(section, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 31. NarrativeSection serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn narrative_section_serde_round_trip(
+        label in arb_name(30),
+        content in arb_name(200),
+    ) {
+        let section = NarrativeSection::new(&label, &content);
+        let json = serde_json::to_string(&section).expect("serialize");
+        let back: NarrativeSection = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(section, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 32. Amount checked_add is commutative
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_add_commutative(
+        a_val in 0u128..10u128.pow(15),
+        b_val in 0u128..10u128.pow(15),
+    ) {
+        let asset = AssetId::Native;
+        let a = Amount::new(a_val, asset.clone(), 10);
+        let b = Amount::new(b_val, asset, 10);
+        let ab = a.checked_add(&b).expect("reasonable values");
+        let ba = b.checked_add(&a).expect("reasonable values");
+        prop_assert_eq!(ab.value, ba.value, "a+b must equal b+a");
+    }
+}
+
+// ===========================================================================
+// Additional non-proptest tests validating invariants
+// ===========================================================================
+
+/// Verify that the manual hex encoding/decoding used in the account ID
+/// round-trip test is correct for known values.
+#[test]
+fn hex_round_trip_known_value() {
+    let bytes: [u8; 32] = [0xAA; 32];
+    let encoded: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(encoded.len(), 64);
+    assert_eq!(&encoded, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    let decoded: Vec<u8> = (0..32)
+        .map(|i| u8::from_str_radix(&encoded[i * 2..i * 2 + 2], 16).unwrap())
+        .collect();
+    assert_eq!(decoded.as_slice(), &bytes);
+}
+
+/// Verify that all AutonomyLevel variants have unique Display strings.
+#[test]
+fn all_autonomy_levels_have_unique_display() {
+    let levels = [
+        AutonomyLevel::FullySupervised,
+        AutonomyLevel::Supervised,
+        AutonomyLevel::AssistedAutonomous,
+        AutonomyLevel::FullyAutonomous,
+    ];
+    let strings: Vec<String> = levels.iter().map(|l| l.to_string()).collect();
+    let unique: std::collections::HashSet<&str> =
+        strings.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        strings.len(),
+        unique.len(),
+        "every AutonomyLevel variant must have a unique Display value"
+    );
+}
+
+/// Verify that all DataClassification variants have unique Display strings.
+#[test]
+fn all_data_classifications_have_unique_display() {
+    let classes = [
+        DataClassification::Public,
+        DataClassification::Internal,
+        DataClassification::Private,
+        DataClassification::Sensitive,
+        DataClassification::SecretForbidden,
+    ];
+    let strings: Vec<String> = classes.iter().map(|c| c.to_string()).collect();
+    let unique: std::collections::HashSet<&str> =
+        strings.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        strings.len(),
+        unique.len(),
+        "every DataClassification variant must have a unique Display value"
+    );
+}

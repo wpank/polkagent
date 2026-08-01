@@ -435,6 +435,21 @@ mod tests {
         async fn release_claim(&self, _: EffectId, _: WorkerId) -> Result<(), polkagent_store_trait::StoreError> {
             Ok(())
         }
+        async fn update_intent_state(
+            &self,
+            id: EffectId,
+            _new_state: &str,
+        ) -> Result<StoredIntent, polkagent_store_trait::StoreError> {
+            // Read-only test store — just return the existing intent unchanged.
+            self.intents
+                .iter()
+                .find(|i| i.id == id)
+                .cloned()
+                .ok_or_else(|| polkagent_store_trait::StoreError::NotFound {
+                    resource_type: "StoredIntent",
+                    id: id.to_string(),
+                })
+        }
         async fn get_intent(&self, id: EffectId) -> Result<StoredIntent, polkagent_store_trait::StoreError> {
             self.intents
                 .iter()

@@ -1,0 +1,2708 @@
+openapi: 3.1.0
+
+info:
+  title: Polkagent API
+  version: "0.1.0"
+  description: |
+    The Polkagent REST API provides programmatic access to the Polkagent
+    platform. All endpoints are versioned under `/api/v1alpha1`. Health
+    probes are available at the root (no version prefix) for load-balancer
+    compatibility.
+
+    ## Versioning
+
+    The current version string is `v1alpha1`. Every response body includes
+    a top-level `"version"` field set to this value.
+
+    ## Pagination
+
+    List endpoints use cursor-based pagination. Pass the `after` query
+    parameter with the opaque token returned in `cursor.next` to fetch the
+    next page. When `cursor.has_more` is `false` you have reached the last
+    page.
+
+    ## Errors
+
+    All non-2xx responses use the standard error envelope:
+    ```json
+    {
+      "error": {
+        "code": "AGENT_NOT_FOUND",
+        "message": "agent not found: <id>",
+        "request_id": "<uuid>",
+        "timestamp": "<iso8601>"
+      }
+    }
+    ```
+
+    ## WebSocket streaming
+
+    Real-time events are available at `GET /api/v1alpha1/events/stream` via
+    a WebSocket upgrade. Each frame is a JSON-encoded `RunEvent` object.
+
+servers:
+  - url: http://localhost:9090
+    description: Local development server
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: agents
+    description: Agent CRUD and lifecycle management.
+  - name: runs
+    description: Run creation, querying, and control.
+  - name: effects
+    description: Effect intent review and approval pipeline.
+  - name: artifacts
+    description: Artifact metadata, content download, and provenance.
+  - name: events
+    description: Durable event log and real-time WebSocket stream.
+  - name: providers
+    description: AI model provider configuration (read-only).
+  - name: models
+    description: Model discovery across all configured providers.
+  - name: skills
+    description: Skill package installation and configuration.
+  - name: tools
+    description: Tool registry and grant inspection.
+  - name: payments
+    description: Budget tracking, usage statistics, and payment receipts.
+  - name: memory
+    description: Semantic memory search and management.
+  - name: system
+    description: Platform version and configuration summary.
+  - name: health
+    description: Liveness, readiness, and startup probes.
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+paths:
+
+  # ==========================================================================
+  # Agents
+  # ==========================================================================
+
+  /api/v1alpha1/agents:
+    post:
+      operationId: createAgent
+      summary: Create an agent
+      tags: [agents]
+      description: |
+        Persists a new agent spec and returns it with `201 Created`. The
+        `name` and `model` fields are required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequest"
+            example:
+              name: "My Assistant"
+              model: "anthropic/claude-opus-4-6"
+              description: "General-purpose assistant"
+              tools: ["polkagent.file.read"]
+              system_prompt: "You are a helpful assistant."
+      responses:
+        "201":
+          description: Agent created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listAgents
+      summary: List agents
+      tags: [agents]
+      description: Returns a paginated list of all agents.
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - name: after
+          in: query
+          description: Opaque cursor from the previous page (`cursor.next`).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Paginated list of agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAgentsResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/agents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/AgentIdPath"
+
+    get:
+      operationId: getAgent
+      summary: Get an agent
+      tags: [agents]
+      description: Returns the full spec and status for a single agent.
+      responses:
+        "200":
+          description: Agent found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: deleteAgent
+      summary: Delete an agent
+      tags: [agents]
+      description: Removes the agent from the registry. Returns `204 No Content`.
+      responses:
+        "204":
+          description: Agent deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/agents/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/AgentIdPath"
+    post:
+      operationId: startAgent
+      summary: Start an agent
+      tags: [agents]
+      description: |
+        Requests the agent to transition to the running state. Currently
+        returns a lifecycle acknowledgement; full lifecycle wiring is pending.
+      responses:
+        "200":
+          description: Lifecycle action acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLifecycleResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /api/v1alpha1/agents/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/AgentIdPath"
+    post:
+      operationId: stopAgent
+      summary: Stop an agent
+      tags: [agents]
+      description: Requests the agent to halt all activity.
+      responses:
+        "200":
+          description: Lifecycle action acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLifecycleResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /api/v1alpha1/agents/{id}/pause:
+    parameters:
+      - $ref: "#/components/parameters/AgentIdPath"
+    post:
+      operationId: pauseAgent
+      summary: Pause an agent
+      tags: [agents]
+      description: Requests the agent to suspend execution without terminating.
+      responses:
+        "200":
+          description: Lifecycle action acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLifecycleResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /api/v1alpha1/agents/{id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/AgentIdPath"
+    post:
+      operationId: resumeAgent
+      summary: Resume an agent
+      tags: [agents]
+      description: Requests a paused agent to resume execution.
+      responses:
+        "200":
+          description: Lifecycle action acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLifecycleResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  # ==========================================================================
+  # Runs
+  # ==========================================================================
+
+  /api/v1alpha1/agents/{agent_id}/runs:
+    parameters:
+      - name: agent_id
+        in: path
+        required: true
+        description: UUID of the agent to run.
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: createRun
+      summary: Create a run
+      tags: [runs]
+      description: |
+        Creates and immediately queues a run for the specified agent. The
+        `input` field is an opaque JSON value interpreted by the agent.
+        Provide `idempotency_key` (within a 24-hour window) to avoid
+        duplicate runs on retries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+            example:
+              input: "Summarise the attached document."
+              idempotency_key: "req-20260101-abc123"
+      responses:
+        "201":
+          description: Run created and queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/runs:
+    get:
+      operationId: listRuns
+      summary: List runs
+      tags: [runs]
+      description: Returns a paginated list of runs across all agents.
+      parameters:
+        - name: agent_id
+          in: query
+          description: Filter by agent UUID.
+          schema:
+            type: string
+            format: uuid
+        - name: state
+          in: query
+          description: Filter by run state.
+          schema:
+            $ref: "#/components/schemas/RunState"
+        - $ref: "#/components/parameters/LimitParam"
+        - name: after
+          in: query
+          description: Opaque cursor from the previous page.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Paginated list of runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRunsResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/runs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RunIdPath"
+    get:
+      operationId: getRun
+      summary: Get a run
+      tags: [runs]
+      description: Returns full details for a single run.
+      responses:
+        "200":
+          description: Run found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/runs/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/RunIdPath"
+    post:
+      operationId: cancelRun
+      summary: Cancel a run
+      tags: [runs]
+      description: |
+        Requests cancellation of a run that is not yet in a terminal state.
+        Returns `409 Conflict` if the run has already completed, failed, or
+        been cancelled.
+      responses:
+        "200":
+          description: Run cancellation accepted; updated run returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/runs/{id}/turns:
+    parameters:
+      - $ref: "#/components/parameters/RunIdPath"
+    get:
+      operationId: listRunTurns
+      summary: List turns for a run
+      tags: [runs]
+      description: |
+        Returns the ordered list of turns for a run. Each turn represents
+        one model invocation cycle. Currently returns an empty list; turn
+        persistence is pending.
+      responses:
+        "200":
+          description: List of turn summaries (may be empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTurnsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/runs/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/RunIdPath"
+    get:
+      operationId: listRunEvents
+      summary: List events for a run
+      tags: [runs]
+      description: |
+        Returns all durable events associated with the specified run.
+        Returns `501 Not Implemented` when no event store is configured.
+      responses:
+        "200":
+          description: List of events for the run.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, data]
+                properties:
+                  version:
+                    type: string
+                    example: v1alpha1
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RunEvent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/runs/{id}/artifacts:
+    parameters:
+      - $ref: "#/components/parameters/RunIdPath"
+    get:
+      operationId: listRunArtifacts
+      summary: List artifacts for a run
+      tags: [runs]
+      description: |
+        Returns metadata for all artifacts produced during the specified run.
+        Returns `501 Not Implemented` when no artifact store is configured.
+      responses:
+        "200":
+          description: List of artifact metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListArtifactsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/runs/{id}/effects:
+    parameters:
+      - $ref: "#/components/parameters/RunIdPath"
+    get:
+      operationId: listRunEffects
+      summary: List effects for a run
+      tags: [runs]
+      description: Returns all effect intents associated with the specified run.
+      responses:
+        "200":
+          description: List of effect intents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEffectsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/runs/{id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/RunIdPath"
+    post:
+      operationId: resumeRun
+      summary: Resume a paused run
+      tags: [runs]
+      description: |
+        Attempts to transition a run from `Paused` back to `Running`.
+        Currently returns `501 Not Implemented`; pause/resume wiring is
+        pending.
+      responses:
+        "200":
+          description: Run resumed; updated run returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  # ==========================================================================
+  # Effects
+  # ==========================================================================
+
+  /api/v1alpha1/effects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EffectIdPath"
+    get:
+      operationId: getEffect
+      summary: Get an effect
+      tags: [effects]
+      description: Returns the stored intent payload for a single effect.
+      responses:
+        "200":
+          description: Effect found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/effects/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/EffectIdPath"
+    post:
+      operationId: approveEffect
+      summary: Approve an effect
+      tags: [effects]
+      description: |
+        Approves a pending effect intent, allowing the agent to execute it.
+        Returns `501 Not Implemented`; approval wiring is pending.
+      responses:
+        "200":
+          description: Effect approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /api/v1alpha1/effects/{id}/deny:
+    parameters:
+      - $ref: "#/components/parameters/EffectIdPath"
+    post:
+      operationId: denyEffect
+      summary: Deny an effect
+      tags: [effects]
+      description: |
+        Denies a pending effect intent, preventing the agent from executing it.
+        Returns `501 Not Implemented`; denial wiring is pending.
+      responses:
+        "200":
+          description: Effect denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  # ==========================================================================
+  # Artifacts
+  # ==========================================================================
+
+  /api/v1alpha1/artifacts/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ArtifactIdPath"
+    get:
+      operationId: getArtifact
+      summary: Get artifact metadata
+      tags: [artifacts]
+      description: |
+        Returns metadata (kind, digest, classification, provenance) for a
+        single artifact. Returns `501 Not Implemented` when no artifact
+        store is configured.
+      responses:
+        "200":
+          description: Artifact metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/artifacts/{id}/content:
+    parameters:
+      - $ref: "#/components/parameters/ArtifactIdPath"
+    get:
+      operationId: getArtifactContent
+      summary: Download artifact content
+      tags: [artifacts]
+      description: |
+        Downloads the raw artifact body as `application/octet-stream`.
+        Returns `501 Not Implemented` when no artifact store is configured.
+        Returns `500 Internal Server Error` if the content integrity check
+        fails.
+      responses:
+        "200":
+          description: Raw artifact bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/artifacts/{id}/provenance:
+    parameters:
+      - $ref: "#/components/parameters/ArtifactIdPath"
+    get:
+      operationId: getArtifactProvenance
+      summary: Get artifact provenance chain
+      tags: [artifacts]
+      description: |
+        Returns the ordered lineage chain (oldest ancestor first) for an
+        artifact. Currently returns a single-element chain; full provenance
+        traversal is pending.
+        Returns `501 Not Implemented` when no artifact store is configured.
+      responses:
+        "200":
+          description: Artifact provenance chain.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvenanceResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Events (REST)
+  # ==========================================================================
+
+  /api/v1alpha1/events:
+    get:
+      operationId: listEvents
+      summary: List durable events
+      tags: [events]
+      description: |
+        Queries the durable event log with optional filters and cursor-based
+        pagination. Page size defaults to 50, maximum 200.
+        Returns `501 Not Implemented` when no event store is configured.
+      parameters:
+        - name: run_id
+          in: query
+          description: Filter events by run UUID.
+          schema:
+            type: string
+            format: uuid
+        - name: event_type
+          in: query
+          description: Filter by event type string (e.g. `run_created`).
+          schema:
+            type: string
+        - name: since
+          in: query
+          description: Return events with `global_sequence >= since`.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: limit
+          in: query
+          description: Maximum items per page (default 50, max 200).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Paginated list of events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEventsResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/events/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Event ID (UUID string).
+        schema:
+          type: string
+    get:
+      operationId: getEvent
+      summary: Get a durable event
+      tags: [events]
+      description: |
+        Returns a single durable event by its ID.
+        Returns `501 Not Implemented` when no event store is configured.
+      responses:
+        "200":
+          description: Event found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/events/stream:
+    get:
+      operationId: eventStream
+      summary: Real-time event stream (WebSocket)
+      tags: [events]
+      description: |
+        Upgrades the HTTP connection to a WebSocket. The server subscribes to
+        the internal event bus and forwards matching `RunEvent` objects as
+        JSON text frames.
+
+        **Keepalive:** The server sends a WebSocket Ping frame every 30 seconds.
+        Clients should respond with Pong to keep the connection open.
+
+        **Filtering:** Both query parameters are optional. When omitted, all
+        events are forwarded.
+
+        **Frame format:** Each frame is a JSON object conforming to the
+        `RunEvent` schema.
+
+        **Error handling:** If the client lags behind the server's broadcast
+        buffer, some events may be skipped. The server logs a warning but
+        continues streaming from the current tail.
+      parameters:
+        - name: run_id
+          in: query
+          description: Forward only events belonging to this run UUID.
+          schema:
+            type: string
+            format: uuid
+        - name: kinds
+          in: query
+          description: |
+            Comma-separated list of event kind names to include. Unknown
+            names are silently ignored. Example: `run_created,turn_started`.
+          schema:
+            type: string
+      responses:
+        "101":
+          description: Switching Protocols — WebSocket connection established.
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Providers
+  # ==========================================================================
+
+  /api/v1alpha1/providers:
+    get:
+      operationId: listProviders
+      summary: List AI providers
+      tags: [providers]
+      description: |
+        Returns all configured AI model providers. Secret fields (API keys)
+        are never included.
+      responses:
+        "200":
+          description: List of providers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListProvidersResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/providers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Provider identifier (e.g. `anthropic`).
+        schema:
+          type: string
+    get:
+      operationId: getProvider
+      summary: Get a provider
+      tags: [providers]
+      description: Returns configuration details for a single provider.
+      responses:
+        "200":
+          description: Provider found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/providers/{provider_id}/models:
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        description: Provider identifier.
+        schema:
+          type: string
+    get:
+      operationId: listProviderModels
+      summary: List models for a provider
+      tags: [providers]
+      description: Returns models available under the specified provider.
+      responses:
+        "200":
+          description: List of models for this provider.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListModelsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Models
+  # ==========================================================================
+
+  /api/v1alpha1/models:
+    get:
+      operationId: listModels
+      summary: List all models
+      tags: [models]
+      description: |
+        Returns all models across every configured provider. Each provider
+        contributes its `default_model`.
+      responses:
+        "200":
+          description: List of all models.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListModelsResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/models/{model_id}:
+    parameters:
+      - name: model_id
+        in: path
+        required: true
+        description: Model identifier (e.g. `claude-opus-4-6`).
+        schema:
+          type: string
+    get:
+      operationId: getModel
+      summary: Get a model
+      tags: [models]
+      description: |
+        Returns metadata for a single model. Searches all configured
+        providers for a matching `default_model`.
+      responses:
+        "200":
+          description: Model found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Skills
+  # ==========================================================================
+
+  /api/v1alpha1/skills:
+    get:
+      operationId: listSkills
+      summary: List skills
+      tags: [skills]
+      description: |
+        Returns all loaded skills from the skill registry.
+        Returns `501 Not Implemented` when no skill registry is configured.
+      responses:
+        "200":
+          description: List of skills.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListSkillsResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/skills/install:
+    post:
+      operationId: installSkill
+      summary: Install a skill
+      tags: [skills]
+      description: |
+        Installs a skill package from a local filesystem path.
+        Returns `501 Not Implemented`; dynamic installation is pending.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstallSkillRequest"
+            example:
+              path: "/opt/polkagent/skills/my-skill"
+      responses:
+        "201":
+          description: Skill installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/skills/{skill_id}:
+    parameters:
+      - $ref: "#/components/parameters/SkillIdPath"
+    get:
+      operationId: getSkill
+      summary: Get a skill
+      tags: [skills]
+      description: |
+        Returns the manifest and status for a single skill by package name.
+        Returns `501 Not Implemented` when no skill registry is configured.
+      responses:
+        "200":
+          description: Skill found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/skills/{skill_id}/uninstall:
+    parameters:
+      - $ref: "#/components/parameters/SkillIdPath"
+    post:
+      operationId: uninstallSkill
+      summary: Uninstall a skill
+      tags: [skills]
+      description: |
+        Uninstalls a skill by package name.
+        Returns `501 Not Implemented`; dynamic uninstallation is pending.
+      responses:
+        "200":
+          description: Skill uninstalled.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/skills/{skill_id}/config:
+    parameters:
+      - $ref: "#/components/parameters/SkillIdPath"
+    put:
+      operationId: updateSkillConfig
+      summary: Update skill configuration
+      tags: [skills]
+      description: |
+        Merges the provided key-value pairs into the skill's runtime
+        configuration. Returns `501 Not Implemented`; per-skill config
+        mutation is pending.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSkillConfigRequest"
+            example:
+              config:
+                api_endpoint: "https://example.com/api"
+                timeout_secs: 30
+      responses:
+        "200":
+          description: Skill configuration updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Tools
+  # ==========================================================================
+
+  /api/v1alpha1/tools:
+    get:
+      operationId: listTools
+      summary: List tools
+      tags: [tools]
+      description: |
+        Returns all tools registered in the tool registry.
+        Returns `501 Not Implemented` when no tool registry is configured.
+      responses:
+        "200":
+          description: List of tools.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListToolsResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/tools/{tool_id}:
+    parameters:
+      - $ref: "#/components/parameters/ToolIdPath"
+    get:
+      operationId: getTool
+      summary: Get a tool
+      tags: [tools]
+      description: |
+        Returns the definition and JSON Schema for a single tool.
+        Returns `501 Not Implemented` when no tool registry is configured.
+      responses:
+        "200":
+          description: Tool found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/tools/{tool_id}/grants:
+    parameters:
+      - $ref: "#/components/parameters/ToolIdPath"
+    get:
+      operationId: getToolGrants
+      summary: Get tool grant requirements
+      tags: [tools]
+      description: |
+        Returns the required grant pattern for a single tool.
+        Returns `501 Not Implemented` when no tool registry is configured.
+      responses:
+        "200":
+          description: Tool grant information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolGrantsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Payments
+  # ==========================================================================
+
+  /api/v1alpha1/payments/balance:
+    get:
+      operationId: getPaymentBalance
+      summary: Get payment balance
+      tags: [payments]
+      description: |
+        Returns the current agent budget and available balance summary.
+        Returns `501 Not Implemented` when no payment store is configured.
+      responses:
+        "200":
+          description: Balance information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentBalanceResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/payments/usage:
+    get:
+      operationId: getPaymentUsage
+      summary: Get usage statistics
+      tags: [payments]
+      description: |
+        Returns aggregated usage statistics (run count, token totals,
+        estimated cost) for the last 30 days.
+        Returns `501 Not Implemented` when no payment store is configured.
+      responses:
+        "200":
+          description: Usage statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentUsageResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/payments/receipts:
+    get:
+      operationId: listPaymentReceipts
+      summary: List payment receipts
+      tags: [payments]
+      description: |
+        Returns all on-chain payment receipts.
+        Returns `501 Not Implemented` when no payment store is configured.
+      responses:
+        "200":
+          description: List of payment receipts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListPaymentReceiptsResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/payments/receipts/{receipt_id}:
+    parameters:
+      - name: receipt_id
+        in: path
+        required: true
+        description: Intent ID for the receipt.
+        schema:
+          type: string
+    get:
+      operationId: getPaymentReceipt
+      summary: Get a payment receipt
+      tags: [payments]
+      description: |
+        Returns a single payment receipt by its intent ID.
+        Returns `501 Not Implemented` when no payment store is configured.
+        Returns `404 Not Found` when receipt lookup is not yet implemented.
+      responses:
+        "200":
+          description: Payment receipt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentReceiptResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Memory
+  # ==========================================================================
+
+  /api/v1alpha1/memory/query:
+    post:
+      operationId: queryMemory
+      summary: Search memory
+      tags: [memory]
+      description: |
+        Performs a semantic search over stored memories and returns ranked
+        results. Returns `501 Not Implemented` when no memory store is
+        configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemoryQueryRequest"
+            example:
+              query: "OAuth token refresh flow"
+              limit: 5
+              namespace: "code-context"
+      responses:
+        "200":
+          description: Memory search results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryQueryResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/memory/stats:
+    get:
+      operationId: getMemoryStats
+      summary: Get memory statistics
+      tags: [memory]
+      description: |
+        Returns aggregate statistics (total entries, byte usage, namespace
+        count). Returns `501 Not Implemented` when no memory store is
+        configured.
+      responses:
+        "200":
+          description: Memory statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryStatsResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/memory/forget:
+    post:
+      operationId: forgetMemory
+      summary: Delete memory entries
+      tags: [memory]
+      description: |
+        Deletes one or more memory entries by ID. Returns the count of
+        actually deleted entries. Returns `501 Not Implemented` when no
+        memory store is configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemoryForgetRequest"
+            example:
+              entry_ids:
+                - "mem_01j1abc"
+                - "mem_01j1def"
+      responses:
+        "200":
+          description: Memory entries deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryForgetResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/memory/entries/{entry_id}:
+    parameters:
+      - name: entry_id
+        in: path
+        required: true
+        description: Memory entry identifier.
+        schema:
+          type: string
+    get:
+      operationId: getMemoryEntry
+      summary: Get a memory entry
+      tags: [memory]
+      description: |
+        Returns a single memory entry by its ID.
+        Returns `501 Not Implemented` when no memory store is configured.
+      responses:
+        "200":
+          description: Memory entry found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryEntryResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # System
+  # ==========================================================================
+
+  /api/v1alpha1/system/info:
+    get:
+      operationId: getSystemInfo
+      summary: Get system info
+      tags: [system]
+      description: |
+        Returns platform version, process uptime, and a non-secret
+        configuration summary. No secrets, API keys, or database URLs
+        are included.
+      responses:
+        "200":
+          description: System information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemInfoResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /openapi.json:
+    get:
+      operationId: getOpenApiSpec
+      summary: Get OpenAPI specification
+      tags: [system]
+      description: Returns this OpenAPI specification as a JSON document.
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.1 specification in JSON format.
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Health (no version prefix)
+  # ==========================================================================
+
+  /health/live:
+    get:
+      operationId: healthLive
+      summary: Liveness probe
+      tags: [health]
+      security: []
+      description: |
+        Always returns `200 OK` with `{"status": "ok"}`. If this endpoint
+        fails the process should be considered dead.
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /health/ready:
+    get:
+      operationId: healthReady
+      summary: Readiness probe
+      tags: [health]
+      security: []
+      description: |
+        Returns `200 OK` when all backend dependencies (effect store, etc.)
+        are reachable. Returns `503 Service Unavailable` when any dependency
+        is unavailable.
+      responses:
+        "200":
+          description: Server is ready to serve traffic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: One or more dependencies are unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /health/startup:
+    get:
+      operationId: healthStartup
+      summary: Startup probe
+      tags: [health]
+      security: []
+      description: |
+        Returns `200 OK` once one-time initialisation (configuration loading,
+        migrations, registry warm-up) has completed. Kubernetes can delay
+        liveness/readiness checks until this returns 200.
+      responses:
+        "200":
+          description: Initialisation complete.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+# ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+
+components:
+
+  # --------------------------------------------------------------------------
+  # Security schemes
+  # --------------------------------------------------------------------------
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authenticating requests to the Polkagent API.
+
+  # --------------------------------------------------------------------------
+  # Reusable parameters
+  # --------------------------------------------------------------------------
+
+  parameters:
+
+    AgentIdPath:
+      name: id
+      in: path
+      required: true
+      description: UUID of the agent.
+      schema:
+        type: string
+        format: uuid
+
+    RunIdPath:
+      name: id
+      in: path
+      required: true
+      description: UUID of the run.
+      schema:
+        type: string
+        format: uuid
+
+    EffectIdPath:
+      name: id
+      in: path
+      required: true
+      description: UUID of the effect intent.
+      schema:
+        type: string
+        format: uuid
+
+    ArtifactIdPath:
+      name: id
+      in: path
+      required: true
+      description: UUID of the artifact.
+      schema:
+        type: string
+        format: uuid
+
+    SkillIdPath:
+      name: skill_id
+      in: path
+      required: true
+      description: Skill package name (e.g. `my-skill`).
+      schema:
+        type: string
+
+    ToolIdPath:
+      name: tool_id
+      in: path
+      required: true
+      description: Tool name (e.g. `polkagent.file.read`).
+      schema:
+        type: string
+
+    LimitParam:
+      name: limit
+      in: query
+      description: Maximum items per page (default 50, max 100).
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 100
+        default: 50
+
+  # --------------------------------------------------------------------------
+  # Reusable responses
+  # --------------------------------------------------------------------------
+
+  responses:
+
+    ValidationError:
+      description: Request body or query parameters failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: "name must not be empty"
+              request_id: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+              timestamp: "2026-07-31T12:00:00Z"
+
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: NOT_FOUND
+              message: "agent not found: 0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+              request_id: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e9"
+              timestamp: "2026-07-31T12:00:00Z"
+
+    Conflict:
+      description: The request conflicts with the current resource state.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: INVALID_STATE
+              message: "run is already in a terminal state"
+              request_id: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6ea"
+              timestamp: "2026-07-31T12:00:00Z"
+
+    NotImplemented:
+      description: The endpoint exists but is not yet implemented.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: NOT_IMPLEMENTED
+              message: "skill installation is not yet implemented"
+              request_id: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6eb"
+              timestamp: "2026-07-31T12:00:00Z"
+
+    InternalError:
+      description: An unexpected internal server error occurred.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: "internal error: database connection lost"
+              request_id: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6ec"
+              timestamp: "2026-07-31T12:00:00Z"
+
+  # --------------------------------------------------------------------------
+  # Schemas
+  # --------------------------------------------------------------------------
+
+  schemas:
+
+    # ---- Enums ---------------------------------------------------------------
+
+    AgentState:
+      type: string
+      description: Operational state of an agent.
+      enum:
+        - Created
+        - Starting
+        - Running
+        - Pausing
+        - Paused
+        - Stopping
+        - Stopped
+        - Error
+      example: Created
+
+    RunState:
+      type: string
+      description: Lifecycle state of a run.
+      enum:
+        - Queued
+        - Running
+        - Paused
+        - Completed
+        - Failed
+        - Cancelled
+      example: Running
+
+    EventKind:
+      type: string
+      description: |
+        Discriminator for `RunEvent` payloads. Corresponds to the
+        `EventKind` enum in `polkagent-core`.
+      enum:
+        - RunCreated
+        - RunQueued
+        - RunStarted
+        - RunCompleted
+        - RunFailed
+        - RunCancelled
+        - TurnStarted
+        - TurnCompleted
+        - ToolCallStarted
+        - ToolCallCompleted
+        - EffectRequested
+        - EffectApproved
+        - EffectDenied
+        - EffectExecuted
+        - ArtifactProduced
+        - AgentMessage
+      example: RunCreated
+
+    # ---- Pagination ----------------------------------------------------------
+
+    CursorInfo:
+      type: object
+      required: [has_more]
+      description: Cursor state included in every list response.
+      properties:
+        next:
+          type: string
+          nullable: true
+          description: Opaque token for the next page, or null on the last page.
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+        has_more:
+          type: boolean
+          description: True when more items exist beyond this page.
+          example: true
+
+    PageMeta:
+      type: object
+      required: [page_size]
+      description: Metadata about the current response page.
+      properties:
+        page_size:
+          type: integer
+          description: Number of items in this response.
+          example: 50
+
+    # ---- Errors --------------------------------------------------------------
+
+    ErrorDetail:
+      type: object
+      required: [code, message, request_id, timestamp]
+      description: Structured error detail included in every non-2xx response.
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code in SCREAMING_SNAKE_CASE.
+          enum:
+            - AGENT_NOT_FOUND
+            - RUN_NOT_FOUND
+            - NOT_FOUND
+            - INVALID_STATE
+            - VALIDATION_ERROR
+            - INTERNAL_ERROR
+            - NOT_IMPLEMENTED
+          example: AGENT_NOT_FOUND
+        message:
+          type: string
+          description: Human-readable explanation safe to surface to clients.
+          example: "agent not found: 0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+        request_id:
+          type: string
+          format: uuid
+          description: Server-generated correlation ID for this request.
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e9"
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC timestamp of the error.
+          example: "2026-07-31T12:00:00Z"
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      description: Standard error envelope returned on all non-2xx responses.
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+
+    # ---- Health --------------------------------------------------------------
+
+    HealthResponse:
+      type: object
+      required: [status]
+      description: Response body for health probe endpoints.
+      properties:
+        status:
+          type: string
+          description: '"ok" or "degraded".'
+          enum: [ok, degraded]
+          example: ok
+        detail:
+          type: string
+          nullable: true
+          description: Optional human-readable detail.
+          example: "initialisation complete"
+        checks:
+          type: object
+          description: Per-dependency health check results.
+          additionalProperties:
+            type: string
+          example:
+            effect_store: "ok"
+
+    # ---- Agents --------------------------------------------------------------
+
+    AgentSpec:
+      type: object
+      required: [id, name, model, tools, created_at, updated_at]
+      description: Persisted agent specification.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique agent identifier.
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+        name:
+          type: string
+          description: Human-readable display name.
+          example: "My Assistant"
+        model:
+          type: string
+          description: 'Model identifier in "provider/model-id" format.'
+          example: "anthropic/claude-opus-4-6"
+        description:
+          type: string
+          nullable: true
+          description: Optional description shown in UIs and logs.
+          example: "General-purpose assistant"
+        tools:
+          type: array
+          items:
+            type: string
+          description: Names of tools the agent may invoke.
+          example: ["polkagent.file.read"]
+        system_prompt:
+          type: string
+          nullable: true
+          description: System prompt template.
+          example: "You are a helpful assistant."
+        created_at:
+          type: string
+          format: date-time
+          description: When the agent was first created.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the agent spec was last updated.
+
+    CreateAgentRequest:
+      type: object
+      required: [name, model]
+      description: Request body for creating a new agent.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Human-readable name (must not be blank).
+          example: "My Assistant"
+        model:
+          type: string
+          minLength: 1
+          description: 'Model identifier in "provider/model-id" format.'
+          example: "anthropic/claude-opus-4-6"
+        description:
+          type: string
+          nullable: true
+          description: Optional description.
+          example: "General-purpose assistant"
+        tools:
+          type: array
+          items:
+            type: string
+          default: []
+          description: Names of tools the agent may invoke.
+          example: ["polkagent.file.read"]
+        system_prompt:
+          type: string
+          nullable: true
+          description: System prompt template.
+          example: "You are a helpful assistant."
+
+    AgentResponse:
+      type: object
+      required: [version, id, spec, status, created_at, updated_at]
+      description: Full agent representation returned by the API.
+      properties:
+        version:
+          type: string
+          description: API version string.
+          example: v1alpha1
+        id:
+          type: string
+          format: uuid
+          description: Unique agent identifier.
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+        spec:
+          $ref: "#/components/schemas/AgentSpec"
+        status:
+          $ref: "#/components/schemas/AgentState"
+        created_at:
+          type: string
+          format: date-time
+          description: When the agent was first created.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the agent spec was last updated.
+
+    ListAgentsResponse:
+      type: object
+      required: [version, data, cursor, meta]
+      description: Paginated list of agents.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentResponse"
+        cursor:
+          $ref: "#/components/schemas/CursorInfo"
+        meta:
+          $ref: "#/components/schemas/PageMeta"
+
+    AgentLifecycleResponse:
+      type: object
+      required: [version, agent_id, action, status]
+      description: Acknowledgement response for agent lifecycle actions.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        agent_id:
+          type: string
+          format: uuid
+          description: The agent that received the lifecycle request.
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+        action:
+          type: string
+          description: The requested action (start, stop, pause, resume).
+          enum: [start, stop, pause, resume]
+          example: start
+        status:
+          type: string
+          description: Outcome of the lifecycle request.
+          example: not_implemented
+
+    # ---- Runs ----------------------------------------------------------------
+
+    CreateRunRequest:
+      type: object
+      required: [input]
+      description: Request body for creating a new run.
+      properties:
+        input:
+          description: |
+            Opaque JSON input for the run. Different agent types may define
+            their own input schemas; the API treats this as a free-form
+            JSON value.
+          example: "Summarise the attached document."
+        idempotency_key:
+          type: string
+          nullable: true
+          description: |
+            Optional idempotency key (24-hour window). Supplying the same
+            key within the window returns the existing run instead of
+            creating a duplicate.
+          example: "req-20260101-abc123"
+
+    RunResponse:
+      type: object
+      required: [version, id, agent_id, status, input, turns_completed, created_at]
+      description: Full run representation returned by the API.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        id:
+          type: string
+          format: uuid
+          description: Unique run identifier.
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+        agent_id:
+          type: string
+          format: uuid
+          description: UUID of the agent that owns this run.
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e7"
+        status:
+          $ref: "#/components/schemas/RunState"
+        input:
+          description: The input supplied when the run was created.
+          example: "Summarise the attached document."
+        turns_completed:
+          type: integer
+          format: int32
+          description: Number of model invocation turns completed so far.
+          example: 3
+        created_at:
+          type: string
+          format: date-time
+          description: When the run was created.
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the run began executing.
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the run reached a terminal state.
+        terminal_reason:
+          type: string
+          nullable: true
+          description: Human-readable reason for the terminal state.
+          example: "Completed successfully"
+
+    ListRunsResponse:
+      type: object
+      required: [version, data, cursor, meta]
+      description: Paginated list of runs.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunResponse"
+        cursor:
+          $ref: "#/components/schemas/CursorInfo"
+        meta:
+          $ref: "#/components/schemas/PageMeta"
+
+    TurnSummary:
+      type: object
+      required: [sequence, started_at]
+      description: Summary of a single model invocation turn within a run.
+      properties:
+        sequence:
+          type: integer
+          format: int32
+          description: Turn sequence number (1-indexed within the run).
+          example: 1
+        started_at:
+          type: string
+          format: date-time
+          description: When the turn started.
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the turn completed.
+
+    ListTurnsResponse:
+      type: object
+      required: [version, data]
+      description: List of turn summaries for a run.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TurnSummary"
+
+    # ---- Effects -------------------------------------------------------------
+
+    EffectResponse:
+      type: object
+      required: [version, data]
+      description: A single stored effect intent.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: object
+          description: |
+            Raw effect intent payload as stored in the effect store.
+            The schema varies by effect kind.
+
+    ListEffectsResponse:
+      type: object
+      required: [version, data]
+      description: List of stored effect intents.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            type: object
+            description: Raw effect intent payload.
+
+    # ---- Artifacts -----------------------------------------------------------
+
+    ArtifactResponse:
+      type: object
+      required: [version, id, kind, algorithm, digest_hex, classification, created_at]
+      description: Metadata for a stored artifact.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        id:
+          type: string
+          description: Unique artifact identifier.
+          example: "01j1abc123def456"
+        kind:
+          type: string
+          description: Artifact kind tag (e.g. "file", "code", "report").
+          example: file
+        algorithm:
+          type: string
+          description: Content-hash algorithm (e.g. "blake3").
+          example: blake3
+        digest_hex:
+          type: string
+          description: Hex-encoded content digest.
+          example: "a1b2c3d4e5f6..."
+        classification:
+          type: string
+          description: Data classification (e.g. "public", "private").
+          example: private
+        run_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The run that produced this artifact, if any.
+        created_at:
+          type: string
+          format: date-time
+          description: When the artifact was created (ISO 8601).
+
+    ListArtifactsResponse:
+      type: object
+      required: [version, data]
+      description: List of artifact metadata objects.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ArtifactResponse"
+
+    ProvenanceResponse:
+      type: object
+      required: [version, chain]
+      description: Artifact provenance (lineage) chain.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        chain:
+          type: array
+          description: Ordered lineage chain, oldest ancestor first.
+          items:
+            $ref: "#/components/schemas/ArtifactResponse"
+
+    # ---- Events --------------------------------------------------------------
+
+    RunEvent:
+      type: object
+      required: [id, run_id, global_sequence, kind, correlation]
+      description: A durable event record emitted during a run.
+      properties:
+        id:
+          type: string
+          description: Unique event identifier (UUID string).
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
+        run_id:
+          type: string
+          format: uuid
+          description: Run this event belongs to.
+          example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e7"
+        global_sequence:
+          type: integer
+          format: int64
+          description: Monotonically increasing global sequence number.
+          example: 42
+        kind:
+          $ref: "#/components/schemas/EventKind"
+        correlation:
+          type: object
+          description: Correlation context for distributed tracing.
+          properties:
+            run_id:
+              type: string
+              format: uuid
+            trace_id:
+              type: string
+              nullable: true
+            span_id:
+              type: string
+              nullable: true
+        payload:
+          type: object
+          nullable: true
+          description: Event-kind-specific payload (schema varies by kind).
+
+    EventResponse:
+      type: object
+      required: [version, data]
+      description: A single durable event retrieved from the store.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          $ref: "#/components/schemas/RunEvent"
+
+    ListEventsResponse:
+      type: object
+      required: [version, data, cursor, meta]
+      description: Paginated list of durable events.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunEvent"
+        cursor:
+          $ref: "#/components/schemas/CursorInfo"
+        meta:
+          $ref: "#/components/schemas/PageMeta"
+
+    # ---- Providers -----------------------------------------------------------
+
+    ProviderResponse:
+      type: object
+      required: [version, id, provider_type, base_url, default_model, timeout_secs, max_retries]
+      description: Configuration details for an AI model provider (no secrets).
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        id:
+          type: string
+          description: Stable provider identifier.
+          example: anthropic
+        provider_type:
+          type: string
+          description: Provider type discriminator.
+          enum: [anthropic, openai_compatible, openai]
+          example: anthropic
+        base_url:
+          type: string
+          format: uri
+          description: Base URL for the provider API.
+          example: "https://api.anthropic.com"
+        default_model:
+          type: string
+          description: Default model used when none is specified.
+          example: "claude-opus-4-6"
+        timeout_secs:
+          type: integer
+          format: int64
+          description: Per-request timeout in seconds.
+          example: 120
+        max_retries:
+          type: integer
+          format: int32
+          description: Maximum automatic retries on transient failures.
+          example: 3
+
+    ListProvidersResponse:
+      type: object
+      required: [version, data]
+      description: List of configured AI providers.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderResponse"
+
+    # ---- Models --------------------------------------------------------------
+
+    ModelCapabilities:
+      type: object
+      required: [vision, tool_use, streaming]
+      description: Capability flags for an AI model.
+      properties:
+        vision:
+          type: boolean
+          description: Whether the model accepts image/vision input.
+          example: true
+        tool_use:
+          type: boolean
+          description: Whether the model supports function/tool calling.
+          example: true
+        streaming:
+          type: boolean
+          description: Whether the model supports streaming responses.
+          example: true
+
+    ModelResponse:
+      type: object
+      required: [version, id, name, provider, context_window, capabilities]
+      description: Metadata for a single AI model.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        id:
+          type: string
+          description: Unique model identifier.
+          example: "claude-opus-4-6"
+        name:
+          type: string
+          description: Human-readable display name.
+          example: "claude-opus-4-6"
+        provider:
+          type: string
+          description: Provider that hosts this model.
+          example: anthropic
+        context_window:
+          type: integer
+          format: int32
+          description: Maximum context window in tokens.
+          example: 200000
+        capabilities:
+          $ref: "#/components/schemas/ModelCapabilities"
+
+    ListModelsResponse:
+      type: object
+      required: [version, data]
+      description: List of AI models.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelResponse"
+
+    # ---- Skills --------------------------------------------------------------
+
+    InstallSkillRequest:
+      type: object
+      required: [path]
+      description: Request body for installing a skill from the local filesystem.
+      properties:
+        path:
+          type: string
+          description: Filesystem path to the skill package directory.
+          example: "/opt/polkagent/skills/my-skill"
+
+    UpdateSkillConfigRequest:
+      type: object
+      required: [config]
+      description: Request body for updating a skill's runtime configuration.
+      properties:
+        config:
+          type: object
+          description: |
+            Key-value pairs to merge into the skill's configuration.
+            The schema is skill-specific.
+          example:
+            api_endpoint: "https://example.com/api"
+            timeout_secs: 30
+
+    SkillResponse:
+      type: object
+      required: [version, id, name, skill_version, description, required_grants, tools, active]
+      description: Metadata for a loaded skill.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        id:
+          type: string
+          description: Unique skill identifier in "name@version" format.
+          example: "my-skill@1.0.0"
+        name:
+          type: string
+          description: Skill package name.
+          example: "my-skill"
+        skill_version:
+          type: string
+          description: Semver version string.
+          example: "1.0.0"
+        description:
+          type: string
+          description: Human-readable description.
+          example: "Provides file system access tools."
+        required_grants:
+          type: array
+          items:
+            type: string
+          description: Grant patterns required by this skill.
+          example: ["polkagent.file.*"]
+        tools:
+          type: array
+          items:
+            type: string
+          description: Tool names registered by this skill.
+          example: ["polkagent.file.read", "polkagent.file.write"]
+        active:
+          type: boolean
+          description: Whether the skill is currently active.
+          example: true
+
+    ListSkillsResponse:
+      type: object
+      required: [version, data]
+      description: List of loaded skills.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkillResponse"
+
+    # ---- Tools ---------------------------------------------------------------
+
+    ToolResponse:
+      type: object
+      required: [version, id, description, input_schema, output_classification]
+      description: Definition and metadata for a registered tool.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        id:
+          type: string
+          description: Unique tool name (e.g. "polkagent.file.read").
+          example: "polkagent.file.read"
+        description:
+          type: string
+          description: Human-readable description of the tool's purpose.
+          example: "Read a file from the local filesystem."
+        input_schema:
+          type: object
+          description: JSON Schema (draft 7) describing the tool's input parameters.
+          example:
+            type: object
+            properties:
+              path:
+                type: string
+                description: Absolute path to the file.
+            required: [path]
+        required_grant:
+          type: string
+          nullable: true
+          description: Grant pattern required to invoke this tool.
+          example: "polkagent.file.read"
+        output_classification:
+          type: string
+          description: Data classification of the tool's output.
+          example: "Private"
+
+    ListToolsResponse:
+      type: object
+      required: [version, data]
+      description: List of registered tools.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolResponse"
+
+    ToolGrantsResponse:
+      type: object
+      required: [version, tool_id]
+      description: Grant requirements for a single tool.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        tool_id:
+          type: string
+          description: The tool name.
+          example: "polkagent.file.read"
+        required_grant:
+          type: string
+          nullable: true
+          description: Required grant pattern, or null if the tool requires no grants.
+          example: "polkagent.file.read"
+
+    # ---- Payments ------------------------------------------------------------
+
+    PaymentBalanceResponse:
+      type: object
+      required: [version, balance, budget]
+      description: Current agent budget and available balance.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        balance:
+          type: object
+          description: Available balance information (structure is implementation-defined).
+          example:
+            available: null
+            currency: NATIVE
+            note: "balance tracking not yet implemented"
+        budget:
+          type: object
+          description: Budget configuration (structure is implementation-defined).
+          example:
+            configured: false
+
+    PaymentUsageResponse:
+      type: object
+      required: [version, total_runs, total_tokens, estimated_usd, period_start, period_end]
+      description: Aggregated usage statistics for a billing period.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        total_runs:
+          type: integer
+          format: int64
+          description: Total number of runs in this period.
+          example: 42
+        total_tokens:
+          type: integer
+          format: int64
+          description: Total tokens consumed across all runs.
+          example: 1250000
+        estimated_usd:
+          type: number
+          format: double
+          description: Estimated USD cost for this period.
+          example: 18.75
+        period_start:
+          type: string
+          format: date-time
+          description: Start of the reporting period (ISO 8601).
+        period_end:
+          type: string
+          format: date-time
+          description: End of the reporting period (ISO 8601).
+
+    PaymentReceiptResponse:
+      type: object
+      required: [version, intent_id, tx_hash, block_number, fee_paid, confirmed_at]
+      description: An on-chain payment receipt.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        intent_id:
+          type: string
+          description: The payment intent ID fulfilled by this receipt.
+          example: "intent_0196b2f4"
+        tx_hash:
+          type: string
+          description: On-chain transaction hash.
+          example: "0xabc123..."
+        block_number:
+          type: integer
+          format: int64
+          description: Block number at which the transaction was confirmed.
+          example: 18500000
+        fee_paid:
+          type: string
+          description: Fee paid expressed as a human-readable string.
+          example: "0.001 ETH"
+        confirmed_at:
+          type: string
+          format: date-time
+          description: When the on-chain confirmation was observed.
+
+    ListPaymentReceiptsResponse:
+      type: object
+      required: [version, data]
+      description: List of payment receipts.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PaymentReceiptResponse"
+
+    # ---- Memory --------------------------------------------------------------
+
+    MemoryQueryRequest:
+      type: object
+      required: [query]
+      description: Request body for a memory search.
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: Free-text search query.
+          example: "OAuth token refresh flow"
+        limit:
+          type: integer
+          format: int32
+          minimum: 1
+          default: 10
+          description: Maximum number of results to return (default 10).
+          example: 5
+        namespace:
+          type: string
+          nullable: true
+          description: Optional namespace filter.
+          example: "code-context"
+
+    MemoryResult:
+      type: object
+      required: [id, content, score, created_at]
+      description: A single memory search result.
+      properties:
+        id:
+          type: string
+          description: Memory item identifier.
+          example: "mem_01j1abc"
+        content:
+          type: string
+          description: Content of the memory.
+          example: "The OAuth token refresh endpoint is POST /oauth/token."
+        score:
+          type: number
+          format: double
+          minimum: 0.0
+          maximum: 1.0
+          description: Relevance score (0.0 = least relevant, 1.0 = most relevant).
+          example: 0.92
+        namespace:
+          type: string
+          nullable: true
+          description: Namespace/type of the memory.
+          example: "code-context"
+        created_at:
+          type: string
+          format: date-time
+          description: When the memory entry was created.
+
+    MemoryQueryResponse:
+      type: object
+      required: [version, data]
+      description: Memory search results.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryResult"
+
+    MemoryStatsResponse:
+      type: object
+      required: [version, total_memories, total_bytes, namespaces]
+      description: Aggregate statistics about the memory store.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        total_memories:
+          type: integer
+          format: int64
+          description: Total number of stored memory entries.
+          example: 12345
+        total_bytes:
+          type: integer
+          format: int64
+          description: Total storage size in bytes.
+          example: 5242880
+        namespaces:
+          type: integer
+          format: int32
+          description: Number of distinct namespaces.
+          example: 7
+
+    MemoryForgetRequest:
+      type: object
+      required: [entry_ids]
+      description: Request body for deleting memory entries.
+      properties:
+        entry_ids:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: IDs of entries to delete.
+          example:
+            - "mem_01j1abc"
+            - "mem_01j1def"
+
+    MemoryForgetResponse:
+      type: object
+      required: [version, deleted]
+      description: Result of a memory deletion operation.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        deleted:
+          type: integer
+          format: int32
+          description: Number of entries actually deleted.
+          example: 2
+
+    MemoryEntryResponse:
+      type: object
+      required: [version, data]
+      description: A single memory entry.
+      properties:
+        version:
+          type: string
+          example: v1alpha1
+        data:
+          $ref: "#/components/schemas/MemoryResult"
+
+    # ---- System --------------------------------------------------------------
+
+    ConfigSummary:
+      type: object
+      required: [bind_address, database_backend, max_concurrent_runs]
+      description: Non-secret subset of the active server configuration.
+      properties:
+        bind_address:
+          type: string
+          description: The address the API server is bound to.
+          example: "0.0.0.0:9090"
+        database_backend:
+          type: string
+          description: Database backend type.
+          enum: [sqlite, postgres]
+          example: sqlite
+        max_concurrent_runs:
+          type: integer
+          format: int32
+          description: Maximum number of runs that may execute simultaneously.
+          example: 10
+
+    SystemInfoResponse:
+      type: object
+      required: [version, platform_version, uptime_secs, config_summary]
+      description: Platform version, uptime, and configuration summary.
+      properties:
+        version:
+          type: string
+          description: API version string.
+          example: v1alpha1
+        platform_version:
+          type: string
+          description: Polkagent platform version from the Cargo manifest.
+          example: "0.1.0"
+        uptime_secs:
+          type: integer
+          format: int64
+          description: Seconds since the server process started.
+          example: 3600
+        config_summary:
+          $ref: "#/components/schemas/ConfigSummary"

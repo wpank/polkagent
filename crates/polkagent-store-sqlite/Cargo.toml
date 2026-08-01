@@ -13,6 +13,9 @@ polkagent-core = { path = "../polkagent-core" }
 polkagent-artifact = { path = "../polkagent-artifact" }
 polkagent-conversation = { path = "../polkagent-conversation" }
 polkagent-payment = { path = "../polkagent-payment" }
+# polkagent-feed and polkagent-group removed: their serde type graphs
+# exceed rustc's trait-solver recursion limit. SQLite impls for these
+# will live in dedicated crates.
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 
 # Crypto
@@ -45,12 +48,21 @@ parking_lot = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 polkagent-store-trait = { path = "../polkagent-store-trait", features = ["test-contracts"] }
+polkagent-payment = { path = "../polkagent-payment" }
+polkagent-conversation = { path = "../polkagent-conversation" }
+polkagent-core = { path = "../polkagent-core" }
+blake3 = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }
 chrono = { workspace = true }
+
+[[bench]]
+name = "store"
+harness = false
 
 [lints]
 workspace = true

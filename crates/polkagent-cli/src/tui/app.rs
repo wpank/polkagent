@@ -83,6 +83,7 @@ pub enum Tab {
     RunDetail,
 }
 
+#[allow(dead_code)]
 impl Tab {
     /// All tabs in display order (excludes pseudo-tabs like RunDetail).
     pub const ALL: [Tab; 8] = [

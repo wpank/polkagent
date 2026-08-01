@@ -17,11 +17,20 @@ path = "src/main.rs"
 
 [dependencies]
 # Internal crates
-polkagent-core          = { path = "../polkagent-core" }
-polkagent-config        = { path = "../polkagent-config" }
-polkagent-store-sqlite  = { path = "../polkagent-store-sqlite" }
-polkagent-store-trait   = { path = "../polkagent-store-trait" }
-polkagent-memory        = { path = "../polkagent-memory" }
+polkagent-core            = { path = "../polkagent-core" }
+polkagent-config          = { path = "../polkagent-config" }
+polkagent-store-sqlite    = { path = "../polkagent-store-sqlite" }
+polkagent-store-trait     = { path = "../polkagent-store-trait" }
+polkagent-memory          = { path = "../polkagent-memory" }
+polkagent-telemetry       = { path = "../polkagent-telemetry" }
+polkagent-eval            = { path = "../polkagent-eval" }
+polkagent-executor-fake   = { path = "../polkagent-executor-fake" }
+polkagent-executor-trait  = { path = "../polkagent-executor-trait" }
+polkagent-api             = { path = "../polkagent-api" }
+polkagent-identity        = { path = "../polkagent-identity" }
+polkagent-event           = { path = "../polkagent-event" }
+polkagent-service         = { path = "../polkagent-service" }
+futures                   = { workspace = true }
 
 # CLI
 clap           = { workspace = true }
@@ -39,8 +48,7 @@ serde      = { workspace = true }
 serde_json = { workspace = true }
 
 # Observability
-tracing            = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }

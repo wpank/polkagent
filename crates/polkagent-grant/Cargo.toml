@@ -10,6 +10,7 @@ description = "Policy evaluation, grant resolution, and gate system for the Polk
 [dependencies]
 # Internal
 polkagent-core = { path = "../polkagent-core" }
+polkagent-identity = { path = "../polkagent-identity", optional = true }
 
 # Async
 async-trait = { workspace = true }
@@ -35,7 +36,16 @@ blake3 = { workspace = true }
 # IDs
 uuid = { workspace = true }
 
+[features]
+identity = ["dep:polkagent-identity"]
+
 [dev-dependencies]
+criterion = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+polkagent-identity = { path = "../polkagent-identity" }
+
+[[bench]]
+name = "policy"
+harness = false

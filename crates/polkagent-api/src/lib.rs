@@ -47,10 +47,12 @@
 
 pub mod dto;
 pub mod error;
+pub mod rate_limit;
 pub mod routes;
 pub mod run;
 pub mod server;
 pub mod state;
+pub mod validate;
 
 // Convenient re-exports for consumers that construct the server.
 pub use run::{InMemoryRunManager, RunManagerTrait};

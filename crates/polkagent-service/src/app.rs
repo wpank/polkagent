@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use polkagent_card::ActionCard;
 use polkagent_config::Config;
 use polkagent_core::{
     event::{EventCorrelation, EventKind, RunEvent},
@@ -122,6 +123,17 @@ impl EffectStore for NoopEffectStore {
         _outcome_ids: &[EffectOutcomeId],
     ) -> Result<(), StoreError> {
         Ok(())
+    }
+
+    async fn update_intent_state(
+        &self,
+        intent_id: EffectId,
+        _new_state: &str,
+    ) -> Result<polkagent_store_trait::StoredIntent, StoreError> {
+        Err(StoreError::NotFound {
+            resource_type: "EffectIntent",
+            id: intent_id.to_string(),
+        })
     }
 }
 
@@ -589,6 +601,10 @@ impl AppService {
     /// Transitions the effect intent's approval state and broadcasts
     /// `(effect_id, true)` to all approval subscribers.
     ///
+    /// Returns the [`ActionCard`] attached to the intent if one was generated
+    /// during the turn loop.  The card is `None` for read-only effects or for
+    /// intents produced before card generation was introduced.
+    ///
     /// # Errors
     ///
     /// Returns [`ServiceError::NotInitialized`] if no effect store is
@@ -598,15 +614,15 @@ impl AppService {
     pub async fn approve_effect(
         &self,
         effect_id: EffectId,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<Option<ActionCard>, ServiceError> {
         let store = self.effect_store.as_ref().ok_or_else(|| {
             ServiceError::NotInitialized {
                 component: "effect_store".into(),
             }
         })?;
 
-        // Verify the intent exists.
-        let _intent = store.get_intent(effect_id).await.map_err(|e| {
+        // Fetch the intent; also extract the action card if present.
+        let intent = store.get_intent(effect_id).await.map_err(|e| {
             match e {
                 polkagent_store_trait::StoreError::NotFound { .. } => {
                     ServiceError::EffectNotFound { effect_id }
@@ -617,11 +633,18 @@ impl AppService {
             }
         })?;
 
+        // Extract the action card from the stored payload JSON, if present.
+        // The field is stored as `action_card` inside the payload blob.
+        let action_card: Option<ActionCard> = intent
+            .payload
+            .get("action_card")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
         // Notify the orchestrator and any other subscribers.
         let _ = self.approval_tx.send((effect_id, true));
 
-        info!(%effect_id, "effect approved");
-        Ok(())
+        info!(%effect_id, has_card = action_card.is_some(), "effect approved");
+        Ok(action_card)
     }
 
     /// Deny a pending effect with the given reason.
@@ -1231,6 +1254,15 @@ mod tests {
                 .cloned()
                 .collect();
             Ok(results)
+        }
+
+        async fn list_entries(
+            &self,
+            _agent_id: &AgentId,
+            _limit: usize,
+            _offset: usize,
+        ) -> MemoryResult<Vec<MemoryEntry>> {
+            Ok(vec![])
         }
 
         async fn update_relevance(

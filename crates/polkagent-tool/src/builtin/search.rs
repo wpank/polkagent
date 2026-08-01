@@ -278,6 +278,15 @@ mod tests {
             Ok(vec![])
         }
 
+        async fn list_entries(
+            &self,
+            _agent_id: &polkagent_core::AgentId,
+            _limit: usize,
+            _offset: usize,
+        ) -> polkagent_memory::MemoryResult<Vec<polkagent_memory::types::MemoryEntry>> {
+            Ok(vec![])
+        }
+
         async fn count_entries(
             &self,
             _agent_id: &polkagent_core::AgentId,

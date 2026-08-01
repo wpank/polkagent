@@ -24,6 +24,8 @@ use polkagent_core::{EffectId, RetryClass, RunId, WorkerId};
 use serde_json::json;
 use tracing::{debug, info};
 
+use polkagent_card::ActionCard;
+
 use crate::claim::ClaimGuard;
 use crate::error::PipelineError;
 use crate::idempotency::{self, IdempotencyKey};
@@ -48,6 +50,12 @@ pub struct EffectIntentSpec {
     pub retry_class: Option<RetryClass>,
     pub priority: Option<EffectPriority>,
     pub max_attempts: Option<u32>,
+    /// Optional action card attached to this intent.
+    ///
+    /// When provided, the card is embedded in the `StoredIntent.payload` JSON
+    /// under the `"action_card"` key so that it can be retrieved during
+    /// approval flows without requiring a separate lookup.
+    pub action_card: Option<ActionCard>,
 }
 
 impl EffectIntentSpec {
@@ -106,6 +114,8 @@ impl EffectPipeline {
         let intent_id = EffectId::new();
 
         // 4. Build the payload JSON.
+        // The action_card is embedded under "action_card" so that approve_effect
+        // in the service layer can extract it without a separate lookup.
         let payload = json!({
             "id": intent_id,
             "run_id": spec.run_id,
@@ -118,6 +128,7 @@ impl EffectPipeline {
             "retry_class": retry_class,
             "max_attempts": max_attempts,
             "params": spec.payload,
+            "action_card": spec.action_card,
         });
 
         let store_retry_class = match retry_class {
@@ -406,6 +417,24 @@ pub(crate) mod tests {
             Ok(())
         }
 
+        async fn update_intent_state(
+            &self,
+            intent_id: EffectId,
+            new_state: &str,
+        ) -> Result<StoredIntent, StoreError> {
+            let mut intents = self.intents.lock().expect("lock");
+            match intents.get_mut(&intent_id) {
+                None => Err(StoreError::NotFound {
+                    resource_type: "EffectIntent",
+                    id: intent_id.to_string(),
+                }),
+                Some(intent) => {
+                    intent.state = new_state.to_string();
+                    Ok(intent.clone())
+                }
+            }
+        }
+
         async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
             let intents = self.intents.lock().expect("lock");
             intents.get(&intent_id).cloned().ok_or_else(|| StoreError::NotFound {
@@ -494,6 +523,7 @@ pub(crate) mod tests {
             retry_class: None,
             priority: None,
             max_attempts: None,
+            action_card: None,
         }
     }
 
@@ -543,6 +573,7 @@ pub(crate) mod tests {
             retry_class: None,
             priority: None,
             max_attempts: None,
+            action_card: None,
         };
         pipeline.propose(make()).await.expect("first");
         let err = pipeline.propose(make()).await.expect_err("second");
@@ -648,6 +679,7 @@ pub(crate) mod tests {
             retry_class: None,
             priority: None,
             max_attempts: None,
+            action_card: None,
         };
         let intent_id = pipeline.propose(spec).await.expect("propose");
         let intents = store.intents.lock().expect("lock");

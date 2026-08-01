@@ -205,6 +205,7 @@ fn render_log_footer(frame: &mut Frame, area: Rect, theme: &Theme) {
 // ---------------------------------------------------------------------------
 
 /// Active audit log filter mode.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum AuditFilter {
     /// No filter — show all events.

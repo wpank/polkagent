@@ -58,4 +58,36 @@ pub enum MetadataError {
     /// Serialization or deserialization failed.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// The extrinsic targets a different network than the chain profile.
+    ///
+    /// This is returned when the genesis hash embedded in the extrinsic's
+    /// signed extensions does not match the expected genesis hash for the
+    /// chain (AC-P2-005).
+    #[error(
+        "extrinsic targets network {extrinsic_genesis} but chain profile \"{chain_name}\" \
+         expects genesis {expected_genesis}"
+    )]
+    WrongNetwork {
+        /// Human-readable name of the expected chain.
+        chain_name: String,
+        /// Hex-encoded genesis hash found in the extrinsic.
+        extrinsic_genesis: String,
+        /// Hex-encoded genesis hash that was expected for this chain.
+        expected_genesis: String,
+    },
+
+    /// The cached metadata is too old to be used for safe decoding.
+    ///
+    /// Returned by [`DecodeService`] when `is_stale` returns `true` for the
+    /// chain (AC-P2-004).
+    #[error("metadata for chain \"{chain_name}\" is stale; refresh metadata before decoding")]
+    StaleMetadata {
+        /// The chain whose metadata is stale.
+        chain_name: String,
+    },
+
+    /// A codec error occurred during extrinsic decoding.
+    #[error("codec error: {0}")]
+    Codec(String),
 }

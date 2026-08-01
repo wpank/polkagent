@@ -4,6 +4,11 @@
 //! effect count breakdown, and a scrollable turn list.
 //!
 //! Keyboard: Esc to go back, Tab to switch between info and turns panels.
+//!
+//! ## Widget integration
+//!
+//! - `token_sparkline` — per-turn token usage Braille chart in the info panel
+//! - `context_gauge`   — tokens used vs context window beneath the sparkline
 
 use chrono::Utc;
 use ratatui::{
@@ -16,6 +21,7 @@ use ratatui::{
 
 use crate::tui::state::{RunDetail, TuiState};
 use crate::tui::theme::Theme;
+use crate::tui::widgets::{context_gauge, token_sparkline};
 
 // ---------------------------------------------------------------------------
 // Public render entry point
@@ -37,7 +43,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    render_info_panel(frame, cols[0], detail, state.detail_panel_index == 0, theme);
+    render_info_panel(frame, cols[0], detail, state, state.detail_panel_index == 0, theme);
     render_turns_panel(frame, cols[1], detail, state.detail_panel_index == 1, theme);
 }
 
@@ -73,6 +79,7 @@ fn render_info_panel(
     frame: &mut Frame,
     area: Rect,
     detail: &RunDetail,
+    state: &TuiState,
     focused: bool,
     theme: &Theme,
 ) {
@@ -81,6 +88,25 @@ fn render_info_panel(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Reserve bottom rows for sparkline (1) + gauge (1) = 2 rows, with a
+    // separator blank row.  Only add widget rows when we have vertical room.
+    let widget_rows: u16 = if inner.height >= 14 { 3 } else { 0 };
+    let text_area_height = inner.height.saturating_sub(widget_rows);
+
+    let (text_area, widget_area) = if widget_rows > 0 {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(text_area_height),
+                Constraint::Length(widget_rows),
+            ])
+            .split(inner);
+        (split[0], split[1])
+    } else {
+        (inner, inner) // widget_area unused
+    };
+
+    // ── Text content ──────────────────────────────────────────────────────
     let now = Utc::now();
     let state_color = theme.status_color(&detail.state);
     let created = detail.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
@@ -140,7 +166,45 @@ fn render_info_panel(
         lines.push(kv_line("  Pending", &eff_pend, theme.warning, theme));
     }
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), text_area);
+
+    // ── Widget rows (sparkline + context gauge) ───────────────────────────
+    if widget_rows > 0 {
+        let widget_rows_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // blank separator
+                Constraint::Length(1), // token sparkline
+                Constraint::Length(1), // context gauge
+            ])
+            .split(widget_area);
+
+        // Token sparkline using TuiState::token_history.
+        let limit = state
+            .token_history
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        token_sparkline::render(
+            frame,
+            widget_rows_split[1],
+            &state.token_history,
+            limit,
+            0.75,
+            theme,
+        );
+
+        // Context gauge.
+        context_gauge::render(
+            frame,
+            widget_rows_split[2],
+            state.context_used,
+            state.context_total,
+            theme,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +264,7 @@ fn render_turns_panel(
 
         let in_tok = format_tokens(turn.input_tokens);
         let out_tok = format_tokens(turn.output_tokens);
+        let total_tok = turn.input_tokens + turn.output_tokens;
 
         lines.push(Line::from(vec![
             Span::styled(
@@ -221,6 +286,11 @@ fn render_turns_panel(
             Span::styled(
                 format!("{:>8}", elapsed),
                 Style::default().fg(theme.text_dim),
+            ),
+            // Total tokens per turn in dim after the time column.
+            Span::styled(
+                format!("  {}t", format_tokens(total_tok)),
+                Style::default().fg(theme.text_ghost),
             ),
         ]));
     }

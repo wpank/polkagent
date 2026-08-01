@@ -15,6 +15,11 @@ use std::time::Duration;
 #[derive(Debug, Default)]
 pub struct MetricRecorder {
     active_runs: AtomicU64,
+    runs_started: AtomicU64,
+    runs_completed: AtomicU64,
+    runs_failed: AtomicU64,
+    effects_approved: AtomicU64,
+    effects_denied: AtomicU64,
 }
 
 impl MetricRecorder {
@@ -80,6 +85,56 @@ impl MetricRecorder {
     pub fn active_runs(&self) -> u64 {
         self.active_runs.load(Ordering::Relaxed)
     }
+
+    /// Record a run as started.
+    pub fn runs_started(&self) {
+        let total = self.runs_started.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            metric = "runs.started",
+            runs.started = total,
+            "run started"
+        );
+    }
+
+    /// Record a run as successfully completed.
+    pub fn runs_completed(&self) {
+        let total = self.runs_completed.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            metric = "runs.completed",
+            runs.completed = total,
+            "run completed"
+        );
+    }
+
+    /// Record a run as failed.
+    pub fn runs_failed(&self) {
+        let total = self.runs_failed.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            metric = "runs.failed",
+            runs.failed = total,
+            "run failed"
+        );
+    }
+
+    /// Record an effect as approved by the operator.
+    pub fn effects_approved(&self) {
+        let total = self.effects_approved.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            metric = "effects.approved",
+            effects.approved = total,
+            "effect approved"
+        );
+    }
+
+    /// Record an effect as denied by the operator.
+    pub fn effects_denied(&self) {
+        let total = self.effects_denied.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            metric = "effects.denied",
+            effects.denied = total,
+            "effect denied"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -135,5 +190,51 @@ mod tests {
         // used saturating_sub so the tracing event showed 0.
         // The actual counter is now wrapped, which is acceptable for
         // a metrics counter that should never go below zero in practice.
+    }
+
+    #[test]
+    fn runs_started_increments() {
+        let r = MetricRecorder::new();
+        r.runs_started();
+        r.runs_started();
+        assert_eq!(r.runs_started.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn runs_completed_increments() {
+        let r = MetricRecorder::new();
+        r.runs_completed();
+        assert_eq!(r.runs_completed.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn runs_failed_increments() {
+        let r = MetricRecorder::new();
+        r.runs_failed();
+        r.runs_failed();
+        assert_eq!(r.runs_failed.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn effects_approved_increments() {
+        let r = MetricRecorder::new();
+        r.effects_approved();
+        r.effects_approved();
+        assert_eq!(
+            r.effects_approved
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn effects_denied_increments() {
+        let r = MetricRecorder::new();
+        r.effects_denied();
+        assert_eq!(
+            r.effects_denied
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 }

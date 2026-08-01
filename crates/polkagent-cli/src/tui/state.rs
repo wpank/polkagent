@@ -446,6 +446,34 @@ pub struct TuiState {
     /// Which sub-panel is focused in the run detail view (0 = info, 1 = turns).
     pub detail_panel_index: usize,
 
+    // -- Widget data ---------------------------------------------------------
+    /// Recent per-turn token counts for the token sparkline widget.
+    ///
+    /// Populated from the turns of the currently selected run (or the most
+    /// recent active run). Each element is `input_tokens + output_tokens` for
+    /// one turn.
+    pub token_history: Vec<u64>,
+
+    /// Number of error-level events in the last hour, shown by the error
+    /// digest count on the dashboard.
+    pub error_count: usize,
+
+    /// Tokens consumed in the active run's context window.
+    ///
+    /// Derived from the sum of tokens across the turns of the selected run.
+    pub context_used: u64,
+
+    /// Total context window capacity for the active run's model.
+    ///
+    /// A default of 200_000 is used when the model is unknown.
+    pub context_total: u64,
+
+    /// Remaining spend budget as a fraction of total budget (0.0–1.0).
+    ///
+    /// Derived from `budget_status()` DB query.  1.0 = fully remaining,
+    /// 0.0 = fully spent.
+    pub budget_remaining: f64,
+
     // -- Refresh bookkeeping -------------------------------------------------
     /// Whether the state has changed since the last render (triggers a draw).
     pub dirty: bool,
@@ -461,5 +489,163 @@ impl TuiState {
     /// Mark the state as requiring a re-render.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Recompute derived widget fields from the currently loaded run detail.
+    ///
+    /// Call this whenever `run_detail` is updated so that sparkline, gauge,
+    /// and progress bar data stays consistent with the run data.
+    pub fn recompute_widget_data(&mut self) {
+        if let Some(detail) = &self.run_detail {
+            // Build per-turn token history for the sparkline.
+            self.token_history = detail
+                .turns
+                .iter()
+                .map(|t| t.input_tokens + t.output_tokens)
+                .collect();
+
+            // Context gauge: total tokens consumed vs model context limit.
+            self.context_used = detail.input_tokens + detail.output_tokens;
+            // Use a conservative 200k context window as the default.
+            self.context_total = 200_000;
+        } else {
+            // No run selected: derive a coarse token history from recent runs.
+            if self.token_history.is_empty() {
+                self.token_history = self
+                    .runs
+                    .iter()
+                    .take(60)
+                    .rev()
+                    .map(|r| r.input_tokens + r.output_tokens)
+                    .collect();
+            }
+            self.context_used = 0;
+            self.context_total = 200_000;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helper builders ──────────────────────────────────────────────────────
+
+    fn make_turn(seq: u32, input: u64, output: u64) -> TurnSummary {
+        TurnSummary {
+            sequence: seq,
+            role: "assistant".to_owned(),
+            started_at: Utc::now(),
+            completed_at: None,
+            input_tokens: input,
+            output_tokens: output,
+        }
+    }
+
+    fn make_run_detail(turns: Vec<TurnSummary>) -> RunDetail {
+        let total_in: u64 = turns.iter().map(|t| t.input_tokens).sum();
+        let total_out: u64 = turns.iter().map(|t| t.output_tokens).sum();
+        let turn_count = turns.len() as u32;
+        RunDetail {
+            id: "run-test-id-00000000".to_owned(),
+            short_id: "run-test".to_owned(),
+            agent_name: "test-agent".to_owned(),
+            state: "working".to_owned(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+            turn_count,
+            input_tokens: total_in,
+            output_tokens: total_out,
+            effect_count: 0,
+            effects_succeeded: 0,
+            effects_failed: 0,
+            effects_pending: 0,
+            turns,
+        }
+    }
+
+    // ── TuiState::recompute_widget_data ──────────────────────────────────────
+
+    #[test]
+    fn test_recompute_no_run_detail_clears_context() {
+        let mut state = TuiState::default();
+        state.context_used = 99_999;
+        state.context_total = 50_000;
+        state.run_detail = None;
+
+        state.recompute_widget_data();
+
+        assert_eq!(state.context_used, 0, "context_used must be 0 with no detail");
+        assert_eq!(state.context_total, 200_000, "context_total must be 200k default");
+    }
+
+    #[test]
+    fn test_recompute_with_run_detail_builds_token_history() {
+        let mut state = TuiState::default();
+        let turns = vec![
+            make_turn(1, 100, 50),
+            make_turn(2, 200, 80),
+            make_turn(3, 300, 120),
+        ];
+        state.run_detail = Some(make_run_detail(turns));
+        state.recompute_widget_data();
+
+        assert_eq!(state.token_history, vec![150, 280, 420]);
+    }
+
+    #[test]
+    fn test_recompute_sets_context_used_from_total_tokens() {
+        let mut state = TuiState::default();
+        let turns = vec![
+            make_turn(1, 1_000, 500),
+            make_turn(2, 2_000, 1_000),
+        ];
+        state.run_detail = Some(make_run_detail(turns));
+        state.recompute_widget_data();
+
+        // context_used = sum of all input+output across the detail struct.
+        assert_eq!(state.context_used, 4_500);
+    }
+
+    #[test]
+    fn test_recompute_context_total_is_200k_default() {
+        let mut state = TuiState::default();
+        state.run_detail = Some(make_run_detail(vec![make_turn(1, 10, 5)]));
+        state.recompute_widget_data();
+
+        assert_eq!(state.context_total, 200_000);
+    }
+
+    #[test]
+    fn test_recompute_empty_turns_yields_empty_history() {
+        let mut state = TuiState::default();
+        state.run_detail = Some(make_run_detail(vec![]));
+        state.recompute_widget_data();
+
+        assert!(state.token_history.is_empty());
+        assert_eq!(state.context_used, 0);
+    }
+
+    #[test]
+    fn test_budget_remaining_default_is_zero() {
+        let state = TuiState::default();
+        assert_eq!(state.budget_remaining, 0.0);
+    }
+
+    #[test]
+    fn test_error_count_default_is_zero() {
+        let state = TuiState::default();
+        assert_eq!(state.error_count, 0);
+    }
+
+    #[test]
+    fn test_token_history_default_is_empty() {
+        let state = TuiState::default();
+        assert!(state.token_history.is_empty());
     }
 }

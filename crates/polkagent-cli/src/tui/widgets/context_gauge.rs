@@ -74,13 +74,9 @@ pub fn render(frame: &mut Frame, area: Rect, used: u64, total: u64, theme: &Them
     let filled_count = ((ratio * width as f64).round() as usize).min(width);
     let empty_count = width.saturating_sub(filled_count);
 
-    // Build the bar as a string, overlaying the label in the centre.
-    let bar_filled = "\u{2588}".repeat(filled_count);
-    let bar_empty = "░".repeat(empty_count);
-    let bar_str = format!("{bar_filled}{bar_empty}");
-
-    // We render the bar in two colour spans, with the label centred.
-    // If the label fits, overlay it; otherwise just render the bar.
+    // Render the bar as spans, overlaying the label in the centre.
+    // NOTE: █ and ░ are multi-byte UTF-8 (3 bytes each), so we must NOT
+    // index `bar_str` by byte offset — instead we build spans from char counts.
     if label_len + 2 <= width {
         let label_start = (width - label_len) / 2;
         let label_end = label_start + label_len;
@@ -88,23 +84,19 @@ pub fn render(frame: &mut Frame, area: Rect, used: u64, total: u64, theme: &Them
         let mut spans: Vec<Span<'_>> = Vec::new();
 
         // Portion before the label.
-        let pre = &bar_str[..label_start.min(bar_str.len())];
-        if !pre.is_empty() {
-            let pre_fill_end = filled_count.min(label_start);
-            let pre_fill = &bar_str[..pre_fill_end];
-            let pre_empty = &bar_str[pre_fill_end..label_start.min(bar_str.len())];
-            if !pre_fill.is_empty() {
-                spans.push(Span::styled(
-                    pre_fill.to_string(),
-                    Style::default().fg(fill_color),
-                ));
-            }
-            if !pre_empty.is_empty() {
-                spans.push(Span::styled(
-                    pre_empty.to_string(),
-                    Style::default().fg(theme.text_phantom),
-                ));
-            }
+        let pre_fill = filled_count.min(label_start);
+        let pre_empty = label_start.saturating_sub(pre_fill);
+        if pre_fill > 0 {
+            spans.push(Span::styled(
+                "\u{2588}".repeat(pre_fill),
+                Style::default().fg(fill_color),
+            ));
+        }
+        if pre_empty > 0 {
+            spans.push(Span::styled(
+                "░".repeat(pre_empty),
+                Style::default().fg(theme.text_phantom),
+            ));
         }
 
         // The label itself — render with bone on bg_raised for readability.
@@ -115,22 +107,20 @@ pub fn render(frame: &mut Frame, area: Rect, used: u64, total: u64, theme: &Them
 
         // Portion after the label.
         if label_end < width {
-            let post_fill_start = filled_count.max(label_end);
-            let post_fill_end = filled_count.max(label_end);
             // Between label_end and filled_count: still filled.
             if filled_count > label_end {
                 let seg = "\u{2588}".repeat(filled_count - label_end);
                 spans.push(Span::styled(seg, Style::default().fg(fill_color)));
             }
             // Empty remainder.
-            let remaining_empty = width.saturating_sub(post_fill_start.max(label_end));
+            let post_start = filled_count.max(label_end);
+            let remaining_empty = width.saturating_sub(post_start);
             if remaining_empty > 0 {
                 spans.push(Span::styled(
                     "░".repeat(remaining_empty),
                     Style::default().fg(theme.text_phantom),
                 ));
             }
-            let _ = post_fill_end; // suppress unused
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);

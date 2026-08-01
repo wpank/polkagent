@@ -60,6 +60,13 @@ pub async fn create_agent(
     spec.created_at = now;
     spec.updated_at = now;
 
+    // PRD-03 fields — wire through from request, using defaults when absent.
+    spec.declared_capabilities = body.declared_capabilities;
+    spec.policy_refs = body.policy_refs;
+    spec.resource_limits = body.resource_limits;
+    spec.model_preference = body.model_preference;
+    spec.surface_bindings = body.surface_bindings;
+
     state.agents.insert(spec.clone()).await;
 
     info!(agent_id = %id, name = %body.name, "agent created");

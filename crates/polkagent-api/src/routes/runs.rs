@@ -52,14 +52,35 @@ pub async fn create_run(
         return Err(ApiError::AgentNotFound(agent_id.to_string()));
     }
 
-    let record = state
+    // Count the run as started and increment the active gauge before the
+    // run_manager call so that if we're fast-completing in-process the gauge
+    // is never below the true active count.
+    state.metrics.runs_started();
+    state.metrics.increment_active_runs();
+
+    let result = state
         .run_manager
         .create_run(agent_id, body.input)
         .await
-        .map_err(ApiError::from)?;
+        .map_err(ApiError::from);
 
-    info!(run_id = %record.id, agent_id = %agent_id, "run created");
+    match &result {
+        Ok(record) => {
+            info!(run_id = %record.id, agent_id = %agent_id, "run created");
+            state.metrics.runs_completed();
+        }
+        Err(_) => {
+            state.metrics.runs_failed();
+        }
+    }
 
+    // The gauge will be decremented when the run reaches a terminal state
+    // via the event bus. Decrement here only on create failure.
+    if result.is_err() {
+        state.metrics.decrement_active_runs();
+    }
+
+    let record = result?;
     let response: RunResponse = record.into();
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -313,27 +334,24 @@ pub async fn list_run_effects(
 
 /// Resume a paused run.
 ///
-/// Attempts to transition the run from `Paused` → `Running`. Returns 501 if
-/// the run manager does not support pause/resume, or 409 if the run is not
-/// in a resumable state.
+/// Attempts to transition the run from `AwaitingApproval` → `Running`.
+/// Returns 404 if the run does not exist, or 409 if the run is not in
+/// the `AwaitingApproval` state.
 #[instrument(skip(state), fields(run_id = %id))]
 pub async fn resume_run(
     State(state): State<AppState>,
     Path(id): Path<RunId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Verify the run exists first; return 404 if not.
     let record = state
         .run_manager
-        .get_run(id)
+        .resume_run(id)
         .await
         .map_err(ApiError::from)?;
 
-    // The current RunManagerTrait does not expose a resume operation.
-    // Return a descriptive 501 that includes the current state for clarity.
-    let state_name = format!("{:?}", record.state);
-    Err::<Json<()>, _>(ApiError::NotImplemented(format!(
-        "resume run {id} (current state: {state_name}) is not yet implemented"
-    )))
+    info!(run_id = %id, "run resumed");
+
+    let response: RunResponse = record.into();
+    Ok(Json(response))
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,19 @@ pub trait MemoryStore: Send + Sync {
         max_classification: Classification,
     ) -> MemoryResult<Vec<MemoryEntry>>;
 
+    /// Return a paginated list of all memory entries for an agent, ordered by
+    /// creation time (oldest first).
+    ///
+    /// `limit` controls the page size; `offset` the number of entries to skip.
+    /// This is used primarily by the export pipeline to stream all entries
+    /// without loading them all at once.
+    async fn list_entries(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        offset: usize,
+    ) -> MemoryResult<Vec<MemoryEntry>>;
+
     /// Update the relevance score for a memory.
     async fn update_relevance(&self, id: MemoryId, score: f64) -> MemoryResult<()>;
 

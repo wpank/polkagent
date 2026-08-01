@@ -25,14 +25,12 @@ fn rule(id: &str, effect: Effect, actions: &[&str], resources: &[&str]) -> Polic
         action_patterns: actions.iter().map(|s| s.to_string()).collect(),
         resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
         conditions: HashMap::new(),
+        abac_condition: None,
     }
 }
 
 fn empty_ctx() -> EvaluationContext {
-    EvaluationContext {
-        attributes: HashMap::new(),
-        evaluated_at: None,
-    }
+    EvaluationContext::default()
 }
 
 /// Build a minimal [`GateRequest`].

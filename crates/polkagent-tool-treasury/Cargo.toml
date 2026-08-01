@@ -1,0 +1,40 @@
+[package]
+name = "polkagent-tool-treasury"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Treasury and portfolio analysis tools for Polkagent agents"
+
+[dependencies]
+# Internal
+polkagent-tool = { path = "../polkagent-tool" }
+polkagent-core = { path = "../polkagent-core" }
+polkagent-chain-trait = { path = "../polkagent-chain-trait" }
+polkagent-identity = { path = "../polkagent-identity" }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Utils
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

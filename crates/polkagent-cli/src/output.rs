@@ -61,6 +61,8 @@ impl std::str::FromStr for OutputFormat {
 // ---------------------------------------------------------------------------
 
 /// Metadata envelope attached to JSON output when the format includes `_meta`.
+// Private implementation detail used by format_output / meta().
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct Meta<'a> {
     command: &'a str,
@@ -69,6 +71,8 @@ struct Meta<'a> {
 }
 
 /// Wrapper that injects `_meta` into the serialised object.
+// Private implementation detail used by format_output.
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct WithMeta<'a, T: Serialize> {
     #[serde(flatten)]
@@ -91,6 +95,8 @@ struct WithMeta<'a, T: Serialize> {
 ///
 /// Panics if `serde_json` serialisation fails (should never happen for
 /// well-formed types).
+// Public API — will be used by command handlers as the CLI matures.
+#[allow(dead_code)]
 #[must_use]
 pub fn format_output<T: Serialize>(data: &T, format: OutputFormat, command: &str) -> String {
     match format {
@@ -121,6 +127,8 @@ pub fn format_output<T: Serialize>(data: &T, format: OutputFormat, command: &str
     }
 }
 
+// Private helper used only by format_output.
+#[allow(dead_code)]
 fn meta(command: &str) -> Meta<'_> {
     Meta {
         command,

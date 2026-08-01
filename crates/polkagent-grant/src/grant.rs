@@ -488,6 +488,7 @@ mod tests {
             action_patterns: actions.iter().map(|s| s.to_string()).collect(),
             resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
             conditions: Default::default(),
+            abac_condition: None,
         }
     }
 
@@ -498,6 +499,7 @@ mod tests {
             action_patterns: actions.iter().map(|s| s.to_string()).collect(),
             resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
             conditions: Default::default(),
+            abac_condition: None,
         }
     }
 
@@ -734,6 +736,7 @@ mod tests {
         let ctx = EvaluationContext {
             attributes: Default::default(),
             evaluated_at: Some(stale_ts),
+            ..Default::default()
         };
 
         let decision = resolver

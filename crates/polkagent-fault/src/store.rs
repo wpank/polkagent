@@ -84,6 +84,17 @@ impl EffectStore for FaultStore {
         self.inner.release_claim(intent_id, worker_id).await
     }
 
+    async fn update_intent_state(
+        &self,
+        intent_id: EffectId,
+        new_state: &str,
+    ) -> Result<StoredIntent, StoreError> {
+        apply_store_fault_write(self.injector.check("before_write")).await?;
+        let result = self.inner.update_intent_state(intent_id, new_state).await?;
+        apply_store_fault_write(self.injector.check("after_write")).await?;
+        Ok(result)
+    }
+
     async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
         apply_store_fault_read(self.injector.check("before_read")).await?;
         let mut intent = self.inner.get_intent(intent_id).await?;
@@ -258,6 +269,24 @@ mod tests {
             _worker_id: WorkerId,
         ) -> Result<(), StoreError> {
             Ok(())
+        }
+
+        async fn update_intent_state(
+            &self,
+            intent_id: EffectId,
+            new_state: &str,
+        ) -> Result<StoredIntent, StoreError> {
+            let mut intents = self.intents.lock().expect("lock");
+            match intents.get_mut(&intent_id) {
+                None => Err(StoreError::NotFound {
+                    resource_type: "Intent",
+                    id: intent_id.to_string(),
+                }),
+                Some(intent) => {
+                    intent.state = new_state.to_string();
+                    Ok(intent.clone())
+                }
+            }
         }
 
         async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {

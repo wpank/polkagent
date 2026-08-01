@@ -23,6 +23,7 @@ use polkagent_payment::PaymentStore;
 use polkagent_skill::manifest::SkillManifest;
 use polkagent_store_trait::{ArtifactStore, EffectStore};
 use polkagent_store_trait::event::EventStore;
+use polkagent_telemetry::MetricRecorder;
 use polkagent_tool::ToolSpec;
 
 use crate::run::RunManagerTrait;
@@ -203,6 +204,8 @@ pub struct AppState {
     pub started_at: Instant,
     /// UTC wall-clock time the server started (for the system/info endpoint).
     pub started_at_utc: DateTime<Utc>,
+    /// Metric recorder for counting runs, effects, and active connections.
+    pub metrics: Arc<MetricRecorder>,
 
     // ------------------------------------------------------------------
     // Optional stores — return 501 Not Implemented when None
@@ -247,6 +250,7 @@ impl AppState {
             event_bus,
             started_at: Instant::now(),
             started_at_utc: Utc::now(),
+            metrics: Arc::new(MetricRecorder::new()),
             event_store: None,
             artifact_store: None,
             skill_registry: None,

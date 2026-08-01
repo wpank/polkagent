@@ -10,6 +10,7 @@ description = "Effect pipeline: durable intent-before-I/O, lease-based claim, id
 # Internal
 polkagent-core = { path = "../polkagent-core" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
+polkagent-card = { path = "../polkagent-card" }
 
 # Serialization
 serde = { workspace = true }
@@ -35,6 +36,11 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+criterion = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 uuid = { workspace = true }
+
+[[bench]]
+name = "pipeline"
+harness = false

@@ -1,0 +1,39 @@
+[package]
+name = "polkagent-audit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Comprehensive audit logging for the Polkagent platform — structured audit trail for agent actions, policy decisions, and system events"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Utils
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

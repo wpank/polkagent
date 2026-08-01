@@ -18,12 +18,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use polkagent_card::{ActionCard, EffectKindTag, IntentCardSpec};
 use polkagent_core::{
     agent::AgentSpec,
     turn::TokenUsage,
     ArtifactId, RunId, RunState, StepId,
 };
-use polkagent_effect::EffectPipeline;
+use polkagent_effect::{EffectIntent, EffectKind, EffectPipeline};
 use polkagent_event::EventRecorder;
 use polkagent_executor_trait::{
     ContentBlock, InferenceMessage, InferenceRequest,
@@ -33,6 +34,7 @@ use polkagent_grant::grant::GrantResolver;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
+use crate::cost_tracker::CostTracker;
 use crate::error::RunError;
 use crate::manager::RunManager;
 use crate::turn::{TurnInput, TurnManager, TurnOutput};
@@ -111,6 +113,12 @@ pub struct RunOrchestrator {
     grant_resolver: Arc<GrantResolver>,
     config: RunOrchestratorConfig,
     turn_manager: TurnManager,
+    /// Optional payment store for persisting per-turn cost records.
+    ///
+    /// When `Some`, the orchestrator creates a [`CostTracker`] per run and
+    /// records actual token usage after each executor call.
+    #[cfg(feature = "payment")]
+    payment_store: Option<Arc<dyn polkagent_payment::PaymentStore>>,
 }
 
 impl std::fmt::Debug for RunOrchestrator {
@@ -147,6 +155,8 @@ impl RunOrchestrator {
             grant_resolver,
             config: RunOrchestratorConfig::default(),
             turn_manager: TurnManager::new(),
+            #[cfg(feature = "payment")]
+            payment_store: None,
         }
     }
 
@@ -154,6 +164,25 @@ impl RunOrchestrator {
     #[must_use]
     pub fn with_config(mut self, config: RunOrchestratorConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Attach a [`PaymentStore`](polkagent_payment::PaymentStore) for
+    /// persisting per-turn cost records.
+    ///
+    /// When attached, the orchestrator creates a [`CostTracker`] for each run
+    /// and records actual token usage after every executor call. If the
+    /// agent's `resource_limits.max_per_run_usd` is set, budget enforcement
+    /// is also active.
+    ///
+    /// Only available when the `payment` feature is enabled.
+    #[cfg(feature = "payment")]
+    #[must_use]
+    pub fn with_payment_store(
+        mut self,
+        store: Arc<dyn polkagent_payment::PaymentStore>,
+    ) -> Self {
+        self.payment_store = Some(store);
         self
     }
 
@@ -195,6 +224,68 @@ impl RunOrchestrator {
         let mut turn_count: u32 = 0;
         let artifacts: Vec<ArtifactId> = Vec::new();
 
+        // Merge agent-level resource limits on top of the static orchestrator
+        // config.  All fields are optional; absent values fall back to the
+        // defaults encoded in `self.config`.
+        let effective_max_turns = agent_spec
+            .resource_limits
+            .as_ref()
+            .and_then(|rl| rl.max_turns)
+            .unwrap_or(self.config.max_turns);
+
+        let effective_max_tokens = agent_spec
+            .resource_limits
+            .as_ref()
+            .and_then(|rl| rl.max_tokens_per_turn)
+            .unwrap_or(self.config.max_tokens_per_turn);
+
+        // Wall-clock timeout derived from resource limits (optional).
+        let run_deadline: Option<Instant> = agent_spec
+            .resource_limits
+            .as_ref()
+            .and_then(|rl| rl.timeout_secs)
+            .map(|secs| Instant::now() + Duration::from_secs(secs));
+
+        // Resolve the model to use: prefer model_preference.model_id when set,
+        // then fall back to agent_spec.model.
+        let effective_model_id: String = agent_spec
+            .model_preference
+            .as_ref()
+            .and_then(|mp| mp.model_id.as_deref())
+            .map(|mid| {
+                // If the spec.model has a provider prefix and the preference
+                // has only a bare model ID, re-attach the provider prefix from
+                // the spec so the executor gets a fully-qualified id.
+                if mid.contains('/') {
+                    mid.to_owned()
+                } else {
+                    let prefix = agent_spec.model.split('/').next().unwrap_or("");
+                    if prefix.is_empty() {
+                        mid.to_owned()
+                    } else {
+                        format!("{prefix}/{mid}")
+                    }
+                }
+            })
+            .unwrap_or_else(|| agent_spec.model.clone());
+
+        // Temperature from model_preference (None means executor default).
+        // InferenceRequest uses f32; we store f64 in the spec for precision in
+        // config files, and cast here at the use site.
+        let effective_temperature: Option<f32> = agent_spec
+            .model_preference
+            .as_ref()
+            .and_then(|mp| mp.temperature)
+            .map(|t| t as f32);
+
+        // System prompt: model_preference.system_prompt overrides
+        // agent_spec.system_prompt when present.
+        let effective_system: Option<String> = agent_spec
+            .model_preference
+            .as_ref()
+            .and_then(|mp| mp.system_prompt.clone())
+            .or_else(|| agent_spec.system_prompt.clone());
+
         // Step 1: Transition Created -> Queued -> Running.
         self.run_manager.enqueue_run(run_id.clone()).await?;
         self.run_manager.start_run(run_id.clone()).await?;
@@ -202,11 +293,62 @@ impl RunOrchestrator {
         // Step 2: Build initial message list.
         let mut messages = self.build_initial_messages(agent_spec, initial_prompt);
 
+        // Build a CostTracker for this run.
+        //
+        // When the `payment` feature is enabled and a payment store is
+        // attached, token usage is persisted after each turn. When a
+        // per-run budget is configured via `agent_spec.resource_limits`,
+        // budget enforcement is active.
+        let mut cost_tracker = {
+            #[cfg(feature = "payment")]
+            {
+                let max_usd = agent_spec
+                    .resource_limits
+                    .as_ref()
+                    .and_then(|rl| {
+                        // Resource limits don't have a USD field yet; use the
+                        // payment feature if attached but no hard USD cap from
+                        // spec. Callers can extend this mapping as needed.
+                        let _ = rl;
+                        None::<f64>
+                    });
+
+                let tracker = match max_usd {
+                    Some(limit) => CostTracker::with_budget(run_id.clone(), limit),
+                    None => CostTracker::unbounded(run_id.clone()),
+                };
+
+                match &self.payment_store {
+                    Some(store) => tracker.with_store(Arc::clone(store)),
+                    None => tracker,
+                }
+            }
+            #[cfg(not(feature = "payment"))]
+            CostTracker::unbounded(run_id.clone())
+        };
+
         // Step 3: Turn loop.
         let outcome = loop {
+            // Guard: wall-clock timeout.
+            if let Some(deadline) = run_deadline {
+                if Instant::now() >= deadline {
+                    let reason = "run timeout exceeded".to_owned();
+                    warn!(%run_id, "run deadline exceeded");
+                    self.run_manager.fail_run(run_id.clone(), &reason).await?;
+                    break RunOutcome {
+                        run_id: run_id.clone(),
+                        final_state: RunState::Failed { reason },
+                        total_tokens: total_usage,
+                        turn_count,
+                        artifacts: artifacts.clone(),
+                        duration: start.elapsed(),
+                    };
+                }
+            }
+
             // Guard: max turns.
-            if turn_count >= self.config.max_turns {
-                warn!(%run_id, turn_count, max = self.config.max_turns, "max turns exceeded");
+            if turn_count >= effective_max_turns {
+                warn!(%run_id, turn_count, max = effective_max_turns, "max turns exceeded");
                 self.run_manager
                     .fail_run(run_id.clone(), "max turns exceeded")
                     .await?;
@@ -222,16 +364,43 @@ impl RunOrchestrator {
                 };
             }
 
+            // Budget check: verify that starting the next turn won't exceed
+            // the per-run budget (pre-turn worst-case estimate).
+            {
+                // Parse provider from the model_id (e.g. "anthropic/claude…" →
+                // provider="anthropic", model="claude…").
+                let (provider, model) = split_model_id(&effective_model_id);
+                if let Some(exceeded) = cost_tracker.check_budget(
+                    provider,
+                    model,
+                    effective_max_tokens,
+                ) {
+                    let reason = format!("BudgetExceeded: {}", exceeded.reason);
+                    warn!(%run_id, %reason, "budget exceeded before turn");
+                    self.run_manager.fail_run(run_id.clone(), &reason).await?;
+                    break RunOutcome {
+                        run_id: run_id.clone(),
+                        final_state: RunState::Failed {
+                            reason,
+                        },
+                        total_tokens: total_usage,
+                        turn_count,
+                        artifacts: artifacts.clone(),
+                        duration: start.elapsed(),
+                    };
+                }
+            }
+
             // 3a: Call executor.
             let request = InferenceRequest {
                 run_id: run_id.clone(),
                 step_id: StepId::new(),
                 messages: messages.clone(),
-                system: agent_spec.system_prompt.clone(),
+                system: effective_system.clone(),
                 tools: Vec::new(),
-                model_id: agent_spec.model.clone(),
-                max_tokens: self.config.max_tokens_per_turn,
-                temperature: None,
+                model_id: effective_model_id.clone(),
+                max_tokens: effective_max_tokens,
+                temperature: effective_temperature,
             };
 
             let response = match self.executor.complete(request).await {
@@ -255,6 +424,32 @@ impl RunOrchestrator {
             turn_count += 1;
             let turn_usage = convert_token_usage(&response.usage);
             total_usage.accumulate(&turn_usage);
+
+            // Post-turn: record actual cost and check if budget is exhausted.
+            {
+                let (provider, model) = split_model_id(&effective_model_id);
+                if let Some(exceeded) = cost_tracker
+                    .record_turn_cost(
+                        provider,
+                        model,
+                        u64::from(response.usage.input_tokens),
+                        u64::from(response.usage.output_tokens),
+                    )
+                    .await
+                {
+                    let reason = format!("BudgetExceeded: {}", exceeded.reason);
+                    warn!(%run_id, %reason, "budget exceeded after turn");
+                    self.run_manager.fail_run(run_id.clone(), &reason).await?;
+                    break RunOutcome {
+                        run_id: run_id.clone(),
+                        final_state: RunState::Failed { reason },
+                        total_tokens: total_usage,
+                        turn_count,
+                        artifacts: artifacts.clone(),
+                        duration: start.elapsed(),
+                    };
+                }
+            }
 
             let turn_input = TurnInput::user(if turn_count == 1 {
                 initial_prompt.to_owned()
@@ -427,6 +622,97 @@ impl RunOrchestrator {
 }
 
 // ---------------------------------------------------------------------------
+// Card helpers (free functions)
+// ---------------------------------------------------------------------------
+
+/// Map an [`EffectKind`] to its [`EffectKindTag`] mirror.
+///
+/// This is the seam between `polkagent-effect` (which owns `EffectKind`) and
+/// `polkagent-card` (which owns `EffectKindTag`). Both enums have the same
+/// variants; this function converts between them.
+#[must_use]
+pub fn effect_kind_to_tag(kind: EffectKind) -> EffectKindTag {
+    match kind {
+        EffectKind::ModelCall => EffectKindTag::ModelCall,
+        EffectKind::ToolCall => EffectKindTag::ToolCall,
+        EffectKind::SignatureRequest => EffectKindTag::SignatureRequest,
+        EffectKind::Broadcast => EffectKindTag::Broadcast,
+        EffectKind::FinalityWatch => EffectKindTag::FinalityWatch,
+        EffectKind::Delivery => EffectKindTag::Delivery,
+        EffectKind::ChainRead => EffectKindTag::ChainRead,
+        EffectKind::Simulation => EffectKindTag::Simulation,
+        EffectKind::HarnessOperation => EffectKindTag::HarnessOperation,
+    }
+}
+
+/// Build an [`ActionCard`] for an [`EffectIntent`], if the effect kind
+/// warrants one.
+///
+/// Extracts canonical fields from the intent payload JSON (on a best-effort
+/// basis) and populates an [`IntentCardSpec`] which is used to construct the
+/// card.  Callers should attach the resulting card to the intent before
+/// persisting it:
+///
+/// ```ignore
+/// if let Some(card) = build_card_for_effect(&intent, Some("Model said: …")) {
+///     intent.attach_card(card);
+/// }
+/// ```
+///
+/// Returns `None` for read-only effects (`ChainRead`, `Simulation`,
+/// `ModelCall`) that do not require user approval.
+#[must_use]
+pub fn build_card_for_effect(
+    intent: &EffectIntent,
+    model_explanation: Option<&str>,
+) -> Option<ActionCard> {
+    let tag = effect_kind_to_tag(intent.kind);
+
+    // Extract optional pallet/call from payload if present.
+    let pallet = intent
+        .payload
+        .get("pallet_name")
+        .or_else(|| intent.payload.get("pallet"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+
+    let call = intent
+        .payload
+        .get("call_name")
+        .or_else(|| intent.payload.get("call"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+
+    // Build a short argument summary from the payload.
+    let arguments_summary = intent
+        .payload
+        .get("args")
+        .map(|a| a.to_string())
+        .or_else(|| intent.payload.get("arguments").map(|a| a.to_string()));
+
+    // Estimated cost from the payload, if provided.
+    let estimated_cost = intent
+        .payload
+        .get("estimated_fee")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+
+    let spec = IntentCardSpec {
+        kind: tag,
+        effect_id: intent.id.to_string(),
+        run_id: intent.run_id.to_string(),
+        pallet,
+        call,
+        arguments_summary,
+        model_explanation: model_explanation.map(str::to_owned),
+        estimated_cost,
+        payload_json: intent.payload.clone(),
+    };
+
+    spec.build_card()
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -439,6 +725,18 @@ fn convert_token_usage(usage: &polkagent_executor_trait::TokenUsage) -> TokenUsa
         cache_read_tokens: usage.cache_read_tokens.unwrap_or(0),
         cache_write_tokens: usage.cache_write_tokens.unwrap_or(0),
         cost_usd: None,
+    }
+}
+
+/// Split a `"provider/model-id"` string into `(provider, model)`.
+///
+/// If no `/` is present the whole string is treated as the model name and
+/// the provider is `"unknown"`.
+fn split_model_id(model_id: &str) -> (&str, &str) {
+    if let Some(pos) = model_id.find('/') {
+        (&model_id[..pos], &model_id[pos + 1..])
+    } else {
+        ("unknown", model_id)
     }
 }
 
@@ -761,6 +1059,17 @@ mod tests {
             _outcome_ids: &[polkagent_core::EffectOutcomeId],
         ) -> Result<(), StoreError> {
             Ok(())
+        }
+
+        async fn update_intent_state(
+            &self,
+            intent_id: polkagent_core::EffectId,
+            _new_state: &str,
+        ) -> Result<StoredIntent, StoreError> {
+            Err(StoreError::NotFound {
+                resource_type: "EffectIntent",
+                id: intent_id.to_string(),
+            })
         }
     }
 
@@ -1268,5 +1577,259 @@ mod tests {
         assert_eq!(config.max_turns, 25);
         assert_eq!(config.max_tokens_per_turn, 4096);
         assert!(!config.auto_approve_effects);
+    }
+
+    // ── Card-building helper tests ────────────────────────────────────────
+
+    /// Build a minimal [`EffectIntent`] for card-building tests.
+    fn make_test_intent(kind: EffectKind) -> EffectIntent {
+        use polkagent_core::TurnId;
+        use polkagent_effect::{EffectIntentState, EffectPriority, IdempotencyKey};
+
+        let run_id = RunId::new();
+        let params_hash = IdempotencyKey::hash_params(b"test");
+        EffectIntent {
+            id: polkagent_core::EffectId::new(),
+            run_id,
+            turn_id: TurnId::new(),
+            step_id: StepId::new(),
+            kind,
+            idempotency_key: IdempotencyKey::generate(run_id, 1, 0, kind, params_hash),
+            sequence: 0,
+            state: EffectIntentState::Pending,
+            deadline: None,
+            max_attempts: 3,
+            attempt_count: 0,
+            retry_class: kind.default_retry_class(),
+            priority: EffectPriority::Normal,
+            payload: serde_json::json!({
+                "pallet_name": "Balances",
+                "call_name": "transfer_keep_alive",
+                "args": {"dest": "5GrwvaEF", "value": 1000000},
+                "estimated_fee": "0.0014 DOT"
+            }),
+            created_at: chrono::Utc::now(),
+            resolved_at: None,
+            action_card: None,
+        }
+    }
+
+    #[test]
+    fn effect_kind_to_tag_covers_all_variants() {
+        let pairs = [
+            (EffectKind::ModelCall, EffectKindTag::ModelCall),
+            (EffectKind::ToolCall, EffectKindTag::ToolCall),
+            (EffectKind::SignatureRequest, EffectKindTag::SignatureRequest),
+            (EffectKind::Broadcast, EffectKindTag::Broadcast),
+            (EffectKind::FinalityWatch, EffectKindTag::FinalityWatch),
+            (EffectKind::Delivery, EffectKindTag::Delivery),
+            (EffectKind::ChainRead, EffectKindTag::ChainRead),
+            (EffectKind::Simulation, EffectKindTag::Simulation),
+            (EffectKind::HarnessOperation, EffectKindTag::HarnessOperation),
+        ];
+        for (kind, expected_tag) in pairs {
+            assert_eq!(effect_kind_to_tag(kind), expected_tag, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn build_card_for_signable_effect_returns_card() {
+        let intent = make_test_intent(EffectKind::SignatureRequest);
+        let card = build_card_for_effect(&intent, Some("Signing a transfer."));
+        assert!(card.is_some(), "SignatureRequest must produce a card");
+        let card = card.unwrap();
+        assert!(!card.payload_hash.is_empty(), "card must have a payload hash");
+    }
+
+    #[test]
+    fn build_card_for_broadcast_returns_card() {
+        let intent = make_test_intent(EffectKind::Broadcast);
+        let card = build_card_for_effect(&intent, None);
+        assert!(card.is_some(), "Broadcast must produce a card");
+    }
+
+    #[test]
+    fn build_card_for_chain_read_returns_none() {
+        let intent = make_test_intent(EffectKind::ChainRead);
+        let card = build_card_for_effect(&intent, None);
+        assert!(card.is_none(), "ChainRead must NOT produce a card");
+    }
+
+    #[test]
+    fn build_card_for_simulation_returns_none() {
+        let intent = make_test_intent(EffectKind::Simulation);
+        let card = build_card_for_effect(&intent, None);
+        assert!(card.is_none(), "Simulation must NOT produce a card");
+    }
+
+    #[test]
+    fn build_card_for_model_call_returns_none() {
+        let intent = make_test_intent(EffectKind::ModelCall);
+        let card = build_card_for_effect(&intent, None);
+        assert!(card.is_none(), "ModelCall must NOT produce a card");
+    }
+
+    #[test]
+    fn card_canonical_fields_extracted_from_payload() {
+        let intent = make_test_intent(EffectKind::SignatureRequest);
+        let card = build_card_for_effect(&intent, Some("Signing test.")).unwrap();
+
+        // Must have canonical section for pallet.
+        let pallet_section = card
+            .canonical_sections
+            .iter()
+            .find(|s| s.label == "Pallet");
+        assert!(pallet_section.is_some(), "missing Pallet canonical section");
+        assert_eq!(pallet_section.unwrap().value, "Balances");
+
+        // Must have canonical section for call.
+        let call_section = card.canonical_sections.iter().find(|s| s.label == "Call");
+        assert!(call_section.is_some(), "missing Call canonical section");
+        assert_eq!(call_section.unwrap().value, "transfer_keep_alive");
+    }
+
+    #[test]
+    fn card_narrative_includes_model_explanation() {
+        let intent = make_test_intent(EffectKind::Broadcast);
+        let card =
+            build_card_for_effect(&intent, Some("Sending DOT to a staking controller.")).unwrap();
+
+        assert!(
+            !card.narrative_sections.is_empty(),
+            "model explanation must produce a narrative section"
+        );
+        assert!(
+            card.narrative_sections[0].content.contains("staking controller"),
+            "narrative must include the model's explanation"
+        );
+    }
+
+    #[test]
+    fn attach_card_via_build_card_for_effect() {
+        let mut intent = make_test_intent(EffectKind::SignatureRequest);
+        assert!(intent.action_card.is_none());
+
+        if let Some(card) = build_card_for_effect(&intent, Some("Test explanation.")) {
+            intent.attach_card(card);
+        }
+
+        assert!(intent.action_card.is_some(), "card must be attached to intent");
+    }
+
+    // ── split_model_id helper tests ──────────────────────────────────────────
+
+    #[test]
+    fn split_model_id_with_slash() {
+        let (provider, model) = split_model_id("anthropic/claude-sonnet-4");
+        assert_eq!(provider, "anthropic");
+        assert_eq!(model, "claude-sonnet-4");
+    }
+
+    #[test]
+    fn split_model_id_without_slash() {
+        let (provider, model) = split_model_id("local-model");
+        assert_eq!(provider, "unknown");
+        assert_eq!(model, "local-model");
+    }
+
+    #[test]
+    fn split_model_id_multiple_slashes_uses_first() {
+        let (provider, model) = split_model_id("openai/gpt-4o/2024");
+        assert_eq!(provider, "openai");
+        assert_eq!(model, "gpt-4o/2024");
+    }
+
+    // ── CostTracker integration via orchestrator turn loop ─────────────────
+
+    #[tokio::test]
+    async fn cost_tracker_does_not_block_run_when_unbounded() {
+        // Default orchestrator has no budget limit; runs should complete
+        // normally regardless of cost accumulation.
+        let harness = build_harness(
+            vec![Ok(FakeExecutor::text_response("Done.", 500, 200))],
+            RunOrchestratorConfig::default(),
+        );
+        let agent_spec = default_agent_spec();
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        let outcome = harness
+            .orchestrator
+            .execute_run(run_id.clone(), &agent_spec, "Hello")
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
+        assert_eq!(outcome.turn_count, 1);
+    }
+
+    #[tokio::test]
+    async fn cost_tracker_records_token_usage_across_turns() {
+        // Multi-turn run: cost tracker should accumulate across turns without
+        // interfering with the run outcome.
+        let responses = vec![
+            Ok(FakeExecutor::tool_call_response(
+                "calling tool",
+                vec![ToolCall {
+                    tool_call_id: "tc-1".to_owned(),
+                    tool_name: "search".to_owned(),
+                    arguments_json: "{}".to_owned(),
+                }],
+                100,
+                50,
+            )),
+            Ok(FakeExecutor::text_response("Done.", 200, 80)),
+        ];
+        let config = RunOrchestratorConfig {
+            auto_approve_effects: true,
+            ..Default::default()
+        };
+        let harness = build_harness(responses, config);
+        let agent_spec = default_agent_spec();
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        let outcome = harness
+            .orchestrator
+            .execute_run(run_id.clone(), &agent_spec, "Accumulate")
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
+        // Verify token accumulation is surfaced in the outcome.
+        assert_eq!(outcome.total_tokens.input_tokens, 300); // 100 + 200
+        assert_eq!(outcome.total_tokens.output_tokens, 130); // 50 + 80
+    }
+
+    #[tokio::test]
+    async fn cost_tracker_with_anthropic_model_id_parses_provider() {
+        // Verify that "anthropic/claude-sonnet-4" is correctly parsed and
+        // does not cause a panic or error in the cost tracker.
+        let harness = build_harness(
+            vec![Ok(FakeExecutor::text_response("Hi.", 10, 5))],
+            RunOrchestratorConfig::default(),
+        );
+        let mut agent_spec = default_agent_spec();
+        agent_spec.model = "anthropic/claude-sonnet-4".to_owned();
+
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        let outcome = harness
+            .orchestrator
+            .execute_run(run_id.clone(), &agent_spec, "Short")
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
     }
 }

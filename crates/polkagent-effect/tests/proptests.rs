@@ -313,6 +313,7 @@ proptest! {
             payload: serde_json::Value::Null,
             created_at: chrono::Utc::now(),
             resolved_at: None,
+            action_card: None,
         };
 
         let terminal_intent = make_intent(PipelineState::Resolved {

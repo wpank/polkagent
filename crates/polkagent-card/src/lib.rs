@@ -45,9 +45,11 @@
 //! | [`sections`] | [`CanonicalSection`], [`NarrativeSection`], [`RiskFlag`], [`RiskFlagType`], [`Severity`], [`SectionSource`] |
 //! | [`builder`] | [`ActionCardBuilder`] |
 //! | [`render`] | [`render_text`], [`render_tui`] |
+//! | [`from_intent`] | [`EffectKindTag`], [`IntentCardSpec`]: bridge from effect intents to cards |
 
 pub mod builder;
 pub mod card;
+pub mod from_intent;
 pub mod render;
 pub mod sections;
 
@@ -55,6 +57,7 @@ pub mod sections;
 // write `polkagent_card::ActionCard` without knowing which module it lives in.
 pub use builder::ActionCardBuilder;
 pub use card::{ActionCard, RiskLevel, SimulationSummary};
+pub use from_intent::{EffectKindTag, IntentCardSpec};
 pub use render::{render_text, render_tui};
 pub use sections::{
     CanonicalSection, NarrativeSection, RiskFlag, RiskFlagType, SectionSource, Severity,

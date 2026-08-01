@@ -159,6 +159,19 @@ impl MemoryStore for TenantAwareStore {
         self.inner.count_entries(agent_id).await
     }
 
+    async fn list_entries(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        offset: usize,
+    ) -> MemoryResult<Vec<MemoryEntry>> {
+        // Only list this tenant's own entries; cross-tenant queries return empty.
+        if *agent_id != self.scope.agent_id {
+            return Ok(Vec::new());
+        }
+        self.inner.list_entries(agent_id, limit, offset).await
+    }
+
     async fn delete_by_age(
         &self,
         agent_id: &AgentId,

@@ -1,17 +1,37 @@
 //! `polkagent run` — submit a run and stream its output.
 //!
-//! For now this creates a run record in the database and prints its status.
-//! Full streaming integration requires the polkagent-serve daemon.
+//! When no daemon is running this command builds an inline [`AppService`]
+//! using the available executor, starts the run, subscribes to the event bus,
+//! and streams events to stdout until a terminal event arrives or the timeout
+//! expires.
 
-use anyhow::Result;
+use std::io::Write as _;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
 use tracing::info;
 
+use polkagent_config::Config;
+use polkagent_core::event::EventKind;
+use polkagent_core::{AgentId, AgentSpec};
+use polkagent_event::{EventBus, EventRecorder};
+use polkagent_executor_fake::FakeExecutor;
+use polkagent_service::AppService;
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
 use crate::cli::RunCmd;
 
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
 /// Execute the `run` subcommand.
-pub fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
+///
+/// Builds an [`AppService`] inline (no daemon required), starts the run, then
+/// subscribes to the event bus and streams events to stdout until the run
+/// reaches a terminal state or the timeout expires.
+pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     let store = SqliteRunStore::new(pool.clone());
 
     // Resolve agent by name or ID (must be active/configured, not archived).
@@ -23,29 +43,380 @@ pub fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
         anyhow::bail!("Agent not found or not active: {}", cmd.agent_id);
     }
 
-    // Create a run record via the store.
-    let params_json = serde_json::json!({ "prompt": cmd.prompt }).to_string();
-    let run_row = store
-        .create_run(&agent.id, None, &params_json)
-        .map_err(|e| anyhow::anyhow!("creating run: {e}"))?;
+    // Parse the agent's UUID string into a typed AgentId.
+    let agent_id: AgentId = agent
+        .id
+        .parse()
+        .with_context(|| format!("invalid agent ID in database: {}", agent.id))?;
+
+    // Detect executor based on environment.
+    let (executor, executor_note) = detect_executor(cmd.model.as_deref());
+
+    if let Some(note) = &executor_note {
+        eprintln!("{note}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Build AppService inline
+    // -----------------------------------------------------------------------
+
+    // Create the event bus and subscribe BEFORE starting the run so we don't
+    // miss RunCreated or any early events.
+    let event_bus = EventBus::with_default_capacity();
+    let mut event_rx = event_bus.subscribe();
+
+    // SqlitePool implements EventStore, so Arc<SqlitePool> coerces to
+    // Arc<dyn EventStore> for the EventRecorder.
+    let event_recorder = EventRecorder::new(Arc::new(pool.clone()), event_bus.clone());
+
+    let config = Config::default();
+
+    // Wrap AppService in Arc so it can be shared with the Ctrl-C handler task.
+    let app_service = Arc::new(
+        AppService::builder()
+            .with_config(config)
+            .with_run_store(Arc::new(pool.clone()))
+            .with_event_bus(event_bus.clone())
+            .with_event_recorder(event_recorder)
+            .with_executor(executor)
+            .build()
+            .context("building AppService")?,
+    );
+
+    // Reconstruct the AgentSpec from the DB row and register it with AppService.
+    let agent_spec = build_agent_spec(agent_id, &agent.name, &agent.spec_json, cmd.model.clone());
+    app_service
+        .create_agent(agent_spec)
+        .context("registering agent with AppService")?;
+
+    // -----------------------------------------------------------------------
+    // Start the run
+    // -----------------------------------------------------------------------
+    let run_id = app_service
+        .start_run(agent_id, &cmd.prompt)
+        .await
+        .context("starting run")?;
+
+    info!(%run_id, agent_id = %agent.id, "run started");
 
     if cmd.json {
         let out = serde_json::json!({
-            "run_id":   run_row.id,
+            "run_id":   run_id.to_string(),
             "agent_id": agent.id,
-            "state":    run_row.state,
+            "state":    "running",
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("Run submitted:");
-        println!("  Run ID: {}", run_row.id);
-        println!("  Agent:  {} ({})", agent.name, agent.id);
-        println!("  State:  {}", run_row.state);
-        println!();
-        println!("Note: A polkagent-serve daemon is required to execute the run.");
-        println!("      Use `polkagent tui` to monitor run status.");
+        println!("Run started: {run_id}");
     }
 
-    info!(run_id = %run_row.id, agent_id = %agent.id, "run created");
-    Ok(())
+    // -----------------------------------------------------------------------
+    // Timeout
+    // -----------------------------------------------------------------------
+    let timeout_duration = if cmd.timeout == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(cmd.timeout))
+    };
+
+    // -----------------------------------------------------------------------
+    // Ctrl-C / SIGINT handler
+    // -----------------------------------------------------------------------
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let cancelled_clone = Arc::clone(&cancelled);
+        let run_id_copy = run_id;
+        let app_service_for_cancel = Arc::clone(&app_service);
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancelled_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                // Best-effort cancel; ignore errors.
+                let _ = app_service_for_cancel.cancel_run(run_id_copy).await;
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Event streaming loop
+    // -----------------------------------------------------------------------
+    // `stream` is true by default; --no-stream sets it to false.
+    let stream_tokens = cmd.stream;
+    let mut final_text = String::new();
+
+    let result: Result<()> = async {
+        // Set up the timeout future — either a real sleep or one that never
+        // fires (pending forever).
+        let timed_out = async {
+            if let Some(dur) = timeout_duration {
+                tokio::time::sleep(dur).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::pin!(timed_out);
+
+        loop {
+            // Check for cancellation set by the Ctrl-C handler.
+            if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                println!("\nRun cancelled");
+                return Ok(());
+            }
+
+            let event = tokio::select! {
+                () = &mut timed_out => {
+                    eprintln!(
+                        "\nRun timed out after {} seconds",
+                        cmd.timeout
+                    );
+                    let _ = app_service.cancel_run(run_id).await;
+                    return Err(anyhow::anyhow!(
+                        "run timed out after {} seconds",
+                        cmd.timeout
+                    ));
+                }
+                recv_result = event_rx.recv() => {
+                    match recv_result {
+                        Ok(ev) => ev,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            eprintln!(
+                                "[warning: {n} events dropped due to slow consumer]"
+                            );
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            // Bus closed — execution finished.
+                            break;
+                        }
+                    }
+                }
+            };
+
+            // Only process events that belong to our run.
+            if event.run_id != run_id {
+                continue;
+            }
+
+            match &event.kind {
+                EventKind::RunCreated => {
+                    // Already printed "Run started: {id}" above.
+                }
+                EventKind::RunQueued | EventKind::RunStarted => {
+                    // Lifecycle noise; skip for normal output.
+                }
+                EventKind::StreamingToken { text } => {
+                    if stream_tokens {
+                        print!("{text}");
+                        // Flush immediately so tokens appear in the terminal.
+                        let _ = std::io::stdout().flush();
+                    } else {
+                        final_text.push_str(text);
+                    }
+                }
+                EventKind::ToolCallStarted { tool_name } => {
+                    println!("\n[Tool: {tool_name}]");
+                }
+                EventKind::EffectIntentCreated { intent_id } => {
+                    println!("\n[Effect pending approval: {intent_id}]");
+                }
+                EventKind::RunCompleted { .. } => {
+                    if !stream_tokens && !final_text.is_empty() {
+                        println!("{final_text}");
+                    }
+                    println!("\nRun completed successfully");
+                    break;
+                }
+                EventKind::RunFailed { reason } => {
+                    println!("\nRun failed: {reason}");
+                    break;
+                }
+                EventKind::RunCancelled { reason } => {
+                    println!("\nRun cancelled: {reason}");
+                    break;
+                }
+                EventKind::RunTimedOut => {
+                    println!("\nRun timed out");
+                    break;
+                }
+                _ => {
+                    // Ignore all other event kinds (TurnStarted, diagnostics, etc.)
+                }
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Executor detection
+// ---------------------------------------------------------------------------
+
+/// Detect which model executor to use based on environment variables.
+///
+/// Priority:
+/// 1. `ANTHROPIC_API_KEY` present → currently falls back to fake with a note
+///    (the real Anthropic executor is not yet feature-flagged into the CLI).
+/// 2. `OPENAI_API_KEY` present → same note, fake executor for now.
+/// 3. Otherwise → fake executor with a helpful message.
+///
+/// Returns an `Arc<FakeExecutor>` which coerces to `Arc<dyn ModelExecutor>`
+/// at the `AppServiceBuilder::with_executor` call site.
+fn detect_executor(
+    _model_override: Option<&str>,
+) -> (Arc<FakeExecutor>, Option<String>) {
+    if std::env::var("ANTHROPIC_API_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        let note = Some(
+            "Note: ANTHROPIC_API_KEY found. \
+             Real Anthropic executor is not yet wired into the CLI binary; \
+             using fake executor for this run."
+                .to_string(),
+        );
+        return (FakeExecutor::new(), note);
+    }
+
+    if std::env::var("OPENAI_API_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        let note = Some(
+            "Note: OPENAI_API_KEY found. \
+             Real OpenAI executor is not yet wired into the CLI binary; \
+             using fake executor for this run."
+                .to_string(),
+        );
+        return (FakeExecutor::new(), note);
+    }
+
+    let note = Some(
+        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY). \
+         Using the fake executor — responses will be simulated. \
+         Set an API key environment variable to use a real model."
+            .to_string(),
+    );
+    (FakeExecutor::new(), note)
+}
+
+// ---------------------------------------------------------------------------
+// AgentSpec reconstruction
+// ---------------------------------------------------------------------------
+
+/// Build an [`AgentSpec`] for use with [`AppService::create_agent`].
+///
+/// Tries to deserialise the stored `spec_json`. Falls back to a minimal spec
+/// constructed from the agent's name. CLI model override always wins.
+fn build_agent_spec(
+    agent_id: AgentId,
+    name: &str,
+    spec_json: &str,
+    model_override: Option<String>,
+) -> AgentSpec {
+    let mut spec: AgentSpec = serde_json::from_str(spec_json).unwrap_or_else(|_| {
+        AgentSpec::new(agent_id, name, "fake/default-model")
+    });
+
+    // Force the ID to match what is stored in the database.
+    spec.id = agent_id;
+
+    // Apply CLI model override if provided.
+    if let Some(model) = model_override {
+        spec.model = model;
+    }
+
+    spec
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_agent_spec_from_valid_json() {
+        let id = AgentId::new();
+        let json = serde_json::json!({
+            "id": id.to_string(),
+            "name": "test-agent",
+            "model": "anthropic/claude-opus-4-6",
+            "description": null,
+            "tools": [],
+            "system_prompt": null,
+            "autonomy_level": "supervised",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        })
+        .to_string();
+
+        let spec = build_agent_spec(id, "test-agent", &json, None);
+        assert_eq!(spec.id, id);
+        assert_eq!(spec.model, "anthropic/claude-opus-4-6");
+    }
+
+    #[test]
+    fn build_agent_spec_fallback_on_bad_json() {
+        let id = AgentId::new();
+        let spec = build_agent_spec(id, "test-agent", "{invalid", None);
+        assert_eq!(spec.id, id);
+        assert_eq!(spec.name, "test-agent");
+    }
+
+    #[test]
+    fn build_agent_spec_model_override_wins() {
+        let id = AgentId::new();
+        let json = serde_json::json!({
+            "id": id.to_string(),
+            "name": "test-agent",
+            "model": "anthropic/claude-opus-4-6",
+            "description": null,
+            "tools": [],
+            "system_prompt": null,
+            "autonomy_level": "supervised",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        })
+        .to_string();
+
+        let spec = build_agent_spec(
+            id,
+            "test-agent",
+            &json,
+            Some("openai/gpt-4o".to_string()),
+        );
+        assert_eq!(spec.model, "openai/gpt-4o");
+    }
+
+    #[test]
+    fn detect_executor_falls_back_to_fake_with_helpful_note() {
+        // Temporarily remove any API keys in the test process environment.
+        let orig_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
+        let orig_openai = std::env::var("OPENAI_API_KEY").ok();
+        #[allow(deprecated)]
+        {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("OPENAI_API_KEY");
+        }
+
+        let (_exec, note) = detect_executor(None);
+        assert!(note.is_some());
+        let note_text = note.unwrap();
+        assert!(note_text.contains("fake executor"));
+
+        // Restore env.
+        #[allow(deprecated)]
+        if let Some(val) = orig_anthropic {
+            std::env::set_var("ANTHROPIC_API_KEY", val);
+        }
+        #[allow(deprecated)]
+        if let Some(val) = orig_openai {
+            std::env::set_var("OPENAI_API_KEY", val);
+        }
+    }
 }

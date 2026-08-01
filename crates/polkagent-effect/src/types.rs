@@ -22,6 +22,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use polkagent_card::ActionCard;
 use serde::{Deserialize, Serialize};
 
 use polkagent_core::{
@@ -197,9 +198,31 @@ pub struct EffectIntent {
 
     /// When this intent was last resolved, if ever.
     pub resolved_at: Option<DateTime<Utc>>,
+
+    /// Action card generated for this intent, if applicable.
+    ///
+    /// Present for signable effects (e.g., `SignatureRequest`, `Broadcast`)
+    /// and absent for read-only effects (e.g., `ChainRead`, `Simulation`).
+    /// The card is generated before the intent is persisted so it is
+    /// available for display to the user during the approval flow.
+    ///
+    /// Defaults to `None` for backward compatibility with serialized intents
+    /// that predate this field.
+    #[serde(default)]
+    pub action_card: Option<ActionCard>,
 }
 
 impl EffectIntent {
+    /// Attach an [`ActionCard`] to this intent.
+    ///
+    /// The card captures all canonical fields needed to display a safety
+    /// review to the user before the effect is approved and executed.
+    /// Calling this after construction (but before persisting) is the
+    /// intended pattern in the orchestrator turn loop.
+    pub fn attach_card(&mut self, card: ActionCard) {
+        self.action_card = Some(card);
+    }
+
     /// Returns `true` if this intent is in a terminal state.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
@@ -583,5 +606,96 @@ mod tests {
         };
         assert_eq!(context, "finality not observed");
         assert_eq!(resolution_hint, ResolutionHint::CheckChain);
+    }
+
+    // ── Action card integration ───────────────────────────────────────────────
+
+    /// Build a minimal `EffectIntent` for use in tests.
+    fn make_intent(kind: EffectKind) -> EffectIntent {
+        use polkagent_core::TurnId;
+        let run_id = RunId::new();
+        let params_hash = IdempotencyKey::hash_params(b"test-intent");
+        EffectIntent {
+            id: EffectId::new(),
+            run_id,
+            turn_id: TurnId::new(),
+            step_id: StepId::new(),
+            kind,
+            idempotency_key: IdempotencyKey::generate(run_id, 1, 0, kind, params_hash),
+            sequence: 0,
+            state: EffectIntentState::Pending,
+            deadline: None,
+            max_attempts: 3,
+            attempt_count: 0,
+            retry_class: kind.default_retry_class(),
+            priority: EffectPriority::Normal,
+            payload: serde_json::json!({"test": true}),
+            created_at: chrono::Utc::now(),
+            resolved_at: None,
+            action_card: None,
+        }
+    }
+
+    #[test]
+    fn attach_card_sets_action_card_field() {
+        let mut intent = make_intent(EffectKind::SignatureRequest);
+        assert!(intent.action_card.is_none());
+
+        let card = polkagent_card::ActionCardBuilder::new("Sign request")
+            .with_payload_hash("abc123")
+            .build();
+        intent.attach_card(card.clone());
+
+        assert!(intent.action_card.is_some());
+        let attached = intent.action_card.as_ref().unwrap();
+        assert_eq!(attached.card_id, card.card_id);
+    }
+
+    #[test]
+    fn action_card_field_survives_serde_round_trip_with_effect_intent() {
+        let mut intent = make_intent(EffectKind::Broadcast);
+        let card = polkagent_card::ActionCardBuilder::new("Broadcast tx")
+            .add_canonical("Pallet", "Balances", polkagent_card::SectionSource::Metadata)
+            .with_payload_hash("deadbeef")
+            .build();
+        let card_id = card.card_id.clone();
+        intent.attach_card(card);
+
+        let json = serde_json::to_string(&intent).expect("serialize");
+        let back: EffectIntent = serde_json::from_str(&json).expect("deserialize");
+
+        let attached = back.action_card.expect("card must survive serde round-trip");
+        assert_eq!(attached.card_id, card_id);
+        assert_eq!(attached.payload_hash, "deadbeef");
+    }
+
+    #[test]
+    fn action_card_defaults_to_none_when_absent_in_json() {
+        // Simulate a legacy intent serialized before the action_card field was added.
+        // IdempotencyKey serializes as a 64-char lowercase hex string (BLAKE3 digest).
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "run_id": "00000000-0000-0000-0000-000000000002",
+            "turn_id": "00000000-0000-0000-0000-000000000003",
+            "step_id": "00000000-0000-0000-0000-000000000004",
+            "kind": "chain_read",
+            "idempotency_key": "0000000000000000000000000000000000000000000000000000000000000000",
+            "sequence": 0,
+            "state": {"tag": "pending"},
+            "deadline": null,
+            "max_attempts": 3,
+            "attempt_count": 0,
+            "retry_class": "idempotent",
+            "priority": "normal",
+            "payload": {},
+            "created_at": "2024-01-01T00:00:00Z",
+            "resolved_at": null
+        }"#;
+        let intent: EffectIntent = serde_json::from_str(json)
+            .expect("legacy intent (without action_card) must deserialize");
+        assert!(
+            intent.action_card.is_none(),
+            "missing action_card must default to None"
+        );
     }
 }

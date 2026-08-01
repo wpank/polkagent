@@ -40,6 +40,7 @@ fn policy_allows_configured_action() {
         action_patterns: vec!["chain/query".to_string()],
         resource_patterns: vec!["**".to_string()],
         conditions: Default::default(),
+        abac_condition: None,
     });
 
     let ctx = EvaluationContext::default();
@@ -56,6 +57,7 @@ fn policy_denies_unconfigured_action() {
         action_patterns: vec!["chain/query".to_string()],
         resource_patterns: vec!["**".to_string()],
         conditions: Default::default(),
+        abac_condition: None,
     });
 
     let ctx = EvaluationContext::default();
@@ -75,6 +77,7 @@ fn explicit_deny_overrides_allow() {
         action_patterns: vec!["**".to_string()],
         resource_patterns: vec!["**".to_string()],
         conditions: Default::default(),
+        abac_condition: None,
     });
     policy_set.add_rule(PolicyRule {
         id: "deny-transfer".to_string(),
@@ -82,6 +85,7 @@ fn explicit_deny_overrides_allow() {
         action_patterns: vec!["chain/transfer".to_string()],
         resource_patterns: vec!["**".to_string()],
         conditions: Default::default(),
+        abac_condition: None,
     });
 
     let ctx = EvaluationContext::default();
@@ -108,6 +112,7 @@ fn policy_with_conditions_requires_matching_context() {
         action_patterns: vec!["chain/**".to_string()],
         resource_patterns: vec!["**".to_string()],
         conditions: Default::default(),
+        abac_condition: None,
     };
     rule.conditions
         .insert("network".to_string(), "polkadot".to_string());

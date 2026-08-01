@@ -34,16 +34,47 @@ fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
 
     let now = Utc::now().to_rfc3339();
 
-    // Build minimal spec JSON.
-    let spec_json = serde_json::json!({
-        "name":         cmd.name,
-        "description":  cmd.description,
-        "model":        cmd.model,
-        "tools":        [],
-        "autonomy_level": "supervised",
-        "created_at":   now,
-        "updated_at":   now,
+    // Build resource_limits object when any limit flag is provided.
+    let resource_limits = if cmd.max_turns.is_some()
+        || cmd.timeout.is_some()
+        || cmd.max_tokens_per_turn.is_some()
+    {
+        serde_json::json!({
+            "max_tokens_per_turn": cmd.max_tokens_per_turn,
+            "max_turns":           cmd.max_turns,
+            "timeout_secs":        cmd.timeout,
+        })
+    } else {
+        serde_json::Value::Null
+    };
+
+    // Build model_preference object when a preferred model is specified.
+    let model_preference = if let Some(ref mid) = cmd.preferred_model {
+        serde_json::json!({ "model_id": mid })
+    } else {
+        serde_json::Value::Null
+    };
+
+    // Build spec JSON including PRD-03 fields.
+    let mut spec_json = serde_json::json!({
+        "name":                  cmd.name,
+        "description":           cmd.description,
+        "model":                 cmd.model,
+        "tools":                 [],
+        "autonomy_level":        "supervised",
+        "created_at":            now,
+        "updated_at":            now,
+        "declared_capabilities": cmd.capabilities,
+        "policy_refs":           [],
+        "surface_bindings":      [],
     });
+
+    if !resource_limits.is_null() {
+        spec_json["resource_limits"] = resource_limits;
+    }
+    if !model_preference.is_null() {
+        spec_json["model_preference"] = model_preference;
+    }
 
     let agent = store.create_agent(
         &cmd.name,
@@ -52,12 +83,25 @@ fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
     )?;
 
     if cmd.json {
-        let out = serde_json::json!({
+        let mut out = serde_json::json!({
             "id":    agent.id,
             "name":  agent.name,
             "model": cmd.model,
             "state": agent.state,
         });
+        if !cmd.capabilities.is_empty() {
+            out["declared_capabilities"] = serde_json::json!(cmd.capabilities);
+        }
+        if cmd.max_turns.is_some() || cmd.timeout.is_some() || cmd.max_tokens_per_turn.is_some() {
+            out["resource_limits"] = serde_json::json!({
+                "max_tokens_per_turn": cmd.max_tokens_per_turn,
+                "max_turns":           cmd.max_turns,
+                "timeout_secs":        cmd.timeout,
+            });
+        }
+        if let Some(ref mid) = cmd.preferred_model {
+            out["model_preference"] = serde_json::json!({ "model_id": mid });
+        }
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         println!("Created agent:");
@@ -65,6 +109,18 @@ fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
         println!("  Name:  {}", agent.name);
         println!("  Model: {}", cmd.model);
         println!("  State: {}", agent.state);
+        if !cmd.capabilities.is_empty() {
+            println!("  Capabilities: {}", cmd.capabilities.join(", "));
+        }
+        if let Some(turns) = cmd.max_turns {
+            println!("  Max turns:    {turns}");
+        }
+        if let Some(secs) = cmd.timeout {
+            println!("  Timeout:      {secs}s");
+        }
+        if let Some(ref mid) = cmd.preferred_model {
+            println!("  Preferred model: {mid}");
+        }
     }
 
     info!(agent_id = %agent.id, name = %cmd.name, "agent created");
@@ -139,9 +195,10 @@ fn show(cmd: &AgentShowCmd, store: &SqliteRunStore) -> Result<()> {
         .get_agent_by_name_or_id(&cmd.agent)
         .map_err(|e| anyhow::anyhow!("Agent not found: {} ({})", cmd.agent, e))?;
 
+    let spec: serde_json::Value = serde_json::from_str(&agent.spec_json)
+        .unwrap_or(serde_json::Value::Null);
+
     if cmd.json {
-        let spec: serde_json::Value = serde_json::from_str(&agent.spec_json)
-            .unwrap_or(serde_json::Value::Null);
         let out = serde_json::json!({
             "id": agent.id, "name": agent.name, "state": agent.state,
             "updated_at": agent.updated_at, "spec": spec,
@@ -155,9 +212,75 @@ fn show(cmd: &AgentShowCmd, store: &SqliteRunStore) -> Result<()> {
     println!("  State:    {}", agent.state);
     println!("  Updated:  {}", agent.updated_at);
 
+    // PRD-03: show new fields in human-readable mode when present in spec.
+    if let Some(caps) = spec.get("declared_capabilities").and_then(|v| v.as_array()) {
+        if !caps.is_empty() {
+            let cap_strs: Vec<&str> = caps.iter().filter_map(|c| c.as_str()).collect();
+            println!("  Capabilities:     {}", cap_strs.join(", "));
+        }
+    }
+    if let Some(refs) = spec.get("policy_refs").and_then(|v| v.as_array()) {
+        if !refs.is_empty() {
+            let ref_strs: Vec<&str> = refs.iter().filter_map(|r| r.as_str()).collect();
+            println!("  Policy refs:      {}", ref_strs.join(", "));
+        }
+    }
+    if let Some(surfaces) = spec.get("surface_bindings").and_then(|v| v.as_array()) {
+        if !surfaces.is_empty() {
+            let surf_strs: Vec<&str> = surfaces.iter().filter_map(|s| s.as_str()).collect();
+            println!("  Surfaces:         {}", surf_strs.join(", "));
+        }
+    }
+    if let Some(rl) = spec.get("resource_limits") {
+        if !rl.is_null() {
+            println!("  Resource limits:");
+            if let Some(t) = rl.get("max_turns").and_then(|v| v.as_u64()) {
+                println!("    max_turns:               {t}");
+            }
+            if let Some(s) = rl.get("timeout_secs").and_then(|v| v.as_u64()) {
+                println!("    timeout_secs:            {s}");
+            }
+            if let Some(tok) = rl.get("max_tokens_per_turn").and_then(|v| v.as_u64()) {
+                println!("    max_tokens_per_turn:     {tok}");
+            }
+            if let Some(c) = rl.get("max_concurrent_effects").and_then(|v| v.as_u64()) {
+                println!("    max_concurrent_effects:  {c}");
+            }
+        }
+    }
+    if let Some(mp) = spec.get("model_preference") {
+        if !mp.is_null() {
+            println!("  Model preference:");
+            if let Some(p) = mp.get("provider").and_then(|v| v.as_str()) {
+                println!("    provider:      {p}");
+            }
+            if let Some(m) = mp.get("model_id").and_then(|v| v.as_str()) {
+                println!("    model_id:      {m}");
+            }
+            if let Some(t) = mp.get("temperature").and_then(|v| v.as_f64()) {
+                println!("    temperature:   {t}");
+            }
+        }
+    }
+    if let Some(mc) = spec.get("memory_config") {
+        if !mc.is_null() {
+            println!("  Memory config:");
+            if let Some(e) = mc.get("enabled").and_then(|v| v.as_bool()) {
+                println!("    enabled:               {e}");
+            }
+            if let Some(m) = mc.get("max_entries").and_then(|v| v.as_u64()) {
+                println!("    max_entries:           {m}");
+            }
+            if let Some(d) = mc.get("retention_days").and_then(|v| v.as_u64()) {
+                println!("    retention_days:        {d}");
+            }
+            if let Some(cl) = mc.get("classification_default").and_then(|v| v.as_str()) {
+                println!("    classification_default: {cl}");
+            }
+        }
+    }
+
     if cmd.full {
-        let spec: serde_json::Value = serde_json::from_str(&agent.spec_json)
-            .unwrap_or(serde_json::Value::Null);
         println!("  Spec:");
         println!("{}", serde_json::to_string_pretty(&spec)?);
     }

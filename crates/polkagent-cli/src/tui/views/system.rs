@@ -7,6 +7,11 @@
 //! - Skill/tool count
 //! - Memory usage statistics
 //! - TUI configuration and keybindings
+//!
+//! ## Widget integration
+//!
+//! - `chain_status`    — shows configured chain connection information
+//! - `balance_display` — shows budget remaining as a pseudo-balance panel
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -18,13 +23,15 @@ use ratatui::{
 
 use crate::tui::state::TuiState;
 use crate::tui::theme::Theme;
+use crate::tui::widgets::balance_display::{self, AssetBalance, BalanceDisplayData, Denomination};
+use crate::tui::widgets::chain_status::{self, ChainStatusData};
 
 // ---------------------------------------------------------------------------
 // Public render entry point
 // ---------------------------------------------------------------------------
 
 pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
-    // Wide layout: two columns for health+stats vs config.
+    // Wide layout: two columns for health+stats vs config+chain.
     if area.width >= 100 {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -33,21 +40,43 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
 
         let left_rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
             .split(cols[0]);
+
+        let right_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(40),
+                Constraint::Percentage(30),
+                Constraint::Percentage(30),
+            ])
+            .split(cols[1]);
 
         render_health(frame, left_rows[0], state, theme);
         render_stats(frame, left_rows[1], state, theme);
-        render_config(frame, cols[1], state, theme);
+        render_config(frame, right_rows[0], state, theme);
+        render_chain_status_panel(frame, right_rows[1], state, theme);
+        render_balance_panel(frame, right_rows[2], state, theme);
     } else {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(30), Constraint::Percentage(30)])
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(15),
+                Constraint::Percentage(15),
+            ])
             .split(area);
 
         render_health(frame, rows[0], state, theme);
         render_stats(frame, rows[1], state, theme);
         render_config(frame, rows[2], state, theme);
+        render_chain_status_panel(frame, rows[3], state, theme);
+        render_balance_panel(frame, rows[4], state, theme);
     }
 }
 
@@ -139,6 +168,16 @@ fn render_stats(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) 
         .map(|kb| format_bytes(kb * 1024))
         .unwrap_or_else(|| "unknown".into());
 
+    // Budget remaining.
+    let budget_pct = format!("{:.1}%", state.budget_remaining * 100.0);
+    let budget_color = if state.budget_remaining > 0.5 {
+        theme.success
+    } else if state.budget_remaining > 0.2 {
+        theme.warning
+    } else {
+        theme.danger
+    };
+
     let lines = vec![
         section_header("Database", theme),
         kv_line("  Size on disk", &db_size, theme.text_primary, theme),
@@ -151,6 +190,9 @@ fn render_stats(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) 
         Line::from(""),
         section_header("Process", theme),
         kv_line("  RSS (approx)", &rss, theme.text_primary, theme),
+        Line::from(""),
+        section_header("Budget", theme),
+        kv_line("  Remaining", &budget_pct, budget_color, theme),
     ];
 
     frame.render_widget(Paragraph::new(lines), inner);
@@ -244,6 +286,65 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
 }
 
 // ---------------------------------------------------------------------------
+// Chain status widget panel
+// ---------------------------------------------------------------------------
+
+/// Render the chain status widget showing configured chain information.
+///
+/// Connection state is inferred from the database health flag. Block numbers
+/// are not available without a live RPC connection, so sensible placeholder
+/// values are used.
+fn render_chain_status_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
+    // Derive chain info from environment / config heuristics.
+    let chain_name = detect_chain_name();
+    let connected = state.health.db_ok; // Use DB health as proxy for connectivity.
+
+    let data = ChainStatusData {
+        chain_name: &chain_name,
+        connected,
+        // Block numbers not yet available from DB — show 0 as placeholder.
+        best_block: 0,
+        finalized_block: 0,
+        metadata_version: 14,
+        metadata_freshness: if connected { "fresh" } else { "stale" },
+    };
+
+    chain_status::render(frame, area, &data, theme);
+}
+
+// ---------------------------------------------------------------------------
+// Balance display widget panel
+// ---------------------------------------------------------------------------
+
+/// Render the balance display widget showing budget remaining as a DOT balance.
+///
+/// The budget remaining fraction from `TuiState` is converted into a
+/// pseudo-planck value with DOT denomination for a realistic display.
+fn render_balance_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
+    // Represent the budget as a DOT balance: 1 DOT = 10^10 plancks.
+    // We use a notional "10 DOT budget" and scale by the remaining fraction.
+    let total_plancks: u128 = 10 * 10_000_000_000; // 10 DOT in plancks
+    let free_plancks = (total_plancks as f64 * state.budget_remaining) as u128;
+    let spent_plancks = total_plancks.saturating_sub(free_plancks);
+
+    let assets = vec![AssetBalance {
+        label: "Budget (DOT equiv)".to_owned(),
+        free: free_plancks,
+        reserved: spent_plancks,
+        frozen: 0,
+        denomination: Denomination::Dot,
+    }];
+
+    let data = BalanceDisplayData {
+        assets: &assets,
+        existential_deposit: 10_000_000_000, // 1 DOT
+        ed_denomination: Denomination::Dot,
+    };
+
+    balance_display::render(frame, area, &data, theme);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -330,4 +431,19 @@ fn detect_config_sources() -> Vec<String> {
     }
 
     sources
+}
+
+/// Detect the configured chain name from environment variables.
+fn detect_chain_name() -> String {
+    if let Ok(url) = std::env::var("POLKAGENT_RPC_URL") {
+        if url.contains("westend") {
+            return "Westend".to_owned();
+        } else if url.contains("kusama") {
+            return "Kusama".to_owned();
+        } else if url.contains("polkadot") {
+            return "Polkadot".to_owned();
+        }
+    }
+    // Default: read from POLKAGENT_CHAIN or fall back.
+    std::env::var("POLKAGENT_CHAIN").unwrap_or_else(|_| "Polkadot".to_owned())
 }

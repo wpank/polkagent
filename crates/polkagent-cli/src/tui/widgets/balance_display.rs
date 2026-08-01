@@ -20,6 +20,8 @@ use crate::tui::theme::Theme;
 // ---------------------------------------------------------------------------
 
 /// Known network denomination metadata.
+// Public widget API — additional variants for Kusama, Westend, and custom networks.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Denomination {
     /// Polkadot (10 decimals, symbol "DOT").

@@ -21,6 +21,8 @@ use crate::tui::theme::Theme;
 // ---------------------------------------------------------------------------
 
 /// Input data for the error digest widget.
+// Public widget API — constructed when the error view is wired to live error state.
+#[allow(dead_code)]
 pub struct ErrorData<'a> {
     /// Short error type or category (e.g. "RuntimeError", "RpcError").
     pub error_type: &'a str,
@@ -41,6 +43,8 @@ pub struct ErrorData<'a> {
 /// Render a structured error digest into `area`.
 ///
 /// The widget draws its own border and fills the provided area.
+// Public widget API — called by the error view once wired.
+#[allow(dead_code)]
 pub fn render(frame: &mut Frame, area: Rect, data: &ErrorData<'_>, theme: &Theme) {
     if area.width < 4 || area.height < 3 {
         return;

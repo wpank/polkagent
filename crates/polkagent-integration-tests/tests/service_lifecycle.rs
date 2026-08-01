@@ -192,6 +192,12 @@ fn create_agent_with_empty_name_fails() {
         autonomy_level: Default::default(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        declared_capabilities: vec![],
+        policy_refs: vec![],
+        resource_limits: None,
+        model_preference: None,
+        memory_config: None,
+        surface_bindings: vec![],
     };
     let result = svc.create_agent(spec);
     assert!(

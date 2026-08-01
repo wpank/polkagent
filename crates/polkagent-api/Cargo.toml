@@ -16,6 +16,7 @@ polkagent-event = { path = "../polkagent-event" }
 polkagent-skill = { path = "../polkagent-skill" }
 polkagent-tool = { path = "../polkagent-tool" }
 polkagent-payment = { path = "../polkagent-payment" }
+polkagent-telemetry = { path = "../polkagent-telemetry" }
 
 # Web
 axum = { workspace = true }
@@ -25,6 +26,7 @@ tower-http = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 
 # Async
 tokio = { workspace = true }
@@ -42,6 +44,9 @@ chrono = { workspace = true }
 
 # IDs
 uuid = { workspace = true }
+
+# Concurrency
+dashmap = { workspace = true }
 
 [dev-dependencies]
 axum-test = "21"

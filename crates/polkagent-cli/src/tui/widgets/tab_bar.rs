@@ -4,6 +4,8 @@
 //! highlighted in rose; inactive tabs use `text_dim`. The full set of
 //! seven conceptual tabs is rendered even though only four are wired up
 //! to views today — the remainder appear dimmed as placeholders.
+// Public widget API — will be wired to the header bar.
+#![allow(dead_code)]
 
 use ratatui::{
     layout::Rect,

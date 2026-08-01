@@ -1,0 +1,37 @@
+[package]
+name = "polkagent-context"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Context assembly for Polkagent model execution"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+polkagent-conversation = { path = "../polkagent-conversation" }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

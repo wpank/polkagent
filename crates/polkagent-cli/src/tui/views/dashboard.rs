@@ -6,6 +6,14 @@
 //! - Wide     (120+):       three columns — agents, runs, health sidebar
 //!
 //! All data is read from `&TuiState`; no I/O occurs on the render path.
+//!
+//! ## Widget integration
+//!
+//! A horizontal widget strip at the bottom of every layout shows:
+//! - `token_sparkline` — recent per-turn token usage (bone/amber Braille)
+//! - `progress_bar`    — active run progress (turns completed / estimated max)
+//! - `context_gauge`   — context-window fill for the active run
+//! - error count summary from `TuiState::error_count`
 
 use chrono::Utc;
 use ratatui::{
@@ -18,6 +26,7 @@ use ratatui::{
 
 use crate::tui::state::{AgentSummary, RunSummary, SystemHealth, TuiState};
 use crate::tui::theme::Theme;
+use crate::tui::widgets::{context_gauge, progress_bar, token_sparkline};
 
 // ---------------------------------------------------------------------------
 // Layout breakpoints
@@ -62,19 +71,21 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
 // ---------------------------------------------------------------------------
 
 fn render_compact(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
-    // Stack: agents (30%) | runs (50%) | health (20%)
+    // Stack: agents | runs | health | widget strip
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(50),
-            Constraint::Percentage(20),
+            Constraint::Percentage(28),
+            Constraint::Percentage(44),
+            Constraint::Percentage(16),
+            Constraint::Percentage(12),
         ])
         .split(area);
 
     render_agents_panel(frame, rows[0], &state.agents, theme);
     render_runs_panel(frame, rows[1], &state.runs, theme);
     render_health_panel(frame, rows[2], &state.health, theme);
+    render_widget_strip(frame, rows[3], state, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -82,10 +93,14 @@ fn render_compact(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme
 // ---------------------------------------------------------------------------
 
 fn render_standard(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
-    // Rows: top panels (80%) | health bar (20%)
+    // Rows: top panels | health bar (6) | widget strip (4)
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(6)])
+        .constraints([
+            Constraint::Min(8),
+            Constraint::Length(6),
+            Constraint::Length(4),
+        ])
         .split(area);
 
     // Top: agents (35%) | runs (65%)
@@ -97,6 +112,7 @@ fn render_standard(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Them
     render_agents_panel(frame, top[0], &state.agents, theme);
     render_runs_panel(frame, top[1], &state.runs, theme);
     render_health_panel(frame, rows[1], &state.health, theme);
+    render_widget_strip(frame, rows[2], state, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -104,10 +120,14 @@ fn render_standard(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Them
 // ---------------------------------------------------------------------------
 
 fn render_wide(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
-    // Rows: panels (80%) | health (20%)
+    // Rows: panels | health (6) | widget strip (4)
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(6)])
+        .constraints([
+            Constraint::Min(8),
+            Constraint::Length(6),
+            Constraint::Length(4),
+        ])
         .split(area);
 
     // Three columns: agents | runs | health sidebar
@@ -124,6 +144,7 @@ fn render_wide(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
     render_runs_panel(frame, cols[1], &state.runs, theme);
     render_health_sidebar(frame, cols[2], &state.health, theme);
     render_health_panel(frame, rows[1], &state.health, theme);
+    render_widget_strip(frame, rows[2], state, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +384,175 @@ fn stat_line(
             Style::default().fg(value_color).add_modifier(Modifier::BOLD),
         ),
     ])
+}
+
+// ---------------------------------------------------------------------------
+// Widget strip (token sparkline, progress bar, context gauge, error count)
+// ---------------------------------------------------------------------------
+
+/// Render the dashboard widget strip — a compact horizontal band of live
+/// widgets showing token usage, run progress, context fill, and error count.
+fn render_widget_strip(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
+    if area.height == 0 {
+        return;
+    }
+
+    // Horizontal split: sparkline | progress bar | context gauge | error count
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(35), // token sparkline
+            Constraint::Percentage(25), // run progress bar
+            Constraint::Percentage(25), // context gauge
+            Constraint::Percentage(15), // error summary
+        ])
+        .split(area);
+
+    // ── Token sparkline ───────────────────────────────────────────────────
+    {
+        let block = styled_block(" Token Usage ", theme);
+        let inner = block.inner(cols[0]);
+        frame.render_widget(block, cols[0]);
+
+        let limit = state.token_history.iter().copied().max().unwrap_or(1).max(1);
+
+        if inner.height >= 2 {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
+                .split(inner);
+
+            let last = state.token_history.last().copied().unwrap_or(0);
+            let label = if state.token_history.is_empty() {
+                "no data".to_owned()
+            } else {
+                format!("last: {last}t")
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(label, Style::default().fg(theme.text_dim))),
+                parts[0],
+            );
+            token_sparkline::render(frame, parts[1], &state.token_history, limit, 0.75, theme);
+        } else {
+            token_sparkline::render(frame, inner, &state.token_history, limit, 0.75, theme);
+        }
+    }
+
+    // ── Active run progress bar ───────────────────────────────────────────
+    {
+        let block = styled_block(" Run Progress ", theme);
+        let inner = block.inner(cols[1]);
+        frame.render_widget(block, cols[1]);
+
+        let (turns_done, max_turns) = active_run_progress(state);
+        let ratio = if max_turns > 0 {
+            (turns_done as f64 / max_turns as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        if inner.height >= 2 {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
+                .split(inner);
+
+            let label = if max_turns == 0 {
+                "idle".to_owned()
+            } else {
+                format!("{turns_done}/{max_turns} turns")
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(label, Style::default().fg(theme.text_dim))),
+                parts[0],
+            );
+            progress_bar::render(frame, parts[1], ratio, theme);
+        } else {
+            progress_bar::render(frame, inner, ratio, theme);
+        }
+    }
+
+    // ── Context gauge ─────────────────────────────────────────────────────
+    {
+        let block = styled_block(" Context ", theme);
+        let inner = block.inner(cols[2]);
+        frame.render_widget(block, cols[2]);
+
+        if inner.height >= 2 {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
+                .split(inner);
+
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "window fill",
+                    Style::default().fg(theme.text_dim),
+                )),
+                parts[0],
+            );
+            context_gauge::render(frame, parts[1], state.context_used, state.context_total, theme);
+        } else {
+            context_gauge::render(frame, inner, state.context_used, state.context_total, theme);
+        }
+    }
+
+    // ── Error count summary ───────────────────────────────────────────────
+    {
+        let block = styled_block(" Errors ", theme);
+        let inner = block.inner(cols[3]);
+        frame.render_widget(block, cols[3]);
+
+        let (err_color, err_text) = if state.error_count == 0 {
+            (theme.success, "0 errors".to_owned())
+        } else {
+            (
+                theme.danger,
+                format!(
+                    "{} error{}",
+                    state.error_count,
+                    if state.error_count == 1 { "" } else { "s" },
+                ),
+            )
+        };
+
+        let lines = vec![
+            Line::from(Span::styled(
+                err_text,
+                Style::default().fg(err_color).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "last hour",
+                Style::default().fg(theme.text_dim),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+/// Derive `(turns_done, estimated_max_turns)` for the progress bar.
+///
+/// Prefers the explicitly selected `RunDetail`; falls back to the most-active
+/// non-terminal run in the summary list.  Returns `(0, 0)` when no runs are
+/// active.
+fn active_run_progress(state: &TuiState) -> (u32, u32) {
+    if let Some(detail) = &state.run_detail {
+        let done = detail.turn_count;
+        // Heuristic: max is turns_done + a headroom of 5 (or at least 20).
+        let max = done.max(20).max(done + 5);
+        return (done, max);
+    }
+
+    let active = state.runs.iter().filter(|r| {
+        matches!(r.state.as_str(), "working" | "started" | "created" | "queued")
+    });
+    if let Some(run) = active.max_by_key(|r| r.turn_count) {
+        let done = run.turn_count;
+        let max = done.max(20).max(done + 5);
+        return (done, max);
+    }
+
+    (0, 0)
 }
 
 // ---------------------------------------------------------------------------

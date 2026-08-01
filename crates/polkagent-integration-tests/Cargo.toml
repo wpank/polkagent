@@ -44,6 +44,15 @@ polkagent-conversation = { path = "../polkagent-conversation" }
 # Service lifecycle tests
 polkagent-service = { path = "../polkagent-service" }
 polkagent-payment = { path = "../polkagent-payment" }
+# Phase 2: Explain-before-sign crates
+polkagent-codec = { path = "../polkagent-codec" }
+polkagent-card = { path = "../polkagent-card" }
+polkagent-chain-trait = { path = "../polkagent-chain-trait" }
+polkagent-chain-fake = { path = "../polkagent-chain-fake" }
+# New integration test crates
+polkagent-group = { path = "../polkagent-group" }
+polkagent-feed = { path = "../polkagent-feed" }
+polkagent-eval = { path = "../polkagent-eval" }
 
 # Async
 tokio = { workspace = true, features = ["full", "test-util"] }

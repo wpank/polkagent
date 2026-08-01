@@ -34,6 +34,7 @@ fn allow_rule(id: &str, actions: &[&str], resources: &[&str]) -> PolicyRule {
         action_patterns: actions.iter().map(|s| s.to_string()).collect(),
         resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
         conditions: Default::default(),
+        abac_condition: None,
     }
 }
 
@@ -44,6 +45,7 @@ fn deny_rule(id: &str, actions: &[&str], resources: &[&str]) -> PolicyRule {
         action_patterns: actions.iter().map(|s| s.to_string()).collect(),
         resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
         conditions: Default::default(),
+        abac_condition: None,
     }
 }
 
@@ -383,6 +385,7 @@ async fn stale_context_produces_denial() {
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let ctx = EvaluationContext {
         attributes: Default::default(),
+        typed_attributes: Default::default(),
         evaluated_at: Some(stale_ts),
     };
 

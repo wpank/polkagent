@@ -16,6 +16,7 @@
 //! | [`timeout`] | [`TimeoutEnforcer`], [`TimeoutConfig`]: deadline enforcement |
 //! | [`error`] | [`RunError`], [`TransitionError`]: error types |
 
+pub mod cost_tracker;
 pub mod dag;
 pub mod error;
 pub mod manager;
@@ -28,6 +29,7 @@ pub mod turn;
 // Flat re-exports — the public API surface
 // ---------------------------------------------------------------------------
 
+pub use cost_tracker::{BudgetExceededReason, CostTracker};
 pub use dag::{DagError, DagExecutor, ExecutionDag, NodeId, NodeState};
 pub use error::{RunError, TransitionError};
 pub use manager::RunManager;

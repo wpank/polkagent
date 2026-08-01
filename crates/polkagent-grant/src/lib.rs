@@ -34,6 +34,7 @@
 //!         action_patterns: vec!["chain/**".to_string()],
 //!         resource_patterns: vec!["account/**".to_string()],
 //!         conditions: Default::default(),
+//!         abac_condition: None,
 //!     });
 //!
 //!     let resolver = GrantResolver::new(set, ResolverConfig::default());
@@ -63,6 +64,8 @@
 pub mod budget;
 pub mod gate;
 pub mod grant;
+#[cfg(any(feature = "identity", test))]
+pub mod identity;
 pub mod loader;
 pub mod policy;
 
@@ -81,5 +84,10 @@ pub use grant::{
 };
 pub use loader::{load_policy_dir, load_policy_file, merge_policy_sets, LoadError, PolicyFileRule};
 pub use policy::{
-    evaluate, pattern_matches, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
+    builtin_templates, evaluate, evaluate_condition, instantiate_template, pattern_matches,
+    resolve_policy_chain, Condition, ContextAttribute, Effect, EvaluationContext, Policy,
+    PolicyDecision, PolicyRule, PolicyRuleTemplate, PolicySet, PolicyTemplate, ResolvedPolicy,
+    TemplateError, TemplateParam,
 };
+#[cfg(feature = "identity")]
+pub use identity::{context_from_identity, IdentityPrincipal, SS58EncodedAccount};

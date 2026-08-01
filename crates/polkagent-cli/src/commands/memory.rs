@@ -6,13 +6,16 @@ use anyhow::Result;
 use tracing::info;
 use uuid::Uuid;
 
+use polkagent_core::ids::AgentId;
+use polkagent_memory::retention::{RetentionPolicy, RetentionSweeper};
 use polkagent_memory::sqlite::SqliteMemoryStore;
+use polkagent_memory::store::MemoryStore;
 use polkagent_memory::types::{MemoryId, MemoryType};
 use polkagent_memory::MemoryService;
-use polkagent_core::ids::AgentId;
 
 use crate::cli::{
-    MemoryCmd, MemoryForgetCmd, MemoryListCmd, MemorySearchCmd, MemoryStatsCmd,
+    MemoryCmd, MemoryExportCmd, MemoryForgetCmd, MemoryImportCmd, MemoryListCmd, MemorySearchCmd,
+    MemoryStatsCmd, MemorySweepCmd,
 };
 
 /// Dispatch the memory subcommand.
@@ -23,9 +26,12 @@ pub fn run(cmd: &MemoryCmd) -> Result<()> {
 
     match cmd {
         MemoryCmd::Search(c) => search(c, &svc, &store),
-        MemoryCmd::List(c)   => list(c, &store),
+        MemoryCmd::List(c) => list(c, &store),
         MemoryCmd::Forget(c) => forget(c, &svc),
-        MemoryCmd::Stats(c)  => stats(c, &store),
+        MemoryCmd::Stats(c) => stats(c, &store),
+        MemoryCmd::Export(c) => export(c, &svc),
+        MemoryCmd::Import(c) => import(c, &svc),
+        MemoryCmd::Sweep(c) => sweep(c, &store),
     }
 }
 
@@ -33,21 +39,36 @@ pub fn run(cmd: &MemoryCmd) -> Result<()> {
 // search
 // ---------------------------------------------------------------------------
 
-fn search(cmd: &MemorySearchCmd, svc: &MemoryService, _store: &SqliteMemoryStore) -> Result<()> {
+fn search(cmd: &MemorySearchCmd, svc: &MemoryService, store: &SqliteMemoryStore) -> Result<()> {
     let rt = tokio::runtime::Handle::current();
 
-    // Search across all agents. We use a nil AgentId to search broadly.
-    // In practice, the FTS search filters by agent_id, so for a CLI-wide search
-    // we query the raw database directly.
     let limit = cmd.limit;
     let query = &cmd.query;
 
-    // Direct SQL search across all agents for the CLI.
-    let results = rt.block_on(async {
-        // Use a generic agent_id for the search (the store filters by it).
-        // For CLI, we do a direct LIKE search across all agents instead.
-        svc.recall(AgentId::from_uuid(Uuid::nil()), query, limit).await
-    });
+    // Resolve the agent_id: use the provided one, or fall back to a cross-agent
+    // direct search when none is given.
+    let results = if let Some(ref agent_id_str) = cmd.agent_id {
+        let agent_id: AgentId = agent_id_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", agent_id_str))?;
+        rt.block_on(async { svc.recall(agent_id, query, limit).await })
+    } else {
+        // Cross-agent search: use the store directly with a nil agent_id, which
+        // in LIKE mode returns entries matching the text across all agents.
+        // We also try a direct raw search using the store's search method.
+        rt.block_on(async {
+            let q = polkagent_memory::types::MemoryQuery {
+                agent_id: AgentId::from_uuid(Uuid::nil()),
+                query_text: query.clone(),
+                memory_types: None,
+                limit,
+                min_relevance: None,
+                since: None,
+                episode_id: None,
+            };
+            store.search(&q).await
+        })
+    };
 
     match results {
         Ok(entries) => {
@@ -113,10 +134,7 @@ fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
         episode_id: None,
     };
 
-    let results = rt.block_on(async {
-        use polkagent_memory::store::MemoryStore;
-        store.search(&query).await
-    });
+    let results = rt.block_on(async { store.search(&query).await });
 
     match results {
         Ok(entries) => {
@@ -153,7 +171,11 @@ fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
                     );
                 }
                 println!();
-                println!("{} memor{}", entries.len(), if entries.len() == 1 { "y" } else { "ies" });
+                println!(
+                    "{} memor{}",
+                    entries.len(),
+                    if entries.len() == 1 { "y" } else { "ies" }
+                );
             }
         }
         Err(e) => {
@@ -196,14 +218,6 @@ fn forget(cmd: &MemoryForgetCmd, svc: &MemoryService) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn stats(cmd: &MemoryStatsCmd, store: &SqliteMemoryStore) -> Result<()> {
-    // Query memory counts by type directly from the database.
-    // SqliteMemoryStore wraps a Connection behind a Mutex, but we
-    // can use the search method with no filters to count.
-    //
-    // For efficiency, query the raw connection. Since SqliteMemoryStore
-    // doesn't expose its connection, we open a read-only connection
-    // to the same path.
-
     let home = std::env::var("HOME").unwrap_or_default();
     let default_path = format!("{home}/.local/share/polkagent/memory.db");
     let db_path = std::env::var("POLKAGENT_MEMORY_DB_PATH").unwrap_or(default_path);
@@ -279,6 +293,254 @@ fn stats(cmd: &MemoryStatsCmd, store: &SqliteMemoryStore) -> Result<()> {
             }
 
             let _ = store;
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// export
+// ---------------------------------------------------------------------------
+
+fn export(cmd: &MemoryExportCmd, svc: &MemoryService) -> Result<()> {
+    let rt = tokio::runtime::Handle::current();
+
+    let agent_id: AgentId = cmd
+        .agent_id
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", cmd.agent_id))?;
+
+    let path = &cmd.output_path;
+
+    let result = rt.block_on(async { svc.export_agent_memory(&agent_id, path).await });
+
+    match result {
+        Ok(count) => {
+            let file_size = std::fs::metadata(path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            if cmd.json {
+                let out = serde_json::json!({
+                    "agent_id": agent_id.to_string(),
+                    "output_path": path.display().to_string(),
+                    "records_exported": count,
+                    "file_size_bytes": file_size,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("Export complete.");
+                println!("  Agent:    {agent_id}");
+                println!("  Output:   {}", path.display());
+                println!("  Records:  {count}");
+                println!("  Size:     {} bytes", file_size);
+            }
+
+            info!(
+                agent_id = %agent_id,
+                output_path = %path.display(),
+                records = count,
+                "memory archive exported via CLI"
+            );
+        }
+        Err(e) => {
+            anyhow::bail!("Export failed: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// import
+// ---------------------------------------------------------------------------
+
+fn import(cmd: &MemoryImportCmd, svc: &MemoryService) -> Result<()> {
+    let rt = tokio::runtime::Handle::current();
+
+    let path = &cmd.input_path;
+
+    if !path.exists() {
+        anyhow::bail!("Input file does not exist: {}", path.display());
+    }
+
+    let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+    let result = rt.block_on(async { svc.import_agent_memory(path).await });
+
+    match result {
+        Ok(import_result) => {
+            if cmd.json {
+                let errors_json: Vec<serde_json::Value> = import_result
+                    .errors
+                    .iter()
+                    .map(|e| serde_json::Value::String(e.clone()))
+                    .collect();
+                let out = serde_json::json!({
+                    "input_path": path.display().to_string(),
+                    "file_size_bytes": file_size,
+                    "imported": import_result.imported_count,
+                    "skipped": import_result.skipped_count,
+                    "errors": errors_json,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("Import complete.");
+                println!("  Input:    {}", path.display());
+                println!("  Size:     {} bytes", file_size);
+                println!("  Imported: {}", import_result.imported_count);
+                println!("  Skipped:  {}", import_result.skipped_count);
+                if !import_result.errors.is_empty() {
+                    println!("  Errors ({}):", import_result.errors.len());
+                    for e in &import_result.errors {
+                        println!("    - {e}");
+                    }
+                }
+            }
+
+            info!(
+                input_path = %path.display(),
+                imported = import_result.imported_count,
+                skipped = import_result.skipped_count,
+                "memory archive imported via CLI"
+            );
+        }
+        Err(e) => {
+            anyhow::bail!("Import failed: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// sweep
+// ---------------------------------------------------------------------------
+
+fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
+    let rt = tokio::runtime::Handle::current();
+
+    let agent_id: AgentId = cmd
+        .agent_id
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", cmd.agent_id))?;
+
+    let policy = RetentionPolicy {
+        max_entries_per_agent: cmd.max_entries,
+        max_age_days: cmd.max_age_days,
+        min_relevance: cmd.min_relevance,
+        sweep_interval_secs: 3600,
+    };
+
+    if cmd.dry_run {
+        // For a dry-run, query the store to show what *would* be deleted
+        // without actually deleting anything.
+        let result = rt.block_on(async {
+            // Count entries that would be deleted by age.
+            let cutoff = chrono::Utc::now()
+                - chrono::Duration::days(policy.max_age_days as i64);
+            let all_query = polkagent_memory::types::MemoryQuery {
+                agent_id,
+                query_text: String::new(),
+                memory_types: None,
+                limit: usize::MAX / 2,
+                min_relevance: None,
+                since: None,
+                episode_id: None,
+            };
+            let all_entries = store.search(&all_query).await?;
+
+            let by_age = all_entries
+                .iter()
+                .filter(|e| e.created_at < cutoff)
+                .count();
+
+            let remaining_after_age: Vec<_> = all_entries
+                .iter()
+                .filter(|e| e.created_at >= cutoff)
+                .collect();
+
+            let by_relevance = remaining_after_age
+                .iter()
+                .filter(|e| e.relevance_score < policy.min_relevance)
+                .count();
+
+            let remaining_after_rel = remaining_after_age.len() - by_relevance;
+
+            let by_count = if remaining_after_rel > policy.max_entries_per_agent {
+                remaining_after_rel - policy.max_entries_per_agent
+            } else {
+                0
+            };
+
+            Ok::<_, polkagent_memory::MemoryError>((by_age, by_relevance, by_count))
+        });
+
+        match result {
+            Ok((by_age, by_relevance, by_count)) => {
+                let total = by_age + by_relevance + by_count;
+                if cmd.json {
+                    let out = serde_json::json!({
+                        "dry_run": true,
+                        "agent_id": agent_id.to_string(),
+                        "would_delete_total": total,
+                        "by_age": by_age,
+                        "by_relevance": by_relevance,
+                        "by_count_limit": by_count,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    println!("Retention sweep (dry-run) for agent {agent_id}:");
+                    println!("{}", "-".repeat(50));
+                    println!("  Would delete by age:        {by_age}");
+                    println!("  Would delete by relevance:  {by_relevance}");
+                    println!("  Would delete by count cap:  {by_count}");
+                    println!("  Total would delete:         {total}");
+                    println!();
+                    println!("Run without --dry-run to apply.");
+                }
+            }
+            Err(e) => {
+                anyhow::bail!("Sweep dry-run failed: {e}");
+            }
+        }
+    } else {
+        let sweeper =
+            RetentionSweeper::new(Arc::new(store.clone()), policy, agent_id);
+
+        let result = rt.block_on(async { sweeper.sweep().await });
+
+        match result {
+            Ok(sweep_result) => {
+                if cmd.json {
+                    let out = serde_json::json!({
+                        "dry_run": false,
+                        "agent_id": agent_id.to_string(),
+                        "deleted_total": sweep_result.deleted_count,
+                        "by_age": sweep_result.by_age,
+                        "by_relevance": sweep_result.by_relevance,
+                        "by_count_limit": sweep_result.by_count_limit,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    println!("Retention sweep complete for agent {agent_id}:");
+                    println!("{}", "-".repeat(50));
+                    println!("  Deleted by age:        {}", sweep_result.by_age);
+                    println!("  Deleted by relevance:  {}", sweep_result.by_relevance);
+                    println!("  Deleted by count cap:  {}", sweep_result.by_count_limit);
+                    println!("  Total deleted:         {}", sweep_result.deleted_count);
+                }
+
+                info!(
+                    agent_id = %agent_id,
+                    deleted = sweep_result.deleted_count,
+                    "retention sweep completed via CLI"
+                );
+            }
+            Err(e) => {
+                anyhow::bail!("Sweep failed: {e}");
+            }
         }
     }
 

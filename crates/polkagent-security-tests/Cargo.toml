@@ -20,6 +20,10 @@ polkagent-store-trait = { path = "../polkagent-store-trait" }
 polkagent-metadata = { path = "../polkagent-metadata" }
 polkagent-identity = { path = "../polkagent-identity" }
 polkagent-outbox = { path = "../polkagent-outbox" }
+# E4 replay/debugging tests
+polkagent-event = { path = "../polkagent-event" }
+# E5 least-privilege tests
+polkagent-tool = { path = "../polkagent-tool" }
 
 # Serialization
 serde = { workspace = true }

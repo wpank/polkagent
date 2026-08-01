@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+// serde_json is used for converting params/payloads but the row types
+// intentionally do NOT derive Serialize/Deserialize to keep trait-solver
+// recursion depth manageable.
 use tracing::{debug, instrument};
 use uuid::Uuid;
 
@@ -29,7 +31,7 @@ use crate::pool::SqlitePool;
 // ---------------------------------------------------------------------------
 
 /// An agent record as stored in the `agents` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AgentRow {
     pub id: String,
     pub name: String,
@@ -41,7 +43,7 @@ pub struct AgentRow {
 }
 
 /// A run record as stored in the `runs` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct RunRow {
     pub id: String,
     pub agent_id: String,
@@ -54,7 +56,7 @@ pub struct RunRow {
 }
 
 /// A turn record as stored in the `turns` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TurnRow {
     pub id: String,
     pub run_id: String,
@@ -67,7 +69,7 @@ pub struct TurnRow {
 }
 
 /// A step record as stored in the `steps` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct StepRow {
     pub id: String,
     pub turn_id: String,
@@ -78,7 +80,7 @@ pub struct StepRow {
 }
 
 /// An effect intent as stored in the `effect_intents` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct EffectIntentRow {
     pub id: String,
     pub run_id: String,
@@ -93,7 +95,7 @@ pub struct EffectIntentRow {
 }
 
 /// An effect attempt as stored in the `effect_attempts` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct EffectAttemptRow {
     pub id: String,
     pub intent_id: String,
@@ -103,7 +105,7 @@ pub struct EffectAttemptRow {
 }
 
 /// An effect outcome as stored in the `effect_outcomes` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct EffectOutcomeRow {
     pub id: String,
     pub intent_id: String,
@@ -113,7 +115,7 @@ pub struct EffectOutcomeRow {
 }
 
 /// An artifact metadata record as stored in the `artifacts` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ArtifactRow {
     pub id: String,
     pub run_id: Option<String>,
@@ -125,7 +127,7 @@ pub struct ArtifactRow {
 }
 
 /// A run event as stored in the `run_events` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct RunEventRow {
     pub id: String,
     pub run_id: String,
@@ -2078,6 +2080,55 @@ impl EffectStore for SqlitePool {
                     .map_err(map_sqlite_err)?;
             }
             Ok(())
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn update_intent_state(
+        &self,
+        intent_id: EffectId,
+        new_state: &str,
+    ) -> Result<StoredIntent, TraitStoreError> {
+        let id_str = intent_id.to_string();
+        let new_state = new_state.to_string();
+        let pool = self.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+
+            // Update state in the database.
+            let n = writer
+                .execute(
+                    "UPDATE effect_intents SET state = ?1 WHERE id = ?2",
+                    rusqlite::params![new_state, id_str],
+                )
+                .map_err(map_sqlite_err)?;
+
+            if n == 0 {
+                return Err(TraitStoreError::NotFound {
+                    resource_type: "EffectIntent",
+                    id: id_str.clone(),
+                });
+            }
+
+            // Fetch and return the updated intent.
+            let row = writer
+                .query_row(
+                    &format!("{INTENT_SELECT} WHERE id = ?1"),
+                    [&id_str],
+                    row_to_stored_intent,
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => TraitStoreError::NotFound {
+                        resource_type: "EffectIntent",
+                        id: id_str.clone(),
+                    },
+                    other => map_sqlite_err(other),
+                })?;
+            row.into_stored_intent()
         })
         .await
         .map_err(|e| TraitStoreError::Internal {

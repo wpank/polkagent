@@ -18,6 +18,9 @@ serde_json = { workspace = true }
 # Time
 chrono = { workspace = true }
 
+# Crypto (for payload hash in from_intent)
+blake3 = { workspace = true }
+
 # Errors
 thiserror = { workspace = true }
 
@@ -28,6 +31,11 @@ uuid = { workspace = true }
 ratatui = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 proptest = { workspace = true }
+
+[[bench]]
+name = "render"
+harness = false

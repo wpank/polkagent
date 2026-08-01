@@ -13,7 +13,7 @@
 
 use chrono::{DateTime, Utc};
 use polkagent_core::{AgentId, RunId};
-use polkagent_core::agent::{AgentSpec, AgentState};
+use polkagent_core::agent::{AgentSpec, AgentState, ModelPreference, ResourceLimits};
 use polkagent_core::run::RunState;
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +46,33 @@ pub struct CreateAgentRequest {
     /// System prompt template.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+
+    // ------------------------------------------------------------------
+    // PRD-03 optional fields
+    // ------------------------------------------------------------------
+
+    /// Capabilities this agent declares (e.g. `"file.read"`, `"chain.query"`).
+    ///
+    /// Absent means the agent declares no capabilities and inherits none from
+    /// the request.
+    #[serde(default)]
+    pub declared_capabilities: Vec<String>,
+    /// Policy file references governing this agent's behaviour.
+    #[serde(default)]
+    pub policy_refs: Vec<String>,
+    /// Runtime resource limits for runs executed by this agent.
+    ///
+    /// `null` / absent means all limits are inherited from the global config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_limits: Option<ResourceLimits>,
+    /// Preferred model configuration overriding provider defaults.
+    ///
+    /// `null` / absent means the global provider defaults apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_preference: Option<ModelPreference>,
+    /// Surfaces on which this agent should be exposed.
+    #[serde(default)]
+    pub surface_bindings: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +728,58 @@ pub struct ListPaymentReceiptsResponse {
     pub version: String,
     /// List of receipts.
     pub data: Vec<PaymentReceiptResponse>,
+}
+
+// ---------------------------------------------------------------------------
+// Effects — approval/denial requests and responses
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /effects/:id/approve`.
+///
+/// Currently no fields are required; the body may be omitted or an empty
+/// JSON object `{}`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ApproveEffectRequest {
+    /// Optional notes or justification for the approval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Request body for `POST /effects/:id/deny`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DenyEffectRequest {
+    /// Human-readable reason for the denial.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Response body for `POST /effects/:id/approve`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApproveEffectResponse {
+    /// API version.
+    pub version: String,
+    /// The effect intent ID.
+    pub effect_id: String,
+    /// The new state after approval (always `"approved"`).
+    pub new_state: String,
+    /// UTC timestamp of when the approval was recorded.
+    pub approved_at: DateTime<Utc>,
+}
+
+/// Response body for `POST /effects/:id/deny`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DenyEffectResponse {
+    /// API version.
+    pub version: String,
+    /// The effect intent ID.
+    pub effect_id: String,
+    /// The new state after denial (always `"denied"`).
+    pub new_state: String,
+    /// The denial reason, if provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// UTC timestamp of when the denial was recorded.
+    pub denied_at: DateTime<Utc>,
 }
 
 // ---------------------------------------------------------------------------

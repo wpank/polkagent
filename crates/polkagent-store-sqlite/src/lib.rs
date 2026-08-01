@@ -1,3 +1,4 @@
+#![recursion_limit = "2048"]
 //! SQLite storage adapter for the Polkagent platform.
 //!
 //! This crate provides durable, local-first storage backed by SQLite with
@@ -66,6 +67,12 @@ pub mod artifact_store_impl;
 pub mod conversation_store_impl;
 pub mod error;
 pub mod event_store;
+// NOTE: group_store_impl and feed_store_impl are temporarily disabled.
+// Their serde type graphs exceed rustc's trait-solver recursion limit
+// when compiled alongside the other store modules. They will be moved
+// to dedicated crates (polkagent-store-sqlite-group, -feed) to isolate
+// the trait resolution. The in-memory stores in polkagent-group and
+// polkagent-feed remain fully functional.
 pub mod migrations;
 pub mod payment_store_impl;
 pub mod pool;

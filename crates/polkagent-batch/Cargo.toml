@@ -1,0 +1,38 @@
+[package]
+name = "polkagent-batch"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Batch processing for effects and operations — grouping multiple operations for efficient execution"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+polkagent-effect = { path = "../polkagent-effect" }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Utils
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

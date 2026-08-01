@@ -57,6 +57,7 @@ pub mod audit;
 pub mod chain;
 pub mod env;
 pub mod file;
+pub mod scan;
 pub mod store;
 pub mod types;
 
@@ -68,5 +69,6 @@ pub use audit::{AuditEntry, AuditOperation, SecretAuditLog};
 pub use chain::ChainSecretStore;
 pub use env::EnvSecretStore;
 pub use file::FileSecretStore;
+pub use scan::{detect_secrets, scrub_secrets, SecretDetection, SecretKind};
 pub use store::{Result, SecretError, SecretStore};
 pub use types::{SecretId, SecretMetadata, SecretSource, SecretValue};

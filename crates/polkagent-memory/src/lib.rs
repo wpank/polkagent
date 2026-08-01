@@ -69,6 +69,8 @@ pub mod types;
 
 pub use classification::Classification;
 pub use error::{MemoryError, MemoryResult};
+pub use export::ImportResult;
+pub use retention::{RetentionPolicy, RetentionSweeper, SweepResult};
 pub use service::MemoryService;
 pub use sqlite::SqliteMemoryStore;
 pub use store::MemoryStore;

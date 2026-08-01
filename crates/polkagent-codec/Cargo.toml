@@ -13,5 +13,12 @@ thiserror = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "decode"
+harness = false
+
 [lints]
 workspace = true

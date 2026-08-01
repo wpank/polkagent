@@ -7,6 +7,9 @@
 //! - Connection indicator: `◉` connected (jade) / `○` disconnected (crimson)
 //! - Runtime metadata version and freshness
 
+// Public widget API — will be wired to the system health view.
+#![allow(dead_code)]
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},

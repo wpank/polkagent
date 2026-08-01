@@ -20,6 +20,9 @@
 //! resource_patterns = ["**"]
 //! ```
 //!
+//! Rules may also carry a structured `[rules.abac_condition]` TOML table that
+//! is deserialized into a [`Condition`] and evaluated by the policy engine.
+//!
 //! # Loading
 //!
 //! - [`load_policy_file`] loads a single `.toml` file into a [`PolicySet`].
@@ -34,7 +37,7 @@ use std::path::Path;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::policy::{Effect, PolicyRule, PolicySet};
+use crate::policy::{Condition, Effect, PolicyRule, PolicySet};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -100,6 +103,13 @@ pub struct PolicyFileRule {
     /// Optional key/value conditions the evaluation context must satisfy.
     #[serde(default)]
     pub conditions: HashMap<String, String>,
+
+    /// Optional structured ABAC condition expression.
+    ///
+    /// When present in TOML this is parsed as a nested table whose `op` key
+    /// determines the [`Condition`] variant.
+    #[serde(default)]
+    pub abac_condition: Option<Condition>,
 }
 
 impl From<PolicyFileRule> for PolicyRule {
@@ -110,6 +120,7 @@ impl From<PolicyFileRule> for PolicyRule {
             action_patterns: file_rule.action_patterns,
             resource_patterns: file_rule.resource_patterns,
             conditions: file_rule.conditions,
+            abac_condition: file_rule.abac_condition,
         }
     }
 }
@@ -218,7 +229,7 @@ pub fn merge_policy_sets(sets: Vec<PolicySet>) -> PolicySet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{evaluate, EvaluationContext, PolicyDecision};
+    use crate::policy::{evaluate, Condition, ContextAttribute, EvaluationContext, PolicyDecision};
     use std::path::PathBuf;
 
     /// Helper to resolve the workspace root from the crate directory.
@@ -244,6 +255,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             evaluated_at: None,
+            ..Default::default()
         }
     }
 
@@ -303,8 +315,9 @@ mod tests {
     fn load_policy_dir_merges_all() {
         let dir = fixtures_dir();
         let set = load_policy_dir(&dir).expect("should load policy directory");
-        // Total rules across all four files: 1 + 3 + 4 + 3 = 11
-        assert_eq!(set.rules.len(), 11);
+        // Total rules across all five files:
+        //   default-deny=1, developer=4, operator=3, read-only=3, time-limited=2 → 13
+        assert_eq!(set.rules.len(), 13);
 
         // Deny rules should come before allow rules after merge.
         let first_allow_idx = set
@@ -573,6 +586,102 @@ mod tests {
         );
     }
 
+    // ---- Time-limited policy evaluation ------------------------------------
+
+    #[test]
+    fn time_limited_loads_successfully() {
+        let path = fixtures_dir().join("time-limited.toml");
+        let set = load_policy_file(&path).expect("should load time-limited.toml");
+        assert_eq!(set.rules.len(), 2, "time-limited should have 2 rules");
+    }
+
+    #[test]
+    fn time_limited_abac_condition_is_loaded() {
+        let path = fixtures_dir().join("time-limited.toml");
+        let set = load_policy_file(&path).expect("load time-limited.toml");
+        let allow_rule = set
+            .rules
+            .iter()
+            .find(|r| r.effect == Effect::Allow)
+            .expect("should have an allow rule");
+        assert!(
+            allow_rule.abac_condition.is_some(),
+            "time-limited allow rule should have an ABAC condition"
+        );
+    }
+
+    #[test]
+    fn time_limited_allows_in_business_hours() {
+        let path = fixtures_dir().join("time-limited.toml");
+        let set = load_policy_file(&path).expect("load");
+
+        let ctx = EvaluationContext::default()
+            .with_attribute(
+                "environment.time_window",
+                ContextAttribute::String("business_hours".to_string()),
+            );
+
+        assert_eq!(
+            evaluate(&set, "chain.query", "any", &ctx),
+            PolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn time_limited_denies_outside_business_hours() {
+        let path = fixtures_dir().join("time-limited.toml");
+        let set = load_policy_file(&path).expect("load");
+
+        // No time_window set → chain.submit should be denied.
+        let ctx = EvaluationContext::default();
+        assert!(matches!(
+            evaluate(&set, "chain.submit", "any", &ctx),
+            PolicyDecision::Deny { .. }
+        ));
+
+        // Wrong window → submit still denied (deny rule fires).
+        let ctx_wrong = EvaluationContext::default().with_attribute(
+            "environment.time_window",
+            ContextAttribute::String("off_hours".to_string()),
+        );
+        assert!(matches!(
+            evaluate(&set, "chain.submit", "any", &ctx_wrong),
+            PolicyDecision::Deny { .. }
+        ));
+    }
+
+    // ---- ABAC condition in TOML (inline table) ------------------------------
+
+    #[test]
+    fn load_rule_with_abac_condition_from_toml() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("abac.toml");
+
+        let content = r#"
+[[rules]]
+id = "abac-allow"
+effect = "allow"
+action_patterns = ["chain.*"]
+resource_patterns = ["**"]
+
+[rules.abac_condition]
+op = "equals"
+attr = "principal.role"
+value = "developer"
+"#;
+        std::fs::write(&path, content).expect("write toml");
+
+        let set = load_policy_file(&path).expect("load abac toml");
+        assert_eq!(set.rules.len(), 1);
+        let rule = &set.rules[0];
+        assert!(rule.abac_condition.is_some());
+        assert!(matches!(
+            rule.abac_condition.as_ref().unwrap(),
+            Condition::Equals { attr, value }
+            if attr == "principal.role" && value == "developer"
+        ));
+    }
+
     // ---- Merge tests -------------------------------------------------------
 
     #[test]
@@ -589,6 +698,7 @@ mod tests {
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
             conditions: Default::default(),
+            abac_condition: None,
         }]);
         let merged = merge_policy_sets(vec![set]);
         assert_eq!(merged.rules.len(), 1);
@@ -602,6 +712,7 @@ mod tests {
             action_patterns: vec!["a.*".to_string()],
             resource_patterns: vec!["**".to_string()],
             conditions: Default::default(),
+            abac_condition: None,
         }]);
         let set_b = PolicySet::new(vec![PolicyRule {
             id: "deny-b".to_string(),
@@ -609,6 +720,7 @@ mod tests {
             action_patterns: vec!["b.*".to_string()],
             resource_patterns: vec!["**".to_string()],
             conditions: Default::default(),
+            abac_condition: None,
         }]);
 
         let merged = merge_policy_sets(vec![set_a, set_b]);

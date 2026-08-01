@@ -27,13 +27,14 @@ use axum::Router;
 use thiserror::Error;
 use tower_http::{
     cors::CorsLayer,
-    trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
+    trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::{info, Level};
 
 use polkagent_config::Config;
 use polkagent_event::EventBus;
 use polkagent_store_trait::EffectStore;
+use polkagent_telemetry::{LogFormat, TelemetryConfig, TelemetryGuard};
 
 use crate::run::RunManagerTrait;
 use crate::state::AgentStore;
@@ -101,6 +102,16 @@ impl ApiServer {
         Self { state }
     }
 
+    /// Construct an `ApiServer` directly from a pre-built [`AppState`].
+    ///
+    /// Useful in tests that need to inject optional stores (e.g. an
+    /// `EventStore` or `ArtifactStore`) via the builder methods on `AppState`
+    /// before creating the server.
+    #[must_use]
+    pub fn from_state(state: crate::state::AppState) -> Self {
+        Self { state }
+    }
+
     /// Build the Axum router (routes + middleware) without binding.
     ///
     /// Exposed so that tests can construct the router and pass it to an
@@ -109,13 +120,67 @@ impl ApiServer {
     pub fn into_router(self) -> Router {
         let cors = CorsLayer::permissive();
 
+        // Request tracing middleware: records HTTP method, path, status, and
+        // latency for every request. Spans are emitted at INFO level.
+        // `DefaultMakeSpan` includes `http.method`, `http.target`, and
+        // `otel.kind`=server on the span. `DefaultOnResponse` logs status and
+        // duration at INFO level. `DefaultOnFailure` logs errors at ERROR level.
         let trace = TraceLayer::new_for_http()
-            .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-            .on_response(DefaultOnResponse::new().level(Level::INFO));
+            .make_span_with(
+                DefaultMakeSpan::new()
+                    .level(Level::INFO)
+                    .include_headers(false),
+            )
+            .on_request(DefaultOnRequest::new().level(Level::DEBUG))
+            .on_response(
+                DefaultOnResponse::new()
+                    .level(Level::INFO)
+                    .include_headers(false),
+            )
+            .on_failure(DefaultOnFailure::new().level(Level::ERROR));
 
         routes::register(self.state)
             .layer(trace)
             .layer(cors)
+    }
+
+    /// Initialise the telemetry subsystem from the server's `Config`.
+    ///
+    /// Reads `config.observability.{service_name,otlp_endpoint}` and
+    /// `config.log.level`, then calls [`polkagent_telemetry::init_telemetry`].
+    /// Returns a [`TelemetryGuard`] that must be held for the lifetime of the
+    /// server process. Gracefully returns `Ok(guard_with_no_provider)` on any
+    /// non-fatal error (e.g. the subscriber was already set in tests).
+    pub fn init_telemetry(config: &Config) -> TelemetryGuard {
+        let obs = &config.observability;
+
+        // Log level: config value, or fall back to "info".
+        let log_level = {
+            let lvl = &config.log.level;
+            if lvl.is_empty() {
+                "info".to_owned()
+            } else {
+                lvl.clone()
+            }
+        };
+
+        // Mirror the config's log format selection.
+        let log_format = match config.log.format {
+            polkagent_config::schema::LogFormat::Json => LogFormat::Json,
+            polkagent_config::schema::LogFormat::Pretty => LogFormat::Pretty,
+        };
+
+        let telemetry_cfg = TelemetryConfig {
+            log_level,
+            log_format,
+            otlp_endpoint: obs.otlp_endpoint.clone(),
+            service_name: obs.service_name.clone(),
+        };
+
+        // Attempt to initialise; swallow the error if a subscriber is already
+        // active (common in integration tests that re-use the same process).
+        polkagent_telemetry::init_telemetry(telemetry_cfg)
+            .unwrap_or_else(|_| TelemetryGuard::no_op())
     }
 
     /// Bind to `bind_addr` and serve requests until the process is killed.
@@ -147,6 +212,10 @@ impl ApiServer {
                 addr: bind_addr.to_owned(),
                 source,
             })?;
+
+        // Initialise telemetry from config before building the router.
+        // The guard is kept alive for the duration of the server.
+        let _telemetry_guard = Self::init_telemetry(&self.state.config);
 
         let router = self.into_router();
 

@@ -46,6 +46,23 @@ members = [
     "crates/polkagent-codec",
     "crates/polkagent-feed",
     "crates/polkagent-fault",
+    "crates/polkagent-health",
+    "crates/polkagent-audit",
+    "crates/polkagent-batch",
+    "crates/polkagent-cache",
+    "crates/polkagent-chain-subxt",
+    "crates/polkagent-context",
+    "crates/polkagent-migration",
+    "crates/polkagent-plugin",
+    "crates/polkagent-rate-limit",
+    "crates/polkagent-retry",
+    "crates/polkagent-scheduler",
+    # "crates/polkagent-store-sqlite-feed",  -- excluded: serde recursion_limit hang
+    "crates/polkagent-store-sqlite-group",
+    "crates/polkagent-surface-webhook",
+    "crates/polkagent-tool-governance",
+    "crates/polkagent-tool-treasury",
+    "crates/polkagent-transport-pca",
 ]
 
 [workspace.package]
@@ -63,6 +80,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 toml = "0.8"
 
 # Error handling

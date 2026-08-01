@@ -53,7 +53,7 @@ pub mod types;
 // `polkagent_core::ids::RunId`.
 // ---------------------------------------------------------------------------
 
-pub use agent::{AgentSpec, AgentState, DegradationStage};
+pub use agent::{AgentSpec, AgentState, DegradationStage, MemoryConfig, ModelPreference, ResourceLimits};
 pub use artifact::{Artifact, ArtifactKind, BlobRef};
 pub use config::{AutonomyLevel, DataClassification};
 pub use effect::{

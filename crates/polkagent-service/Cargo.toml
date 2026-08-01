@@ -18,6 +18,7 @@ polkagent-event = { path = "../polkagent-event" }
 polkagent-run = { path = "../polkagent-run" }
 polkagent-grant = { path = "../polkagent-grant" }
 polkagent-artifact = { path = "../polkagent-artifact" }
+polkagent-card = { path = "../polkagent-card" }
 polkagent-config = { path = "../polkagent-config" }
 polkagent-tool = { path = "../polkagent-tool" }
 polkagent-memory = { path = "../polkagent-memory" }

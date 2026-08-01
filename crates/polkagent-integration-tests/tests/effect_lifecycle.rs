@@ -32,6 +32,7 @@ fn make_spec(run_id: RunId, kind: EffectKind, key: Option<IdempotencyKey>) -> Ef
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     }
 }
 
@@ -311,6 +312,7 @@ async fn duplicate_idempotency_key_is_rejected() {
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     };
 
     pipeline.propose(spec.clone()).await.expect("first propose should succeed");
@@ -353,6 +355,7 @@ async fn different_idempotency_keys_are_both_accepted() {
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     };
     let spec2 = EffectIntentSpec {
         run_id,
@@ -365,6 +368,7 @@ async fn different_idempotency_keys_are_both_accepted() {
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     };
 
     pipeline.propose(spec1).await.expect("propose 1");
@@ -462,6 +466,7 @@ async fn multiple_intents_for_same_run_are_independent() {
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     };
 
     let id1 = pipeline

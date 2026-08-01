@@ -1,0 +1,42 @@
+[package]
+name = "polkagent-rate-limit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rate limiting strategies for the Polkagent platform"
+publish = false
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+
+# Web
+tower = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

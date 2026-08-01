@@ -1,0 +1,46 @@
+[package]
+name = "polkagent-transport-pca"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Polkadot Communication Architecture (PCA) encrypted peer-to-peer transport"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+polkagent-transport-trait = { path = "../polkagent-transport-trait" }
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utils
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+
+# Crypto
+x25519-dalek = { version = "2", features = ["reusable_secrets"] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-test = "0.4"
+polkagent-transport-trait = { path = "../polkagent-transport-trait", features = ["test-contracts"] }
+
+[lints]
+workspace = true

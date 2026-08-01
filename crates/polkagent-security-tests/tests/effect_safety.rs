@@ -115,6 +115,24 @@ impl EffectStore for InMemoryStore {
         Ok(())
     }
 
+    async fn update_intent_state(
+        &self,
+        intent_id: EffectId,
+        new_state: &str,
+    ) -> Result<StoredIntent, StoreError> {
+        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        match intents.get_mut(&intent_id) {
+            None => Err(StoreError::NotFound {
+                resource_type: "EffectIntent",
+                id: intent_id.to_string(),
+            }),
+            Some(intent) => {
+                intent.state = new_state.to_string();
+                Ok(intent.clone())
+            }
+        }
+    }
+
     async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
         let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
         intents.get(&intent_id).cloned().ok_or_else(|| StoreError::NotFound {
@@ -219,6 +237,7 @@ fn make_spec(run_id: RunId, kind: EffectKind) -> EffectIntentSpec {
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     }
 }
 
@@ -265,6 +284,7 @@ async fn duplicate_idempotency_key_prevents_re_execution() {
         retry_class: None,
         priority: None,
         max_attempts: None,
+        action_card: None,
     };
 
     // First proposal: succeeds.

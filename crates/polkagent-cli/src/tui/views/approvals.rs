@@ -9,6 +9,12 @@
 //!
 //! Keyboard: Enter to view detail, 'a' to approve, 'd' to deny.
 //! First press shows a confirmation dialog; second press executes.
+//!
+//! ## Widget integration
+//!
+//! The detail panel on the right side now uses `action_card::render` to show
+//! a structured action card for the selected effect intent, with pallet/call
+//! information parsed from the effect kind and a generated narrative.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -20,6 +26,8 @@ use ratatui::{
 
 use crate::tui::state::{ApprovalItem, ConfirmDialog, ScrollState, TuiState};
 use crate::tui::theme::Theme;
+use crate::tui::widgets::action_card::{ActionCardData, RiskLevel};
+use crate::tui::widgets::action_card;
 
 // ---------------------------------------------------------------------------
 // Public render entry point
@@ -30,7 +38,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
     if area.width >= 100 && state.approvals_scroll.selected.is_some() {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
         render_list(frame, cols[0], &state.pending_approvals, &state.approvals_scroll, theme);
@@ -212,71 +220,77 @@ fn render_list(
 }
 
 // ---------------------------------------------------------------------------
-// Approval detail panel
+// Approval detail panel — uses action_card widget
 // ---------------------------------------------------------------------------
 
 fn render_detail(frame: &mut Frame, area: Rect, item: &ApprovalItem, theme: &Theme) {
-    let state_color = approval_state_color(&item.state, theme);
+    // Parse pallet and call from the effect kind (e.g. "sign", "broadcast",
+    // "tool:balance_transfer").  We produce a best-effort breakdown.
+    let (pallet, call) = parse_kind_to_pallet_call(&item.kind);
 
-    let block = Block::default()
-        .title(Span::styled(
-            format!(" Effect: {} ", item.kind),
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_active))
-        .style(Style::default().bg(theme.bg_raised));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let glyph = approval_glyph(&item.state);
-    let created = item.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    // Build a minimal params list from the effect metadata we have.
     let short_eid = &item.effect_id[..8.min(item.effect_id.len())];
     let short_rid = &item.run_id[..8.min(item.run_id.len())];
-
-    let lines: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled(glyph, Style::default().fg(state_color)),
-            Span::raw("  "),
-            Span::styled(
-                item.state.clone(),
-                Style::default()
-                    .fg(state_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(""),
-        kv_line("  Effect ID", short_eid, theme.text_primary, theme),
-        kv_line("  Kind", &item.kind, kind_color(&item.kind, theme), theme),
-        kv_line("  Agent", &item.agent_name, theme.text_primary, theme),
-        kv_line("  Run", short_rid, theme.text_dim, theme),
-        kv_line("  Created", &created, theme.text_primary, theme),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Actions:",
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(vec![
-            Span::styled("    a", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-            Span::styled("  Approve this effect", Style::default().fg(theme.text_dim)),
-        ]),
-        Line::from(vec![
-            Span::styled("    d", Style::default().fg(theme.danger).add_modifier(Modifier::BOLD)),
-            Span::styled("  Deny this effect", Style::default().fg(theme.text_dim)),
-        ]),
-        Line::from(vec![
-            Span::styled("    Esc", Style::default().fg(theme.text_dim).add_modifier(Modifier::BOLD)),
-            Span::styled("  Go back", Style::default().fg(theme.text_dim)),
-        ]),
+    let params: Vec<(&str, &str)> = vec![
+        ("effect_id", short_eid),
+        ("run_id", short_rid),
+        ("agent", &item.agent_name),
+        ("state", &item.state),
     ];
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    // Determine risk level from the effect kind.
+    let risk = effect_risk_level(&item.kind);
+
+    // Generate a simple narrative summary.
+    let narrative = format!(
+        "Effect '{}' from agent '{}' is in state '{}'. \
+         This action was submitted by run {} and requires your review before it is executed on-chain.",
+        item.kind, item.agent_name, item.state, short_rid,
+    );
+
+    let card_data = ActionCardData {
+        pallet: &pallet,
+        call: &call,
+        params: &params,
+        narrative: &narrative,
+        risk,
+        hash: &item.effect_id,
+    };
+
+    action_card::render(frame, area, &card_data, theme);
+}
+
+/// Split an effect kind string into (pallet, call) for the action card.
+fn parse_kind_to_pallet_call(kind: &str) -> (String, String) {
+    // Kinds: "sign", "broadcast", "tool", "tool:balance_transfer", "model", etc.
+    if let Some(sep) = kind.find(':') {
+        let outer = &kind[..sep];
+        let inner = &kind[sep + 1..];
+        // Try to derive pallet/call from inner if it contains a dot or underscore.
+        if let Some(dot) = inner.find('.') {
+            return (inner[..dot].to_owned(), inner[dot + 1..].to_owned());
+        }
+        (outer.to_owned(), inner.to_owned())
+    } else {
+        // Map well-known kinds to pallet::call.
+        let (pallet, call) = match kind {
+            "sign"      => ("Crypto",    "sign"),
+            "broadcast" => ("Chain",     "broadcast"),
+            "tool"      => ("Tool",      "execute"),
+            "model"     => ("Model",     "infer"),
+            _           => ("Effect",    kind),
+        };
+        (pallet.to_owned(), call.to_owned())
+    }
+}
+
+/// Derive a `RiskLevel` from an effect kind string.
+fn effect_risk_level(kind: &str) -> RiskLevel {
+    match kind {
+        "sign" | "broadcast" => RiskLevel::High,
+        "tool"               => RiskLevel::Medium,
+        _                    => RiskLevel::Low,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -382,17 +396,3 @@ fn kind_color(kind: &str, theme: &Theme) -> ratatui::style::Color {
     }
 }
 
-fn kv_line(
-    key: &str,
-    value: &str,
-    value_color: ratatui::style::Color,
-    theme: &Theme,
-) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("{key:<14}"),
-            Style::default().fg(theme.text_dim),
-        ),
-        Span::styled(value.to_owned(), Style::default().fg(value_color)),
-    ])
-}

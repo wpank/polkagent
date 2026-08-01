@@ -130,6 +130,13 @@ pub trait RunManagerTrait: Send + Sync {
     /// Returns `RunError::InvalidTransition` if the run is already terminal.
     async fn cancel_run(&self, run_id: RunId) -> Result<RunRecord, RunError>;
 
+    /// Resume a paused run, transitioning it from `AwaitingApproval` to `Running`.
+    ///
+    /// Returns `RunError::InvalidTransition` if the run is not in
+    /// `AwaitingApproval` state. Returns `RunError::NotFound` if no run with
+    /// the given ID exists.
+    async fn resume_run(&self, run_id: RunId) -> Result<RunRecord, RunError>;
+
     /// List runs, applying filter and cursor-based pagination from `params`.
     ///
     /// Returns `(page, has_more)`.
@@ -170,6 +177,21 @@ impl InMemoryRunManager {
     pub fn new() -> Self {
         Self {
             runs: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Force an existing run into `AwaitingApproval` state.
+    ///
+    /// This method exists to support integration tests that need to put a run
+    /// into a paused/waiting-for-approval state. In production the
+    /// `AwaitingApproval` state is entered through the normal orchestration
+    /// flow; this shortcut avoids the need for a full orchestrator in tests.
+    pub async fn force_awaiting_approval(&self, run_id: RunId) {
+        let mut guard = self.runs.write().await;
+        if let Some(record) = guard.get_mut(&run_id) {
+            record.state = RunState::AwaitingApproval {
+                request_id: "test-approval-request".to_owned(),
+            };
         }
     }
 }
@@ -235,6 +257,30 @@ impl RunManagerTrait for InMemoryRunManager {
 
         info!(run_id = %run_id, "run cancelled");
         Ok(record.clone())
+    }
+
+    #[instrument(skip(self), fields(run_id = %run_id))]
+    async fn resume_run(&self, run_id: RunId) -> Result<RunRecord, RunError> {
+        let mut guard = self.runs.write().await;
+        let record = guard
+            .get_mut(&run_id)
+            .ok_or(RunError::NotFound(run_id))?;
+
+        match &record.state {
+            RunState::AwaitingApproval { .. } => {
+                record.state = RunState::Running;
+                info!(run_id = %run_id, "run resumed");
+                Ok(record.clone())
+            }
+            other => Err(RunError::InvalidTransition {
+                id: run_id,
+                reason: format!(
+                    "can only resume a run in AwaitingApproval state, \
+                     current state is {:?}",
+                    other
+                ),
+            }),
+        }
     }
 
     async fn list_runs(

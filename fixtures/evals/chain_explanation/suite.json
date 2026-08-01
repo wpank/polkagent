@@ -1,0 +1,197 @@
+{
+  "name": "chain_explanation",
+  "description": "Chain concept explanation quality",
+  "version": "1.0.0",
+  "cases": [
+    {
+      "id": "chain-exp-001",
+      "name": "Explain DOT staking",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "Explain how DOT staking works on Polkadot in simple terms. What is the process, what are the rewards, and how long does unbonding take?",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["nominator", "validator", "unbonding"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "staking"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-002",
+      "name": "Explain Polkadot governance",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "How does on-chain governance work on Polkadot? Explain the referendum process, voting tracks, and how DOT holders participate.",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["referendum", "vote"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "governance"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-003",
+      "name": "Explain XCM cross-chain messaging",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "What is XCM and how does cross-chain messaging work in the Polkadot ecosystem? Give a practical example of transferring assets between parachains.",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["XCM", "parachain"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "xcm", "cross-chain"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-004",
+      "name": "Explain proxy accounts",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "What are proxy accounts on Polkadot? How do they work and what are the different proxy types available?",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["proxy", "delegate"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "proxy"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-005",
+      "name": "Explain multisig accounts",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "How do multisig accounts work on Polkadot? What is the threshold and how do multiple parties approve a transaction?",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["threshold", "multisig"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "multisig"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-006",
+      "name": "Explain the treasury system",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "What is the Polkadot treasury? How is it funded, how can projects apply for funding, and how are proposals approved?",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["treasury", "proposal"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "treasury"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-007",
+      "name": "Explain parachain slots and auctions",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "What are parachain slots on Polkadot? How do parachain slot auctions work and what is a crowdloan?",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["slot", "auction"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "parachain", "auction"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-008",
+      "name": "Explain nomination pools",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "What are nomination pools on Polkadot? How are they different from nominating directly, and what is the minimum stake required?",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["nomination pool", "stake"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "nomination-pools", "staking"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-009",
+      "name": "Explain the on-chain identity system",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "How does the on-chain identity system work on Polkadot? How can someone set their identity and get it verified by a registrar?",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["identity", "registrar"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "identity"],
+      "timeout_secs": 30
+    },
+    {
+      "id": "chain-exp-010",
+      "name": "Explain runtime upgrades",
+      "category": "chain_explanation",
+      "input": {
+        "prompt": "How do runtime upgrades work on Polkadot? What is WebAssembly's role and why can Polkadot upgrade without hard forks?",
+        "context": {},
+        "tools_available": []
+      },
+      "expected": {
+        "must_contain": ["runtime", "WebAssembly"],
+        "must_not_contain": [],
+        "expected_tool_calls": [],
+        "expected_outcome": "success",
+        "custom_scorer": null
+      },
+      "tags": ["explanation", "runtime", "upgrade"],
+      "timeout_secs": 30
+    }
+  ]
+}

@@ -37,6 +37,12 @@ const SCHEMA_V4: &str = include_str!("v4_payment_store.sql");
 /// V5: Conversation store tables (conversations, conversation_messages).
 const SCHEMA_V5: &str = include_str!("v5_conversation_store.sql");
 
+/// V6: Group store tables (groups, group_members).
+const SCHEMA_V6: &str = include_str!("v6_group_store.sql");
+
+/// V7: Feed store tables (feeds, feed_triggers, feed_recipes, feed_items).
+const SCHEMA_V7: &str = include_str!("v7_feed_store.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -44,6 +50,8 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (3, "effect store trait columns", SCHEMA_V3),
     (4, "payment store tables", SCHEMA_V4),
     (5, "conversation store tables", SCHEMA_V5),
+    (6, "group store tables", SCHEMA_V6),
+    (7, "feed store tables", SCHEMA_V7),
 ];
 
 // ---------------------------------------------------------------------------
@@ -178,7 +186,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 5);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -187,7 +195,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 5);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -229,6 +237,12 @@ mod tests {
             "cost_records",
             "conversations",
             "conversation_messages",
+            "groups",
+            "group_members",
+            "feeds",
+            "feed_triggers",
+            "feed_recipes",
+            "feed_items",
         ];
 
         for table in &tables {

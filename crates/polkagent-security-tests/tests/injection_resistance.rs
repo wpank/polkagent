@@ -78,6 +78,7 @@ mod path_traversal {
             action_patterns: vec!["chain/**".to_string()],
             resource_patterns: vec!["**".to_string()],
             conditions: Default::default(),
+            abac_condition: None,
         });
 
         // Action with path traversal should NOT match "chain/**".
@@ -110,6 +111,7 @@ mod path_traversal {
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
             conditions: Default::default(),
+            abac_condition: None,
         });
 
         let resource_with_null = "account/bob\0/evil";
@@ -177,6 +179,7 @@ mod string_limits {
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
             conditions: Default::default(),
+            abac_condition: None,
         });
 
         let decision = evaluate(
@@ -226,6 +229,7 @@ mod null_bytes {
             action_patterns: vec!["chain/**".to_string()],
             resource_patterns: vec!["**".to_string()],
             conditions: Default::default(),
+            abac_condition: None,
         });
 
         // Action and resource containing null bytes.

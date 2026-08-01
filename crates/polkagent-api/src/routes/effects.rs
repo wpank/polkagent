@@ -12,12 +12,14 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::Utc;
 use polkagent_core::{EffectId, RunId};
+use polkagent_store_trait::StoreError;
 use serde::Serialize;
-use tracing::instrument;
+use tracing::{info, instrument};
 
 use crate::{
-    dto::API_VERSION,
+    dto::{ApproveEffectRequest, ApproveEffectResponse, DenyEffectRequest, DenyEffectResponse, API_VERSION},
     error::ApiError,
     state::AppState,
 };
@@ -114,16 +116,67 @@ pub async fn get_effect(
 
 /// Approve a pending effect intent.
 ///
-/// **Stub:** Returns 501 Not Implemented. Will be wired to the approval
-/// subsystem once it is available.
-#[instrument(skip(_state), fields(effect_id = %id))]
+/// - Looks up the effect intent in the store.
+/// - Verifies it is in a state that permits approval (`"pending"` or
+///   `"waiting_approval"`).
+/// - Transitions the intent to `"approved"` via the store.
+/// - Returns 200 with the updated effect state.
+///
+/// # Errors
+///
+/// - 404 if no intent with `id` exists.
+/// - 409 if the intent is in a state that cannot be approved.
+#[instrument(skip(state, body), fields(effect_id = %id))]
 pub async fn approve_effect(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<EffectId>,
+    body: Option<Json<ApproveEffectRequest>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Err::<Json<()>, _>(ApiError::NotImplemented(format!(
-        "approve effect {id} is not yet implemented"
-    )))
+    let _body = body.map(|b| b.0).unwrap_or_default();
+
+    // Look up the intent, returning 404 if it doesn't exist.
+    let intent = state
+        .effect_store
+        .get_intent(id)
+        .await
+        .map_err(|e| match e {
+            StoreError::NotFound { .. } => {
+                ApiError::NotFound(format!("effect intent {id}"))
+            }
+            other => ApiError::InternalError(other.to_string()),
+        })?;
+
+    // Verify the intent is in an approvable state.
+    let approvable_states = ["pending", "waiting_approval"];
+    if !approvable_states.contains(&intent.state.as_str()) {
+        return Err(ApiError::InvalidState(format!(
+            "effect intent {id} is in state '{}' which cannot be approved; \
+             only pending or waiting_approval intents may be approved",
+            intent.state
+        )));
+    }
+
+    // Transition to "approved" via the store.
+    let updated = state
+        .effect_store
+        .update_intent_state(id, "approved")
+        .await
+        .map_err(|e| match e {
+            StoreError::NotFound { .. } => ApiError::NotFound(format!("effect intent {id}")),
+            StoreError::InvalidTransition { message } => ApiError::InvalidState(message),
+            other => ApiError::InternalError(other.to_string()),
+        })?;
+
+    let approved_at = Utc::now();
+    state.metrics.effects_approved();
+    info!(effect_id = %id, "effect intent approved");
+
+    Ok(Json(ApproveEffectResponse {
+        version: API_VERSION.to_owned(),
+        effect_id: updated.id.to_string(),
+        new_state: updated.state.clone(),
+        approved_at,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -132,14 +185,68 @@ pub async fn approve_effect(
 
 /// Deny a pending effect intent.
 ///
-/// **Stub:** Returns 501 Not Implemented. Will be wired to the approval
-/// subsystem once it is available.
-#[instrument(skip(_state), fields(effect_id = %id))]
+/// - Looks up the effect intent in the store.
+/// - Verifies it is in a state that permits denial (`"pending"` or
+///   `"waiting_approval"`).
+/// - Transitions the intent to `"denied"` via the store.
+/// - Records the denial reason from the request body (if provided).
+/// - Returns 200 with the updated effect state.
+///
+/// # Errors
+///
+/// - 404 if no intent with `id` exists.
+/// - 409 if the intent is in a state that cannot be denied.
+#[instrument(skip(state, body), fields(effect_id = %id))]
 pub async fn deny_effect(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<EffectId>,
+    body: Option<Json<DenyEffectRequest>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Err::<Json<()>, _>(ApiError::NotImplemented(format!(
-        "deny effect {id} is not yet implemented"
-    )))
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let reason = body.reason.clone();
+
+    // Look up the intent, returning 404 if it doesn't exist.
+    let intent = state
+        .effect_store
+        .get_intent(id)
+        .await
+        .map_err(|e| match e {
+            StoreError::NotFound { .. } => {
+                ApiError::NotFound(format!("effect intent {id}"))
+            }
+            other => ApiError::InternalError(other.to_string()),
+        })?;
+
+    // Verify the intent is in a deniable state.
+    let deniable_states = ["pending", "waiting_approval"];
+    if !deniable_states.contains(&intent.state.as_str()) {
+        return Err(ApiError::InvalidState(format!(
+            "effect intent {id} is in state '{}' which cannot be denied; \
+             only pending or waiting_approval intents may be denied",
+            intent.state
+        )));
+    }
+
+    // Transition to "denied" via the store.
+    let updated = state
+        .effect_store
+        .update_intent_state(id, "denied")
+        .await
+        .map_err(|e| match e {
+            StoreError::NotFound { .. } => ApiError::NotFound(format!("effect intent {id}")),
+            StoreError::InvalidTransition { message } => ApiError::InvalidState(message),
+            other => ApiError::InternalError(other.to_string()),
+        })?;
+
+    let denied_at = Utc::now();
+    state.metrics.effects_denied();
+    info!(effect_id = %id, "effect intent denied");
+
+    Ok(Json(DenyEffectResponse {
+        version: API_VERSION.to_owned(),
+        effect_id: updated.id.to_string(),
+        new_state: updated.state.clone(),
+        reason,
+        denied_at,
+    }))
 }
