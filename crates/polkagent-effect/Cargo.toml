@@ -11,6 +11,8 @@ description = "Effect pipeline: durable intent-before-I/O, lease-based claim, id
 polkagent-core = { path = "../polkagent-core" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 polkagent-card = { path = "../polkagent-card" }
+polkagent-audit = { path = "../polkagent-audit", optional = true }
+polkagent-outbox = { path = "../polkagent-outbox", optional = true }
 
 # Serialization
 serde = { workspace = true }
@@ -34,9 +36,15 @@ blake3 = { workspace = true }
 # IDs
 uuid = { workspace = true }
 
+[features]
+audit = ["dep:polkagent-audit"]
+dlq = ["dep:polkagent-outbox"]
+
 [dev-dependencies]
 async-trait = { workspace = true }
 criterion = { workspace = true }
+polkagent-audit = { path = "../polkagent-audit" }
+polkagent-outbox = { path = "../polkagent-outbox" }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 uuid = { workspace = true }

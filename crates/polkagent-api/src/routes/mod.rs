@@ -66,6 +66,16 @@
 //!   POST   /memory/forget
 //!   GET    /memory/entries/:entry_id
 //!
+//!   GET    /audit
+//!   GET    /audit/verify
+//!   GET    /audit/:id
+//!
+//!   POST   /conversations
+//!   GET    /conversations
+//!   GET    /conversations/:id
+//!   POST   /conversations/:id/messages
+//!   DELETE /conversations/:id
+//!
 //!   GET    /system/info
 //!
 //! /openapi.json                     (no version prefix)
@@ -79,11 +89,14 @@
 
 pub mod agents;
 pub mod artifacts;
+pub mod audit;
+pub mod conversations;
 pub mod effects;
 pub mod events;
 pub mod events_rest;
 pub mod health;
 pub mod memory;
+pub mod metrics;
 pub mod models;
 pub mod openapi;
 pub mod payments;
@@ -133,6 +146,12 @@ pub fn register(state: AppState) -> Router {
         .route("/health/startup", get(|| async {
             axum::Json(serde_json::json!({ "status": "ok", "detail": "initialisation complete" }))
         }));
+
+    // -----------------------------------------------------------------------
+    // Prometheus metrics (no version prefix — scrapeable by collectors)
+    // -----------------------------------------------------------------------
+    let metrics_route = Router::new()
+        .route("/metrics", get(metrics::prometheus_metrics));
 
     // -----------------------------------------------------------------------
     // OpenAPI spec route (no version prefix, no auth required)
@@ -211,6 +230,23 @@ pub fn register(state: AppState) -> Router {
         .route("/memory/stats", get(memory::memory_stats))
         .route("/memory/forget", post(memory::forget_memory))
         .route("/memory/entries/{entry_id}", get(memory::get_memory_entry))
+        // Audit
+        .route("/audit", get(audit::list_audit_entries))
+        .route("/audit/verify", get(audit::verify_audit_integrity))
+        .route("/audit/{id}", get(audit::get_audit_entry))
+        // Conversations
+        .route(
+            "/conversations",
+            post(conversations::create_conversation).get(conversations::list_conversations),
+        )
+        .route(
+            "/conversations/{id}",
+            get(conversations::get_conversation).delete(conversations::delete_conversation),
+        )
+        .route(
+            "/conversations/{id}/messages",
+            post(conversations::add_message),
+        )
         // System
         .route("/system/info", get(system::system_info))
         // Apply default 1 MiB body limit to all routes in this sub-router.
@@ -218,6 +254,7 @@ pub fn register(state: AppState) -> Router {
 
     Router::new()
         .merge(health_routes)
+        .merge(metrics_route)
         .merge(openapi_route)
         .nest("/api/v1alpha1", api_routes)
         .with_state(state)

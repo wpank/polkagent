@@ -53,6 +53,13 @@ polkagent-chain-fake = { path = "../polkagent-chain-fake" }
 polkagent-group = { path = "../polkagent-group" }
 polkagent-feed = { path = "../polkagent-feed" }
 polkagent-eval = { path = "../polkagent-eval" }
+# Infrastructure crates (cache, retry, rate-limit, audit, scheduler, batch)
+polkagent-cache = { path = "../polkagent-cache" }
+polkagent-retry = { path = "../polkagent-retry" }
+polkagent-rate-limit = { path = "../polkagent-rate-limit" }
+polkagent-audit = { path = "../polkagent-audit" }
+polkagent-scheduler = { path = "../polkagent-scheduler" }
+polkagent-batch = { path = "../polkagent-batch" }
 
 # Async
 tokio = { workspace = true, features = ["full", "test-util"] }
@@ -77,6 +84,9 @@ toml = { workspace = true }
 
 # Testing
 tempfile = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

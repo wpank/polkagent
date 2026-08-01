@@ -1,4 +1,4 @@
-//! `polkagent serve` — start the HTTP API server (daemon mode).
+//! `polkagent serve` -- start the HTTP API + WebSocket server (daemon mode).
 //!
 //! Reads the active configuration for the bind address, CORS settings, and
 //! database path, then starts the Axum-backed polkagent-api server. Handles
@@ -6,10 +6,12 @@
 //!
 //! # Flags
 //!
-//! | Flag       | Description                                     |
-//! |------------|-------------------------------------------------|
-//! | `--port`   | Override the TCP port from config (default 4840)|
-//! | `--host`   | Override the bind host from config              |
+//! | Flag              | Description                                          |
+//! |-------------------|------------------------------------------------------|
+//! | `--port`          | TCP port to bind (default 8080)                      |
+//! | `--host`          | Bind host (default 0.0.0.0)                          |
+//! | `--cors-origin`   | Allowed CORS origins (repeatable; overrides config)   |
+//! | `--read-only`     | Reject all mutating requests                         |
 
 use std::sync::Arc;
 
@@ -36,21 +38,26 @@ pub async fn run(cmd: &ServeCmd) -> Result<()> {
     // -----------------------------------------------------------------------
     // 1. Resolve configuration.
     // -----------------------------------------------------------------------
-    let config = resolve_config(cmd.config.as_deref())?;
+    let mut config = resolve_config(None)?;
 
     // -----------------------------------------------------------------------
-    // 2. Determine bind address (CLI flags override config).
+    // 2. Apply CLI overrides to config.
     // -----------------------------------------------------------------------
-    let bind_addr = build_bind_addr(cmd, &config.api.bind_address);
+    apply_cli_overrides(&mut config, cmd);
 
     // -----------------------------------------------------------------------
-    // 3. Open (or create) the SQLite database and run migrations.
+    // 3. Determine bind address from CLI flags.
     // -----------------------------------------------------------------------
-    let db_path = resolve_db_path(cmd.config.as_deref());
+    let bind_addr = build_bind_addr(cmd);
+
+    // -----------------------------------------------------------------------
+    // 4. Open (or create) the SQLite database and run migrations.
+    // -----------------------------------------------------------------------
+    let db_path = resolve_db_path(None);
     let pool = open_pool(&db_path)?;
 
     // -----------------------------------------------------------------------
-    // 4. Construct stores.
+    // 5. Construct stores.
     // -----------------------------------------------------------------------
     // EffectStore is implemented on SqlitePool directly; use Arc<SqlitePool>.
     let effect_store = Arc::new(pool.clone());
@@ -62,7 +69,7 @@ pub async fn run(cmd: &ServeCmd) -> Result<()> {
     let event_bus = EventBus::with_default_capacity();
 
     // -----------------------------------------------------------------------
-    // 5. Build and start the server.
+    // 6. Build and start the server.
     // -----------------------------------------------------------------------
     let server = ApiServer::new(
         config,
@@ -72,14 +79,24 @@ pub async fn run(cmd: &ServeCmd) -> Result<()> {
         event_bus,
     );
 
-    println!("Polkagent API server");
+    println!("Polkagent API server listening on {bind_addr}");
     println!("{}", "-".repeat(40));
-    println!("  Listening on http://{bind_addr}");
-    println!("  Database:  {db_path}");
+    println!("  Database:    {db_path}");
+    if cmd.read_only {
+        println!("  Mode:        read-only");
+    }
+    if !cmd.cors_origins.is_empty() {
+        println!("  CORS:        {}", cmd.cors_origins.join(", "));
+    }
     println!("  Press Ctrl+C to stop.");
     println!();
 
-    info!(bind_addr = %bind_addr, db_path = %db_path, "polkagent serve starting");
+    info!(
+        bind_addr = %bind_addr,
+        db_path = %db_path,
+        read_only = cmd.read_only,
+        "polkagent serve starting"
+    );
 
     // Wrap the serve future with a graceful shutdown signal.
     let serve_fut = server.serve(&bind_addr);
@@ -102,6 +119,19 @@ pub async fn run(cmd: &ServeCmd) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Apply CLI-level overrides to the resolved config.
+///
+/// - `--cors-origin` values replace the config's `api.cors_origins` list.
+/// - `--read-only` sets `api.read_only = true`.
+fn apply_cli_overrides(config: &mut polkagent_config::Config, cmd: &ServeCmd) {
+    if !cmd.cors_origins.is_empty() {
+        config.api.cors_origins = cmd.cors_origins.clone();
+    }
+    if cmd.read_only {
+        config.api.read_only = true;
+    }
+}
+
 /// Resolve the active polkagent configuration, applying CLI-level overrides.
 ///
 /// Resolution order:
@@ -111,10 +141,9 @@ pub async fn run(cmd: &ServeCmd) -> Result<()> {
 /// 4. Default `Config::default()`.
 fn resolve_config(config_override: Option<&str>) -> Result<polkagent_config::Config> {
     if let Some(path) = config_override {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("reading config file {path}"))?;
-        return toml::from_str(&content)
-            .with_context(|| format!("parsing config file {path}"));
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("reading config file {path}"))?;
+        return toml::from_str(&content).with_context(|| format!("parsing config file {path}"));
     }
 
     // Project-local config.
@@ -136,26 +165,12 @@ fn resolve_config(config_override: Option<&str>) -> Result<polkagent_config::Con
     Ok(polkagent_config::Config::default())
 }
 
-/// Build the `host:port` bind address, applying `--host` and `--port` overrides.
-fn build_bind_addr(cmd: &ServeCmd, config_bind: &str) -> String {
-    // Parse the configured address, then apply overrides.
-    let (config_host, config_port) = parse_host_port(config_bind);
-
-    let host = cmd.host.as_deref().unwrap_or(&config_host);
-    let port = cmd.port.unwrap_or(config_port);
-
-    format!("{host}:{port}")
-}
-
-/// Split a `host:port` string into its components.
-fn parse_host_port(addr: &str) -> (String, u16) {
-    if let Some(colon_pos) = addr.rfind(':') {
-        let host = &addr[..colon_pos];
-        let port: u16 = addr[colon_pos + 1..].parse().unwrap_or(4840);
-        (host.to_owned(), port)
-    } else {
-        (addr.to_owned(), 4840)
-    }
+/// Build the `host:port` bind address from the CLI flags.
+///
+/// With the new `ServeCmd` struct, `host` and `port` always have values
+/// (either from the user or from clap defaults).
+fn build_bind_addr(cmd: &ServeCmd) -> String {
+    format!("{}:{}", cmd.host, cmd.port)
 }
 
 /// Resolve the SQLite database path from environment, config, or default.
@@ -199,13 +214,12 @@ fn open_pool(db_path: &str) -> Result<SqlitePool> {
             .with_context(|| format!("creating database directory {}", parent.display()))?;
     }
 
-    let pool = SqlitePool::open(&expanded)
-        .with_context(|| format!("opening database at {expanded}"))?;
+    let pool =
+        SqlitePool::open(&expanded).with_context(|| format!("opening database at {expanded}"))?;
 
     {
         let writer = pool.writer();
-        migrations::migrate(&writer)
-            .context("running database migrations")?;
+        migrations::migrate(&writer).context("running database migrations")?;
     }
 
     Ok(pool)
@@ -255,70 +269,178 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    /// Helper to parse CLI args into a `ServeCmd` via the full `Cli` parser.
+    fn parse_serve(args: &[&str]) -> crate::cli::ServeCmd {
+        let mut full_args = vec!["polkagent", "serve"];
+        full_args.extend_from_slice(args);
+        let cli = crate::cli::Cli::parse_from(full_args);
+        match cli.command {
+            Some(crate::cli::Commands::Serve(cmd)) => cmd,
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Default values
+    // -----------------------------------------------------------------------
 
     #[test]
-    fn parse_host_port_standard() {
-        let (host, port) = parse_host_port("127.0.0.1:4840");
-        assert_eq!(host, "127.0.0.1");
-        assert_eq!(port, 4840);
+    fn default_host_is_all_interfaces() {
+        let cmd = parse_serve(&[]);
+        assert_eq!(cmd.host, "0.0.0.0");
     }
 
     #[test]
-    fn parse_host_port_ipv6() {
-        let (host, port) = parse_host_port("::1:9090");
-        // rfind(':') finds the last colon → port=9090, host=::1
-        assert_eq!(port, 9090);
-        assert!(!host.is_empty());
+    fn default_port_is_8080() {
+        let cmd = parse_serve(&[]);
+        assert_eq!(cmd.port, 8080);
     }
 
     #[test]
-    fn parse_host_port_no_port() {
-        let (host, port) = parse_host_port("0.0.0.0");
-        assert_eq!(host, "0.0.0.0");
-        assert_eq!(port, 4840); // default
-    }
-
-    #[test]
-    fn build_bind_addr_no_overrides() {
-        let cmd = crate::cli::ServeCmd {
-            port: None,
-            host: None,
-            config: None,
-        };
-        let addr = build_bind_addr(&cmd, "127.0.0.1:4840");
-        assert_eq!(addr, "127.0.0.1:4840");
-    }
-
-    #[test]
-    fn build_bind_addr_port_override() {
-        let cmd = crate::cli::ServeCmd {
-            port: Some(9999),
-            host: None,
-            config: None,
-        };
-        let addr = build_bind_addr(&cmd, "127.0.0.1:4840");
-        assert_eq!(addr, "127.0.0.1:9999");
-    }
-
-    #[test]
-    fn build_bind_addr_host_override() {
-        let cmd = crate::cli::ServeCmd {
-            port: None,
-            host: Some("0.0.0.0".to_owned()),
-            config: None,
-        };
-        let addr = build_bind_addr(&cmd, "127.0.0.1:4840");
-        assert_eq!(addr, "0.0.0.0:4840");
-    }
-
-    #[test]
-    fn build_bind_addr_both_overrides() {
-        let cmd = crate::cli::ServeCmd {
-            port: Some(8080),
-            host: Some("0.0.0.0".to_owned()),
-            config: None,
-        };
-        let addr = build_bind_addr(&cmd, "127.0.0.1:4840");
+    fn default_bind_addr() {
+        let cmd = parse_serve(&[]);
+        let addr = build_bind_addr(&cmd);
         assert_eq!(addr, "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn default_read_only_is_false() {
+        let cmd = parse_serve(&[]);
+        assert!(!cmd.read_only);
+    }
+
+    #[test]
+    fn default_cors_origins_is_empty() {
+        let cmd = parse_serve(&[]);
+        assert!(cmd.cors_origins.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Argument parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_port_override() {
+        let cmd = parse_serve(&["--port", "9999"]);
+        assert_eq!(cmd.port, 9999);
+        let addr = build_bind_addr(&cmd);
+        assert_eq!(addr, "0.0.0.0:9999");
+    }
+
+    #[test]
+    fn parse_host_override() {
+        let cmd = parse_serve(&["--host", "127.0.0.1"]);
+        assert_eq!(cmd.host, "127.0.0.1");
+        let addr = build_bind_addr(&cmd);
+        assert_eq!(addr, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn parse_host_and_port_override() {
+        let cmd = parse_serve(&["--host", "10.0.0.1", "--port", "3000"]);
+        assert_eq!(cmd.host, "10.0.0.1");
+        assert_eq!(cmd.port, 3000);
+        let addr = build_bind_addr(&cmd);
+        assert_eq!(addr, "10.0.0.1:3000");
+    }
+
+    #[test]
+    fn parse_short_port_flag() {
+        let cmd = parse_serve(&["-p", "4321"]);
+        assert_eq!(cmd.port, 4321);
+    }
+
+    // -----------------------------------------------------------------------
+    // --read-only flag
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_only_flag_sets_true() {
+        let cmd = parse_serve(&["--read-only"]);
+        assert!(cmd.read_only);
+    }
+
+    #[test]
+    fn read_only_propagates_to_config() {
+        let cmd = parse_serve(&["--read-only"]);
+        let mut config = polkagent_config::Config::default();
+        assert!(!config.api.read_only);
+        apply_cli_overrides(&mut config, &cmd);
+        assert!(config.api.read_only);
+    }
+
+    #[test]
+    fn read_only_false_does_not_override_config() {
+        // If the user does NOT pass --read-only, the config value is preserved.
+        let cmd = parse_serve(&[]);
+        let mut config = polkagent_config::Config::default();
+        config.api.read_only = false;
+        apply_cli_overrides(&mut config, &cmd);
+        assert!(!config.api.read_only);
+    }
+
+    // -----------------------------------------------------------------------
+    // --cors-origin flag
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_single_cors_origin() {
+        let cmd = parse_serve(&["--cors-origin", "https://example.com"]);
+        assert_eq!(cmd.cors_origins, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn parse_multiple_cors_origins() {
+        let cmd = parse_serve(&[
+            "--cors-origin",
+            "https://a.com",
+            "--cors-origin",
+            "https://b.com",
+        ]);
+        assert_eq!(cmd.cors_origins, vec!["https://a.com", "https://b.com"]);
+    }
+
+    #[test]
+    fn cors_origins_override_config() {
+        let cmd = parse_serve(&["--cors-origin", "https://override.com"]);
+        let mut config = polkagent_config::Config::default();
+        // Default config has cors_origins = ["http://localhost:*"]
+        assert_eq!(config.api.cors_origins, vec!["http://localhost:*"]);
+        apply_cli_overrides(&mut config, &cmd);
+        assert_eq!(config.api.cors_origins, vec!["https://override.com"]);
+    }
+
+    #[test]
+    fn empty_cors_origins_preserves_config() {
+        let cmd = parse_serve(&[]);
+        let mut config = polkagent_config::Config::default();
+        let original = config.api.cors_origins.clone();
+        apply_cli_overrides(&mut config, &cmd);
+        assert_eq!(config.api.cors_origins, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // Combined flags
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_all_flags_together() {
+        let cmd = parse_serve(&[
+            "--host",
+            "192.168.1.1",
+            "--port",
+            "5555",
+            "--cors-origin",
+            "https://x.com",
+            "--read-only",
+        ]);
+        assert_eq!(cmd.host, "192.168.1.1");
+        assert_eq!(cmd.port, 5555);
+        assert_eq!(cmd.cors_origins, vec!["https://x.com"]);
+        assert!(cmd.read_only);
+        let addr = build_bind_addr(&cmd);
+        assert_eq!(addr, "192.168.1.1:5555");
     }
 }

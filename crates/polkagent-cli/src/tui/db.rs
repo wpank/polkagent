@@ -1,4 +1,4 @@
-//! Lightweight SQLite query helpers for the TUI.
+//! Lightweight SQLite query helpers and chain polling for the TUI.
 //!
 //! The TUI reads from the same database as the daemon. All queries are
 //! read-only and use rusqlite directly (no async) since they run on the
@@ -6,6 +6,14 @@
 //!
 //! The data returned is already in the TUI's `state::*` summary types to
 //! avoid leaking raw row structs into the view layer.
+//!
+//! ## Chain polling
+//!
+//! [`ChainPoller`] reads `POLKAGENT_RPC_URL` from the environment and
+//! periodically queries the JSON-RPC endpoint for chain status (best block,
+//! finalized block, chain name, node version). When the variable is unset
+//! or empty the poller is a no-op and the TUI gracefully shows
+//! "Not connected".
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -697,6 +705,196 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Chain poller
+// ---------------------------------------------------------------------------
+
+/// Snapshot of chain status fetched from a Substrate JSON-RPC endpoint.
+#[derive(Debug, Clone)]
+pub struct ChainStatus {
+    /// Human-readable chain name (from `system_chain`).
+    pub chain_name: String,
+    /// Node implementation version (from `system_version`).
+    pub node_version: String,
+    /// Best (head) block number.
+    pub best_block: u64,
+    /// Last finalized block number.
+    pub finalized_block: u64,
+}
+
+/// Polls a Substrate JSON-RPC endpoint for chain status on a fixed interval.
+///
+/// Reads `POLKAGENT_RPC_URL` from the environment at construction time. If the
+/// variable is absent or empty, all poll calls are no-ops and the chain status
+/// fields on [`crate::tui::state::TuiState`] remain at their defaults
+/// ("Not connected", block 0).
+pub struct ChainPoller {
+    /// The RPC URL to query, or `None` if not configured.
+    rpc_url: Option<String>,
+    /// Timestamp of the last successful poll (monotonic).
+    last_poll: Option<std::time::Instant>,
+    /// How often to re-poll (default 6 seconds).
+    interval: std::time::Duration,
+}
+
+impl ChainPoller {
+    /// Polling interval — one poll per finality period (6 seconds).
+    const DEFAULT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6);
+
+    /// Create a new poller, reading `POLKAGENT_RPC_URL` from the environment.
+    pub fn new() -> Self {
+        let rpc_url = std::env::var("POLKAGENT_RPC_URL")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        Self {
+            rpc_url,
+            last_poll: None,
+            interval: Self::DEFAULT_INTERVAL,
+        }
+    }
+
+    /// Create a poller with a specific URL (useful for testing).
+    #[cfg(test)]
+    pub fn with_url(url: Option<String>) -> Self {
+        Self {
+            rpc_url: url,
+            last_poll: None,
+            interval: Self::DEFAULT_INTERVAL,
+        }
+    }
+
+    /// Returns `true` if an RPC URL is configured.
+    pub fn is_configured(&self) -> bool {
+        self.rpc_url.is_some()
+    }
+
+    /// Returns `true` if enough time has elapsed since the last poll.
+    pub fn should_poll(&self) -> bool {
+        if self.rpc_url.is_none() {
+            return false;
+        }
+        match self.last_poll {
+            None => true,
+            Some(t) => t.elapsed() >= self.interval,
+        }
+    }
+
+    /// Poll the RPC endpoint and update `state` with fresh chain data.
+    ///
+    /// If no RPC URL is configured, this is a no-op. If the RPC call fails
+    /// the state is marked as disconnected but no error is propagated.
+    pub fn poll(&mut self, state: &mut crate::tui::state::TuiState) {
+        let Some(url) = &self.rpc_url else {
+            state.chain_connected = false;
+            state.chain_name = String::from("Not connected");
+            state.node_version = String::new();
+            return;
+        };
+
+        match self.fetch_chain_status(url) {
+            Ok(status) => {
+                state.chain_connected = true;
+                state.chain_name = status.chain_name;
+                state.node_version = status.node_version;
+                state.best_block = status.best_block;
+                state.finalized_block = status.finalized_block;
+                state.mark_dirty();
+            }
+            Err(_) => {
+                state.chain_connected = false;
+                state.mark_dirty();
+            }
+        }
+
+        self.last_poll = Some(std::time::Instant::now());
+    }
+
+    /// Execute the JSON-RPC calls to fetch chain status.
+    ///
+    /// Makes three sequential calls:
+    /// - `system_chain` — chain name
+    /// - `system_version` — node version
+    /// - `chain_getHeader` — best block header (block number)
+    /// - `chain_getFinalizedHead` + `chain_getHeader` — finalized block number
+    fn fetch_chain_status(&self, url: &str) -> Result<ChainStatus> {
+        let chain_name = self.rpc_call_string(url, "system_chain", "[]")?;
+        let node_version = self.rpc_call_string(url, "system_version", "[]")?;
+
+        // Best block: chain_getHeader returns the latest header.
+        let best_header_json = self.rpc_call_raw(url, "chain_getHeader", "[]")?;
+        let best_block = parse_block_number_from_header(&best_header_json);
+
+        // Finalized block: get hash, then header.
+        let finalized_hash = self.rpc_call_string(url, "chain_getFinalizedHead", "[]")?;
+        let fin_header_json = self.rpc_call_raw(
+            url,
+            "chain_getHeader",
+            &format!("[\"{finalized_hash}\"]"),
+        )?;
+        let finalized_block = parse_block_number_from_header(&fin_header_json);
+
+        Ok(ChainStatus {
+            chain_name,
+            node_version,
+            best_block,
+            finalized_block,
+        })
+    }
+
+    /// Make a JSON-RPC call and return the `result` field as a string.
+    fn rpc_call_string(&self, url: &str, method: &str, params: &str) -> Result<String> {
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#,
+        );
+        let resp_body = ureq::post(url)
+            .set("Content-Type", "application/json")
+            .send_string(&body)
+            .map_err(|e| anyhow::anyhow!("RPC request to {method} failed: {e}"))?
+            .into_string()
+            .map_err(|e| anyhow::anyhow!("reading RPC response body: {e}"))?;
+
+        // Extract "result" value — for string results it is a quoted JSON string.
+        extract_json_string(&resp_body, "result")
+            .ok_or_else(|| anyhow::anyhow!("missing 'result' in RPC response for {method}"))
+    }
+
+    /// Make a JSON-RPC call and return the raw `result` value as a JSON string.
+    fn rpc_call_raw(&self, url: &str, method: &str, params: &str) -> Result<String> {
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#,
+        );
+        let resp_body = ureq::post(url)
+            .set("Content-Type", "application/json")
+            .send_string(&body)
+            .map_err(|e| anyhow::anyhow!("RPC request to {method} failed: {e}"))?
+            .into_string()
+            .map_err(|e| anyhow::anyhow!("reading RPC response body: {e}"))?;
+
+        Ok(resp_body)
+    }
+}
+
+impl Default for ChainPoller {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Parse a block number from a Substrate block header JSON-RPC response.
+///
+/// The header contains `"number": "0x..."` as a hex-encoded string inside
+/// the `"result"` object. We extract it with simple string matching.
+fn parse_block_number_from_header(header_json: &str) -> u64 {
+    // Look for "number":"0x..." pattern.
+    extract_json_string(header_json, "number")
+        .and_then(|hex| {
+            let stripped = hex.strip_prefix("0x").unwrap_or(&hex);
+            u64::from_str_radix(stripped, 16).ok()
+        })
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -941,5 +1139,79 @@ mod tests {
             extract_json_string(json, "kind"),
             Some("sign".to_owned())
         );
+    }
+
+    // ── parse_block_number_from_header ────────────────────────────────────────
+
+    #[test]
+    fn test_parse_block_number_from_header_hex() {
+        let header = r#"{"jsonrpc":"2.0","result":{"number":"0x157A3C0"},"id":1}"#;
+        let block = parse_block_number_from_header(header);
+        assert_eq!(block, 0x157A3C0);
+    }
+
+    #[test]
+    fn test_parse_block_number_from_header_zero() {
+        let header = r#"{"jsonrpc":"2.0","result":{"number":"0x0"},"id":1}"#;
+        let block = parse_block_number_from_header(header);
+        assert_eq!(block, 0);
+    }
+
+    #[test]
+    fn test_parse_block_number_from_header_missing_returns_zero() {
+        let header = r#"{"jsonrpc":"2.0","result":{},"id":1}"#;
+        let block = parse_block_number_from_header(header);
+        assert_eq!(block, 0, "missing number field should return 0");
+    }
+
+    #[test]
+    fn test_parse_block_number_from_header_garbage_returns_zero() {
+        let block = parse_block_number_from_header("not json at all");
+        assert_eq!(block, 0, "garbage input should return 0");
+    }
+
+    // ── ChainPoller ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_chain_poller_no_url_is_not_configured() {
+        let poller = ChainPoller::with_url(None);
+        assert!(!poller.is_configured());
+        assert!(!poller.should_poll());
+    }
+
+    #[test]
+    fn test_chain_poller_with_url_is_configured() {
+        let poller = ChainPoller::with_url(Some("wss://rpc.polkadot.io".to_owned()));
+        assert!(poller.is_configured());
+        assert!(poller.should_poll(), "should poll immediately on first call");
+    }
+
+    #[test]
+    fn test_chain_poller_poll_no_url_sets_not_connected() {
+        let mut poller = ChainPoller::with_url(None);
+        let mut state = crate::tui::state::TuiState::default();
+
+        // Pre-set some values to verify they get overwritten.
+        state.chain_connected = true;
+        state.chain_name = "Polkadot".to_owned();
+
+        poller.poll(&mut state);
+
+        assert!(!state.chain_connected, "should be disconnected when no URL");
+        assert_eq!(state.chain_name, "Not connected");
+    }
+
+    #[test]
+    fn test_chain_poller_poll_bad_url_marks_disconnected() {
+        let mut poller = ChainPoller::with_url(
+            Some("http://127.0.0.1:1".to_owned()), // unreachable port
+        );
+        let mut state = crate::tui::state::TuiState::default();
+        state.chain_connected = true; // pre-set to true
+
+        poller.poll(&mut state);
+
+        // Unreachable endpoint should mark disconnected.
+        assert!(!state.chain_connected, "unreachable endpoint should disconnect");
     }
 }

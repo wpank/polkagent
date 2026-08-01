@@ -44,7 +44,7 @@ pub mod types;
 pub use budget::{BudgetChecker, BudgetConfig, BudgetDecision, BudgetState};
 pub use error::PaymentError;
 pub use estimator::{CostEstimator, PricingEntry};
-pub use store::PaymentStore;
+pub use store::{BalanceSummary, PaymentStore};
 pub use types::{
     Amount, AssetId, CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary,
 };

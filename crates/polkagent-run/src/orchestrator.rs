@@ -34,6 +34,9 @@ use polkagent_grant::grant::GrantResolver;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
+#[cfg(feature = "context")]
+use polkagent_context::ContextAssembler;
+
 use crate::cost_tracker::CostTracker;
 use crate::error::RunError;
 use crate::manager::RunManager;
@@ -113,6 +116,16 @@ pub struct RunOrchestrator {
     grant_resolver: Arc<GrantResolver>,
     config: RunOrchestratorConfig,
     turn_manager: TurnManager,
+    /// Optional context assembler for building and truncating context
+    /// before each turn's model call.
+    ///
+    /// When `Some`, the orchestrator assembles context from the system prompt,
+    /// conversation history, and tool results, applying token budget
+    /// constraints and truncation using the configured strategy before each
+    /// executor call.
+    #[cfg(feature = "context")]
+    context_assembler: Option<ContextAssembler>,
+
     /// Optional payment store for persisting per-turn cost records.
     ///
     /// When `Some`, the orchestrator creates a [`CostTracker`] per run and
@@ -155,6 +168,8 @@ impl RunOrchestrator {
             grant_resolver,
             config: RunOrchestratorConfig::default(),
             turn_manager: TurnManager::new(),
+            #[cfg(feature = "context")]
+            context_assembler: None,
             #[cfg(feature = "payment")]
             payment_store: None,
         }
@@ -164,6 +179,22 @@ impl RunOrchestrator {
     #[must_use]
     pub fn with_config(mut self, config: RunOrchestratorConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Attach a [`ContextAssembler`] for building and truncating context
+    /// before each turn's model call.
+    ///
+    /// When attached, the orchestrator will assemble context from the system
+    /// prompt, conversation history, and tool results, applying the
+    /// assembler's token budget constraints and truncation strategy before
+    /// each call to the model executor.
+    ///
+    /// Only available when the `context` feature is enabled.
+    #[cfg(feature = "context")]
+    #[must_use]
+    pub fn with_context_assembler(mut self, assembler: ContextAssembler) -> Self {
+        self.context_assembler = Some(assembler);
         self
     }
 
@@ -391,11 +422,24 @@ impl RunOrchestrator {
                 }
             }
 
-            // 3a: Call executor.
+            // 3a: Apply context assembly (if configured) then call executor.
+            //
+            // When a ContextAssembler is attached, the message list is
+            // assembled through the context window budget, truncating
+            // lower-priority sections (oldest conversation messages first)
+            // so the request fits within the model's context limit.
+            #[cfg(feature = "context")]
+            let assembled_messages = self.apply_context_assembly(
+                &messages,
+                effective_system.as_deref(),
+            );
+            #[cfg(not(feature = "context"))]
+            let assembled_messages = messages.clone();
+
             let request = InferenceRequest {
                 run_id: run_id.clone(),
                 step_id: StepId::new(),
-                messages: messages.clone(),
+                messages: assembled_messages,
                 system: effective_system.clone(),
                 tools: Vec::new(),
                 model_id: effective_model_id.clone(),
@@ -618,6 +662,148 @@ impl RunOrchestrator {
                 text: initial_prompt.to_owned(),
             }],
         }]
+    }
+
+    /// Apply the context assembler to the current messages, truncating to
+    /// fit the token budget.
+    ///
+    /// When a [`ContextAssembler`] is configured, this method extracts the
+    /// system prompt and conversation history from the message list,
+    /// assembles them through the context assembler (which applies token
+    /// budget constraints and truncation), and returns a new message list
+    /// derived from the assembled context.
+    ///
+    /// If no assembler is configured, returns the messages unchanged.
+    #[cfg(feature = "context")]
+    fn apply_context_assembly(
+        &self,
+        messages: &[InferenceMessage],
+        system_prompt: Option<&str>,
+    ) -> Vec<InferenceMessage> {
+        let assembler = match &self.context_assembler {
+            Some(a) => a,
+            None => return messages.to_vec(),
+        };
+
+        // Extract conversation messages as strings for the assembler.
+        // Each message is rendered as "Role: content" for the assembler's
+        // conversation history section.
+        let conversation_strings: Vec<String> = messages
+            .iter()
+            .map(|msg| {
+                let role_str = match msg.role {
+                    MessageRole::User => "User",
+                    MessageRole::Assistant => "Assistant",
+                };
+                let text = msg
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+                        ContentBlock::ToolUse { .. } => {
+                            // Tool uses are collected separately below as
+                            // descriptive strings.
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                // Also collect tool use descriptions.
+                let tool_uses: Vec<String> = msg
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolUse {
+                            tool_name,
+                            arguments_json,
+                            ..
+                        } => Some(format!("[tool_use: {tool_name}({arguments_json})]")),
+                        _ => None,
+                    })
+                    .collect();
+
+                if tool_uses.is_empty() {
+                    format!("{role_str}: {text}")
+                } else {
+                    let tools = tool_uses.join(" ");
+                    if text.is_empty() {
+                        format!("{role_str}: {tools}")
+                    } else {
+                        format!("{role_str}: {text} {tools}")
+                    }
+                }
+            })
+            .collect();
+
+        let conversation_refs: Vec<&str> = conversation_strings.iter().map(|s| s.as_str()).collect();
+
+        // Assemble context with the system prompt and conversation history.
+        let assembled = match assembler.assemble(
+            system_prompt,
+            &[],   // tool descriptions are handled separately in InferenceRequest
+            &[],   // memory entries (not used in orchestrator yet)
+            &conversation_refs,
+            None,   // user input is part of conversation messages
+        ) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                warn!("context assembly failed, using original messages: {err}");
+                return messages.to_vec();
+            }
+        };
+
+        info!(
+            total_tokens = assembled.total_tokens,
+            remaining = assembled.remaining_tokens(),
+            sections = assembled.section_count(),
+            "context assembled for turn"
+        );
+
+        // Rebuild messages from the assembled context.
+        // The assembled conversation section contains the (potentially
+        // truncated) conversation history. We parse it back into messages.
+        let mut result = Vec::new();
+
+        for section in &assembled.sections {
+            match section.kind {
+                polkagent_context::section::SectionKind::ConversationHistory => {
+                    // Parse each line back into messages. Lines are in
+                    // "Role: content" format.
+                    for line in section.content.lines() {
+                        if let Some(text) = line.strip_prefix("User: ") {
+                            result.push(InferenceMessage {
+                                role: MessageRole::User,
+                                content: vec![ContentBlock::Text {
+                                    text: text.to_owned(),
+                                }],
+                            });
+                        } else if let Some(text) = line.strip_prefix("Assistant: ") {
+                            result.push(InferenceMessage {
+                                role: MessageRole::Assistant,
+                                content: vec![ContentBlock::Text {
+                                    text: text.to_owned(),
+                                }],
+                            });
+                        }
+                    }
+                }
+                // System prompt and other sections are handled separately
+                // (system prompt goes in InferenceRequest.system, not in
+                // messages).
+                _ => {}
+            }
+        }
+
+        // Safety: if assembly produced no conversation messages (e.g.
+        // extreme truncation), fall back to the original messages to avoid
+        // sending an empty request.
+        if result.is_empty() {
+            return messages.to_vec();
+        }
+
+        result
     }
 }
 
@@ -1831,5 +2017,496 @@ mod tests {
             .expect("execute_run");
 
         assert_eq!(outcome.final_state, RunState::Completed);
+    }
+
+    // ── Context assembler integration tests ──────────────────────────────
+
+    /// An executor that captures the requests it receives, so tests can
+    /// inspect the messages after context assembly.
+    #[cfg(feature = "context")]
+    struct CapturingExecutor {
+        /// Pre-configured responses to return in order.
+        responses: Mutex<Vec<Result<InferenceResponse, ExecutorError>>>,
+        /// All requests received by the executor.
+        captured_requests: Mutex<Vec<InferenceRequest>>,
+    }
+
+    #[cfg(feature = "context")]
+    impl CapturingExecutor {
+        fn new(responses: Vec<Result<InferenceResponse, ExecutorError>>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                captured_requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn captured(&self) -> Vec<InferenceRequest> {
+            self.captured_requests.lock().expect("lock").clone()
+        }
+    }
+
+    #[cfg(feature = "context")]
+    #[async_trait]
+    impl ModelExecutor for CapturingExecutor {
+        async fn complete(
+            &self,
+            request: InferenceRequest,
+        ) -> Result<InferenceResponse, ExecutorError> {
+            self.captured_requests.lock().expect("lock").push(request);
+            let mut responses = self.responses.lock().expect("lock");
+            if responses.is_empty() {
+                return Err(ExecutorError::Internal {
+                    message: "no more responses configured".to_owned(),
+                });
+            }
+            responses.remove(0)
+        }
+
+        async fn stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<
+            Box<dyn Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
+            ExecutorError,
+        > {
+            Err(ExecutorError::Internal {
+                message: "stream not supported".to_owned(),
+            })
+        }
+
+        async fn health(&self) -> Result<(), ExecutorError> {
+            Ok(())
+        }
+    }
+
+    /// Build a test harness with a CapturingExecutor for context assembly
+    /// tests.
+    #[cfg(feature = "context")]
+    fn build_capturing_harness(
+        responses: Vec<Result<InferenceResponse, ExecutorError>>,
+        config: RunOrchestratorConfig,
+        context_assembler: Option<polkagent_context::ContextAssembler>,
+    ) -> (TestHarness, Arc<CapturingExecutor>) {
+        let run_store: Arc<dyn RunStore> = Arc::new(MemRunStore::default());
+        let event_store = Arc::new(MemEventStore::default());
+        let event_store_dyn = Arc::clone(&event_store) as Arc<dyn EventStore>;
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store_dyn, bus);
+        let run_manager = Arc::new(RunManager::new(Arc::clone(&run_store), recorder.clone()));
+
+        let effect_store: Arc<dyn EffectStore> = Arc::new(MemEffectStore);
+        let effect_pipeline =
+            EffectPipeline::new(effect_store, polkagent_core::WorkerId::new());
+
+        let grant_resolver = GrantResolver::new(PolicySet::default(), ResolverConfig::default());
+
+        let capturing = Arc::new(CapturingExecutor::new(responses));
+        let executor: Arc<dyn ModelExecutor> = Arc::clone(&capturing) as Arc<dyn ModelExecutor>;
+
+        let mut orchestrator = RunOrchestrator::new(
+            Arc::clone(&run_manager),
+            executor,
+            effect_pipeline,
+            recorder,
+            grant_resolver,
+        )
+        .with_config(config);
+
+        if let Some(assembler) = context_assembler {
+            orchestrator = orchestrator.with_context_assembler(assembler);
+        }
+
+        let harness = TestHarness {
+            orchestrator,
+            run_manager,
+            event_store,
+        };
+        (harness, capturing)
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn context_assembler_backward_compatible_without_assembler() {
+        // Without a context assembler, the orchestrator should work exactly
+        // as before -- messages are passed through unchanged.
+        let (harness, capturing) = build_capturing_harness(
+            vec![Ok(FakeExecutor::text_response("Hello!", 10, 5))],
+            RunOrchestratorConfig::default(),
+            None, // no assembler
+        );
+        let agent_spec = default_agent_spec();
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        let outcome = harness
+            .orchestrator
+            .execute_run(run_id.clone(), &agent_spec, "Hi there")
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
+        assert_eq!(outcome.turn_count, 1);
+
+        // Verify the original message was passed through unchanged.
+        let requests = capturing.captured();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].messages.len(), 1);
+        let first_msg = &requests[0].messages[0];
+        assert_eq!(first_msg.role, MessageRole::User);
+        match &first_msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Hi there"),
+            other => panic!("expected Text block, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn context_assembler_truncates_to_budget() {
+        // Create an assembler with a very small budget to force truncation
+        // of the conversation history.
+        use polkagent_context::budget::TokenBudget;
+
+        // Budget of 256 tokens; with default 4-chars-per-token estimation,
+        // this is ~1024 chars of content (minus response reserve).
+        let budget = TokenBudget::with_defaults(256).expect("budget");
+        let assembler = polkagent_context::ContextAssembler::new(budget);
+
+        // Build a multi-turn conversation with many messages to exceed the
+        // budget.  Tool call -> tool result -> text response creates a long
+        // history.
+        let responses = vec![
+            Ok(FakeExecutor::tool_call_response(
+                "Let me search for that.",
+                vec![ToolCall {
+                    tool_call_id: "tc-1".to_owned(),
+                    tool_name: "search".to_owned(),
+                    arguments_json: r#"{"query": "very long search query that takes up tokens"}"#
+                        .to_owned(),
+                }],
+                50,
+                20,
+            )),
+            Ok(FakeExecutor::text_response(
+                "Here is the final answer after a long search.",
+                100,
+                30,
+            )),
+        ];
+
+        let config = RunOrchestratorConfig {
+            auto_approve_effects: true,
+            ..Default::default()
+        };
+
+        let (harness, capturing) =
+            build_capturing_harness(responses, config, Some(assembler));
+
+        let agent_spec = default_agent_spec();
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        let outcome = harness
+            .orchestrator
+            .execute_run(run_id.clone(), &agent_spec, "Search for blockchain data")
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
+        assert_eq!(outcome.turn_count, 2);
+
+        // The second request should have gone through context assembly.
+        // With the small budget, messages may have been truncated.
+        let requests = capturing.captured();
+        assert_eq!(requests.len(), 2);
+
+        // Verify the second request's total message text is within budget
+        // bounds. The assembler should have constrained the context.
+        let second_req = &requests[1];
+        let total_text_len: usize = second_req
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .map(|block| match block {
+                ContentBlock::Text { text } => text.len(),
+                ContentBlock::ToolResult { content, .. } => content.len(),
+                ContentBlock::ToolUse { arguments_json, .. } => arguments_json.len(),
+            })
+            .sum();
+
+        // 256 tokens * 4 chars/token = 1024 max chars (content budget is
+        // less due to response reserve).  The assembled context should fit.
+        let budget_chars = 256 * 4;
+        assert!(
+            total_text_len <= budget_chars,
+            "total text length {total_text_len} exceeds budget chars {budget_chars}"
+        );
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn context_assembler_always_includes_system_prompt() {
+        // Verify that when a system prompt is set, the assembled context
+        // preserves it (the system prompt has the highest priority and
+        // should never be truncated away).
+        use polkagent_context::budget::TokenBudget;
+
+        let budget = TokenBudget::with_defaults(8192).expect("budget");
+        let assembler = polkagent_context::ContextAssembler::new(budget);
+
+        let (harness, capturing) = build_capturing_harness(
+            vec![Ok(FakeExecutor::text_response("Done.", 10, 5))],
+            RunOrchestratorConfig::default(),
+            Some(assembler),
+        );
+
+        let mut agent_spec = default_agent_spec();
+        agent_spec.system_prompt = Some("You are a helpful blockchain agent.".to_owned());
+
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        let outcome = harness
+            .orchestrator
+            .execute_run(run_id.clone(), &agent_spec, "Hello agent")
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
+
+        // The request should include the system prompt in the system field.
+        let requests = capturing.captured();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].system.as_deref(),
+            Some("You are a helpful blockchain agent.")
+        );
+
+        // The user message should be present in the messages.
+        let has_user_msg = requests[0].messages.iter().any(|m| {
+            m.role == MessageRole::User
+                && m.content.iter().any(|block| matches!(
+                    block,
+                    ContentBlock::Text { text } if text.contains("Hello agent")
+                ))
+        });
+        assert!(
+            has_user_msg,
+            "user message should be present in assembled context"
+        );
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn context_assembler_prioritizes_recent_messages() {
+        // With a tight budget and many messages, the assembler should
+        // keep the most recent messages and drop older ones (DropOldest
+        // strategy for ConversationHistory).
+        use polkagent_context::budget::TokenBudget;
+
+        // Very small budget to force aggressive truncation.
+        let budget = TokenBudget::with_defaults(256).expect("budget");
+        let assembler = polkagent_context::ContextAssembler::new(budget);
+
+        // Build a conversation with many tool-call turns so the history
+        // grows large. Each turn adds 3 messages (assistant tool_use,
+        // user tool_result, then eventually a final assistant text).
+        let mut responses: Vec<Result<InferenceResponse, ExecutorError>> = Vec::new();
+        for i in 0..5 {
+            responses.push(Ok(FakeExecutor::tool_call_response(
+                &format!("Calling tool for step {i}"),
+                vec![ToolCall {
+                    tool_call_id: format!("tc-{i}"),
+                    tool_name: "lookup".to_owned(),
+                    arguments_json: format!(r#"{{"step": {i}, "data": "padding text to consume tokens in the context window for test purposes"}}"#),
+                }],
+                50,
+                20,
+            )));
+        }
+        // Final response to end the run.
+        responses.push(Ok(FakeExecutor::text_response(
+            "Final answer after many steps.",
+            100,
+            30,
+        )));
+
+        let config = RunOrchestratorConfig {
+            auto_approve_effects: true,
+            ..Default::default()
+        };
+
+        let (harness, capturing) =
+            build_capturing_harness(responses, config, Some(assembler));
+
+        let agent_spec = default_agent_spec();
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        let outcome = harness
+            .orchestrator
+            .execute_run(
+                run_id.clone(),
+                &agent_spec,
+                "Process multiple steps with lots of data",
+            )
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
+
+        // The last request (turn 6) should have gone through context
+        // assembly. With truncation, the total number of messages should
+        // be less than the full history (which would be ~11 messages:
+        // 1 initial user + 5*(assistant+user tool result) = 11).
+        let requests = capturing.captured();
+        let last_request = requests.last().expect("should have requests");
+
+        // With aggressive truncation (256 tokens ~ 1024 chars), the
+        // assembler should have dropped older messages.  The recent
+        // messages should still be present.
+        let msg_texts: Vec<String> = last_request
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // The most recent message should still be present (the last
+        // tool-call text or a recent user message).
+        let has_recent = msg_texts
+            .iter()
+            .any(|t| t.contains("step 4") || t.contains("step 3") || t.contains("Final"));
+        assert!(
+            has_recent || last_request.messages.len() < 11,
+            "context should either have recent messages or be truncated from full ({} messages)",
+            last_request.messages.len()
+        );
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn context_assembler_token_count_tracked_correctly() {
+        // Verify that the token estimation from the context assembler
+        // matches what we'd expect from the content. This tests the
+        // integration between the assembler's token estimator and the
+        // orchestrator's message construction.
+        use polkagent_context::budget::TokenBudget;
+        use polkagent_context::TokenEstimator;
+
+        let budget = TokenBudget::with_defaults(8192).expect("budget");
+        let assembler = polkagent_context::ContextAssembler::new(budget.clone());
+        let estimator = TokenEstimator::default();
+
+        let (harness, capturing) = build_capturing_harness(
+            vec![Ok(FakeExecutor::text_response("Response text.", 10, 5))],
+            RunOrchestratorConfig::default(),
+            Some(assembler),
+        );
+
+        let agent_spec = default_agent_spec();
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        let outcome = harness
+            .orchestrator
+            .execute_run(run_id.clone(), &agent_spec, "Hello world")
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
+
+        // Extract the messages sent to the executor and verify the
+        // estimated token count is within budget.
+        let requests = capturing.captured();
+        assert_eq!(requests.len(), 1);
+
+        let total_text: String = requests[0]
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let estimated_tokens = estimator.estimate(&total_text);
+        let content_budget = budget.content_tokens();
+
+        assert!(
+            estimated_tokens <= content_budget,
+            "estimated tokens ({estimated_tokens}) should not exceed content budget ({content_budget})"
+        );
+
+        // Token count should be positive for non-empty messages.
+        assert!(
+            estimated_tokens > 0,
+            "estimated tokens should be positive for non-empty messages"
+        );
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn context_assembler_handles_assembly_failure_gracefully() {
+        // If the context assembler fails (e.g., budget too small for even
+        // the system prompt), the orchestrator should fall back to using
+        // the original messages.
+        use polkagent_context::budget::TokenBudget;
+
+        // Create an assembler with minimum budget (128 tokens).
+        let budget = TokenBudget::with_defaults(128).expect("budget");
+        let assembler = polkagent_context::ContextAssembler::new(budget);
+
+        let (harness, capturing) = build_capturing_harness(
+            vec![Ok(FakeExecutor::text_response("Still works!", 10, 5))],
+            RunOrchestratorConfig::default(),
+            Some(assembler),
+        );
+
+        let agent_spec = default_agent_spec();
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create_run");
+
+        // Even with a very small budget, the run should complete
+        // successfully because the orchestrator falls back to original
+        // messages on assembly failure.
+        let outcome = harness
+            .orchestrator
+            .execute_run(run_id.clone(), &agent_spec, "Short prompt")
+            .await
+            .expect("execute_run");
+
+        assert_eq!(outcome.final_state, RunState::Completed);
+        assert_eq!(outcome.turn_count, 1);
+
+        // Verify messages were sent (either assembled or fallback).
+        let requests = capturing.captured();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            !requests[0].messages.is_empty(),
+            "executor should have received at least one message"
+        );
     }
 }

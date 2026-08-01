@@ -29,6 +29,7 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
 regex-lite = "0.1"
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

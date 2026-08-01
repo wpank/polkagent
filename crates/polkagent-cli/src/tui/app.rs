@@ -187,6 +187,9 @@ pub struct App {
 
     // -- Data source ---------------------------------------------------------
     pub pool: SqlitePool,
+
+    // -- Chain polling -------------------------------------------------------
+    pub chain_poller: crate::tui::db::ChainPoller,
 }
 
 impl App {
@@ -204,6 +207,7 @@ impl App {
                 .checked_sub(Duration::from_secs(REFRESH_INTERVAL_SECS + 1))
                 .unwrap_or_else(Instant::now),
             pool,
+            chain_poller: crate::tui::db::ChainPoller::new(),
         }
     }
 
@@ -236,6 +240,11 @@ impl App {
             if self.last_refresh.elapsed().as_secs() >= REFRESH_INTERVAL_SECS {
                 self.refresh_data();
                 self.last_refresh = Instant::now();
+            }
+
+            // 2b. Chain poller (every 6 seconds, independent of DB refresh).
+            if self.chain_poller.should_poll() {
+                self.chain_poller.poll(&mut self.tui_state);
             }
 
             // 3. Render (throttled to effective ~10 fps, or ~5 fps when idle).

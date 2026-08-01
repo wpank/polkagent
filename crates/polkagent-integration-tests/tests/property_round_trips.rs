@@ -4,16 +4,8 @@
 //! Uses `proptest` to generate arbitrary domain values and verify that:
 //! - Serialization round-trips preserve equality.
 //! - Arithmetic invariants hold for all reasonable inputs.
-//! - Deterministic functions produce stable outputs.
+//! - Display/FromStr round-trips work for ID types.
 //! - Policy evaluation obeys deny-overrides semantics.
-//!
-//! # Prerequisites
-//!
-//! `proptest` must be a dependency of this crate. Add to Cargo.toml:
-//!
-//! ```toml
-//! proptest = { workspace = true }
-//! ```
 
 use std::collections::HashMap;
 
@@ -341,13 +333,41 @@ proptest! {
         prop_assert_eq!(&spec.declared_capabilities, &back.declared_capabilities);
         prop_assert_eq!(&spec.policy_refs, &back.policy_refs);
         prop_assert_eq!(&spec.resource_limits, &back.resource_limits);
-        prop_assert_eq!(&spec.model_preference, &back.model_preference);
+        // Compare model_preference with approximate f64 equality for temperature
+        match (&spec.model_preference, &back.model_preference) {
+            (Some(orig), Some(parsed)) => {
+                prop_assert_eq!(&orig.provider, &parsed.provider);
+                prop_assert_eq!(&orig.model_id, &parsed.model_id);
+                prop_assert_eq!(&orig.system_prompt, &parsed.system_prompt);
+                match (orig.temperature, parsed.temperature) {
+                    (Some(a), Some(b)) => {
+                        prop_assert!((a - b).abs() < 1e-10,
+                            "temperature mismatch: {} vs {}", a, b);
+                    }
+                    (None, None) => {}
+                    _ => prop_assert!(false, "temperature presence mismatch"),
+                }
+            }
+            (None, None) => {}
+            _ => prop_assert!(false, "model_preference presence mismatch"),
+        }
         prop_assert_eq!(&spec.memory_config, &back.memory_config);
         prop_assert_eq!(&spec.surface_bindings, &back.surface_bindings);
     }
 
     // -----------------------------------------------------------------------
-    // 2. AutonomyLevel ordering: distinct levels have distinct Display values
+    // 2. AutonomyLevel serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn autonomy_level_serde_round_trip(level in arb_autonomy_level()) {
+        let json = serde_json::to_string(&level).expect("serialize");
+        let back: AutonomyLevel = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(level, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. AutonomyLevel ordering: distinct levels have distinct Display values
     // -----------------------------------------------------------------------
 
     #[test]
@@ -364,7 +384,73 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 3. Amount checked_add: a + b >= a for same-asset, reasonable values
+    // 4. DataClassification serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn data_classification_serde_round_trip(cls in arb_data_classification()) {
+        let json = serde_json::to_string(&cls).expect("serialize");
+        let back: DataClassification = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(cls, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. DataClassification ordering invariant
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn data_classification_ordering(
+        a in arb_data_classification(),
+        b in arb_data_classification(),
+    ) {
+        if a < b {
+            prop_assert_ne!(a.to_string(), b.to_string());
+        }
+        // The Ord is total, so exactly one of a < b, a == b, a > b holds.
+        prop_assert!(a <= b || a > b);
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. EffectKind serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effect_kind_serde_round_trip(kind in arb_effect_kind()) {
+        let json = serde_json::to_string(&kind).expect("serialize");
+        let back: EffectKind = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(kind, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. RetryClass serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn retry_class_serde_round_trip(cls in arb_retry_class()) {
+        let json = serde_json::to_string(&cls).expect("serialize");
+        let back: RetryClass = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(cls, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. EffectIntent serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effect_intent_serde_round_trip(intent in arb_effect_intent()) {
+        let json = serde_json::to_string(&intent).expect("serialize");
+        let back: EffectIntent = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&intent.id, &back.id);
+        prop_assert_eq!(&intent.kind, &back.kind);
+        prop_assert_eq!(intent.sequence, back.sequence);
+        prop_assert_eq!(&intent.retry_class, &back.retry_class);
+        prop_assert_eq!(intent.max_attempts, back.max_attempts);
+        prop_assert_eq!(&intent.payload_json, &back.payload_json);
+        prop_assert_eq!(&intent.idempotency_key, &back.idempotency_key);
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. Amount checked_add: a + b >= a for same-asset, reasonable values
     // -----------------------------------------------------------------------
 
     #[test]
@@ -381,7 +467,101 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 4. BudgetConfig serialization round-trip
+    // 10. Amount arithmetic: checked_sub(a, b) + b == a when a >= b
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_sub_then_add_identity(
+        a_val in 0u128..10u128.pow(15),
+        b_val in 0u128..10u128.pow(15),
+    ) {
+        let asset = AssetId::Native;
+        let a = Amount::new(a_val, asset.clone(), 10);
+        let b = Amount::new(b_val, asset, 10);
+
+        if a_val >= b_val {
+            let diff = a.checked_sub(&b).expect("a >= b so no underflow");
+            let restored = diff.checked_add(&b).expect("restoring should not overflow");
+            prop_assert_eq!(restored.value, a.value, "sub then add should restore original");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. Amount checked_add is commutative
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_add_commutative(
+        a_val in 0u128..10u128.pow(15),
+        b_val in 0u128..10u128.pow(15),
+    ) {
+        let asset = AssetId::Native;
+        let a = Amount::new(a_val, asset.clone(), 10);
+        let b = Amount::new(b_val, asset, 10);
+        let ab = a.checked_add(&b).expect("reasonable values");
+        let ba = b.checked_add(&a).expect("reasonable values");
+        prop_assert_eq!(ab.value, ba.value, "a+b must equal b+a");
+    }
+
+    // -----------------------------------------------------------------------
+    // 12. Amount checked_mul: a * k >= a for k >= 1
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_mul_preserves_minimum(
+        a_val in 0u128..10u128.pow(12),
+        k in 1u128..1000,
+    ) {
+        let a = Amount::new(a_val, AssetId::Native, 10);
+        let product = a.checked_mul(k).expect("should not overflow for small values");
+        prop_assert!(product.value >= a.value,
+            "product {} must be >= original {}", product.value, a.value);
+    }
+
+    // -----------------------------------------------------------------------
+    // 13. Amount serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_serde_round_trip(amt in arb_amount()) {
+        let json = serde_json::to_string(&amt).expect("serialize");
+        let back: Amount = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(amt.value, back.value);
+        prop_assert_eq!(amt.decimals, back.decimals);
+    }
+
+    // -----------------------------------------------------------------------
+    // 14. AssetId serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn asset_id_serde_round_trip(asset in arb_asset_id()) {
+        let json = serde_json::to_string(&asset).expect("serialize");
+        let back: AssetId = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(asset, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // 15. Amount display_human contains asset name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn amount_display_contains_asset(value in 0u128..10u128.pow(15)) {
+        let native = Amount::new(value, AssetId::Native, 10);
+        let display = native.display_human();
+        prop_assert!(display.contains("NATIVE"), "display '{}' must contain NATIVE", display);
+
+        let token = Amount::new(value, AssetId::Token {
+            chain: "polkadot".to_string(),
+            symbol: "USDT".to_string(),
+            decimals: 6,
+        }, 6);
+        let display2 = token.display_human();
+        prop_assert!(display2.contains("USDT"), "display '{}' must contain USDT", display2);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. BudgetConfig serialization round-trip
     // -----------------------------------------------------------------------
 
     #[test]
@@ -390,8 +570,6 @@ proptest! {
         let back: BudgetConfig = serde_json::from_str(&json).expect("deserialize");
 
         prop_assert_eq!(config.warn_at_percent, back.warn_at_percent);
-        // Amount does not implement PartialEq for BudgetConfig (only derived),
-        // so we compare the optional values individually.
         prop_assert_eq!(config.max_per_run.is_some(), back.max_per_run.is_some());
         prop_assert_eq!(config.max_per_day.is_some(), back.max_per_day.is_some());
         prop_assert_eq!(config.max_per_month.is_some(), back.max_per_month.is_some());
@@ -411,7 +589,67 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 5. EffectIntent idempotency key: same inputs produce same key
+    // 17. ID types Display/FromStr round-trips
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_id_display_from_str_round_trip(_ in 0u32..256) {
+        let id = RunId::new();
+        let s = id.to_string();
+        let parsed: RunId = s.parse().expect("valid UUID string");
+        prop_assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn agent_id_display_from_str_round_trip(_ in 0u32..256) {
+        let id = AgentId::new();
+        let s = id.to_string();
+        let parsed: AgentId = s.parse().expect("valid UUID string");
+        prop_assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn effect_id_display_from_str_round_trip(_ in 0u32..256) {
+        let id = EffectId::new();
+        let s = id.to_string();
+        let parsed: EffectId = s.parse().expect("valid UUID string");
+        prop_assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn event_id_display_from_str_round_trip(_ in 0u32..256) {
+        let id = EventId::new();
+        let s = id.to_string();
+        let parsed: EventId = s.parse().expect("valid UUID string");
+        prop_assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn artifact_id_display_from_str_round_trip(_ in 0u32..256) {
+        let id = ArtifactId::new();
+        let s = id.to_string();
+        let parsed: ArtifactId = s.parse().expect("valid UUID string");
+        prop_assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn turn_id_display_from_str_round_trip(_ in 0u32..256) {
+        let id = TurnId::new();
+        let s = id.to_string();
+        let parsed: TurnId = s.parse().expect("valid UUID string");
+        prop_assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn step_id_display_from_str_round_trip(_ in 0u32..256) {
+        let id = StepId::new();
+        let s = id.to_string();
+        let parsed: StepId = s.parse().expect("valid UUID string");
+        prop_assert_eq!(id, parsed);
+    }
+
+    // -----------------------------------------------------------------------
+    // 18. IdempotencyKey deterministic
     // -----------------------------------------------------------------------
 
     #[test]
@@ -425,113 +663,96 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 6. PolicyRule evaluation: deny always beats allow at same priority
+    // 19. IdempotencyKey Display matches as_str
     // -----------------------------------------------------------------------
 
     #[test]
-    fn deny_always_beats_allow(
-        action in arb_name(30),
-        resource in arb_name(30),
+    fn idempotency_key_display_matches_as_str(
+        hex in prop::string::string_regex("[0-9a-f]{8,64}").expect("valid regex"),
     ) {
-        // Build a PolicySet with one Allow and one Deny for the same patterns.
-        let allow_rule = PolicyRule {
-            id: "allow-all".to_string(),
-            effect: Effect::Allow,
-            action_patterns: vec!["**".to_string()],
-            resource_patterns: vec!["**".to_string()],
-            conditions: HashMap::new(),
-            abac_condition: None,
-        };
-        let deny_rule = PolicyRule {
-            id: "deny-all".to_string(),
-            effect: Effect::Deny,
-            action_patterns: vec!["**".to_string()],
-            resource_patterns: vec!["**".to_string()],
-            conditions: HashMap::new(),
-            abac_condition: None,
-        };
-
-        // Deny first (deny-overrides in standard order).
-        let set_deny_first = PolicySet::new(vec![deny_rule.clone(), allow_rule.clone()]);
-        let decision = evaluate(&set_deny_first, &action, &resource, &EvaluationContext::default());
-        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
-            "deny-first: expected Deny, got {decision:?}");
-
-        // Allow first, deny second (deny-overrides should still deny).
-        let set_allow_first = PolicySet::new(vec![allow_rule, deny_rule]);
-        let decision = evaluate(&set_allow_first, &action, &resource, &EvaluationContext::default());
-        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
-            "allow-first: expected Deny, got {decision:?}");
+        let key = IdempotencyKey::from_hex(&hex);
+        prop_assert_eq!(key.to_string(), key.as_str(),
+            "Display output must match as_str()");
     }
 
     // -----------------------------------------------------------------------
-    // 7. SS58 address round-trip (using AccountId32 as 32-byte array)
-    //
-    //    We encode a 32-byte public key as a hex string using std formatting,
-    //    then decode back. This is a simplified stand-in for SS58 since the
-    //    actual SS58 codec is not in scope -- we test the hex-encode -> decode
-    //    round-trip of the underlying AccountId representation.
+    // 20. BlobRef from_bytes digest is deterministic
     // -----------------------------------------------------------------------
 
     #[test]
-    fn account_id_hex_round_trip(bytes in prop::array::uniform32(any::<u8>())) {
-        // Encode each byte as two hex digits.
-        let hex_encoded: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        prop_assert_eq!(hex_encoded.len(), 64, "32 bytes -> 64 hex chars");
+    fn artifact_digest_matches_body(body in prop::collection::vec(any::<u8>(), 0..4096)) {
+        let blob_ref = BlobRef::from_bytes(&body);
+        prop_assert!(blob_ref.verify(&body), "BlobRef must verify against its own bytes");
 
-        // Decode back from hex pairs.
-        let decoded: Vec<u8> = (0..32)
-            .map(|i| u8::from_str_radix(&hex_encoded[i * 2..i * 2 + 2], 16).expect("valid hex"))
-            .collect();
-        let decoded_bytes: [u8; 32] = decoded.try_into().expect("32 bytes");
-        prop_assert_eq!(bytes, decoded_bytes);
+        // The digest must be deterministic.
+        let blob_ref2 = BlobRef::from_bytes(&body);
+        prop_assert_eq!(&blob_ref.blake3_hex, &blob_ref2.blake3_hex);
+
+        // Size must match.
+        prop_assert_eq!(blob_ref.size_bytes, body.len() as u64);
     }
 
     // -----------------------------------------------------------------------
-    // 8. ActionCard sections: card with N canonical + M narrative sections
-    //    serializes to JSON with correct counts
+    // 21. BlobRef size_bytes matches input length
     // -----------------------------------------------------------------------
 
     #[test]
-    fn action_card_section_counts(
-        n_canonical in 0usize..10,
-        n_narrative in 0usize..10,
-    ) {
-        let mut builder = ActionCardBuilder::new("Test Transfer")
-            .with_payload_hash("deadbeef");
-
-        for i in 0..n_canonical {
-            builder = builder.add_canonical(
-                format!("field_{i}"),
-                format!("value_{i}"),
-                SectionSource::Metadata,
-            );
-        }
-        for i in 0..n_narrative {
-            builder = builder.add_narrative(
-                format!("narrative_{i}"),
-                format!("explanation_{i}"),
-            );
-        }
-
-        let card = builder.build();
-
-        // Verify section counts.
-        prop_assert_eq!(card.canonical_sections.len(), n_canonical,
-            "expected {n_canonical} canonical sections, got {}", card.canonical_sections.len());
-        prop_assert_eq!(card.narrative_sections.len(), n_narrative,
-            "expected {n_narrative} narrative sections, got {}", card.narrative_sections.len());
-
-        // Serialize and check counts are preserved.
-        let json = serde_json::to_string(&card).expect("serialize");
-        let back: ActionCard = serde_json::from_str(&json).expect("deserialize");
-
-        prop_assert_eq!(back.canonical_sections.len(), n_canonical);
-        prop_assert_eq!(back.narrative_sections.len(), n_narrative);
+    fn blob_ref_size_matches_input(body in prop::collection::vec(any::<u8>(), 0..8192)) {
+        let blob = BlobRef::from_bytes(&body);
+        prop_assert_eq!(blob.size_bytes, body.len() as u64,
+            "size_bytes must equal input length");
     }
 
     // -----------------------------------------------------------------------
-    // 9. EventSequence monotonicity: sequence numbers are strictly increasing
+    // 22. Artifact from_bytes preserves integrity check
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn artifact_integrity_preserved(body in prop::collection::vec(any::<u8>(), 0..2048)) {
+        let artifact = Artifact::from_bytes(
+            ArtifactId::new(),
+            ArtifactKind::Custom { type_uri: "test://v1".to_string() },
+            &body,
+        );
+
+        prop_assert!(artifact.verify_integrity(&body), "artifact must verify its own body");
+
+        // Flipping any byte should break integrity (unless body is empty).
+        if !body.is_empty() {
+            let mut tampered = body.clone();
+            tampered[0] = tampered[0].wrapping_add(1);
+            prop_assert!(!artifact.verify_integrity(&tampered), "tampered body must not verify");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 23. RunEvent serde round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_event_serde_round_trip(seq in 1u64..100_000) {
+        let run_id = RunId::new();
+        let correlation = EventCorrelation {
+            run_id: run_id.clone(),
+            ..Default::default()
+        };
+        let event = RunEvent::new_durable(
+            EventId::new(),
+            run_id,
+            seq,
+            EventKind::RunCreated,
+            correlation,
+        );
+
+        let json = serde_json::to_string(&event).expect("serialize");
+        let back: RunEvent = serde_json::from_str(&json).expect("deserialize");
+        prop_assert_eq!(&event.id, &back.id);
+        prop_assert_eq!(event.sequence, back.sequence);
+        prop_assert_eq!(&event.durability, &back.durability);
+    }
+
+    // -----------------------------------------------------------------------
+    // 24. EventSequence monotonicity: sequence numbers are strictly increasing
     // -----------------------------------------------------------------------
 
     #[test]
@@ -563,167 +784,62 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 10. ArtifactDigest: BLAKE3(body) matches stored digest for all bodies
+    // 25. PolicyRule: deny always beats allow at same priority
     // -----------------------------------------------------------------------
 
     #[test]
-    fn artifact_digest_matches_body(body in prop::collection::vec(any::<u8>(), 0..4096)) {
-        let blob_ref = BlobRef::from_bytes(&body);
-        prop_assert!(blob_ref.verify(&body), "BlobRef must verify against its own bytes");
-
-        // The digest must be deterministic.
-        let blob_ref2 = BlobRef::from_bytes(&body);
-        prop_assert_eq!(&blob_ref.blake3_hex, &blob_ref2.blake3_hex);
-
-        // Size must match.
-        prop_assert_eq!(blob_ref.size_bytes, body.len() as u64);
-    }
-
-    // -----------------------------------------------------------------------
-    // 11. AutonomyLevel serde round-trip for all variants
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn autonomy_level_serde_round_trip(level in arb_autonomy_level()) {
-        let json = serde_json::to_string(&level).expect("serialize");
-        let back: AutonomyLevel = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(level, back);
-    }
-
-    // -----------------------------------------------------------------------
-    // 12. DataClassification serde round-trip for all variants
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn data_classification_serde_round_trip(cls in arb_data_classification()) {
-        let json = serde_json::to_string(&cls).expect("serialize");
-        let back: DataClassification = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(cls, back);
-    }
-
-    // -----------------------------------------------------------------------
-    // 13. DataClassification ordering invariant: higher classification is
-    //     more restricted
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn data_classification_ordering(
-        a in arb_data_classification(),
-        b in arb_data_classification(),
+    fn deny_always_beats_allow(
+        action in arb_name(30),
+        resource in arb_name(30),
     ) {
-        if a < b {
-            prop_assert_ne!(a.to_string(), b.to_string());
-        }
-        // The Ord is total, so exactly one of a < b, a == b, a > b holds.
-        prop_assert!(a <= b || a > b);
+        let allow_rule = PolicyRule {
+            id: "allow-all".to_string(),
+            effect: Effect::Allow,
+            action_patterns: vec!["**".to_string()],
+            resource_patterns: vec!["**".to_string()],
+            conditions: HashMap::new(),
+            abac_condition: None,
+        };
+        let deny_rule = PolicyRule {
+            id: "deny-all".to_string(),
+            effect: Effect::Deny,
+            action_patterns: vec!["**".to_string()],
+            resource_patterns: vec!["**".to_string()],
+            conditions: HashMap::new(),
+            abac_condition: None,
+        };
+
+        // Deny first (deny-overrides in standard order).
+        let set_deny_first = PolicySet::new(vec![deny_rule.clone(), allow_rule.clone()]);
+        let decision = evaluate(&set_deny_first, &action, &resource, &EvaluationContext::default());
+        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
+            "deny-first: expected Deny, got {decision:?}");
+
+        // Allow first, deny second (deny-overrides should still deny).
+        let set_allow_first = PolicySet::new(vec![allow_rule, deny_rule]);
+        let decision = evaluate(&set_allow_first, &action, &resource, &EvaluationContext::default());
+        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
+            "allow-first: expected Deny, got {decision:?}");
     }
 
     // -----------------------------------------------------------------------
-    // 14. EffectKind serde round-trip
+    // 26. Policy default-deny: empty PolicySet always denies
     // -----------------------------------------------------------------------
 
     #[test]
-    fn effect_kind_serde_round_trip(kind in arb_effect_kind()) {
-        let json = serde_json::to_string(&kind).expect("serialize");
-        let back: EffectKind = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(kind, back);
-    }
-
-    // -----------------------------------------------------------------------
-    // 15. RetryClass serde round-trip
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn retry_class_serde_round_trip(cls in arb_retry_class()) {
-        let json = serde_json::to_string(&cls).expect("serialize");
-        let back: RetryClass = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(cls, back);
-    }
-
-    // -----------------------------------------------------------------------
-    // 16. EffectIntent serde round-trip
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn effect_intent_serde_round_trip(intent in arb_effect_intent()) {
-        let json = serde_json::to_string(&intent).expect("serialize");
-        let back: EffectIntent = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(&intent.id, &back.id);
-        prop_assert_eq!(&intent.kind, &back.kind);
-        prop_assert_eq!(intent.sequence, back.sequence);
-        prop_assert_eq!(&intent.retry_class, &back.retry_class);
-        prop_assert_eq!(intent.max_attempts, back.max_attempts);
-        prop_assert_eq!(&intent.payload_json, &back.payload_json);
-        prop_assert_eq!(&intent.idempotency_key, &back.idempotency_key);
-    }
-
-    // -----------------------------------------------------------------------
-    // 17. Amount serde round-trip
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn amount_serde_round_trip(amt in arb_amount()) {
-        let json = serde_json::to_string(&amt).expect("serialize");
-        let back: Amount = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(amt.value, back.value);
-        prop_assert_eq!(amt.decimals, back.decimals);
-    }
-
-    // -----------------------------------------------------------------------
-    // 18. AssetId serde round-trip
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn asset_id_serde_round_trip(asset in arb_asset_id()) {
-        let json = serde_json::to_string(&asset).expect("serialize");
-        let back: AssetId = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(asset, back);
-    }
-
-    // -----------------------------------------------------------------------
-    // 19. Amount arithmetic: checked_sub(a, b) + b == a when a >= b
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn amount_sub_then_add_identity(
-        a_val in 0u128..10u128.pow(15),
-        b_val in 0u128..10u128.pow(15),
+    fn empty_policy_set_always_denies(
+        action in arb_name(30),
+        resource in arb_name(30),
     ) {
-        let asset = AssetId::Native;
-        let a = Amount::new(a_val, asset.clone(), 10);
-        let b = Amount::new(b_val, asset, 10);
-
-        if a_val >= b_val {
-            let diff = a.checked_sub(&b).expect("a >= b so no underflow");
-            let restored = diff.checked_add(&b).expect("restoring should not overflow");
-            prop_assert_eq!(restored.value, a.value, "sub then add should restore original");
-        }
+        let empty_set = PolicySet::new(vec![]);
+        let ctx = EvaluationContext::default();
+        let decision = evaluate(&empty_set, &action, &resource, &ctx);
+        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
+            "empty policy set must deny, got {decision:?}");
     }
 
     // -----------------------------------------------------------------------
-    // 20. Artifact from_bytes preserves integrity check
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn artifact_integrity_preserved(body in prop::collection::vec(any::<u8>(), 0..2048)) {
-        let artifact = Artifact::from_bytes(
-            ArtifactId::new(),
-            ArtifactKind::Custom { type_uri: "test://v1".to_string() },
-            &body,
-        );
-
-        prop_assert!(artifact.verify_integrity(&body), "artifact must verify its own body");
-
-        // Flipping any byte should break integrity (unless body is empty).
-        if !body.is_empty() {
-            let mut tampered = body.clone();
-            tampered[0] = tampered[0].wrapping_add(1);
-            prop_assert!(!artifact.verify_integrity(&tampered), "tampered body must not verify");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // 21. PolicyRule: no-match on empty action patterns
+    // 27. PolicyRule: no-match on empty action patterns
     // -----------------------------------------------------------------------
 
     #[test]
@@ -756,7 +872,47 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 22. ActionCard narrative sections always carry AI disclaimer
+    // 28. ActionCard section counts: card with N canonical + M narrative
+    //     sections serializes to JSON with correct counts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn action_card_section_counts(
+        n_canonical in 0usize..10,
+        n_narrative in 0usize..10,
+    ) {
+        let mut builder = ActionCardBuilder::new("Test Transfer")
+            .with_payload_hash("deadbeef");
+
+        for i in 0..n_canonical {
+            builder = builder.add_canonical(
+                format!("field_{i}"),
+                format!("value_{i}"),
+                SectionSource::Metadata,
+            );
+        }
+        for i in 0..n_narrative {
+            builder = builder.add_narrative(
+                format!("narrative_{i}"),
+                format!("explanation_{i}"),
+            );
+        }
+
+        let card = builder.build();
+
+        prop_assert_eq!(card.canonical_sections.len(), n_canonical);
+        prop_assert_eq!(card.narrative_sections.len(), n_narrative);
+
+        // Serialize and check counts are preserved.
+        let json = serde_json::to_string(&card).expect("serialize");
+        let back: ActionCard = serde_json::from_str(&json).expect("deserialize");
+
+        prop_assert_eq!(back.canonical_sections.len(), n_canonical);
+        prop_assert_eq!(back.narrative_sections.len(), n_narrative);
+    }
+
+    // -----------------------------------------------------------------------
+    // 29. ActionCard narrative sections always carry AI disclaimer
     // -----------------------------------------------------------------------
 
     #[test]
@@ -781,107 +937,7 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 23. RunEvent serde round-trip
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn run_event_serde_round_trip(seq in 1u64..100_000) {
-        let run_id = RunId::new();
-        let correlation = EventCorrelation {
-            run_id: run_id.clone(),
-            ..Default::default()
-        };
-        let event = RunEvent::new_durable(
-            EventId::new(),
-            run_id,
-            seq,
-            EventKind::RunCreated,
-            correlation,
-        );
-
-        let json = serde_json::to_string(&event).expect("serialize");
-        let back: RunEvent = serde_json::from_str(&json).expect("deserialize");
-        prop_assert_eq!(&event.id, &back.id);
-        prop_assert_eq!(event.sequence, back.sequence);
-        prop_assert_eq!(&event.durability, &back.durability);
-    }
-
-    // -----------------------------------------------------------------------
-    // 24. Amount display_human contains asset name
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn amount_display_contains_asset(value in 0u128..10u128.pow(15)) {
-        let native = Amount::new(value, AssetId::Native, 10);
-        let display = native.display_human();
-        prop_assert!(display.contains("NATIVE"), "display '{}' must contain NATIVE", display);
-
-        let token = Amount::new(value, AssetId::Token {
-            chain: "polkadot".to_string(),
-            symbol: "USDT".to_string(),
-            decimals: 6,
-        }, 6);
-        let display2 = token.display_human();
-        prop_assert!(display2.contains("USDT"), "display '{}' must contain USDT", display2);
-    }
-
-    // -----------------------------------------------------------------------
-    // 25. BlobRef size_bytes matches input length
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn blob_ref_size_matches_input(body in prop::collection::vec(any::<u8>(), 0..8192)) {
-        let blob = BlobRef::from_bytes(&body);
-        prop_assert_eq!(blob.size_bytes, body.len() as u64,
-            "size_bytes must equal input length");
-    }
-
-    // -----------------------------------------------------------------------
-    // 26. Idempotency key Display matches as_str
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn idempotency_key_display_matches_as_str(
-        hex in prop::string::string_regex("[0-9a-f]{8,64}").expect("valid regex"),
-    ) {
-        let key = IdempotencyKey::from_hex(&hex);
-        prop_assert_eq!(key.to_string(), key.as_str(),
-            "Display output must match as_str()");
-    }
-
-    // -----------------------------------------------------------------------
-    // 27. Amount checked_mul: a * k >= a for k >= 1
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn amount_mul_preserves_minimum(
-        a_val in 0u128..10u128.pow(12),
-        k in 1u128..1000,
-    ) {
-        let a = Amount::new(a_val, AssetId::Native, 10);
-        let product = a.checked_mul(k).expect("should not overflow for small values");
-        prop_assert!(product.value >= a.value,
-            "product {} must be >= original {}", product.value, a.value);
-    }
-
-    // -----------------------------------------------------------------------
-    // 28. Policy default-deny: empty PolicySet always denies
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn empty_policy_set_always_denies(
-        action in arb_name(30),
-        resource in arb_name(30),
-    ) {
-        let empty_set = PolicySet::new(vec![]);
-        let ctx = EvaluationContext::default();
-        let decision = evaluate(&empty_set, &action, &resource, &ctx);
-        prop_assert!(matches!(decision, PolicyDecision::Deny { .. }),
-            "empty policy set must deny, got {decision:?}");
-    }
-
-    // -----------------------------------------------------------------------
-    // 29. RiskFlag serde round-trip
+    // 30. RiskFlag serde round-trip
     // -----------------------------------------------------------------------
 
     #[test]
@@ -897,7 +953,7 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 30. CanonicalSection serde round-trip
+    // 31. CanonicalSection serde round-trip
     // -----------------------------------------------------------------------
 
     #[test]
@@ -914,7 +970,7 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 31. NarrativeSection serde round-trip
+    // 32. NarrativeSection serde round-trip
     // -----------------------------------------------------------------------
 
     #[test]
@@ -929,20 +985,19 @@ proptest! {
     }
 
     // -----------------------------------------------------------------------
-    // 32. Amount checked_add is commutative
+    // 33. Account ID hex round-trip (32-byte array)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn amount_add_commutative(
-        a_val in 0u128..10u128.pow(15),
-        b_val in 0u128..10u128.pow(15),
-    ) {
-        let asset = AssetId::Native;
-        let a = Amount::new(a_val, asset.clone(), 10);
-        let b = Amount::new(b_val, asset, 10);
-        let ab = a.checked_add(&b).expect("reasonable values");
-        let ba = b.checked_add(&a).expect("reasonable values");
-        prop_assert_eq!(ab.value, ba.value, "a+b must equal b+a");
+    fn account_id_hex_round_trip(bytes in prop::array::uniform32(any::<u8>())) {
+        let hex_encoded: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        prop_assert_eq!(hex_encoded.len(), 64, "32 bytes -> 64 hex chars");
+
+        let decoded: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&hex_encoded[i * 2..i * 2 + 2], 16).expect("valid hex"))
+            .collect();
+        let decoded_bytes: [u8; 32] = decoded.try_into().expect("32 bytes");
+        prop_assert_eq!(bytes, decoded_bytes);
     }
 }
 

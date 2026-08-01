@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 
 # Crypto
 blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
 
 # Errors
 thiserror = { workspace = true }
@@ -28,4 +29,6 @@ chrono = { workspace = true }
 base58 = "0.2"
 
 [dev-dependencies]
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+rand = "0.8"
 serde_json = { workspace = true }

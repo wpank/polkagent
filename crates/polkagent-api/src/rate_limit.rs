@@ -1,194 +1,214 @@
-//! Rate-limiter types for the Polkagent API.
+//! Axum middleware for per-client rate limiting.
 //!
-//! This module provides an in-memory, per-key **token-bucket** rate limiter.
-//! It is intentionally a data-layer only — it does not integrate with Tower
-//! middleware. Route handlers call [`RateLimiter::check`] directly when they
-//! need to enforce a per-client or per-resource limit.
+//! This module bridges [`polkagent_rate_limit`] into the API server as Axum
+//! middleware.  Each inbound request is keyed by client IP (or an
+//! `X-Api-Key` header when present) and checked against a shared
+//! [`KeyedRateLimiter`].
 //!
-//! # Algorithm
+//! # HTTP behaviour
 //!
-//! Each key gets its own [`TokenBucket`].  The bucket starts full (at the
-//! configured `burst` capacity).  On every request:
+//! - **All responses** include `X-RateLimit-Limit` and `X-RateLimit-Remaining`
+//!   headers so that clients can self-throttle.
+//! - When a request is rejected the response is `429 Too Many Requests` with a
+//!   `Retry-After` header (in seconds).
 //!
-//! 1. Tokens are refilled based on elapsed time since the last refill
-//!    (`rate` tokens per second, up to `burst`).
-//! 2. If at least one token is available it is consumed and the request is
-//!    allowed.
-//! 3. If no tokens remain the request is rejected with
-//!    [`RateLimitError::TooManyRequests`].
+//! # Configuration
 //!
-//! # Thread safety
+//! Rate limiting is driven by [`polkagent_config::RateLimitConfig`]:
 //!
-//! [`RateLimiter`] uses a [`dashmap::DashMap`] for lock-free concurrent
-//! per-key access, making it safe to share across Axum handlers via `Arc`.
-//!
-//! # Example
-//!
-//! ```rust
-//! use std::sync::Arc;
-//! use polkagent_api::rate_limit::RateLimiter;
-//!
-//! let limiter = Arc::new(RateLimiter::new(10.0, 20));
-//! assert!(limiter.check("client-a").is_ok());
-//! assert_eq!(limiter.remaining("client-a"), 19);
-//! ```
+//! | Field | Default | Meaning |
+//! |---|---|---|
+//! | `enabled` | `true` | Set to `false` to disable rate limiting entirely |
+//! | `requests_per_second` | `100` | Steady-state refill rate per client |
+//! | `burst` | `200` | Maximum token capacity (allows short spikes) |
 
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::Duration;
 
-use dashmap::DashMap;
-use thiserror::Error;
-
-// ---------------------------------------------------------------------------
-// RateLimitError
-// ---------------------------------------------------------------------------
-
-/// Error returned when a rate limit is exceeded.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum RateLimitError {
-    /// The caller has exhausted its token budget.
-    #[error("too many requests: rate limit exceeded for key '{key}'")]
-    TooManyRequests {
-        /// The rate-limit key that was checked.
-        key: String,
-    },
-}
+use axum::{
+    body::Body,
+    extract::ConnectInfo,
+    http::{HeaderValue, Request, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
+use polkagent_config::RateLimitConfig;
+use polkagent_rate_limit::keyed::{KeyedRateLimiter, TokenBucketFactory};
+use serde_json::json;
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
-// TokenBucket
+// RateLimitState
 // ---------------------------------------------------------------------------
 
-/// A single token-bucket instance for one rate-limit key.
+/// Shared state for the rate-limit middleware.
 ///
-/// Not exposed publicly; managed internally by [`RateLimiter`].
-#[derive(Debug)]
-pub(crate) struct TokenBucket {
-    /// Current number of available tokens (fractional to avoid drift).
-    pub(crate) tokens: f64,
-    /// Monotonic timestamp of the last refill calculation.
-    pub(crate) last_refill: Instant,
-    /// Token replenishment rate in tokens per second.
-    pub(crate) rate: f64,
-    /// Maximum number of tokens (burst capacity).
-    pub(crate) burst: u32,
+/// Held inside an `Arc` and injected into each request via Axum extension.
+#[derive(Debug, Clone)]
+pub struct RateLimitState {
+    /// The per-key rate limiter. `None` when rate limiting is disabled.
+    limiter: Option<Arc<KeyedRateLimiter<String>>>,
+    /// The configured burst capacity (used for the `X-RateLimit-Limit` header).
+    limit: u32,
 }
 
-impl TokenBucket {
-    /// Create a new, full bucket.
-    fn new(rate: f64, burst: u32) -> Self {
-        Self {
-            tokens: f64::from(burst),
-            last_refill: Instant::now(),
-            rate,
-            burst,
-        }
-    }
-
-    /// Refill tokens based on elapsed time, then try to consume one.
+impl RateLimitState {
+    /// Build from configuration.
     ///
-    /// Returns `true` if a token was consumed (request allowed).
-    fn try_consume(&mut self) -> bool {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        self.last_refill = now;
-
-        // Refill: add tokens proportional to elapsed time, cap at burst.
-        self.tokens = (self.tokens + elapsed * self.rate).min(f64::from(self.burst));
-
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            true
-        } else {
-            false
+    /// When `config.enabled` is `false` the limiter is `None` and the
+    /// middleware becomes a no-op pass-through.
+    #[must_use]
+    pub fn from_config(config: &RateLimitConfig) -> Self {
+        if !config.enabled {
+            return Self {
+                limiter: None,
+                limit: config.burst,
+            };
         }
-    }
 
-    /// Return the current floor of available tokens without consuming any.
-    fn available(&self) -> u32 {
-        // Peek: compute what we would have after a refill, but do not mutate.
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        let projected = (self.tokens + elapsed * self.rate).min(f64::from(self.burst));
-        projected.floor() as u32
+        let factory = TokenBucketFactory {
+            capacity: config.burst,
+            refill_rate: f64::from(config.requests_per_second),
+            refill_interval: Duration::from_secs(1),
+        };
+
+        Self {
+            limiter: Some(Arc::new(KeyedRateLimiter::new(factory))),
+            limit: config.burst,
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// RateLimiter
+// Key extraction
 // ---------------------------------------------------------------------------
 
-/// An in-memory, per-key token-bucket rate limiter.
+/// Extract a rate-limit key from the request.
 ///
-/// # Construction
+/// Prefers the `X-Api-Key` header when present; otherwise falls back to the
+/// client IP address from `ConnectInfo`.  If neither is available the
+/// request is keyed as `"unknown"`.
+fn extract_key<B>(req: &Request<B>) -> String {
+    // 1. Try X-Api-Key header.
+    if let Some(api_key) = req
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+    {
+        if !api_key.is_empty() {
+            return format!("apikey:{api_key}");
+        }
+    }
+
+    // 2. Try ConnectInfo (requires axum::extract::connect_info::ConnectInfo).
+    if let Some(connect_info) = req.extensions().get::<ConnectInfo<std::net::SocketAddr>>() {
+        return format!("ip:{}", connect_info.0.ip());
+    }
+
+    // 3. Try X-Forwarded-For header (common behind reverse proxies).
+    if let Some(forwarded) = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+    {
+        // Take the first (leftmost) IP, which is the original client.
+        if let Some(first_ip) = forwarded.split(',').next() {
+            let ip = first_ip.trim();
+            if !ip.is_empty() {
+                return format!("ip:{ip}");
+            }
+        }
+    }
+
+    "unknown".to_owned()
+}
+
+// ---------------------------------------------------------------------------
+// Middleware function
+// ---------------------------------------------------------------------------
+
+/// Axum middleware that enforces per-client rate limits.
 ///
-/// ```rust
-/// use polkagent_api::rate_limit::RateLimiter;
+/// Install via [`axum::middleware::from_fn_with_state`]:
 ///
-/// // Allow 10 requests per second with a burst of 20.
-/// let limiter = RateLimiter::new(10.0, 20);
+/// ```rust,ignore
+/// use axum::middleware;
+///
+/// let state = RateLimitState::from_config(&config.server.rate_limit);
+/// let app = Router::new()
+///     .route("/api/v1alpha1/...", get(handler))
+///     .layer(middleware::from_fn_with_state(
+///         Arc::new(state),
+///         rate_limit_middleware,
+///     ));
 /// ```
-#[derive(Debug)]
-pub struct RateLimiter {
-    /// Per-key token buckets.
-    buckets: DashMap<String, TokenBucket>,
-    /// Token replenishment rate (tokens / second).
-    requests_per_second: f64,
-    /// Maximum token capacity (burst size).
-    burst: u32,
-}
-
-impl RateLimiter {
-    /// Create a new rate limiter.
-    ///
-    /// # Arguments
-    ///
-    /// - `requests_per_second`: steady-state throughput, e.g. `10.0`.
-    /// - `burst`: maximum tokens available at once (allows short spikes).
-    ///
-    /// # Panics
-    ///
-    /// Does not panic.  Negative or zero `requests_per_second` simply means
-    /// no tokens are ever refilled — all requests after the initial burst
-    /// will be rejected.
-    pub fn new(requests_per_second: f64, burst: u32) -> Self {
-        Self {
-            buckets: DashMap::new(),
-            requests_per_second,
-            burst,
+pub async fn rate_limit_middleware(
+    axum::extract::State(state): axum::extract::State<Arc<RateLimitState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let limiter = match &state.limiter {
+        Some(l) => l,
+        None => {
+            // Rate limiting disabled — pass through.
+            return next.run(req).await;
         }
-    }
+    };
 
-    /// Check whether the `key` is within its rate limit.
-    ///
-    /// If the key's bucket has at least one token it is consumed and
-    /// `Ok(())` is returned.  Otherwise [`RateLimitError::TooManyRequests`]
-    /// is returned.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RateLimitError::TooManyRequests`] when the bucket is empty.
-    pub fn check(&self, key: &str) -> Result<(), RateLimitError> {
-        let mut bucket = self.buckets
-            .entry(key.to_owned())
-            .or_insert_with(|| TokenBucket::new(self.requests_per_second, self.burst));
+    let key = extract_key(&req);
+    let result = limiter.check(&key, 1);
 
-        if bucket.try_consume() {
-            Ok(())
-        } else {
-            Err(RateLimitError::TooManyRequests {
-                key: key.to_owned(),
-            })
-        }
-    }
+    if result.allowed {
+        // Forward to inner handler, then append rate-limit headers.
+        let mut response = next.run(req).await;
+        let headers = response.headers_mut();
+        headers.insert(
+            "x-ratelimit-limit",
+            HeaderValue::from(state.limit),
+        );
+        headers.insert(
+            "x-ratelimit-remaining",
+            HeaderValue::from(result.remaining),
+        );
+        response
+    } else {
+        // Compute Retry-After in whole seconds (minimum 1).
+        let retry_secs = result
+            .retry_after
+            .unwrap_or(Duration::from_secs(1))
+            .as_secs()
+            .max(1);
 
-    /// Return the number of tokens currently available for `key`.
-    ///
-    /// Returns the burst capacity when the key has not yet been seen.
-    /// This is a snapshot and may change by the time `check` is called.
-    pub fn remaining(&self, key: &str) -> u32 {
-        match self.buckets.get(key) {
-            Some(bucket) => bucket.available(),
-            None => self.burst,
-        }
+        warn!(
+            key,
+            remaining = result.remaining,
+            retry_after_secs = retry_secs,
+            "rate limit exceeded"
+        );
+
+        let body = json!({
+            "error": {
+                "code": "RATE_LIMIT_EXCEEDED",
+                "message": "too many requests",
+                "retry_after": retry_secs,
+            }
+        });
+
+        let mut response = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+        let headers = response.headers_mut();
+        headers.insert(
+            "retry-after",
+            HeaderValue::from(retry_secs as u32),
+        );
+        headers.insert(
+            "x-ratelimit-limit",
+            HeaderValue::from(state.limit),
+        );
+        headers.insert(
+            "x-ratelimit-remaining",
+            HeaderValue::from(0u32),
+        );
+        response
     }
 }
 
@@ -198,73 +218,359 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware,
+        routing::get,
+        Router,
+    };
+    use polkagent_config::RateLimitConfig;
+    use tower::ServiceExt;
 
-    #[test]
-    fn within_limit_passes() {
-        let limiter = RateLimiter::new(10.0, 5);
-        assert!(limiter.check("user-a").is_ok());
+    /// Build a minimal test router with rate limiting applied.
+    fn test_router(config: &RateLimitConfig) -> Router {
+        let state = Arc::new(RateLimitState::from_config(config));
+
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                state,
+                rate_limit_middleware,
+            ))
     }
 
-    #[test]
-    fn over_limit_rejected() {
-        // Burst of 2 → first two allowed, third rejected immediately.
-        let limiter = RateLimiter::new(0.0, 2);
-        assert!(limiter.check("user-b").is_ok());
-        assert!(limiter.check("user-b").is_ok());
-        let result = limiter.check("user-b");
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            RateLimitError::TooManyRequests { key } => assert_eq!(key, "user-b"),
+    /// Helper: send a GET /test with an optional X-Api-Key header.
+    fn make_request(api_key: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().uri("/test").method("GET");
+        if let Some(key) = api_key {
+            builder = builder.header("x-api-key", key);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 1: requests under the limit succeed with 200
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn requests_under_limit_succeed() {
+        let config = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 10,
+            burst: 5,
+        };
+        let app = test_router(&config);
+
+        for _ in 0..5 {
+            let resp = app
+                .clone()
+                .oneshot(make_request(Some("client-a")))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
         }
     }
 
-    #[test]
-    fn tokens_refill_over_time() {
-        // Start with burst=1, rate=100/s.  Exhaust the bucket, then sleep
-        // 20 ms — at 100 tokens/s that refills at least 1 token.
-        let limiter = RateLimiter::new(100.0, 1);
-        assert!(limiter.check("user-c").is_ok());
-        assert!(limiter.check("user-c").is_err(), "should be exhausted");
+    // -----------------------------------------------------------------------
+    // Test 2: requests over the limit get 429
+    // -----------------------------------------------------------------------
 
-        std::thread::sleep(Duration::from_millis(20));
-
-        assert!(
-            limiter.check("user-c").is_ok(),
-            "tokens should have refilled after sleep"
-        );
-    }
-
-    #[test]
-    fn remaining_starts_at_burst_for_unseen_key() {
-        let limiter = RateLimiter::new(10.0, 15);
-        assert_eq!(limiter.remaining("brand-new-key"), 15);
-    }
-
-    #[test]
-    fn remaining_decreases_after_check() {
-        let limiter = RateLimiter::new(0.0, 10);
-        limiter.check("key").unwrap();
-        assert_eq!(limiter.remaining("key"), 9);
-    }
-
-    #[test]
-    fn different_keys_have_independent_buckets() {
-        let limiter = RateLimiter::new(0.0, 1);
-        // Key A: use up the bucket.
-        assert!(limiter.check("key-a").is_ok());
-        assert!(limiter.check("key-a").is_err());
-        // Key B is still full.
-        assert!(limiter.check("key-b").is_ok());
-    }
-
-    #[test]
-    fn rate_limit_error_display_contains_key() {
-        let err = RateLimitError::TooManyRequests {
-            key: "test-key".into(),
+    #[tokio::test]
+    async fn requests_over_limit_get_429() {
+        let config = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 0, // no refill
+            burst: 2,
         };
-        assert!(err.to_string().contains("test-key"));
+        let app = test_router(&config);
+
+        // First two should succeed.
+        let r1 = app
+            .clone()
+            .oneshot(make_request(Some("over-client")))
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+
+        let r2 = app
+            .clone()
+            .oneshot(make_request(Some("over-client")))
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), StatusCode::OK);
+
+        // Third should be rejected.
+        let r3 = app
+            .clone()
+            .oneshot(make_request(Some("over-client")))
+            .await
+            .unwrap();
+        assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: 429 response includes Retry-After header
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn retry_after_header_present_on_429() {
+        let config = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 0,
+            burst: 1,
+        };
+        let app = test_router(&config);
+
+        // Exhaust the bucket.
+        let _ = app
+            .clone()
+            .oneshot(make_request(Some("retry-client")))
+            .await
+            .unwrap();
+
+        // Next request should be 429 with Retry-After.
+        let resp = app
+            .clone()
+            .oneshot(make_request(Some("retry-client")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            resp.headers().contains_key("retry-after"),
+            "429 response must include Retry-After header"
+        );
+        // The value should be a positive integer.
+        let retry_val: u64 = resp
+            .headers()
+            .get("retry-after")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(retry_val >= 1, "Retry-After should be at least 1 second");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4: rate limit headers present on all successful responses
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rate_limit_headers_on_all_responses() {
+        let config = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 100,
+            burst: 50,
+        };
+        let app = test_router(&config);
+
+        let resp = app
+            .clone()
+            .oneshot(make_request(Some("header-client")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // X-RateLimit-Limit should match the configured burst.
+        let limit_val: u32 = resp
+            .headers()
+            .get("x-ratelimit-limit")
+            .expect("X-RateLimit-Limit header missing")
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(limit_val, 50);
+
+        // X-RateLimit-Remaining should be present and less than the burst
+        // (since we consumed one token).
+        let remaining_val: u32 = resp
+            .headers()
+            .get("x-ratelimit-remaining")
+            .expect("X-RateLimit-Remaining header missing")
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(remaining_val < 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5: different clients have independent limits
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn different_clients_independent_limits() {
+        let config = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 0,
+            burst: 1,
+        };
+        let app = test_router(&config);
+
+        // Client A exhausts its bucket.
+        let r1 = app
+            .clone()
+            .oneshot(make_request(Some("client-alpha")))
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+        let r2 = app
+            .clone()
+            .oneshot(make_request(Some("client-alpha")))
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // Client B should still have its full budget.
+        let r3 = app
+            .clone()
+            .oneshot(make_request(Some("client-beta")))
+            .await
+            .unwrap();
+        assert_eq!(r3.status(), StatusCode::OK);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6: rate limiting can be disabled via config
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn disabled_rate_limiting_passes_all_requests() {
+        let config = RateLimitConfig {
+            enabled: false,
+            requests_per_second: 0,
+            burst: 1,
+        };
+        let app = test_router(&config);
+
+        // Even with burst=1 and no refill, all requests should pass when
+        // rate limiting is disabled.
+        for _ in 0..10 {
+            let resp = app
+                .clone()
+                .oneshot(make_request(Some("disabled-client")))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 7: 429 response body contains error JSON
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rejected_response_body_is_json_error() {
+        let config = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 0,
+            burst: 1,
+        };
+        let app = test_router(&config);
+
+        // Exhaust.
+        let _ = app
+            .clone()
+            .oneshot(make_request(Some("body-client")))
+            .await
+            .unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(make_request(Some("body-client")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "RATE_LIMIT_EXCEEDED");
+        assert_eq!(body["error"]["message"], "too many requests");
+        assert!(body["error"]["retry_after"].is_number());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 8: X-RateLimit-Remaining decrements correctly
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn remaining_decrements_with_each_request() {
+        let config = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 0, // no refill
+            burst: 5,
+        };
+        let app = test_router(&config);
+
+        let mut prev_remaining = 5u32;
+        for i in 0..5 {
+            let resp = app
+                .clone()
+                .oneshot(make_request(Some("decrement-client")))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "request {i} should succeed");
+
+            let remaining: u32 = resp
+                .headers()
+                .get("x-ratelimit-remaining")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(
+                remaining < prev_remaining,
+                "remaining should decrease: was {prev_remaining}, got {remaining}"
+            );
+            prev_remaining = remaining;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 9: rate limit headers also present on 429 responses
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rate_limit_headers_on_429_responses() {
+        let config = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 0,
+            burst: 1,
+        };
+        let app = test_router(&config);
+
+        // Exhaust.
+        let _ = app
+            .clone()
+            .oneshot(make_request(Some("headers-429-client")))
+            .await
+            .unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(make_request(Some("headers-429-client")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // Both rate limit headers should be present.
+        assert!(resp.headers().contains_key("x-ratelimit-limit"));
+        assert!(resp.headers().contains_key("x-ratelimit-remaining"));
+
+        let remaining: u32 = resp
+            .headers()
+            .get("x-ratelimit-remaining")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(remaining, 0, "remaining should be 0 on rejected requests");
     }
 }

@@ -9,6 +9,9 @@ description = "Retry, circuit breaker, bulkhead, and timeout patterns for Polkag
 publish = false
 
 [dependencies]
+polkagent-executor-trait = { path = "../polkagent-executor-trait" }
+async-trait = { workspace = true }
+futures = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -19,6 +22,8 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+polkagent-core = { path = "../polkagent-core" }
+polkagent-executor-fake = { path = "../polkagent-executor-fake" }
 
 [lints]
 workspace = true

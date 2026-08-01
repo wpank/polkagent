@@ -63,6 +63,8 @@
 )]
 
 pub mod cache;
+#[cfg(feature = "cached")]
+pub mod cached_service;
 pub mod decode;
 pub mod drift;
 pub mod error;
@@ -76,6 +78,8 @@ pub mod validation;
 // ---------------------------------------------------------------------------
 
 pub use cache::MetadataCache;
+#[cfg(feature = "cached")]
+pub use cached_service::CachedMetadataService;
 pub use decode::DecodeService;
 pub use drift::DriftDetector;
 pub use error::MetadataError;

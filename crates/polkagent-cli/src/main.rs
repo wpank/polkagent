@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
             return commands::auth::run(cmd);
         }
         Some(Commands::Network(cmd)) => {
-            return commands::network::run(cmd);
+            return commands::network::run(cmd).await;
         }
         Some(Commands::Serve(cmd)) => {
             return commands::serve::run(cmd).await;

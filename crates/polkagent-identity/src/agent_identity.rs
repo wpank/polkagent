@@ -115,12 +115,18 @@ impl AgentCard {
     ///
     /// # Stub implementation
     ///
-    /// This always returns `false`. A real implementation would verify an
-    /// Ed25519 or Sr25519 signature using the provided public key.
+    /// This always returns `false`. A real implementation would:
+    /// 1. Call [`to_bytes()`](AgentCard::to_bytes) to obtain the canonical payload.
+    /// 2. Verify the `signature` against the payload using the `public_key`
+    ///    with Ed25519 or Sr25519 (depending on the key type indicator).
+    ///
+    /// The stub conservatively returns `false` (reject) rather than `true`
+    /// so that callers cannot accidentally bypass verification.
     #[must_use]
     pub fn verify_signature(&self, _signature: &[u8], _public_key: &[u8; 32]) -> bool {
-        // TODO: Implement real signature verification (Ed25519 / Sr25519)
-        // once the signing infrastructure is available.
+        // Stub: signature verification is not yet implemented.
+        // Returning `false` is the safe default -- no signature is ever
+        // considered valid until the signing infrastructure lands.
         false
     }
 }

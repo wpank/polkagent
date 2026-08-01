@@ -13,6 +13,7 @@
 //! grant run unconditionally.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -280,6 +281,26 @@ impl ToolRegistry {
                 }
             })
             .collect()
+    }
+}
+
+impl ToolRegistry {
+    /// Execute a batch of tool invocations using the given mode and context.
+    ///
+    /// This is a convenience method that creates a [`BatchToolExecutor`],
+    /// dispatches all invocations, and returns the aggregate result. It
+    /// requires wrapping `self` in an `Arc` first; prefer constructing a
+    /// [`BatchToolExecutor`] directly if you already have an `Arc<ToolRegistry>`.
+    ///
+    /// See [`crate::batch::BatchToolExecutor::execute`] for full documentation.
+    pub async fn execute_batch(
+        self: &Arc<Self>,
+        invocations: Vec<crate::batch::ToolInvocation>,
+        context: &ToolContext,
+        mode: crate::batch::BatchExecutionMode,
+    ) -> crate::batch::BatchToolResult {
+        let executor = crate::batch::BatchToolExecutor::new(Arc::clone(self));
+        executor.execute(invocations, context, mode).await
     }
 }
 

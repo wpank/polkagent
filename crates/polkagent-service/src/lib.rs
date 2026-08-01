@@ -11,6 +11,8 @@
 //! | [`app`] | [`AppService`] and [`AppServiceBuilder`]: the central service facade |
 //! | [`provider`] | [`ProviderRegistry`]: manages configured model providers |
 //! | [`lifecycle`] | [`startup`] / [`shutdown`]: full application initialization and teardown |
+//! | [`plugins`] | [`ServicePluginManager`]: plugin lifecycle management and capability validation |
+//! | [`scheduled`] | [`ScheduledTaskManager`]: scheduled/recurring agent runs |
 //! | [`error`] | [`ServiceError`]: unified error type |
 //!
 //! # Quick start
@@ -44,8 +46,12 @@
 
 pub mod app;
 pub mod error;
+pub mod explain;
 pub mod lifecycle;
+pub mod plugins;
 pub mod provider;
+pub mod scheduled;
+pub mod webhook;
 
 // ---------------------------------------------------------------------------
 // Convenience re-exports
@@ -55,3 +61,6 @@ pub use app::{AppService, AppServiceBuilder};
 pub use error::ServiceError;
 pub use lifecycle::{StartupContext, shutdown, startup};
 pub use provider::{ProviderInfo, ProviderRegistry, ProviderStatus};
+pub use plugins::{PluginInfo, ServicePluginManager};
+pub use scheduled::ScheduledTaskManager;
+pub use webhook::WebhookDispatcher;

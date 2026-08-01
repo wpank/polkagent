@@ -849,6 +849,10 @@ pub struct EvalRunCmd {
     #[arg(value_name = "SUITE_PATH")]
     pub suite_path: std::path::PathBuf,
 
+    /// Agent name or ID to tag the run with.
+    #[arg(long, short = 'a', value_name = "AGENT")]
+    pub agent: Option<String>,
+
     /// Save the JSON report to this path.
     #[arg(long, value_name = "PATH")]
     pub output: Option<std::path::PathBuf>,
@@ -864,6 +868,10 @@ pub struct EvalRunCmd {
     /// Emit the full JSON report to stdout instead of Markdown.
     #[arg(long)]
     pub json: bool,
+
+    /// Show detailed per-case scoring output.
+    #[arg(long)]
+    pub details: bool,
 }
 
 /// List available evaluation suites under fixtures/evals/.
@@ -975,8 +983,11 @@ pub struct AuthStatusCmd {
 /// Network endpoint status and infrastructure guidance subcommands.
 #[derive(Debug, Subcommand)]
 pub enum NetworkCmd {
-    /// Show configured chain endpoints and their reachability.
+    /// Show chain status: name, best block, finalized block, peer count.
     Status(NetworkStatusCmd),
+
+    /// Show metadata version and pallet list.
+    Metadata(NetworkMetadataCmd),
 
     /// Print guidance on starting a local test network with zombienet/chopsticks.
     Start(NetworkStartCmd),
@@ -985,9 +996,17 @@ pub enum NetworkCmd {
     Stop(NetworkStopCmd),
 }
 
-/// Show configured chain endpoints and their reachability status.
+/// Show chain status: name, best block, finalized block, peer count.
 #[derive(Debug, Args)]
 pub struct NetworkStatusCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Show metadata version and pallet list.
+#[derive(Debug, Args)]
+pub struct NetworkMetadataCmd {
     /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
@@ -1013,22 +1032,27 @@ pub struct NetworkStopCmd {
 // serve
 // ---------------------------------------------------------------------------
 
-/// Start the Polkagent HTTP API server.
+/// Start the Polkagent HTTP API + WebSocket server.
 ///
 /// Reads bind address, CORS, and database settings from the active
 /// configuration, then starts the Axum-backed server. Handles SIGTERM/SIGINT
 /// for graceful shutdown.
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct ServeCmd {
-    /// Override the TCP port (default: value from config, typically 4840).
-    #[arg(long, short = 'p', value_name = "PORT")]
-    pub port: Option<u16>,
+    /// Override the TCP port (default: 8080).
+    #[arg(long, short = 'p', value_name = "PORT", default_value_t = 8080)]
+    pub port: u16,
 
-    /// Override the bind host (default: value from config, typically 127.0.0.1).
-    #[arg(long, value_name = "HOST")]
-    pub host: Option<String>,
+    /// Override the bind host (default: 0.0.0.0).
+    #[arg(long, value_name = "HOST", default_value = "0.0.0.0")]
+    pub host: String,
 
-    /// Path to the configuration file to use.
-    #[arg(long, short = 'c', value_name = "PATH")]
-    pub config: Option<String>,
+    /// Allowed CORS origins (repeatable). When omitted, uses the value from
+    /// the config file.
+    #[arg(long = "cors-origin", value_name = "ORIGIN", action = clap::ArgAction::Append)]
+    pub cors_origins: Vec<String>,
+
+    /// Start the server in read-only mode (reject all mutating requests).
+    #[arg(long)]
+    pub read_only: bool,
 }

@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use polkagent_payment::{
-    PaymentError, PaymentStore,
+    BalanceSummary, PaymentError, PaymentStore,
     types::{Amount, AssetId, CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary},
 };
 
@@ -389,6 +389,139 @@ impl PaymentStore for SqlitePool {
                     }
                 })?;
             Ok(())
+        })
+        .await
+        .map_err(|e| PaymentError::store(format!("blocking task panicked: {e}")))?
+    }
+
+    async fn list_receipts(&self) -> Result<Vec<PaymentReceipt>, PaymentError> {
+        let pool = self.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let mut stmt = writer
+                .prepare(
+                    "SELECT intent_id, tx_hash, block_number, fee_value, fee_asset,
+                            fee_decimals, confirmed_at
+                      FROM payment_receipts
+                      ORDER BY confirmed_at DESC",
+                )
+                .map_err(map_err)?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,   // intent_id
+                        row.get::<_, String>(1)?,   // tx_hash
+                        row.get::<_, i64>(2)?,      // block_number
+                        row.get::<_, String>(3)?,   // fee_value
+                        row.get::<_, String>(4)?,   // fee_asset
+                        row.get::<_, i64>(5)?,      // fee_decimals
+                        row.get::<_, String>(6)?,   // confirmed_at
+                    ))
+                })
+                .map_err(map_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_err)?;
+
+            rows.into_iter()
+                .map(|(intent_id_s, tx_hash, block_number, fee_val, fee_asset_s, fee_dec, confirmed_at_s)| {
+                    let intent_id = intent_id_s.parse::<Uuid>()
+                        .map_err(|e| PaymentError::store(format!("invalid uuid: {e}")))?;
+                    let asset = decode_asset(&fee_asset_s)?;
+                    let value = decode_u128(&fee_val)?;
+                    let confirmed_at = parse_ts(&confirmed_at_s)?;
+
+                    Ok(PaymentReceipt {
+                        intent_id,
+                        tx_hash,
+                        block_number: block_number as u64,
+                        fee_paid: Amount::new(value, asset, fee_dec as u8),
+                        confirmed_at,
+                    })
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| PaymentError::store(format!("blocking task panicked: {e}")))?
+    }
+
+    async fn get_receipt(&self, intent_id: Uuid) -> Result<PaymentReceipt, PaymentError> {
+        let pool = self.clone();
+        let intent_id_str = intent_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let row = writer
+                .query_row(
+                    "SELECT intent_id, tx_hash, block_number, fee_value, fee_asset,
+                            fee_decimals, confirmed_at
+                      FROM payment_receipts
+                      WHERE intent_id = ?1",
+                    [&intent_id_str],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, i64>(5)?,
+                            row.get::<_, String>(6)?,
+                        ))
+                    },
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        PaymentError::IntentNotFound { id: intent_id }
+                    }
+                    other => map_err(other),
+                })?;
+
+            let (intent_id_s, tx_hash, block_number, fee_val, fee_asset_s, fee_dec, confirmed_at_s) = row;
+            let id = intent_id_s.parse::<Uuid>()
+                .map_err(|e| PaymentError::store(format!("invalid uuid: {e}")))?;
+            let asset = decode_asset(&fee_asset_s)?;
+            let value = decode_u128(&fee_val)?;
+            let confirmed_at = parse_ts(&confirmed_at_s)?;
+
+            Ok(PaymentReceipt {
+                intent_id: id,
+                tx_hash,
+                block_number: block_number as u64,
+                fee_paid: Amount::new(value, asset, fee_dec as u8),
+                confirmed_at,
+            })
+        })
+        .await
+        .map_err(|e| PaymentError::store(format!("blocking task panicked: {e}")))?
+    }
+
+    async fn get_balance(&self) -> Result<BalanceSummary, PaymentError> {
+        let pool = self.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+
+            // Sum all cost records to compute total spend.
+            let total_usd: f64 = writer
+                .query_row(
+                    "SELECT COALESCE(SUM(estimated_usd), 0.0) FROM cost_records",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)?;
+
+            // Convert USD to micro-dollars for the integer field.
+            let total_spent_micro = (total_usd * 1_000_000.0) as u128;
+
+            Ok(BalanceSummary {
+                available: None,
+                currency: "USD".to_owned(),
+                total_spent: total_spent_micro,
+                budget_configured: false,
+                budget_limit: None,
+            })
         })
         .await
         .map_err(|e| PaymentError::store(format!("blocking task panicked: {e}")))?

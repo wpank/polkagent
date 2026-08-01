@@ -63,6 +63,7 @@
     clippy::missing_panics_doc
 )]
 
+pub mod batch;
 pub mod builtin;
 pub mod registry;
 
@@ -70,5 +71,6 @@ pub mod registry;
 // Convenience re-exports
 // ---------------------------------------------------------------------------
 
+pub use batch::{BatchExecutionMode, BatchToolExecutor, BatchToolResult, ToolInvocation, ToolInvocationResult};
 pub use builtin::register_builtins;
 pub use registry::{ToolContext, ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSpec};

@@ -16,14 +16,16 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use polkagent_audit::AuditStore;
 use polkagent_config::Config;
+use polkagent_conversation::ConversationStore;
 use polkagent_core::{AgentId, agent::AgentSpec};
 use polkagent_event::EventBus;
 use polkagent_payment::PaymentStore;
 use polkagent_skill::manifest::SkillManifest;
 use polkagent_store_trait::{ArtifactStore, EffectStore};
 use polkagent_store_trait::event::EventStore;
-use polkagent_telemetry::MetricRecorder;
+use polkagent_telemetry::{MetricRecorder, PrometheusRegistry};
 use polkagent_tool::ToolSpec;
 
 use crate::run::RunManagerTrait;
@@ -206,6 +208,8 @@ pub struct AppState {
     pub started_at_utc: DateTime<Utc>,
     /// Metric recorder for counting runs, effects, and active connections.
     pub metrics: Arc<MetricRecorder>,
+    /// Prometheus metrics registry for the `/metrics` endpoint.
+    pub prometheus: PrometheusRegistry,
 
     // ------------------------------------------------------------------
     // Optional stores — return 501 Not Implemented when None
@@ -223,6 +227,10 @@ pub struct AppState {
     pub payment_store: Option<Arc<dyn PaymentStore>>,
     /// Memory store (optional — returns 501 when not configured).
     pub memory_store: Option<Arc<dyn crate::routes::memory::MemoryStore>>,
+    /// Audit log store (optional — returns 501 when not configured).
+    pub audit_store: Option<Arc<dyn AuditStore>>,
+    /// Conversation store (optional — returns 501 when not configured).
+    pub conversation_store: Option<Arc<dyn ConversationStore>>,
 }
 
 impl AppState {
@@ -251,12 +259,15 @@ impl AppState {
             started_at: Instant::now(),
             started_at_utc: Utc::now(),
             metrics: Arc::new(MetricRecorder::new()),
+            prometheus: PrometheusRegistry::with_default_metrics(),
             event_store: None,
             artifact_store: None,
             skill_registry: None,
             tool_registry: None,
             payment_store: None,
             memory_store: None,
+            audit_store: None,
+            conversation_store: None,
         }
     }
 
@@ -302,6 +313,20 @@ impl AppState {
         store: Arc<dyn crate::routes::memory::MemoryStore>,
     ) -> Self {
         self.memory_store = Some(store);
+        self
+    }
+
+    /// Set the audit store.
+    #[must_use]
+    pub fn with_audit_store(mut self, store: Arc<dyn AuditStore>) -> Self {
+        self.audit_store = Some(store);
+        self
+    }
+
+    /// Set the conversation store.
+    #[must_use]
+    pub fn with_conversation_store(mut self, store: Arc<dyn ConversationStore>) -> Self {
+        self.conversation_store = Some(store);
         self
     }
 

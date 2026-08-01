@@ -52,9 +52,10 @@
 |-------|--------|-------|-------------|
 | `polkagent-store-sqlite` | Done | 203 | All 6 store traits (+ payment, conversation) + conformance tests |
 | `polkagent-store-sqlite-group` | Done | 41 | Dedicated GroupStore SQLite impl (isolated from store-sqlite for serde recursion) |
-| `polkagent-api` | Done | 120 | REST + WebSocket, health endpoints, models/skills/tools/payments routes, event streaming |
-| `polkagent-cli` | Done | 127 | ROSEDUST TUI (8 widgets, 10 views), 15 commands, approve/deny flow, TUI db wiring |
-| `polkagent-service` | Done | 54 | AppService facade wired to all subsystems, approval channel |
+| `polkagent-store-sqlite-feed` | Done | 29 | FeedStore SQLite impl (manual serde for recursive TriggerCondition) |
+| `polkagent-api` | Done | 159 | REST + WebSocket, health, metrics, audit, conversation, rate-limit middleware |
+| `polkagent-cli` | Done | 105 | ROSEDUST TUI, 15 commands, serve/network/eval, approve/deny flow |
+| `polkagent-service` | Done | 71 | AppService facade, signer/chain wiring, webhook/scheduler/plugin integration |
 
 ### Phase 2b: Real Adapters
 
@@ -63,8 +64,8 @@
 | `polkagent-executor-anthropic` | Done | 60 | Anthropic Messages API with streaming, tool calls, retries |
 | `polkagent-executor-openai` | Done | 57 | OpenAI-compatible API (OpenAI, Azure, vLLM, Ollama) |
 | `polkagent-executor-local` | Done | 42 | Local models via Ollama API, no auth, graceful degradation |
-| `polkagent-metadata` | Done | 68 | Metadata cache, pinning, drift detection, service facade, validation, decode |
-| `polkagent-memory` | Done | 97 | FTS5 memory + admission, retention, tenant isolation, classification |
+| `polkagent-metadata` | Done | 80 | Metadata cache, pinning, drift detection, CachedMetadataService with LRU+TTL |
+| `polkagent-memory` | Done | 135 | FTS5 memory + admission, retention, tenant isolation, VectorIndex embedding |
 | `polkagent-signer-external` | Done | 42 | External signer with INV-01 enforcement, approval callbacks |
 | `polkagent-chain-fake` | Done | 42 | Fake ChainClient with pre-seeded data, fault injection, call tracking |
 | `polkagent-chain-subxt` | Done | 90 | JSON-RPC chain client, SCALE decode via polkagent-codec, multi-profile |
@@ -74,15 +75,15 @@
 
 | Crate | Status | Tests | Description |
 |-------|--------|-------|-------------|
-| `polkagent-tool` | Done | 32 | ToolRegistry, ToolHandler trait, grant-checked execution, builtins |
+| `polkagent-tool` | Done | 43 | ToolRegistry, ToolHandler, BatchToolExecutor, grant-checked execution |
 | `polkagent-tool-governance` | Done | 67 | OpenGov governance research tools (referendum, track, voter, delegation, treasury) |
 | `polkagent-tool-treasury` | Done | 65 | Portfolio/balance/staking/transfer/vesting analysis tools |
 | `polkagent-skill` | Done | 55 | TOML manifests, SkillLoader, dependency resolution, semver |
-| `polkagent-telemetry` | Done | 31 | OpenTelemetry, Redacted<T>, MetricRecorder, JsonlWriter |
+| `polkagent-telemetry` | Done | 42 | OpenTelemetry, Redacted<T>, MetricRecorder, PrometheusRegistry, JsonlWriter |
 | `polkagent-harness-trait` | Done | 22 | Harness port trait with session lifecycle |
-| `polkagent-harness-claude` | Done | 25 | Claude Code harness stub with state tracking |
+| `polkagent-harness-claude` | Done | 56 | Claude Code harness with real subprocess I/O |
 | `polkagent-secret` | Done | 66 | SecretValue (zeroize), env/file/chain stores, audit log, secret scanning/redaction |
-| `polkagent-identity` | Done | 36 | AccountId32, SS58 encode/decode, NetworkId, AgentIdentity |
+| `polkagent-identity` | Done | 42 | AccountId32, SS58 encode/decode, Ed25519 signature verification |
 | `polkagent-payment` | Done | 46 | Amount arithmetic, BudgetChecker, CostEstimator, PaymentStore |
 | `polkagent-conversation` | Done | 44 | Conversation/Message types, InMemoryStore, ContextWindow |
 | `polkagent-codec` | Done | 80 | Pure-Rust SCALE encode/decode, metadata parsing, call helpers |
@@ -99,7 +100,7 @@
 | Property tests (effect) | Done | 11 | Proptest for idempotency keys, effect kinds, priorities |
 | Property tests (grant) | Done | 18 | Proptest for policies, budgets, gate composition |
 | Property tests (5 crates) | Done | 35 | Proptest for config, card, outbox, event, artifact |
-| Integration tests | Done | 317 | Cross-crate e2e: lifecycle, effects, grants, tools, skills, conversations, faults |
+| Integration tests | Done | 380 | Cross-crate e2e: lifecycle, effects, grants, tools, skills, conversations, faults, infrastructure |
 | Port contract tests | Done | 10 | Executor, signer, transport conformance suites |
 | Store contract tests | Done | 46 | RunStore, EffectStore, EventStore, ArtifactStore on SQLite |
 | Security tests | Done | 157 | Secrets, injection, cards + RT-02-12 red-team + MD-02/03/05 metadata |
@@ -114,9 +115,14 @@
 
 | Flow | Status | Description |
 |------|--------|-------------|
-| Explain Before Sign | Partial | ExplainBeforeSign pipeline in polkagent-service (decode → card → approve → sign) |
-| CLI `polkagent run` | Partial | Commands wired, needs real executor integration |
+| Explain Before Sign | Done | ExplainBeforeSign pipeline in polkagent-service (decode → card → approve → sign → finality) |
+| CLI `polkagent run` | Done | Real executor detection (Anthropic/OpenAI/Local), wired in run command |
+| CLI `polkagent serve` | Done | API server with --host/--port/--cors-origin/--read-only flags |
+| CLI `polkagent network` | Done | Chain status and metadata subcommands via FakeChainClient |
+| CLI `polkagent eval` | Done | Enhanced eval with --agent/--details flags |
 | API event streaming | Done | WebSocket with run_id/kind filtering, ping/pong keepalive |
+| API Prometheus metrics | Done | `/metrics` endpoint with PrometheusRegistry |
+| Extrinsic decode fixture | Done | Real Polkadot balance transfer SCALE fixture + decode tests |
 
 
 ### Phase 2 Acceptance Criteria
@@ -199,9 +205,9 @@
 | Metric | Count |
 |--------|-------|
 | Crates | 62 |
-| Workspace members | 61 (1 excluded: store-sqlite-feed due to serde recursion) |
-| Tests | 4,640 |
-| Lines of Rust | ~160,000 |
+| Workspace members | 62 |
+| Tests | 4,893 |
+| Lines of Rust | ~207,000 |
 
 ## Build Commands
 

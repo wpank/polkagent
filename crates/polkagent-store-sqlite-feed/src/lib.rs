@@ -1,15 +1,11 @@
-#![recursion_limit = "4096"]
 //! SQLite [`FeedStore`] implementation for the Polkagent platform.
 //!
 //! This crate provides a durable, SQLite-backed implementation of
 //! [`polkagent_feed::FeedStore`] via the [`SqliteFeedStore`] newtype wrapper
 //! around [`SqlitePool`] from `polkagent-store-sqlite`.
 //!
-//! It is separated from `polkagent-store-sqlite` into its own crate because
-//! the `polkagent-feed` type graph (with its recursive `TriggerCondition` enum
-//! and tagged serde variants) can push `rustc`'s trait-solver recursion limit
-//! beyond the default when compiled alongside all the other store modules.
-//! By isolating it here the serde derivations compile independently.
+//! It is separated from `polkagent-store-sqlite` into its own crate to keep
+//! the feed-related persistence logic isolated from the core store modules.
 //!
 //! # Quickstart
 //!

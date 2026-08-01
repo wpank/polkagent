@@ -39,6 +39,12 @@ pub enum AuditAction {
     ToolInvoked,
     /// A transaction was submitted to a chain.
     ChainSubmitted,
+    /// An effect execution was attempted (logged before I/O begins).
+    EffectAttempted,
+    /// An effect execution completed successfully.
+    EffectCompleted,
+    /// An effect execution failed.
+    EffectFailed,
 }
 
 impl AuditAction {
@@ -72,6 +78,9 @@ impl fmt::Display for AuditAction {
             Self::ApprovalDenied => "approval_denied",
             Self::ToolInvoked => "tool_invoked",
             Self::ChainSubmitted => "chain_submitted",
+            Self::EffectAttempted => "effect_attempted",
+            Self::EffectCompleted => "effect_completed",
+            Self::EffectFailed => "effect_failed",
         };
         write!(f, "{s}")
     }
@@ -107,6 +116,9 @@ mod tests {
             AuditAction::ApprovalDenied,
             AuditAction::ToolInvoked,
             AuditAction::ChainSubmitted,
+            AuditAction::EffectAttempted,
+            AuditAction::EffectCompleted,
+            AuditAction::EffectFailed,
         ];
         for action in &actions {
             let json = serde_json::to_string(action).expect("serialize");
@@ -130,5 +142,8 @@ mod tests {
         assert!(!AuditAction::RunStarted.is_security_sensitive());
         assert!(!AuditAction::ToolInvoked.is_security_sensitive());
         assert!(!AuditAction::ApprovalGranted.is_security_sensitive());
+        assert!(!AuditAction::EffectAttempted.is_security_sensitive());
+        assert!(!AuditAction::EffectCompleted.is_security_sensitive());
+        assert!(!AuditAction::EffectFailed.is_security_sensitive());
     }
 }

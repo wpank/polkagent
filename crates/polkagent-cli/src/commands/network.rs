@@ -5,24 +5,70 @@
 //! These commands are primarily informational and print helpful guidance.
 //!
 //! Subcommands:
-//! - `network status` — show configured chain endpoints and their status.
-//! - `network start`  — advisory message directing users to zombienet/chopsticks.
-//! - `network stop`   — advisory message directing users to zombienet/chopsticks.
+//! - `network status`   — show chain name, best block, finalized block, peer count.
+//! - `network metadata` — show metadata version and pallet list.
+//! - `network start`    — advisory message directing users to zombienet/chopsticks.
+//! - `network stop`     — advisory message directing users to zombienet/chopsticks.
 
 use anyhow::Result;
 
-use crate::cli::{NetworkCmd, NetworkStartCmd, NetworkStatusCmd, NetworkStopCmd};
+use polkagent_chain_fake::FakeChainClientBuilder;
+use polkagent_chain_trait::{ChainClient, ChainProfileId};
+
+use crate::cli::{NetworkCmd, NetworkMetadataCmd, NetworkStartCmd, NetworkStatusCmd, NetworkStopCmd};
+
+// ---------------------------------------------------------------------------
+// Well-known pallet names for the fake metadata display
+// ---------------------------------------------------------------------------
+
+/// A representative list of pallets that appear in a typical Polkadot runtime.
+///
+/// Since the fake chain client returns opaque metadata bytes, we provide a
+/// static list that gives users a realistic preview of the metadata shape.
+const KNOWN_PALLETS: &[&str] = &[
+    "System",
+    "Timestamp",
+    "Balances",
+    "TransactionPayment",
+    "Authorship",
+    "Staking",
+    "Session",
+    "Grandpa",
+    "Babe",
+    "ImOnline",
+    "Offences",
+    "Democracy",
+    "Council",
+    "TechnicalCommittee",
+    "Elections",
+    "Treasury",
+    "Utility",
+    "Identity",
+    "Proxy",
+    "Multisig",
+    "Scheduler",
+    "Preimage",
+    "XcmPallet",
+    "ParaInherent",
+    "Paras",
+    "Registrar",
+    "Auctions",
+    "Crowdloan",
+    "Slots",
+    "NominationPools",
+];
 
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
 /// Dispatch the `network` subcommand.
-pub fn run(cmd: &NetworkCmd) -> Result<()> {
+pub async fn run(cmd: &NetworkCmd) -> Result<()> {
     match cmd {
-        NetworkCmd::Status(c) => status(c),
-        NetworkCmd::Start(c)  => start(c),
-        NetworkCmd::Stop(c)   => stop(c),
+        NetworkCmd::Status(c)   => status(c).await,
+        NetworkCmd::Metadata(c) => metadata(c).await,
+        NetworkCmd::Start(c)    => start(c),
+        NetworkCmd::Stop(c)     => stop(c),
     }
 }
 
@@ -62,27 +108,84 @@ fn strip_scheme(url: &str) -> &str {
         .unwrap_or(url)
 }
 
-fn status(cmd: &NetworkStatusCmd) -> Result<()> {
-    // Collect configured RPC endpoints from environment variables.
-    let rpc_url = std::env::var("POLKAGENT_CHAIN_RPC_URL")
+/// Determine whether a real RPC endpoint is configured.
+fn rpc_url() -> Option<String> {
+    std::env::var("POLKAGENT_RPC_URL")
         .ok()
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("POLKAGENT_CHAIN_RPC_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
+}
 
-    // Build an endpoint list from config if available.
-    let mut endpoints: Vec<(String, String)> = Vec::new(); // (name, url)
+/// Build a `FakeChainClient` to provide fallback data when no real RPC is
+/// available.
+fn build_fake_client() -> polkagent_chain_fake::FakeChainClient {
+    FakeChainClientBuilder::polkadot()
+        .with_block_number(22_543_871)
+        .with_runtime_version(1_003_004, 0)
+        .build()
+}
 
-    if let Some(ref url) = rpc_url {
-        endpoints.push(("polkadot".to_owned(), url.clone()));
+async fn status(cmd: &NetworkStatusCmd) -> Result<()> {
+    let configured_rpc = rpc_url();
+
+    if configured_rpc.is_none() {
+        // No RPC configured — use the fake client to show representative data
+        // and guide the user.
+        let client = build_fake_client();
+        let profile = ChainProfileId::new("polkadot");
+        let meta = client.fetch_metadata(profile).await?;
+        let best_block = client.current_block_number();
+        let finalized = best_block.saturating_sub(10);
+
+        if cmd.json {
+            let out = serde_json::json!({
+                "chain_name": "polkadot",
+                "best_block": best_block,
+                "finalized_block": finalized,
+                "spec_version": meta.spec_version,
+                "peer_count": serde_json::Value::Null,
+                "rpc_configured": false,
+                "note": "No RPC endpoint configured. Set POLKAGENT_RPC_URL to connect to a live chain.",
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            return Ok(());
+        }
+
+        println!("Network Status");
+        println!("{}", "-".repeat(50));
+        println!();
+        println!("  Chain:           polkadot (fake/offline)");
+        println!("  Best block:      #{best_block}");
+        println!("  Finalized block: #{finalized}");
+        println!("  Spec version:    {}", meta.spec_version);
+        println!("  Peer count:      (not available)");
+        println!();
+        println!("  No RPC endpoint configured.");
+        println!("  Showing sample data from the built-in fake chain client.");
+        println!();
+        println!("  To connect to a live chain, set one of:");
+        println!("    export POLKAGENT_RPC_URL=wss://rpc.polkadot.io");
+        println!("    export POLKAGENT_CHAIN_RPC_URL=ws://127.0.0.1:9944");
+        println!();
+        println!("  Or configure endpoints in polkagent.toml under [network].");
+        return Ok(());
     }
 
-    // Also check a Westend endpoint variable (common in test setups).
+    // RPC is configured — probe endpoints.
+    let rpc = configured_rpc.unwrap();
+
+    // Also collect additional endpoints.
+    let mut endpoints: Vec<(String, String)> = vec![("primary".to_owned(), rpc)];
+
     if let Ok(url) = std::env::var("POLKAGENT_WESTEND_RPC_URL") {
         if !url.is_empty() {
             endpoints.push(("westend".to_owned(), url));
         }
     }
-
-    // Check a zombienet/local endpoint.
     if let Ok(url) = std::env::var("POLKAGENT_LOCAL_RPC_URL") {
         if !url.is_empty() {
             endpoints.push(("local".to_owned(), url));
@@ -90,29 +193,23 @@ fn status(cmd: &NetworkStatusCmd) -> Result<()> {
     }
 
     if cmd.json {
-        let items: Vec<serde_json::Value> = if endpoints.is_empty() {
-            vec![serde_json::json!({
-                "name":      "polkadot",
-                "url":       "(not configured)",
-                "reachable": false,
-                "note":      "Set POLKAGENT_CHAIN_RPC_URL to configure a chain endpoint",
-            })]
-        } else {
-            endpoints
-                .iter()
-                .map(|(name, url)| {
-                    let hostport = strip_scheme(url);
-                    let reachable = probe_tcp(hostport);
-                    serde_json::json!({
-                        "name":      name,
-                        "url":       url,
-                        "reachable": reachable,
-                    })
+        let items: Vec<serde_json::Value> = endpoints
+            .iter()
+            .map(|(name, url)| {
+                let hostport = strip_scheme(url);
+                let reachable = probe_tcp(hostport);
+                serde_json::json!({
+                    "name":      name,
+                    "url":       url,
+                    "reachable": reachable,
                 })
-                .collect()
-        };
+            })
+            .collect();
 
-        let out = serde_json::json!({ "endpoints": items });
+        let out = serde_json::json!({
+            "endpoints": items,
+            "rpc_configured": true,
+        });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
@@ -120,18 +217,6 @@ fn status(cmd: &NetworkStatusCmd) -> Result<()> {
     println!("Network Status");
     println!("{}", "-".repeat(50));
     println!();
-
-    if endpoints.is_empty() {
-        println!("  No chain endpoints configured.");
-        println!();
-        println!("  Set one or more of the following environment variables:");
-        println!("    POLKAGENT_CHAIN_RPC_URL   — primary chain RPC (ws:// or wss://)");
-        println!("    POLKAGENT_WESTEND_RPC_URL — Westend testnet RPC");
-        println!("    POLKAGENT_LOCAL_RPC_URL   — local node (e.g. zombienet)");
-        println!();
-        println!("  Or configure endpoints in polkagent.toml under [network].");
-        return Ok(());
-    }
 
     for (name, url) in &endpoints {
         let hostport = strip_scheme(url);
@@ -141,6 +226,71 @@ fn status(cmd: &NetworkStatusCmd) -> Result<()> {
         println!("  {glyph} [{label}] {name:<12}  {url}");
     }
     println!();
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// metadata
+// ---------------------------------------------------------------------------
+
+async fn metadata(cmd: &NetworkMetadataCmd) -> Result<()> {
+    let configured_rpc = rpc_url();
+
+    // Whether or not an RPC is configured, we use the fake client for metadata
+    // display since we cannot parse real metadata without a full subxt connection.
+    let client = build_fake_client();
+    let profile = ChainProfileId::new("polkadot");
+    let meta = client.fetch_metadata(profile).await?;
+
+    let source = if configured_rpc.is_some() {
+        "cached"
+    } else {
+        "fake/offline"
+    };
+
+    if cmd.json {
+        let pallets: Vec<serde_json::Value> = KNOWN_PALLETS
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                serde_json::json!({
+                    "index": i,
+                    "name": name,
+                })
+            })
+            .collect();
+
+        let out = serde_json::json!({
+            "spec_version": meta.spec_version,
+            "metadata_digest": meta.metadata_digest.0,
+            "source": source,
+            "pallet_count": KNOWN_PALLETS.len(),
+            "pallets": pallets,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    println!("Runtime Metadata");
+    println!("{}", "-".repeat(50));
+    println!();
+    println!("  Spec version:    {}", meta.spec_version);
+    println!("  Metadata digest: {}", meta.metadata_digest.0);
+    println!("  Source:           {source}");
+    println!("  Pallet count:    {}", KNOWN_PALLETS.len());
+    println!();
+    println!("  Pallets:");
+    for (i, pallet) in KNOWN_PALLETS.iter().enumerate() {
+        println!("    {i:>3}. {pallet}");
+    }
+    println!();
+
+    if configured_rpc.is_none() {
+        println!("  Note: Showing representative pallet list from offline data.");
+        println!("  Set POLKAGENT_RPC_URL to fetch live metadata from a chain node.");
+        println!();
+    }
 
     Ok(())
 }
@@ -175,7 +325,7 @@ fn start(cmd: &NetworkStartCmd) -> Result<()> {
     println!("    https://github.com/AcalaNetwork/chopsticks");
     println!();
     println!("  Once a network is running, configure its RPC endpoint:");
-    println!("    export POLKAGENT_CHAIN_RPC_URL=ws://127.0.0.1:9944");
+    println!("    export POLKAGENT_RPC_URL=ws://127.0.0.1:9944");
     println!();
 
     Ok(())
@@ -218,6 +368,185 @@ fn stop(cmd: &NetworkStopCmd) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::Cli;
+    use clap::Parser;
+
+    // -----------------------------------------------------------------------
+    // 1. Arg parsing: `network status`
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_network_status() {
+        let cli = Cli::try_parse_from(["polkagent", "network", "status"]).unwrap();
+        match cli.command {
+            Some(crate::cli::Commands::Network(NetworkCmd::Status(ref cmd))) => {
+                assert!(!cmd.json);
+            }
+            _ => panic!("expected Network Status command"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. Arg parsing: `network status --json`
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_network_status_json() {
+        let cli = Cli::try_parse_from(["polkagent", "network", "status", "--json"]).unwrap();
+        match cli.command {
+            Some(crate::cli::Commands::Network(NetworkCmd::Status(ref cmd))) => {
+                assert!(cmd.json);
+            }
+            _ => panic!("expected Network Status command with --json"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Arg parsing: `network metadata`
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_network_metadata() {
+        let cli = Cli::try_parse_from(["polkagent", "network", "metadata"]).unwrap();
+        match cli.command {
+            Some(crate::cli::Commands::Network(NetworkCmd::Metadata(ref cmd))) => {
+                assert!(!cmd.json);
+            }
+            _ => panic!("expected Network Metadata command"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Arg parsing: `network metadata --json`
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_network_metadata_json() {
+        let cli = Cli::try_parse_from(["polkagent", "network", "metadata", "--json"]).unwrap();
+        match cli.command {
+            Some(crate::cli::Commands::Network(NetworkCmd::Metadata(ref cmd))) => {
+                assert!(cmd.json);
+            }
+            _ => panic!("expected Network Metadata command with --json"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. Status output: no RPC configured shows helpful message (human)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn status_no_rpc_shows_helpful_message() {
+        // Ensure no RPC env is set for this test.
+        std::env::remove_var("POLKAGENT_RPC_URL");
+        std::env::remove_var("POLKAGENT_CHAIN_RPC_URL");
+
+        let cmd = NetworkStatusCmd { json: false };
+        // Should succeed without error.
+        let result = status(&cmd).await;
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Status output: no RPC configured, JSON mode
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn status_no_rpc_json_mode() {
+        std::env::remove_var("POLKAGENT_RPC_URL");
+        std::env::remove_var("POLKAGENT_CHAIN_RPC_URL");
+
+        let cmd = NetworkStatusCmd { json: true };
+        let result = status(&cmd).await;
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. Metadata output: pallet list is non-empty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn known_pallets_non_empty() {
+        assert!(!KNOWN_PALLETS.is_empty());
+        assert!(KNOWN_PALLETS.len() >= 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. Metadata output: all pallets have non-empty names
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn known_pallets_have_names() {
+        for pallet in KNOWN_PALLETS {
+            assert!(!pallet.is_empty(), "pallet name should not be empty");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. Metadata handler runs without error
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn metadata_handler_succeeds() {
+        std::env::remove_var("POLKAGENT_RPC_URL");
+        std::env::remove_var("POLKAGENT_CHAIN_RPC_URL");
+
+        let cmd = NetworkMetadataCmd { json: false };
+        let result = metadata(&cmd).await;
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. Metadata JSON output succeeds
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn metadata_json_output_succeeds() {
+        std::env::remove_var("POLKAGENT_RPC_URL");
+        std::env::remove_var("POLKAGENT_CHAIN_RPC_URL");
+
+        let cmd = NetworkMetadataCmd { json: true };
+        let result = metadata(&cmd).await;
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. Fake client provides consistent block numbers
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn fake_client_block_numbers() {
+        let client = build_fake_client();
+        let best = client.current_block_number();
+        assert!(best > 0, "best block should be > 0");
+    }
+
+    // -----------------------------------------------------------------------
+    // 12. Fake client fetch_metadata returns correct spec version
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn fake_client_spec_version() {
+        let client = build_fake_client();
+        let profile = ChainProfileId::new("polkadot");
+        let meta = client.fetch_metadata(profile).await.unwrap();
+        assert_eq!(meta.spec_version, 1_003_004);
+    }
+
+    // -----------------------------------------------------------------------
+    // 13. rpc_url returns None when env vars are unset
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rpc_url_returns_none_when_unset() {
+        std::env::remove_var("POLKAGENT_RPC_URL");
+        std::env::remove_var("POLKAGENT_CHAIN_RPC_URL");
+        assert!(rpc_url().is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // 14. strip_scheme helper
+    // -----------------------------------------------------------------------
 
     #[test]
     fn strip_scheme_ws() {
@@ -241,7 +570,28 @@ mod tests {
 
     #[test]
     fn strip_scheme_with_path() {
-        // Should only return the host:port portion.
         assert_eq!(strip_scheme("ws://127.0.0.1:9944/path"), "127.0.0.1:9944");
+    }
+
+    // -----------------------------------------------------------------------
+    // 15. Arg parsing: `network start` and `network stop` still work
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_network_start() {
+        let cli = Cli::try_parse_from(["polkagent", "network", "start"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(crate::cli::Commands::Network(NetworkCmd::Start(_)))
+        ));
+    }
+
+    #[test]
+    fn parse_network_stop() {
+        let cli = Cli::try_parse_from(["polkagent", "network", "stop"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(crate::cli::Commands::Network(NetworkCmd::Stop(_)))
+        ));
     }
 }

@@ -24,12 +24,17 @@ polkagent-store-trait     = { path = "../polkagent-store-trait" }
 polkagent-memory          = { path = "../polkagent-memory" }
 polkagent-telemetry       = { path = "../polkagent-telemetry" }
 polkagent-eval            = { path = "../polkagent-eval" }
+polkagent-executor-anthropic = { path = "../polkagent-executor-anthropic" }
 polkagent-executor-fake   = { path = "../polkagent-executor-fake" }
+polkagent-executor-local  = { path = "../polkagent-executor-local" }
+polkagent-executor-openai = { path = "../polkagent-executor-openai" }
 polkagent-executor-trait  = { path = "../polkagent-executor-trait" }
 polkagent-api             = { path = "../polkagent-api" }
 polkagent-identity        = { path = "../polkagent-identity" }
 polkagent-event           = { path = "../polkagent-event" }
 polkagent-service         = { path = "../polkagent-service" }
+polkagent-chain-trait     = { path = "../polkagent-chain-trait" }
+polkagent-chain-fake      = { path = "../polkagent-chain-fake" }
 futures                   = { workspace = true }
 
 # CLI
@@ -42,6 +47,9 @@ tokio = { workspace = true }
 # TUI
 ratatui   = { workspace = true }
 crossterm = { workspace = true }
+
+# HTTP (blocking — used by TUI chain poller)
+ureq = { workspace = true }
 
 # Serialization
 serde      = { workspace = true }
@@ -70,6 +78,7 @@ parking_lot = { workspace = true }
 ratatui   = { workspace = true }
 crossterm = { workspace = true }
 proptest  = { workspace = true }
+tempfile  = { workspace = true }
 
 [lints]
 workspace = true

@@ -23,7 +23,7 @@
 
 use std::sync::Arc;
 
-use axum::Router;
+use axum::{middleware, Router};
 use thiserror::Error;
 use tower_http::{
     cors::CorsLayer,
@@ -36,6 +36,7 @@ use polkagent_event::EventBus;
 use polkagent_store_trait::EffectStore;
 use polkagent_telemetry::{LogFormat, TelemetryConfig, TelemetryGuard};
 
+use crate::rate_limit::{RateLimitState, rate_limit_middleware};
 use crate::run::RunManagerTrait;
 use crate::state::AgentStore;
 
@@ -139,7 +140,18 @@ impl ApiServer {
             )
             .on_failure(DefaultOnFailure::new().level(Level::ERROR));
 
+        // Per-client rate limiting middleware, configured via
+        // `config.server.rate_limit`. When `enabled` is false the middleware
+        // is a no-op pass-through (no performance overhead).
+        let rate_limit_state = Arc::new(
+            RateLimitState::from_config(&self.state.config.server.rate_limit),
+        );
+
         routes::register(self.state)
+            .layer(middleware::from_fn_with_state(
+                rate_limit_state,
+                rate_limit_middleware,
+            ))
             .layer(trace)
             .layer(cors)
     }

@@ -7,11 +7,14 @@
 //! CLI, TUI) use to drive the platform.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use polkagent_card::ActionCard;
-use polkagent_config::Config;
+use polkagent_chain_trait::ChainClient;
+use polkagent_config::watch::{AtomicConfig, ConfigWatcher, ReloadPolicy, WatchEventKind};
+use polkagent_config::{Config, ConfigLoader};
 use polkagent_core::{
     event::{EventCorrelation, EventKind, RunEvent},
     AgentId, AgentSpec, EffectAttemptId, EffectId, EffectOutcomeId, EventId, RunId, RunState,
@@ -26,13 +29,15 @@ use polkagent_grant::{
 use polkagent_memory::{MemoryEntry, MemoryId, MemoryQuery, MemoryStore};
 use polkagent_payment::{Amount, CostRecord, PaymentStore, UsageSummary};
 use polkagent_run::{RunManager, RunOrchestrator};
+use polkagent_signer_trait::Signer;
 use polkagent_store_trait::{
     EffectStore, RunStore, RunSummary, StoredIntent, StoredOutcome, StoreError,
 };
 use tokio::sync::broadcast;
-use tracing::{info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 use crate::error::ServiceError;
+use crate::explain::{ExplainRequest, SignAndSubmitResult};
 use crate::provider::ProviderRegistry;
 
 // ---------------------------------------------------------------------------
@@ -159,6 +164,11 @@ pub struct AppServiceBuilder {
     tool_registry: Option<Arc<polkagent_tool::ToolRegistry>>,
     conversation_store: Option<Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>>,
     payment_store: Option<Arc<dyn PaymentStore + Send + Sync>>,
+    signer: Option<Arc<dyn Signer>>,
+    chain_client: Option<Arc<dyn ChainClient>>,
+    webhook_dispatcher: Option<crate::webhook::WebhookDispatcher>,
+    scheduler: Option<crate::scheduled::ScheduledTaskManager>,
+    plugin_manager: Option<crate::plugins::ServicePluginManager>,
 }
 
 impl AppServiceBuilder {
@@ -267,6 +277,66 @@ impl AppServiceBuilder {
         self
     }
 
+    /// Set the signer port for the Explain-Before-Sign pipeline.
+    ///
+    /// When configured, enables [`AppService::explain_and_sign`] to produce
+    /// Polkadot transaction signatures through the isolated signing boundary.
+    #[must_use]
+    pub fn with_signer(mut self, signer: Arc<dyn Signer>) -> Self {
+        self.signer = Some(signer);
+        self
+    }
+
+    /// Set the chain client port for the Explain-Before-Sign pipeline.
+    ///
+    /// When configured, enables [`AppService::explain_and_sign`] to fetch
+    /// metadata, decode calls, submit extrinsics, and watch finality.
+    #[must_use]
+    pub fn with_chain_client(mut self, chain_client: Arc<dyn ChainClient>) -> Self {
+        self.chain_client = Some(chain_client);
+        self
+    }
+
+    /// Set the webhook dispatcher subsystem.
+    ///
+    /// When configured, event bus events are automatically dispatched to
+    /// registered webhook endpoints via the
+    /// [`polkagent_surface_webhook`] delivery engine.
+    #[must_use]
+    pub fn with_webhook_dispatcher(
+        mut self,
+        dispatcher: crate::webhook::WebhookDispatcher,
+    ) -> Self {
+        self.webhook_dispatcher = Some(dispatcher);
+        self
+    }
+
+    /// Set the scheduled task manager.
+    ///
+    /// When configured, enables registering recurring or one-shot agent runs
+    /// that fire automatically according to their schedule.
+    #[must_use]
+    pub fn with_scheduler(
+        mut self,
+        scheduler: crate::scheduled::ScheduledTaskManager,
+    ) -> Self {
+        self.scheduler = Some(scheduler);
+        self
+    }
+
+    /// Set the plugin manager for plugin lifecycle management.
+    ///
+    /// When configured, enables [`AppService::plugin_manager`] and the
+    /// plugin discovery, loading, and enable/disable lifecycle.
+    #[must_use]
+    pub fn with_plugin_manager(
+        mut self,
+        plugin_manager: crate::plugins::ServicePluginManager,
+    ) -> Self {
+        self.plugin_manager = Some(plugin_manager);
+        self
+    }
+
     /// Build the [`AppService`], consuming the builder.
     ///
     /// # Errors
@@ -322,7 +392,7 @@ impl AppServiceBuilder {
         let (approval_tx, _) = broadcast::channel::<(EffectId, bool)>(256);
 
         Ok(AppService {
-            config,
+            atomic_config: Arc::new(AtomicConfig::new(config)),
             executor: self.executor,
             run_store,
             effect_store: self.effect_store,
@@ -337,7 +407,13 @@ impl AppServiceBuilder {
             tool_registry: self.tool_registry,
             conversation_store: self.conversation_store,
             payment_store: self.payment_store,
+            signer: self.signer,
+            chain_client: self.chain_client,
             approval_tx,
+            watcher_shutdown: Mutex::new(None),
+            webhook_dispatcher: Mutex::new(self.webhook_dispatcher),
+            scheduler: self.scheduler,
+            plugin_manager: self.plugin_manager,
         })
     }
 }
@@ -358,8 +434,10 @@ impl AppServiceBuilder {
 /// `AppService` is `Send + Sync`. It can be wrapped in an `Arc` and shared
 /// across Tokio tasks.
 pub struct AppService {
-    /// The resolved application configuration.
-    config: Config,
+    /// The resolved application configuration, swappable at runtime via
+    /// hot-reload. Readers call [`live_config`](Self::live_config) to get an
+    /// `Arc<Config>` snapshot that remains valid even if a reload races.
+    atomic_config: Arc<AtomicConfig<Config>>,
     /// Default model executor (used when no provider-specific executor is
     /// requested).
     executor: Option<Arc<dyn ModelExecutor>>,
@@ -389,15 +467,33 @@ pub struct AppService {
     conversation_store: Option<Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>>,
     /// Payment store (optional).
     payment_store: Option<Arc<dyn PaymentStore + Send + Sync>>,
+    /// Signer port for the Explain-Before-Sign pipeline (optional).
+    signer: Option<Arc<dyn Signer>>,
+    /// Chain client port for the Explain-Before-Sign pipeline (optional).
+    chain_client: Option<Arc<dyn ChainClient>>,
     /// Broadcast channel for notifying the orchestrator of approval decisions.
     /// Sends `(effect_id, approved)` tuples.
     approval_tx: broadcast::Sender<(EffectId, bool)>,
+    /// Shutdown sender for the config watcher background task. Sending `true`
+    /// signals the watcher loop to exit. `None` when no watcher is running.
+    watcher_shutdown: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
+    /// Webhook dispatcher subsystem (optional). When present, events published
+    /// to the event bus are automatically delivered to registered webhook
+    /// endpoints.
+    webhook_dispatcher: Mutex<Option<crate::webhook::WebhookDispatcher>>,
+    /// Scheduled task manager (optional). When present, enables registering
+    /// recurring or one-shot agent runs that fire on a schedule.
+    scheduler: Option<crate::scheduled::ScheduledTaskManager>,
+    /// Plugin manager (optional). When present, enables plugin discovery,
+    /// loading, capability validation, and enable/disable lifecycle.
+    plugin_manager: Option<crate::plugins::ServicePluginManager>,
 }
 
 impl std::fmt::Debug for AppService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cfg = self.atomic_config.get();
         f.debug_struct("AppService")
-            .field("config_schema_version", &self.config.meta.schema_version)
+            .field("config_schema_version", &cfg.meta.schema_version)
             .field("has_executor", &self.executor.is_some())
             .field("has_effect_store", &self.effect_store.is_some())
             .field("has_orchestrator", &self.orchestrator.is_some())
@@ -405,7 +501,11 @@ impl std::fmt::Debug for AppService {
             .field("has_tool_registry", &self.tool_registry.is_some())
             .field("has_conversation_store", &self.conversation_store.is_some())
             .field("has_payment_store", &self.payment_store.is_some())
+            .field("has_signer", &self.signer.is_some())
+            .field("has_chain_client", &self.chain_client.is_some())
             .field("provider_count", &self.provider_registry.len())
+            .field("has_webhook_dispatcher", &self.webhook_dispatcher.lock().map(|g| g.is_some()).unwrap_or(false))
+            .field("has_scheduler", &self.scheduler.is_some())
             .finish()
     }
 }
@@ -417,10 +517,180 @@ impl AppService {
         AppServiceBuilder::new()
     }
 
-    /// Return a reference to the resolved configuration.
+    /// Return a snapshot of the current configuration.
+    ///
+    /// The returned `Arc<Config>` is a point-in-time snapshot. It remains
+    /// valid and consistent even if a hot-reload swaps the underlying
+    /// config between the time this is called and when the caller uses
+    /// the value.
     #[must_use]
-    pub fn config(&self) -> &Config {
-        &self.config
+    pub fn config(&self) -> Arc<Config> {
+        self.atomic_config.get()
+    }
+
+    /// Return a clone of the [`AtomicConfig`] handle.
+    ///
+    /// Useful for subsystems that need to hold a long-lived reference and
+    /// read the latest config on each operation.
+    #[must_use]
+    pub fn atomic_config(&self) -> Arc<AtomicConfig<Config>> {
+        Arc::clone(&self.atomic_config)
+    }
+
+    /// Start a background config watcher that polls `config_path` for
+    /// changes and atomically swaps the live config when a valid update
+    /// is detected.
+    ///
+    /// The watcher runs in a Tokio blocking task and can be stopped via
+    /// [`stop_config_watcher`](Self::stop_config_watcher).
+    ///
+    /// # Arguments
+    ///
+    /// * `config_path` - Path to the TOML config file to watch.
+    /// * `poll_interval` - How often to poll the file for changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::ConfigReload`] if a watcher is already
+    /// running, or if the config path does not exist.
+    pub fn start_config_watcher(
+        &self,
+        config_path: impl AsRef<Path>,
+        poll_interval: Duration,
+    ) -> Result<(), ServiceError> {
+        let config_path = config_path.as_ref().to_path_buf();
+
+        // Prevent starting multiple watchers.
+        {
+            let guard = self.watcher_shutdown.lock().map_err(|e| {
+                ServiceError::Internal {
+                    message: format!("watcher lock poisoned: {e}"),
+                }
+            })?;
+            if guard.is_some() {
+                return Err(ServiceError::ConfigReload {
+                    message: "config watcher is already running".into(),
+                });
+            }
+        }
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        // Store the shutdown sender so we can stop the watcher later.
+        {
+            let mut guard = self.watcher_shutdown.lock().map_err(|e| {
+                ServiceError::Internal {
+                    message: format!("watcher lock poisoned: {e}"),
+                }
+            })?;
+            *guard = Some(shutdown_tx);
+        }
+
+        let atomic = Arc::clone(&self.atomic_config);
+        let path_for_log = config_path.clone();
+
+        tokio::task::spawn_blocking(move || {
+            Self::watcher_loop(config_path, poll_interval, atomic, shutdown_rx);
+        });
+
+        info!(path = %path_for_log.display(), "config watcher started");
+        Ok(())
+    }
+
+    /// The polling loop executed inside `spawn_blocking`.
+    fn watcher_loop(
+        config_path: PathBuf,
+        poll_interval: Duration,
+        atomic: Arc<AtomicConfig<Config>>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let watcher = ConfigWatcher::new(&config_path, poll_interval, ReloadPolicy::Immediate);
+
+        loop {
+            // Check for shutdown signal (non-blocking).
+            if *shutdown_rx.borrow() {
+                info!(path = %config_path.display(), "config watcher stopped");
+                return;
+            }
+
+            if let Some(event) = watcher.check_for_changes() {
+                match event.kind {
+                    WatchEventKind::Modified | WatchEventKind::Created => {
+                        info!(
+                            path = %event.path.display(),
+                            kind = %event.kind,
+                            "config file change detected, reloading"
+                        );
+
+                        // Load and parse the new config.
+                        let new_config = match ConfigLoader::new()
+                            .with_path(&config_path)
+                            .load()
+                        {
+                            Ok(cfg) => cfg,
+                            Err(err) => {
+                                error!(
+                                    %err,
+                                    path = %config_path.display(),
+                                    "failed to parse new config, keeping old config"
+                                );
+                                std::thread::sleep(poll_interval);
+                                continue;
+                            }
+                        };
+
+                        // Validate the new config.
+                        if let Err(validation_errors) =
+                            polkagent_config::validate::validate(&new_config)
+                        {
+                            let msgs: Vec<String> = validation_errors
+                                .iter()
+                                .map(|e| format!("{}: {}", e.field, e.message))
+                                .collect();
+                            error!(
+                                errors = %msgs.join("; "),
+                                path = %config_path.display(),
+                                "new config failed validation, keeping old config"
+                            );
+                            std::thread::sleep(poll_interval);
+                            continue;
+                        }
+
+                        // Atomically swap to the new config.
+                        let _old = atomic.swap(new_config);
+                        info!(
+                            path = %config_path.display(),
+                            "config reloaded successfully"
+                        );
+                    }
+                    WatchEventKind::Deleted => {
+                        warn!(
+                            path = %event.path.display(),
+                            "config file deleted, keeping current config"
+                        );
+                    }
+                }
+            }
+
+            std::thread::sleep(poll_interval);
+        }
+    }
+
+    /// Stop the background config watcher, if one is running.
+    ///
+    /// This is idempotent: calling it when no watcher is running is a no-op.
+    pub fn stop_config_watcher(&self) {
+        let mut guard = match self.watcher_shutdown.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                warn!("watcher lock poisoned during stop: {e}");
+                return;
+            }
+        };
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(true);
+            info!("config watcher stop signal sent");
+        }
     }
 
     /// Return a reference to the provider registry.
@@ -878,6 +1148,66 @@ impl AppService {
     }
 
     // -----------------------------------------------------------------------
+    // Explain-Before-Sign pipeline
+    // -----------------------------------------------------------------------
+
+    /// Run the full Explain-Before-Sign pipeline.
+    ///
+    /// Decodes the SCALE-encoded call bytes against pinned metadata, builds a
+    /// human-readable action card, signs the EXACT original bytes, submits the
+    /// signed extrinsic, and watches for finality.
+    ///
+    /// # Acceptance criteria
+    ///
+    /// - **AC-P2-001:** Call decoded correctly against pinned metadata.
+    /// - **AC-P2-003:** Signer receives exact bytes, never model-modified data.
+    /// - **AC-P2-004:** Stale metadata produces explicit error before signing.
+    /// - **AC-P2-005:** Wrong-network extrinsic rejected before signing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::NotInitialized`] if either the signer or chain
+    /// client is not configured. Returns [`ServiceError::ExplainPipeline`] if
+    /// any stage of the pipeline fails.
+    #[instrument(skip(self, request), fields(chain_profile = %request.chain_profile, run_id = %request.run_id))]
+    pub async fn explain_and_sign(
+        &self,
+        request: ExplainRequest,
+    ) -> Result<SignAndSubmitResult, ServiceError> {
+        let signer = self.signer.as_ref().ok_or_else(|| {
+            ServiceError::NotInitialized {
+                component: "signer".into(),
+            }
+        })?;
+        let chain_client = self.chain_client.as_ref().ok_or_else(|| {
+            ServiceError::NotInitialized {
+                component: "chain_client".into(),
+            }
+        })?;
+
+        let result = crate::explain::full_pipeline(
+            chain_client.as_ref(),
+            signer.as_ref(),
+            request,
+        )
+        .await?;
+
+        Ok(result)
+    }
+
+    /// Return a reference to the signer, if configured.
+    #[must_use]
+    pub fn signer(&self) -> Option<&Arc<dyn Signer>> {
+        self.signer.as_ref()
+    }
+
+    /// Return a reference to the chain client, if configured.
+    #[must_use]
+    pub fn chain_client(&self) -> Option<&Arc<dyn ChainClient>> {
+        self.chain_client.as_ref()
+    }
+
+    // -----------------------------------------------------------------------
     // Optional subsystem accessors
     // -----------------------------------------------------------------------
 
@@ -912,6 +1242,43 @@ impl AppService {
     #[must_use]
     pub fn payment_store(&self) -> Option<&Arc<dyn PaymentStore + Send + Sync>> {
         self.payment_store.as_ref()
+    }
+
+    /// Return a reference to the plugin manager, if configured.
+    #[must_use]
+    pub fn plugin_manager(&self) -> Option<&crate::plugins::ServicePluginManager> {
+        self.plugin_manager.as_ref()
+    }
+
+    /// Start the webhook dispatcher if one was configured via the builder.
+    ///
+    /// This subscribes to the event bus and begins dispatching matching
+    /// events to registered webhook endpoints. The dispatcher runs in the
+    /// background until the service is shut down.
+    ///
+    /// This is a no-op if no dispatcher was configured or if it has already
+    /// been started.
+    pub fn start_webhook_dispatcher(&self) {
+        if let Ok(mut guard) = self.webhook_dispatcher.lock() {
+            if let Some(dispatcher) = guard.as_mut() {
+                dispatcher.start();
+            }
+        }
+    }
+
+    /// Return `true` if a webhook dispatcher is configured.
+    #[must_use]
+    pub fn has_webhook_dispatcher(&self) -> bool {
+        self.webhook_dispatcher
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Return a reference to the scheduled task manager, if configured.
+    #[must_use]
+    pub fn scheduler(&self) -> Option<&crate::scheduled::ScheduledTaskManager> {
+        self.scheduler.as_ref()
     }
 }
 
@@ -1993,4 +2360,542 @@ mod tests {
         let state = service.get_run_status(run_id).await.expect("state");
         assert_eq!(state, RunState::Queued);
     }
+
+    // ── Fake Signer and ChainClient for explain pipeline tests ─────────
+
+    use polkagent_chain_trait::{
+        BlockRef, ChainError, DecodedCall, FinalityObservation, MetadataDigest as ChainMetadataDigest,
+        PinnedMetadata, SimulationResult, TxHash,
+    };
+    use polkagent_signer_trait::{
+        AccountRef, CanonicalSignRequest, SignedPayload, SignerCapabilities, SignerError,
+    };
+
+    /// A mock [`Signer`] for app-level integration tests.
+    #[derive(Debug)]
+    struct FakeSigner {
+        /// If set, `sign` returns this error.
+        sign_error: Option<&'static str>,
+    }
+
+    impl FakeSigner {
+        fn new() -> Self {
+            Self { sign_error: None }
+        }
+
+        fn rejecting() -> Self {
+            Self {
+                sign_error: Some("user rejected"),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl polkagent_signer_trait::Signer for FakeSigner {
+        async fn describe(&self) -> Result<SignerCapabilities, SignerError> {
+            Ok(SignerCapabilities {
+                accounts: vec![AccountRef::from_bytes([0u8; 32])],
+                chain_profiles: vec![polkagent_signer_trait::ChainProfileId::new("test-chain")],
+                hardware_backed: false,
+                display_name: "FakeSigner".into(),
+            })
+        }
+
+        async fn sign(
+            &self,
+            request: CanonicalSignRequest,
+        ) -> Result<SignedPayload, SignerError> {
+            if let Some(_msg) = &self.sign_error {
+                return Err(SignerError::UserRejected);
+            }
+            Ok(SignedPayload {
+                signed_extrinsic: [request.payload.as_slice(), &[0xFF, 0xFE]].concat(),
+                public_key: vec![2u8; 32],
+                signature: vec![3u8; 64],
+            })
+        }
+
+        async fn health(&self) -> Result<(), SignerError> {
+            Ok(())
+        }
+    }
+
+    /// A mock [`ChainClient`] for app-level integration tests.
+    #[derive(Debug)]
+    struct FakeChainClient;
+
+    #[async_trait::async_trait]
+    impl polkagent_chain_trait::ChainClient for FakeChainClient {
+        async fn fetch_metadata(
+            &self,
+            _chain_profile: polkagent_chain_trait::ChainProfileId,
+        ) -> Result<PinnedMetadata, ChainError> {
+            Ok(PinnedMetadata {
+                chain_profile: polkagent_chain_trait::ChainProfileId::new("test-chain"),
+                spec_version: 1_000_000,
+                metadata_digest: ChainMetadataDigest("abcdef0123456789".into()),
+                metadata_bytes: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                block_ref: BlockRef {
+                    number: 42,
+                    hash: "0xblockhash".into(),
+                },
+                fetched_at: chrono::Utc::now(),
+            })
+        }
+
+        async fn simulate(
+            &self,
+            _signed_extrinsic: &[u8],
+            _block_ref: &BlockRef,
+            _metadata: &PinnedMetadata,
+        ) -> Result<SimulationResult, ChainError> {
+            Ok(SimulationResult {
+                success: true,
+                fee_estimate: Some(1_000_000),
+                error_message: None,
+                storage_changes_preview: vec![],
+                block_ref: BlockRef {
+                    number: 50,
+                    hash: "0xsim".into(),
+                },
+            })
+        }
+
+        async fn submit_extrinsic(
+            &self,
+            _signed_extrinsic: &[u8],
+            _chain_profile: polkagent_chain_trait::ChainProfileId,
+        ) -> Result<TxHash, ChainError> {
+            Ok(TxHash::new("0xtxhash"))
+        }
+
+        async fn watch_finality(
+            &self,
+            _tx_hash: TxHash,
+            _chain_profile: polkagent_chain_trait::ChainProfileId,
+            _timeout_ms: u64,
+        ) -> Result<FinalityObservation, ChainError> {
+            Ok(FinalityObservation::Finalized {
+                block_ref: BlockRef {
+                    number: 100,
+                    hash: "0xfinalized".into(),
+                },
+                tx_index: 0,
+            })
+        }
+
+        async fn decode_call(
+            &self,
+            _call_bytes: &[u8],
+            _metadata: &PinnedMetadata,
+        ) -> Result<DecodedCall, ChainError> {
+            Ok(DecodedCall {
+                pallet: "Balances".into(),
+                call_name: "transfer_keep_alive".into(),
+                arguments_json: r#"{"dest":"5GrwvaEF","value":1000}"#.into(),
+                metadata_digest: ChainMetadataDigest("abcdef0123456789".into()),
+            })
+        }
+
+        async fn query_storage(
+            &self,
+            _storage_key: &[u8],
+            _block_ref: Option<&BlockRef>,
+            _chain_profile: polkagent_chain_trait::ChainProfileId,
+        ) -> Result<Option<Vec<u8>>, ChainError> {
+            Ok(None)
+        }
+
+        async fn health(&self) -> Result<(), ChainError> {
+            Ok(())
+        }
+    }
+
+    fn build_service_with_signer_and_chain() -> AppService {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+
+        AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .with_signer(Arc::new(FakeSigner::new()))
+            .with_chain_client(Arc::new(FakeChainClient))
+            .build()
+            .expect("build service with signer and chain_client")
+    }
+
+    // ── Explain-Before-Sign pipeline tests ─────────────────────────────
+
+    /// Test 1: Builder accepts signer and chain_client, accessors return Some.
+    #[test]
+    fn builder_accepts_signer_and_chain_client() {
+        let service = build_service_with_signer_and_chain();
+        assert!(service.signer().is_some());
+        assert!(service.chain_client().is_some());
+    }
+
+    /// Test 2: Signer and chain_client are None by default.
+    #[test]
+    fn signer_and_chain_client_none_by_default() {
+        let service = build_service();
+        assert!(service.signer().is_none());
+        assert!(service.chain_client().is_none());
+    }
+
+    /// Test 3: explain_and_sign errors with NotInitialized when signer is
+    /// not configured.
+    #[tokio::test]
+    async fn explain_and_sign_errors_without_signer() {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+
+        // Only chain_client, no signer.
+        let service = AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .with_chain_client(Arc::new(FakeChainClient))
+            .build()
+            .expect("build");
+
+        let request = crate::explain::ExplainRequest {
+            call_bytes: vec![0x05, 0x00, 0x01, 0x02],
+            chain_profile: polkagent_chain_trait::ChainProfileId::new("test-chain"),
+            run_id: RunId::new(),
+            agent_id: AgentId::new(),
+        };
+
+        let result = service.explain_and_sign(request).await;
+        assert!(matches!(
+            result,
+            Err(ServiceError::NotInitialized { ref component }) if component == "signer"
+        ));
+    }
+
+    /// Test 4: explain_and_sign errors with NotInitialized when chain_client
+    /// is not configured.
+    #[tokio::test]
+    async fn explain_and_sign_errors_without_chain_client() {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+
+        // Only signer, no chain_client.
+        let service = AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .with_signer(Arc::new(FakeSigner::new()))
+            .build()
+            .expect("build");
+
+        let request = crate::explain::ExplainRequest {
+            call_bytes: vec![0x05, 0x00, 0x01, 0x02],
+            chain_profile: polkagent_chain_trait::ChainProfileId::new("test-chain"),
+            run_id: RunId::new(),
+            agent_id: AgentId::new(),
+        };
+
+        let result = service.explain_and_sign(request).await;
+        assert!(matches!(
+            result,
+            Err(ServiceError::NotInitialized { ref component }) if component == "chain_client"
+        ));
+    }
+
+    /// Test 5: explain_and_sign succeeds when both signer and chain_client
+    /// are configured, delegating to the full pipeline.
+    #[tokio::test]
+    async fn explain_and_sign_full_pipeline_succeeds() {
+        let service = build_service_with_signer_and_chain();
+
+        let request = crate::explain::ExplainRequest {
+            call_bytes: vec![0x05, 0x00, 0x01, 0x02, 0x03],
+            chain_profile: polkagent_chain_trait::ChainProfileId::new("test-chain"),
+            run_id: RunId::new(),
+            agent_id: AgentId::new(),
+        };
+
+        let result = service
+            .explain_and_sign(request)
+            .await
+            .expect("explain_and_sign should succeed");
+
+        assert_eq!(result.tx_hash.0, "0xtxhash");
+        assert!(matches!(
+            result.finality,
+            FinalityObservation::Finalized { .. }
+        ));
+    }
+
+    /// Test 6: explain_and_sign propagates signer rejection as
+    /// ExplainPipeline error.
+    #[tokio::test]
+    async fn explain_and_sign_signer_rejection_propagates() {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+
+        let service = AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .with_signer(Arc::new(FakeSigner::rejecting()))
+            .with_chain_client(Arc::new(FakeChainClient))
+            .build()
+            .expect("build");
+
+        let request = crate::explain::ExplainRequest {
+            call_bytes: vec![0x05, 0x00],
+            chain_profile: polkagent_chain_trait::ChainProfileId::new("test-chain"),
+            run_id: RunId::new(),
+            agent_id: AgentId::new(),
+        };
+
+        let result = service.explain_and_sign(request).await;
+        assert!(matches!(
+            result,
+            Err(ServiceError::ExplainPipeline { .. })
+        ));
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("rejected"));
+    }
+
+    /// Test 7: Debug format includes signer and chain_client fields.
+    #[test]
+    fn debug_format_includes_signer_and_chain_client() {
+        let service = build_service_with_signer_and_chain();
+        let debug = format!("{service:?}");
+        assert!(debug.contains("has_signer: true"));
+        assert!(debug.contains("has_chain_client: true"));
+
+        // Verify defaults show false
+        let basic = build_service();
+        let debug_basic = format!("{basic:?}");
+        assert!(debug_basic.contains("has_signer: false"));
+        assert!(debug_basic.contains("has_chain_client: false"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Config watcher integration tests
+    // -----------------------------------------------------------------------
+
+    /// Write a minimal valid TOML config to a file path.
+    fn write_valid_config(path: &std::path::Path, log_level: &str) {
+        let content = format!(
+            "[meta]\napi_version = \"polkagent.dev/v1alpha1\"\nschema_version = 1\n\n[log]\nlevel = \"{}\"\n",
+            log_level,
+        );
+        std::fs::write(path, content).expect("write config");
+    }
+
+    /// Test 8: Config watcher starts without error.
+    #[tokio::test]
+    async fn config_watcher_starts_without_error() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("polkagent.toml");
+        write_valid_config(&config_path, "info");
+
+        let service = build_service();
+        let result =
+            service.start_config_watcher(&config_path, Duration::from_millis(50));
+        assert!(result.is_ok(), "watcher should start without error");
+
+        service.stop_config_watcher();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    /// Test 9: Initial config is available via atomic_config / config().
+    #[test]
+    fn initial_config_is_available() {
+        let service = build_service();
+        let cfg = service.config();
+        assert_eq!(cfg.meta.schema_version, 1);
+
+        let ac = service.atomic_config();
+        let cfg2 = ac.get();
+        assert_eq!(cfg2.meta.schema_version, cfg.meta.schema_version);
+    }
+
+    /// Test 10: Config swap is atomic -- readers see a consistent snapshot.
+    #[test]
+    fn config_swap_is_atomic_readers_see_consistent_state() {
+        let service = build_service();
+
+        let before = service.config();
+        assert_eq!(before.log.level, "info");
+
+        let mut new_config = Config::default();
+        new_config.log.level = "debug".to_owned();
+        let _old = service.atomic_config.swap(new_config);
+
+        assert_eq!(before.log.level, "info");
+
+        let after = service.config();
+        assert_eq!(after.log.level, "debug");
+    }
+
+    /// Test 11: Invalid config is rejected and old config is preserved.
+    #[tokio::test]
+    async fn invalid_config_rejected_old_config_preserved() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("polkagent.toml");
+        write_valid_config(&config_path, "info");
+
+        let service = build_service();
+        service
+            .start_config_watcher(&config_path, Duration::from_millis(30))
+            .expect("start watcher");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        std::fs::write(&config_path, b"this is not valid toml [[[").expect("write");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let cfg = service.config();
+        assert_eq!(cfg.log.level, "info", "invalid config must not be applied");
+
+        service.stop_config_watcher();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    /// Test 12: Watcher can be stopped gracefully.
+    #[tokio::test]
+    async fn watcher_stops_gracefully() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("polkagent.toml");
+        write_valid_config(&config_path, "info");
+
+        let service = build_service();
+        service
+            .start_config_watcher(&config_path, Duration::from_millis(30))
+            .expect("start watcher");
+
+        service.stop_config_watcher();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let guard = service.watcher_shutdown.lock().expect("lock");
+        assert!(guard.is_none(), "shutdown sender should be consumed after stop");
+    }
+
+    /// Test 13: Starting a second watcher while one is running returns an error.
+    #[tokio::test]
+    async fn double_start_watcher_returns_error() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("polkagent.toml");
+        write_valid_config(&config_path, "info");
+
+        let service = build_service();
+        service
+            .start_config_watcher(&config_path, Duration::from_millis(50))
+            .expect("first start");
+
+        let result =
+            service.start_config_watcher(&config_path, Duration::from_millis(50));
+        assert!(
+            matches!(result, Err(ServiceError::ConfigReload { .. })),
+            "double start should return ConfigReload error, got: {result:?}"
+        );
+
+        service.stop_config_watcher();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    /// Test 14: Valid config change is picked up by the watcher.
+    #[tokio::test]
+    async fn valid_config_change_is_applied_by_watcher() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("polkagent.toml");
+        write_valid_config(&config_path, "info");
+
+        let service = build_service();
+        service
+            .start_config_watcher(&config_path, Duration::from_millis(30))
+            .expect("start watcher");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        write_valid_config(&config_path, "debug");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let cfg = service.config();
+        assert_eq!(cfg.log.level, "debug", "watcher should apply the new config");
+
+        service.stop_config_watcher();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    /// Test 15: Config deletion preserves old config.
+    #[tokio::test]
+    async fn config_deletion_preserves_old_config() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tmp.path().join("polkagent.toml");
+        write_valid_config(&config_path, "warn");
+
+        let service = build_service();
+
+        let mut initial = Config::default();
+        initial.log.level = "warn".to_owned();
+        service.atomic_config.swap(initial);
+
+        service
+            .start_config_watcher(&config_path, Duration::from_millis(30))
+            .expect("start watcher");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        std::fs::remove_file(&config_path).expect("remove");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let cfg = service.config();
+        assert_eq!(
+            cfg.log.level, "warn",
+            "config deletion should preserve the current config"
+        );
+
+        service.stop_config_watcher();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    /// Test 16: stop_config_watcher is idempotent.
+    #[test]
+    fn stop_config_watcher_is_idempotent() {
+        let service = build_service();
+        service.stop_config_watcher();
+        service.stop_config_watcher();
+    }
+
+    /// Test 17: atomic_config returns a clonable Arc handle.
+    #[test]
+    fn atomic_config_handle_is_shareable_across_threads() {
+        let service = build_service();
+        let handle = service.atomic_config();
+        let handle2 = Arc::clone(&handle);
+
+        let cfg1 = handle.get();
+        let cfg2 = handle2.get();
+        assert_eq!(cfg1.meta.schema_version, cfg2.meta.schema_version);
+
+        let mut new_cfg = Config::default();
+        new_cfg.log.level = "trace".to_owned();
+        handle.swap(new_cfg);
+
+        let cfg3 = handle2.get();
+        assert_eq!(cfg3.log.level, "trace");
+    }
+
 }

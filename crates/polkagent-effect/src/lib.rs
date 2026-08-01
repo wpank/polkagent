@@ -58,6 +58,12 @@ pub mod pipeline;
 pub mod recovery;
 pub mod types;
 
+#[cfg(any(feature = "dlq", test))]
+pub mod dlq_bridge;
+
+#[cfg(any(feature = "audit", test))]
+pub mod audit;
+
 // ---------------------------------------------------------------------------
 // Convenience re-exports
 // ---------------------------------------------------------------------------
@@ -71,3 +77,6 @@ pub use types::{
     AttemptState, CancellationReason, EffectAttempt, EffectIntent, EffectIntentState, EffectKind,
     EffectOutcome, EffectPriority, ErrorClass, OutcomeResult, ResolutionHint, SupersessionReason,
 };
+
+#[cfg(feature = "audit")]
+pub use audit::{AuditContext, AuditedPipeline};

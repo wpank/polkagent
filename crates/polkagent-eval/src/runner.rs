@@ -284,7 +284,9 @@ mod tests {
             Box<dyn Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
             ExecutorError,
         > {
-            unimplemented!("not used in eval tests")
+            Err(ExecutorError::Internal {
+                message: "streaming not supported by FakeExecutor".into(),
+            })
         }
 
         async fn health(&self) -> Result<(), ExecutorError> {
@@ -313,7 +315,9 @@ mod tests {
             Box<dyn Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
             ExecutorError,
         > {
-            unimplemented!()
+            Err(ExecutorError::Internal {
+                message: "streaming not supported by ErrorExecutor".into(),
+            })
         }
 
         async fn health(&self) -> Result<(), ExecutorError> {
@@ -341,7 +345,9 @@ mod tests {
             Box<dyn Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
             ExecutorError,
         > {
-            unimplemented!()
+            Err(ExecutorError::Internal {
+                message: "streaming not supported by SlowExecutor".into(),
+            })
         }
 
         async fn health(&self) -> Result<(), ExecutorError> {

@@ -1,10 +1,7 @@
-//! Integration tests for the `GroupStore` implementation on `SqlitePool`.
+//! Integration tests for the [`GroupStore`] implementation on [`SqliteGroupStore`].
 //!
-//! These tests live here (outside `src/group_store_impl.rs`) to keep them in a
-//! separate compilation unit.  That avoids a `serde` derive recursion-limit
-//! overflow that occurs when `GroupBudget` (which carries an
-//! `Arc<parking_lot::Mutex<u64>>` guarded with `#[serde(skip)]`) is imported
-//! alongside many other serde-derived types in the same crate compilation.
+//! These tests exercise the full async [`GroupStore`] trait surface via
+//! [`SqliteGroupStore`], which wraps [`SqlitePool`] in a newtype.
 
 use chrono::Utc;
 
@@ -13,19 +10,20 @@ use polkagent_group::{
     GroupError, GroupStore,
     types::{GrantSpec, Group, GroupBudget, GroupId, GroupMember, MemberRole, QuorumPolicy},
 };
-use polkagent_store_sqlite::{SqlitePool, migrations};
+use polkagent_store_sqlite::SqlitePool;
+use polkagent_store_sqlite_group::SqliteGroupStore;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn test_pool() -> SqlitePool {
+fn test_store() -> SqliteGroupStore {
     let pool = SqlitePool::open_in_memory().expect("open in-memory pool");
     {
         let writer = pool.writer();
-        migrations::migrate(&writer).expect("migrate");
+        polkagent_store_sqlite_group::migrate_groups(&writer).expect("migrate");
     }
-    pool
+    SqliteGroupStore::new(pool)
 }
 
 fn make_group(name: &str) -> Group {
@@ -53,17 +51,13 @@ fn make_member(role: MemberRole) -> GroupMember {
 
 #[tokio::test]
 async fn create_and_get_group() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("alpha");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group.clone())
-        .await
-        .expect("create group");
+    store.create_group(group.clone()).await.expect("create group");
 
-    let fetched = GroupStore::get_group(&pool, &gid)
-        .await
-        .expect("get group");
+    let fetched = store.get_group(&gid).await.expect("get group");
 
     assert_eq!(fetched.id, gid);
     assert_eq!(fetched.name, "alpha");
@@ -74,23 +68,24 @@ async fn create_and_get_group() {
 
 #[tokio::test]
 async fn create_group_with_description() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("beta");
     group.description = "A description".to_string();
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(fetched.description, "A description");
 }
 
 #[tokio::test]
 async fn get_group_not_found() {
-    let pool = test_pool();
+    let store = test_store();
     let gid = GroupId::new();
 
-    let err = GroupStore::get_group(&pool, &gid)
+    let err = store
+        .get_group(&gid)
         .await
         .expect_err("should be NotFound");
     assert!(matches!(err, GroupError::NotFound(_)));
@@ -98,14 +93,16 @@ async fn get_group_not_found() {
 
 #[tokio::test]
 async fn create_duplicate_group_returns_already_exists() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("gamma");
 
-    GroupStore::create_group(&pool, group.clone())
+    store
+        .create_group(group.clone())
         .await
         .expect("first create");
 
-    let err = GroupStore::create_group(&pool, group)
+    let err = store
+        .create_group(group)
         .await
         .expect_err("duplicate should fail");
     assert!(
@@ -116,11 +113,12 @@ async fn create_duplicate_group_returns_already_exists() {
 
 #[tokio::test]
 async fn update_group() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("delta");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group.clone())
+    store
+        .create_group(group.clone())
         .await
         .expect("create");
 
@@ -128,9 +126,9 @@ async fn update_group() {
     group.description = "now has a description".to_string();
     group.quorum_policy = QuorumPolicy::Unanimous;
 
-    GroupStore::update_group(&pool, group).await.expect("update");
+    store.update_group(group).await.expect("update");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(fetched.name, "delta-updated");
     assert_eq!(fetched.description, "now has a description");
     assert_eq!(fetched.quorum_policy, QuorumPolicy::Unanimous);
@@ -138,10 +136,11 @@ async fn update_group() {
 
 #[tokio::test]
 async fn update_group_not_found() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("epsilon");
 
-    let err = GroupStore::update_group(&pool, group)
+    let err = store
+        .update_group(group)
         .await
         .expect_err("should be NotFound");
     assert!(matches!(err, GroupError::NotFound(_)));
@@ -149,14 +148,15 @@ async fn update_group_not_found() {
 
 #[tokio::test]
 async fn delete_group() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("zeta");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
-    GroupStore::delete_group(&pool, &gid).await.expect("delete");
+    store.create_group(group).await.expect("create");
+    store.delete_group(&gid).await.expect("delete");
 
-    let err = GroupStore::get_group(&pool, &gid)
+    let err = store
+        .get_group(&gid)
         .await
         .expect_err("should be gone");
     assert!(matches!(err, GroupError::NotFound(_)));
@@ -164,10 +164,11 @@ async fn delete_group() {
 
 #[tokio::test]
 async fn delete_group_not_found() {
-    let pool = test_pool();
+    let store = test_store();
     let gid = GroupId::new();
 
-    let err = GroupStore::delete_group(&pool, &gid)
+    let err = store
+        .delete_group(&gid)
         .await
         .expect_err("should be NotFound");
     assert!(matches!(err, GroupError::NotFound(_)));
@@ -175,22 +176,23 @@ async fn delete_group_not_found() {
 
 #[tokio::test]
 async fn list_groups_empty() {
-    let pool = test_pool();
-    let groups = GroupStore::list_groups(&pool).await.expect("list");
+    let store = test_store();
+    let groups = store.list_groups().await.expect("list");
     assert!(groups.is_empty());
 }
 
 #[tokio::test]
 async fn list_groups_returns_all() {
-    let pool = test_pool();
+    let store = test_store();
 
     for name in ["g1", "g2", "g3"] {
-        GroupStore::create_group(&pool, make_group(name))
+        store
+            .create_group(make_group(name))
             .await
             .expect("create");
     }
 
-    let groups = GroupStore::list_groups(&pool).await.expect("list");
+    let groups = store.list_groups().await.expect("list");
     assert_eq!(groups.len(), 3);
 }
 
@@ -200,22 +202,18 @@ async fn list_groups_returns_all() {
 
 #[tokio::test]
 async fn add_and_list_member() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("eta");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
     let member = make_member(MemberRole::Worker);
     let agent_id = member.agent_id;
 
-    GroupStore::add_member(&pool, &gid, member)
-        .await
-        .expect("add member");
+    store.add_member(&gid, member).await.expect("add member");
 
-    let members = GroupStore::list_members(&pool, &gid)
-        .await
-        .expect("list members");
+    let members = store.list_members(&gid).await.expect("list members");
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].agent_id, agent_id);
     assert_eq!(members[0].role, MemberRole::Worker);
@@ -223,11 +221,12 @@ async fn add_and_list_member() {
 
 #[tokio::test]
 async fn add_member_to_nonexistent_group() {
-    let pool = test_pool();
+    let store = test_store();
     let gid = GroupId::new();
     let member = make_member(MemberRole::Worker);
 
-    let err = GroupStore::add_member(&pool, &gid, member)
+    let err = store
+        .add_member(&gid, member)
         .await
         .expect_err("should be NotFound");
     assert!(matches!(err, GroupError::NotFound(_)));
@@ -235,22 +234,21 @@ async fn add_member_to_nonexistent_group() {
 
 #[tokio::test]
 async fn add_duplicate_member_returns_internal_error() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("theta");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
     let member = make_member(MemberRole::Worker);
     let agent_id = member.agent_id;
 
-    GroupStore::add_member(&pool, &gid, member)
-        .await
-        .expect("first add");
+    store.add_member(&gid, member).await.expect("first add");
 
     // Adding the same agent again should be an error.
     let member2 = GroupMember::new(agent_id, MemberRole::Observer);
-    let err = GroupStore::add_member(&pool, &gid, member2)
+    let err = store
+        .add_member(&gid, member2)
         .await
         .expect_err("duplicate member");
     assert!(matches!(err, GroupError::Internal(_)));
@@ -258,36 +256,33 @@ async fn add_duplicate_member_returns_internal_error() {
 
 #[tokio::test]
 async fn remove_member() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("iota");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
     let member = make_member(MemberRole::Worker);
     let agent_id = member.agent_id;
 
-    GroupStore::add_member(&pool, &gid, member).await.expect("add");
-    GroupStore::remove_member(&pool, &gid, &agent_id)
-        .await
-        .expect("remove");
+    store.add_member(&gid, member).await.expect("add");
+    store.remove_member(&gid, &agent_id).await.expect("remove");
 
-    let members = GroupStore::list_members(&pool, &gid)
-        .await
-        .expect("list");
+    let members = store.list_members(&gid).await.expect("list");
     assert!(members.is_empty());
 }
 
 #[tokio::test]
 async fn remove_member_not_member() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("kappa");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
     let agent_id = AgentId::new();
-    let err = GroupStore::remove_member(&pool, &gid, &agent_id)
+    let err = store
+        .remove_member(&gid, &agent_id)
         .await
         .expect_err("should be NotMember");
     assert!(matches!(err, GroupError::NotMember(_, _)));
@@ -295,11 +290,12 @@ async fn remove_member_not_member() {
 
 #[tokio::test]
 async fn remove_member_group_not_found() {
-    let pool = test_pool();
+    let store = test_store();
     let gid = GroupId::new();
     let agent_id = AgentId::new();
 
-    let err = GroupStore::remove_member(&pool, &gid, &agent_id)
+    let err = store
+        .remove_member(&gid, &agent_id)
         .await
         .expect_err("should be NotFound");
     assert!(matches!(err, GroupError::NotFound(_)));
@@ -307,10 +303,11 @@ async fn remove_member_group_not_found() {
 
 #[tokio::test]
 async fn list_members_group_not_found() {
-    let pool = test_pool();
+    let store = test_store();
     let gid = GroupId::new();
 
-    let err = GroupStore::list_members(&pool, &gid)
+    let err = store
+        .list_members(&gid)
         .await
         .expect_err("should be NotFound");
     assert!(matches!(err, GroupError::NotFound(_)));
@@ -318,27 +315,24 @@ async fn list_members_group_not_found() {
 
 #[tokio::test]
 async fn list_members_multiple_roles() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("lambda");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
     let leader = make_member(MemberRole::Leader);
     let worker = make_member(MemberRole::Worker);
     let observer = make_member(MemberRole::Observer);
 
-    GroupStore::add_member(&pool, &gid, leader)
-        .await
-        .expect("add leader");
-    GroupStore::add_member(&pool, &gid, worker)
-        .await
-        .expect("add worker");
-    GroupStore::add_member(&pool, &gid, observer)
+    store.add_member(&gid, leader).await.expect("add leader");
+    store.add_member(&gid, worker).await.expect("add worker");
+    store
+        .add_member(&gid, observer)
         .await
         .expect("add observer");
 
-    let members = GroupStore::list_members(&pool, &gid).await.expect("list");
+    let members = store.list_members(&gid).await.expect("list");
     assert_eq!(members.len(), 3);
 
     let roles: Vec<MemberRole> = members.iter().map(|m| m.role).collect();
@@ -353,53 +347,53 @@ async fn list_members_multiple_roles() {
 
 #[tokio::test]
 async fn quorum_policy_unanimous_round_trip() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("mu");
     group.quorum_policy = QuorumPolicy::Unanimous;
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(fetched.quorum_policy, QuorumPolicy::Unanimous);
 }
 
 #[tokio::test]
 async fn quorum_policy_majority_round_trip() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("nu");
     group.quorum_policy = QuorumPolicy::Majority;
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(fetched.quorum_policy, QuorumPolicy::Majority);
 }
 
 #[tokio::test]
 async fn quorum_policy_leader_only_round_trip() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("xi");
     group.quorum_policy = QuorumPolicy::LeaderOnly;
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(fetched.quorum_policy, QuorumPolicy::LeaderOnly);
 }
 
 #[tokio::test]
 async fn quorum_policy_threshold_round_trip() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("omicron");
     group.quorum_policy = QuorumPolicy::Threshold { fraction: 0.75 };
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(
         fetched.quorum_policy,
         QuorumPolicy::Threshold { fraction: 0.75 }
@@ -412,15 +406,15 @@ async fn quorum_policy_threshold_round_trip() {
 
 #[tokio::test]
 async fn budget_round_trip_full() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("pi");
     group.budget = GroupBudget::new(50_000, Some(1_000), Some(500));
     group.budget.member_spent.insert("some-agent".to_string(), 200);
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(fetched.budget.max_total, 50_000);
     assert_eq!(fetched.budget.max_per_member, Some(1_000));
     assert_eq!(fetched.budget.max_per_run, Some(500));
@@ -432,14 +426,14 @@ async fn budget_round_trip_full() {
 
 #[tokio::test]
 async fn budget_round_trip_minimal() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("rho");
     group.budget = GroupBudget::new(100, None, None);
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(fetched.budget.max_total, 100);
     assert!(fetched.budget.max_per_member.is_none());
     assert!(fetched.budget.max_per_run.is_none());
@@ -451,11 +445,11 @@ async fn budget_round_trip_minimal() {
 
 #[tokio::test]
 async fn member_grant_override_round_trip() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("sigma");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
     let grant = GrantSpec {
         capabilities: vec!["chain.transfer".to_string(), "model.inference".to_string()],
@@ -465,34 +459,39 @@ async fn member_grant_override_round_trip() {
     let member = GroupMember::with_grant(AgentId::new(), MemberRole::Worker, grant.clone());
     let agent_id = member.agent_id;
 
-    GroupStore::add_member(&pool, &gid, member).await.expect("add");
+    store.add_member(&gid, member).await.expect("add");
 
-    let members = GroupStore::list_members(&pool, &gid).await.expect("list");
+    let members = store.list_members(&gid).await.expect("list");
     assert_eq!(members.len(), 1);
 
-    let fetched_grant = members[0].grant_override.as_ref().expect("should have grant");
+    let fetched_grant = members[0]
+        .grant_override
+        .as_ref()
+        .expect("should have grant");
     assert_eq!(fetched_grant.capabilities, grant.capabilities);
     assert_eq!(fetched_grant.max_budget, grant.max_budget);
     assert_eq!(fetched_grant.allowed_pallets, grant.allowed_pallets);
 
     // Also verify via get_group.
-    let group = GroupStore::get_group(&pool, &gid).await.expect("get");
-    let member_in_group = group.find_member(&agent_id).expect("member should be in group");
+    let group = store.get_group(&gid).await.expect("get");
+    let member_in_group = group
+        .find_member(&agent_id)
+        .expect("member should be in group");
     assert!(member_in_group.grant_override.is_some());
 }
 
 #[tokio::test]
 async fn member_no_grant_override() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("tau");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
     let member = GroupMember::new(AgentId::new(), MemberRole::Observer);
-    GroupStore::add_member(&pool, &gid, member).await.expect("add");
+    store.add_member(&gid, member).await.expect("add");
 
-    let members = GroupStore::list_members(&pool, &gid).await.expect("list");
+    let members = store.list_members(&gid).await.expect("list");
     assert_eq!(members.len(), 1);
     assert!(members[0].grant_override.is_none());
 }
@@ -503,21 +502,23 @@ async fn member_no_grant_override() {
 
 #[tokio::test]
 async fn delete_group_cascades_members() {
-    let pool = test_pool();
+    let store = test_store();
     let group = make_group("upsilon");
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    GroupStore::add_member(&pool, &gid, make_member(MemberRole::Worker))
+    store
+        .add_member(&gid, make_member(MemberRole::Worker))
         .await
         .expect("add member");
 
-    GroupStore::delete_group(&pool, &gid).await.expect("delete");
+    store.delete_group(&gid).await.expect("delete");
 
     // Verify member rows are gone via a raw count.
+    // Access the inner SqlitePool through Deref.
     let count: i64 = {
-        let writer = pool.writer();
+        let writer = store.writer();
         writer
             .query_row(
                 "SELECT COUNT(*) FROM group_members WHERE group_id = ?1",
@@ -535,20 +536,25 @@ async fn delete_group_cascades_members() {
 
 #[tokio::test]
 async fn update_group_replaces_members() {
-    let pool = test_pool();
+    let store = test_store();
     let mut group = make_group("phi");
     let gid = group.id;
     let old_agent = AgentId::new();
-    group.members.push(GroupMember::new(old_agent, MemberRole::Worker));
+    group
+        .members
+        .push(GroupMember::new(old_agent, MemberRole::Worker));
 
-    GroupStore::create_group(&pool, group.clone()).await.expect("create");
+    store
+        .create_group(group.clone())
+        .await
+        .expect("create");
 
     // Update with a completely different member set.
     let new_agent = AgentId::new();
     group.members = vec![GroupMember::new(new_agent, MemberRole::Leader)];
-    GroupStore::update_group(&pool, group).await.expect("update");
+    store.update_group(group).await.expect("update");
 
-    let members = GroupStore::list_members(&pool, &gid).await.expect("list");
+    let members = store.list_members(&gid).await.expect("list");
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].agent_id, new_agent);
     assert_eq!(members[0].role, MemberRole::Leader);
@@ -560,18 +566,22 @@ async fn update_group_replaces_members() {
 
 #[tokio::test]
 async fn create_group_with_initial_members() {
-    let pool = test_pool();
+    let store = test_store();
     let leader = AgentId::new();
     let worker = AgentId::new();
 
     let mut group = make_group("psi");
-    group.members.push(GroupMember::new(leader, MemberRole::Leader));
-    group.members.push(GroupMember::new(worker, MemberRole::Worker));
+    group
+        .members
+        .push(GroupMember::new(leader, MemberRole::Leader));
+    group
+        .members
+        .push(GroupMember::new(worker, MemberRole::Worker));
     let gid = group.id;
 
-    GroupStore::create_group(&pool, group).await.expect("create");
+    store.create_group(group).await.expect("create");
 
-    let fetched = GroupStore::get_group(&pool, &gid).await.expect("get");
+    let fetched = store.get_group(&gid).await.expect("get");
     assert_eq!(fetched.members.len(), 2);
     assert!(fetched.find_member(&leader).is_some());
     assert!(fetched.find_member(&worker).is_some());
@@ -585,16 +595,14 @@ async fn create_group_with_initial_members() {
 async fn concurrent_group_creation() {
     use std::sync::Arc;
 
-    let pool = Arc::new(test_pool());
+    let store = Arc::new(test_store());
     let mut handles = Vec::new();
 
     for i in 0..10u32 {
-        let pool_clone = pool.clone();
+        let store_clone = store.clone();
         let handle = tokio::spawn(async move {
             let group = make_group(&format!("concurrent-{i}"));
-            GroupStore::create_group(pool_clone.as_ref(), group)
-                .await
-                .expect("concurrent create");
+            store_clone.create_group(group).await.expect("concurrent create");
         });
         handles.push(handle);
     }
@@ -603,7 +611,7 @@ async fn concurrent_group_creation() {
         h.await.expect("task completed");
     }
 
-    let groups = GroupStore::list_groups(pool.as_ref()).await.expect("list");
+    let groups = store.list_groups().await.expect("list");
     assert_eq!(groups.len(), 10);
 }
 
@@ -611,20 +619,19 @@ async fn concurrent_group_creation() {
 async fn concurrent_member_addition() {
     use std::sync::Arc;
 
-    let pool = Arc::new(test_pool());
+    let store = Arc::new(test_store());
     let group = make_group("chi");
     let gid = group.id;
 
-    GroupStore::create_group(pool.as_ref(), group)
-        .await
-        .expect("create");
+    store.create_group(group).await.expect("create");
 
     let mut handles = Vec::new();
     for _ in 0..5u32 {
-        let pool_clone = pool.clone();
+        let store_clone = store.clone();
         let handle = tokio::spawn(async move {
             let member = make_member(MemberRole::Worker);
-            GroupStore::add_member(pool_clone.as_ref(), &gid, member)
+            store_clone
+                .add_member(&gid, member)
                 .await
                 .expect("concurrent add member");
         });
@@ -635,9 +642,7 @@ async fn concurrent_member_addition() {
         h.await.expect("task completed");
     }
 
-    let members = GroupStore::list_members(pool.as_ref(), &gid)
-        .await
-        .expect("list");
+    let members = store.list_members(&gid).await.expect("list");
     assert_eq!(members.len(), 5);
 }
 
@@ -647,7 +652,7 @@ async fn concurrent_member_addition() {
 
 #[tokio::test]
 async fn list_groups_includes_members() {
-    let pool = test_pool();
+    let store = test_store();
 
     let mut group_a = make_group("list-a");
     group_a.members.push(make_member(MemberRole::Leader));
@@ -655,10 +660,10 @@ async fn list_groups_includes_members() {
 
     let group_b = make_group("list-b");
 
-    GroupStore::create_group(&pool, group_a).await.expect("create a");
-    GroupStore::create_group(&pool, group_b).await.expect("create b");
+    store.create_group(group_a).await.expect("create a");
+    store.create_group(group_b).await.expect("create b");
 
-    let groups = GroupStore::list_groups(&pool).await.expect("list");
+    let groups = store.list_groups().await.expect("list");
     assert_eq!(groups.len(), 2);
 
     let a = groups.iter().find(|g| g.name == "list-a").expect("group a");
@@ -668,11 +673,11 @@ async fn list_groups_includes_members() {
 }
 
 // ---------------------------------------------------------------------------
-// Pool object safety
+// SqliteGroupStore object safety
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
-fn _pool_is_group_store() {
+fn _store_is_group_store() {
     fn assert_group_store<T: GroupStore>() {}
-    assert_group_store::<SqlitePool>();
+    assert_group_store::<SqliteGroupStore>();
 }

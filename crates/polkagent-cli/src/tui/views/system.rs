@@ -289,24 +289,32 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
 // Chain status widget panel
 // ---------------------------------------------------------------------------
 
-/// Render the chain status widget showing configured chain information.
+/// Render the chain status widget showing live chain information.
 ///
-/// Connection state is inferred from the database health flag. Block numbers
-/// are not available without a live RPC connection, so sensible placeholder
-/// values are used.
+/// Chain data is populated by the [`crate::tui::db::ChainPoller`] which
+/// periodically queries the configured RPC endpoint. When no RPC URL is
+/// set the panel gracefully shows "Not connected" with zero block numbers.
 fn render_chain_status_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
-    // Derive chain info from environment / config heuristics.
-    let chain_name = detect_chain_name();
-    let connected = state.health.db_ok; // Use DB health as proxy for connectivity.
+    // Use live chain data from state (populated by ChainPoller).
+    // Fall back to environment heuristic if the chain name has not been set yet.
+    let chain_name = if state.chain_name.is_empty() {
+        detect_chain_name()
+    } else {
+        state.chain_name.clone()
+    };
 
     let data = ChainStatusData {
         chain_name: &chain_name,
-        connected,
-        // Block numbers not yet available from DB — show 0 as placeholder.
-        best_block: 0,
-        finalized_block: 0,
+        connected: state.chain_connected,
+        best_block: state.best_block,
+        finalized_block: state.finalized_block,
+        node_version: if state.node_version.is_empty() {
+            None
+        } else {
+            Some(state.node_version.as_str())
+        },
         metadata_version: 14,
-        metadata_freshness: if connected { "fresh" } else { "stale" },
+        metadata_freshness: if state.chain_connected { "fresh" } else { "stale" },
     };
 
     chain_status::render(frame, area, &data, theme);

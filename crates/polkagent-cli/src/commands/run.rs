@@ -16,7 +16,11 @@ use polkagent_config::Config;
 use polkagent_core::event::EventKind;
 use polkagent_core::{AgentId, AgentSpec};
 use polkagent_event::{EventBus, EventRecorder};
+use polkagent_executor_anthropic::AnthropicExecutor;
 use polkagent_executor_fake::FakeExecutor;
+use polkagent_executor_local::LocalExecutor;
+use polkagent_executor_openai::OpenAiExecutor;
+use polkagent_executor_trait::ModelExecutor;
 use polkagent_service::AppService;
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
@@ -257,46 +261,73 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
 /// Detect which model executor to use based on environment variables.
 ///
 /// Priority:
-/// 1. `ANTHROPIC_API_KEY` present → currently falls back to fake with a note
-///    (the real Anthropic executor is not yet feature-flagged into the CLI).
-/// 2. `OPENAI_API_KEY` present → same note, fake executor for now.
-/// 3. Otherwise → fake executor with a helpful message.
+/// 1. `ANTHROPIC_API_KEY` present → [`AnthropicExecutor`] with the key.
+/// 2. `OPENAI_API_KEY` present → [`OpenAiExecutor`] with the key.
+/// 3. `OLLAMA_URL` present → [`LocalExecutor`] targeting the given URL.
+/// 4. `OLLAMA_MODEL` present (without URL) → [`LocalExecutor`] targeting
+///    the default Ollama endpoint (`http://localhost:11434/v1`).
+/// 5. Otherwise → [`FakeExecutor`] with a helpful note.
 ///
-/// Returns an `Arc<FakeExecutor>` which coerces to `Arc<dyn ModelExecutor>`
-/// at the `AppServiceBuilder::with_executor` call site.
+/// An optional `model_override` replaces the executor's default model.
 fn detect_executor(
-    _model_override: Option<&str>,
-) -> (Arc<FakeExecutor>, Option<String>) {
-    if std::env::var("ANTHROPIC_API_KEY")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-    {
-        let note = Some(
-            "Note: ANTHROPIC_API_KEY found. \
-             Real Anthropic executor is not yet wired into the CLI binary; \
-             using fake executor for this run."
-                .to_string(),
-        );
-        return (FakeExecutor::new(), note);
+    model_override: Option<&str>,
+) -> (Arc<dyn ModelExecutor>, Option<String>) {
+    // 1. Anthropic
+    if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+        if !api_key.is_empty() {
+            let model = model_override
+                .unwrap_or("claude-sonnet-4-20250514")
+                .to_string();
+            let executor = AnthropicExecutor::new(api_key, model.clone());
+            let note = Some(format!(
+                "Using Anthropic executor (model: {model})."
+            ));
+            return (executor, note);
+        }
     }
 
-    if std::env::var("OPENAI_API_KEY")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-    {
-        let note = Some(
-            "Note: OPENAI_API_KEY found. \
-             Real OpenAI executor is not yet wired into the CLI binary; \
-             using fake executor for this run."
-                .to_string(),
-        );
-        return (FakeExecutor::new(), note);
+    // 2. OpenAI
+    if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+        if !api_key.is_empty() {
+            let model = model_override.unwrap_or("gpt-4o").to_string();
+            let executor = OpenAiExecutor::new(api_key, model.clone());
+            let note = Some(format!(
+                "Using OpenAI executor (model: {model})."
+            ));
+            return (executor, note);
+        }
     }
 
+    // 3. Local executor — explicit OLLAMA_URL
+    if let Ok(url) = std::env::var("OLLAMA_URL") {
+        if !url.is_empty() {
+            let model = model_override.unwrap_or("llama3.2").to_string();
+            let executor = LocalExecutor::custom(url.clone(), model.clone());
+            let note = Some(format!(
+                "Using local executor at {url} (model: {model})."
+            ));
+            return (executor, note);
+        }
+    }
+
+    // 4. Local executor — OLLAMA_MODEL with default Ollama endpoint
+    if let Ok(ollama_model) = std::env::var("OLLAMA_MODEL") {
+        if !ollama_model.is_empty() {
+            let model = model_override.unwrap_or(&ollama_model).to_string();
+            let executor = LocalExecutor::ollama(model.clone());
+            let note = Some(format!(
+                "Using local Ollama executor (model: {model})."
+            ));
+            return (executor, note);
+        }
+    }
+
+    // 5. Fallback — fake executor
     let note = Some(
-        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY). \
-         Using the fake executor — responses will be simulated. \
-         Set an API key environment variable to use a real model."
+        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY) and no local \
+         model configured (OLLAMA_URL / OLLAMA_MODEL). Using the fake \
+         executor \u{2014} responses will be simulated. Set an API key or \
+         local model environment variable to use a real model."
             .to_string(),
     );
     (FakeExecutor::new(), note)
@@ -393,30 +424,168 @@ mod tests {
         assert_eq!(spec.model, "openai/gpt-4o");
     }
 
+    /// Helper: save, clear, and restore executor-related env vars so that
+    /// individual tests are isolated from the host environment.
+    struct EnvGuard {
+        vars: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        const KEYS: &'static [&'static str] = &[
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OLLAMA_URL",
+            "OLLAMA_MODEL",
+        ];
+
+        fn new() -> Self {
+            let vars: Vec<_> = Self::KEYS
+                .iter()
+                .map(|&k| (k, std::env::var(k).ok()))
+                .collect();
+            #[allow(deprecated)]
+            for &k in Self::KEYS {
+                std::env::remove_var(k);
+            }
+            Self { vars }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            #[allow(deprecated)]
+            for (k, v) in &self.vars {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
     #[test]
     fn detect_executor_falls_back_to_fake_with_helpful_note() {
-        // Temporarily remove any API keys in the test process environment.
-        let orig_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
-        let orig_openai = std::env::var("OPENAI_API_KEY").ok();
-        #[allow(deprecated)]
-        {
-            std::env::remove_var("ANTHROPIC_API_KEY");
-            std::env::remove_var("OPENAI_API_KEY");
-        }
+        let _guard = EnvGuard::new();
 
         let (_exec, note) = detect_executor(None);
         assert!(note.is_some());
         let note_text = note.unwrap();
-        assert!(note_text.contains("fake executor"));
+        assert!(
+            note_text.contains("fake executor"),
+            "expected note to mention 'fake executor', got: {note_text}",
+        );
+    }
 
-        // Restore env.
+    #[test]
+    fn detect_executor_uses_anthropic_when_key_set() {
+        let _guard = EnvGuard::new();
         #[allow(deprecated)]
-        if let Some(val) = orig_anthropic {
-            std::env::set_var("ANTHROPIC_API_KEY", val);
-        }
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-key");
+
+        let (_exec, note) = detect_executor(None);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("Anthropic"),
+            "expected note to mention 'Anthropic', got: {note_text}",
+        );
+        assert!(
+            !note_text.contains("fake"),
+            "note should not mention 'fake' when real executor is used",
+        );
+    }
+
+    #[test]
+    fn detect_executor_uses_openai_when_key_set() {
+        let _guard = EnvGuard::new();
         #[allow(deprecated)]
-        if let Some(val) = orig_openai {
-            std::env::set_var("OPENAI_API_KEY", val);
+        std::env::set_var("OPENAI_API_KEY", "sk-test-key");
+
+        let (_exec, note) = detect_executor(None);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("OpenAI"),
+            "expected note to mention 'OpenAI', got: {note_text}",
+        );
+        assert!(
+            !note_text.contains("fake"),
+            "note should not mention 'fake' when real executor is used",
+        );
+    }
+
+    #[test]
+    fn detect_executor_uses_local_when_ollama_url_set() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("OLLAMA_URL", "http://localhost:11434/v1");
+
+        let (_exec, note) = detect_executor(None);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("local executor"),
+            "expected note to mention 'local executor', got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn detect_executor_uses_local_when_ollama_model_set() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("OLLAMA_MODEL", "mistral");
+
+        let (_exec, note) = detect_executor(None);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("Ollama"),
+            "expected note to mention 'Ollama', got: {note_text}",
+        );
+        assert!(
+            note_text.contains("mistral"),
+            "expected note to mention model 'mistral', got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn detect_executor_anthropic_takes_priority_over_openai() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        {
+            std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+            std::env::set_var("OPENAI_API_KEY", "sk-test");
         }
+
+        let (_exec, note) = detect_executor(None);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("Anthropic"),
+            "Anthropic should take priority when both keys are set, got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn detect_executor_model_override_is_applied() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+
+        let (_exec, note) = detect_executor(Some("claude-opus-4-6"));
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("claude-opus-4-6"),
+            "model override should appear in note, got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn detect_executor_empty_key_treated_as_absent() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("ANTHROPIC_API_KEY", "");
+
+        let (_exec, note) = detect_executor(None);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("fake executor"),
+            "empty key should fall through to fake executor, got: {note_text}",
+        );
     }
 }

@@ -72,6 +72,14 @@ pub enum PipelineError {
     Store(#[from] polkagent_store_trait::StoreError),
 
     // ------------------------------------------------------------------
+    // Dead-letter queue
+    // ------------------------------------------------------------------
+    /// An error occurred while interacting with the dead-letter queue.
+    #[cfg(any(feature = "dlq", test))]
+    #[error("dead-letter queue error: {0}")]
+    DeadLetterQueue(#[from] polkagent_outbox::DlqError),
+
+    // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------
     /// An unexpected internal error occurred. This should never happen in

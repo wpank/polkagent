@@ -10,6 +10,7 @@ description = "Tool registry, handler trait, and built-in tool implementations f
 [dependencies]
 # Internal
 polkagent-core = { path = "../polkagent-core" }
+polkagent-batch = { path = "../polkagent-batch" }
 polkagent-executor-trait = { path = "../polkagent-executor-trait" }
 polkagent-grant = { path = "../polkagent-grant" }
 polkagent-memory = { path = "../polkagent-memory" }
@@ -27,6 +28,9 @@ tracing = { workspace = true }
 
 # Errors
 thiserror = { workspace = true }
+
+# Utils
+chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

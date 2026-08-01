@@ -6,6 +6,21 @@ use uuid::Uuid;
 use crate::error::PaymentError;
 use crate::types::{CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary};
 
+/// Summary of the agent's current balance and budget state.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct BalanceSummary {
+    /// Available balance in the smallest denomination, if tracked.
+    pub available: Option<u128>,
+    /// Currency / asset identifier (e.g. `"NATIVE"`, `"USDT"`).
+    pub currency: String,
+    /// Total amount spent to date (in the smallest denomination).
+    pub total_spent: u128,
+    /// Whether a budget has been configured.
+    pub budget_configured: bool,
+    /// The budget limit (in the smallest denomination), if configured.
+    pub budget_limit: Option<u128>,
+}
+
 /// Persistence layer for payment-related data.
 ///
 /// Implementations may be backed by SQLite, PostgreSQL, or an in-memory store
@@ -41,4 +56,34 @@ pub trait PaymentStore: Send + Sync {
 
     /// Store a payment receipt (on-chain confirmation proof).
     async fn create_receipt(&self, receipt: PaymentReceipt) -> Result<(), PaymentError>;
+
+    /// List all payment receipts, ordered by confirmation time descending.
+    ///
+    /// The default implementation returns an empty list so that existing
+    /// implementations continue to compile without changes.
+    async fn list_receipts(&self) -> Result<Vec<PaymentReceipt>, PaymentError> {
+        Ok(vec![])
+    }
+
+    /// Look up a payment receipt by its associated intent ID.
+    ///
+    /// The default implementation returns `IntentNotFound` so that existing
+    /// implementations continue to compile without changes.
+    async fn get_receipt(&self, intent_id: Uuid) -> Result<PaymentReceipt, PaymentError> {
+        Err(PaymentError::IntentNotFound { id: intent_id })
+    }
+
+    /// Get a balance summary for the agent.
+    ///
+    /// The default implementation returns a summary indicating that balance
+    /// tracking is not yet implemented by this store.
+    async fn get_balance(&self) -> Result<BalanceSummary, PaymentError> {
+        Ok(BalanceSummary {
+            available: None,
+            currency: "NATIVE".to_owned(),
+            total_spent: 0,
+            budget_configured: false,
+            budget_limit: None,
+        })
+    }
 }

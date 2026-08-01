@@ -45,13 +45,27 @@ fn run_suite(cmd: &EvalRunCmd) -> Result<()> {
         cmd.suite_path.clone()
     };
 
+    if !suite_path.exists() {
+        anyhow::bail!(
+            "Eval suite file not found: {}\n\n\
+             Hint: Provide a path to a valid suite JSON file.\n\
+             Example: polkagent eval run fixtures/evals/my-suite/suite.json\n\
+             \n\
+             To list available suites: polkagent eval list",
+            suite_path.display()
+        );
+    }
+
     let suite = load_suite_from_json(&suite_path)
         .with_context(|| format!("loading eval suite from {}", suite_path.display()))?;
 
+    let agent_label = cmd.agent.as_deref().unwrap_or("(default)");
+
     eprintln!(
-        "Running eval suite {:?} ({} cases) ...",
+        "Running eval suite {:?} ({} cases) against agent {} ...",
         suite.name,
-        suite.len()
+        suite.len(),
+        agent_label,
     );
 
     // Build runner — uses the fake executor so the CLI works without a live
@@ -72,9 +86,43 @@ fn run_suite(cmd: &EvalRunCmd) -> Result<()> {
 
     let report = rt.block_on(runner.run_suite(&suite));
 
+    // Print verbose per-case scoring details.
+    if cmd.details {
+        eprintln!();
+        for result in &report.results {
+            let status = if result.error.is_some() {
+                "SKIP"
+            } else if result.score.passed {
+                "PASS"
+            } else {
+                "FAIL"
+            };
+            eprintln!(
+                "  [{status}] {id} ({name}) — score: {score:.3}",
+                id = result.case_id,
+                name = result.case_name,
+                score = result.score.score,
+            );
+            for check in &result.score.checks {
+                let mark = if check.passed { "+" } else { "-" };
+                eprintln!("         [{mark}] {}: {}", check.name, check.message);
+            }
+            if let Some(err) = &result.error {
+                eprintln!("         error: {err}");
+            }
+        }
+        eprintln!();
+    }
+
     // Print result.
     if cmd.json {
-        let json = report_to_json(&report);
+        let mut json = report_to_json(&report);
+        // Include the agent label in JSON output when specified.
+        if let Some(agent) = &cmd.agent {
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert("agent".into(), serde_json::Value::String(agent.clone()));
+            }
+        }
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
         print!("{}", report_to_markdown(&report));
@@ -308,4 +356,297 @@ fn load_report_json(path: &Path) -> Result<EvalReport> {
         .with_context(|| format!("reading report from {}", path.display()))?;
     serde_json::from_str::<EvalReport>(&content)
         .with_context(|| format!("parsing report JSON from {}", path.display()))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use polkagent_eval::corpus::load_suite_from_json;
+    use polkagent_eval::report::{report_to_json, EvalReport};
+    use polkagent_eval::types::{EvalCase, EvalCategory, EvalInput, EvalSuite, Expected};
+
+    use crate::cli::Cli;
+
+    // ------------------------------------------------------------------
+    // Helper: create a minimal valid suite JSON string
+    // ------------------------------------------------------------------
+    fn minimal_suite_json() -> String {
+        let suite = EvalSuite {
+            name: "test-suite".into(),
+            description: "A test suite for CLI tests".into(),
+            version: "1.0.0".into(),
+            cases: vec![EvalCase {
+                id: "tc-1".into(),
+                name: "basic case".into(),
+                category: EvalCategory::General,
+                input: EvalInput::from_prompt("What is 2+2?"),
+                expected: Expected {
+                    must_contain: vec!["4".into()],
+                    ..Expected::default()
+                },
+                tags: vec!["math".into()],
+                timeout_secs: 30,
+            }],
+        };
+        serde_json::to_string_pretty(&suite).expect("serialize suite")
+    }
+
+    // ------------------------------------------------------------------
+    // Test 1: Arg parsing — eval run with all flags
+    // ------------------------------------------------------------------
+    #[test]
+    fn parse_eval_run_all_flags() {
+        let cli = Cli::try_parse_from([
+            "polkagent",
+            "eval",
+            "run",
+            "path/to/suite.json",
+            "--agent",
+            "my-agent",
+            "--output",
+            "/tmp/report.json",
+            "--concurrency",
+            "8",
+            "--model",
+            "claude-sonnet-4-6",
+            "--json",
+            "--details",
+        ])
+        .expect("should parse");
+
+        match cli.command {
+            Some(crate::cli::Commands::Eval(crate::cli::EvalCmd::Run(cmd))) => {
+                assert_eq!(
+                    cmd.suite_path,
+                    std::path::PathBuf::from("path/to/suite.json")
+                );
+                assert_eq!(cmd.agent.as_deref(), Some("my-agent"));
+                assert_eq!(
+                    cmd.output,
+                    Some(std::path::PathBuf::from("/tmp/report.json"))
+                );
+                assert_eq!(cmd.concurrency, 8);
+                assert_eq!(cmd.model, "claude-sonnet-4-6");
+                assert!(cmd.json);
+                assert!(cmd.details);
+            }
+            other => panic!("expected Eval::Run, got {:?}", other),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Test 2: Arg parsing — eval run defaults
+    // ------------------------------------------------------------------
+    #[test]
+    fn parse_eval_run_defaults() {
+        let cli = Cli::try_parse_from(["polkagent", "eval", "run", "suite.json"])
+            .expect("should parse");
+
+        match cli.command {
+            Some(crate::cli::Commands::Eval(crate::cli::EvalCmd::Run(cmd))) => {
+                assert_eq!(cmd.suite_path, std::path::PathBuf::from("suite.json"));
+                assert!(cmd.agent.is_none());
+                assert!(cmd.output.is_none());
+                assert_eq!(cmd.concurrency, 4);
+                assert_eq!(cmd.model, "claude-opus-4-6");
+                assert!(!cmd.json);
+                assert!(!cmd.details);
+            }
+            other => panic!("expected Eval::Run, got {:?}", other),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Test 3: Arg parsing — short flags (-a, -v)
+    // ------------------------------------------------------------------
+    #[test]
+    fn parse_eval_run_short_flags() {
+        let cli = Cli::try_parse_from([
+            "polkagent",
+            "eval",
+            "run",
+            "suite.json",
+            "-a",
+            "agent-42",
+            "--details",
+        ])
+        .expect("should parse");
+
+        match cli.command {
+            Some(crate::cli::Commands::Eval(crate::cli::EvalCmd::Run(cmd))) => {
+                assert_eq!(cmd.agent.as_deref(), Some("agent-42"));
+                assert!(cmd.details);
+            }
+            other => panic!("expected Eval::Run, got {:?}", other),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Test 4: Suite loading from a valid JSON file
+    // ------------------------------------------------------------------
+    #[test]
+    fn suite_loading_from_json_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let suite_path = dir.path().join("suite.json");
+        std::fs::write(&suite_path, minimal_suite_json()).expect("write");
+
+        let suite = load_suite_from_json(&suite_path).expect("load suite");
+        assert_eq!(suite.name, "test-suite");
+        assert_eq!(suite.cases.len(), 1);
+        assert_eq!(suite.cases[0].id, "tc-1");
+        assert_eq!(suite.cases[0].expected.must_contain, vec!["4"]);
+    }
+
+    // ------------------------------------------------------------------
+    // Test 5: Helpful error on missing suite file
+    // ------------------------------------------------------------------
+    #[test]
+    fn missing_suite_file_gives_helpful_error() {
+        let result = super::run_suite(&crate::cli::EvalRunCmd {
+            suite_path: std::path::PathBuf::from("/nonexistent/path/suite.json"),
+            agent: None,
+            output: None,
+            concurrency: 4,
+            model: "test-model".into(),
+            json: false,
+            details: false,
+        });
+
+        let err = result.expect_err("should fail for missing file");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not found"),
+            "Error should mention 'not found', got: {msg}"
+        );
+        assert!(
+            msg.contains("polkagent eval"),
+            "Error should contain a helpful hint, got: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Test 6: JSON output format has expected structure
+    // ------------------------------------------------------------------
+    #[test]
+    fn json_output_format_has_expected_fields() {
+        let report = EvalReport::from_results("cli-json-test", Vec::new());
+        let json = report_to_json(&report);
+
+        // Verify top-level fields exist.
+        assert_eq!(json["suite_name"], "cli-json-test");
+        assert!(json["timestamp"].is_string());
+        assert_eq!(json["total_cases"], 0);
+        assert_eq!(json["passed"], 0);
+        assert_eq!(json["failed"], 0);
+        assert!(json["mean_score"].is_number());
+        assert!(json["results"].is_array());
+    }
+
+    // ------------------------------------------------------------------
+    // Test 7: JSON output includes agent when specified
+    // ------------------------------------------------------------------
+    #[test]
+    fn json_output_includes_agent_field() {
+        let report = EvalReport::from_results("agent-test", Vec::new());
+        let mut json = report_to_json(&report);
+
+        // Simulate the agent injection done in run_suite.
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert(
+                "agent".into(),
+                serde_json::Value::String("my-agent".into()),
+            );
+        }
+
+        assert_eq!(json["agent"], "my-agent");
+        assert_eq!(json["suite_name"], "agent-test");
+    }
+
+    // ------------------------------------------------------------------
+    // Test 8: eval run with output file saves report
+    // ------------------------------------------------------------------
+    #[test]
+    fn run_suite_saves_output_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let suite_path = dir.path().join("suite.json");
+        std::fs::write(&suite_path, minimal_suite_json()).expect("write");
+
+        let output_path = dir.path().join("report.json");
+
+        let result = super::run_suite(&crate::cli::EvalRunCmd {
+            suite_path: suite_path.clone(),
+            agent: Some("test-agent".into()),
+            output: Some(output_path.clone()),
+            concurrency: 1,
+            model: "test-model".into(),
+            json: false,
+            details: false,
+        });
+
+        assert!(result.is_ok(), "run_suite should succeed: {:?}", result);
+        assert!(output_path.exists(), "report file should have been created");
+
+        // Verify the saved file is valid JSON and deserializes to an EvalReport.
+        let content = std::fs::read_to_string(&output_path).expect("read report");
+        let report: EvalReport =
+            serde_json::from_str(&content).expect("parse saved report");
+        assert_eq!(report.suite_name, "test-suite");
+        assert_eq!(report.total_cases, 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Test 9: eval list subcommand arg parsing
+    // ------------------------------------------------------------------
+    #[test]
+    fn parse_eval_list_args() {
+        let cli = Cli::try_parse_from([
+            "polkagent",
+            "eval",
+            "list",
+            "/tmp/suites",
+            "--json",
+        ])
+        .expect("should parse");
+
+        match cli.command {
+            Some(crate::cli::Commands::Eval(crate::cli::EvalCmd::List(cmd))) => {
+                assert_eq!(cmd.dir, std::path::PathBuf::from("/tmp/suites"));
+                assert!(cmd.json);
+            }
+            other => panic!("expected Eval::List, got {:?}", other),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Test 10: eval compare subcommand arg parsing
+    // ------------------------------------------------------------------
+    #[test]
+    fn parse_eval_compare_args() {
+        let cli = Cli::try_parse_from([
+            "polkagent",
+            "eval",
+            "compare",
+            "baseline.json",
+            "current.json",
+            "--min-delta",
+            "0.05",
+            "--json",
+        ])
+        .expect("should parse");
+
+        match cli.command {
+            Some(crate::cli::Commands::Eval(crate::cli::EvalCmd::Compare(cmd))) => {
+                assert_eq!(cmd.baseline, std::path::PathBuf::from("baseline.json"));
+                assert_eq!(cmd.current, std::path::PathBuf::from("current.json"));
+                assert!((cmd.min_delta - 0.05).abs() < f64::EPSILON);
+                assert!(cmd.json);
+            }
+            other => panic!("expected Eval::Compare, got {:?}", other),
+        }
+    }
 }

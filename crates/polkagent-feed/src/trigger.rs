@@ -118,8 +118,12 @@ impl CompOp {
 // ---------------------------------------------------------------------------
 
 /// Determines whether a trigger should fire for a given [`FeedItem`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+///
+/// `Serialize` and `Deserialize` are implemented manually (below) to avoid
+/// the deep monomorphisation chains that the derive macros generate for
+/// recursive, internally-tagged enums.  The on-wire JSON format is identical
+/// to `#[serde(tag = "type", rename_all = "snake_case")]`.
+#[derive(Debug, Clone, PartialEq)]
 pub enum TriggerCondition {
     /// Always fires; useful for unconditional triggers such as "run on every
     /// item".
@@ -156,6 +160,171 @@ pub enum TriggerCondition {
 
     /// Fires when the inner condition does **not** fire.
     Not(Box<TriggerCondition>),
+}
+
+// ---------------------------------------------------------------------------
+// Manual Serialize / Deserialize for TriggerCondition
+//
+// The recursive variants (And, Or, Not) cause the Rust compiler to hit its
+// recursion limit when serde's derive macros try to monomorphise the
+// internally-tagged-enum code path (which routes through an intermediate
+// `Content` representation).  By going through `serde_json::Value` manually
+// the recursive monomorphisation chain is broken: we only ever serialize /
+// deserialize `serde_json::Value`, not `TriggerCondition` itself.
+// ---------------------------------------------------------------------------
+
+impl Serialize for TriggerCondition {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        // Build a serde_json::Value and then serialize *that*.
+        let value = tc_to_value(self).map_err(serde::ser::Error::custom)?;
+        value.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TriggerCondition {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        tc_from_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Convert a `TriggerCondition` into a `serde_json::Value`.
+///
+/// The format mirrors `#[serde(tag = "type", rename_all = "snake_case")]`:
+///
+/// - `{"type":"always"}`
+/// - `{"type":"json_path","path":"...","expected":...}`
+/// - `{"type":"threshold","field":"...","op":"...","value":...}`
+/// - `{"type":"and","conditions":[...]}`
+/// - `{"type":"or","conditions":[...]}`
+/// - `{"type":"not","condition":{...}}`
+fn tc_to_value(tc: &TriggerCondition) -> std::result::Result<serde_json::Value, serde_json::Error> {
+    match tc {
+        TriggerCondition::Always => {
+            Ok(serde_json::json!({ "type": "always" }))
+        }
+        TriggerCondition::JsonPath { path, expected } => {
+            Ok(serde_json::json!({
+                "type": "json_path",
+                "path": path,
+                "expected": expected,
+            }))
+        }
+        TriggerCondition::Threshold { field, op, value } => {
+            let op_value = serde_json::to_value(op)?;
+            Ok(serde_json::json!({
+                "type": "threshold",
+                "field": field,
+                "op": op_value,
+                "value": value,
+            }))
+        }
+        TriggerCondition::And(conditions) => {
+            let items: Vec<serde_json::Value> = conditions
+                .iter()
+                .map(tc_to_value)
+                .collect::<std::result::Result<_, _>>()?;
+            Ok(serde_json::json!({
+                "type": "and",
+                "conditions": items,
+            }))
+        }
+        TriggerCondition::Or(conditions) => {
+            let items: Vec<serde_json::Value> = conditions
+                .iter()
+                .map(tc_to_value)
+                .collect::<std::result::Result<_, _>>()?;
+            Ok(serde_json::json!({
+                "type": "or",
+                "conditions": items,
+            }))
+        }
+        TriggerCondition::Not(inner) => {
+            let inner_value = tc_to_value(inner)?;
+            Ok(serde_json::json!({
+                "type": "not",
+                "condition": inner_value,
+            }))
+        }
+    }
+}
+
+/// Reconstruct a `TriggerCondition` from a `serde_json::Value`.
+fn tc_from_value(value: &serde_json::Value) -> std::result::Result<TriggerCondition, String> {
+    let obj = value.as_object().ok_or("expected JSON object for TriggerCondition")?;
+    let type_str = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or("missing or non-string \"type\" field")?;
+
+    match type_str {
+        "always" => Ok(TriggerCondition::Always),
+
+        "json_path" => {
+            let path = obj
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("json_path: missing \"path\"")?
+                .to_string();
+            let expected = obj
+                .get("expected")
+                .cloned()
+                .ok_or("json_path: missing \"expected\"")?;
+            Ok(TriggerCondition::JsonPath { path, expected })
+        }
+
+        "threshold" => {
+            let field = obj
+                .get("field")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "threshold: missing \"field\"".to_string())?
+                .to_string();
+            let op_val = obj
+                .get("op")
+                .ok_or_else(|| "threshold: missing \"op\"".to_string())?;
+            let op: CompOp = serde_json::from_value(op_val.clone())
+                .map_err(|e| format!("threshold: bad op: {e}"))?;
+            let val = obj
+                .get("value")
+                .and_then(|v| v.as_f64())
+                .ok_or_else(|| "threshold: missing or non-numeric \"value\"".to_string())?;
+            Ok(TriggerCondition::Threshold { field, op, value: val })
+        }
+
+        "and" => {
+            let arr = obj
+                .get("conditions")
+                .and_then(|v| v.as_array())
+                .ok_or("and: missing \"conditions\" array")?;
+            let conditions: Vec<TriggerCondition> = arr
+                .iter()
+                .map(tc_from_value)
+                .collect::<std::result::Result<_, _>>()?;
+            Ok(TriggerCondition::And(conditions))
+        }
+
+        "or" => {
+            let arr = obj
+                .get("conditions")
+                .and_then(|v| v.as_array())
+                .ok_or("or: missing \"conditions\" array")?;
+            let conditions: Vec<TriggerCondition> = arr
+                .iter()
+                .map(tc_from_value)
+                .collect::<std::result::Result<_, _>>()?;
+            Ok(TriggerCondition::Or(conditions))
+        }
+
+        "not" => {
+            let inner_value = obj
+                .get("condition")
+                .ok_or("not: missing \"condition\"")?;
+            let inner = tc_from_value(inner_value)?;
+            Ok(TriggerCondition::Not(Box::new(inner)))
+        }
+
+        other => Err(format!("unknown TriggerCondition type: \"{other}\"")),
+    }
 }
 
 impl TriggerCondition {

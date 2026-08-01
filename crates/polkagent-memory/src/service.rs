@@ -3,15 +3,25 @@
 //! [`MemoryService`] provides a convenient API for agent code to interact with
 //! the memory subsystem without worrying about low-level store details like
 //! timestamps, IDs, or provenance wiring.
+//!
+//! ## Semantic search
+//!
+//! Optionally attach an [`EmbeddingProvider`] via
+//! [`MemoryService::with_embedding_index`] to enable vector-based semantic
+//! search through [`MemoryService::semantic_search`]. When an embedding
+//! provider is configured, every call to [`MemoryService::remember`]
+//! automatically computes and indexes the embedding for the new entry.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use chrono::Utc;
+use parking_lot::Mutex;
 use tracing::debug;
 
 use polkagent_core::ids::AgentId;
 
+use crate::embedding::{EmbeddingProvider, SearchResult, SimilarityMetric, VectorIndex};
 use crate::error::{MemoryError, MemoryResult};
 use crate::export::{export_archive, import_archive, ImportResult};
 use crate::store::MemoryStore;
@@ -23,19 +33,52 @@ use crate::types::{
 ///
 /// Wraps a [`MemoryStore`] implementation and provides ergonomic methods
 /// for the most common memory operations.
+///
+/// Optionally holds an [`EmbeddingProvider`] and [`VectorIndex`] for
+/// semantic (vector-similarity) search. When configured, every
+/// [`remember`](Self::remember) call also computes and stores the entry's
+/// embedding.
 pub struct MemoryService {
     store: Arc<dyn MemoryStore>,
+    /// Optional embedding provider for computing vectors from text.
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    /// Optional in-memory vector index for semantic search.
+    vector_index: Option<Arc<Mutex<VectorIndex>>>,
 }
 
 impl MemoryService {
     /// Create a new service wrapping the given store.
+    ///
+    /// Semantic search is disabled by default. Use
+    /// [`with_embedding_index`](Self::with_embedding_index) to enable it.
     pub fn new(store: Arc<dyn MemoryStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            embedding_provider: None,
+            vector_index: None,
+        }
+    }
+
+    /// Enable semantic search by attaching an [`EmbeddingProvider`].
+    ///
+    /// A [`VectorIndex`] is created automatically with the provider's native
+    /// dimensionality. All subsequent [`remember`](Self::remember) calls will
+    /// compute and index the embedding.
+    #[must_use]
+    pub fn with_embedding_index(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
+        let dims = provider.dimensions();
+        self.embedding_provider = Some(provider);
+        self.vector_index = Some(Arc::new(Mutex::new(VectorIndex::new(dims))));
+        self
     }
 
     /// Store a new memory and return its identifier.
     ///
     /// Timestamps are set to the current time. Relevance starts at 1.0.
+    ///
+    /// When an [`EmbeddingProvider`] is configured (via
+    /// [`with_embedding_index`](Self::with_embedding_index)), the entry's
+    /// content is embedded and added to the in-memory vector index.
     pub async fn remember(
         &self,
         agent_id: AgentId,
@@ -44,13 +87,23 @@ impl MemoryService {
         provenance: Option<MemoryProvenance>,
     ) -> MemoryResult<MemoryId> {
         let now = Utc::now();
+
+        // Compute embedding if a provider is available.
+        let embedding_vec = if let Some(ref provider) = self.embedding_provider {
+            Some(provider.embed(content).await?)
+        } else {
+            None
+        };
+
         let entry = MemoryEntry {
             id: MemoryId::new(),
             agent_id,
             episode_id: None,
             memory_type,
             content: content.to_string(),
-            embedding: None,
+            embedding: embedding_vec
+                .as_ref()
+                .map(|v| v.as_slice().to_vec()),
             metadata: serde_json::json!({}),
             provenance,
             created_at: now,
@@ -68,7 +121,14 @@ impl MemoryService {
             "storing memory"
         );
 
-        self.store.store_memory(&entry).await
+        let id = self.store.store_memory(&entry).await?;
+
+        // Index the embedding if the vector index is configured.
+        if let (Some(ref index), Some(vec)) = (&self.vector_index, embedding_vec) {
+            index.lock().add(id, vec, None)?;
+        }
+
+        Ok(id)
     }
 
     /// Search for relevant memories matching the query text.
@@ -93,6 +153,40 @@ impl MemoryService {
         };
 
         self.store.search(&q).await
+    }
+
+    /// Search for semantically similar memories using vector cosine similarity.
+    ///
+    /// The `query` text is embedded with the configured [`EmbeddingProvider`]
+    /// and then matched against the in-memory [`VectorIndex`]. Returns up to
+    /// `k` results ordered by descending cosine similarity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::InvalidOperation`] if no embedding provider has
+    /// been configured (see [`with_embedding_index`](Self::with_embedding_index)).
+    pub async fn semantic_search(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> MemoryResult<Vec<SearchResult>> {
+        let provider = self.embedding_provider.as_ref().ok_or_else(|| {
+            MemoryError::InvalidOperation(
+                "semantic search requires an embedding provider; \
+                 call with_embedding_index() first"
+                    .into(),
+            )
+        })?;
+        let index = self.vector_index.as_ref().ok_or_else(|| {
+            MemoryError::InvalidOperation("vector index not initialised".into())
+        })?;
+
+        let query_vec = provider.embed(query).await?;
+        let results = index
+            .lock()
+            .search(&query_vec, k, SimilarityMetric::Cosine)?;
+
+        Ok(results)
     }
 
     /// Start a new episode (conversation session).
@@ -498,5 +592,157 @@ mod tests {
         let p = entry.provenance.unwrap();
         assert_eq!(p.extraction_method, "user_input");
         assert!(p.verified);
+    }
+
+    // -- Embedding integration -----------------------------------------------
+
+    use crate::embedding::MockEmbeddingProvider;
+
+    fn make_service_with_embeddings() -> MemoryService {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let provider = Arc::new(MockEmbeddingProvider::new(16));
+        MemoryService::new(Arc::new(store)).with_embedding_index(provider)
+    }
+
+    #[tokio::test]
+    async fn service_works_without_embedding_index() {
+        // The base make_service() helper has no embedding provider.
+        let svc = make_service();
+        let agent = AgentId::new();
+
+        let id = svc
+            .remember(agent, "no embedding here", MemoryType::Semantic, None)
+            .await
+            .unwrap();
+
+        // Normal recall still works.
+        let results = svc.recall(agent, "no embedding", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, id);
+
+        // Semantic search should fail gracefully.
+        let err = svc.semantic_search("anything", 5).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn remember_stores_embedding_when_index_configured() {
+        let svc = make_service_with_embeddings();
+        let agent = AgentId::new();
+
+        let id = svc
+            .remember(agent, "Rust is a systems language", MemoryType::Semantic, None)
+            .await
+            .unwrap();
+
+        // The stored entry should have an embedding set.
+        let entry = svc.store.get_memory(id).await.unwrap();
+        assert!(
+            entry.embedding.is_some(),
+            "embedding should be populated when provider is configured"
+        );
+        let emb = entry.embedding.unwrap();
+        assert_eq!(emb.len(), 16, "embedding dimension should match provider");
+
+        // The vector index should contain exactly one entry.
+        let index = svc.vector_index.as_ref().unwrap();
+        assert_eq!(index.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn semantic_search_returns_similar_entries() {
+        let svc = make_service_with_embeddings();
+        let agent = AgentId::new();
+
+        // Store several memories.
+        svc.remember(agent, "Rust is a systems language", MemoryType::Semantic, None)
+            .await
+            .unwrap();
+        svc.remember(agent, "Python is great for scripting", MemoryType::Semantic, None)
+            .await
+            .unwrap();
+        svc.remember(agent, "Rust has a borrow checker", MemoryType::Semantic, None)
+            .await
+            .unwrap();
+
+        // Semantic search should return results (the MockEmbeddingProvider
+        // produces deterministic hash-based vectors, so identical text
+        // always gets the highest cosine similarity).
+        let results = svc.semantic_search("Rust is a systems language", 10).await.unwrap();
+
+        assert!(
+            !results.is_empty(),
+            "semantic search should return at least one result"
+        );
+        // The top result should have a high similarity score (identical text
+        // will produce cosine similarity of 1.0).
+        assert!(
+            (results[0].score - 1.0).abs() < 1e-5,
+            "identical query text should yield cosine similarity ~1.0, got {}",
+            results[0].score,
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_search_empty_index_returns_empty() {
+        let svc = make_service_with_embeddings();
+
+        // No memories stored, index is empty.
+        let results = svc.semantic_search("anything at all", 10).await.unwrap();
+        assert!(results.is_empty(), "empty index should return no results");
+    }
+
+    #[tokio::test]
+    async fn semantic_search_k_limits_results() {
+        let svc = make_service_with_embeddings();
+        let agent = AgentId::new();
+
+        // Store more entries than we'll ask for.
+        for i in 0..10 {
+            svc.remember(
+                agent,
+                &format!("memory entry number {i}"),
+                MemoryType::Semantic,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        let results = svc.semantic_search("memory entry", 3).await.unwrap();
+        assert_eq!(
+            results.len(),
+            3,
+            "k=3 should return at most 3 results, got {}",
+            results.len(),
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_search_without_provider_returns_error() {
+        let svc = make_service();
+
+        let result = svc.semantic_search("test", 5).await;
+        assert!(result.is_err(), "semantic_search without provider should error");
+
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("embedding provider"),
+            "error message should mention embedding provider, got: {err_msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn with_embedding_index_creates_correct_dimension_index() {
+        let provider = Arc::new(MockEmbeddingProvider::new(64));
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let svc = MemoryService::new(Arc::new(store)).with_embedding_index(provider);
+
+        let index = svc.vector_index.as_ref().unwrap();
+        assert_eq!(
+            index.lock().dimensions(),
+            64,
+            "index dimensions should match provider"
+        );
     }
 }

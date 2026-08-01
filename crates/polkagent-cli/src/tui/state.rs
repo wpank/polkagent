@@ -446,6 +446,22 @@ pub struct TuiState {
     /// Which sub-panel is focused in the run detail view (0 = info, 1 = turns).
     pub detail_panel_index: usize,
 
+    // -- Chain data -----------------------------------------------------------
+    /// Best (head) block number from the connected chain.
+    pub best_block: u64,
+
+    /// Last finalized block number from the connected chain.
+    pub finalized_block: u64,
+
+    /// Human-readable chain name (e.g. "Polkadot", "Westend").
+    pub chain_name: String,
+
+    /// Node implementation version string (e.g. "Parity Polkadot/v1.7.0").
+    pub node_version: String,
+
+    /// Whether the TUI has an active RPC connection to a chain node.
+    pub chain_connected: bool,
+
     // -- Widget data ---------------------------------------------------------
     /// Recent per-turn token counts for the token sparkline widget.
     ///
@@ -647,5 +663,45 @@ mod tests {
     fn test_token_history_default_is_empty() {
         let state = TuiState::default();
         assert!(state.token_history.is_empty());
+    }
+
+    // ── Chain data defaults ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_chain_data_defaults_show_zeros_and_not_connected() {
+        let state = TuiState::default();
+        assert_eq!(state.best_block, 0, "default best_block must be 0");
+        assert_eq!(state.finalized_block, 0, "default finalized_block must be 0");
+        assert!(state.chain_name.is_empty(), "default chain_name must be empty");
+        assert!(state.node_version.is_empty(), "default node_version must be empty");
+        assert!(!state.chain_connected, "default chain_connected must be false");
+    }
+
+    #[test]
+    fn test_chain_state_update_reflects_new_block_numbers() {
+        let mut state = TuiState::default();
+        state.best_block = 22_500_000;
+        state.finalized_block = 22_499_990;
+        state.chain_name = "Polkadot".to_owned();
+        state.node_version = "Parity Polkadot/v1.7.0".to_owned();
+        state.chain_connected = true;
+
+        assert_eq!(state.best_block, 22_500_000);
+        assert_eq!(state.finalized_block, 22_499_990);
+        assert_eq!(state.chain_name, "Polkadot");
+        assert_eq!(state.node_version, "Parity Polkadot/v1.7.0");
+        assert!(state.chain_connected);
+    }
+
+    #[test]
+    fn test_chain_name_displayed_correctly_after_update() {
+        let mut state = TuiState::default();
+        assert!(state.chain_name.is_empty());
+
+        state.chain_name = "Westend".to_owned();
+        assert_eq!(state.chain_name, "Westend");
+
+        state.chain_name = "Kusama".to_owned();
+        assert_eq!(state.chain_name, "Kusama");
     }
 }

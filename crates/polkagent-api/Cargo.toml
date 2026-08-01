@@ -9,6 +9,8 @@ description = "REST API server for the Polkagent platform"
 
 [dependencies]
 # Internal
+polkagent-audit = { path = "../polkagent-audit" }
+polkagent-conversation = { path = "../polkagent-conversation" }
 polkagent-core = { path = "../polkagent-core" }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 polkagent-config = { path = "../polkagent-config" }
@@ -17,6 +19,7 @@ polkagent-skill = { path = "../polkagent-skill" }
 polkagent-tool = { path = "../polkagent-tool" }
 polkagent-payment = { path = "../polkagent-payment" }
 polkagent-telemetry = { path = "../polkagent-telemetry" }
+polkagent-rate-limit = { path = "../polkagent-rate-limit" }
 
 # Web
 axum = { workspace = true }
@@ -51,6 +54,7 @@ dashmap = { workspace = true }
 [dev-dependencies]
 axum-test = "21"
 async-trait = { workspace = true }
+polkagent-conversation = { path = "../polkagent-conversation" }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]

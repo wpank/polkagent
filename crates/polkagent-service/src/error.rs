@@ -80,6 +80,20 @@ pub enum ServiceError {
     #[error("service is shutting down")]
     ShuttingDown,
 
+    /// The explain-before-sign pipeline returned an error.
+    #[error("explain pipeline error: {message}")]
+    ExplainPipeline {
+        /// Human-readable description of the pipeline error.
+        message: String,
+    },
+
+    /// A hot-reload of the configuration failed.
+    #[error("config reload failed: {message}")]
+    ConfigReload {
+        /// Human-readable description of the reload failure.
+        message: String,
+    },
+
     /// An unexpected internal error.
     #[error("internal service error: {message}")]
     Internal {
@@ -142,6 +156,14 @@ impl From<polkagent_event::EventError> for ServiceError {
 impl From<polkagent_config::ConfigError> for ServiceError {
     fn from(err: polkagent_config::ConfigError) -> Self {
         Self::Config {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<crate::explain::ExplainError> for ServiceError {
+    fn from(err: crate::explain::ExplainError) -> Self {
+        Self::ExplainPipeline {
             message: err.to_string(),
         }
     }

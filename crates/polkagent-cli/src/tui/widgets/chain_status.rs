@@ -34,6 +34,9 @@ pub struct ChainStatusData<'a> {
     pub best_block: u64,
     /// Last finalized block number.
     pub finalized_block: u64,
+    /// Node implementation version string (e.g. "Parity Polkadot/v1.7.0").
+    /// Shown when available; omitted when `None`.
+    pub node_version: Option<&'a str>,
     /// Runtime metadata version (e.g. 14, 15).
     pub metadata_version: u32,
     /// Human-readable age of the cached metadata (e.g. "2m ago", "fresh").
@@ -117,8 +120,8 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ChainStatusData<'_>, theme: 
     ];
     frame.render_widget(Paragraph::new(left_lines), cols[0]);
 
-    // ── Right column: metadata ───────────────────────────────────────────
-    let right_lines = vec![
+    // ── Right column: metadata + node version ─────────────────────────────
+    let mut right_lines = vec![
         Line::from(vec![
             Span::styled("Metadata v", Style::default().fg(theme.text_dim)),
             Span::styled(
@@ -134,6 +137,18 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ChainStatusData<'_>, theme: 
             ),
         ]),
     ];
+
+    // Show node version when available.
+    if let Some(version) = data.node_version {
+        right_lines.push(Line::from(vec![
+            Span::styled("Node: ", Style::default().fg(theme.text_dim)),
+            Span::styled(
+                version.to_owned(),
+                Style::default().fg(theme.bone),
+            ),
+        ]));
+    }
+
     frame.render_widget(Paragraph::new(right_lines), cols[1]);
 }
 
@@ -148,4 +163,126 @@ fn format_block_number(n: u64) -> String {
         result.push(ch);
     }
     result.chars().rev().collect()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn test_theme() -> Theme {
+        Theme::dark()
+    }
+
+    #[test]
+    fn test_format_block_number_zero() {
+        assert_eq!(format_block_number(0), "0");
+    }
+
+    #[test]
+    fn test_format_block_number_thousands() {
+        assert_eq!(format_block_number(1_000), "1,000");
+        assert_eq!(format_block_number(22_500_000), "22,500,000");
+    }
+
+    #[test]
+    fn test_widget_renders_without_panic_on_empty_state() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let theme = test_theme();
+
+        let data = ChainStatusData {
+            chain_name: "",
+            connected: false,
+            best_block: 0,
+            finalized_block: 0,
+            node_version: None,
+            metadata_version: 14,
+            metadata_freshness: "stale",
+        };
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render(frame, area, &data, &theme);
+            })
+            .expect("render should not panic on empty state");
+    }
+
+    #[test]
+    fn test_widget_renders_with_real_data() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let theme = test_theme();
+
+        let data = ChainStatusData {
+            chain_name: "Polkadot",
+            connected: true,
+            best_block: 22_500_000,
+            finalized_block: 22_499_990,
+            node_version: Some("Parity Polkadot/v1.7.0"),
+            metadata_version: 14,
+            metadata_freshness: "fresh",
+        };
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render(frame, area, &data, &theme);
+            })
+            .expect("render should not panic with real data");
+    }
+
+    #[test]
+    fn test_widget_skips_render_on_tiny_area() {
+        let backend = TestBackend::new(5, 2);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let theme = test_theme();
+
+        let data = ChainStatusData {
+            chain_name: "Polkadot",
+            connected: true,
+            best_block: 100,
+            finalized_block: 99,
+            node_version: None,
+            metadata_version: 14,
+            metadata_freshness: "fresh",
+        };
+
+        // Should not panic even with area too small.
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render(frame, area, &data, &theme);
+            })
+            .expect("render should gracefully skip on tiny area");
+    }
+
+    #[test]
+    fn test_widget_renders_not_connected_label() {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let theme = test_theme();
+
+        let data = ChainStatusData {
+            chain_name: "Not connected",
+            connected: false,
+            best_block: 0,
+            finalized_block: 0,
+            node_version: None,
+            metadata_version: 14,
+            metadata_freshness: "stale",
+        };
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render(frame, area, &data, &theme);
+            })
+            .expect("render should display 'Not connected' gracefully");
+    }
 }

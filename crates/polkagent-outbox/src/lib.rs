@@ -45,12 +45,17 @@
 //! will be added in a future iteration without changing this public API.
 
 pub mod dedup;
+pub mod dlq;
 pub mod message;
 pub mod outbox;
 pub mod retry;
 
 // Flat re-exports for ergonomic use.
 pub use dedup::{DedupError, DeduplicationLog};
+pub use dlq::{
+    DeadLetter, DeadLetterId, DeadLetterQueue, DeliveryError, DlqError, DlqPolicy, DlqResult,
+    DlqStats, InMemoryDlq, ReplayResult,
+};
 pub use message::{OutboxId, OutboxItem, OutboxMessage};
 pub use outbox::{DurableOutbox, OutboxConfig, OutboxError};
 pub use retry::ExponentialBackoff;

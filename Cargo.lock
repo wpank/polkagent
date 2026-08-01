@@ -3,6 +3,12 @@
 version = 3
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -311,6 +317,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64ct"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -572,6 +584,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "const-oid"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
 name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -609,6 +627,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -723,6 +750,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
+ "digest",
  "fiat-crypto",
  "rustc_version",
  "subtle",
@@ -795,6 +823,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
+name = "der"
+version = "0.7.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
+dependencies = [
+ "const-oid",
+ "zeroize",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -846,6 +884,31 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "rand_core 0.6.4",
+ "serde",
+ "sha2",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -980,6 +1043,16 @@ name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "flate2"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+]
 
 [[package]]
 name = "fnv"
@@ -1314,7 +1387,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -1718,6 +1791,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1972,6 +2055,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pkcs8"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
+dependencies = [
+ "der",
+ "spki",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2015,10 +2108,13 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
+ "polkagent-audit",
  "polkagent-config",
+ "polkagent-conversation",
  "polkagent-core",
  "polkagent-event",
  "polkagent-payment",
+ "polkagent-rate-limit",
  "polkagent-skill",
  "polkagent-store-trait",
  "polkagent-telemetry",
@@ -2173,11 +2269,16 @@ dependencies = [
  "futures",
  "parking_lot",
  "polkagent-api",
+ "polkagent-chain-fake",
+ "polkagent-chain-trait",
  "polkagent-config",
  "polkagent-core",
  "polkagent-eval",
  "polkagent-event",
+ "polkagent-executor-anthropic",
  "polkagent-executor-fake",
+ "polkagent-executor-local",
+ "polkagent-executor-openai",
  "polkagent-executor-trait",
  "polkagent-identity",
  "polkagent-memory",
@@ -2190,9 +2291,11 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
+ "ureq",
  "uuid",
 ]
 
@@ -2274,8 +2377,10 @@ dependencies = [
  "blake3",
  "chrono",
  "criterion",
+ "polkagent-audit",
  "polkagent-card",
  "polkagent-core",
+ "polkagent-outbox",
  "polkagent-store-trait",
  "proptest",
  "serde",
@@ -2472,6 +2577,7 @@ dependencies = [
 name = "polkagent-harness-claude"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "async-trait",
  "chrono",
  "futures",
@@ -2524,7 +2630,9 @@ dependencies = [
  "base58",
  "blake3",
  "chrono",
+ "ed25519-dalek",
  "polkagent-core",
+ "rand 0.8.7",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -2539,6 +2647,9 @@ dependencies = [
  "chrono",
  "futures",
  "polkagent-artifact",
+ "polkagent-audit",
+ "polkagent-batch",
+ "polkagent-cache",
  "polkagent-card",
  "polkagent-chain-fake",
  "polkagent-chain-trait",
@@ -2559,7 +2670,10 @@ dependencies = [
  "polkagent-metadata",
  "polkagent-outbox",
  "polkagent-payment",
+ "polkagent-rate-limit",
+ "polkagent-retry",
  "polkagent-run",
+ "polkagent-scheduler",
  "polkagent-service",
  "polkagent-signer-fake",
  "polkagent-signer-trait",
@@ -2568,6 +2682,7 @@ dependencies = [
  "polkagent-test-fixtures",
  "polkagent-tool",
  "polkagent-transport-fake",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2602,6 +2717,7 @@ dependencies = [
  "blake3",
  "chrono",
  "hex",
+ "polkagent-cache",
  "polkagent-codec",
  "polkagent-core",
  "serde",
@@ -2698,8 +2814,13 @@ dependencies = [
 name = "polkagent-retry"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
+ "futures",
  "parking_lot",
+ "polkagent-core",
+ "polkagent-executor-fake",
+ "polkagent-executor-trait",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -2715,6 +2836,7 @@ dependencies = [
  "chrono",
  "futures",
  "polkagent-card",
+ "polkagent-context",
  "polkagent-core",
  "polkagent-effect",
  "polkagent-event",
@@ -2789,6 +2911,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "toml",
  "uuid",
 ]
 
@@ -2799,8 +2922,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "parking_lot",
  "polkagent-artifact",
  "polkagent-card",
+ "polkagent-chain-trait",
  "polkagent-config",
  "polkagent-conversation",
  "polkagent-core",
@@ -2811,15 +2936,20 @@ dependencies = [
  "polkagent-identity",
  "polkagent-memory",
  "polkagent-payment",
+ "polkagent-plugin",
  "polkagent-run",
+ "polkagent-scheduler",
  "polkagent-signer-trait",
  "polkagent-skill",
  "polkagent-store-trait",
+ "polkagent-surface-webhook",
  "polkagent-tool",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
 ]
@@ -2908,6 +3038,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-store-sqlite-feed"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "parking_lot",
+ "polkagent-core",
+ "polkagent-feed",
+ "polkagent-store-sqlite",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "polkagent-store-sqlite-group"
 version = "0.1.0"
 dependencies = [
@@ -2969,6 +3118,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "parking_lot",
  "polkagent-core",
  "regex-lite",
  "serde",
@@ -3002,6 +3152,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "polkagent-batch",
  "polkagent-core",
  "polkagent-executor-trait",
  "polkagent-grant",
@@ -3502,7 +3653,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -3604,6 +3755,7 @@ version = "0.23.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -3782,6 +3934,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3828,6 +3991,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "signature"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "simd-adler32"
+version = "0.3.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3857,6 +4035,16 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spki"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
+dependencies = [
+ "base64ct",
+ "der",
 ]
 
 [[package]]
@@ -4513,6 +4701,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
+name = "ureq"
+version = "2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+dependencies = [
+ "base64",
+ "flate2",
+ "log",
+ "once_cell",
+ "rustls",
+ "rustls-pki-types",
+ "url",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4682,6 +4886,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]

@@ -370,6 +370,9 @@ pub struct ApiConfig {
     /// List of allowed CORS origins.
     /// Default: `["http://localhost:*"]`.
     pub cors_origins: Vec<String>,
+    /// When `true`, the server rejects all mutating (write) requests.
+    /// Default: `false`.
+    pub read_only: bool,
 }
 
 impl Default for ApiConfig {
@@ -378,6 +381,7 @@ impl Default for ApiConfig {
             enabled: true,
             bind_address: "127.0.0.1:4840".to_owned(),
             cors_origins: vec!["http://localhost:*".to_owned()],
+            read_only: false,
         }
     }
 }
@@ -472,6 +476,8 @@ pub struct TlsConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RateLimitConfig {
+    /// Whether rate limiting is enabled. Default: `true`.
+    pub enabled: bool,
     /// Steady-state request rate allowed per second. Default: `100`.
     pub requests_per_second: u32,
     /// Maximum burst above the steady-state rate. Default: `200`.
@@ -481,6 +487,7 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             requests_per_second: 100,
             burst: 200,
         }
@@ -993,7 +1000,7 @@ mod tests {
 
     #[test]
     fn rate_limit_config_serde_round_trip() {
-        let original = RateLimitConfig { requests_per_second: 50, burst: 100 };
+        let original = RateLimitConfig { enabled: true, requests_per_second: 50, burst: 100 };
         let json = serde_json::to_string(&original).expect("serialize");
         let back: RateLimitConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, original);
@@ -1009,7 +1016,7 @@ mod tests {
                 ca_path: None,
             }),
             cors_origins: vec!["https://example.com".to_owned()],
-            rate_limit: RateLimitConfig { requests_per_second: 200, burst: 400 },
+            rate_limit: RateLimitConfig { enabled: true, requests_per_second: 200, burst: 400 },
         };
         let toml = toml::to_string_pretty(&original).expect("serialize");
         let back: ServerConfig = toml::from_str(&toml).expect("deserialize");

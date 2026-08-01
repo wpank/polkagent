@@ -35,6 +35,7 @@ pub mod circuit_breaker;
 pub mod classifier;
 pub mod error;
 pub mod executor;
+pub mod model_executor;
 pub mod policy;
 pub mod timeout;
 
@@ -45,6 +46,7 @@ pub use circuit_breaker::{CircuitBreaker, CircuitState};
 pub use classifier::{ErrorClass, ErrorClassifier};
 pub use error::{BulkheadFull, CircuitOpen, RetryError, RetryExhausted};
 pub use executor::{retry_with_policy, retry_with_policy_and_classifier};
+pub use model_executor::RetryModelExecutor;
 pub use policy::RetryPolicy;
 pub use timeout::TimeoutWrapper;
 

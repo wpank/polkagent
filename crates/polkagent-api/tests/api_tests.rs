@@ -294,13 +294,14 @@ fn test_server_with_effect_store() -> (TestServer, Arc<InMemoryEffectStore>) {
     let run_manager = Arc::new(InMemoryRunManager::new());
     let store = Arc::new(InMemoryEffectStore::new());
     let event_bus = EventBus::with_default_capacity();
-    let server = ApiServer::new(
+    let state = polkagent_api::AppState::new(
         Config::default(),
         agents,
         run_manager,
         store.clone() as Arc<dyn EffectStore>,
         event_bus,
     );
+    let server = ApiServer::from_state(state);
     (TestServer::new(server.into_router()), store)
 }
 
@@ -314,7 +315,14 @@ fn test_server() -> TestServer {
     let run_manager = Arc::new(InMemoryRunManager::new());
     let store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
     let event_bus = EventBus::with_default_capacity();
-    let server = ApiServer::new(Config::default(), agents, run_manager, store, event_bus);
+    let state = polkagent_api::AppState::new(
+        Config::default(),
+        agents,
+        run_manager,
+        store,
+        event_bus,
+    );
+    let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
 }
 
@@ -324,7 +332,14 @@ fn test_server_with_config(config: Config) -> TestServer {
     let run_manager = Arc::new(InMemoryRunManager::new());
     let store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
     let event_bus = EventBus::with_default_capacity();
-    let server = ApiServer::new(config, agents, run_manager, store, event_bus);
+    let state = polkagent_api::AppState::new(
+        config,
+        agents,
+        run_manager,
+        store,
+        event_bus,
+    );
+    let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
 }
 
@@ -2278,8 +2293,8 @@ fn test_server_with_event_store(
         run_manager,
         effect_store,
         event_bus,
-    )
-    .with_event_store(store);
+    );
+    let state = state.with_event_store(store);
     let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
 }
@@ -2298,8 +2313,8 @@ fn test_server_with_artifact_store(
         run_manager,
         effect_store,
         event_bus,
-    )
-    .with_artifact_store(store);
+    );
+    let state = state.with_artifact_store(store);
     let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
 }
@@ -2881,13 +2896,14 @@ async fn resume_run_awaiting_approval_returns_200_with_running_state() {
         Arc::new(InMemoryAgentStore::new());
     let store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
     let event_bus = EventBus::with_default_capacity();
-    let server = ApiServer::new(
+    let state = polkagent_api::AppState::new(
         Config::default(),
         agents.clone(),
         run_manager.clone(),
         store,
         event_bus,
     );
+    let server = ApiServer::from_state(state);
     let server = TestServer::new(server.into_router());
 
     // Create an agent and a run via the API.

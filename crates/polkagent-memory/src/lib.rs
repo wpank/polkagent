@@ -54,6 +54,7 @@
 pub mod admission;
 pub mod classification;
 pub mod conformance;
+pub mod embedding;
 pub mod error;
 pub mod export;
 pub mod retention;
@@ -68,6 +69,10 @@ pub mod types;
 // ---------------------------------------------------------------------------
 
 pub use classification::Classification;
+pub use embedding::{
+    EmbeddingProvider, EmbeddingVector, MockEmbeddingProvider, SearchResult, SimilarityMetric,
+    VectorIndex,
+};
 pub use error::{MemoryError, MemoryResult};
 pub use export::ImportResult;
 pub use retention::{RetentionPolicy, RetentionSweeper, SweepResult};

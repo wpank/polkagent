@@ -41,6 +41,7 @@ pub mod error;
 pub mod loader;
 pub mod schema;
 pub mod validate;
+pub mod watch;
 
 // ---------------------------------------------------------------------------
 // Re-exports
@@ -56,3 +57,4 @@ pub use schema::{
     CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
 };
 pub use validate::ValidationError;
+pub use watch::{AtomicConfig, ConfigDiff, ConfigSnapshot, ConfigWatcher, ReloadPolicy, WatchEvent, WatchEventKind, WatchError};

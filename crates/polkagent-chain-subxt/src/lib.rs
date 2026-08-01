@@ -66,7 +66,8 @@ use tracing::{debug, info, warn};
 
 use polkagent_chain_trait::{
     BlockRef, ChainClient, ChainError, ChainProfile, ChainProfileId, DecodedCall,
-    FinalityObservation, PinnedMetadata, SimulationResult, TxHash,
+    FinalityObservation, PinnedMetadata, SimulationResult, StorageChange, StorageChangeType,
+    TxHash,
 };
 use polkagent_core::now;
 

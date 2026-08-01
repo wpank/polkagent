@@ -57,7 +57,7 @@ members = [
     "crates/polkagent-rate-limit",
     "crates/polkagent-retry",
     "crates/polkagent-scheduler",
-    # "crates/polkagent-store-sqlite-feed",  -- excluded: serde recursion_limit hang
+    "crates/polkagent-store-sqlite-feed",
     "crates/polkagent-store-sqlite-group",
     "crates/polkagent-surface-webhook",
     "crates/polkagent-tool-governance",
@@ -76,6 +76,7 @@ repository = "https://github.com/nicovince/polkagent"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 async-trait = "0.1"
+async-stream = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -96,11 +97,13 @@ rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
 
 # Crypto
 blake3 = "1"
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
 zeroize = { version = "1", features = ["derive"] }
 
 # Web
 axum = { version = "0.8", features = ["ws"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+ureq = "2"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 

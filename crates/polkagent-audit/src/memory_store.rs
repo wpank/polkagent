@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
 use crate::action::AuditAction;
-use crate::entry::AuditEntry;
+use crate::entry::{AuditEntry, AuditId};
 use crate::error::AuditResult;
 use crate::integrity;
 use crate::query::AuditQuery;
@@ -59,6 +59,11 @@ impl AuditStore for InMemoryAuditStore {
         Ok(entry)
     }
 
+    async fn get_by_id(&self, id: AuditId) -> AuditResult<Option<AuditEntry>> {
+        let entries = self.entries.read();
+        Ok(entries.iter().find(|e| e.id == id).cloned())
+    }
+
     async fn query_by_actor(&self, actor_id: &str) -> AuditResult<Vec<AuditEntry>> {
         let entries = self.entries.read();
         Ok(entries
@@ -102,6 +107,11 @@ impl AuditStore for InMemoryAuditStore {
 
     async fn count(&self) -> AuditResult<usize> {
         Ok(self.entries.read().len())
+    }
+
+    async fn verify_integrity(&self) -> AuditResult<()> {
+        let entries = self.entries.read();
+        integrity::verify_chain(&entries)
     }
 }
 

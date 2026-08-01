@@ -11,6 +11,8 @@
 //!   "meta": { "page_size": 50 } }
 //! ```
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use polkagent_core::{AgentId, RunId};
 use polkagent_core::agent::{AgentSpec, AgentState, ModelPreference, ResourceLimits};
@@ -797,4 +799,231 @@ pub struct AgentLifecycleResponse {
     pub action: String,
     /// The resulting status message.
     pub status: String,
+}
+
+// ---------------------------------------------------------------------------
+// Audit — query params and responses
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /audit`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuditListParams {
+    /// Filter by actor ID (exact match).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Filter by action type (snake_case, e.g. `"run_started"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// Only include entries at or after this RFC-3339 timestamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// Only include entries at or before this RFC-3339 timestamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Maximum number of entries to return (default 100).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Response body for a single audit entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEntryResponse {
+    /// API version.
+    pub version: String,
+    /// The audit entry (serialized as-is from the audit crate).
+    pub data: polkagent_audit::AuditEntry,
+}
+
+/// Response body for `GET /audit` (list).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditListResponse {
+    /// API version.
+    pub version: String,
+    /// List of matching audit entries.
+    pub data: Vec<polkagent_audit::AuditEntry>,
+    /// Total number of entries returned.
+    pub count: usize,
+}
+
+/// Response body for `GET /audit/verify`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditVerifyResponse {
+    /// API version.
+    pub version: String,
+    /// Whether the integrity chain is valid.
+    pub valid: bool,
+    /// Total number of entries verified.
+    pub entries_checked: usize,
+    /// Error detail when `valid` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Conversations — requests
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /conversations`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateConversationRequest {
+    /// The agent that owns this conversation.
+    pub agent_id: String,
+    /// Optional human-readable title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Optional key-value metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, String>>,
+}
+
+/// Request body for `POST /conversations/:id/messages`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateMessageRequest {
+    /// Message role: `"user"`, `"assistant"`, `"system"`, or `"tool"`.
+    pub role: String,
+    /// The text content of the message.
+    pub content: String,
+}
+
+/// Query parameters for `GET /conversations`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListConversationsQuery {
+    /// Filter by owning agent ID (required).
+    pub agent_id: String,
+    /// Maximum items per page (default 50, max 100).
+    pub limit: Option<u32>,
+    /// Offset for pagination.
+    pub offset: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// Conversations — responses
+// ---------------------------------------------------------------------------
+
+/// Response body for `POST /conversations`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateConversationResponse {
+    /// API version.
+    pub version: String,
+    /// The newly created conversation ID.
+    pub id: String,
+    /// The owning agent ID.
+    pub agent_id: String,
+    /// Optional title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// When the conversation was created.
+    pub created_at: DateTime<Utc>,
+}
+
+/// A conversation summary for list responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationSummaryDto {
+    /// Conversation identifier.
+    pub id: String,
+    /// Owning agent identifier.
+    pub agent_id: String,
+    /// Optional title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Number of messages in the conversation.
+    pub message_count: u32,
+    /// Timestamp of the most recent message, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<DateTime<Utc>>,
+    /// When the conversation was created.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Response body for `GET /conversations`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListConversationsResponse {
+    /// API version.
+    pub version: String,
+    /// Page of conversation summaries.
+    pub data: Vec<ConversationSummaryDto>,
+    /// Pagination cursor information.
+    pub cursor: CursorInfo,
+    /// Page metadata.
+    pub meta: PageMeta,
+}
+
+/// A single message in a conversation response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageDto {
+    /// Message identifier.
+    pub id: String,
+    /// The conversation this message belongs to.
+    pub conversation_id: String,
+    /// The sender role.
+    pub role: String,
+    /// The text content of the message.
+    pub content: String,
+    /// When this message was created.
+    pub created_at: DateTime<Utc>,
+    /// Approximate token count, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<u32>,
+}
+
+impl From<polkagent_conversation::Message> for MessageDto {
+    fn from(msg: polkagent_conversation::Message) -> Self {
+        let content_text = match &msg.content {
+            polkagent_conversation::MessageContent::Text { text } => text.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        let role_str = match msg.role {
+            polkagent_conversation::MessageRole::User => "user",
+            polkagent_conversation::MessageRole::Assistant => "assistant",
+            polkagent_conversation::MessageRole::System => "system",
+            polkagent_conversation::MessageRole::Tool => "tool",
+        };
+        Self {
+            id: msg.id.to_string(),
+            conversation_id: msg.conversation_id.to_string(),
+            role: role_str.to_owned(),
+            content: content_text,
+            created_at: msg.created_at,
+            token_count: msg.token_count,
+        }
+    }
+}
+
+/// Response body for `GET /conversations/:id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationResponse {
+    /// API version.
+    pub version: String,
+    /// Conversation identifier.
+    pub id: String,
+    /// Owning agent identifier.
+    pub agent_id: String,
+    /// Optional title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Number of messages in the conversation.
+    pub message_count: u32,
+    /// When the conversation was created.
+    pub created_at: DateTime<Utc>,
+    /// When the conversation was last updated.
+    pub updated_at: DateTime<Utc>,
+    /// Messages in the conversation.
+    pub messages: Vec<MessageDto>,
+}
+
+/// Response body for `POST /conversations/:id/messages`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateMessageResponse {
+    /// API version.
+    pub version: String,
+    /// The newly created message ID.
+    pub id: String,
+    /// The conversation the message belongs to.
+    pub conversation_id: String,
+    /// The sender role.
+    pub role: String,
+    /// The text content.
+    pub content: String,
+    /// When the message was created.
+    pub created_at: DateTime<Utc>,
 }
