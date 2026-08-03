@@ -143,7 +143,7 @@ impl MemoryService {
         debug!(agent_id = %agent_id, query = query, limit = limit, "recalling memories");
 
         let q = MemoryQuery {
-            agent_id,
+            agent_id: Some(agent_id),
             query_text: query.to_string(),
             memory_types: None,
             limit,
@@ -305,7 +305,7 @@ impl MemoryService {
         let episode = self.store.get_episode(episode_id).await?;
 
         let query = MemoryQuery {
-            agent_id: episode.agent_id,
+            agent_id: Some(episode.agent_id),
             query_text: String::new(),
             memory_types: None,
             limit: 1000,

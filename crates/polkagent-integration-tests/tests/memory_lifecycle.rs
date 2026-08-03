@@ -352,7 +352,7 @@ async fn search_with_classification_filters_confidential_entries() {
     store.store_memory(&confidential_entry).await.expect("store confidential");
 
     let query = MemoryQuery {
-        agent_id: agent,
+        agent_id: Some(agent),
         query_text: String::new(), // match all
         memory_types: None,
         limit: 100,
@@ -391,7 +391,7 @@ async fn search_with_classification_confidential_max_shows_all() {
     store.store_memory(&confidential).await.expect("store confidential");
 
     let query = MemoryQuery {
-        agent_id: agent,
+        agent_id: Some(agent),
         query_text: String::new(),
         memory_types: None,
         limit: 100,
@@ -418,7 +418,7 @@ async fn public_classification_entries_visible_to_store() {
     store.store_memory(&entry).await.expect("store public");
 
     let query = MemoryQuery {
-        agent_id: agent,
+        agent_id: Some(agent),
         query_text: "block height".to_string(),
         memory_types: None,
         limit: 10,

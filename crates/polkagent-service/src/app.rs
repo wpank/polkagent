@@ -1119,7 +1119,7 @@ impl AppService {
             }
         })?;
         let memory_query = MemoryQuery {
-            agent_id: *agent_id,
+            agent_id: Some(*agent_id),
             query_text: query.to_owned(),
             memory_types: None,
             limit,
@@ -1662,7 +1662,7 @@ mod tests {
             let results: Vec<MemoryEntry> = guard
                 .values()
                 .filter(|e| {
-                    e.agent_id == query.agent_id
+                    query.agent_id.map_or(true, |aid| e.agent_id == aid)
                         && e.content.contains(&query.query_text)
                 })
                 .take(query.limit)
@@ -1680,7 +1680,7 @@ mod tests {
             let results: Vec<MemoryEntry> = guard
                 .values()
                 .filter(|e| {
-                    e.agent_id == query.agent_id
+                    query.agent_id.map_or(true, |aid| e.agent_id == aid)
                         && e.content.contains(&query.query_text)
                         && e.classification <= max_classification
                 })

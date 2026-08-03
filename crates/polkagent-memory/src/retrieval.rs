@@ -343,7 +343,7 @@ impl<'a> HybridRetriever<'a> {
 
         // 1. FTS5 text search.
         let fts_query = MemoryQuery {
-            agent_id,
+            agent_id: Some(agent_id),
             query_text: query_text.to_string(),
             memory_types: None,
             limit: fetch_k,

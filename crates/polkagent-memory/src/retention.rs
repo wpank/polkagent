@@ -115,7 +115,7 @@ impl RetentionSweeper {
         // entries (the store's search API only supports a *minimum* filter, not a
         // *maximum*, so we invert the logic here).
         let all_query = MemoryQuery {
-            agent_id: self.agent_id,
+            agent_id: Some(self.agent_id),
             query_text: String::new(),
             memory_types: None,
             limit: usize::MAX / 2, // effectively unlimited

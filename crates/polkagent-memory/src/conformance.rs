@@ -155,7 +155,7 @@ pub async fn test_search_returns_relevant(store: &dyn MemoryStore, agent_id: Age
 
     // Search for content related to "Rust".
     let query = MemoryQuery {
-        agent_id,
+        agent_id: Some(agent_id),
         query_text: "Rust programming".into(),
         memory_types: None,
         limit: 10,
@@ -196,7 +196,7 @@ pub async fn test_search_respects_limit(store: &dyn MemoryStore, agent_id: Agent
     }
 
     let query = MemoryQuery {
-        agent_id,
+        agent_id: Some(agent_id),
         query_text: "widgets".into(),
         memory_types: None,
         limit: 2,

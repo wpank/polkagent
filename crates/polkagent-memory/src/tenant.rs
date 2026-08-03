@@ -116,8 +116,10 @@ impl MemoryStore for TenantAwareStore {
 
     async fn search(&self, query: &MemoryQuery) -> MemoryResult<Vec<MemoryEntry>> {
         // A cross-tenant query returns empty results, not an error.
-        if query.agent_id != self.scope.agent_id {
-            return Ok(Vec::new());
+        if let Some(agent_id) = query.agent_id {
+            if agent_id != self.scope.agent_id {
+                return Ok(Vec::new());
+            }
         }
         self.inner.search(query).await
     }
@@ -127,8 +129,10 @@ impl MemoryStore for TenantAwareStore {
         query: &MemoryQuery,
         max_classification: Classification,
     ) -> MemoryResult<Vec<MemoryEntry>> {
-        if query.agent_id != self.scope.agent_id {
-            return Ok(Vec::new());
+        if let Some(agent_id) = query.agent_id {
+            if agent_id != self.scope.agent_id {
+                return Ok(Vec::new());
+            }
         }
         self.inner.search_with_classification(query, max_classification).await
     }
@@ -253,7 +257,7 @@ mod tests {
 
     fn make_query(agent_id: AgentId) -> MemoryQuery {
         MemoryQuery {
-            agent_id,
+            agent_id: Some(agent_id),
             query_text: String::new(),
             memory_types: None,
             limit: 100,

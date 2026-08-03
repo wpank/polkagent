@@ -249,8 +249,8 @@ fn default_confidence() -> f64 {
 /// Parameters for searching memories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryQuery {
-    /// The agent whose memories to search.
-    pub agent_id: AgentId,
+    /// The agent whose memories to search. `None` searches across all agents.
+    pub agent_id: Option<AgentId>,
     /// Free-text query string.
     pub query_text: String,
     /// Optional filter to specific memory types.

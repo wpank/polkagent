@@ -583,10 +583,14 @@ fn search_fts(
                 m.relevance_score, m.confidence, m.classification
          FROM memories m
          JOIN memories_fts fts ON m.rowid = fts.rowid
-         WHERE fts.memories_fts MATCH ?1
-           AND m.agent_id = ?2",
+         WHERE fts.memories_fts MATCH ?1",
     );
-    let mut param_idx = 3u32;
+    let mut param_idx = 2u32;
+
+    if query.agent_id.is_some() {
+        let _ = write!(sql, " AND m.agent_id = ?{param_idx}");
+        param_idx += 1;
+    }
 
     // Build dynamic WHERE clauses and collect params as strings.
     let mut extra_params: Vec<String> = Vec::new();
@@ -645,7 +649,9 @@ fn search_fts(
     // Build a dynamic rusqlite params vector.
     let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     values.push(Box::new(query.query_text.clone()));
-    values.push(Box::new(query.agent_id.to_string()));
+    if let Some(ref agent_id) = query.agent_id {
+        values.push(Box::new(agent_id.to_string()));
+    }
     for p in &extra_params {
         values.push(Box::new(p.clone()));
     }
@@ -681,10 +687,15 @@ fn search_like(
                 metadata, provenance, created_at, accessed_at, access_count,
                 relevance_score, confidence, classification
          FROM memories
-         WHERE agent_id = ?1",
+         WHERE 1=1",
     );
-    let mut param_idx = 2u32;
+    let mut param_idx = 1u32;
     let mut extra_params: Vec<String> = Vec::new();
+
+    if query.agent_id.is_some() {
+        let _ = write!(sql, " AND agent_id = ?{param_idx}");
+        param_idx += 1;
+    }
 
     if !query.query_text.is_empty() {
         extra_params.push(format!("%{}%", query.query_text));
@@ -744,7 +755,9 @@ fn search_like(
     sql.push_str(" ORDER BY relevance_score DESC LIMIT ?100");
 
     let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    values.push(Box::new(query.agent_id.to_string()));
+    if let Some(ref agent_id) = query.agent_id {
+        values.push(Box::new(agent_id.to_string()));
+    }
     for p in &extra_params {
         values.push(Box::new(p.clone()));
     }
@@ -873,7 +886,7 @@ mod tests {
         store.store_memory(&e3).await.unwrap();
 
         let query = MemoryQuery {
-            agent_id: agent,
+            agent_id: Some(agent),
             query_text: "Rust".to_string(),
             memory_types: None,
             limit: 10,
@@ -899,7 +912,7 @@ mod tests {
         store.store_memory(&e2).await.unwrap();
 
         let query = MemoryQuery {
-            agent_id: agent,
+            agent_id: Some(agent),
             query_text: "Rust".to_string(),
             memory_types: Some(vec![MemoryType::Semantic]),
             limit: 10,
@@ -1275,7 +1288,7 @@ mod tests {
         store.store_memory(&restricted_entry).await.unwrap();
 
         let query = MemoryQuery {
-            agent_id: agent,
+            agent_id: Some(agent),
             query_text: "Rust".to_string(),
             memory_types: None,
             limit: 10,

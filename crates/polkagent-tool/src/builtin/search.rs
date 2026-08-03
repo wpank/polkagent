@@ -95,7 +95,7 @@ impl ToolHandler for SearchMemoryTool {
         );
 
         let query = MemoryQuery {
-            agent_id: context.agent_id,
+            agent_id: Some(context.agent_id),
             query_text: query_text.to_string(),
             memory_types,
             limit,

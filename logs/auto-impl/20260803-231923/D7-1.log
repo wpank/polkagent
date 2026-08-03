@@ -1,0 +1,20 @@
+All four fixes are done. Here's a summary:
+
+### Fix #1 — Cross-agent memory search ✅
+Changed `MemoryQuery.agent_id` from `AgentId` to `Option<AgentId>`:
+- **`types.rs`**: Made the field optional
+- **`sqlite.rs`**: Updated both `search_fts` and `search_like` to conditionally include the `agent_id = ?` filter only when `Some`
+- **`memory.rs` (CLI)**: Rewrote `search()` to build a `MemoryQuery` with `agent_id: None` when `--agent-id` is omitted, querying the store directly instead of bailing
+- **14 other call sites** across `conformance.rs`, `retention.rs`, `retrieval.rs`, `service.rs`, `export.rs`, `tenant.rs`, `search.rs` (tool), `app.rs` (service + test mock), `sqlite.rs` (tests), and `memory_lifecycle.rs` (integration tests) — all wrapped existing `agent_id` values in `Some(...)`
+- **`tenant.rs`**: Updated the tenant-isolation guard to allow `None` (no agent filter) through to the inner store
+
+### Fix #2 — `report.rs` saturating_sub ✅ (already applied)
+Line 83 already uses `total_cases.saturating_sub(passed).saturating_sub(skipped)`.
+
+### Fix #3 — Unicode right single quote ✅ (already applied)
+Lines 143-145 already normalize `\u{2019}` and `\u{2018}` to ASCII apostrophes before refusal matching.
+
+### Fix #4 — Zero-check scoring note ✅
+Added a comment in `aggregate_score()` making it explicit that empty check lists auto-pass and can inflate suite scores.
+
+**Verification**: `cargo check --workspace` compiles cleanly. All 322 tests in `polkagent-memory` (206) and `polkagent-eval` (116) pass.

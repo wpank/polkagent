@@ -78,7 +78,7 @@ pub async fn export_archive(
 ) -> MemoryResult<MemoryArchive> {
     // Fetch all memories for the agent (no text filter, no limit cap).
     let query = MemoryQuery {
-        agent_id: *agent_id,
+        agent_id: Some(*agent_id),
         query_text: String::new(),
         memory_types: None,
         limit: usize::MAX / 2, // effectively unlimited
@@ -246,7 +246,7 @@ mod tests {
 
         // Verify the entry is actually in the destination store.
         let query = MemoryQuery {
-            agent_id: agent,
+            agent_id: Some(agent),
             query_text: "imported".to_string(),
             memory_types: None,
             limit: 10,

@@ -37,25 +37,35 @@ pub fn run(cmd: &MemoryCmd) -> Result<()> {
 // search
 // ---------------------------------------------------------------------------
 
-fn search(cmd: &MemorySearchCmd, svc: &MemoryService, _store: &SqliteMemoryStore) -> Result<()> {
+fn search(cmd: &MemorySearchCmd, _svc: &MemoryService, store: &SqliteMemoryStore) -> Result<()> {
     let rt = tokio_handle()?;
 
     let limit = cmd.limit;
     let query = &cmd.query;
 
-    // Resolve the agent_id: use the provided one, or fall back to a cross-agent
-    // direct search when none is given.
-    let results = if let Some(ref agent_id_str) = cmd.agent_id {
-        let agent_id: AgentId = agent_id_str
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", agent_id_str))?;
-        rt.block_on(async { svc.recall(agent_id, query, limit).await })
-    } else {
-        anyhow::bail!(
-            "Error: --agent-id is required for search. \
-             Use `polkagent agent list` to see available agents."
-        );
+    // Resolve the agent_id: use the provided one, or search across all agents
+    // when none is given.
+    let agent_id: Option<AgentId> = match cmd.agent_id {
+        Some(ref id_str) => Some(
+            id_str
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+        ),
+        None => None,
     };
+
+    let results = rt.block_on(async {
+        let q = polkagent_memory::types::MemoryQuery {
+            agent_id,
+            query_text: query.to_string(),
+            memory_types: None,
+            limit,
+            min_relevance: None,
+            since: None,
+            episode_id: None,
+        };
+        store.search(&q).await.map_err(|e| anyhow::anyhow!("{e}"))
+    });
 
     match results {
         Ok(entries) => {
@@ -108,10 +118,12 @@ fn search(cmd: &MemorySearchCmd, svc: &MemoryService, _store: &SqliteMemoryStore
 fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
     let rt = tokio_handle()?;
 
-    let agent_id: AgentId = match cmd.agent_id {
-        Some(ref id_str) => id_str
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+    let agent_id: Option<AgentId> = match cmd.agent_id {
+        Some(ref id_str) => Some(
+            id_str
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+        ),
         None => {
             anyhow::bail!(
                 "Error: --agent-id is required for list. \
@@ -440,7 +452,7 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
             let cutoff = chrono::Utc::now()
                 - chrono::Duration::days(policy.max_age_days as i64);
             let all_query = polkagent_memory::types::MemoryQuery {
-                agent_id,
+                agent_id: Some(agent_id),
                 query_text: String::new(),
                 memory_types: None,
                 limit: usize::MAX / 2,

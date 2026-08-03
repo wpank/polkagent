@@ -183,6 +183,9 @@ pub fn score_case(result: &CaseResult, expected: &Expected) -> Score {
 #[must_use]
 pub fn aggregate_score(checks: Vec<CheckResult>) -> Score {
     if checks.is_empty() {
+        // NOTE: no assertions were defined for this case, so we auto-pass.
+        // This inflates suite-level scores when cases lack assertions.
+        // Consider adding at least one expected check per eval case.
         return Score::perfect();
     }
 
