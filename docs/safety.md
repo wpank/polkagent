@@ -173,3 +173,7 @@ max_cpu_seconds = 300
 ```
 
 For reporting security vulnerabilities, see [SECURITY.md](../SECURITY.md).
+
+---
+
+> For annotated policy configuration examples, see [Examples: Policy Examples](examples.md#policy-examples).

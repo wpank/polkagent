@@ -109,9 +109,31 @@ polkagent doctor
 
 This verifies provider connectivity, database status, and overall system health.
 
-## Next Steps
+## What Next?
+
+Now that you have a running agent, here are three paths to explore:
+
+- **Research your first governance proposal** — Use the built-in governance tools to look up an OpenGov referendum, check voting history, or explore delegation graphs. See [Examples: Governance Workflows](examples.md#governance-workflows).
+- **Set up multiple AI providers** — Configure fallback providers or use different models for different tasks. See [Examples: Agent Configuration](examples.md#agent-configuration).
+- **Deploy the API server** — Expose polkagent as a REST API for integration with other services. See [Examples: API Cookbook](examples.md#api-cookbook).
+
+Further reading:
 
 - [CLI Reference](cli.md) — full command documentation
 - [Configuration](configuration.md) — all configuration options
 - [Providers](providers.md) — provider setup details
 - [Tools & Skills](tools-and-skills.md) — available tools and how to extend them
+
+## Troubleshooting
+
+**Missing API key** — `Error: no providers configured`
+Set at least one provider API key environment variable (e.g., `export ANTHROPIC_API_KEY="sk-ant-..."`). See [Setting Up Provider API Keys](#setting-up-provider-api-keys) above.
+
+**Port already in use** — `Address already in use` when running `polkagent serve`
+Use the `--port` flag to choose a different port (`polkagent serve --port 9091`), or find and kill the existing process using that port.
+
+**Build errors** — compilation failures during `cargo install`
+Ensure Rust 1.80+ is installed. Run `rustup update` to get the latest toolchain, then verify with `rustc --version`.
+
+**Database locked** — agent commands hang or return lock errors
+Increase `busy_timeout_ms` in your configuration, or ensure no other polkagent process is running against the same data directory.

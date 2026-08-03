@@ -205,3 +205,7 @@ Start the server in read-only mode to reject all mutating requests (`POST`, `PUT
 ```bash
 polkagent serve --read-only
 ```
+
+---
+
+> For a hands-on API cookbook with curl examples, see [Examples: API Cookbook](examples.md#api-cookbook).
