@@ -324,8 +324,7 @@ impl App {
             }
 
             TuiAction::NavigateDown => {
-                // conservative estimate; actual visible rows depend on terminal height
-                let visible = 15usize;
+                let visible = self.visible_rows();
                 match self.active_tab {
                     Tab::Agents => {
                         let total = self.tui_state.agents.len();
@@ -377,8 +376,7 @@ impl App {
             }
 
             TuiAction::ScrollDown(n) => {
-                // conservative estimate; actual visible rows depend on terminal height
-                let visible = 15usize;
+                let visible = self.visible_rows();
                 for _ in 0..n {
                     match self.active_tab {
                         Tab::Agents => {
@@ -605,21 +603,20 @@ impl App {
             }
 
             TuiAction::ScrollToBottom => {
+                let visible = self.visible_rows();
                 match self.active_tab {
                     Tab::Audit => {
                         let total = self.tui_state.audit_log.len();
                         if total > 0 {
                             self.tui_state.audit_scroll.selected = Some(total - 1);
-                            // conservative estimate; actual visible rows depend on terminal height
-                            self.tui_state.audit_scroll.offset = total.saturating_sub(15);
+                            self.tui_state.audit_scroll.offset = total.saturating_sub(visible);
                         }
                     }
                     Tab::Timeline => {
                         let total = self.tui_state.run_events.len();
                         if total > 0 {
                             self.tui_state.timeline_scroll.selected = Some(total - 1);
-                            // conservative estimate; actual visible rows depend on terminal height
-                            self.tui_state.timeline_scroll.offset = total.saturating_sub(15);
+                            self.tui_state.timeline_scroll.offset = total.saturating_sub(visible);
                         }
                     }
                     _ => {}
@@ -959,6 +956,20 @@ impl App {
                 }
             }
         }
+    }
+
+    // ── Layout helpers ──────────────────────────────────────────────────────
+
+    /// Estimate the number of visible data rows in the main content area.
+    ///
+    /// Uses the current terminal height minus chrome (header, tab bar, status
+    /// bar, block borders, table header).
+    fn visible_rows(&self) -> usize {
+        let h = crossterm::terminal::size()
+            .map(|(_, h)| h)
+            .unwrap_or(24) as usize;
+        // 3 chrome rows (header + tab_bar + status_bar) + 2 border + 1 table header
+        h.saturating_sub(6)
     }
 
     // ── Render pipeline ─────────────────────────────────────────────────────

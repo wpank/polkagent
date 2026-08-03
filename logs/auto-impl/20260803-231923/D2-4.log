@@ -1,0 +1,15 @@
+All done. Here's a summary of the changes made to `crates/polkagent-cli/src/tui/app.rs`:
+
+**Added** `visible_rows()` helper method that computes actual visible rows from the terminal height:
+- Calls `crossterm::terminal::size()` to get the real terminal height (falls back to 24)
+- Subtracts 6 chrome rows (1 header + 1 tab bar + 1 status bar + 2 block border + 1 table header)
+
+**Fixed 4 locations** that hardcoded `visible = 15`:
+1. **`NavigateDown`** (line ~327): `let visible = 15usize` → `let visible = self.visible_rows()`
+2. **`ScrollDown`** (line ~379): `let visible = 15usize` → `let visible = self.visible_rows()`
+3. **`ScrollToBottom` / Audit** (line ~614): `total.saturating_sub(15)` → `total.saturating_sub(visible)`
+4. **`ScrollToBottom` / Timeline** (line ~622): `total.saturating_sub(15)` → `total.saturating_sub(visible)`
+
+**Issue 2 (footer overlap)** was already fixed — both `agents.rs` and `approvals.rs` already use `inner.y + inner.height.saturating_sub(1)` (the `inner` rect from `block.inner(area)`), not `area.y + area.height - 1`. No changes needed there.
+
+`cargo check -p polkagent-cli` passes cleanly.
