@@ -17,6 +17,7 @@ use polkagent_telemetry::{LogFormat, MetricRecorder, TelemetryConfig, TelemetryG
 
 mod cli;
 mod commands;
+mod error_explainer;
 mod exit_codes;
 mod output;
 mod tui;

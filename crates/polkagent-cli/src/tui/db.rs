@@ -186,6 +186,7 @@ impl TuiDb {
                     effects_succeeded: 0,
                     effects_failed: 0,
                     effects_pending: 0,
+                    failure_reason: None,
                     turns: Vec::new(),
                 })
             })
@@ -222,6 +223,31 @@ impl TuiDb {
         detail.effects_succeeded = effect_counts.1;
         detail.effects_failed = effect_counts.2;
         detail.effects_pending = effect_counts.3;
+
+        // Failure reason from terminal event.
+        if matches!(detail.state.as_str(), "failed" | "timed_out" | "cancelled") {
+            let reason: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT data_json FROM run_events
+                     WHERE run_id = ?1 AND kind IN ('RunFailed','RunCancelled','RunTimedOut')
+                     ORDER BY sequence DESC LIMIT 1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .and_then(|json: String| {
+                    extract_json_string(&json, "reason")
+                        .or_else(|| {
+                            if json.contains("RunTimedOut") {
+                                Some("run timed out".to_owned())
+                            } else {
+                                None
+                            }
+                        })
+                });
+            detail.failure_reason = reason;
+        }
 
         // Turn list.
         let mut turn_stmt = self.conn.prepare(

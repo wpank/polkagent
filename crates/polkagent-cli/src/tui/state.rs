@@ -147,6 +147,8 @@ pub struct RunDetail {
     pub effects_failed: u32,
     /// Number of effects still pending (no outcome).
     pub effects_pending: u32,
+    /// Failure reason extracted from the terminal RunFailed / RunCancelled / RunTimedOut event.
+    pub failure_reason: Option<String>,
     /// Per-turn summaries for the turn list panel.
     pub turns: Vec<TurnSummary>,
 }
@@ -581,6 +583,7 @@ mod tests {
             effects_succeeded: 0,
             effects_failed: 0,
             effects_pending: 0,
+            failure_reason: None,
             turns,
         }
     }

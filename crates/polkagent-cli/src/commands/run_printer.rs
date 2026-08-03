@@ -16,6 +16,7 @@ use ratatui::style::Color as RatColor;
 
 use polkagent_core::event::{EventKind, LogLevel, RunEvent};
 
+use crate::error_explainer;
 use crate::tui::theme::Theme;
 
 // ---------------------------------------------------------------------------
@@ -370,18 +371,12 @@ impl RunPrinter {
                 return ControlFlow::Break(());
             }
             EventKind::RunCancelled { reason } => {
-                let _ = writeln!(w);
-                let _ = self.styled_line(
-                    w,
-                    &format!("  ✗ Run cancelled: {reason}"),
-                    self.theme.danger,
-                    true,
-                );
+                let cancel_reason = format!("cancelled: {reason}");
+                let _ = self.print_failure_card(w, &cancel_reason);
                 return ControlFlow::Break(());
             }
             EventKind::RunTimedOut => {
-                let _ = writeln!(w);
-                let _ = self.styled_line(w, "  ✗ Run timed out", self.theme.danger, true);
+                let _ = self.print_failure_card(w, "run timed out");
                 return ControlFlow::Break(());
             }
             EventKind::RunRetryQueued => {
@@ -480,21 +475,27 @@ impl RunPrinter {
         Ok(())
     }
 
-    /// Render the failure card.
+    /// Render the failure card with structured error explanation.
     fn print_failure_card(&self, w: &mut impl Write, reason: &str) -> std::io::Result<()> {
         let elapsed = format_elapsed(self.start_time.elapsed());
+        let explanation = error_explainer::explain(reason);
 
-        let line1 = format!("  ✗ Run failed                       {elapsed}");
+        let line1 = format!(
+            "  ✗ Run failed: {:<26}{elapsed}",
+            explanation.category.label()
+        );
         let line2 = format!("  {reason}");
         let inner_w = line1.len().max(line2.len()) + 2;
 
         let top = format!(" ┌{}┐", "─".repeat(inner_w));
+        let mid = format!(" ├{}┤", "─".repeat(inner_w));
         let bot = format!(" └{}┘", "─".repeat(inner_w));
 
         writeln!(w)?;
         self.set_fg(w, self.theme.rose_ember)?;
         writeln!(w, "{top}")?;
 
+        // Line 1: status + category + elapsed.
         write!(w, " │")?;
         self.set_fg(w, self.theme.danger)?;
         self.set_bold(w)?;
@@ -505,6 +506,7 @@ impl RunPrinter {
         self.set_fg(w, self.theme.rose_ember)?;
         writeln!(w, "│")?;
 
+        // Line 2: raw reason.
         write!(w, " │")?;
         self.set_fg(w, self.theme.text_primary)?;
         write!(w, "{line2}")?;
@@ -514,9 +516,40 @@ impl RunPrinter {
         self.set_fg(w, self.theme.rose_ember)?;
         writeln!(w, "│")?;
 
+        // Separator.
+        self.set_fg(w, self.theme.rose_ember)?;
+        writeln!(w, "{mid}")?;
+
+        // What happened.
+        self.print_box_line(w, explanation.what_happened, inner_w, self.theme.text_primary)?;
+
+        // Next step.
+        let next = format!("→ {}", explanation.next_step_summary());
+        self.print_box_line(w, &next, inner_w, self.theme.bone)?;
+
         writeln!(w, "{bot}")?;
         self.reset(w)?;
 
+        Ok(())
+    }
+
+    /// Write a single line inside a box-drawn card.
+    fn print_box_line(
+        &self,
+        w: &mut impl Write,
+        text: &str,
+        inner_w: usize,
+        color: RatColor,
+    ) -> std::io::Result<()> {
+        let content = format!("  {text}");
+        write!(w, " │")?;
+        self.set_fg(w, color)?;
+        write!(w, "{content}")?;
+        self.reset(w)?;
+        let pad = inner_w - content.len().min(inner_w);
+        write!(w, "{:width$}", "", width = pad)?;
+        self.set_fg(w, self.theme.rose_ember)?;
+        writeln!(w, "│")?;
         Ok(())
     }
 

@@ -19,6 +19,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::error_explainer;
 use crate::tui::state::{RunDetail, TuiState};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::{context_gauge, token_sparkline};
@@ -164,6 +165,68 @@ fn render_info_panel(
         lines.push(kv_line("  Succeeded", &eff_ok, theme.success, theme));
         lines.push(kv_line("  Failed", &eff_fail, theme.danger, theme));
         lines.push(kv_line("  Pending", &eff_pend, theme.warning, theme));
+    }
+
+    // Error explanation for failed runs.
+    if matches!(detail.state.as_str(), "failed" | "timed_out" | "cancelled") {
+        let reason = detail
+            .failure_reason
+            .as_deref()
+            .unwrap_or(match detail.state.as_str() {
+                "timed_out" => "run timed out",
+                "cancelled" => "cancelled",
+                _ => "unknown error",
+            });
+        let explanation = error_explainer::explain(reason);
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {} ", explanation.category.label()),
+                Style::default()
+                    .fg(theme.danger)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("  {reason}"),
+            Style::default().fg(theme.danger),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  What happened:",
+            Style::default()
+                .fg(theme.bone)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("    {}", explanation.what_happened),
+            Style::default().fg(theme.text_primary),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  What is safe:",
+            Style::default()
+                .fg(theme.bone)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("    {}", explanation.what_is_safe),
+            Style::default().fg(theme.text_primary),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  What you can do:",
+            Style::default()
+                .fg(theme.bone)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for step in explanation.next_steps {
+            lines.push(Line::from(Span::styled(
+                format!("    • {step}"),
+                Style::default().fg(theme.text_primary),
+            )));
+        }
     }
 
     frame.render_widget(Paragraph::new(lines), text_area);
