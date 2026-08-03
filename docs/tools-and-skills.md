@@ -32,6 +32,8 @@ Provided by the `polkagent-tool-governance` crate. All tools require the `chain.
 
 **Conviction**: `None`, `Locked1X`, `Locked2X`, `Locked3X`, `Locked4X`, `Locked5X`, `Locked6X`
 
+> For practical governance workflow examples, see [Examples: Governance Workflows](examples.md#governance-workflows).
+
 ## Treasury Tools
 
 Provided by the `polkagent-tool-treasury` crate. All tools require the `chain.query` grant. Output classification: `Internal`.
@@ -43,6 +45,8 @@ Provided by the `polkagent-tool-treasury` crate. All tools require the `chain.qu
 | `polkagent.treasury.portfolio_summary` | Aggregated view of all asset positions. |
 | `polkagent.treasury.transfer_history` | Recent transfers in/out with timestamps (default 20, max 100). |
 | `polkagent.treasury.vesting_schedule` | Vesting schedules, unlocked amount, and next unlock. |
+
+> For practical treasury workflow examples, see [Examples: Treasury Workflows](examples.md#treasury-workflows).
 
 ## Tool Grants
 

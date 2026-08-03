@@ -196,3 +196,7 @@ When an agent run begins, polkagent resolves which provider to use in the follow
 4. The first available provider from explicit config or auto-synthesis
 
 The first match wins. Later entries in the list are only consulted if the earlier ones are absent or unresolvable.
+
+---
+
+> For a complete multi-provider setup walkthrough, see [Examples: Agent Configuration](examples.md#agent-configuration).
