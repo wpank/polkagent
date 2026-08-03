@@ -35,6 +35,7 @@ polkagent-identity        = { path = "../polkagent-identity" }
 polkagent-event           = { path = "../polkagent-event" }
 polkagent-service         = { path = "../polkagent-service" }
 polkagent-chain-trait     = { path = "../polkagent-chain-trait" }
+polkagent-chain-subxt     = { path = "../polkagent-chain-subxt" }
 polkagent-chain-fake      = { path = "../polkagent-chain-fake" }
 polkagent-harness-trait   = { path = "../polkagent-harness-trait" }
 polkagent-harness-codex   = { path = "../polkagent-harness-codex" }
@@ -72,6 +73,10 @@ chrono = { workspace = true }
 
 # Config parsing
 toml = { workspace = true }
+
+# Crypto (for Substrate storage key computation)
+blake2 = { workspace = true }
+twox-hash = { workspace = true }
 
 # IDs
 uuid = { workspace = true }

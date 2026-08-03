@@ -106,6 +106,8 @@ rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
 
 # Crypto
 blake3 = "1"
+blake2 = "0.10"
+twox-hash = "1"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 zeroize = { version = "1", features = ["derive"] }
 

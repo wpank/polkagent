@@ -78,7 +78,8 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Chain(cmd)) => {
             let _span = tracing::info_span!("chain").entered();
-            return commands::chain::run(cmd);
+            let rpc_url = resolve_rpc_url(cli.config.as_ref().map(|p| p.as_path()));
+            return commands::chain::run(cmd, rpc_url.as_deref()).await;
         }
         Some(Commands::Doctor(cmd)) => {
             return commands::doctor::run(cmd);
@@ -456,6 +457,24 @@ fn resolve_db_path(config_override: Option<&std::path::Path>) -> String {
 
     // 3. Default.
     format!("{home}/.local/share/polkagent/polkagent.db")
+}
+
+// ---------------------------------------------------------------------------
+// RPC URL resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the chain RPC URL.
+///
+/// Resolution order:
+/// 1. `POLKAGENT_RPC_URL` environment variable.
+/// 2. Default: none (chain commands will show a helpful message).
+fn resolve_rpc_url(_config_override: Option<&std::path::Path>) -> Option<String> {
+    if let Ok(url) = std::env::var("POLKAGENT_RPC_URL") {
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
