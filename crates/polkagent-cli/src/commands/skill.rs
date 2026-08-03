@@ -14,8 +14,26 @@ use crate::cli::{
     SkillCmd, SkillInstallCmd, SkillListCmd, SkillRemoveCmd, SkillShowCmd, SkillUpdateCmd,
 };
 
+/// Ensure the `skills` table exists (self-healing for fresh / older databases).
+fn ensure_skills_table(pool: &SqlitePool) -> Result<()> {
+    let writer = pool.writer();
+    writer.execute_batch(
+        "CREATE TABLE IF NOT EXISTS skills (
+            name          TEXT PRIMARY KEY,
+            version       TEXT NOT NULL DEFAULT '0.1.0',
+            description   TEXT NOT NULL DEFAULT '',
+            path          TEXT NOT NULL,
+            manifest_json TEXT NOT NULL DEFAULT '{}',
+            installed_at  TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
+        )",
+    )?;
+    Ok(())
+}
+
 /// Dispatch the skill subcommand.
 pub fn run(cmd: &SkillCmd, pool: &SqlitePool) -> Result<()> {
+    ensure_skills_table(pool)?;
     match cmd {
         SkillCmd::List(c)    => list(c, pool),
         SkillCmd::Install(c) => install(c, pool),
