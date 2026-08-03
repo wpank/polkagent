@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use polkagent_codec::{CallMetadata, PalletMetadata, RuntimeMetadata};
+use polkagent_codec::{CallMetadata, ConstantMetadata, PalletMetadata, RuntimeMetadata};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -40,6 +40,12 @@ pub struct PalletDiff {
     pub added_storage: Vec<String>,
     /// Storage entries removed.
     pub removed_storage: Vec<String>,
+    /// Constants added in the new version.
+    pub added_constants: Vec<String>,
+    /// Constants removed from the old version.
+    pub removed_constants: Vec<String>,
+    /// Constants whose type_id changed.
+    pub changed_constants: Vec<String>,
 }
 
 impl PalletDiff {
@@ -50,6 +56,9 @@ impl PalletDiff {
             && self.changed_call_signatures.is_empty()
             && self.added_storage.is_empty()
             && self.removed_storage.is_empty()
+            && self.added_constants.is_empty()
+            && self.removed_constants.is_empty()
+            && self.changed_constants.is_empty()
     }
 
     /// Returns `true` if any change in this pallet is breaking.
@@ -57,6 +66,8 @@ impl PalletDiff {
         !self.removed_calls.is_empty()
             || !self.changed_call_signatures.is_empty()
             || !self.removed_storage.is_empty()
+            || !self.removed_constants.is_empty()
+            || !self.changed_constants.is_empty()
     }
 }
 
@@ -85,6 +96,12 @@ pub struct MetadataDiff {
     pub added_storage: Vec<String>,
     /// Storage entries removed across all pallets (formatted as "Pallet.entry").
     pub removed_storage: Vec<String>,
+    /// Constants added across all pallets (formatted as "Pallet.constant_name").
+    pub added_constants: Vec<String>,
+    /// Constants removed across all pallets (formatted as "Pallet.constant_name").
+    pub removed_constants: Vec<String>,
+    /// Constants whose type changed across all pallets (formatted as "Pallet.constant_name").
+    pub changed_constants: Vec<String>,
     /// Human-readable descriptions of breaking changes.
     pub breaking_changes: Vec<String>,
 }
@@ -101,6 +118,9 @@ impl MetadataDiff {
             && self.removed_events.is_empty()
             && self.added_storage.is_empty()
             && self.removed_storage.is_empty()
+            && self.added_constants.is_empty()
+            && self.removed_constants.is_empty()
+            && self.changed_constants.is_empty()
             && self.breaking_changes.is_empty()
     }
 }
@@ -138,9 +158,12 @@ pub fn diff_metadata(old: &RuntimeMetadata, new: &RuntimeMetadata) -> MetadataDi
     let mut removed_events = Vec::new();
     let mut all_added_storage = Vec::new();
     let mut all_removed_storage = Vec::new();
+    let mut all_added_constants = Vec::new();
+    let mut all_removed_constants = Vec::new();
+    let mut all_changed_constants = Vec::new();
     let mut breaking_changes = Vec::new();
 
-    // Collect added pallet calls/events/storage
+    // Collect added pallet calls/events/storage/constants
     for name in &added_pallets {
         if let Some(p) = new_pallets.get(name.as_str()) {
             if let Some(calls) = &p.calls {
@@ -154,10 +177,13 @@ pub fn diff_metadata(old: &RuntimeMetadata, new: &RuntimeMetadata) -> MetadataDi
             if p.storage.is_some() {
                 all_added_storage.push(format!("{name}.*"));
             }
+            for c in &p.constants {
+                all_added_constants.push(format!("{name}.{}", c.name));
+            }
         }
     }
 
-    // Collect removed pallet calls/events/storage as breaking
+    // Collect removed pallet calls/events/storage/constants as breaking
     for name in &removed_pallets {
         breaking_changes.push(format!("Pallet `{name}` removed"));
         if let Some(p) = old_pallets.get(name.as_str()) {
@@ -171,6 +197,9 @@ pub fn diff_metadata(old: &RuntimeMetadata, new: &RuntimeMetadata) -> MetadataDi
             }
             if p.storage.is_some() {
                 all_removed_storage.push(format!("{name}.*"));
+            }
+            for c in &p.constants {
+                all_removed_constants.push(format!("{name}.{}", c.name));
             }
         }
     }
@@ -204,6 +233,19 @@ pub fn diff_metadata(old: &RuntimeMetadata, new: &RuntimeMetadata) -> MetadataDi
             breaking_changes.push(format!("Storage `{name}.{s}` removed"));
         }
 
+        // Aggregate constant changes
+        for c in &pallet_diff.added_constants {
+            all_added_constants.push(format!("{name}.{c}"));
+        }
+        for c in &pallet_diff.removed_constants {
+            all_removed_constants.push(format!("{name}.{c}"));
+            breaking_changes.push(format!("Constant `{name}.{c}` removed"));
+        }
+        for c in &pallet_diff.changed_constants {
+            all_changed_constants.push(format!("{name}.{c}"));
+            breaking_changes.push(format!("Constant `{name}.{c}` type changed"));
+        }
+
         // Event changes
         match (&old_p.events, &new_p.events) {
             (None, Some(_)) => added_events.push((*name).to_string()),
@@ -229,6 +271,9 @@ pub fn diff_metadata(old: &RuntimeMetadata, new: &RuntimeMetadata) -> MetadataDi
         removed_events,
         added_storage: all_added_storage,
         removed_storage: all_removed_storage,
+        added_constants: all_added_constants,
+        removed_constants: all_removed_constants,
+        changed_constants: all_changed_constants,
         breaking_changes,
     }
 }
@@ -244,6 +289,8 @@ fn diff_pallet(old: &PalletMetadata, new: &PalletMetadata) -> PalletDiff {
     );
 
     let (added_storage, removed_storage) = diff_storage(old, new);
+    let (added_constants, removed_constants, changed_constants) =
+        diff_constants(&old.constants, &new.constants);
 
     PalletDiff {
         name: new.name.clone(),
@@ -252,6 +299,9 @@ fn diff_pallet(old: &PalletMetadata, new: &PalletMetadata) -> PalletDiff {
         changed_call_signatures,
         added_storage,
         removed_storage,
+        added_constants,
+        removed_constants,
+        changed_constants,
     }
 }
 
@@ -318,6 +368,43 @@ fn diff_storage(old: &PalletMetadata, new: &PalletMetadata) -> (Vec<String>, Vec
         (Some(p), None) => (vec![], vec![p.to_string()]),
         _ => (vec![], vec![]),
     }
+}
+
+// ---------------------------------------------------------------------------
+// diff_constants
+// ---------------------------------------------------------------------------
+
+fn diff_constants(
+    old: &[ConstantMetadata],
+    new: &[ConstantMetadata],
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let old_map: HashMap<&str, &ConstantMetadata> =
+        old.iter().map(|c| (c.name.as_str(), c)).collect();
+    let new_map: HashMap<&str, &ConstantMetadata> =
+        new.iter().map(|c| (c.name.as_str(), c)).collect();
+
+    let old_names: BTreeSet<&str> = old_map.keys().copied().collect();
+    let new_names: BTreeSet<&str> = new_map.keys().copied().collect();
+
+    let added: Vec<String> = new_names
+        .difference(&old_names)
+        .map(|s| (*s).to_string())
+        .collect();
+    let removed: Vec<String> = old_names
+        .difference(&new_names)
+        .map(|s| (*s).to_string())
+        .collect();
+
+    let mut changed = Vec::new();
+    for name in old_names.intersection(&new_names) {
+        let old_c = old_map[name];
+        let new_c = new_map[name];
+        if old_c.type_id != new_c.type_id {
+            changed.push((*name).to_string());
+        }
+    }
+
+    (added, removed, changed)
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +509,29 @@ pub fn generate_impact_brief(diff: &MetadataDiff) -> String {
             "Removed storage ({}): {}",
             diff.removed_storage.len(),
             diff.removed_storage.join(", ")
+        ));
+    }
+
+    // Constants summary
+    if !diff.added_constants.is_empty() {
+        lines.push(format!(
+            "Added constants ({}): {}",
+            diff.added_constants.len(),
+            diff.added_constants.join(", ")
+        ));
+    }
+    if !diff.removed_constants.is_empty() {
+        lines.push(format!(
+            "Removed constants ({}): {}",
+            diff.removed_constants.len(),
+            diff.removed_constants.join(", ")
+        ));
+    }
+    if !diff.changed_constants.is_empty() {
+        lines.push(format!(
+            "Changed constants ({}): {}",
+            diff.changed_constants.len(),
+            diff.changed_constants.join(", ")
         ));
     }
 
@@ -864,6 +974,9 @@ mod tests {
             changed_call_signatures: vec![],
             added_storage: vec![],
             removed_storage: vec![],
+            added_constants: vec![],
+            removed_constants: vec![],
+            changed_constants: vec![],
         };
         assert!(pd.is_empty());
         assert!(!pd.has_breaking_changes());
@@ -882,6 +995,9 @@ mod tests {
             changed_call_signatures: vec![],
             added_storage: vec![],
             removed_storage: vec![],
+            added_constants: vec![],
+            removed_constants: vec![],
+            changed_constants: vec![],
         };
         assert!(!pd.is_empty());
         assert!(pd.has_breaking_changes());
@@ -896,6 +1012,9 @@ mod tests {
             changed_call_signatures: vec!["bar".to_string()],
             added_storage: vec![],
             removed_storage: vec![],
+            added_constants: vec![],
+            removed_constants: vec![],
+            changed_constants: vec![],
         };
         assert!(pd.has_breaking_changes());
     }
@@ -909,6 +1028,9 @@ mod tests {
             changed_call_signatures: vec![],
             added_storage: vec![],
             removed_storage: vec!["Account".to_string()],
+            added_constants: vec![],
+            removed_constants: vec![],
+            changed_constants: vec![],
         };
         assert!(pd.has_breaking_changes());
     }
@@ -980,6 +1102,9 @@ mod tests {
             changed_call_signatures: vec!["transfer".to_string()],
             added_storage: vec!["Locks".to_string()],
             removed_storage: vec![],
+            added_constants: vec!["NewConst".to_string()],
+            removed_constants: vec![],
+            changed_constants: vec![],
         };
         let json = serde_json::to_string(&pd).expect("serialize");
         let back: PalletDiff = serde_json::from_str(&json).expect("deserialize");

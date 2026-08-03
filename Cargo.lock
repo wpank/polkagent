@@ -3400,7 +3400,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "polkagent-chain-trait",
+ "polkagent-codec",
  "polkagent-core",
+ "polkagent-metadata",
  "polkagent-tool",
  "serde",
  "serde_json",

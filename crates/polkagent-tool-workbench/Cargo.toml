@@ -12,6 +12,8 @@ description = "Product-engineering workbench tools for Polkagent (storage migrat
 polkagent-tool = { path = "../polkagent-tool" }
 polkagent-core = { path = "../polkagent-core" }
 polkagent-chain-trait = { path = "../polkagent-chain-trait" }
+polkagent-metadata = { path = "../polkagent-metadata" }
+polkagent-codec = { path = "../polkagent-codec" }
 
 # Async
 tokio = { workspace = true }

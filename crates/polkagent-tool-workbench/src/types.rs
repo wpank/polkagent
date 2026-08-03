@@ -96,6 +96,91 @@ pub struct MigrationRehearsalReport {
 }
 
 // ---------------------------------------------------------------------------
+// MetadataComparisonReport
+// ---------------------------------------------------------------------------
+
+/// Structured report from a metadata comparison between two runtime versions.
+///
+/// Enumerates every change across pallets, calls, events, storage items,
+/// and constants with before/after detail. This is a read-only analysis
+/// artifact — no state was modified on any live chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetadataComparisonReport {
+    /// Identifier for the old metadata source (block number or file path).
+    pub old_source: String,
+    /// Identifier for the new metadata source (block number or file path).
+    pub new_source: String,
+    /// Whether the diff contains any breaking changes.
+    pub is_breaking: bool,
+    /// Pallets added in the new version.
+    pub added_pallets: Vec<String>,
+    /// Pallets removed from the old version.
+    pub removed_pallets: Vec<String>,
+    /// Pallets present in both but with changes.
+    pub modified_pallets: Vec<PalletComparisonDetail>,
+    /// Summary counts.
+    pub summary: ComparisonSummary,
+    /// Human-readable impact brief suitable for an action card.
+    pub impact_brief: String,
+}
+
+/// Summary counts for a metadata comparison.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComparisonSummary {
+    /// Total pallets added.
+    pub pallets_added: usize,
+    /// Total pallets removed.
+    pub pallets_removed: usize,
+    /// Total pallets modified.
+    pub pallets_modified: usize,
+    /// Total calls added across all pallets.
+    pub calls_added: usize,
+    /// Total calls removed across all pallets.
+    pub calls_removed: usize,
+    /// Total call signatures changed.
+    pub calls_changed: usize,
+    /// Total events added.
+    pub events_added: usize,
+    /// Total events removed.
+    pub events_removed: usize,
+    /// Total storage entries added.
+    pub storage_added: usize,
+    /// Total storage entries removed.
+    pub storage_removed: usize,
+    /// Total constants added.
+    pub constants_added: usize,
+    /// Total constants removed.
+    pub constants_removed: usize,
+    /// Total constants whose type changed.
+    pub constants_changed: usize,
+    /// Total breaking changes.
+    pub breaking_change_count: usize,
+}
+
+/// Detailed comparison for a single pallet that was modified.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalletComparisonDetail {
+    /// Pallet name.
+    pub name: String,
+    /// Calls added.
+    pub added_calls: Vec<String>,
+    /// Calls removed.
+    pub removed_calls: Vec<String>,
+    /// Calls whose signatures changed.
+    pub changed_call_signatures: Vec<String>,
+    /// Storage entries added.
+    pub added_storage: Vec<String>,
+    /// Storage entries removed.
+    pub removed_storage: Vec<String>,
+    /// Constants added.
+    pub added_constants: Vec<String>,
+    /// Constants removed.
+    pub removed_constants: Vec<String>,
+    /// Constants whose type changed.
+    pub changed_constants: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

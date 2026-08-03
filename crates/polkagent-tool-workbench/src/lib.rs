@@ -9,6 +9,7 @@
 //! | Tool | Description |
 //! |------|-------------|
 //! | [`migration_rehearsal::MigrationRehearsalTool`] | Rehearse a storage migration and produce a structured diff |
+//! | [`metadata_comparison::MetadataComparisonTool`] | Compare two metadata snapshots and produce an upgrade impact brief |
 //!
 //! # Registration
 //!
@@ -23,7 +24,7 @@
 //! # fn example(chain_client: Arc<dyn polkagent_chain_trait::ChainClient>) {
 //! let mut registry = ToolRegistry::new();
 //! register_workbench_tools(&mut registry, chain_client);
-//! assert_eq!(registry.len(), 1);
+//! assert_eq!(registry.len(), 2);
 //! # }
 //! ```
 //!
@@ -47,6 +48,7 @@
 )]
 
 pub mod error;
+pub mod metadata_comparison;
 pub mod migration_rehearsal;
 pub mod types;
 
@@ -60,8 +62,12 @@ use polkagent_tool::ToolRegistry;
 // ---------------------------------------------------------------------------
 
 pub use error::WorkbenchError;
+pub use metadata_comparison::MetadataComparisonTool;
 pub use migration_rehearsal::MigrationRehearsalTool;
-pub use types::{MigrationRehearsalReport, StorageDiff, StorageKeyChange};
+pub use types::{
+    ComparisonSummary, MetadataComparisonReport, MigrationRehearsalReport,
+    PalletComparisonDetail, StorageDiff, StorageKeyChange,
+};
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -69,7 +75,7 @@ pub use types::{MigrationRehearsalReport, StorageDiff, StorageKeyChange};
 
 /// Register all workbench tools into the given registry.
 ///
-/// This adds the migration rehearsal tool. A [`ChainClient`] must be
+/// This adds the migration rehearsal and metadata comparison tools. A [`ChainClient`] must be
 /// provided so the tools can query chain state.
 ///
 /// Call this once when setting up a new run or agent context.
@@ -77,7 +83,8 @@ pub fn register_workbench_tools(
     registry: &mut ToolRegistry,
     chain_client: Arc<dyn ChainClient>,
 ) {
-    registry.register(Box::new(MigrationRehearsalTool::new(chain_client)));
+    registry.register(Box::new(MigrationRehearsalTool::new(chain_client.clone())));
+    registry.register(Box::new(MetadataComparisonTool::new(chain_client)));
 }
 
 // ---------------------------------------------------------------------------
@@ -251,21 +258,22 @@ pub(crate) mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn register_workbench_tools_adds_one() {
+    fn register_workbench_tools_adds_two() {
         let client = Arc::new(MockChainClient::new());
         let mut registry = ToolRegistry::new();
         register_workbench_tools(&mut registry, client);
-        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.len(), 2);
     }
 
     #[test]
-    fn register_workbench_tools_correct_name() {
+    fn register_workbench_tools_correct_names() {
         let client = Arc::new(MockChainClient::new());
         let mut registry = ToolRegistry::new();
         register_workbench_tools(&mut registry, client);
 
         let names = registry.names();
         assert!(names.contains(&"polkagent.workbench.migration_rehearsal".to_string()));
+        assert!(names.contains(&"polkagent.workbench.metadata_comparison".to_string()));
     }
 
     #[test]
@@ -311,7 +319,7 @@ pub(crate) mod tests {
         register_workbench_tools(&mut registry, client);
 
         let defs = registry.to_tool_definitions();
-        assert_eq!(defs.len(), 1);
+        assert_eq!(defs.len(), 2);
 
         for def in &defs {
             assert!(!def.name.is_empty());
@@ -326,6 +334,6 @@ pub(crate) mod tests {
         let mut registry = ToolRegistry::new();
         register_workbench_tools(&mut registry, client.clone());
         register_workbench_tools(&mut registry, client);
-        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.len(), 2);
     }
 }
