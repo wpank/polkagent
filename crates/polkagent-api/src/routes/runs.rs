@@ -52,10 +52,9 @@ pub async fn create_run(
         return Err(ApiError::AgentNotFound(agent_id.to_string()));
     }
 
-    // Count the run as started and increment the active gauge before the
-    // run_manager call so that if we're fast-completing in-process the gauge
-    // is never below the true active count.
-    state.metrics.runs_started();
+    // Increment the active gauge before the run_manager call so that if
+    // we're fast-completing in-process the gauge is never below the true
+    // active count.
     state.metrics.increment_active_runs();
 
     let result = state
@@ -66,8 +65,9 @@ pub async fn create_run(
 
     match &result {
         Ok(record) => {
+            // The run is now in Running state; record the start metric.
+            state.metrics.runs_started();
             info!(run_id = %record.id, agent_id = %agent_id, "run created");
-            state.metrics.runs_completed();
         }
         Err(_) => {
             state.metrics.runs_failed();
@@ -362,11 +362,19 @@ pub async fn resume_run(
 ///
 /// **Stub:** Returns 501 Not Implemented. Will be wired to the agent
 /// lifecycle subsystem once long-running agent processes are supported.
-#[instrument(skip(_state), fields(agent_id = %id))]
+#[instrument(skip(state), fields(agent_id = %id))]
 pub async fn start_agent(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(id): Path<AgentId>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Verify the agent exists.
+    state
+        .agents
+        .get(id)
+        .await
+        .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
+
+    info!(agent_id = %id, "agent start requested");
     Ok(Json(AgentLifecycleResponse {
         version: API_VERSION.to_owned(),
         agent_id: id.to_string(),

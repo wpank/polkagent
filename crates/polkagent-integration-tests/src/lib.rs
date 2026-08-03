@@ -10,7 +10,7 @@ use std::time::Duration;
 use chrono::Utc;
 
 use polkagent_core::{
-    EffectAttemptId, EffectId, EffectOutcomeId, RunId, WorkerId,
+    EffectAttemptId, EffectId, EffectOutcomeId, RunId, TurnId, WorkerId,
 };
 use polkagent_event::{EventBus, EventRecorder};
 use polkagent_run::RunManager;
@@ -118,6 +118,20 @@ impl RunStore for MemRunStore {
         runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         runs.truncate(limit as usize);
         Ok(runs)
+    }
+
+    async fn insert_turn(
+        &self,
+        _turn_id: TurnId,
+        _run_id: RunId,
+        _sequence: u32,
+        _role: &str,
+        _started_at: &str,
+        _completed_at: Option<&str>,
+        _input_tokens: u32,
+        _output_tokens: u32,
+    ) -> Result<(), StoreError> {
+        Ok(())
     }
 }
 

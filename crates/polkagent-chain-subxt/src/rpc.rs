@@ -27,9 +27,13 @@ use crate::error::SubxtError;
 /// A JSON-RPC 2.0 request.
 #[derive(Debug, Serialize)]
 pub struct JsonRpcRequest<'a> {
+    /// JSON-RPC protocol version (always `"2.0"`).
     pub jsonrpc: &'a str,
+    /// Request identifier.
     pub id: u64,
+    /// RPC method name.
     pub method: &'a str,
+    /// Optional positional parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
 }
@@ -37,18 +41,25 @@ pub struct JsonRpcRequest<'a> {
 /// A JSON-RPC 2.0 response.
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcResponse {
+    /// JSON-RPC protocol version.
     #[allow(dead_code)]
     pub jsonrpc: String,
+    /// Response identifier matching the request.
     pub id: u64,
+    /// Successful result value, if any.
     pub result: Option<serde_json::Value>,
+    /// Error object, if the request failed.
     pub error: Option<JsonRpcError>,
 }
 
 /// A JSON-RPC 2.0 error object.
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcError {
+    /// Numeric error code.
     pub code: i64,
+    /// Human-readable error message.
     pub message: String,
+    /// Optional additional error data.
     #[allow(dead_code)]
     pub data: Option<serde_json::Value>,
 }

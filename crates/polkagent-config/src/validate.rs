@@ -311,7 +311,17 @@ fn validate_models(config: &Config, errors: &mut Vec<ValidationError>) {
         }
 
         if let Some(fmt) = &model.tool_format {
-            let valid_formats = ["json", "xml", "native"];
+            let valid_formats = [
+                // Canonical serde names (snake_case of the ToolFormat enum variants).
+                "anthropic_blocks",
+                "open_ai_json",
+                "gemini_native",
+                "re_act_text",
+                // Legacy aliases kept for backwards compatibility.
+                "json",
+                "xml",
+                "native",
+            ];
             if !valid_formats.contains(&fmt.as_str()) {
                 errors.push(ValidationError::new(
                     format!("{prefix}.tool_format"),

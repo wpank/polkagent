@@ -7,6 +7,7 @@ use thiserror::Error;
 ///
 /// These are converted into [`ChainError`] variants at the trait boundary.
 #[derive(Debug, Error)]
+#[allow(missing_docs)]
 pub enum SubxtError {
     /// A JSON-RPC transport error (network, timeout, etc.).
     #[error("RPC transport error: {message}")]

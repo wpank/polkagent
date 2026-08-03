@@ -66,8 +66,7 @@ use tracing::{debug, info, warn};
 
 use polkagent_chain_trait::{
     BlockRef, ChainClient, ChainError, ChainProfile, ChainProfileId, DecodedCall, DryRunResult,
-    FinalityObservation, GenesisHash, PinnedMetadata, SimulationResult, StorageChange,
-    StorageChangeType, TxHash,
+    FinalityObservation, GenesisHash, PinnedMetadata, SimulationResult, TxHash,
 };
 use polkagent_core::now;
 
@@ -633,7 +632,7 @@ mod tests {
     use super::*;
     use polkagent_chain_trait::{
         BlockRef, ChainProfile, ChainProfileId, GenesisHash, MetadataDigest, NetworkType,
-        PinnedMetadata,
+        PinnedMetadata, StorageChange, StorageChangeType,
     };
     use std::sync::Arc;
 

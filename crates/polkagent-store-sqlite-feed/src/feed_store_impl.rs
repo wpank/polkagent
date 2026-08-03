@@ -18,7 +18,6 @@
 //!   `"error:<message>"`.
 
 use async_trait::async_trait;
-use chrono::Utc;
 use uuid::Uuid;
 
 use polkagent_feed::store::FeedStore;

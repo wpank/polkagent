@@ -519,7 +519,7 @@ where
 {
     ENV_PROVIDER_SPECS
         .iter()
-        .filter(|spec| env_lookup(spec.env_var).is_ok())
+        .filter(|spec| env_lookup(spec.env_var).is_ok_and(|v| !v.is_empty()))
         .map(|spec| {
             let config = ProviderConfig {
                 id: spec.id.to_owned(),
