@@ -4,6 +4,9 @@
 //! threaded through command handlers.  [`format_output`] converts any
 //! [`serde::Serialize`] value into the requested format string.
 
+// TODO: Wire format_output into command handlers. Currently OutputFormat
+// is parsed by cli.rs but ignored in main.rs (line ~109).
+
 use std::fmt;
 
 use serde::Serialize;

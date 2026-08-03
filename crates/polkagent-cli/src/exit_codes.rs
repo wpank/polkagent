@@ -2,8 +2,10 @@
 //!
 //! Use these constants with `std::process::exit` to communicate structured
 //! outcomes to shell scripts and CI pipelines.
-// These constants form the public exit-code API for shell scripts and CI
-// pipelines. Not all are used yet by the current command set.
+//!
+//! These constants are reserved for future use as the CLI command set grows.
+//! Not all codes are wired into command handlers yet; they are defined here
+//! so that the numeric assignments are stable and documented in one place.
 #![allow(dead_code)]
 
 /// Command completed successfully.

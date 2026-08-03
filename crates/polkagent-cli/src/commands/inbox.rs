@@ -173,17 +173,29 @@ fn approve(cmd: &InboxApproveCmd, pool: &SqlitePool) -> Result<()> {
     println!();
 
     let writer = pool.writer();
-    let rows = writer.execute(
-        "UPDATE effect_intents SET claimed_by = 'cli-approved' WHERE id = ?1 AND claimed_by IS NULL",
-        rusqlite::params![cmd.effect_id],
-    )?;
 
-    if rows == 0 {
+    // Check the intent has no outcome yet (i.e. not already approved/denied).
+    let already_resolved: bool = writer
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM effect_outcomes WHERE intent_id = ?1)",
+            rusqlite::params![cmd.effect_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if already_resolved {
         anyhow::bail!(
-            "Effect not found or already claimed/approved: {}",
+            "Effect already resolved: {}",
             cmd.effect_id
         );
     }
+
+    // Record the approval in effect_outcomes (matches TUI pattern).
+    let outcome_id = uuid::Uuid::now_v7().to_string();
+    writer.execute(
+        "INSERT INTO effect_outcomes (id, intent_id, status, result_json, created_at)
+         VALUES (?1, ?2, 'approved', '{\"source\":\"cli\"}', datetime('now'))",
+        rusqlite::params![outcome_id, cmd.effect_id],
+    )?;
 
     // Record an approval event in the run_events table.
     let event_id = uuid::Uuid::now_v7().to_string();
@@ -205,11 +217,13 @@ fn approve(cmd: &InboxApproveCmd, pool: &SqlitePool) -> Result<()> {
         )
         .unwrap_or(1);
 
-    let _ = writer.execute(
-        "INSERT INTO run_events (id, run_id, sequence, event_type, payload_json, created_at)
+    if let Err(e) = writer.execute(
+        "INSERT INTO run_events (id, run_id, sequence, kind, data_json, timestamp)
          VALUES (?1, ?2, ?3, 'effect.approved', ?4, ?5)",
         rusqlite::params![event_id, run_id, next_seq, event_payload, now],
-    );
+    ) {
+        eprintln!("Warning: failed to record event: {e}");
+    }
 
     println!("Effect '{}' approved.", cmd.effect_id);
     info!(effect_id = %cmd.effect_id, kind = %kind, "effect approved via CLI");
@@ -250,17 +264,29 @@ fn deny(cmd: &InboxDenyCmd, pool: &SqlitePool) -> Result<()> {
     println!();
 
     let writer = pool.writer();
-    let rows = writer.execute(
-        "UPDATE effect_intents SET claimed_by = 'cli-denied' WHERE id = ?1 AND claimed_by IS NULL",
-        rusqlite::params![cmd.effect_id],
-    )?;
 
-    if rows == 0 {
+    // Check the intent has no outcome yet (i.e. not already approved/denied).
+    let already_resolved: bool = writer
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM effect_outcomes WHERE intent_id = ?1)",
+            rusqlite::params![cmd.effect_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if already_resolved {
         anyhow::bail!(
-            "Effect not found or already claimed/denied: {}",
+            "Effect already resolved: {}",
             cmd.effect_id
         );
     }
+
+    // Record the denial in effect_outcomes (matches TUI pattern).
+    let outcome_id = uuid::Uuid::now_v7().to_string();
+    writer.execute(
+        "INSERT INTO effect_outcomes (id, intent_id, status, result_json, created_at)
+         VALUES (?1, ?2, 'denied', '{\"source\":\"cli\"}', datetime('now'))",
+        rusqlite::params![outcome_id, cmd.effect_id],
+    )?;
 
     // Record a denial event in the run_events table.
     let event_id = uuid::Uuid::now_v7().to_string();
@@ -282,11 +308,13 @@ fn deny(cmd: &InboxDenyCmd, pool: &SqlitePool) -> Result<()> {
         )
         .unwrap_or(1);
 
-    let _ = writer.execute(
-        "INSERT INTO run_events (id, run_id, sequence, event_type, payload_json, created_at)
+    if let Err(e) = writer.execute(
+        "INSERT INTO run_events (id, run_id, sequence, kind, data_json, timestamp)
          VALUES (?1, ?2, ?3, 'effect.denied', ?4, ?5)",
         rusqlite::params![event_id, run_id, next_seq, event_payload, now],
-    );
+    ) {
+        eprintln!("Warning: failed to record event: {e}");
+    }
 
     println!("Effect '{}' denied. Reason: {reason}", cmd.effect_id);
     info!(effect_id = %cmd.effect_id, kind = %kind, reason = reason, "effect denied via CLI");

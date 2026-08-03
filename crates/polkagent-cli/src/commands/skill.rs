@@ -200,14 +200,18 @@ fn install(cmd: &SkillInstallCmd, pool: &SqlitePool) -> Result<()> {
 fn update(cmd: &SkillUpdateCmd, pool: &SqlitePool) -> Result<()> {
     let reader = pool.reader().map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let row: Option<(String, String)> = reader
-        .query_row(
-            "SELECT path, version FROM skills WHERE name = ?1",
-            rusqlite::params![cmd.name],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map(Some)
-        .unwrap_or(None);
+    let row: Option<(String, String)> = match reader.query_row(
+        "SELECT path, version FROM skills WHERE name = ?1",
+        rusqlite::params![cmd.name],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ) {
+        Ok(r) => Some(r),
+        Err(e) if e.to_string().contains("no such table") => {
+            eprintln!("No skills installed. Use 'polkagent skill install' first.");
+            return Ok(());
+        }
+        Err(_) => None,
+    };
 
     let Some((path_str, old_version)) = row else {
         anyhow::bail!("Skill '{}' is not installed.", cmd.name);
@@ -297,6 +301,9 @@ fn remove(cmd: &SkillRemoveCmd, pool: &SqlitePool) -> Result<()> {
             println!("Skill '{}' removed.", cmd.name);
             info!(skill = %cmd.name, "skill removed");
         }
+        Err(e) if e.to_string().contains("no such table") => {
+            eprintln!("No skills installed. Use 'polkagent skill install' first.");
+        }
         Err(e) => {
             eprintln!("Warning: {e}");
             eprintln!("The skills table may not exist — run `polkagent init`.");
@@ -313,24 +320,28 @@ fn remove(cmd: &SkillRemoveCmd, pool: &SqlitePool) -> Result<()> {
 fn show(cmd: &SkillShowCmd, pool: &SqlitePool) -> Result<()> {
     let reader = pool.reader().map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let row: Option<(String, String, String, String, String, String)> = reader
-        .query_row(
-            "SELECT name, version, description, path, manifest_json, installed_at
+    let row: Option<(String, String, String, String, String, String)> = match reader.query_row(
+        "SELECT name, version, description, path, manifest_json, installed_at
              FROM skills WHERE name = ?1",
-            rusqlite::params![cmd.name],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            },
-        )
-        .map(Some)
-        .unwrap_or(None);
+        rusqlite::params![cmd.name],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        },
+    ) {
+        Ok(r) => Some(r),
+        Err(e) if e.to_string().contains("no such table") => {
+            eprintln!("No skills installed. Use 'polkagent skill install' first.");
+            return Ok(());
+        }
+        Err(_) => None,
+    };
 
     let Some((name, version, description, path, manifest_json, installed_at)) = row else {
         anyhow::bail!("Skill '{}' is not installed.", cmd.name);
