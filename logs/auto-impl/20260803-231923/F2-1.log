@@ -1,0 +1,30 @@
+Everything compiles and all 354 tests pass. Here's a summary of what was done:
+
+## Changes Made
+
+### 1. `crates/polkagent-cli/Cargo.toml`
+Added two new internal dependencies:
+- `polkagent-codec` — for SCALE decoding of extrinsics
+- `polkagent-card` — for rendering action card previews
+
+### 2. `crates/polkagent-cli/src/commands/explain.rs`
+Replaced the stub with a full implementation:
+
+**Hex parsing:**
+- Accepts hex-encoded extrinsic data (with or without `0x` prefix)
+- Validates input: checks for empty strings, odd length, invalid characters
+- Validates minimum extrinsic length (3 bytes)
+- Shows helpful error messages for each failure case
+
+**SCALE decoding:**
+- Uses `polkagent_codec::decode_extrinsic()` to structurally decode the extrinsic (length prefix → version byte → signature (if signed) → pallet/call indices → raw args)
+- Displays pallet index/name and call index/name
+- Formats decoded arguments (with name-value display for named fields, hex abbreviation for large byte blobs)
+- Detects transfer calls via `is_transfer_call()` and extracts the transfer amount via `extract_transfer_amount()`
+
+**Action card preview:**
+- Builds an `ActionCard` using `ActionCardBuilder` with canonical sections for Pallet, Call, Arguments (unverified), and Transfer amount (when applicable)
+- Renders the card using `polkagent_card::render::render_text()` which outputs the full box-drawing card format with canonical data, risk level, simulation status, and payload hash
+
+**JSON mode (`--json`):**
+- Emits a structured JSON object with `status: "decoded"`, pallet/call indices and names, decoded arguments, transfer detection, and transfer amount
