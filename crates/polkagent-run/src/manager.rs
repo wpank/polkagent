@@ -77,6 +77,71 @@ impl RunManager {
     }
 
     // -----------------------------------------------------------------------
+    // Startup recovery
+    // -----------------------------------------------------------------------
+
+    /// Sweep runs stuck in non-terminal active states (`Running`, `Queued`,
+    /// `Completing`) and transition them to `Failed`.
+    ///
+    /// This must be called once during application startup, **before** any new
+    /// work is accepted. After a crash, runs in these states will never make
+    /// progress because the in-process executor is gone.
+    ///
+    /// Each recovered run gets:
+    /// - Its store status set to `Failed`.
+    /// - A `RunFailed` event emitted with the given `reason`.
+    ///
+    /// Runs that fail to update are logged and skipped (best-effort).
+    ///
+    /// Returns the number of runs successfully recovered.
+    #[instrument(skip(self))]
+    pub async fn recover_stuck_runs(&self) -> Result<u32, RunError> {
+        const STUCK_STATES: &[&str] = &["running", "queued", "completing"];
+        const REASON: &str = "recovered after restart";
+        const PAGE_LIMIT: u32 = 500;
+
+        let mut recovered: u32 = 0;
+
+        for state_str in STUCK_STATES {
+            let status = RunStatus::new(*state_str);
+            let runs = self
+                .store
+                .list_by_state(status, PAGE_LIMIT, 0)
+                .await
+                .map_err(|e| RunError::Store(e.to_string()))?;
+
+            for run in &runs {
+                let failed_status = RunStatus::new(format!("failed:{REASON}"));
+                if let Err(e) = self.store.update_state(run.id, failed_status).await {
+                    warn!(run_id = %run.id, error = %e, "failed to recover stuck run, skipping");
+                    continue;
+                }
+
+                if let Err(e) = self
+                    .emit_event(
+                        run.id,
+                        EventKind::RunFailed {
+                            reason: REASON.to_owned(),
+                        },
+                    )
+                    .await
+                {
+                    warn!(run_id = %run.id, error = %e, "failed to emit recovery event");
+                }
+
+                info!(run_id = %run.id, previous_state = %state_str, "recovered stuck run");
+                recovered += 1;
+            }
+        }
+
+        if recovered > 0 {
+            info!(recovered, "startup recovery sweep complete");
+        }
+
+        Ok(recovered)
+    }
+
+    // -----------------------------------------------------------------------
     // Run lifecycle methods
     // -----------------------------------------------------------------------
 
@@ -916,6 +981,96 @@ mod tests {
 
         let state = mgr.get_state(run_id).await.expect("state");
         assert!(matches!(state, RunState::Cancelled { .. }));
+    }
+
+    // ── recover_stuck_runs tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn recover_stuck_runs_transitions_running_to_failed() {
+        let (mgr, _) = make_manager();
+        let agent_id = AgentId::new();
+        let run_id = mgr.create_run(agent_id).await.expect("create");
+        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
+        mgr.start_run(run_id.clone()).await.expect("start");
+
+        let recovered = mgr.recover_stuck_runs().await.expect("recover");
+        assert_eq!(recovered, 1);
+
+        let state = mgr.get_state(run_id).await.expect("state");
+        assert!(matches!(state, RunState::Failed { reason } if reason == "recovered after restart"));
+    }
+
+    #[tokio::test]
+    async fn recover_stuck_runs_transitions_queued_to_failed() {
+        let (mgr, _) = make_manager();
+        let agent_id = AgentId::new();
+        let run_id = mgr.create_run(agent_id).await.expect("create");
+        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
+
+        let recovered = mgr.recover_stuck_runs().await.expect("recover");
+        assert_eq!(recovered, 1);
+
+        let state = mgr.get_state(run_id).await.expect("state");
+        assert!(matches!(state, RunState::Failed { reason } if reason == "recovered after restart"));
+    }
+
+    #[tokio::test]
+    async fn recover_stuck_runs_transitions_completing_to_failed() {
+        let (mgr, _) = make_manager();
+        let agent_id = AgentId::new();
+        let run_id = mgr.create_run(agent_id).await.expect("create");
+        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
+        mgr.start_run(run_id.clone()).await.expect("start");
+        mgr.completing_run(run_id.clone()).await.expect("completing");
+
+        let recovered = mgr.recover_stuck_runs().await.expect("recover");
+        assert_eq!(recovered, 1);
+
+        let state = mgr.get_state(run_id).await.expect("state");
+        assert!(matches!(state, RunState::Failed { reason } if reason == "recovered after restart"));
+    }
+
+    #[tokio::test]
+    async fn recover_stuck_runs_skips_terminal_states() {
+        let (mgr, _) = make_manager();
+        let agent_id = AgentId::new();
+
+        // Create a completed run — should not be recovered.
+        let run_id = mgr.create_run(agent_id.clone()).await.expect("create");
+        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
+        mgr.start_run(run_id.clone()).await.expect("start");
+        mgr.completing_run(run_id.clone()).await.expect("completing");
+        mgr.complete_run(run_id.clone(), None).await.expect("complete");
+
+        let recovered = mgr.recover_stuck_runs().await.expect("recover");
+        assert_eq!(recovered, 0);
+
+        let state = mgr.get_state(run_id).await.expect("state");
+        assert_eq!(state, RunState::Completed);
+    }
+
+    #[tokio::test]
+    async fn recover_stuck_runs_handles_multiple_runs() {
+        let (mgr, _) = make_manager();
+        let agent_id = AgentId::new();
+
+        // One running, one queued.
+        let r1 = mgr.create_run(agent_id.clone()).await.expect("create");
+        mgr.enqueue_run(r1.clone()).await.expect("enqueue");
+        mgr.start_run(r1.clone()).await.expect("start");
+
+        let r2 = mgr.create_run(agent_id).await.expect("create");
+        mgr.enqueue_run(r2.clone()).await.expect("enqueue");
+
+        let recovered = mgr.recover_stuck_runs().await.expect("recover");
+        assert_eq!(recovered, 2);
+    }
+
+    #[tokio::test]
+    async fn recover_stuck_runs_returns_zero_when_nothing_stuck() {
+        let (mgr, _) = make_manager();
+        let recovered = mgr.recover_stuck_runs().await.expect("recover");
+        assert_eq!(recovered, 0);
     }
 
     // ── parse_run_state helper tests ────────────────────────────────────────
