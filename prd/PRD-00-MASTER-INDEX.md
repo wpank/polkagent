@@ -161,7 +161,10 @@ effect pipeline, grant model, and outbox remain independent of all four.
 | **PRD-13** | UX, CLI, Studio, Inbox, Mobile and Operator Surfaces | 2,093 | UX | Persona journeys, CLI design, Agent Studio, Inbox, action cards, mobile/chat, onboarding, accessibility |
 | **PRD-14** | APIs, Schemas, Configuration and Migration | 2,905 | APIs | REST/WebSocket/gRPC APIs, database schemas, configuration hierarchy, DTOs, SDKs, PCA migration, feature flags |
 | **PRD-15** | Testing, Security Assurance, Roadmap and Acceptance | 1,385 | Assurance | Threat model, testing pyramid, security testing, CI/CD gates, 6-phase roadmap, cross-PRD acceptance |
-| **Total** | | **34,895** | | |
+| **PRD-16** | TUI Diagnostics, Claude Integration, and Bug Triage | — | Diagnostics | TUI bug triage, Claude-in-the-loop diagnostic workflow, observed issues, fix procedures |
+| **PRD-17** | Local Testnet End-to-End | — | Testing | Local testnet setup, E2E test scenarios, chain integration verification |
+| **PRD-18** | Interactive TUI: Prompt Bar, Run Control, Agent Management | — | UX | Prompt bar, text input engine, run creation/streaming, agent creation dialog, command palette, inline approval |
+| **Total** | | **~35,500** | | |
 
 ### 3.1 Reading order by role
 

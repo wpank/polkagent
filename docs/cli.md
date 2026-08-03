@@ -106,6 +106,36 @@ polkagent run -a my-agent -p "Query balance" --json --no-stream
 polkagent run -a my-agent -p "Research" --model gpt-4o --timeout 120
 ```
 
+#### Output
+
+By default, `run` produces styled inline output using the ROSEDUST design
+system. A startup banner identifies the agent, model, and run ID; events are
+rendered with colored Unicode glyphs; and a summary card reports the outcome.
+
+```
+ ┌───────────────────────────────────────────────┐
+ │  POLKAGENT RUN                      v0.1.0    │
+ │  Agent: my-agent  Model: claude-opus-4-6      │
+ │  Run:   ab12cd34                              │
+ └───────────────────────────────────────────────┘
+  ▶ Running
+
+ ── Turn 1 ──
+  ◉ read_file
+  ✓ read_file (0.3s)
+
+ ┌───────────────────────────────────────────────┐
+ │  ✓ Run completed                    4.2s      │
+ │  Turns: 1   Tools: 1   Effects: 0            │
+ └───────────────────────────────────────────────┘
+```
+
+Styling is disabled automatically when output is piped or when `NO_COLOR` is
+set. `--json` mode bypasses all styled output entirely.
+
+Internal tracing logs are written to stderr. Use `-v` or `-vv` for debug/trace
+verbosity.
+
 ---
 
 ### `agent`
