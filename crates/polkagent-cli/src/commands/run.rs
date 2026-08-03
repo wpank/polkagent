@@ -22,6 +22,7 @@ use polkagent_executor_local::LocalExecutor;
 use polkagent_executor_gemini::GeminiExecutor;
 use polkagent_executor_openai::OpenAiExecutor;
 use polkagent_executor_trait::ModelExecutor;
+use polkagent_chain_trait::ChainClient;
 use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
@@ -138,6 +139,19 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     // Arc<dyn EventStore> for the EventRecorder.
     let event_recorder = EventRecorder::new(Arc::new(pool.clone()), event_bus.clone());
 
+    // -----------------------------------------------------------------------
+    // Build chain client and tool registry
+    // -----------------------------------------------------------------------
+
+    let chain_client: Arc<dyn ChainClient> = build_chain_client();
+
+    let mut tool_registry = polkagent_tool::ToolRegistry::new();
+    polkagent_tool_governance::register_governance_tools(
+        &mut tool_registry,
+        chain_client.clone(),
+    );
+    polkagent_tool_treasury::register_treasury_tools(&mut tool_registry);
+
     // Wrap AppService in Arc so it can be shared with the Ctrl-C handler task.
     let mut builder = AppService::builder()
         .with_config(config)
@@ -145,7 +159,9 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
         .with_event_bus(event_bus.clone())
         .with_event_recorder(event_recorder)
         .with_executor(executor)
-        .with_provider_registry(registry);
+        .with_provider_registry(registry)
+        .with_chain_client(chain_client)
+        .with_tool_registry(Arc::new(tool_registry));
 
     if let Some(h) = harness {
         builder = builder.with_harness(h);
@@ -602,6 +618,58 @@ fn build_agent_spec(
     }
 
     spec
+}
+
+// ---------------------------------------------------------------------------
+// Chain client construction
+// ---------------------------------------------------------------------------
+
+/// Build a chain client for governance and treasury tools.
+///
+/// When `POLKAGENT_RPC_URL` is set, builds a [`SubxtChainClient`] that queries
+/// a live chain node. Otherwise falls back to a [`FakeChainClient`] so tools
+/// still work (returning representative offline data).
+fn build_chain_client() -> Arc<dyn ChainClient> {
+    use polkagent_chain_trait::{ChainProfile, ChainProfileId, GenesisHash, NetworkType};
+
+    if let Ok(rpc_url) = std::env::var("POLKAGENT_RPC_URL") {
+        if !rpc_url.is_empty() {
+            let profile = ChainProfile {
+                id: ChainProfileId::new("polkadot"),
+                name: "Polkadot".into(),
+                genesis_hash: GenesisHash::new(
+                    "0x91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3",
+                ),
+                spec_version: None,
+                rpc_endpoints: vec![rpc_url.clone()],
+                network_type: NetworkType::Production,
+            };
+
+            match polkagent_chain_subxt::SubxtChainClientBuilder::new()
+                .add_profile(profile)
+                .build()
+            {
+                Ok(client) => {
+                    info!(rpc = %rpc_url, "using SubxtChainClient for governance/treasury tools");
+                    return Arc::new(client);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to build SubxtChainClient, falling back to FakeChainClient"
+                    );
+                }
+            }
+        }
+    }
+
+    info!("no RPC endpoint configured, using FakeChainClient for governance/treasury tools");
+    Arc::new(
+        polkagent_chain_fake::FakeChainClientBuilder::polkadot()
+            .with_block_number(22_543_871)
+            .with_runtime_version(1_003_004, 0)
+            .build(),
+    )
 }
 
 // ---------------------------------------------------------------------------
