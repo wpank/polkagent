@@ -22,3 +22,44 @@ Switched to a new branch 'auto/impl-20260803-231923'
 [23:21:10]   Verifying: cargo test --workspace (quick)
   PASS   cargo test passed
   PASS   Verified: D0-1
+[auto/impl-20260803-231923 da79fbe] [auto] D0-1: Fix run_events column names
+ 21 files changed, 19848 insertions(+)
+ create mode 100644 IMPLEMENTATION-REPORT.md
+ create mode 100644 OVERNIGHT-REPORT.md
+ create mode 100644 TRACKING.md
+ create mode 100644 logs/auto-impl/.branch
+ create mode 100644 logs/auto-impl/.lock
+ create mode 100644 logs/auto-impl/.state
+ create mode 100644 logs/auto-impl/20260803-231450/master.log
+ create mode 100644 logs/auto-impl/20260803-231923/D0-1.log
+ create mode 100644 logs/auto-impl/20260803-231923/master.log
+ create mode 100644 logs/auto-impl/20260803-231923/verify-check.log
+ create mode 100644 logs/auto-impl/20260803-231923/verify-test.log
+ create mode 100644 logs/overnight/20260803-220027/master.log
+ create mode 100644 logs/overnight/20260803-220352/D0-1.log
+ create mode 100644 logs/overnight/20260803-220352/D0-2.log
+ create mode 100644 logs/overnight/20260803-220352/master.log
+ create mode 100644 logs/overnight/20260803-220352/verify-check.log
+ create mode 100644 logs/overnight/20260803-220352/verify-test.log
+ create mode 100644 logs/overnight/20260803-223133/master.log
+ create mode 100644 logs/overnight/20260803-223137/master.log
+ create mode 100644 logs/overnight/run-20260803-215239.log
+ create mode 100755 scripts/overnight.sh
+remote: 
+remote: Create a pull request for 'auto/impl-20260803-231923' on GitHub by visiting:        
+remote:      https://github.com/wpank/polkagent/pull/new/auto/impl-20260803-231923        
+remote: 
+To https://github.com/wpank/polkagent.git
+ * [new branch]      auto/impl-20260803-231923 -> auto/impl-20260803-231923
+branch 'auto/impl-20260803-231923' set up to track 'origin/auto/impl-20260803-231923'.
+  PASS   Committed and pushed: D0-1
+──────────────────────────────────────────────────────────────────────
+[23:22:46] Task 2/64: [D0-2] Fix effect store schema mismatches
+[23:22:46]   Invoking claude for D0-2...
+[23:22:46]   Log: /Users/will/dev/par/polkagent/logs/auto-impl/20260803-231923/D0-2.log
+  PASS   claude completed D0-2
+[23:24:59]   Verifying: cargo check --workspace
+  PASS   cargo check passed
+[23:25:00]   Verifying: cargo test --workspace (quick)
+  PASS   cargo test passed
+  PASS   Verified: D0-2
