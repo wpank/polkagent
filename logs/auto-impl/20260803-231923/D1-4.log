@@ -1,0 +1,9 @@
+This fix has **already been applied**. Here's the summary:
+
+**Commit `0163d7d`** ("Fix service, run, and effect layers: crash safety, token persistence, warnings") already removed the duplicate terminal event emission in `AppService::start_run`:
+
+1. **`Ok(outcome)` branch** — previously constructed a `RunEvent` with hardcoded `sequence: 3` and published it via `event_bus.publish(ev)`. Now it just logs the outcome, deferring to the orchestrator's already-emitted event.
+
+2. **`Err(err)` branch** — previously also constructed a `RunEvent` with hardcoded `sequence: 3`. Now it checks `already_terminal` via `run_manager.get_state()` and only calls `run_manager.fail_run()` if the run hasn't already been transitioned — a safe fallback for cases where the orchestrator errored before reaching a terminal state.
+
+All **221 tests pass** (plus 3 doc-tests), confirming the fix is solid. No changes needed.
