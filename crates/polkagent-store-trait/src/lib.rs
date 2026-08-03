@@ -126,6 +126,7 @@ pub struct RunSummary {
     pub agent_id: String,
     pub status: RunStatus,
     pub created_at: Timestamp,
+    pub started_at: Option<Timestamp>,
     pub completed_at: Option<Timestamp>,
 }
 

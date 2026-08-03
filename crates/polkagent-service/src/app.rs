@@ -1332,6 +1332,92 @@ impl AppService {
     pub fn scheduler(&self) -> Option<&crate::scheduled::ScheduledTaskManager> {
         self.scheduler.as_ref()
     }
+
+    /// Start a background task that periodically sweeps active runs and
+    /// transitions any that have exceeded the global timeout to `TimedOut`.
+    ///
+    /// The enforcer runs every `interval` and checks all runs in non-terminal
+    /// states (`running`, `queued`, `awaiting_approval`, `waiting_effect`).
+    /// Runs whose `started_at` timestamp plus the configured global max
+    /// duration has elapsed are transitioned to `TimedOut` via
+    /// [`RunManager::timeout_run`].
+    ///
+    /// Returns a [`tokio::task::JoinHandle`] that can be used to abort the
+    /// background task.
+    pub fn start_timeout_enforcer(
+        &self,
+        config: polkagent_run::TimeoutConfig,
+        interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let run_store = Arc::clone(&self.run_store);
+        let run_manager = self.run_manager.clone();
+
+        info!(
+            global_max_secs = config.global_max_duration.map(|d| d.as_secs()),
+            interval_secs = interval.as_secs(),
+            "timeout enforcer started"
+        );
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // The first tick fires immediately; consume it so we start after
+            // one full interval.
+            ticker.tick().await;
+
+            let max_dur = match config.global_max_duration {
+                Some(d) => d,
+                None => return, // nothing to enforce
+            };
+
+            loop {
+                ticker.tick().await;
+
+                let active_states = ["running", "queued", "awaiting_approval", "waiting_effect"];
+                for state_str in &active_states {
+                    let summaries = match run_store
+                        .list_by_state(
+                            polkagent_store_trait::RunStatus::new(*state_str),
+                            500,
+                            0,
+                        )
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!(state = state_str, %e, "timeout sweep: failed to list runs");
+                            continue;
+                        }
+                    };
+
+                    let now = chrono::Utc::now();
+                    for summary in summaries {
+                        let started = match summary.started_at {
+                            Some(t) => t,
+                            None => continue,
+                        };
+                        let elapsed = now
+                            .signed_duration_since(started)
+                            .to_std()
+                            .unwrap_or(Duration::ZERO);
+                        if elapsed >= max_dur {
+                            info!(
+                                run_id = %summary.id,
+                                elapsed_secs = elapsed.as_secs(),
+                                max_secs = max_dur.as_secs(),
+                                "timeout enforcer: transitioning run to TimedOut"
+                            );
+                            if let Err(e) = run_manager.timeout_run(summary.id).await {
+                                warn!(
+                                    %e,
+                                    "timeout enforcer: failed to transition run"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,6 +1522,7 @@ mod tests {
                     agent_id: agent_id.to_owned(),
                     status,
                     created_at: Utc::now(),
+                    started_at: None,
                     completed_at: None,
                 },
             );

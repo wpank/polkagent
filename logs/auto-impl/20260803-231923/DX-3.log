@@ -1,0 +1,32 @@
+All done. Here's a summary of what was changed:
+
+## Changes Made
+
+### 1. Schema: `crates/polkagent-store-sqlite/src/schema.sql`
+- Added `started_at TEXT` column to the `runs` table (nullable, `NULL` until the run transitions to `Running`)
+
+### 2. Store trait: `crates/polkagent-store-trait/src/lib.rs`
+- Added `started_at: Option<Timestamp>` field to `RunSummary` struct
+
+### 3. SQLite store: `crates/polkagent-store-sqlite/src/run_store_impl.rs`
+- Added `started_at` to `RawRunSummary` struct and `row_to_summary` function
+- Added `started_at` parsing in `into_run_summary`
+- Updated all 3 SQL `SELECT` queries (`get`, `list_by_agent`, `list_by_state`) to include `started_at`
+- Updated `update_state` to set `started_at` (preserving the first value) when the run transitions to `"running"`
+
+### 4. Fake RunStore implementations (4 files)
+- Added `started_at: None` to all `RunSummary` constructors in test/fake `RunStore` implementations across:
+  - `crates/polkagent-service/src/app.rs`
+  - `crates/polkagent-service/src/lifecycle.rs`
+  - `crates/polkagent-integration-tests/src/lib.rs`
+  - `crates/polkagent-run/src/manager.rs`
+  - `crates/polkagent-run/src/orchestrator.rs`
+
+### 5. Timeout enforcer wiring: `crates/polkagent-service/src/app.rs`
+- Added `start_timeout_enforcer(config, interval)` method to `AppService`
+- Spawns a background tokio task that runs periodically on `interval`
+- Sweeps all active runs (states: `running`, `queued`, `awaiting_approval`, `waiting_effect`)
+- For each run with a `started_at` timestamp, checks if `elapsed ≥ global_max_duration`
+- Calls `RunManager::timeout_run()` to transition timed-out runs to `TimedOut` state
+- Exits early if no `global_max_duration` is configured
+- Returns a `JoinHandle` for the caller to abort the task if needed

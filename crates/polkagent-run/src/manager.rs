@@ -623,6 +623,7 @@ mod tests {
                     agent_id: agent_id.to_owned(),
                     status,
                     created_at: chrono::Utc::now(),
+                    started_at: None,
                     completed_at: None,
                 },
             );

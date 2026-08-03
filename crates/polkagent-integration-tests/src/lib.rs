@@ -53,6 +53,7 @@ impl RunStore for MemRunStore {
                 agent_id: agent_id.to_owned(),
                 status,
                 created_at: Utc::now(),
+                started_at: None,
                 completed_at: None,
             },
         );

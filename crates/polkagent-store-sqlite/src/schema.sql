@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS runs (
     params_json     TEXT    NOT NULL DEFAULT '{}',  -- run parameters
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL,
+    started_at      TEXT,                   -- NULL until Running
     completed_at    TEXT                    -- NULL until terminal state
 );
 
