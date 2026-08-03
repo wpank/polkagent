@@ -1,0 +1,30 @@
+[package]
+name = "polkagent-harness-copilot"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GitHub Copilot CLI harness adapter for the Polkagent platform"
+
+[dependencies]
+polkagent-core = { path = "../polkagent-core" }
+polkagent-harness-trait = { path = "../polkagent-harness-trait" }
+polkagent-executor-trait = { path = "../polkagent-executor-trait" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

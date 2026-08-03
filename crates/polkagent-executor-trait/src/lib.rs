@@ -215,6 +215,221 @@ pub enum StreamEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Provider error classification
+// ---------------------------------------------------------------------------
+
+/// Classified provider error from an HTTP API response.
+///
+/// This enum maps raw HTTP status codes and error bodies from AI model
+/// providers into a small set of semantic categories. The orchestrator and
+/// retry logic use these categories to decide whether (and when) to retry,
+/// and to surface actionable diagnostics to operators.
+///
+/// Construct instances via [`ProviderError::classify`] or manually when
+/// provider-specific heuristics are needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderError {
+    /// HTTP 429 — the provider's rate limit has been hit.
+    RateLimit {
+        /// Seconds to wait before retrying, parsed from the `Retry-After`
+        /// header when available.
+        retry_after_secs: Option<u64>,
+        /// Human-readable detail from the error body.
+        message: String,
+    },
+
+    /// HTTP 401 or 403 — API credentials are invalid, expired, or lack
+    /// the required permissions.
+    AuthFailure {
+        /// The HTTP status code (401 or 403).
+        status: u16,
+        /// Human-readable detail from the error body.
+        message: String,
+    },
+
+    /// HTTP 408 or client-side request timeout.
+    Timeout {
+        /// Human-readable detail.
+        message: String,
+    },
+
+    /// HTTP 500, 502, 503, or 504 — the provider experienced an internal
+    /// error or is temporarily unavailable.
+    ServerError {
+        /// The HTTP status code.
+        status: u16,
+        /// Human-readable detail from the error body.
+        message: String,
+    },
+
+    /// The provider rejected the request due to content policy / safety
+    /// filters (e.g. Anthropic's content moderation or OpenAI's
+    /// `content_filter` finish reason).
+    ContentPolicy {
+        /// Human-readable detail from the error body.
+        message: String,
+    },
+
+    /// The assembled context exceeds the model's context window.
+    ContextOverflow {
+        /// Human-readable detail from the error body.
+        message: String,
+    },
+
+    /// HTTP 404 on the model endpoint — the requested model does not
+    /// exist or is not available to the authenticated account.
+    ModelNotFound {
+        /// The model identifier that was not found.
+        model: String,
+        /// Human-readable detail from the error body.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RateLimit { message, .. } => write!(f, "rate limit: {message}"),
+            Self::AuthFailure { status, message } => {
+                write!(f, "auth failure ({status}): {message}")
+            }
+            Self::Timeout { message } => write!(f, "timeout: {message}"),
+            Self::ServerError { status, message } => {
+                write!(f, "server error ({status}): {message}")
+            }
+            Self::ContentPolicy { message } => write!(f, "content policy: {message}"),
+            Self::ContextOverflow { message } => write!(f, "context overflow: {message}"),
+            Self::ModelNotFound { model, message } => {
+                write!(f, "model not found ({model}): {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+impl ProviderError {
+    /// Classify a raw HTTP status code and error body into a [`ProviderError`].
+    ///
+    /// `retry_after_secs` should be parsed from the `Retry-After` header
+    /// before calling this function. `model_id` is used for `ModelNotFound`
+    /// diagnostics.
+    ///
+    /// Body-level heuristics (e.g. context-overflow detection from error
+    /// messages) are intentionally coarse here; provider-specific adapters
+    /// may override the classification when they have richer information.
+    #[must_use]
+    pub fn classify(
+        status: u16,
+        body: &str,
+        retry_after_secs: Option<u64>,
+        model_id: &str,
+    ) -> Self {
+        let detail = body.to_string();
+
+        match status {
+            429 => Self::RateLimit {
+                retry_after_secs,
+                message: detail,
+            },
+            401 | 403 => Self::AuthFailure {
+                status,
+                message: detail,
+            },
+            408 => Self::Timeout { message: detail },
+            404 => Self::ModelNotFound {
+                model: model_id.to_string(),
+                message: detail,
+            },
+            500 | 502 | 503 | 504 => Self::ServerError {
+                status,
+                message: detail,
+            },
+            _ => {
+                // Body-level heuristics for context overflow and content policy.
+                let lower = body.to_lowercase();
+                if lower.contains("context_length_exceeded")
+                    || lower.contains("maximum context length")
+                    || lower.contains("too many tokens")
+                    || lower.contains("context window")
+                {
+                    Self::ContextOverflow { message: detail }
+                } else if lower.contains("content_filter")
+                    || lower.contains("content_policy")
+                    || lower.contains("safety")
+                    || lower.contains("content moderation")
+                {
+                    Self::ContentPolicy { message: detail }
+                } else {
+                    // Fall back to server error for unknown statuses.
+                    Self::ServerError {
+                        status,
+                        message: detail,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns `true` if the error is retryable.
+    ///
+    /// Retryable categories: `RateLimit`, `Timeout`, `ServerError`.
+    /// Non-retryable: `AuthFailure`, `ContentPolicy`, `ContextOverflow`,
+    /// `ModelNotFound`.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::RateLimit { .. } | Self::Timeout { .. } | Self::ServerError { .. }
+        )
+    }
+
+    /// Returns the suggested retry delay in seconds, if known.
+    ///
+    /// Only `RateLimit` errors carry this information (from the `Retry-After`
+    /// header). All other variants return `None`.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<u64> {
+        match self {
+            Self::RateLimit {
+                retry_after_secs, ..
+            } => *retry_after_secs,
+            _ => None,
+        }
+    }
+}
+
+impl From<ProviderError> for ExecutorError {
+    fn from(pe: ProviderError) -> Self {
+        match pe {
+            ProviderError::RateLimit {
+                retry_after_secs, ..
+            } => ExecutorError::RateLimit { retry_after_secs },
+            ProviderError::AuthFailure { message, .. } => {
+                ExecutorError::Authentication { message }
+            }
+            ProviderError::Timeout { .. } => ExecutorError::Timeout {
+                elapsed_ms: 0,
+            },
+            ProviderError::ServerError { status, message } => ExecutorError::Transport {
+                message: format!("server error ({status}): {message}"),
+                retryable: true,
+            },
+            ProviderError::ContentPolicy { message } => ExecutorError::ContentPolicy { message },
+            ProviderError::ContextOverflow { .. } => {
+                ExecutorError::ContextWindowExceeded {
+                    tokens_requested: 0,
+                    tokens_allowed: 0,
+                }
+            }
+            ProviderError::ModelNotFound { model, message } => {
+                ExecutorError::ModelNotFound { model, message }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
 
@@ -271,6 +486,22 @@ pub enum ExecutorError {
     #[error("execution cancelled")]
     Cancelled,
 
+    /// The provider rejected the request due to content policy / safety filters.
+    #[error("content policy violation: {message}")]
+    ContentPolicy {
+        /// Human-readable description.
+        message: String,
+    },
+
+    /// The requested model was not found at the provider endpoint.
+    #[error("model not found: {model} ({message})")]
+    ModelNotFound {
+        /// The model identifier that was not found.
+        model: String,
+        /// Human-readable description.
+        message: String,
+    },
+
     /// An unexpected internal error.
     #[error("internal executor error: {message}")]
     Internal {
@@ -289,6 +520,37 @@ impl ExecutorError {
                 | Self::Timeout { .. }
                 | Self::Transport { retryable: true, .. }
         )
+    }
+
+    /// Returns the classified [`ProviderError`] if this error originated
+    /// from an HTTP API response classification. Returns `None` for
+    /// non-provider errors (e.g. `Cancelled`, `InvalidResponse`).
+    #[must_use]
+    pub fn as_provider_error(&self) -> Option<ProviderError> {
+        match self {
+            Self::RateLimit { retry_after_secs } => Some(ProviderError::RateLimit {
+                retry_after_secs: *retry_after_secs,
+                message: String::new(),
+            }),
+            Self::Authentication { message } => Some(ProviderError::AuthFailure {
+                status: 401,
+                message: message.clone(),
+            }),
+            Self::Timeout { .. } => Some(ProviderError::Timeout {
+                message: self.to_string(),
+            }),
+            Self::ContentPolicy { message } => Some(ProviderError::ContentPolicy {
+                message: message.clone(),
+            }),
+            Self::ContextWindowExceeded { .. } => Some(ProviderError::ContextOverflow {
+                message: self.to_string(),
+            }),
+            Self::ModelNotFound { model, message } => Some(ProviderError::ModelNotFound {
+                model: model.clone(),
+                message: message.clone(),
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -425,4 +687,179 @@ mod tests {
     /// Compile-time check: `ModelExecutor` can be used as a `dyn` trait object.
     #[allow(dead_code)]
     fn _model_executor_is_object_safe(_e: &dyn ModelExecutor) {}
+
+    // -- ProviderError classification tests ---------------------------------
+
+    #[test]
+    fn provider_error_classify_429_is_rate_limit() {
+        let pe = ProviderError::classify(429, "rate limited", Some(30), "gpt-4o");
+        assert!(matches!(pe, ProviderError::RateLimit { retry_after_secs: Some(30), .. }));
+        assert!(pe.is_retryable());
+        assert_eq!(pe.retry_after(), Some(30));
+    }
+
+    #[test]
+    fn provider_error_classify_429_no_retry_after() {
+        let pe = ProviderError::classify(429, "rate limited", None, "gpt-4o");
+        assert!(matches!(pe, ProviderError::RateLimit { retry_after_secs: None, .. }));
+        assert!(pe.is_retryable());
+        assert_eq!(pe.retry_after(), None);
+    }
+
+    #[test]
+    fn provider_error_classify_401_is_auth_failure() {
+        let pe = ProviderError::classify(401, "invalid api key", None, "gpt-4o");
+        assert!(matches!(pe, ProviderError::AuthFailure { status: 401, .. }));
+        assert!(!pe.is_retryable());
+        assert_eq!(pe.retry_after(), None);
+    }
+
+    #[test]
+    fn provider_error_classify_403_is_auth_failure() {
+        let pe = ProviderError::classify(403, "forbidden", None, "gpt-4o");
+        assert!(matches!(pe, ProviderError::AuthFailure { status: 403, .. }));
+        assert!(!pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_classify_408_is_timeout() {
+        let pe = ProviderError::classify(408, "request timeout", None, "gpt-4o");
+        assert!(matches!(pe, ProviderError::Timeout { .. }));
+        assert!(pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_classify_500_is_server_error() {
+        let pe = ProviderError::classify(500, "internal server error", None, "gpt-4o");
+        assert!(matches!(pe, ProviderError::ServerError { status: 500, .. }));
+        assert!(pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_classify_502_is_server_error() {
+        let pe = ProviderError::classify(502, "bad gateway", None, "gpt-4o");
+        assert!(matches!(pe, ProviderError::ServerError { status: 502, .. }));
+        assert!(pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_classify_503_is_server_error() {
+        let pe = ProviderError::classify(503, "service unavailable", None, "gpt-4o");
+        assert!(matches!(pe, ProviderError::ServerError { status: 503, .. }));
+        assert!(pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_classify_504_is_server_error() {
+        let pe = ProviderError::classify(504, "gateway timeout", None, "gpt-4o");
+        assert!(matches!(pe, ProviderError::ServerError { status: 504, .. }));
+        assert!(pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_classify_404_is_model_not_found() {
+        let pe = ProviderError::classify(404, "not found", None, "gpt-99");
+        assert!(matches!(pe, ProviderError::ModelNotFound { ref model, .. } if model == "gpt-99"));
+        assert!(!pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_classify_context_overflow_from_body() {
+        let pe = ProviderError::classify(
+            400,
+            "context_length_exceeded: maximum context length is 8192",
+            None,
+            "gpt-4o",
+        );
+        assert!(matches!(pe, ProviderError::ContextOverflow { .. }));
+        assert!(!pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_classify_content_policy_from_body() {
+        let pe = ProviderError::classify(
+            400,
+            "content_filter: your request was rejected by our safety system",
+            None,
+            "gpt-4o",
+        );
+        assert!(matches!(pe, ProviderError::ContentPolicy { .. }));
+        assert!(!pe.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_into_executor_error_rate_limit() {
+        let pe = ProviderError::RateLimit {
+            retry_after_secs: Some(60),
+            message: "slow down".into(),
+        };
+        let ee: ExecutorError = pe.into();
+        assert!(matches!(ee, ExecutorError::RateLimit { retry_after_secs: Some(60) }));
+        assert!(ee.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_into_executor_error_auth() {
+        let pe = ProviderError::AuthFailure {
+            status: 401,
+            message: "bad key".into(),
+        };
+        let ee: ExecutorError = pe.into();
+        assert!(matches!(ee, ExecutorError::Authentication { .. }));
+        assert!(!ee.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_into_executor_error_content_policy() {
+        let pe = ProviderError::ContentPolicy {
+            message: "blocked".into(),
+        };
+        let ee: ExecutorError = pe.into();
+        assert!(matches!(ee, ExecutorError::ContentPolicy { .. }));
+        assert!(!ee.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_into_executor_error_model_not_found() {
+        let pe = ProviderError::ModelNotFound {
+            model: "gpt-99".into(),
+            message: "no such model".into(),
+        };
+        let ee: ExecutorError = pe.into();
+        assert!(matches!(ee, ExecutorError::ModelNotFound { ref model, .. } if model == "gpt-99"));
+        assert!(!ee.is_retryable());
+    }
+
+    #[test]
+    fn provider_error_into_executor_error_server_error() {
+        let pe = ProviderError::ServerError {
+            status: 503,
+            message: "unavailable".into(),
+        };
+        let ee: ExecutorError = pe.into();
+        assert!(matches!(ee, ExecutorError::Transport { retryable: true, .. }));
+        assert!(ee.is_retryable());
+    }
+
+    #[test]
+    fn executor_error_content_policy_not_retryable() {
+        let e = ExecutorError::ContentPolicy { message: "blocked".into() };
+        assert!(!e.is_retryable());
+    }
+
+    #[test]
+    fn executor_error_model_not_found_not_retryable() {
+        let e = ExecutorError::ModelNotFound {
+            model: "gpt-99".into(),
+            message: "not found".into(),
+        };
+        assert!(!e.is_retryable());
+    }
+
+    #[test]
+    fn executor_error_as_provider_error_roundtrip() {
+        let ee = ExecutorError::RateLimit { retry_after_secs: Some(10) };
+        let pe = ee.as_provider_error().expect("should convert");
+        assert!(matches!(pe, ProviderError::RateLimit { retry_after_secs: Some(10), .. }));
+    }
 }

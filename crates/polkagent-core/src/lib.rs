@@ -44,6 +44,7 @@ pub mod ids;
 pub mod run;
 pub mod turn;
 pub mod types;
+pub mod usage;
 
 // ---------------------------------------------------------------------------
 // Convenience re-exports
@@ -64,8 +65,9 @@ pub use error::PolkagentError;
 pub use event::{Durability, EventCorrelation, EventKind, LogLevel, RunEvent};
 pub use ids::{
     AgentId, ApprovalId, ArtifactId, ConversationId, EffectAttemptId, EffectId, EffectOutcomeId,
-    EventId, GrantId, PrincipalId, RunId, StepId, TurnId, WorkerId,
+    EventId, GrantId, PrincipalId, RunId, StepId, TurnId, UsageRecordId, WorkerId,
 };
 pub use run::{Run, RunState};
 pub use turn::{MessageRole, Step, StepKind, TokenUsage, Turn};
 pub use types::{DurabilityClass, Timestamp, now};
+pub use usage::{Budget, BudgetLimits, BudgetScope, Cost, UsageRecord, UsageSource, UsageSummary};

@@ -41,6 +41,10 @@ pub enum RunError {
     #[error("run {0} exceeded its deadline")]
     DeadlineExceeded(RunId),
 
+    /// The harness does not meet the task's requirements.
+    #[error("harness capability mismatch: {0}")]
+    HarnessValidation(String),
+
     /// Serialization error.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),

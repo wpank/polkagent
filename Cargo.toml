@@ -19,6 +19,7 @@ members = [
     "crates/polkagent-executor-fake",
     "crates/polkagent-executor-anthropic",
     "crates/polkagent-executor-openai",
+    "crates/polkagent-executor-gemini",
     "crates/polkagent-executor-local",
     "crates/polkagent-signer-fake",
     "crates/polkagent-chain-fake",
@@ -66,6 +67,10 @@ members = [
     "crates/polkagent-transport-pca",
     "crates/polkagent-harness-acp",
     "crates/polkagent-harness-cursor",
+    "crates/polkagent-harness-copilot",
+    "crates/polkagent-harness-goose",
+    "crates/polkagent-harness-kiro",
+    "crates/polkagent-executor-openrouter",
 ]
 
 [workspace.package]

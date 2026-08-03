@@ -31,7 +31,9 @@ use polkagent_executor_trait::{
     MessageRole, ModelExecutor,
 };
 use polkagent_grant::grant::GrantResolver;
-use polkagent_harness_trait::{Harness, HarnessEvent, SessionConfig};
+use polkagent_harness_trait::{
+    Harness, HarnessEvent, HarnessTaskRequirements, SessionConfig, validate_for_task,
+};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
@@ -132,6 +134,13 @@ pub struct RunOrchestrator {
     #[cfg(feature = "context")]
     context_assembler: Option<ContextAssembler>,
 
+    /// Optional task requirements for dispatch-time harness validation.
+    ///
+    /// When `Some` and a harness is attached, the orchestrator validates
+    /// that the harness capabilities satisfy these requirements before
+    /// starting a run.
+    task_requirements: Option<HarnessTaskRequirements>,
+
     /// Optional payment store for persisting per-turn cost records.
     ///
     /// When `Some`, the orchestrator creates a [`CostTracker`] per run and
@@ -175,6 +184,7 @@ impl RunOrchestrator {
             config: RunOrchestratorConfig::default(),
             turn_manager: TurnManager::new(),
             harness: None,
+            task_requirements: None,
             #[cfg(feature = "context")]
             context_assembler: None,
             #[cfg(feature = "payment")]
@@ -197,6 +207,16 @@ impl RunOrchestrator {
     #[must_use]
     pub fn with_harness(mut self, harness: Arc<dyn Harness>) -> Self {
         self.harness = Some(harness);
+        self
+    }
+
+    /// Attach task requirements for dispatch-time harness validation.
+    ///
+    /// When set, the orchestrator validates that an attached harness meets
+    /// these requirements before starting a run via that harness.
+    #[must_use]
+    pub fn with_task_requirements(mut self, requirements: HarnessTaskRequirements) -> Self {
+        self.task_requirements = Some(requirements);
         self
     }
 
@@ -252,6 +272,21 @@ impl RunOrchestrator {
         harness: &Arc<dyn Harness>,
     ) -> Result<RunOutcome, RunError> {
         let start = Instant::now();
+
+        // Dispatch-time validation: check harness capabilities vs task requirements.
+        if let Some(ref requirements) = self.task_requirements {
+            let caps = harness.capabilities();
+            if let Err(mismatches) = validate_for_task(&caps, requirements) {
+                let reasons: Vec<String> = mismatches.iter().map(|m| m.to_string()).collect();
+                let msg = format!(
+                    "harness {:?} does not meet task requirements: {}",
+                    harness.id(),
+                    reasons.join("; ")
+                );
+                warn!(%run_id, %msg, "harness validation failed");
+                return Err(RunError::HarnessValidation(msg));
+            }
+        }
 
         // Transition to Running.
         let current_state = self.run_manager.get_state(run_id.clone()).await?;

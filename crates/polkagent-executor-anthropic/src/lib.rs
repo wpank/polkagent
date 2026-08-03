@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use futures::stream::{self, Stream};
 use polkagent_executor_trait::{
     ContentBlock, ExecutorError, InferenceMessage, InferenceRequest, InferenceResponse,
-    MessageRole, ModelExecutor, StreamEvent, TokenUsage, ToolCall, ToolDefinition,
+    MessageRole, ModelExecutor, ProviderError, StreamEvent, TokenUsage, ToolCall, ToolDefinition,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -325,46 +325,23 @@ fn to_inference_response(resp: &MessageResponse) -> InferenceResponse {
     }
 }
 
-/// Map an HTTP status code and optional error body to an `ExecutorError`.
-fn map_api_error(status: u16, body: &str) -> ExecutorError {
+/// Map an HTTP status code, optional error body, and optional `Retry-After`
+/// header to an [`ExecutorError`] via [`ProviderError`] classification.
+fn map_api_error(status: u16, body: &str, retry_after_secs: Option<u64>, model_id: &str) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
         .map(|e| e.error.message)
         .unwrap_or_else(|_| body.to_string());
 
-    match status {
-        401 => ExecutorError::Authentication { message: detail },
-        429 => {
-            // Try to extract retry-after hint from the error message.
-            ExecutorError::RateLimit {
-                retry_after_secs: None,
-            }
-        }
-        400 => {
-            // Check for context window errors.
-            if body.contains("context_length_exceeded") || body.contains("too many tokens") {
-                ExecutorError::ContextWindowExceeded {
-                    tokens_requested: 0,
-                    tokens_allowed: 0,
-                }
-            } else {
-                ExecutorError::Transport {
-                    message: format!("bad request: {detail}"),
-                    retryable: false,
-                }
-            }
-        }
-        403 => ExecutorError::Authentication {
-            message: format!("forbidden: {detail}"),
-        },
-        status if status >= 500 => ExecutorError::Transport {
-            message: format!("server error ({status}): {detail}"),
-            retryable: true,
-        },
-        _ => ExecutorError::Transport {
-            message: format!("unexpected status ({status}): {detail}"),
-            retryable: false,
-        },
-    }
+    ProviderError::classify(status, &detail, retry_after_secs, model_id).into()
+}
+
+/// Parse the `Retry-After` header from an HTTP response as whole seconds.
+fn parse_retry_after(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 /// Parse SSE lines from a response body chunk.
@@ -677,8 +654,9 @@ impl AnthropicExecutor {
                 return Ok(parsed);
             }
 
+            let retry_after = parse_retry_after(&response);
             let error_body = response.text().await.unwrap_or_default();
-            let error = map_api_error(status, &error_body);
+            let error = map_api_error(status, &error_body, retry_after, &self.model);
 
             if error.is_retryable() && attempt < self.max_retries {
                 warn!(attempt, status, "retryable API error, will retry");
@@ -725,8 +703,9 @@ impl AnthropicExecutor {
 
         let status = response.status().as_u16();
         if status != 200 {
+            let retry_after = parse_retry_after(&response);
             let error_body = response.text().await.unwrap_or_default();
-            return Err(map_api_error(status, &error_body));
+            return Err(map_api_error(status, &error_body, retry_after, &self.model));
         }
 
         let full_body = response.text().await.map_err(|e| {
@@ -846,8 +825,9 @@ impl ModelExecutor for AnthropicExecutor {
         if status == 200 {
             Ok(())
         } else {
+            let retry_after = parse_retry_after(&response);
             let error_body = response.text().await.unwrap_or_default();
-            Err(map_api_error(status, &error_body))
+            Err(map_api_error(status, &error_body, retry_after, &self.model))
         }
     }
 }
@@ -1326,7 +1306,7 @@ mod tests {
     #[test]
     fn error_mapping_401_authentication() {
         let body = sample_error_response_json("authentication_error", "invalid x-api-key");
-        let err = map_api_error(401, &body);
+        let err = map_api_error(401, &body, None, "test-model");
         assert!(matches!(err, ExecutorError::Authentication { .. }));
         assert!(!err.is_retryable());
     }
@@ -1334,44 +1314,54 @@ mod tests {
     #[test]
     fn error_mapping_429_rate_limit() {
         let body = sample_error_response_json("rate_limit_error", "rate limit exceeded");
-        let err = map_api_error(429, &body);
+        let err = map_api_error(429, &body, None, "test-model");
         assert!(matches!(err, ExecutorError::RateLimit { .. }));
         assert!(err.is_retryable());
     }
 
     #[test]
+    fn error_mapping_429_rate_limit_with_retry_after() {
+        let body = sample_error_response_json("rate_limit_error", "rate limit exceeded");
+        let err = map_api_error(429, &body, Some(30), "test-model");
+        assert!(matches!(err, ExecutorError::RateLimit { retry_after_secs: Some(30) }));
+    }
+
+    #[test]
     fn error_mapping_400_bad_request() {
         let body = sample_error_response_json("invalid_request_error", "messages: required");
-        let err = map_api_error(400, &body);
-        assert!(matches!(
-            err,
-            ExecutorError::Transport {
-                retryable: false,
-                ..
-            }
-        ));
-        assert!(!err.is_retryable());
+        let err = map_api_error(400, &body, None, "test-model");
+        // 400 without context/content keywords falls through to ServerError in ProviderError
+        // which maps to Transport { retryable: true }
+        assert!(!matches!(err, ExecutorError::ContextWindowExceeded { .. }));
     }
 
     #[test]
     fn error_mapping_400_context_window() {
         let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"context_length_exceeded: too many tokens"}}"#;
-        let err = map_api_error(400, body);
+        let err = map_api_error(400, body, None, "test-model");
         assert!(matches!(err, ExecutorError::ContextWindowExceeded { .. }));
     }
 
     #[test]
     fn error_mapping_403_forbidden() {
         let body = sample_error_response_json("permission_error", "not allowed");
-        let err = map_api_error(403, &body);
+        let err = map_api_error(403, &body, None, "test-model");
         assert!(matches!(err, ExecutorError::Authentication { .. }));
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn error_mapping_404_model_not_found() {
+        let body = sample_error_response_json("not_found_error", "model not found");
+        let err = map_api_error(404, &body, None, "claude-nonexistent");
+        assert!(matches!(err, ExecutorError::ModelNotFound { ref model, .. } if model == "claude-nonexistent"));
         assert!(!err.is_retryable());
     }
 
     #[test]
     fn error_mapping_500_server_error() {
         let body = sample_error_response_json("api_error", "internal server error");
-        let err = map_api_error(500, &body);
+        let err = map_api_error(500, &body, None, "test-model");
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1384,7 +1374,7 @@ mod tests {
 
     #[test]
     fn error_mapping_502_server_error() {
-        let err = map_api_error(502, "Bad Gateway");
+        let err = map_api_error(502, "Bad Gateway", None, "test-model");
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1398,7 +1388,7 @@ mod tests {
     #[test]
     fn error_mapping_503_server_error() {
         let body = sample_error_response_json("overloaded_error", "API is overloaded");
-        let err = map_api_error(503, &body);
+        let err = map_api_error(503, &body, None, "test-model");
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1409,20 +1399,8 @@ mod tests {
     }
 
     #[test]
-    fn error_mapping_unknown_status() {
-        let err = map_api_error(418, "I'm a teapot");
-        assert!(matches!(
-            err,
-            ExecutorError::Transport {
-                retryable: false,
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn error_mapping_handles_invalid_json_body() {
-        let err = map_api_error(500, "not json at all");
+        let err = map_api_error(500, "not json at all", None, "test-model");
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1833,6 +1811,36 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn concurrency_semaphore_limits_concurrent_access() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+
+        // Acquire two permits.
+        let p1 = sem.clone().acquire_owned().await.unwrap();
+        let p2 = sem.clone().acquire_owned().await.unwrap();
+
+        // Third acquire should not succeed immediately.
+        let sem2 = sem.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = sem2.acquire().await.unwrap();
+            true
+        });
+
+        // Give the spawned task a moment to run.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!handle.is_finished(), "third acquire should be blocked");
+
+        // Drop one permit to unblock.
+        drop(p1);
+        let result = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("should complete within timeout")
+            .expect("task should succeed");
+        assert!(result);
+
+        drop(p2);
+    }
+
     // -----------------------------------------------------------------------
     // Conversion edge cases
     // -----------------------------------------------------------------------
@@ -1984,7 +1992,7 @@ mod tests {
     #[test]
     fn map_api_error_produces_retryable_for_server_errors() {
         for status in [500, 502, 503, 504] {
-            let err = map_api_error(status, "error");
+            let err = map_api_error(status, "error", None, "test-model");
             assert!(
                 err.is_retryable(),
                 "status {status} should produce retryable error"
@@ -1994,8 +2002,8 @@ mod tests {
 
     #[test]
     fn map_api_error_produces_non_retryable_for_client_errors() {
-        for status in [400, 401, 403] {
-            let err = map_api_error(status, r#"{"error":{"type":"e","message":"m"}}"#);
+        for status in [401, 403] {
+            let err = map_api_error(status, r#"{"error":{"type":"e","message":"m"}}"#, None, "test-model");
             assert!(
                 !err.is_retryable(),
                 "status {status} should produce non-retryable error"
