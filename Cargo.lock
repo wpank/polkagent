@@ -2302,6 +2302,7 @@ dependencies = [
  "polkagent-event",
  "polkagent-executor-anthropic",
  "polkagent-executor-fake",
+ "polkagent-executor-gemini",
  "polkagent-executor-local",
  "polkagent-executor-openai",
  "polkagent-executor-trait",

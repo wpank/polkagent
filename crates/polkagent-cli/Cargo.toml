@@ -28,6 +28,7 @@ polkagent-executor-anthropic = { path = "../polkagent-executor-anthropic" }
 polkagent-executor-fake   = { path = "../polkagent-executor-fake" }
 polkagent-executor-local  = { path = "../polkagent-executor-local" }
 polkagent-executor-openai = { path = "../polkagent-executor-openai" }
+polkagent-executor-gemini = { path = "../polkagent-executor-gemini" }
 polkagent-executor-trait  = { path = "../polkagent-executor-trait" }
 polkagent-api             = { path = "../polkagent-api" }
 polkagent-identity        = { path = "../polkagent-identity" }

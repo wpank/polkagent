@@ -429,21 +429,19 @@ fn process_rss_kb() -> Option<u64> {
 /// Return a list of config file paths that exist on disk.
 ///
 /// Matches the paths checked by `ConfigLoader`:
-///   1. `$HOME/.config/polkagent/polkagent.toml`
-///   2. `$HOME/.polkagent/polkagent.toml`  (legacy / convenience)
+///   1. Global: `dirs::config_dir()/polkagent/polkagent.toml`
+///   2. Project: `.polkagent/polkagent.toml` (walks up from CWD)
 fn detect_config_sources() -> Vec<String> {
     let mut sources = Vec::new();
 
-    let home = std::env::var("HOME").unwrap_or_default();
-    let candidates = [
-        format!("{home}/.config/polkagent/polkagent.toml"),
-        format!("{home}/.polkagent/polkagent.toml"),
-    ];
-
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            sources.push(path.clone());
+    if let Some(global) = polkagent_config::loader::global_config_path() {
+        if global.exists() {
+            sources.push(global.display().to_string());
         }
+    }
+
+    if let Some(project) = polkagent_config::loader::find_project_config() {
+        sources.push(project.display().to_string());
     }
 
     sources

@@ -19,6 +19,7 @@ use polkagent_event::{EventBus, EventRecorder};
 use polkagent_executor_anthropic::AnthropicExecutor;
 use polkagent_executor_fake::FakeExecutor;
 use polkagent_executor_local::LocalExecutor;
+use polkagent_executor_gemini::GeminiExecutor;
 use polkagent_executor_openai::OpenAiExecutor;
 use polkagent_executor_trait::ModelExecutor;
 use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
@@ -390,9 +391,7 @@ fn executor_from_provider_config(
             Some(LocalExecutor::custom(url, pc.default_model.clone()))
         }
         "gemini" => {
-            // Gemini executor not yet available; use OpenAI-compat shim.
-            tracing::warn!("Gemini executor not yet available; falling back to OpenAI-compatible shim");
-            Some(OpenAiExecutor::new(api_key, pc.default_model.clone()))
+            Some(GeminiExecutor::new(api_key, pc.default_model.clone()))
         }
         _ => None,
     }
