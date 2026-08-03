@@ -1,0 +1,9 @@
+The fix described in the task has **already been applied**. Here's what I found:
+
+- **`approve_effect`** (lines 588-603) already does `INSERT INTO effect_outcomes` with `status = 'approved'`
+- **`deny_effect`** (lines 606-619) already does `INSERT INTO effect_outcomes` with `status = 'denied'`
+- There are **no** remaining instances of `UPDATE effect_intents SET claimed_by` or the string `'tui-approved'` anywhere in this file
+- The pattern matches the CLI inbox commands (`commands/inbox.rs`) which use the same `INSERT INTO effect_outcomes` approach
+- `cargo check -p polkagent-cli` passes clean
+
+No changes are needed — the code is already correct.
