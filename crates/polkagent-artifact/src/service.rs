@@ -18,7 +18,7 @@ use polkagent_core::config::DataClassification;
 use polkagent_core::ids::{ArtifactId, RunId};
 use tracing::{debug, instrument, warn};
 
-use crate::digest::{compute_digest, verify_digest};
+use crate::digest::{compute_digest, compute_sha256_digest, verify_digest};
 use crate::store::{ArtifactStore, StoreError};
 
 // ---------------------------------------------------------------------------
@@ -111,7 +111,8 @@ impl<S: ArtifactStore> ArtifactService<S> {
         metadata: HashMap<String, String>,
     ) -> Result<Artifact, ArtifactError> {
         let id = ArtifactId::new();
-        let blob_ref = compute_digest(body);
+        let mut blob_ref = compute_digest(body);
+        blob_ref.sha256_hex = Some(compute_sha256_digest(body));
 
         let artifact = Artifact {
             id,

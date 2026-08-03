@@ -127,6 +127,7 @@ mod tests {
                 chain_profiles: vec![ChainProfileId::new("polkadot")],
                 hardware_backed: false,
                 display_name: "OkSigner".into(),
+                can_sign: true,
             })
         }
 

@@ -65,9 +65,9 @@ use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
 use polkagent_chain_trait::{
-    BlockRef, ChainClient, ChainError, ChainProfile, ChainProfileId, DecodedCall,
-    FinalityObservation, PinnedMetadata, SimulationResult, StorageChange, StorageChangeType,
-    TxHash,
+    BlockRef, ChainClient, ChainError, ChainProfile, ChainProfileId, DecodedCall, DryRunResult,
+    FinalityObservation, GenesisHash, PinnedMetadata, SimulationResult, StorageChange,
+    StorageChangeType, TxHash,
 };
 use polkagent_core::now;
 
@@ -482,6 +482,54 @@ impl ChainClient for SubxtChainClient {
             }
             None => Ok(None),
         }
+    }
+
+    async fn dry_run_call(
+        &self,
+        _extrinsic: &[u8],
+    ) -> Result<DryRunResult, ChainError> {
+        Err(ChainError::Unsupported {
+            operation: "dry_run_call".into(),
+        })
+    }
+
+    async fn xcm_query_acceptable_payment_assets(
+        &self,
+        _version: u8,
+    ) -> Result<Vec<String>, ChainError> {
+        Err(ChainError::Unsupported {
+            operation: "xcm_query_acceptable_payment_assets".into(),
+        })
+    }
+
+    async fn xcm_query_delivery_fee(
+        &self,
+        _dest: &GenesisHash,
+        _message: &[u8],
+    ) -> Result<u128, ChainError> {
+        Err(ChainError::Unsupported {
+            operation: "xcm_query_delivery_fee".into(),
+        })
+    }
+
+    async fn is_trusted_teleporter(
+        &self,
+        _dest: &ChainProfileId,
+        _asset: &str,
+    ) -> Result<bool, ChainError> {
+        Err(ChainError::Unsupported {
+            operation: "is_trusted_teleporter".into(),
+        })
+    }
+
+    async fn is_reserve_transfer_supported(
+        &self,
+        _dest: &ChainProfileId,
+        _asset: &str,
+    ) -> Result<bool, ChainError> {
+        Err(ChainError::Unsupported {
+            operation: "is_reserve_transfer_supported".into(),
+        })
     }
 
     async fn health(&self) -> Result<(), ChainError> {

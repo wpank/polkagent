@@ -55,9 +55,11 @@ pub mod admission;
 pub mod classification;
 pub mod conformance;
 pub mod embedding;
+pub mod episode;
 pub mod error;
 pub mod export;
 pub mod retention;
+pub mod retrieval;
 pub mod service;
 pub mod sqlite;
 pub mod store;
@@ -73,9 +75,17 @@ pub use embedding::{
     EmbeddingProvider, EmbeddingVector, MockEmbeddingProvider, SearchResult, SimilarityMetric,
     VectorIndex,
 };
+pub use episode::{
+    EpisodeEntry, EpisodeLogger, EpisodeLoggerConfig, RedactionRule, Role, StandardRedactor,
+    ToolCallRecord,
+};
 pub use error::{MemoryError, MemoryResult};
 pub use export::ImportResult;
 pub use retention::{RetentionPolicy, RetentionSweeper, SweepResult};
+pub use retrieval::{
+    ContextBudget, HybridRetriever, InMemoryVectorIndex, RankedResult, RetrievalConfig,
+    SqliteVecIndex, VectorSearchIndex,
+};
 pub use service::MemoryService;
 pub use sqlite::SqliteMemoryStore;
 pub use store::MemoryStore;

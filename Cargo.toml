@@ -24,6 +24,7 @@ members = [
     "crates/polkagent-signer-fake",
     "crates/polkagent-chain-fake",
     "crates/polkagent-signer-external",
+    "crates/polkagent-signer-watchonly",
     "crates/polkagent-transport-fake",
     "crates/polkagent-api",
     "crates/polkagent-cli",
@@ -121,6 +122,12 @@ crossterm = "0.28"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# Regex
+regex = "1"
+
+# Compression
+zstd = "0.13"
 
 # Utils
 uuid = { version = "1", features = ["v7", "serde"] }

@@ -1198,3 +1198,387 @@ mod feed_source {
         assert_eq!(s, back);
     }
 }
+
+// ---------------------------------------------------------------------------
+// DurableFeedStore tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod durable {
+    use serde_json::json;
+
+    use crate::durable::{
+        DurableFeedStore, FeedCursor, Gap, InMemoryDurableFeedStore, TriggerDedup,
+    };
+    use crate::store::FeedStore;
+    use crate::trigger::{Trigger, TriggerAction, TriggerCondition, TriggerId};
+    use crate::types::{Feed, FeedId, FeedSource};
+
+    fn make_store() -> InMemoryDurableFeedStore {
+        InMemoryDurableFeedStore::new()
+    }
+
+    fn make_feed() -> Feed {
+        Feed::new(
+            "durable-test",
+            FeedSource::Webhook {
+                path: "/test".to_string(),
+                secret_hash: None,
+            },
+            polkagent_core::AgentId::new(),
+        )
+    }
+
+    fn make_cursor(feed_id: FeedId, pos: &str) -> FeedCursor {
+        FeedCursor::new(feed_id, pos)
+    }
+
+    fn notify_action() -> TriggerAction {
+        TriggerAction::Notify {
+            channel: "ch".to_string(),
+            message: "msg".to_string(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FeedCursor
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn feed_cursor_new_sets_fields() {
+        let feed_id = FeedId::new();
+        let c = FeedCursor::new(feed_id, "block-42");
+        assert_eq!(c.feed_id, feed_id);
+        assert_eq!(c.position, "block-42");
+    }
+
+    // -----------------------------------------------------------------------
+    // save_cursor / load_cursor
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn save_and_load_cursor_round_trip() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create feed");
+        let cursor = make_cursor(feed.id, "pos-100");
+
+        store.save_cursor(&feed.id, cursor.clone()).await.expect("save");
+
+        let loaded = store.load_cursor(&feed.id).await.expect("load");
+        let loaded = loaded.expect("cursor should exist");
+        assert_eq!(loaded.position, "pos-100");
+        assert_eq!(loaded.feed_id, feed.id);
+    }
+
+    #[tokio::test]
+    async fn load_cursor_returns_none_when_not_saved() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+        let loaded = store.load_cursor(&feed.id).await.expect("load");
+        assert!(loaded.is_none());
+    }
+
+    #[tokio::test]
+    async fn save_cursor_overwrites_previous() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+
+        store.save_cursor(&feed.id, make_cursor(feed.id, "v1")).await.expect("save v1");
+        store.save_cursor(&feed.id, make_cursor(feed.id, "v2")).await.expect("save v2");
+
+        let loaded = store.load_cursor(&feed.id).await.expect("load").expect("some");
+        assert_eq!(loaded.position, "v2");
+    }
+
+    #[tokio::test]
+    async fn save_cursor_mismatched_feed_id_returns_error() {
+        let store = make_store();
+        let feed_a = store.create_feed(make_feed()).await.expect("a");
+        let feed_b = store.create_feed(make_feed()).await.expect("b");
+
+        // Cursor belongs to feed_b but we pass feed_a's id.
+        let cursor = make_cursor(feed_b.id, "pos");
+        let result = store.save_cursor(&feed_a.id, cursor).await;
+        assert!(result.is_err(), "should reject mismatched feed id");
+    }
+
+    // -----------------------------------------------------------------------
+    // atomic_advance
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn atomic_advance_saves_cursor_and_creates_action() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+        let trigger_id = TriggerId::new();
+        let cursor = make_cursor(feed.id, "block-200");
+
+        let pending = store
+            .atomic_advance(&feed.id, cursor, trigger_id, notify_action())
+            .await
+            .expect("advance");
+
+        // Cursor should be saved.
+        let saved = store.load_cursor(&feed.id).await.expect("load").expect("some");
+        assert_eq!(saved.position, "block-200");
+
+        // Pending action should be created.
+        assert_eq!(pending.feed_id, feed.id);
+        assert_eq!(pending.trigger_id, trigger_id);
+        assert_eq!(pending.cursor_position, "block-200");
+    }
+
+    #[tokio::test]
+    async fn list_pending_actions_returns_undispatched() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+        let trigger_id = TriggerId::new();
+
+        let p1 = store
+            .atomic_advance(&feed.id, make_cursor(feed.id, "p1"), trigger_id, notify_action())
+            .await
+            .expect("advance 1");
+        let _p2 = store
+            .atomic_advance(&feed.id, make_cursor(feed.id, "p2"), trigger_id, notify_action())
+            .await
+            .expect("advance 2");
+
+        let pending = store.list_pending_actions(&feed.id).await.expect("list");
+        assert_eq!(pending.len(), 2);
+
+        // Dispatch p1.
+        store.mark_action_dispatched(p1.id).await.expect("dispatch");
+
+        let pending = store.list_pending_actions(&feed.id).await.expect("list after");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].cursor_position, "p2");
+    }
+
+    #[tokio::test]
+    async fn mark_action_dispatched_is_idempotent() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+        let p = store
+            .atomic_advance(&feed.id, make_cursor(feed.id, "x"), TriggerId::new(), notify_action())
+            .await
+            .expect("advance");
+
+        store.mark_action_dispatched(p.id).await.expect("first");
+        store.mark_action_dispatched(p.id).await.expect("second");
+
+        let pending = store.list_pending_actions(&feed.id).await.expect("list");
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn atomic_advance_mismatched_cursor_returns_error() {
+        let store = make_store();
+        let feed_a = store.create_feed(make_feed()).await.expect("a");
+        let feed_b = store.create_feed(make_feed()).await.expect("b");
+
+        let cursor = make_cursor(feed_b.id, "pos");
+        let result = store
+            .atomic_advance(&feed_a.id, cursor, TriggerId::new(), notify_action())
+            .await;
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Deduplication
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn check_dedup_returns_false_for_unseen_key() {
+        let store = make_store();
+        let result = store.check_dedup("never-seen-key").await.expect("check");
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn record_and_check_dedup_returns_true() {
+        let store = make_store();
+        let feed_id = FeedId::new();
+        let trigger_id = TriggerId::new();
+        let dedup = TriggerDedup::new("key-abc", feed_id, trigger_id);
+
+        store.record_dedup(dedup).await.expect("record");
+        let is_dup = store.check_dedup("key-abc").await.expect("check");
+        assert!(is_dup);
+    }
+
+    #[tokio::test]
+    async fn record_dedup_is_idempotent() {
+        let store = make_store();
+        let feed_id = FeedId::new();
+        let trigger_id = TriggerId::new();
+
+        let d1 = TriggerDedup::new("my-key", feed_id, trigger_id);
+        let d2 = TriggerDedup::new("my-key", feed_id, trigger_id);
+
+        store.record_dedup(d1).await.expect("first");
+        store.record_dedup(d2).await.expect("second (idempotent)");
+
+        let is_dup = store.check_dedup("my-key").await.expect("check");
+        assert!(is_dup);
+    }
+
+    #[tokio::test]
+    async fn different_dedup_keys_are_independent() {
+        let store = make_store();
+        let feed_id = FeedId::new();
+        let trigger_id = TriggerId::new();
+
+        store.record_dedup(TriggerDedup::new("key-1", feed_id, trigger_id)).await.expect("k1");
+
+        assert!(store.check_dedup("key-1").await.expect("check k1"));
+        assert!(!store.check_dedup("key-2").await.expect("check k2"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap detection
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn detect_gaps_returns_empty_when_no_sequences_recorded() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+        let gaps = store.detect_gaps(&feed.id, 0).await.expect("gaps");
+        assert!(gaps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn detect_gaps_no_gap_when_contiguous() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+
+        for seq in 5..=10_u64 {
+            store.record_sequence(&feed.id, seq).await.expect("record");
+        }
+
+        let gaps = store.detect_gaps(&feed.id, 5).await.expect("gaps");
+        assert!(gaps.is_empty(), "expected no gaps, got: {:?}", gaps);
+    }
+
+    #[tokio::test]
+    async fn detect_gaps_finds_single_gap() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+
+        // Sequences 0,1,2 then skip 3,4 then 5.
+        for seq in [0_u64, 1, 2, 5] {
+            store.record_sequence(&feed.id, seq).await.expect("record");
+        }
+
+        let gaps = store.detect_gaps(&feed.id, 0).await.expect("gaps");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].from_sequence, 3);
+        assert_eq!(gaps[0].to_sequence, 4);
+        assert_eq!(gaps[0].size(), 2);
+    }
+
+    #[tokio::test]
+    async fn detect_gaps_finds_multiple_gaps() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+
+        // 1, 3, 7 — gaps at 2 and 4-6.
+        for seq in [1_u64, 3, 7] {
+            store.record_sequence(&feed.id, seq).await.expect("record");
+        }
+
+        let mut gaps = store.detect_gaps(&feed.id, 1).await.expect("gaps");
+        gaps.sort_by_key(|g| g.from_sequence);
+        assert_eq!(gaps.len(), 2);
+        assert_eq!(gaps[0].from_sequence, 2);
+        assert_eq!(gaps[0].to_sequence, 2);
+        assert_eq!(gaps[1].from_sequence, 4);
+        assert_eq!(gaps[1].to_sequence, 6);
+    }
+
+    #[tokio::test]
+    async fn detect_gaps_skips_sequences_before_expected() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+
+        // Record 0,1,2,5 but start expected at 3.
+        for seq in [0_u64, 1, 2, 5] {
+            store.record_sequence(&feed.id, seq).await.expect("record");
+        }
+
+        // Expecting from 3, so gap should be 3-4.
+        let gaps = store.detect_gaps(&feed.id, 3).await.expect("gaps");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].from_sequence, 3);
+        assert_eq!(gaps[0].to_sequence, 4);
+    }
+
+    #[tokio::test]
+    async fn gap_size_is_calculated_correctly() {
+        let feed_id = FeedId::new();
+        let g = Gap::new(feed_id, 10, 19);
+        assert_eq!(g.size(), 10);
+
+        let g2 = Gap::new(feed_id, 5, 5);
+        assert_eq!(g2.size(), 1);
+    }
+
+    #[tokio::test]
+    async fn detect_gaps_deduplicates_duplicate_sequences() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+
+        // Record sequence 5 twice, then 7 (gap at 6).
+        for seq in [5_u64, 5, 7] {
+            store.record_sequence(&feed.id, seq).await.expect("record");
+        }
+
+        let gaps = store.detect_gaps(&feed.id, 5).await.expect("gaps");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].from_sequence, 6);
+        assert_eq!(gaps[0].to_sequence, 6);
+    }
+
+    // -----------------------------------------------------------------------
+    // Base FeedStore delegation
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn durable_store_delegates_feed_crud() {
+        let store = make_store();
+        let feed = make_feed();
+        let id = feed.id;
+        store.create_feed(feed).await.expect("create");
+        let got = store.get_feed(&id).await.expect("get");
+        assert_eq!(got.id, id);
+    }
+
+    #[tokio::test]
+    async fn durable_store_delegates_trigger_crud() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("feed");
+        let t = Trigger::new(
+            "dt",
+            feed.id,
+            TriggerCondition::Always,
+            notify_action(),
+        );
+        let tid = t.id;
+        store.create_trigger(t).await.expect("create");
+        let got = store.get_trigger(&tid).await.expect("get");
+        assert_eq!(got.id, tid);
+    }
+
+    #[tokio::test]
+    async fn durable_store_delegates_item_queue() {
+        use crate::types::FeedItem;
+
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("feed");
+        let item = FeedItem::new(feed.id, json!({ "n": 42 }));
+        store.enqueue_item(item.clone()).await.expect("enqueue");
+
+        let items = store.dequeue_items(&feed.id, 10).await.expect("dequeue");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, item.id);
+    }
+}

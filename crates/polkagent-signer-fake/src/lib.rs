@@ -198,6 +198,7 @@ impl Signer for FakeSigner {
             chain_profiles: self.chain_profiles.clone(),
             hardware_backed: false,
             display_name: "FakeSigner".into(),
+            can_sign: true,
         })
     }
 

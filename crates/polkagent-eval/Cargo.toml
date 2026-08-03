@@ -19,6 +19,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
+sha2 = "0.10"
+toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

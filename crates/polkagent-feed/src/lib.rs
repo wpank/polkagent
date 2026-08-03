@@ -14,6 +14,8 @@
 //!   tests.
 //! - **[`processor`]** — [`FeedProcessor`]: the processing engine that binds
 //!   feeds, items, triggers, and the store together.
+//! - **[`durable`]** — [`DurableFeedStore`]: cursor persistence, atomic
+//!   advance, deduplication, gap detection, and [`InMemoryDurableFeedStore`].
 //! - **[`error`]** — [`FeedError`] and the crate-level [`Result`] alias.
 //!
 //! # Module layout
@@ -26,8 +28,10 @@
 //! | [`store`] | Persistence abstraction trait |
 //! | [`memory_store`] | In-memory store for tests |
 //! | [`processor`] | Feed processing engine |
+//! | [`durable`] | Durable cursor persistence, atomic advance, dedup, gap detection |
 //! | [`error`] | [`FeedError`] enum |
 
+pub mod durable;
 pub mod error;
 pub mod memory_store;
 pub mod processor;
@@ -60,3 +64,7 @@ pub use store::FeedStore;
 pub use memory_store::MemoryStore;
 
 pub use processor::{FeedProcessor, initial_cursor};
+
+pub use durable::{
+    DurableFeedStore, FeedCursor, Gap, InMemoryDurableFeedStore, PendingAction, TriggerDedup,
+};

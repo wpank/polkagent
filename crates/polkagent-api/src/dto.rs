@@ -733,24 +733,27 @@ pub struct ListPaymentReceiptsResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Effects — approval/denial requests and responses
+// Effects — approval/denial requests and responses (PRD-14 §4)
 // ---------------------------------------------------------------------------
 
 /// Request body for `POST /effects/:id/approve`.
-///
-/// Currently no fields are required; the body may be omitted or an empty
-/// JSON object `{}`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApproveEffectRequest {
-    /// Optional notes or justification for the approval.
+    /// Optional free-text comment explaining the approval.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub notes: Option<String>,
+    pub comment: Option<String>,
+    /// Optional conditions attached to the approval (e.g. `["max_value:100"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<String>,
 }
 
 /// Request body for `POST /effects/:id/deny`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DenyEffectRequest {
-    /// Human-readable reason for the denial.
+    /// Optional free-text comment explaining the denial.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// Human-readable reason code for the denial.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -764,6 +767,8 @@ pub struct ApproveEffectResponse {
     pub effect_id: String,
     /// The new state after approval (always `"approved"`).
     pub new_state: String,
+    /// The durable approval record.
+    pub approval: ApprovalRecordDto,
     /// UTC timestamp of when the approval was recorded.
     pub approved_at: DateTime<Utc>,
 }
@@ -777,11 +782,36 @@ pub struct DenyEffectResponse {
     pub effect_id: String,
     /// The new state after denial (always `"denied"`).
     pub new_state: String,
+    /// The durable denial record.
+    pub approval: ApprovalRecordDto,
     /// The denial reason, if provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// UTC timestamp of when the denial was recorded.
     pub denied_at: DateTime<Utc>,
+}
+
+/// DTO for an [`ApprovalRecord`](polkagent_effect::ApprovalRecord) in API responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalRecordDto {
+    /// Stable identifier for this record.
+    pub id: String,
+    /// The effect intent this record belongs to.
+    pub effect_id: String,
+    /// Who or what made the decision: `"human"`, `"quorum"`, `"service"`, or `"mandate"`.
+    pub approval_type: String,
+    /// Identifier of the principal that made the decision.
+    pub principal_id: String,
+    /// Optional comment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// Conditions attached to an approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<String>,
+    /// `"approved"` or `"denied"`.
+    pub decision: String,
+    /// When this record was created.
+    pub created_at: DateTime<Utc>,
 }
 
 // ---------------------------------------------------------------------------

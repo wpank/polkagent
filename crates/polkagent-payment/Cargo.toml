@@ -14,6 +14,7 @@ polkagent-core = { path = "../polkagent-core" }
 # Async
 async-trait = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

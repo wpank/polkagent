@@ -15,6 +15,11 @@
 //! | [`budget`] | Budget enforcement: [`BudgetConfig`], [`BudgetState`], [`BudgetChecker`], [`BudgetDecision`]. |
 //! | [`store`] | [`PaymentStore`] async trait for persistence. |
 //! | [`estimator`] | [`CostEstimator`] with pricing tables for known LLM models. |
+//! | [`action`] | [`PaymentAction`] enum for on-chain operation types. |
+//! | [`intent`] | [`IntentStatus`], [`IntentStateMachine`], and validated transitions. |
+//! | [`builder`] | [`PaymentIntentBuilder`] with fluent API. |
+//! | [`finality`] | [`TransactionOutcome`] and [`FinalityWatcher`] trait. |
+//! | [`preflight`] | Pre-flight checks: [`PreFlightCheck`] trait, [`CompositePreFlight`], balance/fee/ED/address/nonce/metadata checks. |
 //! | [`error`] | [`PaymentError`] enum. |
 
 #![forbid(unsafe_code)]
@@ -31,9 +36,15 @@
     clippy::missing_panics_doc
 )]
 
+pub mod action;
 pub mod budget;
+pub mod builder;
 pub mod error;
 pub mod estimator;
+pub mod finality;
+pub mod intent;
+pub mod preflight;
+pub mod risk;
 pub mod store;
 pub mod types;
 
@@ -41,9 +52,22 @@ pub mod types;
 // Convenience re-exports
 // ---------------------------------------------------------------------------
 
+pub use action::PaymentAction;
 pub use budget::{BudgetChecker, BudgetConfig, BudgetDecision, BudgetState};
+pub use builder::{BuiltIntent, PaymentIntentBuilder};
 pub use error::PaymentError;
 pub use estimator::{CostEstimator, PricingEntry};
+pub use finality::{FinalityWatcher, TransactionOutcome};
+pub use intent::{IntentStateMachine, IntentStatus};
+pub use preflight::{
+    AddressCheck, BalanceCheck, CompositePreFlight, ExistentialDepositCheck, FeeCheck,
+    MetadataFreshnessCheck, NonceCheck, PreFlightBlocker, PreFlightCheck, PreFlightResult,
+    PreFlightWarning, WarningSeverity,
+};
+pub use risk::{
+    BatchHidingDetector, CompositeRiskGate, HighValueDetector, HomoglyphDetector, RiskCode,
+    RiskFinding, RiskGate, RiskSeverity,
+};
 pub use store::{BalanceSummary, PaymentStore};
 pub use types::{
     Amount, AssetId, CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary,

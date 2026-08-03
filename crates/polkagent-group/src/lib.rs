@@ -1,6 +1,6 @@
 //! Multi-agent group coordination for the Polkagent platform.
 //!
-//! This crate implements the group coordination layer described in PRD-09 §4.
+//! This crate implements the group coordination layer described in PRD-09 §4-6.
 //! It provides:
 //!
 //! - **[`types`]** — Core vocabulary: [`types::GroupId`], [`types::Group`],
@@ -14,6 +14,11 @@
 //! - **[`propagation`]** — [`propagation::propagate_cancellation`] and
 //!   [`propagation::aggregate_evidence`]: cancellation fan-out and run-result
 //!   aggregation.
+//! - **[`execution`]** — [`execution::ExecutionMode`], executors
+//!   ([`execution::SequentialExecutor`], [`execution::ParallelExecutor`],
+//!   [`execution::PipelineExecutor`], [`execution::ConsensusExecutor`]),
+//!   [`execution::ExecutionPlan`], [`execution::GroupTask`],
+//!   [`execution::ExecutionResult`], and [`execution::ExecutionEvidence`].
 //! - **[`store`]** — [`store::GroupStore`] async storage trait.
 //! - **[`memory_store`]** — [`memory_store::MemoryGroupStore`] in-memory
 //!   implementation for tests.
@@ -27,6 +32,7 @@
 //! | [`coordinator`] | Mutable group state and business logic |
 //! | [`quorum`] | Quorum policy evaluation |
 //! | [`propagation`] | Cancellation propagation and evidence aggregation |
+//! | [`execution`] | Execution modes and task orchestration (PRD-09 §5-6) |
 //! | [`store`] | Async persistence trait |
 //! | [`memory_store`] | In-memory store for tests |
 //! | [`error`] | Error types |
@@ -47,6 +53,7 @@
 
 pub mod coordinator;
 pub mod error;
+pub mod execution;
 pub mod memory_store;
 pub mod propagation;
 pub mod quorum;
@@ -59,6 +66,11 @@ pub mod types;
 
 pub use coordinator::GroupCoordinator;
 pub use error::{GroupError, GroupResult};
+pub use execution::{
+    ConsensusExecutor, ExecutionEvidence, ExecutionMode, ExecutionPlan, ExecutionResult, Executor,
+    GroupExecutor, GroupTask, ParallelExecutor, PipelineExecutor, SequentialExecutor, TaskId,
+    TaskResult,
+};
 pub use memory_store::MemoryGroupStore;
 pub use propagation::{GroupEvidence, aggregate_evidence, propagate_cancellation};
 pub use quorum::{

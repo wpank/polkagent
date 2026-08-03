@@ -21,6 +21,7 @@ chrono = { workspace = true }
 
 # Crypto
 blake3 = { workspace = true }
+sha2 = "0.10"
 
 # Async
 tokio = { workspace = true }
