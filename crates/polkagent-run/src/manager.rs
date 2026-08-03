@@ -329,9 +329,12 @@ impl RunManager {
     pub async fn request_approval(&self, run_id: RunId, request_id: &str) -> Result<(), RunError> {
         let request_id = request_id.to_owned();
         let current = self.current_state(run_id.clone()).await?;
-        let next = self
+        let _next = self
             .machine
             .transition(&current, RunTransition::RequestApproval)?;
+        let next = RunState::AwaitingApproval {
+            request_id: request_id.clone(),
+        };
 
         self.apply_transition(
             run_id.clone(),
@@ -553,17 +556,23 @@ fn parse_run_state(s: &str) -> Result<RunState, String> {
         "completing" => Ok(RunState::Completing),
         "completed" => Ok(RunState::Completed),
         "timed_out" => Ok(RunState::TimedOut),
-        // AwaitingApproval and WaitingEffect can't fully round-trip through the
-        // plain string without extra fields. Represent them as Running when
-        // fetched from the store (the event log is the authoritative source of
-        // truth for the full state). In a real system the store would store the
-        // full JSON-serialised state.
-        s if s.starts_with("awaiting_approval") => Ok(RunState::AwaitingApproval {
-            request_id: String::new(),
-        }),
-        s if s.starts_with("waiting_effect") => Ok(RunState::WaitingEffect {
-            pending_intent_ids: vec![],
-        }),
+        s if s.starts_with("awaiting_approval:") => {
+            let request_id = s.strip_prefix("awaiting_approval:").unwrap_or_default().to_owned();
+            Ok(RunState::AwaitingApproval { request_id })
+        }
+        s if s.starts_with("waiting_effect:") => {
+            let ids_str = s.strip_prefix("waiting_effect:").unwrap_or_default();
+            let pending_intent_ids = if ids_str.is_empty() {
+                vec![]
+            } else {
+                ids_str
+                    .split(',')
+                    .map(|id| id.parse::<polkagent_core::EffectId>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("invalid effect id in waiting_effect state: {e}"))?
+            };
+            Ok(RunState::WaitingEffect { pending_intent_ids })
+        }
         other => Err(format!("unknown run state string: {other}")),
     }
 }
@@ -952,7 +961,7 @@ mod tests {
             .await
             .expect("request_approval");
         let state = mgr.get_state(run_id.clone()).await.expect("state");
-        assert!(matches!(state, RunState::AwaitingApproval { .. }));
+        assert!(matches!(state, RunState::AwaitingApproval { request_id } if request_id == "req-1"));
 
         // Grant approval.
         mgr.grant_approval(run_id.clone(), "approval-1")

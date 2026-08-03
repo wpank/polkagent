@@ -420,3 +420,21 @@ To https://github.com/wpank/polkagent.git
 [00:54:36]   Verifying: cargo test --workspace (quick)
   PASS   cargo test passed
   PASS   Verified: DX-1
+[auto/impl-20260803-231923 59fde4a] [auto] DX-1: Persist token usage to DB
+ 17 files changed, 2514 insertions(+), 2278 deletions(-)
+ create mode 100644 logs/auto-impl/20260803-231923/DX-1.log
+To https://github.com/wpank/polkagent.git
+   08759d0..59fde4a  auto/impl-20260803-231923 -> auto/impl-20260803-231923
+  PASS   Committed and pushed: DX-1
+──────────────────────────────────────────────────────────────────────
+[00:58:01] Task 25/64: [DX-2] Fix AwaitingApproval state after restart
+  WARN Low disk (11GB). Cleaning...
+[00:58:19] Disk after cleanup: 17GB
+[00:58:19]   Invoking claude for DX-2...
+[00:58:19]   Log: /Users/will/dev/par/polkagent/logs/auto-impl/20260803-231923/DX-2.log
+  PASS   claude completed DX-2
+[01:01:59]   Verifying: cargo check --workspace
+  PASS   cargo check passed
+[01:02:09]   Verifying: cargo test --workspace (quick)
+  PASS   cargo test passed
+  PASS   Verified: DX-2
