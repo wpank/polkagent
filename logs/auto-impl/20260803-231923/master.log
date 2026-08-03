@@ -143,3 +143,19 @@ To https://github.com/wpank/polkagent.git
 [23:35:45]   Verifying: cargo test --workspace (quick)
   PASS   cargo test passed
   PASS   Verified: D1-4
+[auto/impl-20260803-231923 d4f24e6] [auto] D1-4: Fix duplicate event emission
+ 5 files changed, 1689 insertions(+), 1667 deletions(-)
+ create mode 100644 logs/auto-impl/20260803-231923/D1-4.log
+To https://github.com/wpank/polkagent.git
+   a5ff4c6..d4f24e6  auto/impl-20260803-231923 -> auto/impl-20260803-231923
+  PASS   Committed and pushed: D1-4
+──────────────────────────────────────────────────────────────────────
+[23:36:17] Task 8/64: [D2-1] Wire TUI widget data computation
+[23:36:17]   Invoking claude for D2-1...
+[23:36:17]   Log: /Users/will/dev/par/polkagent/logs/auto-impl/20260803-231923/D2-1.log
+  PASS   claude completed D2-1
+[23:37:14]   Verifying: cargo check --workspace
+  PASS   cargo check passed
+[23:37:14]   Verifying: cargo test --workspace (quick)
+  PASS   cargo test passed
+  PASS   Verified: D2-1

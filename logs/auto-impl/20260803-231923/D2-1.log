@@ -1,0 +1,7 @@
+Everything is already in place. The three calls are already wired into `refresh_data()` in `app.rs`:
+
+- **`recompute_widget_data()`** (line 791) — called at the end of the successful refresh block, right before `mark_dirty()`, so sparkline/gauge widgets get populated from the latest `run_detail` and `runs` data.
+- **`recent_error_count()`** (line 776) — result stored into `tui_state.error_count`.
+- **`budget_status()`** (lines 779–784) — spent/ceiling converted to a percentage and stored in `tui_state.budget_remaining`.
+
+`cargo check -p polkagent-cli` passes cleanly. No changes needed — this fix was already applied.
