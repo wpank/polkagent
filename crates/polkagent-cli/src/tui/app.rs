@@ -506,7 +506,11 @@ impl App {
                         self.tui_state.mark_dirty();
                     }
                     Tab::Memory => {
-                        if self.tui_state.memory_scroll.selected.is_some() {
+                        if self.input_mode == InputMode::Insert {
+                            self.input_mode = InputMode::Normal;
+                            self.tui_state.memory_search_query.clear();
+                            self.refresh_memory();
+                        } else if self.tui_state.memory_scroll.selected.is_some() {
                             self.tui_state.memory_scroll.selected = None;
                         } else {
                             self.active_tab = Tab::Dashboard;
@@ -682,6 +686,27 @@ impl App {
                     self.refresh_memory();
                 }
                 self.input_mode = InputMode::Insert;
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SearchInput(c) => {
+                self.tui_state.memory_search_query.push(c);
+                self.refresh_memory();
+                self.tui_state.memory_scroll.offset = 0;
+                self.tui_state.memory_scroll.selected = None;
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SearchBackspace => {
+                self.tui_state.memory_search_query.pop();
+                self.refresh_memory();
+                self.tui_state.memory_scroll.offset = 0;
+                self.tui_state.memory_scroll.selected = None;
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SearchSubmit => {
+                self.input_mode = InputMode::Normal;
                 self.tui_state.mark_dirty();
             }
 

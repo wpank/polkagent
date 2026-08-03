@@ -1,0 +1,25 @@
+All done. `cargo check -p polkagent-cli` passes cleanly. Here's a summary of the changes:
+
+### `input.rs` — 2 edits
+
+1. **Added 3 new `TuiAction` variants:**
+   - `SearchInput(char)` — append a character to the search query
+   - `SearchBackspace` — delete last character from the query
+   - `SearchSubmit` — confirm the query and exit insert mode
+
+2. **Wired Insert-mode key handling** in `key_to_action()` — previously all keys except `Esc` returned `None` in Insert mode. Now:
+   - `Char(c)` → `SearchInput(c)`
+   - `Backspace` → `SearchBackspace`
+   - `Enter` → `SearchSubmit`
+   - `Esc` → `Back` (unchanged)
+
+### `app.rs` — 2 edits
+
+3. **Added action handlers** in `apply_action()`:
+   - `SearchInput(c)` — pushes char to `memory_search_query`, calls `refresh_memory()`, resets scroll
+   - `SearchBackspace` — pops last char from `memory_search_query`, calls `refresh_memory()`, resets scroll
+   - `SearchSubmit` — returns to Normal mode (query stays, so the filter remains active)
+
+4. **Fixed `Back` on the Memory tab** — when in Insert mode, Esc now exits Insert mode and clears the search query (calling `refresh_memory()` to reload all entries), instead of immediately deselecting or navigating away.
+
+The existing infrastructure (`refresh_memory()` already queries via FTS when `memory_search_query` is non-empty, and the search bar UI already renders the query text) means no view changes were needed — everything just works end-to-end now.

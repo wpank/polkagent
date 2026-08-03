@@ -66,6 +66,12 @@ pub enum TuiAction {
     // -- Memory / audit ------------------------------------------------------
     /// Activate the memory search bar (switches to insert mode on the Memory tab).
     Search,
+    /// Append a character to the memory search query (insert mode).
+    SearchInput(char),
+    /// Delete the last character from the memory search query (insert mode).
+    SearchBackspace,
+    /// Submit the current search query (exit insert mode, keep filter).
+    SearchSubmit,
     /// Delete the selected memory entry.
     DeleteEntry,
     /// Scroll to the bottom of the active list (G in audit/timeline).
@@ -110,8 +116,14 @@ pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
 
     match mode {
         InputMode::Normal => normal_mode_key(key),
-        InputMode::Insert | InputMode::Command => {
-            // In insert/command mode only Escape cancels back to normal.
+        InputMode::Insert => match key.code {
+            KeyCode::Esc => Some(TuiAction::Back),
+            KeyCode::Enter => Some(TuiAction::SearchSubmit),
+            KeyCode::Backspace => Some(TuiAction::SearchBackspace),
+            KeyCode::Char(c) => Some(TuiAction::SearchInput(c)),
+            _ => None,
+        },
+        InputMode::Command => {
             match key.code {
                 KeyCode::Esc => Some(TuiAction::Back),
                 _ => None,
