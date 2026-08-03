@@ -471,16 +471,15 @@ impl TuiDb {
 
     /// Load recent audit events from the run_events table.
     pub fn audit_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
-        let mut stmt = self.conn.prepare(&format!(
+        let mut stmt = self.conn.prepare(
             "SELECT id, run_id, kind, data_json, timestamp
              FROM run_events
              ORDER BY sequence DESC
-             LIMIT {limit}",
-            limit = limit,
-        ))?;
+             LIMIT ?1",
+        )?;
 
         let raw: Vec<(String, String, String, String, String)> = stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params![limit as i64], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
