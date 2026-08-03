@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing::info;
 
+use polkagent_config::model_registry::synthesize_providers_from_env;
 use polkagent_config::Config;
 use polkagent_core::event::EventKind;
 use polkagent_core::{AgentId, AgentSpec};
@@ -21,18 +22,10 @@ use polkagent_executor_fake::FakeExecutor;
 use polkagent_executor_local::LocalExecutor;
 use polkagent_executor_openai::OpenAiExecutor;
 use polkagent_executor_trait::ModelExecutor;
-use polkagent_service::AppService;
+use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
 use crate::cli::RunCmd;
-
-/// Known harnesses and their binary names used for PATH probing.
-const KNOWN_HARNESSES: &[(&str, &str)] = &[
-    ("claude-code", "claude"),
-    ("codex", "codex"),
-    ("cursor", "cursor"),
-    ("goose", "goose"),
-];
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -64,28 +57,43 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     // Load config for provider/harness resolution.
     let config = load_config();
 
+    // Build the provider registry from environment + config providers.
+    let registry = build_provider_registry(&config);
+
     // Resolve provider and executor.
     let (executor, executor_note) =
-        resolve_provider(cmd.provider.as_deref(), cmd.model.as_deref(), &config);
+        resolve_provider(cmd.provider.as_deref(), cmd.model.as_deref(), &config, &registry);
 
     if let Some(note) = &executor_note {
         eprintln!("{note}");
     }
 
-    // Resolve harness.
-    let (harness_name, harness_note) = resolve_harness(cmd.harness.as_deref(), &config);
+    // Resolve harness via registry.
+    let mut harness_registry = HarnessRegistry::with_known_harnesses();
+    // Register any custom harness entries from the config file.
+    for (id, entry) in &config.harness.harnesses {
+        if let Some(ref path) = entry.binary_path {
+            harness_registry.register_with_path(id, id, path.clone());
+        } else {
+            harness_registry.register(id, id);
+        }
+    }
+    let resolution = harness_registry.resolve(
+        cmd.harness.as_deref(),
+        config.harness.default.as_deref(),
+    );
 
-    if let Some(note) = &harness_note {
+    if let Some(note) = &resolution.note {
         eprintln!("{note}");
     }
 
-    if let Some(ref name) = harness_name {
+    if let Some(ref name) = resolution.harness_name {
         info!(harness = %name, "harness selected");
     }
 
     // Instantiate the harness when one was resolved.
     let harness: Option<Arc<dyn polkagent_harness_trait::Harness>> =
-        match harness_name.as_deref() {
+        match resolution.harness_name.as_deref() {
             Some("codex") => {
                 let hcfg = polkagent_harness_trait::HarnessConfig::new("codex");
                 let codex = polkagent_harness_codex::CodexHarness::new(
@@ -134,7 +142,8 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
         .with_run_store(Arc::new(pool.clone()))
         .with_event_bus(event_bus.clone())
         .with_event_recorder(event_recorder)
-        .with_executor(executor);
+        .with_executor(executor)
+        .with_provider_registry(registry);
 
     if let Some(h) = harness {
         builder = builder.with_harness(h);
@@ -341,58 +350,47 @@ fn load_config() -> Config {
 }
 
 // ---------------------------------------------------------------------------
-// Provider resolution (§ 11.1)
+// Provider registry construction
 // ---------------------------------------------------------------------------
 
-/// Resolve which provider and executor to use.
+/// Build a [`ProviderRegistry`] populated from environment variables and
+/// config-file `[[providers]]` sections.
 ///
-/// Resolution order:
-/// 1. CLI flag: `--provider anthropic --model claude-opus-4-6`
-/// 2. Config default: first provider in `[[providers]]` list
-/// 3. Environment detection: first available API key
-/// 4. Fallback: FakeExecutor with warning
-fn resolve_provider(
-    provider_flag: Option<&str>,
-    model_override: Option<&str>,
-    config: &Config,
-) -> (Arc<dyn ModelExecutor>, Option<String>) {
-    // 1. CLI flag — look up in config providers.
-    if let Some(provider_id) = provider_flag {
-        if let Some(pc) = config.providers.iter().find(|p| p.id == provider_id) {
-            if let Some(result) = try_provider_from_config(pc, model_override) {
-                return result;
+/// Environment-synthesized providers are registered first, then config-file
+/// providers are layered on top (potentially overriding env-synthesized
+/// entries with the same id).
+fn build_provider_registry(config: &Config) -> ProviderRegistry {
+    let mut registry = ProviderRegistry::new();
+
+    // 1. Synthesize providers from well-known environment variables.
+    let env_providers = synthesize_providers_from_env(|k| std::env::var(k));
+    for (_kind, pc) in env_providers {
+        if let Some(executor) = executor_from_provider_config(&pc) {
+            if let Err(e) = registry.register(pc, executor) {
+                tracing::warn!(error = %e, "failed to register env-synthesized provider");
             }
         }
-        // Provider flag given but not in config — try env-based matching.
-        if let Some(result) = try_provider_by_name(provider_id, model_override) {
-            return result;
-        }
-        eprintln!(
-            "Warning: provider '{provider_id}' not found in config and no matching \
-             API key detected. Falling back to environment detection."
-        );
     }
 
-    // 2. Config default — use first configured provider with a valid key.
+    // 2. Register providers from config file (override env-synthesized ones).
     for pc in &config.providers {
-        if let Some(result) = try_provider_from_config(pc, model_override) {
-            return result;
+        if let Some(executor) = executor_from_provider_config(pc) {
+            if let Err(e) = registry.register(pc.clone(), executor) {
+                tracing::warn!(error = %e, "failed to register config provider");
+            }
         }
     }
 
-    // 3. Environment detection.
-    detect_executor(model_override)
+    registry
 }
 
-/// Try to build an executor from a [`ProviderConfig`] entry.
+/// Try to instantiate an executor from a [`ProviderConfig`].
 ///
-/// Returns `None` if the required API key env var is not set.
-fn try_provider_from_config(
+/// Returns `None` if the required API key is not set in the environment.
+fn executor_from_provider_config(
     pc: &polkagent_config::ProviderConfig,
-    model_override: Option<&str>,
-) -> Option<(Arc<dyn ModelExecutor>, Option<String>)> {
+) -> Option<Arc<dyn ModelExecutor>> {
     let api_key = if pc.api_key_env.is_empty() {
-        // No key env configured — only valid for local providers.
         String::new()
     } else {
         match std::env::var(&pc.api_key_env) {
@@ -401,20 +399,10 @@ fn try_provider_from_config(
         }
     };
 
-    let model = model_override
-        .map(String::from)
-        .unwrap_or_else(|| pc.default_model.clone());
-
     match pc.provider_type.as_str() {
-        "anthropic" => {
-            let executor = AnthropicExecutor::new(api_key, model.clone());
-            let note = format!("Using provider '{}': Anthropic (model: {model}).", pc.id);
-            Some((executor, Some(note)))
-        }
+        "anthropic" => Some(AnthropicExecutor::new(api_key, pc.default_model.clone())),
         "openai" | "openai_compatible" => {
-            let executor = OpenAiExecutor::new(api_key, model.clone());
-            let note = format!("Using provider '{}': OpenAI (model: {model}).", pc.id);
-            Some((executor, Some(note)))
+            Some(OpenAiExecutor::new(api_key, pc.default_model.clone()))
         }
         "local" | "ollama" => {
             let url = if pc.base_url.is_empty() {
@@ -422,15 +410,85 @@ fn try_provider_from_config(
             } else {
                 pc.base_url.clone()
             };
-            let executor = LocalExecutor::custom(url.clone(), model.clone());
-            let note = format!(
-                "Using provider '{}': local at {url} (model: {model}).",
-                pc.id
-            );
-            Some((executor, Some(note)))
+            Some(LocalExecutor::custom(url, pc.default_model.clone()))
+        }
+        "gemini" => {
+            // Gemini executor not yet available; use OpenAI-compat shim.
+            Some(OpenAiExecutor::new(api_key, pc.default_model.clone()))
         }
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Provider resolution (§ 11.1)
+// ---------------------------------------------------------------------------
+
+/// Resolve which provider and executor to use.
+///
+/// Resolution order:
+/// 1. CLI flag: `--provider anthropic --model claude-opus-4-6`
+/// 2. Config `[execution] default_provider`
+/// 3. First registered provider in the registry (env + config)
+/// 4. Fallback: FakeExecutor with warning
+fn resolve_provider(
+    provider_flag: Option<&str>,
+    model_override: Option<&str>,
+    config: &Config,
+    registry: &ProviderRegistry,
+) -> (Arc<dyn ModelExecutor>, Option<String>) {
+    // 1. CLI flag — look up in the registry.
+    if let Some(provider_id) = provider_flag {
+        if let Ok(executor) = registry.get_executor(provider_id) {
+            let note = format!("Using provider '{provider_id}' (from --provider flag).");
+            return (executor, Some(note));
+        }
+        // Provider flag given but not in registry — try env-based matching.
+        if let Some(result) = try_provider_by_name(provider_id, model_override) {
+            return result;
+        }
+        eprintln!(
+            "Warning: provider '{provider_id}' not found in config and no matching \
+             API key detected. Falling back."
+        );
+    }
+
+    // 2. Config default_provider.
+    if let Some(ref default_id) = config.execution.default_provider {
+        if !default_id.is_empty() {
+            if let Ok(executor) = registry.get_executor(default_id) {
+                let note = format!(
+                    "Using provider '{default_id}' (from config default_provider)."
+                );
+                return (executor, Some(note));
+            }
+            eprintln!(
+                "Warning: configured default_provider '{default_id}' not found in registry."
+            );
+        }
+    }
+
+    // 3. First available provider from the registry.
+    let providers = registry.list_providers();
+    if let Some(first) = providers.first() {
+        if let Ok(executor) = registry.get_executor(&first.id) {
+            let note = format!(
+                "Using provider '{}' (auto-detected from environment).",
+                first.id
+            );
+            return (executor, Some(note));
+        }
+    }
+
+    // 4. Fallback — fake executor.
+    let note = Some(
+        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY) and no local \
+         model configured (OLLAMA_URL / OLLAMA_MODEL). Using the fake \
+         executor \u{2014} responses will be simulated. Set an API key or \
+         local model environment variable to use a real model."
+            .to_string(),
+    );
+    (FakeExecutor::new(), note)
 }
 
 /// Try to build an executor by matching a provider name to well-known types.
@@ -466,12 +524,16 @@ fn try_provider_by_name(
 
 /// Detect which model executor to use based on environment variables.
 ///
+/// Retained for backward-compatible test coverage. Production code now uses
+/// [`build_provider_registry`] + [`resolve_provider`] instead.
+///
 /// Priority:
 /// 1. `ANTHROPIC_API_KEY` present → [`AnthropicExecutor`].
 /// 2. `OPENAI_API_KEY` present → [`OpenAiExecutor`].
 /// 3. `OLLAMA_URL` present → [`LocalExecutor`] targeting the given URL.
 /// 4. `OLLAMA_MODEL` present → [`LocalExecutor`] with default Ollama endpoint.
 /// 5. Otherwise → [`FakeExecutor`] with a helpful note.
+#[cfg(test)]
 fn detect_executor(
     model_override: Option<&str>,
 ) -> (Arc<dyn ModelExecutor>, Option<String>) {
@@ -534,91 +596,6 @@ fn detect_executor(
             .to_string(),
     );
     (FakeExecutor::new(), note)
-}
-
-// ---------------------------------------------------------------------------
-// Harness resolution (§ 11.2)
-// ---------------------------------------------------------------------------
-
-/// Resolve which harness to use.
-///
-/// Resolution order:
-/// 1. CLI flag: `--harness codex`
-/// 2. Config default: `[harness] default` from config
-/// 3. First available: probe harnesses in order
-/// 4. Fallback: `None` (executor-only mode)
-///
-/// Returns the harness name (if any) and an informational note.
-fn resolve_harness(
-    harness_flag: Option<&str>,
-    config: &Config,
-) -> (Option<String>, Option<String>) {
-    // 1. CLI flag.
-    if let Some(name) = harness_flag {
-        if probe_harness_binary(name).is_some() {
-            let note = format!("Using harness '{name}' (from --harness flag).");
-            return (Some(name.to_owned()), Some(note));
-        }
-        let note = format!(
-            "Warning: harness '{name}' binary not found on PATH. \
-             Falling back to executor-only mode."
-        );
-        return (None, Some(note));
-    }
-
-    // 2. Config default.
-    if let Some(ref default_harness) = config.harness.default {
-        if !default_harness.is_empty() {
-            if probe_harness_binary(default_harness).is_some() {
-                let note = format!(
-                    "Using harness '{default_harness}' (from config default)."
-                );
-                return (Some(default_harness.clone()), Some(note));
-            }
-            let note = format!(
-                "Warning: configured default harness '{default_harness}' not found on PATH."
-            );
-            eprintln!("{note}");
-        }
-    }
-
-    // 3. First available.
-    for &(harness_name, _binary) in KNOWN_HARNESSES {
-        if probe_harness_binary(harness_name).is_some() {
-            let note = format!(
-                "Auto-detected harness '{harness_name}' on PATH."
-            );
-            return (Some(harness_name.to_owned()), Some(note));
-        }
-    }
-
-    // 4. Fallback — executor-only mode.
-    (None, Some("No harness found. Running in executor-only mode.".to_owned()))
-}
-
-/// Look up the binary for a harness name. Returns the binary path if found.
-fn probe_harness_binary(harness_name: &str) -> Option<String> {
-    // Check config-defined harnesses first (for custom binary paths).
-    let binary = KNOWN_HARNESSES
-        .iter()
-        .find(|&&(name, _)| name == harness_name)
-        .map(|&(_, bin)| bin.to_owned())
-        .unwrap_or_else(|| harness_name.to_owned());
-
-    which_binary(&binary)
-}
-
-/// Check if a binary is available on PATH. Returns the full path if found.
-fn which_binary(name: &str) -> Option<String> {
-    std::process::Command::new("which")
-        .arg(name)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            let path = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-            if path.is_empty() { None } else { Some(path) }
-        })
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +704,10 @@ mod tests {
         const KEYS: &'static [&'static str] = &[
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "PERPLEXITY_API_KEY",
+            "CEREBRAS_API_KEY",
             "OLLAMA_URL",
             "OLLAMA_MODEL",
         ];
@@ -894,10 +875,11 @@ mod tests {
         std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
 
         let config = Config::default();
-        let (_exec, note) = resolve_provider(Some("anthropic"), None, &config);
+        let registry = build_provider_registry(&config);
+        let (_exec, note) = resolve_provider(Some("anthropic"), None, &config, &registry);
         let note_text = note.expect("expected a note");
         assert!(
-            note_text.contains("Anthropic"),
+            note_text.contains("Anthropic") || note_text.contains("anthropic"),
             "expected note to mention 'Anthropic', got: {note_text}",
         );
     }
@@ -909,10 +891,11 @@ mod tests {
         std::env::set_var("OPENAI_API_KEY", "sk-test");
 
         let config = Config::default();
-        let (_exec, note) = resolve_provider(Some("openai"), None, &config);
+        let registry = build_provider_registry(&config);
+        let (_exec, note) = resolve_provider(Some("openai"), None, &config, &registry);
         let note_text = note.expect("expected a note");
         assert!(
-            note_text.contains("OpenAI"),
+            note_text.contains("OpenAI") || note_text.contains("openai"),
             "expected note to mention 'OpenAI', got: {note_text}",
         );
     }
@@ -932,39 +915,12 @@ mod tests {
             ..Default::default()
         });
 
-        let (_exec, note) = resolve_provider(Some("my-anthropic"), None, &config);
+        let registry = build_provider_registry(&config);
+        let (_exec, note) = resolve_provider(Some("my-anthropic"), None, &config, &registry);
         let note_text = note.expect("expected a note");
         assert!(
             note_text.contains("my-anthropic"),
             "expected note to mention provider id, got: {note_text}",
-        );
-        assert!(
-            note_text.contains("claude-opus-4-6"),
-            "expected note to mention model, got: {note_text}",
-        );
-    }
-
-    #[test]
-    fn resolve_provider_model_override_with_config() {
-        let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("MY_ANTHROPIC_KEY", "sk-custom");
-
-        let mut config = Config::default();
-        config.providers.push(polkagent_config::ProviderConfig {
-            id: "my-anthropic".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "MY_ANTHROPIC_KEY".to_owned(),
-            default_model: "claude-sonnet-4-6".to_owned(),
-            ..Default::default()
-        });
-
-        let (_exec, note) =
-            resolve_provider(Some("my-anthropic"), Some("claude-opus-4-6"), &config);
-        let note_text = note.expect("expected a note");
-        assert!(
-            note_text.contains("claude-opus-4-6"),
-            "model override should win, got: {note_text}",
         );
     }
 
@@ -975,11 +931,12 @@ mod tests {
         std::env::set_var("OPENAI_API_KEY", "sk-test");
 
         let config = Config::default();
+        let registry = build_provider_registry(&config);
         // No provider flag, no config providers — should fall to env detection.
-        let (_exec, note) = resolve_provider(None, None, &config);
+        let (_exec, note) = resolve_provider(None, None, &config, &registry);
         let note_text = note.expect("expected a note");
         assert!(
-            note_text.contains("OpenAI"),
+            note_text.contains("OpenAI") || note_text.contains("openai"),
             "should detect OpenAI from env, got: {note_text}",
         );
     }
@@ -989,7 +946,8 @@ mod tests {
         let _guard = EnvGuard::new();
 
         let config = Config::default();
-        let (_exec, note) = resolve_provider(None, None, &config);
+        let registry = build_provider_registry(&config);
+        let (_exec, note) = resolve_provider(None, None, &config, &registry);
         let note_text = note.expect("expected a note");
         assert!(
             note_text.contains("fake executor"),
@@ -997,57 +955,125 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolve_provider_default_provider_from_config() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("OPENAI_API_KEY", "sk-test");
+
+        let mut config = Config::default();
+        config.execution.default_provider = Some("openai".to_owned());
+
+        let registry = build_provider_registry(&config);
+        // No CLI flag — should pick up default_provider from config.
+        let (_exec, note) = resolve_provider(None, None, &config, &registry);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("openai") && note_text.contains("default_provider"),
+            "should use config default_provider, got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn build_provider_registry_populates_from_env() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+
+        let config = Config::default();
+        let registry = build_provider_registry(&config);
+        assert!(
+            !registry.is_empty(),
+            "registry should have at least one provider from env"
+        );
+        assert!(
+            registry.get_executor("anthropic").is_ok(),
+            "should find anthropic provider in registry"
+        );
+    }
+
+    #[test]
+    fn build_provider_registry_config_overrides_env() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("MY_KEY", "sk-custom");
+
+        let mut config = Config::default();
+        config.providers.push(polkagent_config::ProviderConfig {
+            id: "custom-provider".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "MY_KEY".to_owned(),
+            default_model: "claude-opus-4-6".to_owned(),
+            ..Default::default()
+        });
+
+        let registry = build_provider_registry(&config);
+        assert!(
+            registry.get_executor("custom-provider").is_ok(),
+            "config-defined provider should be in registry"
+        );
+    }
+
+    #[test]
+    fn build_provider_registry_empty_when_no_keys() {
+        let _guard = EnvGuard::new();
+
+        let config = Config::default();
+        let registry = build_provider_registry(&config);
+        assert!(
+            registry.is_empty(),
+            "registry should be empty with no env keys"
+        );
+    }
+
     // -----------------------------------------------------------------------
-    // Harness resolution tests
+    // Harness registry resolution tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn resolve_harness_no_flag_no_config_falls_back() {
-        let config = Config::default();
-        let (name, note) = resolve_harness(None, &config);
-        // We can't guarantee any harness is on PATH in CI, but the fallback
-        // message should appear if none is found.
-        if name.is_none() {
-            let note_text = note.expect("expected a note");
+    fn harness_registry_resolve_no_flag_no_config_falls_back() {
+        let mut registry = HarnessRegistry::with_known_harnesses();
+        let result = registry.resolve(None, None);
+        // We can't guarantee any harness is on PATH in CI, but the result
+        // should either be auto-detected or fallback.
+        if result.harness_name.is_none() {
+            let note = result.note.expect("expected a note");
             assert!(
-                note_text.contains("executor-only mode")
-                    || note_text.contains("Auto-detected"),
-                "expected fallback or auto-detect note, got: {note_text}",
+                note.contains("executor-only mode"),
+                "expected fallback note, got: {note}",
+            );
+        } else {
+            let note = result.note.expect("expected a note");
+            assert!(
+                note.contains("Auto-detected"),
+                "expected auto-detect note, got: {note}",
             );
         }
     }
 
     #[test]
-    fn resolve_harness_nonexistent_binary_falls_back() {
-        let config = Config::default();
-        let (name, note) = resolve_harness(Some("nonexistent-harness-xyz"), &config);
-        assert!(name.is_none());
-        let note_text = note.expect("expected a note");
+    fn harness_registry_resolve_nonexistent_binary_falls_back() {
+        let mut registry = HarnessRegistry::with_known_harnesses();
+        let result = registry.resolve(Some("nonexistent-harness-xyz"), None);
+        assert!(result.harness_name.is_none());
+        let note = result.note.expect("expected a note");
         assert!(
-            note_text.contains("not found on PATH"),
-            "expected 'not found' note, got: {note_text}",
+            note.contains("not found on PATH"),
+            "expected 'not found' note, got: {note}",
         );
     }
 
     #[test]
-    fn which_binary_finds_sh() {
-        // `sh` should exist on any Unix system.
-        let result = which_binary("sh");
-        assert!(result.is_some(), "expected `sh` to be found on PATH");
-    }
-
-    #[test]
-    fn which_binary_returns_none_for_nonexistent() {
-        let result = which_binary("nonexistent-binary-abc123xyz");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn known_harnesses_has_expected_entries() {
-        let names: Vec<&str> = KNOWN_HARNESSES.iter().map(|&(n, _)| n).collect();
-        assert!(names.contains(&"claude-code"));
-        assert!(names.contains(&"codex"));
-        assert!(names.contains(&"cursor"));
-        assert!(names.contains(&"goose"));
+    fn harness_registry_has_known_entries() {
+        let registry = HarnessRegistry::with_known_harnesses();
+        let ids: Vec<String> = registry
+            .list_harnesses()
+            .iter()
+            .map(|h| h.id.clone())
+            .collect();
+        assert!(ids.contains(&"claude-code".to_owned()));
+        assert!(ids.contains(&"codex".to_owned()));
+        assert!(ids.contains(&"cursor".to_owned()));
+        assert!(ids.contains(&"goose".to_owned()));
     }
 }

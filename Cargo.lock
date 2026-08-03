@@ -2474,6 +2474,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-executor-gemini"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "polkagent-core",
+ "polkagent-executor-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-executor-local"
 version = "0.1.0"
 dependencies = [
@@ -2491,6 +2507,22 @@ dependencies = [
 
 [[package]]
 name = "polkagent-executor-openai"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "polkagent-core",
+ "polkagent-executor-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "polkagent-executor-openrouter"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2648,7 +2680,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-harness-copilot"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "chrono",
+ "futures",
+ "polkagent-core",
+ "polkagent-executor-trait",
+ "polkagent-harness-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-harness-cursor"
+version = "0.1.0"
+dependencies = [
+ "polkagent-harness-acp",
+ "polkagent-harness-trait",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "polkagent-harness-goose"
+version = "0.1.0"
+dependencies = [
+ "polkagent-harness-acp",
+ "polkagent-harness-trait",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "polkagent-harness-kiro"
 version = "0.1.0"
 dependencies = [
  "polkagent-harness-acp",

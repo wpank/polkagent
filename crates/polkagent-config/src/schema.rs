@@ -235,6 +235,10 @@ pub struct ExecutionConfig {
     pub default_timeout_secs: u64,
     /// Default spending limits applied to every run.
     pub budget: BudgetConfig,
+    /// Default provider identifier used when no `--provider` CLI flag is given.
+    /// When `None`, the system falls back to environment-variable detection.
+    #[serde(default)]
+    pub default_provider: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -243,6 +247,7 @@ impl Default for ExecutionConfig {
             max_concurrent_runs: 10,
             default_timeout_secs: 600,
             budget: BudgetConfig::default(),
+            default_provider: None,
         }
     }
 }

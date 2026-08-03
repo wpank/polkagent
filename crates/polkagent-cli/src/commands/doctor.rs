@@ -7,21 +7,105 @@ use anyhow::Result;
 
 use crate::cli::DoctorCmd;
 
-/// Known harness entries: (name, binary, api_key_env).
-const KNOWN_HARNESSES: &[(&str, &str, &str)] = &[
-    ("claude-code", "claude", "ANTHROPIC_API_KEY"),
-    ("codex", "codex", "OPENAI_API_KEY"),
-    ("cursor", "cursor", ""),
-    ("goose", "goose", ""),
+/// Known harness entries: (name, binary, api_key_env, min_version).
+///
+/// `min_version` is a `(major, minor, patch)` tuple. When `None`, any version
+/// is accepted.
+const KNOWN_HARNESSES: &[HarnessDef] = &[
+    HarnessDef {
+        name: "claude-code",
+        binary: "claude",
+        api_key_env: "ANTHROPIC_API_KEY",
+        min_version: Some((1, 0, 0)),
+    },
+    HarnessDef {
+        name: "codex",
+        binary: "codex",
+        api_key_env: "OPENAI_API_KEY",
+        min_version: Some((0, 1, 0)),
+    },
+    HarnessDef {
+        name: "cursor",
+        binary: "cursor",
+        api_key_env: "",
+        min_version: None,
+    },
+    HarnessDef {
+        name: "goose",
+        binary: "goose",
+        api_key_env: "",
+        min_version: None,
+    },
+    HarnessDef {
+        name: "gh-copilot",
+        binary: "gh",
+        api_key_env: "",
+        min_version: None,
+    },
+    HarnessDef {
+        name: "kiro",
+        binary: "kiro-cli",
+        api_key_env: "",
+        min_version: None,
+    },
 ];
 
+struct HarnessDef {
+    name: &'static str,
+    binary: &'static str,
+    api_key_env: &'static str,
+    min_version: Option<(u32, u32, u32)>,
+}
+
 /// Default provider definitions used when no config file is present.
-const DEFAULT_PROVIDERS: &[(&str, &str, &str, &str)] = &[
-    // (id, type, api_key_env, default_model)
-    ("anthropic", "anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-6"),
-    ("openai", "openai", "OPENAI_API_KEY", "gpt-5.4-mini"),
-    ("gemini", "gemini", "GEMINI_API_KEY", "gemini-2.5-flash"),
+///
+/// Tuple: (id, type, api_key_env, default_model, health_url).
+/// `health_url` is a base URL whose TCP reachability we probe.
+const DEFAULT_PROVIDERS: &[ProviderDef] = &[
+    ProviderDef {
+        id: "anthropic",
+        api_key_env: "ANTHROPIC_API_KEY",
+        default_model: "claude-sonnet-4-6",
+        base_url: "https://api.anthropic.com",
+    },
+    ProviderDef {
+        id: "openai",
+        api_key_env: "OPENAI_API_KEY",
+        default_model: "gpt-5.4-mini",
+        base_url: "https://api.openai.com",
+    },
+    ProviderDef {
+        id: "gemini",
+        api_key_env: "GEMINI_API_KEY",
+        default_model: "gemini-2.5-flash",
+        base_url: "https://generativelanguage.googleapis.com",
+    },
+    ProviderDef {
+        id: "openrouter",
+        api_key_env: "OPENROUTER_API_KEY",
+        default_model: "claude-sonnet-4-6",
+        base_url: "https://openrouter.ai",
+    },
+    ProviderDef {
+        id: "perplexity",
+        api_key_env: "PERPLEXITY_API_KEY",
+        default_model: "sonar",
+        base_url: "https://api.perplexity.ai",
+    },
+    ProviderDef {
+        id: "cerebras",
+        api_key_env: "CEREBRAS_API_KEY",
+        default_model: "llama-4-scout-17b-16e",
+        base_url: "https://api.cerebras.ai",
+    },
 ];
+
+struct ProviderDef {
+    id: &'static str,
+    api_key_env: &'static str,
+    default_model: &'static str,
+    base_url: &'static str,
+}
 
 // ---------------------------------------------------------------------------
 // Check types
@@ -38,6 +122,7 @@ struct Check {
 enum CheckStatus {
     Ok,
     Fail,
+    Warn,
     Skip,
 }
 
@@ -46,6 +131,7 @@ impl CheckStatus {
         match self {
             Self::Ok => "OK",
             Self::Fail => "FAIL",
+            Self::Warn => "WARN",
             Self::Skip => "SKIP",
         }
     }
@@ -54,12 +140,13 @@ impl CheckStatus {
         match self {
             Self::Ok => "\u{25C9}",   // filled circle
             Self::Fail => "\u{25A0}", // filled square
+            Self::Warn => "\u{25B3}", // triangle
             Self::Skip => "\u{25A0}", // filled square
         }
     }
 
     fn is_pass(self) -> bool {
-        self == Self::Ok
+        self == Self::Ok || self == Self::Warn
     }
 }
 
@@ -147,38 +234,43 @@ fn print_human(system: &[Check], providers: &[Check], harnesses: &[Check]) {
     // System checks.
     println!("  System");
     for c in system {
-        let glyph = c.status.glyph();
-        let label = c.status.label();
-        println!("    {glyph} [{label:<4}] {}: {}", c.name, c.message);
+        print_check(c);
     }
     println!();
 
     // Providers.
     println!("  Providers");
     for c in providers {
-        let glyph = c.status.glyph();
-        let label = c.status.label();
-        println!("    {glyph} [{label:<4}] {}: {}", c.name, c.message);
+        print_check(c);
     }
     println!();
 
     // Harnesses.
     println!("  Harnesses");
     for c in harnesses {
-        let glyph = c.status.glyph();
-        let label = c.status.label();
-        println!("    {glyph} [{label:<4}] {}: {}", c.name, c.message);
+        print_check(c);
     }
 
     // Summary.
     println!();
+    let all: Vec<&Check> = system.iter().chain(providers).chain(harnesses).collect();
+    let passed = all.iter().filter(|c| c.status.is_pass()).count();
+    let total = all.len();
+
     let provider_pass = providers.iter().filter(|c| c.status.is_pass()).count();
     let provider_total = providers.len();
-    println!("  {provider_pass}/{provider_total} provider checks passed.");
-
     let harness_pass = harnesses.iter().filter(|c| c.status.is_pass()).count();
     let harness_total = harnesses.len();
+
+    println!("  {provider_pass}/{provider_total} provider checks passed.");
     println!("  {harness_pass}/{harness_total} harness checks passed.");
+    println!("  {passed}/{total} total checks passed.");
+}
+
+fn print_check(c: &Check) {
+    let glyph = c.status.glyph();
+    let label = c.status.label();
+    println!("    {glyph} [{label:<4}] {}: {}", c.name, c.message);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,19 +282,29 @@ fn check_providers(config: &polkagent_config::schema::Config) -> Vec<Check> {
 
     if config.providers.is_empty() {
         // No config providers — probe defaults.
-        for &(id, _ptype, key_env, default_model) in DEFAULT_PROVIDERS {
-            checks.push(check_single_provider(id, key_env, default_model, ""));
+        for def in DEFAULT_PROVIDERS {
+            checks.extend(check_provider_full(
+                def.id,
+                def.api_key_env,
+                def.default_model,
+                def.base_url,
+            ));
         }
         // Also probe local/ollama.
         checks.push(check_local_provider());
     } else {
         for pc in &config.providers {
             let base_url = if pc.base_url.is_empty() {
-                ""
+                // Look up in default defs.
+                DEFAULT_PROVIDERS
+                    .iter()
+                    .find(|d| d.id == pc.id)
+                    .map(|d| d.base_url)
+                    .unwrap_or("")
             } else {
                 &pc.base_url
             };
-            checks.push(check_single_provider(
+            checks.extend(check_provider_full(
                 &pc.id,
                 &pc.api_key_env,
                 &pc.default_model,
@@ -214,39 +316,78 @@ fn check_providers(config: &polkagent_config::schema::Config) -> Vec<Check> {
     checks
 }
 
-fn check_single_provider(
+/// Produce multiple checks for a single provider:
+/// 1. API key env var is set and non-empty
+/// 2. Endpoint reachability (TCP connect to base URL host)
+fn check_provider_full(
     id: &str,
     api_key_env: &str,
     default_model: &str,
     base_url: &str,
-) -> Check {
-    if api_key_env.is_empty() {
-        return Check {
-            name: id.to_owned(),
+) -> Vec<Check> {
+    let mut checks = Vec::new();
+
+    // (1) API key probe.
+    let key_ok = if api_key_env.is_empty() {
+        checks.push(Check {
+            name: format!("{id}/api-key"),
             status: CheckStatus::Skip,
             message: "no API key env configured".to_owned(),
-        };
-    }
-
-    match std::env::var(api_key_env) {
-        Ok(val) if !val.is_empty() => {
-            let url_part = if base_url.is_empty() {
-                String::new()
-            } else {
-                format!(" ({base_url})")
-            };
-            Check {
-                name: id.to_owned(),
-                status: CheckStatus::Ok,
-                message: format!("{default_model}{url_part}"),
+        });
+        false
+    } else {
+        match std::env::var(api_key_env) {
+            Ok(val) if !val.is_empty() => {
+                checks.push(Check {
+                    name: format!("{id}/api-key"),
+                    status: CheckStatus::Ok,
+                    message: format!("{api_key_env} is set (model: {default_model})"),
+                });
+                true
+            }
+            _ => {
+                checks.push(Check {
+                    name: format!("{id}/api-key"),
+                    status: CheckStatus::Fail,
+                    message: format!("{api_key_env} not set"),
+                });
+                false
             }
         }
-        _ => Check {
-            name: id.to_owned(),
-            status: CheckStatus::Fail,
-            message: format!("{api_key_env} not set"),
-        },
+    };
+
+    // (2) Endpoint reachability probe.
+    if base_url.is_empty() {
+        checks.push(Check {
+            name: format!("{id}/endpoint"),
+            status: CheckStatus::Skip,
+            message: "no base URL configured".to_owned(),
+        });
+    } else if !key_ok {
+        // No point probing the endpoint if we don't have a key.
+        checks.push(Check {
+            name: format!("{id}/endpoint"),
+            status: CheckStatus::Skip,
+            message: format!("skipped (no API key) - {base_url}"),
+        });
+    } else {
+        let reachable = probe_tcp(base_url);
+        if reachable {
+            checks.push(Check {
+                name: format!("{id}/endpoint"),
+                status: CheckStatus::Ok,
+                message: format!("reachable: {base_url}"),
+            });
+        } else {
+            checks.push(Check {
+                name: format!("{id}/endpoint"),
+                status: CheckStatus::Fail,
+                message: format!("not reachable: {base_url}"),
+            });
+        }
     }
+
+    checks
 }
 
 fn check_local_provider() -> Check {
@@ -255,17 +396,36 @@ fn check_local_provider() -> Check {
 
     if let Some(url) = ollama_url {
         let model = ollama_model.as_deref().unwrap_or("llama3.2");
-        Check {
-            name: "local-ollama".to_owned(),
-            status: CheckStatus::Ok,
-            message: format!("{model} ({url})"),
+        let reachable = probe_tcp(&url);
+        if reachable {
+            Check {
+                name: "local-ollama".to_owned(),
+                status: CheckStatus::Ok,
+                message: format!("{model} ({url}) reachable"),
+            }
+        } else {
+            Check {
+                name: "local-ollama".to_owned(),
+                status: CheckStatus::Warn,
+                message: format!("{model} ({url}) configured but not reachable"),
+            }
         }
     } else if ollama_model.is_some() {
         let model = ollama_model.as_deref().unwrap_or("llama3.2");
-        Check {
-            name: "local-ollama".to_owned(),
-            status: CheckStatus::Ok,
-            message: format!("{model} (localhost:11434)"),
+        let default_url = "http://localhost:11434";
+        let reachable = probe_tcp(default_url);
+        if reachable {
+            Check {
+                name: "local-ollama".to_owned(),
+                status: CheckStatus::Ok,
+                message: format!("{model} ({default_url}) reachable"),
+            }
+        } else {
+            Check {
+                name: "local-ollama".to_owned(),
+                status: CheckStatus::Warn,
+                message: format!("{model} ({default_url}) configured but not reachable"),
+            }
         }
     } else {
         Check {
@@ -283,15 +443,15 @@ fn check_local_provider() -> Check {
 fn check_harnesses(config: &polkagent_config::schema::Config) -> Vec<Check> {
     let mut checks = Vec::new();
 
-    for &(name, binary, api_key_env) in KNOWN_HARNESSES {
+    for def in KNOWN_HARNESSES {
         // Check if harness is configured (either in known list or config).
-        let configured = config.harness.harnesses.contains_key(name)
-            || config.harness.default.as_deref() == Some(name)
+        let configured = config.harness.harnesses.contains_key(def.name)
+            || config.harness.default.as_deref() == Some(def.name)
             || config.harness.harnesses.is_empty(); // probe all when no config
 
         if !configured && !config.harness.harnesses.is_empty() {
             checks.push(Check {
-                name: name.to_owned(),
+                name: def.name.to_owned(),
                 status: CheckStatus::Skip,
                 message: "not configured".to_owned(),
             });
@@ -302,43 +462,135 @@ fn check_harnesses(config: &polkagent_config::schema::Config) -> Vec<Check> {
         let binary_to_check = config
             .harness
             .harnesses
-            .get(name)
+            .get(def.name)
             .and_then(|e| e.binary_path.as_deref())
-            .unwrap_or(binary);
+            .unwrap_or(def.binary);
 
+        // Special case for gh-copilot: check `gh copilot --version` not just `gh`.
+        let is_gh_copilot = def.name == "gh-copilot";
+
+        // (1) Binary existence.
         match which_binary(binary_to_check) {
             Some(path) => {
-                let version = get_binary_version(binary_to_check);
-                let version_str = version.as_deref().unwrap_or("unknown version");
+                checks.push(Check {
+                    name: format!("{}/binary", def.name),
+                    status: CheckStatus::Ok,
+                    message: format!("{binary_to_check} found at {path}"),
+                });
 
-                // Check auth if applicable.
-                let auth_ok = api_key_env.is_empty()
-                    || std::env::var(api_key_env)
+                // (2) Version check.
+                let version = if is_gh_copilot {
+                    get_gh_copilot_version()
+                } else {
+                    get_binary_version(binary_to_check)
+                };
+
+                match &version {
+                    Some(ver_str) => {
+                        if let Some(min) = def.min_version {
+                            if let Some(parsed) = parse_semver(ver_str) {
+                                if parsed >= min {
+                                    checks.push(Check {
+                                        name: format!("{}/version", def.name),
+                                        status: CheckStatus::Ok,
+                                        message: format!(
+                                            "{ver_str} (>= {}.{}.{})",
+                                            min.0, min.1, min.2,
+                                        ),
+                                    });
+                                } else {
+                                    checks.push(Check {
+                                        name: format!("{}/version", def.name),
+                                        status: CheckStatus::Warn,
+                                        message: format!(
+                                            "{ver_str} (< {}.{}.{} minimum)",
+                                            min.0, min.1, min.2,
+                                        ),
+                                    });
+                                }
+                            } else {
+                                checks.push(Check {
+                                    name: format!("{}/version", def.name),
+                                    status: CheckStatus::Ok,
+                                    message: format!("{ver_str} (could not parse semver)"),
+                                });
+                            }
+                        } else {
+                            checks.push(Check {
+                                name: format!("{}/version", def.name),
+                                status: CheckStatus::Ok,
+                                message: ver_str.clone(),
+                            });
+                        }
+                    }
+                    None => {
+                        if is_gh_copilot {
+                            // gh exists but copilot extension might not be installed.
+                            checks.push(Check {
+                                name: format!("{}/version", def.name),
+                                status: CheckStatus::Fail,
+                                message: "gh copilot extension not installed (run `gh extension install github/gh-copilot`)".to_owned(),
+                            });
+                            // Skip auth check for gh-copilot if extension missing.
+                            continue;
+                        } else {
+                            checks.push(Check {
+                                name: format!("{}/version", def.name),
+                                status: CheckStatus::Warn,
+                                message: "could not determine version".to_owned(),
+                            });
+                        }
+                    }
+                }
+
+                // (3) Auth validation.
+                if !def.api_key_env.is_empty() {
+                    let auth_ok = std::env::var(def.api_key_env)
                         .ok()
                         .filter(|k| !k.is_empty())
                         .is_some();
+                    if auth_ok {
+                        checks.push(Check {
+                            name: format!("{}/auth", def.name),
+                            status: CheckStatus::Ok,
+                            message: format!("{} is set", def.api_key_env),
+                        });
+                    } else {
+                        checks.push(Check {
+                            name: format!("{}/auth", def.name),
+                            status: CheckStatus::Fail,
+                            message: format!("{} not set", def.api_key_env),
+                        });
+                    }
+                }
 
-                if auth_ok {
-                    checks.push(Check {
-                        name: name.to_owned(),
-                        status: CheckStatus::Ok,
-                        message: format!("{binary_to_check} {version_str} ({path})"),
-                    });
-                } else {
-                    checks.push(Check {
-                        name: name.to_owned(),
-                        status: CheckStatus::Fail,
-                        message: format!(
-                            "binary found at {path} but {api_key_env} not set"
-                        ),
-                    });
+                // (4) Daemon health for HTTP-transport harnesses.
+                if let Some(entry) = config.harness.harnesses.get(def.name) {
+                    if entry.transport.as_deref() == Some("http") {
+                        let port = entry.http_port.unwrap_or(9090);
+                        let addr = format!("127.0.0.1:{port}");
+                        let reachable = probe_tcp_addr(&addr);
+                        checks.push(Check {
+                            name: format!("{}/daemon", def.name),
+                            status: if reachable {
+                                CheckStatus::Ok
+                            } else {
+                                CheckStatus::Fail
+                            },
+                            message: if reachable {
+                                format!("HTTP daemon reachable at {addr}")
+                            } else {
+                                format!("HTTP daemon not reachable at {addr}")
+                            },
+                        });
+                    }
                 }
             }
             None => {
                 checks.push(Check {
-                    name: name.to_owned(),
+                    name: format!("{}/binary", def.name),
                     status: CheckStatus::Fail,
-                    message: "binary not found".to_owned(),
+                    message: format!("{binary_to_check} not found on PATH"),
                 });
             }
         }
@@ -597,19 +849,21 @@ fn probe_tcp_addr(addr: &str) -> bool {
     use std::net::TcpStream;
     use std::time::Duration;
 
+    // Determine port from scheme context.
     let addr = if addr.contains(':') {
         addr.to_owned()
     } else {
-        format!("{addr}:80")
+        format!("{addr}:443")
     };
 
-    TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .unwrap_or_else(|_| ([127, 0, 0, 1], 80).into()),
-        Duration::from_secs(2),
-    )
-    .is_ok()
+    // Try DNS resolution first, then connect.
+    use std::net::ToSocketAddrs;
+    if let Ok(mut addrs) = addr.to_socket_addrs() {
+        if let Some(socket_addr) = addrs.next() {
+            return TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3)).is_ok();
+        }
+    }
+    false
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -653,6 +907,48 @@ fn get_binary_version(binary: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Get `gh copilot --version` output.
+fn get_gh_copilot_version() -> Option<String> {
+    std::process::Command::new("gh")
+        .args(["copilot", "--version"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let out = String::from_utf8_lossy(&o.stdout);
+            out.lines().next().unwrap_or("").trim().to_owned()
+        })
+        .filter(|s| !s.is_empty())
+}
+
+/// Parse a version string into `(major, minor, patch)`.
+///
+/// Handles formats like:
+/// - `1.2.3`
+/// - `v1.2.3`
+/// - `claude-code 1.2.3`
+/// - `codex v0.1.2-beta`
+fn parse_semver(version_str: &str) -> Option<(u32, u32, u32)> {
+    // Find the first sequence that looks like digits.digits.digits.
+    let re_like = version_str
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .find(|s| s.contains('.') && s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))?;
+
+    let mut parts = re_like.splitn(3, '.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+    // Patch may contain trailing non-digit chars (e.g. "3-beta").
+    let patch_str = parts.next().unwrap_or("0");
+    let patch: u32 = patch_str
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+
+    Some((major, minor, patch))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -665,12 +961,14 @@ mod tests {
     fn check_status_labels() {
         assert_eq!(CheckStatus::Ok.label(), "OK");
         assert_eq!(CheckStatus::Fail.label(), "FAIL");
+        assert_eq!(CheckStatus::Warn.label(), "WARN");
         assert_eq!(CheckStatus::Skip.label(), "SKIP");
     }
 
     #[test]
     fn check_status_is_pass() {
         assert!(CheckStatus::Ok.is_pass());
+        assert!(CheckStatus::Warn.is_pass());
         assert!(!CheckStatus::Fail.is_pass());
         assert!(!CheckStatus::Skip.is_pass());
     }
@@ -679,34 +977,50 @@ mod tests {
     fn check_status_glyphs_are_nonempty() {
         assert!(!CheckStatus::Ok.glyph().is_empty());
         assert!(!CheckStatus::Fail.glyph().is_empty());
+        assert!(!CheckStatus::Warn.glyph().is_empty());
         assert!(!CheckStatus::Skip.glyph().is_empty());
     }
 
     #[test]
-    fn check_single_provider_missing_key() {
-        let check = check_single_provider(
-            "test-provider",
-            "NONEXISTENT_KEY_XYZ_123",
-            "test-model",
-            "",
-        );
-        assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.message.contains("not set"));
+    fn parse_semver_simple() {
+        assert_eq!(parse_semver("1.2.3"), Some((1, 2, 3)));
     }
 
     #[test]
-    fn check_single_provider_no_key_env_skips() {
-        let check = check_single_provider("test-provider", "", "test-model", "");
-        assert_eq!(check.status, CheckStatus::Skip);
+    fn parse_semver_with_v_prefix() {
+        assert_eq!(parse_semver("v1.2.3"), Some((1, 2, 3)));
+    }
+
+    #[test]
+    fn parse_semver_with_program_name() {
+        assert_eq!(parse_semver("claude-code 1.0.12"), Some((1, 0, 12)));
+    }
+
+    #[test]
+    fn parse_semver_with_prerelease() {
+        assert_eq!(parse_semver("codex v0.1.2-beta"), Some((0, 1, 2)));
+    }
+
+    #[test]
+    fn parse_semver_invalid() {
+        assert_eq!(parse_semver("no version here"), None);
+    }
+
+    #[test]
+    fn parse_semver_two_part() {
+        // Two-part versions: patch defaults to 0.
+        assert_eq!(parse_semver("1.2"), Some((1, 2, 0)));
     }
 
     #[test]
     fn known_harnesses_has_expected_entries() {
-        let names: Vec<&str> = KNOWN_HARNESSES.iter().map(|&(n, _, _)| n).collect();
+        let names: Vec<&str> = KNOWN_HARNESSES.iter().map(|d| d.name).collect();
         assert!(names.contains(&"claude-code"));
         assert!(names.contains(&"codex"));
         assert!(names.contains(&"cursor"));
         assert!(names.contains(&"goose"));
+        assert!(names.contains(&"gh-copilot"));
+        assert!(names.contains(&"kiro"));
     }
 
     #[test]
@@ -729,19 +1043,48 @@ mod tests {
     #[test]
     fn default_providers_has_entries() {
         assert!(!DEFAULT_PROVIDERS.is_empty());
-        let ids: Vec<&str> = DEFAULT_PROVIDERS.iter().map(|&(id, _, _, _)| id).collect();
+        let ids: Vec<&str> = DEFAULT_PROVIDERS.iter().map(|d| d.id).collect();
         assert!(ids.contains(&"anthropic"));
         assert!(ids.contains(&"openai"));
+        assert!(ids.contains(&"gemini"));
+        assert!(ids.contains(&"openrouter"));
+        assert!(ids.contains(&"perplexity"));
+        assert!(ids.contains(&"cerebras"));
+    }
+
+    #[test]
+    fn check_provider_full_missing_key() {
+        let checks = check_provider_full(
+            "test-provider",
+            "NONEXISTENT_KEY_XYZ_123",
+            "test-model",
+            "https://example.com",
+        );
+        // Should have api-key (FAIL) and endpoint (SKIP, no key).
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].status, CheckStatus::Fail);
+        assert!(checks[0].name.contains("api-key"));
+        assert_eq!(checks[1].status, CheckStatus::Skip);
+        assert!(checks[1].name.contains("endpoint"));
+    }
+
+    #[test]
+    fn check_provider_full_no_key_env_skips() {
+        let checks = check_provider_full("test-provider", "", "test-model", "");
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].status, CheckStatus::Skip);
+        assert_eq!(checks[1].status, CheckStatus::Skip);
     }
 
     #[test]
     fn check_providers_with_default_config() {
         let config = polkagent_config::schema::Config::default();
         let checks = check_providers(&config);
-        // Should produce checks for default providers + local-ollama.
+        // Should produce checks for default providers (2 per provider) + local-ollama.
         assert!(
-            checks.len() >= 3,
-            "expected at least 3 provider checks, got {}",
+            checks.len() >= DEFAULT_PROVIDERS.len() * 2 + 1,
+            "expected at least {} provider checks, got {}",
+            DEFAULT_PROVIDERS.len() * 2 + 1,
             checks.len()
         );
     }
@@ -750,11 +1093,20 @@ mod tests {
     fn check_harnesses_with_default_config() {
         let config = polkagent_config::schema::Config::default();
         let checks = check_harnesses(&config);
-        assert_eq!(
-            checks.len(),
-            KNOWN_HARNESSES.len(),
-            "should probe all known harnesses"
+        // Each harness produces at least 1 check (binary existence).
+        assert!(
+            checks.len() >= KNOWN_HARNESSES.len(),
+            "should probe all known harnesses, got {} checks",
+            checks.len()
         );
+    }
+
+    #[test]
+    fn version_comparison_works() {
+        assert!((1, 0, 0) >= (1, 0, 0));
+        assert!((1, 1, 0) >= (1, 0, 0));
+        assert!((2, 0, 0) >= (1, 0, 0));
+        assert!(!((0, 9, 0) >= (1, 0, 0)));
     }
 
     #[test]
@@ -766,12 +1118,12 @@ mod tests {
             message: "all good".to_owned(),
         }];
         let providers = vec![Check {
-            name: "anthropic".to_owned(),
+            name: "anthropic/api-key".to_owned(),
             status: CheckStatus::Fail,
             message: "ANTHROPIC_API_KEY not set".to_owned(),
         }];
         let harnesses = vec![Check {
-            name: "claude-code".to_owned(),
+            name: "claude-code/binary".to_owned(),
             status: CheckStatus::Skip,
             message: "not configured".to_owned(),
         }];

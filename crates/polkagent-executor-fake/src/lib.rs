@@ -68,6 +68,8 @@ enum ExecutorErrorKind {
     Timeout { elapsed_ms: u64 },
     Cancelled,
     Internal { message: String },
+    ContentPolicy { message: String },
+    ModelNotFound { model: String, message: String },
 }
 
 impl ExecutorErrorKind {
@@ -95,6 +97,12 @@ impl ExecutorErrorKind {
             Self::Timeout { elapsed_ms } => ExecutorError::Timeout { elapsed_ms: *elapsed_ms },
             Self::Cancelled => ExecutorError::Cancelled,
             Self::Internal { message } => ExecutorError::Internal { message: message.clone() },
+            Self::ContentPolicy { message } => {
+                ExecutorError::ContentPolicy { message: message.clone() }
+            }
+            Self::ModelNotFound { model, message } => {
+                ExecutorError::ModelNotFound { model: model.clone(), message: message.clone() }
+            }
         }
     }
 }
@@ -197,6 +205,12 @@ impl FakeExecutor {
             ExecutorError::Timeout { elapsed_ms } => ExecutorErrorKind::Timeout { elapsed_ms },
             ExecutorError::Cancelled => ExecutorErrorKind::Cancelled,
             ExecutorError::Internal { message } => ExecutorErrorKind::Internal { message },
+            ExecutorError::ContentPolicy { message } => {
+                ExecutorErrorKind::ContentPolicy { message }
+            }
+            ExecutorError::ModelNotFound { model, message } => {
+                ExecutorErrorKind::ModelNotFound { model, message }
+            }
         };
         Arc::new(Self {
             mode: Mode::Failing(kind),

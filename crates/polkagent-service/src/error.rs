@@ -20,6 +20,13 @@ pub enum ServiceError {
         provider_id: String,
     },
 
+    /// The requested harness is not registered.
+    #[error("harness not found: {harness_id}")]
+    HarnessNotFound {
+        /// The harness identifier that was requested.
+        harness_id: String,
+    },
+
     /// The requested agent does not exist.
     #[error("agent not found: {agent_id}")]
     AgentNotFound {
@@ -132,6 +139,9 @@ impl From<polkagent_run::RunError> for ServiceError {
             }
             polkagent_run::RunError::Serialization(err) => Self::Internal {
                 message: format!("serialization error: {err}"),
+            },
+            polkagent_run::RunError::HarnessValidation(msg) => Self::Internal {
+                message: format!("harness validation error: {msg}"),
             },
         }
     }

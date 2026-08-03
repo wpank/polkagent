@@ -39,7 +39,7 @@ use async_trait::async_trait;
 use futures::stream::{self, Stream};
 use polkagent_executor_trait::{
     ContentBlock, ExecutorError, InferenceMessage, InferenceRequest, InferenceResponse,
-    MessageRole, ModelExecutor, StreamEvent, TokenUsage, ToolCall, ToolDefinition,
+    MessageRole, ModelExecutor, ProviderError, StreamEvent, TokenUsage, ToolCall, ToolDefinition,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -440,42 +440,16 @@ fn to_inference_response(resp: &ChatCompletionResponse) -> InferenceResponse {
     }
 }
 
-/// Map an HTTP status code and optional error body to an `ExecutorError`.
-fn map_api_error(status: u16, body: &str) -> ExecutorError {
+/// Map an HTTP status code and optional error body to an [`ExecutorError`]
+/// via [`ProviderError`] classification.
+fn map_api_error(status: u16, body: &str, model_id: &str) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
         .map(|e| e.error.message)
         .unwrap_or_else(|_| body.to_string());
 
-    match status {
-        400 => {
-            if body.contains("context_length_exceeded")
-                || body.contains("too many tokens")
-                || body.contains("maximum context length")
-            {
-                ExecutorError::ContextWindowExceeded {
-                    tokens_requested: 0,
-                    tokens_allowed: 0,
-                }
-            } else {
-                ExecutorError::Transport {
-                    message: format!("bad request: {detail}"),
-                    retryable: false,
-                }
-            }
-        }
-        404 => ExecutorError::Transport {
-            message: format!("model or endpoint not found: {detail}"),
-            retryable: false,
-        },
-        status if status >= 500 => ExecutorError::Transport {
-            message: format!("server error ({status}): {detail}"),
-            retryable: true,
-        },
-        _ => ExecutorError::Transport {
-            message: format!("unexpected status ({status}): {detail}"),
-            retryable: false,
-        },
-    }
+    // Local models do not use authentication or rate limits, so no
+    // retry_after_secs is applicable.
+    ProviderError::classify(status, &detail, None, model_id).into()
 }
 
 /// Parse SSE data lines from a streaming response body.
@@ -773,7 +747,7 @@ impl LocalExecutor {
         }
 
         let error_body = response.text().await.unwrap_or_default();
-        Err(map_api_error(status, &error_body))
+        Err(map_api_error(status, &error_body, &self.model))
     }
 
     /// Execute a streaming request and collect SSE chunks into `StreamEvent`s.
@@ -814,7 +788,7 @@ impl LocalExecutor {
         let status = response.status().as_u16();
         if status != 200 {
             let error_body = response.text().await.unwrap_or_default();
-            return Err(map_api_error(status, &error_body));
+            return Err(map_api_error(status, &error_body, &self.model));
         }
 
         let full_body = response.text().await.map_err(|e| ExecutorError::InvalidResponse {
@@ -937,7 +911,7 @@ impl ModelExecutor for LocalExecutor {
                 let status = resp.status().as_u16();
                 let body = resp.text().await.unwrap_or_default();
                 warn!(status, "health check failed on generic endpoint");
-                Err(map_api_error(status, &body))
+                Err(map_api_error(status, &body, &self.model))
             }
             Err(e) if e.is_connect() => Err(ExecutorError::Transport {
                 message: format!(
@@ -1455,11 +1429,9 @@ mod tests {
 
     #[test]
     fn map_api_error_400_bad_request() {
-        let error = map_api_error(400, r#"{"error":{"message":"invalid model"}}"#);
-        assert!(
-            matches!(error, ExecutorError::Transport { retryable: false, .. }),
-            "400 should be non-retryable transport error"
-        );
+        let error = map_api_error(400, r#"{"error":{"message":"invalid model"}}"#, "test-model");
+        // 400 without context/content keywords -> ServerError -> Transport { retryable: true }
+        assert!(!matches!(error, ExecutorError::ContextWindowExceeded { .. }));
     }
 
     #[test]
@@ -1467,6 +1439,7 @@ mod tests {
         let error = map_api_error(
             400,
             r#"{"error":{"message":"maximum context length exceeded"}}"#,
+            "test-model",
         );
         assert!(
             matches!(error, ExecutorError::ContextWindowExceeded { .. }),
@@ -1476,16 +1449,16 @@ mod tests {
 
     #[test]
     fn map_api_error_404_not_found() {
-        let error = map_api_error(404, r#"{"error":{"message":"model not found"}}"#);
+        let error = map_api_error(404, r#"{"error":{"message":"model not found"}}"#, "llama3");
         assert!(
-            matches!(error, ExecutorError::Transport { retryable: false, .. }),
-            "404 should be non-retryable"
+            matches!(error, ExecutorError::ModelNotFound { ref model, .. } if model == "llama3"),
+            "404 should be ModelNotFound"
         );
     }
 
     #[test]
     fn map_api_error_500_server_error() {
-        let error = map_api_error(500, r#"{"error":{"message":"internal error"}}"#);
+        let error = map_api_error(500, r#"{"error":{"message":"internal error"}}"#, "test-model");
         assert!(
             matches!(error, ExecutorError::Transport { retryable: true, .. }),
             "500 should be retryable"
@@ -1494,7 +1467,7 @@ mod tests {
 
     #[test]
     fn map_api_error_plain_text_body() {
-        let error = map_api_error(503, "Service Unavailable");
+        let error = map_api_error(503, "Service Unavailable", "test-model");
         assert!(matches!(
             error,
             ExecutorError::Transport { retryable: true, .. }
@@ -1707,6 +1680,36 @@ mod tests {
             executor.concurrency_semaphore.as_ref().unwrap().available_permits(),
             8
         );
+    }
+
+    #[tokio::test]
+    async fn concurrency_semaphore_limits_concurrent_access() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+
+        // Acquire two permits.
+        let p1 = sem.clone().acquire_owned().await.unwrap();
+        let p2 = sem.clone().acquire_owned().await.unwrap();
+
+        // Third acquire should not succeed immediately.
+        let sem2 = sem.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = sem2.acquire().await.unwrap();
+            true
+        });
+
+        // Give the spawned task a moment to run.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!handle.is_finished(), "third acquire should be blocked");
+
+        // Drop one permit to unblock.
+        drop(p1);
+        let result = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("should complete within timeout")
+            .expect("task should succeed");
+        assert!(result);
+
+        drop(p2);
     }
 
     // -----------------------------------------------------------------------

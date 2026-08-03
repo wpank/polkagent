@@ -47,6 +47,7 @@
 pub mod app;
 pub mod error;
 pub mod explain;
+pub mod harness;
 pub mod lifecycle;
 pub mod plugins;
 pub mod provider;
@@ -59,6 +60,7 @@ pub mod webhook;
 
 pub use app::{AppService, AppServiceBuilder};
 pub use error::ServiceError;
+pub use harness::{HarnessInfo, HarnessRegistry, HarnessResolution};
 pub use lifecycle::{StartupContext, shutdown, startup};
 pub use provider::{ProviderInfo, ProviderRegistry, ProviderStatus};
 pub use plugins::{PluginInfo, ServicePluginManager};

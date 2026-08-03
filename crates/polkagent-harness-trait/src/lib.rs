@@ -657,43 +657,50 @@ impl fmt::Display for CapabilityMismatch {
 
 /// Validate that a harness's capabilities satisfy a task's requirements.
 ///
-/// Returns `Ok(())` if all requirements are met, or `Err(CapabilityMismatch)`
-/// describing the first unmet requirement.
+/// Returns `Ok(())` if all requirements are met, or `Err` with a list of
+/// all unmet requirements.
 pub fn validate_for_task(
     capabilities: &HarnessCapabilities,
     requirements: &HarnessTaskRequirements,
-) -> Result<(), CapabilityMismatch> {
+) -> Result<(), Vec<CapabilityMismatch>> {
+    let mut mismatches = Vec::new();
+
     if requirements.needs_tools && !capabilities.supports_tools {
-        return Err(CapabilityMismatch {
+        mismatches.push(CapabilityMismatch {
             requirement: "tools".to_string(),
             reason: "harness does not support tool calling".to_string(),
         });
     }
     if requirements.needs_streaming && !capabilities.supports_streaming {
-        return Err(CapabilityMismatch {
+        mismatches.push(CapabilityMismatch {
             requirement: "streaming".to_string(),
             reason: "harness does not support streaming output".to_string(),
         });
     }
     if requirements.needs_mcp && capabilities.mcp_passthrough == McpMode::None {
-        return Err(CapabilityMismatch {
+        mismatches.push(CapabilityMismatch {
             requirement: "mcp".to_string(),
             reason: "harness does not support MCP passthrough".to_string(),
         });
     }
     if requirements.needs_session_resume && capabilities.session_resume == SessionResumeMode::None {
-        return Err(CapabilityMismatch {
+        mismatches.push(CapabilityMismatch {
             requirement: "session_resume".to_string(),
             reason: "harness does not support session resumption".to_string(),
         });
     }
     if requirements.needs_cancel && capabilities.cancel == CancelMode::None {
-        return Err(CapabilityMismatch {
+        mismatches.push(CapabilityMismatch {
             requirement: "cancel".to_string(),
             reason: "harness does not support in-flight cancellation".to_string(),
         });
     }
-    Ok(())
+
+    if mismatches.is_empty() {
+        Ok(())
+    } else {
+        Err(mismatches)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,8 +1201,9 @@ mod tests {
             needs_session_resume: false,
             needs_cancel: false,
         };
-        let err = validate_for_task(&caps, &reqs).unwrap_err();
-        assert_eq!(err.requirement, "tools");
+        let errs = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].requirement, "tools");
     }
 
     #[test]
@@ -1214,8 +1222,9 @@ mod tests {
             needs_session_resume: false,
             needs_cancel: false,
         };
-        let err = validate_for_task(&caps, &reqs).unwrap_err();
-        assert_eq!(err.requirement, "streaming");
+        let errs = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].requirement, "streaming");
     }
 
     #[test]
@@ -1234,8 +1243,30 @@ mod tests {
             needs_session_resume: false,
             needs_cancel: false,
         };
-        let err = validate_for_task(&caps, &reqs).unwrap_err();
-        assert_eq!(err.requirement, "mcp");
+        let errs = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].requirement, "mcp");
+    }
+
+    #[test]
+    fn validate_for_task_session_resume_mismatch() {
+        let caps = make_caps(
+            true,
+            true,
+            McpMode::Passthrough,
+            SessionResumeMode::None,
+            CancelMode::Signal,
+        );
+        let reqs = HarnessTaskRequirements {
+            needs_tools: false,
+            needs_streaming: false,
+            needs_mcp: false,
+            needs_session_resume: true,
+            needs_cancel: false,
+        };
+        let errs = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].requirement, "session_resume");
     }
 
     #[test]
@@ -1254,8 +1285,35 @@ mod tests {
             needs_session_resume: false,
             needs_cancel: true,
         };
-        let err = validate_for_task(&caps, &reqs).unwrap_err();
-        assert_eq!(err.requirement, "cancel");
+        let errs = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].requirement, "cancel");
+    }
+
+    #[test]
+    fn validate_for_task_multiple_mismatches() {
+        let caps = make_caps(
+            false,
+            false,
+            McpMode::None,
+            SessionResumeMode::None,
+            CancelMode::None,
+        );
+        let reqs = HarnessTaskRequirements {
+            needs_tools: true,
+            needs_streaming: true,
+            needs_mcp: true,
+            needs_session_resume: true,
+            needs_cancel: true,
+        };
+        let errs = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(errs.len(), 5);
+        let names: Vec<&str> = errs.iter().map(|e| e.requirement.as_str()).collect();
+        assert!(names.contains(&"tools"));
+        assert!(names.contains(&"streaming"));
+        assert!(names.contains(&"mcp"));
+        assert!(names.contains(&"session_resume"));
+        assert!(names.contains(&"cancel"));
     }
 
     #[test]

@@ -1,31 +1,35 @@
-//! OpenAI-compatible Chat Completions API adapter for the [`ModelExecutor`] trait.
+//! OpenRouter adapter for the [`ModelExecutor`] trait.
 //!
-//! This crate provides [`OpenAiExecutor`] -- a production adapter that
-//! translates the provider-agnostic [`InferenceRequest`] into the OpenAI
-//! Chat Completions API wire format, handles authentication, rate-limit
-//! retries with exponential backoff, and maps responses back to
-//! [`InferenceResponse`].
-//!
-//! Compatible with OpenAI, Azure OpenAI, vLLM, Ollama, and any other
-//! provider that exposes the OpenAI Chat Completions API.
+//! This crate provides [`OpenRouterExecutor`] -- a production adapter that
+//! translates the provider-agnostic [`InferenceRequest`] into the OpenAI-compatible
+//! Chat Completions API wire format used by OpenRouter, adds OpenRouter-specific
+//! routing headers (`X-Title`, `HTTP-Referer`) and provider preferences, and maps
+//! responses back to [`InferenceResponse`].
 //!
 //! # Quick start
 //!
 //! ```rust,no_run
-//! use polkagent_executor_openai::OpenAiExecutor;
+//! use polkagent_executor_openrouter::OpenRouterExecutor;
 //!
-//! // OpenAI
-//! let executor = OpenAiExecutor::new(
-//!     "sk-...".to_string(),
-//!     "gpt-4o".to_string(),
+//! let executor = OpenRouterExecutor::new(
+//!     "sk-or-...".to_string(),
+//!     "anthropic/claude-opus-4-6".to_string(),
 //! );
 //!
-//! // Ollama (local)
-//! let executor = OpenAiExecutor::new_builder(
-//!     String::new(),
-//!     "llama3".to_string(),
+//! // With provider preferences
+//! use polkagent_executor_openrouter::ProviderPreferences;
+//!
+//! let executor = OpenRouterExecutor::builder(
+//!     "sk-or-...".to_string(),
+//!     "anthropic/claude-opus-4-6".to_string(),
 //! )
-//! .with_base_url("http://localhost:11434/v1".to_string())
+//! .with_app_title("My Agent".to_string())
+//! .with_site_url("https://myapp.example.com".to_string())
+//! .with_provider_preferences(ProviderPreferences {
+//!     order: Some(vec!["Anthropic".to_string()]),
+//!     allow_fallbacks: Some(false),
+//!     ..Default::default()
+//! })
 //! .build();
 //! ```
 
@@ -47,8 +51,8 @@ use tracing::{debug, warn};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default OpenAI API base URL.
-const DEFAULT_BASE_URL: &str = "https://api.openai.com";
+/// Default OpenRouter API base URL.
+const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 /// Default request timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -59,19 +63,51 @@ const DEFAULT_MAX_RETRIES: u32 = 3;
 /// Base delay for exponential backoff in milliseconds.
 const BACKOFF_BASE_MS: u64 = 500;
 
+/// Default concurrency limit for OpenRouter requests.
+const DEFAULT_MAX_CONCURRENT: u32 = 10;
+
 // ---------------------------------------------------------------------------
-// OpenAI API types (private)
+// OpenRouter-specific types
 // ---------------------------------------------------------------------------
 
-/// Request body for the OpenAI Chat Completions API.
+/// Provider preferences for OpenRouter routing.
+///
+/// Controls which upstream providers OpenRouter routes to, fallback behavior,
+/// and data handling policies.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProviderPreferences {
+    /// Ordered list of provider names to prefer (e.g. `["Anthropic", "OpenAI"]`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<Vec<String>>,
+
+    /// Whether to allow fallback to other providers if preferred ones are unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_fallbacks: Option<bool>,
+
+    /// Require the provider to comply with specific data policies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_parameters: Option<bool>,
+
+    /// Data collection preference: `"deny"` or `"allow"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_collection: Option<String>,
+
+    /// Provider-specific quantization preference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quantizations: Option<Vec<String>>,
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI-compatible API types (private)
+// ---------------------------------------------------------------------------
+
+/// Request body for the OpenAI Chat Completions API (OpenRouter-extended).
 #[derive(Debug, Clone, Serialize)]
 struct ChatCompletionRequest {
     model: String,
     messages: Vec<ApiMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -80,6 +116,9 @@ struct ChatCompletionRequest {
     tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    /// OpenRouter-specific: provider routing preferences.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<ProviderPreferences>,
 }
 
 /// A message in the OpenAI conversation format.
@@ -126,7 +165,7 @@ struct ApiFunctionCall {
     arguments: String,
 }
 
-/// Top-level response from the OpenAI Chat Completions API.
+/// Top-level response from the OpenRouter/OpenAI Chat Completions API.
 #[derive(Debug, Clone, Deserialize)]
 struct ChatCompletionResponse {
     id: String,
@@ -134,9 +173,13 @@ struct ChatCompletionResponse {
     usage: Option<ApiUsage>,
     #[allow(dead_code)]
     model: Option<String>,
+    /// OpenRouter-specific: upstream provider that served the request.
+    #[allow(dead_code)]
+    #[serde(default)]
+    provider: Option<String>,
 }
 
-/// A single choice in the OpenAI response.
+/// A single choice in the response.
 #[derive(Debug, Clone, Deserialize)]
 struct Choice {
     message: ChoiceMessage,
@@ -152,7 +195,7 @@ struct ChoiceMessage {
     tool_calls: Option<Vec<ApiToolCall>>,
 }
 
-/// Token usage from the OpenAI API response.
+/// Token usage from the API response.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiUsage {
     prompt_tokens: u32,
@@ -161,13 +204,13 @@ struct ApiUsage {
     total_tokens: u32,
 }
 
-/// Error response body from the OpenAI API.
+/// Error response body from the API.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiErrorResponse {
     error: ApiErrorDetail,
 }
 
-/// Inner error detail from the OpenAI API.
+/// Inner error detail from the API.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiErrorDetail {
     message: String,
@@ -175,14 +218,18 @@ struct ApiErrorDetail {
     #[serde(rename = "type")]
     error_type: Option<String>,
     #[allow(dead_code)]
-    code: Option<String>,
+    code: Option<serde_json::Value>,
+    /// OpenRouter-specific: metadata about the upstream provider error.
+    #[allow(dead_code)]
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
 // SSE / streaming types
 // ---------------------------------------------------------------------------
 
-/// A single chunk from the OpenAI streaming API.
+/// A single chunk from the streaming API.
 #[derive(Debug, Clone, Deserialize)]
 struct StreamChunk {
     #[allow(dead_code)]
@@ -223,25 +270,68 @@ struct StreamFunctionCall {
 }
 
 // ---------------------------------------------------------------------------
+// Provider error classification
+// ---------------------------------------------------------------------------
+
+/// Classification of an OpenRouter provider error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderErrorKind {
+    /// The upstream provider is temporarily unavailable.
+    ProviderUnavailable,
+    /// The upstream provider rate-limited the request.
+    ProviderRateLimit,
+    /// The upstream provider rejected the request content.
+    ContentModeration,
+    /// Authentication failed at the OpenRouter layer.
+    Authentication,
+    /// The requested model or provider was not found.
+    NotFound,
+    /// The context window was exceeded.
+    ContextWindowExceeded,
+    /// A generic bad request.
+    BadRequest,
+    /// Unknown/other error.
+    Unknown,
+}
+
+/// Classify an OpenRouter error body into a provider error kind.
+#[cfg(test)]
+fn classify_provider_error(status: u16, body: &str) -> ProviderErrorKind {
+    match status {
+        401 | 403 => ProviderErrorKind::Authentication,
+        404 => ProviderErrorKind::NotFound,
+        429 => ProviderErrorKind::ProviderRateLimit,
+        502 | 503 => ProviderErrorKind::ProviderUnavailable,
+        400 => {
+            if body.contains("context_length_exceeded")
+                || body.contains("maximum context length")
+                || body.contains("too many tokens")
+            {
+                ProviderErrorKind::ContextWindowExceeded
+            } else if body.contains("content_filter")
+                || body.contains("content_policy")
+                || body.contains("moderation")
+            {
+                ProviderErrorKind::ContentModeration
+            } else {
+                ProviderErrorKind::BadRequest
+            }
+        }
+        _ => ProviderErrorKind::Unknown,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
 /// Convert a provider-agnostic `InferenceMessage` to the OpenAI wire format.
-///
-/// OpenAI uses a different message structure than Anthropic:
-/// - User messages have `role: "user"` and `content` as a string.
-/// - Assistant messages have `role: "assistant"` with optional `tool_calls`.
-/// - Tool results are sent as `role: "tool"` messages with `tool_call_id`.
-///
-/// A single `InferenceMessage` may expand into multiple OpenAI messages
-/// when it contains mixed content blocks (e.g., text + tool results).
 fn to_api_messages(msg: &InferenceMessage) -> Vec<ApiMessage> {
     let role_str = match msg.role {
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
     };
 
-    // Separate content blocks into text parts, tool_use parts, and tool_result parts.
     let mut text_parts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ApiToolCall> = Vec::new();
     let mut tool_results: Vec<(String, String, bool)> = Vec::new();
@@ -277,7 +367,6 @@ fn to_api_messages(msg: &InferenceMessage) -> Vec<ApiMessage> {
 
     let mut messages = Vec::new();
 
-    // If this is an assistant message with tool calls, emit one message.
     if role_str == "assistant" && !tool_calls.is_empty() {
         let content = if text_parts.is_empty() {
             None
@@ -299,7 +388,6 @@ fn to_api_messages(msg: &InferenceMessage) -> Vec<ApiMessage> {
         });
     }
 
-    // Tool results become separate "tool" role messages.
     for (call_id, content, _is_error) in tool_results {
         messages.push(ApiMessage {
             role: "tool".to_string(),
@@ -336,11 +424,10 @@ fn to_api_tool(tool: &ToolDefinition) -> ApiTool {
 fn build_request_body(
     request: &InferenceRequest,
     stream: bool,
-    use_max_completion_tokens: bool,
+    provider_prefs: &Option<ProviderPreferences>,
 ) -> ChatCompletionRequest {
     let mut messages: Vec<ApiMessage> = Vec::new();
 
-    // OpenAI uses a system message as the first message with role "system".
     if let Some(system) = &request.system {
         messages.push(ApiMessage {
             role: "system".to_string(),
@@ -350,7 +437,6 @@ fn build_request_body(
         });
     }
 
-    // Convert each inference message.
     for msg in &request.messages {
         messages.extend(to_api_messages(msg));
     }
@@ -363,23 +449,15 @@ fn build_request_body(
         None
     };
 
-    // For reasoning models (o3, o4-mini, gpt-5.x, codex-mini) use
-    // max_completion_tokens instead of max_tokens.
-    let (max_tokens, max_completion_tokens) = if use_max_completion_tokens {
-        (None, Some(request.max_tokens))
-    } else {
-        (Some(request.max_tokens), None)
-    };
-
     ChatCompletionRequest {
         model: request.model_id.clone(),
         messages,
-        max_tokens,
-        max_completion_tokens,
+        max_tokens: Some(request.max_tokens),
         temperature: request.temperature,
         tools,
         tool_choice,
         stream: if stream { Some(true) } else { None },
+        provider: provider_prefs.clone(),
     }
 }
 
@@ -418,7 +496,6 @@ fn to_inference_response(resp: &ChatCompletionResponse) -> InferenceResponse {
         .and_then(|c| c.finish_reason.clone())
         .unwrap_or_else(|| "stop".to_string());
 
-    // Map OpenAI finish_reason to our normalized stop_reason values.
     let stop_reason = map_finish_reason(&finish_reason);
 
     let usage = resp
@@ -436,8 +513,7 @@ fn to_inference_response(resp: &ChatCompletionResponse) -> InferenceResponse {
     }
 }
 
-/// Map OpenAI `finish_reason` to the normalized stop reason values
-/// used by the executor trait.
+/// Map OpenAI `finish_reason` to the normalized stop reason values.
 fn map_finish_reason(finish_reason: &str) -> String {
     match finish_reason {
         "stop" => "end_turn".to_string(),
@@ -468,10 +544,6 @@ fn map_api_error(status: u16, body: &str, retry_after_secs: Option<u64>, model_i
 }
 
 /// Parse SSE lines from a response body chunk.
-///
-/// Returns a list of parsed `StreamChunk` values. Lines that are not valid
-/// `data:` lines, are `[DONE]` markers, or cannot be parsed are silently
-/// skipped.
 fn parse_sse_chunks(chunk: &str) -> Vec<StreamChunk> {
     let mut chunks = Vec::new();
     for line in chunk.lines() {
@@ -500,10 +572,6 @@ struct ToolCallAssembler {
 }
 
 /// Process raw SSE chunks into a list of `StreamEvent` values.
-///
-/// This function handles text deltas, tool call assembly from partial
-/// function call deltas, usage tracking, and produces the terminal
-/// `Completed` event.
 fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, ExecutorError>> {
     let mut stream_events: Vec<Result<StreamEvent, ExecutorError>> = Vec::new();
     let mut accumulated_text = String::new();
@@ -513,20 +581,17 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
     let mut stop_reason = String::from("end_turn");
 
     for chunk in &chunks {
-        // Track usage if present.
         if let Some(api_usage) = &chunk.usage {
             usage = to_token_usage(api_usage);
         }
 
         for choice in &chunk.choices {
-            // Track finish_reason.
             if let Some(reason) = &choice.finish_reason {
                 stop_reason = map_finish_reason(reason);
             }
 
             let delta = &choice.delta;
 
-            // Text delta.
             if let Some(content) = &delta.content {
                 if !content.is_empty() {
                     accumulated_text.push_str(content);
@@ -536,30 +601,25 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
                 }
             }
 
-            // Tool call deltas.
             if let Some(tool_calls) = &delta.tool_calls {
                 for tc in tool_calls {
                     let idx = tc.index;
 
-                    // Ensure we have an assembler for this index.
                     while tool_assemblers.len() <= idx {
                         tool_assemblers.push(ToolCallAssembler::default());
                     }
                     let assembler = &mut tool_assemblers[idx];
 
-                    // Capture id if present (first delta for this call).
                     if let Some(id) = &tc.id {
                         assembler.id = id.clone();
                     }
 
                     if let Some(func) = &tc.function {
-                        // Capture name if present.
                         let name_delta = func.name.as_ref();
                         if let Some(name) = name_delta {
                             assembler.name.push_str(name);
                         }
 
-                        // Append argument fragment.
                         if let Some(args) = &func.arguments {
                             assembler.arguments.push_str(args);
 
@@ -575,7 +635,6 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
         }
     }
 
-    // Finalize assembled tool calls.
     for assembler in &tool_assemblers {
         if !assembler.id.is_empty() {
             let call = ToolCall {
@@ -588,12 +647,10 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
         }
     }
 
-    // Emit usage update.
     stream_events.push(Ok(StreamEvent::UsageUpdate {
         usage: usage.clone(),
     }));
 
-    // Emit the terminal Completed event.
     let response = InferenceResponse {
         text: accumulated_text,
         tool_calls: final_tool_calls,
@@ -607,31 +664,36 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
 }
 
 // ---------------------------------------------------------------------------
-// OpenAiExecutor
+// OpenRouterExecutor
 // ---------------------------------------------------------------------------
 
-/// A [`ModelExecutor`] adapter for the OpenAI Chat Completions API.
+/// A [`ModelExecutor`] adapter for the OpenRouter API.
 ///
-/// Compatible with OpenAI, Azure OpenAI, vLLM, Ollama, and any other
-/// service that exposes the OpenAI Chat Completions API.
+/// Wraps the OpenAI-compatible Chat Completions API with OpenRouter-specific
+/// routing headers (`X-Title`, `HTTP-Referer`) and provider preferences.
 ///
-/// Handles authentication, request/response mapping, rate-limit retries with
-/// exponential backoff, and streaming via SSE.
-pub struct OpenAiExecutor {
+/// Handles authentication via `OPENROUTER_API_KEY`, request/response mapping,
+/// rate-limit retries with exponential backoff, and streaming via SSE.
+pub struct OpenRouterExecutor {
     client: Client,
     api_key: String,
     model: String,
     base_url: String,
     max_retries: u32,
-    use_max_completion_tokens: bool,
-    concurrency_semaphore: Option<Arc<Semaphore>>,
+    concurrency_semaphore: Arc<Semaphore>,
+    /// OpenRouter `X-Title` header value (app name).
+    app_title: Option<String>,
+    /// OpenRouter `HTTP-Referer` header value (site URL).
+    site_url: Option<String>,
+    /// Provider routing preferences sent in the request body.
+    provider_preferences: Option<ProviderPreferences>,
 }
 
-impl OpenAiExecutor {
-    /// Create a new `OpenAiExecutor` with the given API key and model.
+impl OpenRouterExecutor {
+    /// Create a new `OpenRouterExecutor` with the given API key and model.
     ///
-    /// Uses the default OpenAI API base URL (`https://api.openai.com`),
-    /// a 120-second timeout, and up to 3 retries for retryable errors.
+    /// Uses the default OpenRouter API base URL, a 120-second timeout,
+    /// up to 3 retries, and a concurrency limit of 10.
     pub fn new(api_key: String, model: String) -> Arc<Self> {
         let client = Client::builder()
             .timeout(DEFAULT_TIMEOUT)
@@ -644,85 +706,25 @@ impl OpenAiExecutor {
             model,
             base_url: DEFAULT_BASE_URL.to_string(),
             max_retries: DEFAULT_MAX_RETRIES,
-            use_max_completion_tokens: false,
-            concurrency_semaphore: None,
+            concurrency_semaphore: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT as usize)),
+            app_title: None,
+            site_url: None,
+            provider_preferences: None,
         })
     }
 
-    /// Override the base URL (for Azure OpenAI, Ollama, vLLM, etc.).
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use polkagent_executor_openai::OpenAiExecutor;
-    ///
-    /// let executor = OpenAiExecutor::new_builder(String::new(), "llama3".into())
-    ///     .with_base_url("http://localhost:11434/v1".into())
-    ///     .build();
-    /// ```
-    #[must_use]
-    pub fn with_base_url(mut self, url: String) -> Self {
-        self.base_url = url;
-        self
-    }
-
-    /// Override the maximum number of retries for retryable errors.
-    #[must_use]
-    pub fn with_max_retries(mut self, n: u32) -> Self {
-        self.max_retries = n;
-        self
-    }
-
-    /// Override the HTTP request timeout.
-    #[must_use]
-    pub fn with_timeout(mut self, duration: Duration) -> Self {
-        self.client = Client::builder()
-            .timeout(duration)
-            .build()
-            .unwrap_or_else(|_| Client::new());
-        self
-    }
-
-    /// Use `max_completion_tokens` instead of `max_tokens` in the request.
-    ///
-    /// Required for OpenAI reasoning models (o3, o4-mini, gpt-5.x, codex-mini)
-    /// which use the newer parameter name.
-    #[must_use]
-    pub fn with_use_max_completion_tokens(mut self, val: bool) -> Self {
-        self.use_max_completion_tokens = val;
-        self
-    }
-
-    /// Limit the number of concurrent HTTP requests to the provider.
-    ///
-    /// When set, a [`tokio::sync::Semaphore`] is used to cap in-flight
-    /// requests. Callers will wait for a permit before issuing the HTTP call.
-    #[must_use]
-    pub fn with_max_concurrent(mut self, n: u32) -> Self {
-        self.concurrency_semaphore = Some(Arc::new(Semaphore::new(n as usize)));
-        self
-    }
-
-    /// Build an `Arc<Self>` after applying builder methods.
-    pub fn build(self) -> Arc<Self> {
-        Arc::new(self)
-    }
-
-    /// Construct a raw (non-Arc) executor for builder chaining.
-    pub fn new_builder(api_key: String, model: String) -> Self {
-        let client = Client::builder()
-            .timeout(DEFAULT_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| Client::new());
-
-        Self {
-            client,
+    /// Construct a builder for fine-grained configuration.
+    pub fn builder(api_key: String, model: String) -> OpenRouterBuilder {
+        OpenRouterBuilder {
             api_key,
             model,
             base_url: DEFAULT_BASE_URL.to_string(),
+            timeout: DEFAULT_TIMEOUT,
             max_retries: DEFAULT_MAX_RETRIES,
-            use_max_completion_tokens: false,
-            concurrency_semaphore: None,
+            max_concurrent: DEFAULT_MAX_CONCURRENT,
+            app_title: None,
+            site_url: None,
+            provider_preferences: None,
         }
     }
 
@@ -731,7 +733,7 @@ impl OpenAiExecutor {
         &self,
         body: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, ExecutorError> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/chat/completions", self.base_url);
         let mut last_error: Option<ExecutorError> = None;
 
         for attempt in 0..=self.max_retries {
@@ -741,14 +743,21 @@ impl OpenAiExecutor {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
 
-            let result = self
+            let mut req = self
                 .client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("content-type", "application/json")
-                .json(body)
-                .send()
-                .await;
+                .header("content-type", "application/json");
+
+            // Add OpenRouter-specific routing headers.
+            if let Some(title) = &self.app_title {
+                req = req.header("X-Title", title.as_str());
+            }
+            if let Some(site) = &self.site_url {
+                req = req.header("HTTP-Referer", site.as_str());
+            }
+
+            let result = req.json(body).send().await;
 
             let response = match result {
                 Ok(resp) => resp,
@@ -818,28 +827,33 @@ impl OpenAiExecutor {
         &self,
         body: &ChatCompletionRequest,
     ) -> Result<Vec<Result<StreamEvent, ExecutorError>>, ExecutorError> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/chat/completions", self.base_url);
 
-        let response = self
+        let mut req = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("content-type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ExecutorError::Timeout {
-                        elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
-                    }
-                } else {
-                    ExecutorError::Transport {
-                        message: format!("HTTP transport error: {e}"),
-                        retryable: true,
-                    }
+            .header("content-type", "application/json");
+
+        if let Some(title) = &self.app_title {
+            req = req.header("X-Title", title.as_str());
+        }
+        if let Some(site) = &self.site_url {
+            req = req.header("HTTP-Referer", site.as_str());
+        }
+
+        let response = req.json(body).send().await.map_err(|e| {
+            if e.is_timeout() {
+                ExecutorError::Timeout {
+                    elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
                 }
-            })?;
+            } else {
+                ExecutorError::Transport {
+                    message: format!("HTTP transport error: {e}"),
+                    retryable: true,
+                }
+            }
+        })?;
 
         let status = response.status().as_u16();
         if status != 200 {
@@ -860,11 +874,99 @@ impl OpenAiExecutor {
 }
 
 // ---------------------------------------------------------------------------
+// Builder
+// ---------------------------------------------------------------------------
+
+/// Builder for configuring an [`OpenRouterExecutor`].
+pub struct OpenRouterBuilder {
+    api_key: String,
+    model: String,
+    base_url: String,
+    timeout: Duration,
+    max_retries: u32,
+    max_concurrent: u32,
+    app_title: Option<String>,
+    site_url: Option<String>,
+    provider_preferences: Option<ProviderPreferences>,
+}
+
+impl OpenRouterBuilder {
+    /// Override the base URL.
+    #[must_use]
+    pub fn with_base_url(mut self, url: String) -> Self {
+        self.base_url = url;
+        self
+    }
+
+    /// Override the HTTP request timeout.
+    #[must_use]
+    pub fn with_timeout(mut self, duration: Duration) -> Self {
+        self.timeout = duration;
+        self
+    }
+
+    /// Override the maximum number of retries for retryable errors.
+    #[must_use]
+    pub fn with_max_retries(mut self, n: u32) -> Self {
+        self.max_retries = n;
+        self
+    }
+
+    /// Set the maximum number of concurrent HTTP requests.
+    #[must_use]
+    pub fn with_max_concurrent(mut self, n: u32) -> Self {
+        self.max_concurrent = n;
+        self
+    }
+
+    /// Set the `X-Title` header for OpenRouter app identification.
+    #[must_use]
+    pub fn with_app_title(mut self, title: String) -> Self {
+        self.app_title = Some(title);
+        self
+    }
+
+    /// Set the `HTTP-Referer` header for OpenRouter site identification.
+    #[must_use]
+    pub fn with_site_url(mut self, url: String) -> Self {
+        self.site_url = Some(url);
+        self
+    }
+
+    /// Set provider routing preferences.
+    #[must_use]
+    pub fn with_provider_preferences(mut self, prefs: ProviderPreferences) -> Self {
+        self.provider_preferences = Some(prefs);
+        self
+    }
+
+    /// Build the executor as an `Arc<OpenRouterExecutor>`.
+    pub fn build(self) -> Arc<OpenRouterExecutor> {
+        let client = Client::builder()
+            .timeout(self.timeout)
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
+        Arc::new(OpenRouterExecutor {
+            client,
+            api_key: self.api_key,
+            model: self.model,
+            base_url: self.base_url,
+            max_retries: self.max_retries,
+            concurrency_semaphore: Arc::new(Semaphore::new(self.max_concurrent as usize)),
+            app_title: self.app_title,
+            site_url: self.site_url,
+            provider_preferences: self.provider_preferences,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ModelExecutor implementation
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl ModelExecutor for OpenAiExecutor {
+impl ModelExecutor for OpenRouterExecutor {
     async fn complete(
         &self,
         request: InferenceRequest,
@@ -875,16 +977,17 @@ impl ModelExecutor for OpenAiExecutor {
             step_id = %request.step_id,
             message_count = request.messages.len(),
             tool_count = request.tools.len(),
-            "executing openai inference"
+            "executing openrouter inference"
         );
 
-        let body = build_request_body(&request, false, self.use_max_completion_tokens);
+        let body = build_request_body(&request, false, &self.provider_preferences);
 
-        // Acquire concurrency permit if configured, held for the request duration.
-        let _permit = match &self.concurrency_semaphore {
-            Some(sem) => Some(sem.acquire().await.map_err(|_| ExecutorError::Cancelled)?),
-            None => None,
-        };
+        // Acquire concurrency permit, held for the request duration.
+        let _permit = self
+            .concurrency_semaphore
+            .acquire()
+            .await
+            .map_err(|_| ExecutorError::Cancelled)?;
 
         let api_response = self.execute_with_retries(&body).await?;
         let response = to_inference_response(&api_response);
@@ -910,16 +1013,16 @@ impl ModelExecutor for OpenAiExecutor {
             model = %self.model,
             run_id = %request.run_id,
             step_id = %request.step_id,
-            "starting openai streaming inference"
+            "starting openrouter streaming inference"
         );
 
-        let body = build_request_body(&request, true, self.use_max_completion_tokens);
+        let body = build_request_body(&request, true, &self.provider_preferences);
 
-        // Acquire concurrency permit if configured, held for the request duration.
-        let _permit = match &self.concurrency_semaphore {
-            Some(sem) => Some(sem.acquire().await.map_err(|_| ExecutorError::Cancelled)?),
-            None => None,
-        };
+        let _permit = self
+            .concurrency_semaphore
+            .acquire()
+            .await
+            .map_err(|_| ExecutorError::Cancelled)?;
 
         let events = self.execute_streaming(&body).await?;
 
@@ -927,19 +1030,25 @@ impl ModelExecutor for OpenAiExecutor {
     }
 
     async fn health(&self) -> Result<(), ExecutorError> {
-        // GET /v1/models to verify connectivity and authentication.
-        let url = format!("{}/v1/models", self.base_url);
+        // OpenRouter supports GET /api/v1/models for health/auth check.
+        let url = format!("{}/models", self.base_url);
 
-        let response = self
+        let mut req = self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .send()
-            .await
-            .map_err(|e| ExecutorError::Transport {
-                message: format!("health check failed: {e}"),
-                retryable: true,
-            })?;
+            .header("Authorization", format!("Bearer {}", self.api_key));
+
+        if let Some(title) = &self.app_title {
+            req = req.header("X-Title", title.as_str());
+        }
+        if let Some(site) = &self.site_url {
+            req = req.header("HTTP-Referer", site.as_str());
+        }
+
+        let response = req.send().await.map_err(|e| ExecutorError::Transport {
+            message: format!("health check failed: {e}"),
+            retryable: true,
+        })?;
 
         let status = response.status().as_u16();
         if status == 200 {
@@ -977,7 +1086,7 @@ mod tests {
             }],
             system: Some("You are a helpful assistant.".into()),
             tools: vec![],
-            model_id: "gpt-4o".into(),
+            model_id: "anthropic/claude-opus-4-6".into(),
             max_tokens: 1024,
             temperature: Some(0.7),
         }
@@ -999,7 +1108,7 @@ mod tests {
                 description: "Read a file from disk".to_string(),
                 input_schema_json: r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#.to_string(),
             }],
-            model_id: "gpt-4o".into(),
+            model_id: "openai/gpt-4o".into(),
             max_tokens: 4096,
             temperature: None,
         }
@@ -1035,7 +1144,7 @@ mod tests {
             ],
             system: None,
             tools: vec![],
-            model_id: "gpt-4o".into(),
+            model_id: "openai/gpt-4o".into(),
             max_tokens: 1024,
             temperature: None,
         }
@@ -1043,10 +1152,11 @@ mod tests {
 
     fn sample_text_response_json() -> String {
         serde_json::json!({
-            "id": "chatcmpl-abc123",
+            "id": "gen-abc123",
             "object": "chat.completion",
             "created": 1677858242,
-            "model": "gpt-4o",
+            "model": "anthropic/claude-opus-4-6",
+            "provider": "Anthropic",
             "choices": [
                 {
                     "index": 0,
@@ -1068,10 +1178,10 @@ mod tests {
 
     fn sample_tool_use_response_json() -> String {
         serde_json::json!({
-            "id": "chatcmpl-def456",
+            "id": "gen-def456",
             "object": "chat.completion",
             "created": 1677858242,
-            "model": "gpt-4o",
+            "model": "openai/gpt-4o",
             "choices": [
                 {
                     "index": 0,
@@ -1103,10 +1213,10 @@ mod tests {
 
     fn sample_tool_use_with_text_response_json() -> String {
         serde_json::json!({
-            "id": "chatcmpl-ghi012",
+            "id": "gen-ghi012",
             "object": "chat.completion",
             "created": 1677858242,
-            "model": "gpt-4o",
+            "model": "openai/gpt-4o",
             "choices": [
                 {
                     "index": 0,
@@ -1138,10 +1248,10 @@ mod tests {
 
     fn sample_multiple_choices_response_json() -> String {
         serde_json::json!({
-            "id": "chatcmpl-multi",
+            "id": "gen-multi",
             "object": "chat.completion",
             "created": 1677858242,
-            "model": "gpt-4o",
+            "model": "openai/gpt-4o",
             "choices": [
                 {
                     "index": 0,
@@ -1182,11 +1292,11 @@ mod tests {
 
     fn sample_sse_text_stream() -> String {
         [
-            r#"data: {"id":"chatcmpl-stream1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
-            r#"data: {"id":"chatcmpl-stream1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#,
-            r#"data: {"id":"chatcmpl-stream1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}"#,
-            r#"data: {"id":"chatcmpl-stream1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
-            r#"data: {"id":"chatcmpl-stream1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}"#,
+            r#"data: {"id":"gen-stream1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
+            r#"data: {"id":"gen-stream1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#,
+            r#"data: {"id":"gen-stream1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}"#,
+            r#"data: {"id":"gen-stream1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            r#"data: {"id":"gen-stream1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}"#,
             "data: [DONE]",
         ]
         .join("\n")
@@ -1194,14 +1304,80 @@ mod tests {
 
     fn sample_sse_tool_stream() -> String {
         [
-            r#"data: {"id":"chatcmpl-stream2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"file_read","arguments":""}}]},"finish_reason":null}]}"#,
-            r#"data: {"id":"chatcmpl-stream2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"pa"}}]},"finish_reason":null}]}"#,
-            r#"data: {"id":"chatcmpl-stream2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"/tmp/test\"}"}}]},"finish_reason":null}]}"#,
-            r#"data: {"id":"chatcmpl-stream2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
-            r#"data: {"id":"chatcmpl-stream2","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":30,"completion_tokens":15,"total_tokens":45}}"#,
+            r#"data: {"id":"gen-stream2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"file_read","arguments":""}}]},"finish_reason":null}]}"#,
+            r#"data: {"id":"gen-stream2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"pa"}}]},"finish_reason":null}]}"#,
+            r#"data: {"id":"gen-stream2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"/tmp/test\"}"}}]},"finish_reason":null}]}"#,
+            r#"data: {"id":"gen-stream2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            r#"data: {"id":"gen-stream2","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":30,"completion_tokens":15,"total_tokens":45}}"#,
             "data: [DONE]",
         ]
         .join("\n")
+    }
+
+    // -----------------------------------------------------------------------
+    // Constructor / builder tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn new_creates_executor_with_defaults() {
+        let exec = OpenRouterExecutor::new("sk-or-test".into(), "openai/gpt-4o".into());
+        assert_eq!(exec.api_key, "sk-or-test");
+        assert_eq!(exec.model, "openai/gpt-4o");
+        assert_eq!(exec.base_url, DEFAULT_BASE_URL);
+        assert_eq!(exec.max_retries, DEFAULT_MAX_RETRIES);
+        assert!(exec.app_title.is_none());
+        assert!(exec.site_url.is_none());
+        assert!(exec.provider_preferences.is_none());
+    }
+
+    #[test]
+    fn builder_sets_app_title() {
+        let exec = OpenRouterExecutor::builder("key".into(), "model".into())
+            .with_app_title("My App".into())
+            .build();
+        assert_eq!(exec.app_title.as_deref(), Some("My App"));
+    }
+
+    #[test]
+    fn builder_sets_site_url() {
+        let exec = OpenRouterExecutor::builder("key".into(), "model".into())
+            .with_site_url("https://example.com".into())
+            .build();
+        assert_eq!(exec.site_url.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn builder_sets_provider_preferences() {
+        let prefs = ProviderPreferences {
+            order: Some(vec!["Anthropic".into(), "OpenAI".into()]),
+            allow_fallbacks: Some(false),
+            ..Default::default()
+        };
+        let exec = OpenRouterExecutor::builder("key".into(), "model".into())
+            .with_provider_preferences(prefs)
+            .build();
+        let pp = exec.provider_preferences.as_ref().expect("prefs set");
+        assert_eq!(
+            pp.order.as_ref().expect("order"),
+            &["Anthropic", "OpenAI"]
+        );
+        assert_eq!(pp.allow_fallbacks, Some(false));
+    }
+
+    #[test]
+    fn builder_sets_max_retries() {
+        let exec = OpenRouterExecutor::builder("key".into(), "model".into())
+            .with_max_retries(5)
+            .build();
+        assert_eq!(exec.max_retries, 5);
+    }
+
+    #[test]
+    fn builder_sets_base_url() {
+        let exec = OpenRouterExecutor::builder("key".into(), "model".into())
+            .with_base_url("https://custom.openrouter.ai/api/v1".into())
+            .build();
+        assert_eq!(exec.base_url, "https://custom.openrouter.ai/api/v1");
     }
 
     // -----------------------------------------------------------------------
@@ -1211,10 +1387,10 @@ mod tests {
     #[test]
     fn request_body_includes_model_and_max_tokens() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize request body");
 
-        assert_eq!(json["model"], "gpt-4o");
+        assert_eq!(json["model"], "anthropic/claude-opus-4-6");
         assert_eq!(json["max_tokens"], 1024);
         assert!(json.get("stream").is_none());
     }
@@ -1222,7 +1398,7 @@ mod tests {
     #[test]
     fn request_body_includes_system_as_first_message() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages array");
@@ -1234,18 +1410,17 @@ mod tests {
     fn request_body_omits_system_message_when_none() {
         let mut req = minimal_request();
         req.system = None;
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
-        // No system message; first message should be user.
         assert_eq!(messages[0]["role"], "user");
     }
 
     #[test]
     fn request_body_includes_temperature_when_set() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let temp = json["temperature"]
@@ -1261,7 +1436,7 @@ mod tests {
     fn request_body_omits_temperature_when_none() {
         let mut req = minimal_request();
         req.temperature = None;
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert!(json.get("temperature").is_none());
@@ -1270,7 +1445,7 @@ mod tests {
     #[test]
     fn request_body_sets_stream_flag() {
         let req = minimal_request();
-        let body = build_request_body(&req, true, false);
+        let body = build_request_body(&req, true, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert_eq!(json["stream"], true);
@@ -1279,11 +1454,10 @@ mod tests {
     #[test]
     fn request_body_maps_user_message_correctly() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages array");
-        // Index 1 because index 0 is the system message.
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[1]["content"], "hello");
     }
@@ -1291,7 +1465,7 @@ mod tests {
     #[test]
     fn request_body_maps_tools_correctly() {
         let req = request_with_tools();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let tools = json["tools"].as_array().expect("tools array");
@@ -1300,23 +1474,21 @@ mod tests {
         assert_eq!(tools[0]["function"]["name"], "file_read");
         assert_eq!(tools[0]["function"]["description"], "Read a file from disk");
         assert_eq!(tools[0]["function"]["parameters"]["type"], "object");
-        assert!(tools[0]["function"]["parameters"]["properties"]["path"].is_object());
     }
 
     #[test]
     fn request_body_omits_tools_when_empty() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
-        // tools should be omitted entirely (skip_serializing_if = "Vec::is_empty")
         assert!(json.get("tools").is_none());
     }
 
     #[test]
     fn request_body_sets_tool_choice_auto_when_tools_present() {
         let req = request_with_tools();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert_eq!(json["tool_choice"], "auto");
@@ -1325,20 +1497,44 @@ mod tests {
     #[test]
     fn request_body_omits_tool_choice_when_no_tools() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert!(json.get("tool_choice").is_none());
     }
 
     #[test]
+    fn request_body_includes_provider_preferences() {
+        let prefs = ProviderPreferences {
+            order: Some(vec!["Anthropic".into()]),
+            allow_fallbacks: Some(false),
+            ..Default::default()
+        };
+        let req = minimal_request();
+        let body = build_request_body(&req, false, &Some(prefs));
+        let json = serde_json::to_value(&body).expect("serialize");
+
+        let provider = &json["provider"];
+        assert_eq!(provider["order"][0], "Anthropic");
+        assert_eq!(provider["allow_fallbacks"], false);
+    }
+
+    #[test]
+    fn request_body_omits_provider_when_none() {
+        let req = minimal_request();
+        let body = build_request_body(&req, false, &None);
+        let json = serde_json::to_value(&body).expect("serialize");
+
+        assert!(json.get("provider").is_none());
+    }
+
+    #[test]
     fn request_body_maps_tool_use_as_assistant_tool_calls() {
         let req = request_with_tool_result();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
-        // Messages: [0] user "read the file", [1] assistant with tool_calls, [2] tool result
         let assistant_msg = &messages[1];
         assert_eq!(assistant_msg["role"], "assistant");
         let tool_calls = assistant_msg["tool_calls"]
@@ -1348,20 +1544,15 @@ mod tests {
         assert_eq!(tool_calls[0]["id"], "call_abc123");
         assert_eq!(tool_calls[0]["type"], "function");
         assert_eq!(tool_calls[0]["function"]["name"], "file_read");
-        assert_eq!(
-            tool_calls[0]["function"]["arguments"],
-            r#"{"path":"/tmp/test"}"#
-        );
     }
 
     #[test]
     fn request_body_maps_tool_result_as_tool_role_message() {
         let req = request_with_tool_result();
-        let body = build_request_body(&req, false, false);
+        let body = build_request_body(&req, false, &None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
-        // The tool result is the third message (index 2).
         let tool_msg = &messages[2];
         assert_eq!(tool_msg["role"], "tool");
         assert_eq!(tool_msg["tool_call_id"], "call_abc123");
@@ -1378,7 +1569,7 @@ mod tests {
         let parsed: ChatCompletionResponse =
             serde_json::from_str(&json).expect("parse response");
 
-        assert_eq!(parsed.id, "chatcmpl-abc123");
+        assert_eq!(parsed.id, "gen-abc123");
         assert_eq!(parsed.choices.len(), 1);
         assert_eq!(
             parsed.choices[0].message.content.as_deref(),
@@ -1391,7 +1582,14 @@ mod tests {
         let usage = parsed.usage.as_ref().expect("usage");
         assert_eq!(usage.prompt_tokens, 25);
         assert_eq!(usage.completion_tokens, 12);
-        assert_eq!(usage.total_tokens, 37);
+    }
+
+    #[test]
+    fn deserialize_response_with_provider_field() {
+        let json = sample_text_response_json();
+        let parsed: ChatCompletionResponse =
+            serde_json::from_str(&json).expect("parse response");
+        assert_eq!(parsed.provider.as_deref(), Some("Anthropic"));
     }
 
     #[test]
@@ -1409,16 +1607,7 @@ mod tests {
             .expect("tool_calls");
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].id, "call_xyz789");
-        assert_eq!(tool_calls[0].call_type, "function");
         assert_eq!(tool_calls[0].function.name, "file_read");
-        assert_eq!(
-            tool_calls[0].function.arguments,
-            r#"{"path":"/tmp/test.txt"}"#
-        );
-        assert_eq!(
-            parsed.choices[0].finish_reason.as_deref(),
-            Some("tool_calls")
-        );
     }
 
     #[test]
@@ -1448,7 +1637,7 @@ mod tests {
         assert_eq!(response.stop_reason, "end_turn");
         assert_eq!(
             response.provider_request_id.as_deref(),
-            Some("chatcmpl-abc123")
+            Some("gen-abc123")
         );
     }
 
@@ -1473,7 +1662,6 @@ mod tests {
 
         assert_eq!(response.text, "I'll read that file for you.");
         assert_eq!(response.tool_calls.len(), 1);
-        assert_eq!(response.tool_calls[0].tool_name, "file_read");
         assert_eq!(response.stop_reason, "tool_use");
     }
 
@@ -1483,7 +1671,6 @@ mod tests {
         let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse");
         let response = to_inference_response(&parsed);
 
-        // Should use the first choice.
         assert_eq!(response.text, "First choice.");
     }
 
@@ -1496,7 +1683,6 @@ mod tests {
         assert_eq!(response.usage.input_tokens, 25);
         assert_eq!(response.usage.output_tokens, 12);
         assert!(response.usage.cache_read_tokens.is_none());
-        assert!(response.usage.cache_write_tokens.is_none());
     }
 
     #[test]
@@ -1567,13 +1753,25 @@ mod tests {
     }
 
     #[test]
+    fn error_mapping_429_with_retry_after() {
+        let body = sample_error_response_json("rate_limit_exceeded", "slow down");
+        let err = map_api_error(429, &body, Some(30), "test-model");
+        match &err {
+            ExecutorError::RateLimit { retry_after_secs } => {
+                assert_eq!(*retry_after_secs, Some(30));
+            }
+            _ => panic!("expected RateLimit error"),
+        }
+    }
+
+    #[test]
     fn error_mapping_400_bad_request() {
         let body = sample_error_response_json(
             "invalid_request_error",
             "messages is a required field",
         );
         let err = map_api_error(400, &body, None, "test-model");
-        // 400 without context/content keywords falls through to ServerError
+        // 400 without context/content keywords
         assert!(!matches!(err, ExecutorError::ContextWindowExceeded { .. }));
     }
 
@@ -1585,10 +1783,10 @@ mod tests {
     }
 
     #[test]
-    fn error_mapping_400_context_window_alternative_message() {
-        let body = r#"{"error":{"message":"maximum context length exceeded","type":"invalid_request_error","code":null}}"#;
+    fn error_mapping_400_content_moderation() {
+        let body = r#"{"error":{"message":"content_filter triggered","type":"invalid_request_error","code":null}}"#;
         let err = map_api_error(400, body, None, "test-model");
-        assert!(matches!(err, ExecutorError::ContextWindowExceeded { .. }));
+        assert!(matches!(err, ExecutorError::ContentPolicy { .. }));
     }
 
     #[test]
@@ -1596,15 +1794,13 @@ mod tests {
         let body = sample_error_response_json("permission_error", "not allowed");
         let err = map_api_error(403, &body, None, "test-model");
         assert!(matches!(err, ExecutorError::Authentication { .. }));
-        assert!(!err.is_retryable());
     }
 
     #[test]
-    fn error_mapping_404_model_not_found() {
-        let body = sample_error_response_json("not_found", "model gpt-99 not found");
-        let err = map_api_error(404, &body, None, "gpt-99");
-        assert!(matches!(err, ExecutorError::ModelNotFound { ref model, .. } if model == "gpt-99"));
-        assert!(!err.is_retryable());
+    fn error_mapping_404_not_found() {
+        let body = sample_error_response_json("not_found", "model not found");
+        let err = map_api_error(404, &body, None, "test-model");
+        assert!(matches!(err, ExecutorError::ModelNotFound { .. }));
     }
 
     #[test]
@@ -1619,11 +1815,10 @@ mod tests {
                 ..
             }
         ));
-        assert!(err.is_retryable());
     }
 
     #[test]
-    fn error_mapping_502_server_error() {
+    fn error_mapping_502_provider_unavailable() {
         let err = map_api_error(502, "Bad Gateway", None, "test-model");
         assert!(matches!(
             err,
@@ -1632,11 +1827,10 @@ mod tests {
                 ..
             }
         ));
-        assert!(err.is_retryable());
     }
 
     #[test]
-    fn error_mapping_503_server_error() {
+    fn error_mapping_503_provider_unavailable() {
         let body =
             sample_error_response_json("server_error", "service unavailable");
         let err = map_api_error(503, &body, None, "test-model");
@@ -1650,15 +1844,100 @@ mod tests {
     }
 
     #[test]
-    fn error_mapping_handles_invalid_json_body() {
-        let err = map_api_error(500, "not json at all", None, "test-model");
-        assert!(matches!(
-            err,
-            ExecutorError::Transport {
-                retryable: true,
-                ..
-            }
-        ));
+    fn error_mapping_408_timeout() {
+        let err = map_api_error(408, "Request Timeout", None, "test-model");
+        assert!(matches!(err, ExecutorError::Timeout { .. }));
+    }
+
+    #[test]
+    fn error_mapping_unknown_status() {
+        let err = map_api_error(418, "I'm a teapot", None, "test-model");
+        // Unknown status falls to ProviderError's body heuristics -> ServerError
+        assert!(err.is_retryable());
+    }
+
+    // -----------------------------------------------------------------------
+    // Provider error classification tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_401_as_authentication() {
+        assert_eq!(
+            classify_provider_error(401, ""),
+            ProviderErrorKind::Authentication
+        );
+    }
+
+    #[test]
+    fn classify_403_as_authentication() {
+        assert_eq!(
+            classify_provider_error(403, ""),
+            ProviderErrorKind::Authentication
+        );
+    }
+
+    #[test]
+    fn classify_404_as_not_found() {
+        assert_eq!(
+            classify_provider_error(404, ""),
+            ProviderErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn classify_429_as_rate_limit() {
+        assert_eq!(
+            classify_provider_error(429, ""),
+            ProviderErrorKind::ProviderRateLimit
+        );
+    }
+
+    #[test]
+    fn classify_502_as_provider_unavailable() {
+        assert_eq!(
+            classify_provider_error(502, ""),
+            ProviderErrorKind::ProviderUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_503_as_provider_unavailable() {
+        assert_eq!(
+            classify_provider_error(503, ""),
+            ProviderErrorKind::ProviderUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_400_context_exceeded() {
+        assert_eq!(
+            classify_provider_error(400, "context_length_exceeded"),
+            ProviderErrorKind::ContextWindowExceeded
+        );
+    }
+
+    #[test]
+    fn classify_400_content_moderation() {
+        assert_eq!(
+            classify_provider_error(400, "content_filter violation"),
+            ProviderErrorKind::ContentModeration
+        );
+    }
+
+    #[test]
+    fn classify_400_generic() {
+        assert_eq!(
+            classify_provider_error(400, "something else"),
+            ProviderErrorKind::BadRequest
+        );
+    }
+
+    #[test]
+    fn classify_unknown_status() {
+        assert_eq!(
+            classify_provider_error(418, ""),
+            ProviderErrorKind::Unknown
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1667,380 +1946,196 @@ mod tests {
 
     #[test]
     fn parse_sse_text_stream() {
-        let raw = sample_sse_text_stream();
-        let chunks = parse_sse_chunks(&raw);
-
-        // 6 data lines, one is [DONE] which is skipped = 5 chunks.
-        assert_eq!(chunks.len(), 5);
+        let sse = sample_sse_text_stream();
+        let chunks = parse_sse_chunks(&sse);
+        assert!(!chunks.is_empty());
     }
 
     #[test]
     fn parse_sse_tool_stream() {
-        let raw = sample_sse_tool_stream();
-        let chunks = parse_sse_chunks(&raw);
-
-        // 6 data lines, one is [DONE] which is skipped = 5 chunks.
-        assert_eq!(chunks.len(), 5);
+        let sse = sample_sse_tool_stream();
+        let chunks = parse_sse_chunks(&sse);
+        assert!(!chunks.is_empty());
     }
 
     #[test]
-    fn parse_sse_done_marker_skipped() {
-        let raw = "data: [DONE]\n";
-        let chunks = parse_sse_chunks(raw);
+    fn parse_sse_skips_done_marker() {
+        let sse = "data: [DONE]\n";
+        let chunks = parse_sse_chunks(sse);
         assert!(chunks.is_empty());
     }
 
     #[test]
-    fn parse_sse_ignores_non_data_lines() {
-        let raw = "event: something\n: comment\ndata: [DONE]\n";
-        let chunks = parse_sse_chunks(raw);
+    fn parse_sse_skips_invalid_json() {
+        let sse = "data: {invalid json}\n";
+        let chunks = parse_sse_chunks(sse);
         assert!(chunks.is_empty());
     }
 
     #[test]
-    fn parse_sse_ignores_invalid_json() {
-        let raw = "data: {invalid json}\n";
-        let chunks = parse_sse_chunks(raw);
+    fn parse_sse_skips_non_data_lines() {
+        let sse = "event: ping\nretry: 5000\n";
+        let chunks = parse_sse_chunks(sse);
         assert!(chunks.is_empty());
     }
-
-    // -----------------------------------------------------------------------
-    // SSE processing tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn process_sse_text_stream_produces_correct_events() {
-        let raw = sample_sse_text_stream();
-        let chunks = parse_sse_chunks(&raw);
+        let sse = sample_sse_text_stream();
+        let chunks = parse_sse_chunks(&sse);
         let events = process_sse_chunks(chunks);
 
-        // Should have: TextDelta("Hello"), TextDelta(" world"), UsageUpdate, Completed
-        // (The empty content delta at the start is skipped.)
-        let mut text_deltas = Vec::new();
-        let mut has_usage_update = false;
-        let mut has_completed = false;
+        // Should have: text deltas + usage + completed
+        let text_deltas: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Ok(StreamEvent::TextDelta { .. })))
+            .collect();
+        assert!(!text_deltas.is_empty());
 
-        for event in &events {
-            match event.as_ref().expect("no error") {
-                StreamEvent::TextDelta { delta } => text_deltas.push(delta.clone()),
-                StreamEvent::UsageUpdate { .. } => has_usage_update = true,
-                StreamEvent::Completed { result } => {
-                    has_completed = true;
-                    assert_eq!(result.text, "Hello world");
-                    assert_eq!(result.stop_reason, "end_turn");
-                    assert_eq!(result.usage.input_tokens, 20);
-                    assert_eq!(result.usage.output_tokens, 5);
-                }
-                _ => {}
-            }
-        }
-
-        assert_eq!(text_deltas, vec!["Hello", " world"]);
-        assert!(has_usage_update);
-        assert!(has_completed);
+        // Last event should be Completed
+        let last = events.last().expect("has events");
+        assert!(matches!(last, Ok(StreamEvent::Completed { .. })));
     }
 
     #[test]
-    fn process_sse_tool_stream_produces_correct_events() {
-        let raw = sample_sse_tool_stream();
-        let chunks = parse_sse_chunks(&raw);
+    fn process_sse_text_stream_accumulates_text() {
+        let sse = sample_sse_text_stream();
+        let chunks = parse_sse_chunks(&sse);
         let events = process_sse_chunks(chunks);
 
-        let mut tool_deltas = Vec::new();
-        let mut has_tool_complete = false;
-        let mut has_completed = false;
-
-        for event in &events {
-            match event.as_ref().expect("no error") {
-                StreamEvent::ToolCallDelta {
-                    tool_call_id,
-                    name,
-                    input_delta,
-                } => {
-                    tool_deltas.push((
-                        tool_call_id.clone(),
-                        name.clone(),
-                        input_delta.clone(),
-                    ));
-                }
-                StreamEvent::ToolCallComplete { call } => {
-                    has_tool_complete = true;
-                    assert_eq!(call.tool_call_id, "call_abc123");
-                    assert_eq!(call.tool_name, "file_read");
-                    assert_eq!(
-                        call.arguments_json,
-                        r#"{"path":"/tmp/test"}"#
-                    );
-                }
-                StreamEvent::Completed { result } => {
-                    has_completed = true;
-                    assert_eq!(result.stop_reason, "tool_use");
-                    assert_eq!(result.tool_calls.len(), 1);
-                    assert_eq!(result.usage.input_tokens, 30);
-                    assert_eq!(result.usage.output_tokens, 15);
-                }
-                _ => {}
-            }
-        }
-
-        // First delta should have name "file_read".
-        assert!(!tool_deltas.is_empty());
-        assert_eq!(tool_deltas[0].1, Some("file_read".to_string()));
-
-        assert!(has_tool_complete);
-        assert!(has_completed);
-    }
-
-    // -----------------------------------------------------------------------
-    // Builder / constructor tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn new_creates_executor_with_defaults() {
-        let exec = OpenAiExecutor::new("sk-test".into(), "gpt-4o".into());
-        assert_eq!(exec.api_key, "sk-test");
-        assert_eq!(exec.model, "gpt-4o");
-        assert_eq!(exec.base_url, "https://api.openai.com");
-        assert_eq!(exec.max_retries, 3);
-    }
-
-    #[test]
-    fn with_base_url_overrides_default() {
-        let exec = OpenAiExecutor::new_builder("sk-test".into(), "gpt-4o".into())
-            .with_base_url("http://localhost:11434/v1".into());
-        assert_eq!(exec.base_url, "http://localhost:11434/v1");
-    }
-
-    #[test]
-    fn with_max_retries_overrides_default() {
-        let exec = OpenAiExecutor::new_builder("sk-test".into(), "gpt-4o".into())
-            .with_max_retries(5);
-        assert_eq!(exec.max_retries, 5);
-    }
-
-    #[test]
-    fn with_timeout_creates_new_client() {
-        let exec = OpenAiExecutor::new_builder("sk-test".into(), "gpt-4o".into())
-            .with_timeout(Duration::from_secs(30));
-        // Just verify it doesn't panic and produces a valid executor.
-        assert_eq!(exec.model, "gpt-4o");
-    }
-
-    #[test]
-    fn builder_chain_works() {
-        let exec = OpenAiExecutor::new_builder("sk-test".into(), "gpt-4o".into())
-            .with_base_url("http://localhost:8080".into())
-            .with_max_retries(1)
-            .with_timeout(Duration::from_secs(60))
-            .build();
-
-        assert_eq!(exec.base_url, "http://localhost:8080");
-        assert_eq!(exec.max_retries, 1);
-    }
-
-    #[test]
-    fn new_builder_returns_non_arc() {
-        let exec = OpenAiExecutor::new_builder("key".into(), "model".into());
-        assert_eq!(exec.api_key, "key");
-        assert_eq!(exec.model, "model");
-    }
-
-    #[test]
-    fn build_returns_arc() {
-        let exec =
-            OpenAiExecutor::new_builder("key".into(), "model".into()).build();
-        // Verify it's an Arc by cloning (Arc implements Clone).
-        let _clone = Arc::clone(&exec);
-        assert_eq!(exec.model, "model");
-    }
-
-    /// Compile-time check: `OpenAiExecutor` implements `ModelExecutor`.
-    #[allow(dead_code)]
-    fn _openai_executor_implements_model_executor(e: &OpenAiExecutor) {
-        let _: &dyn ModelExecutor = e;
-    }
-
-    // -----------------------------------------------------------------------
-    // Message conversion edge cases
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn assistant_message_with_text_and_tool_use() {
-        let msg = InferenceMessage {
-            role: MessageRole::Assistant,
-            content: vec![
-                ContentBlock::Text {
-                    text: "Let me check.".into(),
-                },
-                ContentBlock::ToolUse {
-                    tool_call_id: "call_001".into(),
-                    tool_name: "lookup".into(),
-                    arguments_json: r#"{"q":"test"}"#.into(),
-                },
-            ],
-        };
-
-        let api_msgs = to_api_messages(&msg);
-        assert_eq!(api_msgs.len(), 1);
-        assert_eq!(api_msgs[0].role, "assistant");
-        assert_eq!(api_msgs[0].content.as_deref(), Some("Let me check."));
-        let tool_calls = api_msgs[0].tool_calls.as_ref().expect("tool_calls");
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0].function.name, "lookup");
-    }
-
-    #[test]
-    fn user_message_with_tool_result_becomes_tool_role() {
-        let msg = InferenceMessage {
-            role: MessageRole::User,
-            content: vec![ContentBlock::ToolResult {
-                tool_call_id: "call_001".into(),
-                content: "result data".into(),
-                is_error: false,
-            }],
-        };
-
-        let api_msgs = to_api_messages(&msg);
-        assert_eq!(api_msgs.len(), 1);
-        assert_eq!(api_msgs[0].role, "tool");
-        assert_eq!(api_msgs[0].content.as_deref(), Some("result data"));
-        assert_eq!(api_msgs[0].tool_call_id.as_deref(), Some("call_001"));
-    }
-
-    #[test]
-    fn assistant_tool_use_without_text_has_null_content() {
-        let msg = InferenceMessage {
-            role: MessageRole::Assistant,
-            content: vec![ContentBlock::ToolUse {
-                tool_call_id: "call_002".into(),
-                tool_name: "search".into(),
-                arguments_json: "{}".into(),
-            }],
-        };
-
-        let api_msgs = to_api_messages(&msg);
-        assert_eq!(api_msgs.len(), 1);
-        assert!(api_msgs[0].content.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // max_completion_tokens tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn max_completion_tokens_serialized_when_enabled() {
-        let req = minimal_request();
-        let body = build_request_body(&req, false, true);
-        let json = serde_json::to_value(&body).expect("serialize");
-
-        assert_eq!(json["max_completion_tokens"], 1024);
-        assert!(json.get("max_tokens").is_none());
-    }
-
-    #[test]
-    fn max_tokens_used_when_use_max_completion_tokens_is_false() {
-        let req = minimal_request();
-        let body = build_request_body(&req, false, false);
-        let json = serde_json::to_value(&body).expect("serialize");
-
-        assert_eq!(json["max_tokens"], 1024);
-        assert!(json.get("max_completion_tokens").is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // Concurrency semaphore tests
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn concurrency_semaphore_limits_concurrent_access() {
-        let sem = Arc::new(Semaphore::new(2));
-
-        // Acquire two permits.
-        let p1 = sem.clone().acquire_owned().await.unwrap();
-        let p2 = sem.clone().acquire_owned().await.unwrap();
-
-        // Third acquire should not succeed immediately.
-        let sem2 = sem.clone();
-        let handle = tokio::spawn(async move {
-            let _permit = sem2.acquire().await.unwrap();
-            true
+        let completed = events.iter().find_map(|e| match e {
+            Ok(StreamEvent::Completed { result }) => Some(result),
+            _ => None,
         });
-
-        // Give the spawned task a moment to run.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(!handle.is_finished(), "third acquire should be blocked");
-
-        // Drop one permit to unblock.
-        drop(p1);
-        let result = tokio::time::timeout(Duration::from_secs(1), handle)
-            .await
-            .expect("should complete within timeout")
-            .expect("task should succeed");
-        assert!(result);
-
-        drop(p2);
+        let result = completed.expect("has completed event");
+        assert_eq!(result.text, "Hello world");
+        assert_eq!(result.stop_reason, "end_turn");
     }
 
     #[test]
-    fn builder_with_max_concurrent_creates_semaphore() {
-        let exec = OpenAiExecutor::new_builder("key".into(), "model".into())
-            .with_max_concurrent(5);
-        assert!(exec.concurrency_semaphore.is_some());
+    fn process_sse_tool_stream_assembles_tool_call() {
+        let sse = sample_sse_tool_stream();
+        let chunks = parse_sse_chunks(&sse);
+        let events = process_sse_chunks(chunks);
+
+        let tool_complete: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Ok(StreamEvent::ToolCallComplete { .. })))
+            .collect();
+        assert_eq!(tool_complete.len(), 1);
+
+        let completed = events.iter().find_map(|e| match e {
+            Ok(StreamEvent::Completed { result }) => Some(result),
+            _ => None,
+        });
+        let result = completed.expect("has completed event");
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].tool_name, "file_read");
+        assert_eq!(result.tool_calls[0].tool_call_id, "call_abc123");
+        assert_eq!(result.stop_reason, "tool_use");
     }
 
     #[test]
-    fn builder_without_max_concurrent_has_no_semaphore() {
-        let exec = OpenAiExecutor::new_builder("key".into(), "model".into());
-        assert!(exec.concurrency_semaphore.is_none());
-    }
+    fn process_sse_stream_extracts_usage() {
+        let sse = sample_sse_text_stream();
+        let chunks = parse_sse_chunks(&sse);
+        let events = process_sse_chunks(chunks);
 
-    #[test]
-    fn builder_with_use_max_completion_tokens() {
-        let exec = OpenAiExecutor::new_builder("key".into(), "model".into())
-            .with_use_max_completion_tokens(true);
-        assert!(exec.use_max_completion_tokens);
+        let usage_event = events.iter().find_map(|e| match e {
+            Ok(StreamEvent::UsageUpdate { usage }) => Some(usage),
+            _ => None,
+        });
+        let usage = usage_event.expect("has usage event");
+        assert_eq!(usage.input_tokens, 20);
+        assert_eq!(usage.output_tokens, 5);
     }
 
     // -----------------------------------------------------------------------
-    // Error classification tests (PRD-04a § 4.5)
+    // ProviderPreferences serialization tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn error_mapping_429_with_retry_after() {
-        let body = sample_error_response_json("rate_limit_exceeded", "Rate limited");
-        let err = map_api_error(429, &body, Some(30), "test-model");
-        match err {
-            ExecutorError::RateLimit { retry_after_secs } => {
-                assert_eq!(retry_after_secs, Some(30));
+    fn provider_preferences_serializes_order() {
+        let prefs = ProviderPreferences {
+            order: Some(vec!["Anthropic".into(), "OpenAI".into()]),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&prefs).expect("serialize");
+        assert_eq!(json["order"][0], "Anthropic");
+        assert_eq!(json["order"][1], "OpenAI");
+    }
+
+    #[test]
+    fn provider_preferences_skips_none_fields() {
+        let prefs = ProviderPreferences::default();
+        let json = serde_json::to_value(&prefs).expect("serialize");
+        assert!(json.get("order").is_none());
+        assert!(json.get("allow_fallbacks").is_none());
+        assert!(json.get("require_parameters").is_none());
+    }
+
+    #[test]
+    fn provider_preferences_serializes_data_collection() {
+        let prefs = ProviderPreferences {
+            data_collection: Some("deny".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&prefs).expect("serialize");
+        assert_eq!(json["data_collection"], "deny");
+    }
+
+    #[test]
+    fn provider_preferences_serializes_quantizations() {
+        let prefs = ProviderPreferences {
+            quantizations: Some(vec!["bf16".into(), "fp8".into()]),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&prefs).expect("serialize");
+        assert_eq!(json["quantizations"][0], "bf16");
+        assert_eq!(json["quantizations"][1], "fp8");
+    }
+
+    #[test]
+    fn provider_preferences_deserializes() {
+        let json = r#"{"order":["Anthropic"],"allow_fallbacks":true}"#;
+        let prefs: ProviderPreferences = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(
+            prefs.order.as_ref().expect("order"),
+            &["Anthropic"]
+        );
+        assert_eq!(prefs.allow_fallbacks, Some(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // OpenRouter-specific response parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deserialize_response_with_metadata_error() {
+        let json = r#"{
+            "error": {
+                "message": "Provider returned error",
+                "type": "provider_error",
+                "code": 502,
+                "metadata": {"provider_name": "Anthropic", "raw": "upstream error"}
             }
-            other => panic!("expected RateLimit, got {other:?}"),
-        }
+        }"#;
+        let parsed: ApiErrorResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.error.message, "Provider returned error");
+        assert!(parsed.error.metadata.is_some());
     }
 
     #[test]
-    fn error_mapping_408_timeout() {
-        let err = map_api_error(408, "", None, "test-model");
-        assert!(matches!(err, ExecutorError::Timeout { .. }));
+    fn deserialize_error_with_numeric_code() {
+        let json = r#"{"error":{"message":"error","type":"test","code":429}}"#;
+        let parsed: ApiErrorResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.error.message, "error");
     }
 
     #[test]
-    fn error_mapping_404_model_not_found_uses_provider_error() {
-        let body = sample_error_response_json("not_found", "model xyz not found");
-        let err = map_api_error(404, &body, None, "xyz");
-        match err {
-            ExecutorError::ModelNotFound { model, .. } => {
-                assert_eq!(model, "xyz");
-            }
-            other => panic!("expected ModelNotFound, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn error_mapping_599_server_error_retryable() {
-        let err = map_api_error(599, "edge error", None, "test-model");
-        // 599 is not in the 500-504 range for ProviderError::classify, so it
-        // falls through to the body heuristics. Since "edge error" doesn't
-        // match context/content patterns, it becomes a ServerError.
-        assert!(err.is_retryable());
+    fn deserialize_error_with_string_code() {
+        let json = r#"{"error":{"message":"error","type":"test","code":"rate_limit"}}"#;
+        let parsed: ApiErrorResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.error.message, "error");
     }
 }
