@@ -1,76 +1,151 @@
 # Polkagent
 
-Rust-first, Polkadot-native platform for building, using, and publishing AI agents.
+A Rust-first, Polkadot-native platform for building, using, and publishing AI agents.
 
-## Overview
+Polkagent enables AI agents to operate within the Polkadot ecosystem — governance research, treasury operations, cross-chain transfers — with evidence-bearing safety, configurable autonomy, and crash-safe execution.
 
-Polkagent enables AI agents to deeply understand and operate within the Polkadot ecosystem — from governance research and treasury operations to runtime engineering and cross-chain transfers. It provides evidence-bearing safety, configurable autonomy, and a permissionless extension marketplace.
+## Features
 
-### Three Pillars
+- Multi-provider LLM support (Anthropic, OpenAI, Google Gemini, OpenRouter, Perplexity, Cerebras, local/Ollama) with zero-config auto-detection from environment variables
+- Polkadot-native governance tools (referendum lookup, track info, voter history, delegation info, treasury overview)
+- Polkadot-native treasury tools (balance query, staking info, portfolio summary, transfer history, vesting schedule)
+- Crash-safe effect pipeline with four invariants (signer isolation, intent-before-I/O, no silent duplicates, unknown stays unknown)
+- Grant-based policy engine for configurable agent autonomy
+- Multi-harness support (Claude Code, Codex, Cursor, Copilot, Goose, Kiro) via ACP
+- ROSEDUST terminal UI (ratatui)
+- REST + WebSocket API (`/api/v1alpha1`)
+- Skill system with TOML manifests for extensibility
+- Episodic agent memory with SQLite FTS5
+- Budget enforcement (per-run and per-day USD limits)
+- 74-crate hexagonal architecture with strict dependency rules
 
-- **Build** — Create agents with deep Polkadot domain knowledge, typed chain profiles, and metadata-aware tooling
-- **Act** — Execute agent workflows with approval gates, budget enforcement, signer isolation, and durable effect tracking
-- **Reach** — Publish and discover agents, skills, tools, and context packs through a federated marketplace
+## Quick Start
 
-## Project Structure
+```bash
+# Install from source
+cargo install --path crates/polkagent-cli
+
+# Initialize project directory
+polkagent init
+
+# Set your provider API key
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Create an agent
+polkagent agent create my-agent --model anthropic/claude-sonnet-4-6
+
+# Run it
+polkagent run --agent-id my-agent --prompt "Summarize referendum 1234"
+
+# Or launch the TUI
+polkagent tui
+```
+
+## CLI Overview
+
+| Command | Description |
+|---------|-------------|
+| `init` | Initialize `.polkagent/` project directory |
+| `run` | Execute a run against an agent |
+| `agent` | Agent CRUD and lifecycle management |
+| `skill` | Skill management (install, list, remove) |
+| `tui` | Launch interactive ROSEDUST terminal UI |
+| `serve` | Start the HTTP API + WebSocket server |
+| `config` | Show or validate configuration |
+| `doctor` | Run system health checks |
+| `status` | Show agent count, active runs, effect queue depth |
+| `logs` | Tail the event log |
+| `inbox` | Manage pending effects awaiting approval |
+| `explain` | Decode and preview a hex extrinsic |
+| `chain` | Chain interaction and inspection |
+| `memory` | Agent memory management |
+| `eval` | Run evaluation suites |
+| `auth` | API key and credential management |
+| `network` | Network endpoint status |
+| `completions` | Generate shell completion scripts |
+| `version` | Print version |
+
+## Configuration
+
+Configuration is loaded from two locations:
+
+- `~/.config/polkagent/polkagent.toml` — global defaults
+- `.polkagent/polkagent.toml` — project-local overrides (takes precedence)
+
+Environment variables prefixed with `POLKAGENT_*` override both. See [docs/configuration.md](docs/configuration.md) for the full reference.
+
+## Architecture at a Glance
+
+Polkagent is organized as a Cargo workspace following a hexagonal (ports and adapters) architecture. Domain logic lives in pure crates with no I/O dependencies. External systems are accessed through narrow trait-based ports, with concrete adapters provided separately.
 
 ```
-polkagent/
-├── prd/                    # Product Requirements Documents
-│   ├── PRD-00-MASTER-INDEX.md
-│   ├── PRD-01-VISION-PRINCIPLES-PERSONAS.md
-│   ├── PRD-02-VOCABULARY-ARCHITECTURE.md
-│   ├── PRD-03-EXECUTION-MODEL.md
-│   ├── PRD-04-PROVIDERS-MODELS-TOOLS.md
-│   ├── PRD-05-POLKADOT-INTEGRATIONS.md
-│   ├── PRD-06-PCA-COMPATIBILITY.md
-│   ├── PRD-07-IDENTITY-SECURITY.md
-│   ├── PRD-08-PAYMENTS-AUTONOMY.md
-│   ├── PRD-09-MEMORY-GROUPS-EVALS.md
-│   ├── PRD-10-DATA-OBSERVABILITY.md
-│   ├── PRD-11-DEPLOYMENT-CLOUD.md
-│   ├── PRD-12-MARKETPLACE-EXTENSIONS.md
-│   ├── PRD-13-UX-SURFACES.md
-│   ├── PRD-14-APIs-SCHEMAS-CONFIG.md
-│   ├── PRD-15-TESTING-ROADMAP.md
-│   └── research-*.md          # Research documents
-└── README.md
+                      +-----------+
+                      |    User   |
+                      +-----+-----+
+                            |
+                +-----------+-----------+
+                |  Surfaces (CLI / API) |
+                +-----------+-----------+
+                            |
+          +-----------------+-----------------+
+          |          Application Core         |
+          |  +-----------+  +-------------+   |
+          |  |    Run    |  |    Grant     |   |
+          |  |  Manager  |  |   Resolver   |   |
+          |  +-----+-----+  +------+------+   |
+          |        |               |           |
+          |  +-----+-----+  +-----+-----+     |
+          |  |  Effect   |  |   Event    |     |
+          |  |  Pipeline |  |    Bus     |     |
+          |  +-----+-----+  +-----+-----+     |
+          |        |               |           |
+          |  +-----+-----+  +-----+-----+     |
+          |  |  Artifact |  |   Outbox   |     |
+          |  |  Store    |  |            |     |
+          |  +-----------+  +-----------+     |
+          +-----------------+-----------------+
+                            |
+          +-----------------+-----------------+
+          |              Ports                |
+          |  (executor, signer, store,        |
+          |   chain, transport traits)        |
+          +-----------------+-----------------+
+                            |
+          +-----------------+-----------------+
+          |            Adapters               |
+          |  SQLite  Anthropic  OpenAI  Fake  |
+          |  Ollama  External-Signer  ...     |
+          +-----------------+-----------------+
+                            |
+          +-----------------+-----------------+
+          |         External Systems          |
+          |  LLM APIs  Polkadot  Filesystem   |
+          +-----------------------------------+
 ```
 
-## PRD Suite
+See [docs/architecture.md](docs/architecture.md) for a full description of the layered design, crate dependency diagram, and key invariants.
 
-The project is specified across 16 PRDs with comprehensive implementation appendices:
+## Documentation
 
-| PRD | Title | Scope |
-|-----|-------|-------|
-| 00 | Master Index | Workspace layout, build sequence, cross-PRD dependencies, phased roadmap |
-| 01 | Vision & Personas | Product pillars, persona journey maps, success metrics, competitive positioning |
-| 02 | Vocabulary & Architecture | Canonical types, Rust trait definitions, layered architecture, invariant enforcement |
-| 03 | Execution Model | Agent/Run state machines, effect pipeline, graph engine, crash recovery |
-| 04 | Providers & Tools | Multi-provider support, cascade routing, tool system, skill packages, harnesses |
-| 05 | Polkadot Integrations | Chain profiles, metadata strategy, XCM, Zombienet/Chopsticks, JAM roadmap |
-| 06 | PCA Compatibility | ACK protocol, device channels, outbound lane, state import, rolling migration |
-| 07 | Identity & Security | Grant resolution, Cedar policy engine, secret management, signer isolation |
-| 08 | Payments & Autonomy | Asset registry, fee estimation, mandate DSL, budget enforcement |
-| 09 | Memory & Evals | SQLite+FTS5+sqlite-vec storage, episode management, feeds, eval framework |
-| 10 | Data & Observability | Database schemas, event system, OpenTelemetry, JSONL tailer, projections |
-| 11 | Deployment & Cloud | Data/execution/control planes, Docker, Kubernetes/Helm, HA/DR |
-| 12 | Marketplace | Package manifests, PubGrub resolver, sandbox isolation, trust tiers, extension SDK |
-| 13 | UX Surfaces | 25-screen TUI (ratatui), ROSEDUST design system, 20 widgets, CLI, web API |
-| 14 | APIs & Schemas | REST/WebSocket/SSE API, SQLite+PostgreSQL DDL, TOML config, Rust+TS SDKs |
-| 15 | Testing & Roadmap | Testing pyramid, 25 security test cases, TUI tests, CI/CD, phase gates |
+- [Getting Started](docs/getting-started.md)
+- [Configuration](docs/configuration.md)
+- [CLI Reference](docs/cli.md)
+- [Architecture](docs/architecture.md)
+- [Providers](docs/providers.md)
+- [Harnesses](docs/harnesses.md)
+- [Tools & Skills](docs/tools-and-skills.md)
+- [Safety](docs/safety.md)
+- [API Reference](docs/api.md)
+- [Deployment](docs/deployment.md)
 
-Each PRD includes implementation blueprints with Rust code sketches, agent-ready checklists, reference file maps to proven patterns, configuration guides, and ASCII wireframes for TUI components.
+## Contributing
 
-## Tech Stack
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and contribution guidelines.
 
-- **Language:** Rust
-- **TUI:** ratatui + crossterm (ROSEDUST design system)
-- **Database:** SQLite (local) / PostgreSQL (cloud)
-- **AI Providers:** Anthropic, OpenAI, Google, OpenAI-compatible, local (Ollama)
-- **Blockchain:** Polkadot SDK, subxt, SCALE codec
-- **Policy:** Cedar (ABAC)
+## Security
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## License
 
-TBD
+Licensed under Apache-2.0.
