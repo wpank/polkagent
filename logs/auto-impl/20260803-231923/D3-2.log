@@ -1,0 +1,7 @@
+Both checks pass. Here's the summary:
+
+**Fix 1 (run.rs `load_config()`):** Already correct — it uses `ConfigLoader::new().load()` at line 320. No change needed.
+
+**Fix 2 (memory.rs `tokio_handle()`):** Applied. The old code tried `Handle::try_current()` first, which only works inside an existing tokio runtime, and the fallback path built a `Runtime` but returned only `rt.handle().clone()` — the `Runtime` would be dropped immediately, invalidating the handle. Replaced it with a function that simply builds and returns a `tokio::runtime::Runtime`, matching the pattern in eval.rs. All 6 call sites use `rt.block_on(...)`, which works identically on `Runtime`.
+
+`cargo check -p polkagent-cli` passes cleanly.

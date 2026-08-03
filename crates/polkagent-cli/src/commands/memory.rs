@@ -550,22 +550,12 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Obtain a tokio runtime handle.
-///
-/// Prefers the current runtime (when called from inside `#[tokio::main]`).
-/// Falls back to creating a new multi-threaded runtime if no current one
-/// exists.
-fn tokio_handle() -> Result<tokio::runtime::Handle> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(h) => Ok(h),
-        Err(_) => {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| anyhow::anyhow!("failed to build tokio runtime: {e}"))?;
-            Ok(rt.handle().clone())
-        }
-    }
+/// Build a Tokio runtime for blocking on async operations.
+fn tokio_handle() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build tokio runtime: {e}"))
 }
 
 fn open_memory_store() -> Result<SqliteMemoryStore> {
