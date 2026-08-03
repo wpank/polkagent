@@ -40,6 +40,28 @@ When polkagent detects a provider API key in the environment at startup, it auto
 | `PERPLEXITY_API_KEY` | `perplexity` | `PerplexityApi` | `https://api.perplexity.ai` | `sonar` |
 | `CEREBRAS_API_KEY` | `cerebras` | `CerebrasApi` | `https://api.cerebras.ai/v1` | `llama-4-scout-17b-16e` |
 
+```mermaid
+graph TB
+    START[polkagent startup] --> SCAN[Scan environment variables]
+    SCAN --> CHECK{API key detected?}
+
+    CHECK -->|ANTHROPIC_API_KEY| A["Auto-create Anthropic provider<br/>model: claude-sonnet-4-6"]
+    CHECK -->|OPENAI_API_KEY| B["Auto-create OpenAI provider<br/>model: gpt-4o"]
+    CHECK -->|GEMINI_API_KEY| C["Auto-create Gemini provider<br/>model: gemini-2.5-flash"]
+    CHECK -->|OPENROUTER_API_KEY| D["Auto-create OpenRouter provider<br/>model: claude-sonnet-4-6"]
+    CHECK -->|PERPLEXITY_API_KEY| E["Auto-create Perplexity provider<br/>model: sonar"]
+    CHECK -->|CEREBRAS_API_KEY| F["Auto-create Cerebras provider<br/>model: llama-4-scout-17b-16e"]
+    CHECK -->|None| G["No providers configured"]
+
+    A --> MERGE[Merge with explicit config]
+    B --> MERGE
+    C --> MERGE
+    D --> MERGE
+    E --> MERGE
+    F --> MERGE
+    MERGE --> READY["Providers ready"]
+```
+
 Auto-synthesized configs use the default timeout and retry values. To override any field, define an explicit `[[providers]]` block with the same `id`.
 
 ## Provider Configuration
@@ -196,6 +218,40 @@ When an agent run begins, polkagent resolves which provider to use in the follow
 4. The first available provider from explicit config or auto-synthesis
 
 The first match wins. Later entries in the list are only consulted if the earlier ones are absent or unresolvable.
+
+```mermaid
+graph LR
+    A["--provider CLI flag"] -->|"if absent"| B["Agent's configured provider"]
+    B -->|"if absent"| C["execution.default_provider"]
+    C -->|"if absent"| D["First available provider"]
+
+    A -->|"if present"| E["✓ Use this provider"]
+    B -->|"if present"| E
+    C -->|"if present"| E
+    D -->|"if present"| E
+```
+
+```mermaid
+sequenceDiagram
+    participant A as Agent Run
+    participant R as Provider Resolver
+    participant P1 as Provider 1 (Anthropic)
+    participant P2 as Provider 2 (OpenAI)
+    participant P3 as Provider 3 (Gemini)
+
+    A->>R: Resolve provider for run
+    R->>R: Check CLI --provider flag
+    R->>R: Check agent config
+    R->>R: Check execution.default_provider
+    R->>P1: Attempt inference
+    alt Provider available
+        P1-->>A: Response
+    else Provider unavailable
+        P1-->>R: Connection error
+        R->>P2: Fallback to next provider
+        P2-->>A: Response
+    end
+```
 
 ---
 

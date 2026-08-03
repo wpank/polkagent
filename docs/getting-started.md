@@ -5,6 +5,19 @@
 - Rust 1.80+ (MSRV)
 - Optional: Docker (for containerized deployment)
 
+```mermaid
+flowchart LR
+    A["1. Install"] --> B["2. Initialize"]
+    B --> C["3. Set API Key"]
+    C --> D["4. Create Agent"]
+    D --> E["5. Run"]
+    E --> F{Next steps}
+    F --> G["Governance Research"]
+    F --> H["Multi-Provider Setup"]
+    F --> I["Deploy API Server"]
+    F --> J["Launch TUI"]
+```
+
 ## Installation from Source
 
 ```bash
@@ -85,6 +98,31 @@ polkagent run --agent-id my-agent --prompt "Hello" --provider openai --model gpt
 
 # Set a timeout (in seconds)
 polkagent run --agent-id my-agent --prompt "Research topic" --timeout 120
+```
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CLI as polkagent CLI
+    participant CFG as Config Loader
+    participant PR as Provider Resolver
+    participant RM as Run Manager
+    participant LLM as LLM Provider
+
+    U->>CLI: polkagent run -a my-agent -p "Hello"
+    CLI->>CFG: Load config (defaults + global + local + env)
+    CFG-->>CLI: Resolved config
+    CLI->>PR: Resolve provider for agent
+    PR-->>CLI: Provider + model
+    CLI->>RM: Create Run (state: Created)
+    RM->>RM: Validate agent, check budget
+    RM->>RM: Transition: Created → Queued → Running
+    RM->>LLM: Send prompt + context + tools
+    LLM-->>RM: Streaming response
+    RM->>RM: Parse output, execute tool calls
+    RM->>RM: Transition: Running → Completed
+    RM-->>CLI: Run result
+    CLI-->>U: Display response
 ```
 
 ## Launching the TUI

@@ -15,6 +15,17 @@ Sources are applied in order; later sources override earlier ones:
 
 **Merge semantics:** TOML tables merge key-by-key. Arrays replace entirely — there is no append behavior.
 
+```mermaid
+flowchart LR
+    A["Built-in<br/>Defaults"] -->|overridden by| B["Global User File<br/>~/.config/polkagent/polkagent.toml"]
+    B -->|overridden by| C["Project-Local File<br/>.polkagent/polkagent.toml"]
+    C -->|overridden by| D["Environment<br/>Variables<br/>POLKAGENT_*"]
+    D --> E["Resolved<br/>Configuration"]
+
+    style A fill:#e8e8e8
+    style E fill:#4CAF50,color:#fff
+```
+
 ## CLI Options
 
 Override the config file path at runtime:
@@ -204,6 +215,34 @@ All configuration keys can be overridden via environment variables. Environment 
 | `POLKAGENT_OBSERVABILITY_METRICS_ENABLED` | `observability.metrics_enabled` | |
 | `POLKAGENT_OBSERVABILITY_TRACES_ENABLED` | `observability.traces_enabled` | |
 | `POLKAGENT_OBSERVABILITY_SERVICE_NAME` | `observability.service_name` | |
+
+```mermaid
+graph TB
+    subgraph Global["Global Config (~/.config/polkagent/)"]
+        GC["polkagent.toml"]
+        GP["policies/"]
+        GS["skills/"]
+    end
+
+    subgraph Project["Project Config (.polkagent/)"]
+        PC["polkagent.toml"]
+        PP["policies/"]
+        PS["skills/"]
+        PD["polkagent.db"]
+    end
+
+    subgraph Env["Environment Variables"]
+        E1["POLKAGENT_LOG_LEVEL"]
+        E2["POLKAGENT_DATABASE_BACKEND"]
+        E3["ANTHROPIC_API_KEY"]
+        E4["POLKAGENT_*"]
+    end
+
+    Global -->|"merged with"| MERGE["Config Merger"]
+    Project -->|"takes precedence"| MERGE
+    Env -->|"highest precedence"| MERGE
+    MERGE --> RESOLVED["Resolved Config"]
+```
 
 ### Provider API Keys
 

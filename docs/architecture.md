@@ -15,49 +15,48 @@ Polkagent uses a hexagonal (ports and adapters) architecture. Domain logic lives
 
 ## System Overview
 
-```
-                      +-----------+
-                      |    User   |
-                      +-----+-----+
-                            |
-                +-----------+-----------+
-                |  Surfaces (CLI / API) |
-                +-----------+-----------+
-                            |
-          +-----------------+-----------------+
-          |          Application Core         |
-          |  +-----------+  +-------------+   |
-          |  |    Run    |  |    Grant     |   |
-          |  |  Manager  |  |   Resolver   |   |
-          |  +-----+-----+  +------+------+   |
-          |        |               |           |
-          |  +-----+-----+  +-----+-----+     |
-          |  |  Effect   |  |   Event    |     |
-          |  |  Pipeline |  |    Bus     |     |
-          |  +-----+-----+  +-----+-----+     |
-          |        |               |           |
-          |  +-----+-----+  +-----+-----+     |
-          |  |  Artifact |  |   Outbox   |     |
-          |  |  Store    |  |            |     |
-          |  +-----------+  +-----------+     |
-          +-----------------+-----------------+
-                            |
-          +-----------------+-----------------+
-          |              Ports                |
-          |  (executor, signer, store,        |
-          |   chain, transport traits)        |
-          +-----------------+-----------------+
-                            |
-          +-----------------+-----------------+
-          |            Adapters               |
-          |  SQLite  Anthropic  OpenAI  Fake  |
-          |  Ollama  External-Signer  ...     |
-          +-----------------+-----------------+
-                            |
-          +-----------------+-----------------+
-          |         External Systems          |
-          |  LLM APIs  Polkadot  Filesystem   |
-          +-----------------------------------+
+```mermaid
+graph TB
+    subgraph Surfaces["🔷 Surfaces"]
+        CLI["polkagent-cli<br/>CLI + TUI"]
+        API["polkagent-api<br/>REST + WS"]
+        WH["polkagent-surface-webhook"]
+    end
+
+    subgraph Core["🔶 Application Core"]
+        RC["polkagent-core<br/>Domain Types"]
+        RUN["polkagent-run<br/>Run Manager"]
+        EFF["polkagent-effect<br/>Effect Pipeline"]
+        GR["polkagent-grant<br/>Policy Engine"]
+        EVT["polkagent-event<br/>Event Bus"]
+        ART["polkagent-artifact<br/>Artifact Store"]
+        OUT["polkagent-outbox<br/>Durable Delivery"]
+        CFG["polkagent-config<br/>Config Loader"]
+    end
+
+    subgraph Ports["🔷 Ports (Traits)"]
+        PE["executor-trait"]
+        PS["signer-trait"]
+        PT["store-trait"]
+        PC["chain-trait"]
+        PX["transport-trait"]
+        PH["harness-trait"]
+    end
+
+    subgraph Adapters["🔶 Adapters"]
+        EA["executor-anthropic"]
+        EO["executor-openai"]
+        EG["executor-gemini"]
+        EL["executor-local"]
+        ER["executor-openrouter"]
+        SS["store-sqlite"]
+        CS["chain-subxt"]
+        SE["signer-external"]
+    end
+
+    Surfaces --> Core
+    Core --> Ports
+    Ports --> Adapters
 ```
 
 ## Crate Map
@@ -129,6 +128,51 @@ Polkagent uses a hexagonal (ports and adapters) architecture. Domain logic lives
 | `polkagent-integration-tests` | Cross-crate integration tests |
 | `polkagent-security-tests` | Security test suite |
 
+### Crate Dependency Graph
+
+```mermaid
+graph LR
+    subgraph Domain
+        core["polkagent-core"]
+        run["polkagent-run"]
+        effect["polkagent-effect"]
+        grant["polkagent-grant"]
+        event["polkagent-event"]
+    end
+
+    subgraph Features
+        memory["polkagent-memory"]
+        skill["polkagent-skill"]
+        plugin["polkagent-plugin"]
+        eval["polkagent-eval"]
+    end
+
+    subgraph Ports
+        exec_t["executor-trait"]
+        sign_t["signer-trait"]
+        store_t["store-trait"]
+        chain_t["chain-trait"]
+    end
+
+    run --> core
+    effect --> core
+    grant --> core
+    event --> core
+    memory --> core
+    skill --> core
+    plugin --> core
+    eval --> core
+
+    run --> effect
+    run --> grant
+    run --> event
+
+    exec_t --> core
+    sign_t --> core
+    store_t --> core
+    chain_t --> core
+```
+
 ## Key Invariants
 
 ### INV-01: Signer Isolation
@@ -149,47 +193,73 @@ A crash never silently repeats an irreversible external action. Uses idempotency
 
 ## Data Flow
 
+```mermaid
+flowchart TD
+    A[User Request] --> B[Surface - CLI / API]
+    B --> C[RunManager]
+    C --> D{Grant Resolver}
+    D -->|Approved| E[Executor Port - Model Inference]
+    D -->|Denied| F[Run Failed: Permission Denied]
+    E --> G[Effect Pipeline]
+    G --> H[Create EffectIntent\nPersist BEFORE I/O]
+    H --> I{Check Grant Gates}
+    I -->|Approved| J[Claim & Lease Effect]
+    I -->|Denied| K[Effect Denied]
+    I -->|Escalate| L[AwaitingApproval]
+    J --> M[Execute via Port Adapter]
+    M --> N[Record EffectOutcome]
+    N --> O[Event Bus]
+    O --> P[Artifact Store]
+    P --> Q[Outbox - Durable Delivery]
+    Q --> R[Surface - CLI / API]
+    R --> S[User Response]
 ```
-User Request
-    │
-    ▼
-Surface (CLI / API)
-    │  parse input, create RunRequest
-    ▼
-RunManager
-    │  create Run (state: Created → Running)
-    │  create Turn
-    ▼
-Grant Resolver
-    │  resolve permissions for this run
-    │  check capabilities, budget limits
-    ▼
-Executor Port (model inference)
-    │  send prompt to LLM
-    │  receive streaming response
-    │  extract tool calls / effect requests
-    ▼
-Effect Pipeline
-    │  for each requested effect:
-    │    1. Create EffectIntent (persist BEFORE I/O)
-    │    2. Check grant gates (approve / deny / escalate)
-    │    3. Claim and lease the effect
-    │    4. Execute via appropriate port adapter
-    │    5. Record EffectOutcome (Success / Failure / Unknown)
-    ▼
-Event Bus
-    │  emit lifecycle events
-    ▼
-Artifact Store
-    │  persist content-addressed artifacts
-    ▼
-Outbox
-    │  durable ordered delivery
-    ▼
-Surface (CLI / API)
-    │  render results to user
-    ▼
-User Response
+
+## Run / Turn / Step / Effect Hierarchy
+
+```mermaid
+classDiagram
+    class Run {
+        +RunId id
+        +AgentId agent_id
+        +RunState state
+        +u64 event_sequence
+        +u32 turns_count
+        +TokenUsage token_usage
+        +is_terminal() bool
+    }
+
+    class Turn {
+        +TurnId id
+        +RunId run_id
+        +u32 sequence
+        +MessageRole role
+        +Vec~Step~ steps
+        +TokenUsage token_usage
+        +is_complete() bool
+    }
+
+    class Step {
+        +StepId id
+        +TurnId turn_id
+        +u32 step_number
+        +StepKind kind
+        +Option~EffectId~ effect_intent_id
+        +is_complete() bool
+    }
+
+    class EffectIntent {
+        +EffectId id
+        +RunId run_id
+        +EffectKind kind
+        +IdempotencyKey idempotency_key
+        +RetryClass retry_class
+        +EffectIntentState state
+    }
+
+    Run "1" --> "*" Turn : contains
+    Turn "1" --> "*" Step : contains
+    Step "0..1" --> "1" EffectIntent : dispatches
 ```
 
 ## Testing Strategy

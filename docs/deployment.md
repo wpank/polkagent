@@ -1,5 +1,40 @@
 # Deployment
 
+```mermaid
+graph TB
+    subgraph Local["Local Development"]
+        LC["polkagent CLI"]
+        LD["SQLite DB"]
+        LC --> LD
+    end
+
+    subgraph Single["Single Instance (Docker)"]
+        DC["Docker Container"]
+        DS["SQLite Volume"]
+        RP["Reverse Proxy<br/>(nginx/caddy)"]
+        RP --> DC
+        DC --> DS
+    end
+
+    subgraph Production["Production (Multi-Instance)"]
+        LB["Load Balancer"]
+        I1["Instance 1"]
+        I2["Instance 2"]
+        I3["Instance N"]
+        PG["PostgreSQL"]
+        OT["OTLP Collector"]
+        LB --> I1
+        LB --> I2
+        LB --> I3
+        I1 --> PG
+        I2 --> PG
+        I3 --> PG
+        I1 --> OT
+        I2 --> OT
+        I3 --> OT
+    end
+```
+
 ## Running Locally
 
 ```bash
@@ -125,6 +160,21 @@ POLKAGENT_OBSERVABILITY_SERVICE_NAME=polkagent-prod
 
 ## Database Options
 
+```mermaid
+flowchart TD
+    A{Deployment type?} -->|"Single instance"| B[SQLite]
+    A -->|"Multi-instance"| C[PostgreSQL]
+    A -->|"Development"| D[SQLite with WAL]
+
+    B --> E{Data volume?}
+    E -->|"< 10 GB"| F["SQLite with WAL mode<br/>busy_timeout_ms = 5000"]
+    E -->|"> 10 GB"| G["Consider migrating<br/>to PostgreSQL"]
+
+    C --> H{High availability?}
+    H -->|"Yes"| I["PostgreSQL with<br/>ssl_mode = require<br/>max_connections = 20"]
+    H -->|"No"| J["PostgreSQL single<br/>instance"]
+```
+
 ### SQLite (default)
 
 Suitable for single-instance deployments.
@@ -191,6 +241,34 @@ startupProbe:
 ```
 
 ## Monitoring
+
+```mermaid
+graph LR
+    subgraph Polkagent
+        APP["polkagent<br/>Application"]
+        MET["/metrics<br/>Prometheus"]
+        HLT["/health/*<br/>Probes"]
+    end
+
+    subgraph Collectors
+        OTLP["OTLP Collector"]
+        PROM["Prometheus<br/>Scraper"]
+    end
+
+    subgraph Backends
+        JAE["Jaeger<br/>(Traces)"]
+        GRA["Grafana<br/>(Dashboards)"]
+        LOG["Log Aggregator"]
+    end
+
+    APP -->|"gRPC traces + metrics"| OTLP
+    MET -->|"scrape /metrics"| PROM
+    APP -->|"JSON logs"| LOG
+    OTLP --> JAE
+    PROM --> GRA
+    OTLP --> GRA
+    HLT -->|"k8s probes"| GRA
+```
 
 ### Prometheus Metrics
 

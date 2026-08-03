@@ -1,5 +1,20 @@
 # Tools and Skills
 
+```mermaid
+graph LR
+    A[Agent Run] --> B[Model suggests tool call]
+    B --> C[Tool Registry lookup]
+    C --> D{Tool found?}
+    D -->|Yes| E[Grant Resolver]
+    D -->|No| F[Error: unknown tool]
+    E --> G{Agent has\nrequired grant?}
+    G -->|Yes| H[Create EffectIntent]
+    G -->|No| I[Error: permission denied]
+    H --> J[Execute tool]
+    J --> K[Record EffectOutcome]
+    K --> L[Return result to model]
+```
+
 ## Built-in Tools
 
 Provided by the `polkagent-tool` crate (`crates/polkagent-tool/src/builtin/mod.rs`).
@@ -54,6 +69,21 @@ Tools declare the grants they require. The grant resolver checks agent permissio
 
 Example: all governance and treasury tools require `chain.query`. An agent must have this grant in its permission set to use them.
 
+```mermaid
+flowchart TD
+    A[Tool invocation requested] --> B[Read tool's required_grants]
+    B --> C{Agent has\nall required grants?}
+    C -->|Yes| D{Budget check}
+    C -->|No| E[Deny: missing grant]
+    D -->|Within budget| F{Policy check}
+    D -->|Over budget| G[Deny: budget exceeded]
+    F -->|Allowed| H[Execute tool]
+    F -->|Denied by policy| I[Deny: policy violation]
+    F -->|Needs approval| J[AwaitingApproval]
+    J -->|Approved| H
+    J -->|Denied| I
+```
+
 ### Tool API Endpoints
 
 ```
@@ -67,6 +97,54 @@ GET    /api/v1alpha1/tools/:tool_id/grants       Get required grants for a tool
 Skills are packaged extensions defined by a `skill.toml` manifest. They bundle a system prompt, tool requirements, and configuration into a reusable unit. Skills are provided by the `polkagent-skill` crate (`crates/polkagent-skill/src/manifest.rs`).
 
 Skills are identified by `name@version` (e.g., `governance-researcher@0.1.0`).
+
+```mermaid
+classDiagram
+    class Tool {
+        +String id
+        +String description
+        +Vec~String~ required_grants
+        +invoke(input) Result
+    }
+
+    class BuiltinTool {
+        +file.read
+        +file.write
+        +list_dir
+        +shell
+        +search_memory
+    }
+
+    class GovernanceTool {
+        +referendum_lookup
+        +track_info
+        +voter_history
+        +delegation_info
+        +treasury_overview
+    }
+
+    class TreasuryTool {
+        +balance_query
+        +staking_info
+        +portfolio_summary
+        +transfer_history
+        +vesting_schedule
+    }
+
+    class Skill {
+        +String name
+        +String version
+        +String description
+        +Vec~String~ required_grants
+        +Vec~String~ tools
+        +String system_prompt
+    }
+
+    Tool <|-- BuiltinTool
+    Tool <|-- GovernanceTool
+    Tool <|-- TreasuryTool
+    Skill --> Tool : uses
+```
 
 ### Skill Manifest Format
 
