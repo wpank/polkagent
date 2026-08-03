@@ -1,0 +1,124 @@
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Polkagent Overnight Implementation Driver
+[22:00:27] Tool:    claude (model: sonnet)
+[22:00:27] Tasks:   25
+[22:00:27] Budget:  $5.00 per task
+[22:00:27] Turns:   50 per task
+[22:00:27] Verify:  true
+[22:00:27] Logs:    /Users/will/dev/par/polkagent/logs/overnight/20260803-220027/
+[22:00:27] Started: 2026-08-03 22:00:27
+──────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 1/25: [D0-1] Fix run_events column names
+[22:00:27]   [dry-run] prompt: Fix SQL schema mismatches in the polkagent CLI crate. The production schema in crates/polkagent-store-sqlite/src/schema....
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 2/25: [D0-2] Fix effect store schema mismatches
+[22:00:27]   [dry-run] prompt: Fix SQL schema mismatches in crates/polkagent-store-sqlite/src/store.rs for the effect pipeline tables.
+
+Read crates/pol...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 3/25: [D0-3] Create skills table migration
+[22:00:27]   [dry-run] prompt: The polkagent skill CLI commands (crates/polkagent-cli/src/commands/skill.rs) query a 'skills' table that does not exist...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 4/25: [D1-1] Fix event sequence numbering
+[22:00:27]   [dry-run] prompt: In crates/polkagent-run/src/manager.rs around line 386, every emit_event call passes sequence = 0 (hardcoded). This caus...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 5/25: [D1-2] Add startup reaper for zombie runs
+[22:00:27]   [dry-run] prompt: In crates/polkagent-run/src/lifecycle.rs, there is no startup sweep to clean up runs stuck in running/queued/completing ...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 6/25: [D1-3] Fix timeout state and orchestrator error path
+[22:00:27]   [dry-run] prompt: Two related fixes in crates/polkagent-run/src/orchestrator.rs:
+
+1. Around line 574-584: wall-clock timeout calls fail_ru...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 7/25: [D1-4] Fix duplicate event emission
+[22:00:27]   [dry-run] prompt: In crates/polkagent-service/src/app.rs around lines 832-854, both the orchestrator AND AppService emit terminal run even...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 8/25: [D2-1] Wire TUI widget data computation
+[22:00:27]   [dry-run] prompt: In the TUI, recompute_widget_data() (in crates/polkagent-cli/src/tui/state.rs) is never called, so sparkline/gauge widge...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 9/25: [D2-2] Fix TUI approve/deny to write effect_outcomes
+[22:00:27]   [dry-run] prompt: In crates/polkagent-cli/src/tui/db.rs around lines 612-648, the approve/deny functions set claimed_by = 'tui-approved' i...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 10/25: [D2-3] Implement TUI memory search
+[22:00:27]   [dry-run] prompt: The TUI memory tab documents '/' for search but it's not implemented.
+
+In crates/polkagent-cli/src/tui/:
+1. Add a TuiAct...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 11/25: [D2-4] Fix TUI scroll and footer issues
+[22:00:27]   [dry-run] prompt: Multiple TUI rendering issues:
+
+1. crates/polkagent-cli/src/tui/app.rs lines 327, 379: scroll visible=20 is hardcoded — ...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 12/25: [D3-1] Wire export and inspect commands
+[22:00:27]   [dry-run] prompt: Two entire command modules exist but are dead code:
+- crates/polkagent-cli/src/commands/export.rs
+- crates/polkagent-cli...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 13/25: [D3-2] Fix config loading and memory runtime
+[22:00:27]   [dry-run] prompt: Two CLI fixes:
+
+1. crates/polkagent-cli/src/commands/run.rs has a load_config() function (around line 332-350) that reim...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 14/25: [D4-1] Fix API route ordering and health endpoints
+[22:00:27]   [dry-run] prompt: In crates/polkagent-api/src/routes/mod.rs:
+
+1. /events/stream is registered AFTER /events/{id} — the {id} capture matche...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 15/25: [D4-2] Fix WebSocket and API issues
+[22:00:27]   [dry-run] prompt: In crates/polkagent-api/src/routes/:
+
+1. ws.rs lines 479-502: pong timeout logic is inverted — it measures time since po...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 16/25: [D5-1] Fix effect pipeline issues
+[22:00:27]   [dry-run] prompt: Multiple effect pipeline fixes in crates/polkagent-cli/src/commands/inbox.rs and crates/polkagent-store-sqlite/src/store...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 17/25: [D6-1] Fix config and provider issues
+[22:00:27]   [dry-run] prompt: Several config/provider fixes:
+
+1. crates/polkagent-cli/src/commands/run.rs model_registry.rs around line 520-535: synth...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 18/25: [D7-1] Fix memory and eval issues
+[22:00:27]   [dry-run] prompt: Four fixes:
+
+1. crates/polkagent-cli/src/commands/memory.rs: cross-agent search uses AgentId::from_uuid(Uuid::nil()) whi...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 19/25: [D8-1] Clean up dead code
+[22:00:27]   [dry-run] prompt: Remove or wire dead code across the CLI crate:
+
+1. If export.rs and inspect.rs were wired in task D3-1, skip this. Other...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 20/25: [F1-1] Wire SubxtChainClient into CLI
+[22:00:27]   [dry-run] prompt: This is the single most important remaining task. The SubxtChainClient in polkagent-chain-subxt is fully implemented (90...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 21/25: [F1-2] Wire chain client to tool execution
+[22:00:27]   [dry-run] prompt: After F1-1 wired SubxtChainClient into the CLI, the governance and treasury tools also need it.
+
+The tools in polkagent-...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 22/25: [F2-1] Implement explain command
+[22:00:27]   [dry-run] prompt: The polkagent explain command (crates/polkagent-cli/src/commands/explain.rs) is a stub that always prints 'Extrinsic dec...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 23/25: [F3-1] Fix SQL injection in TUI memory search
+[22:00:27]   [dry-run] prompt: In crates/polkagent-cli/src/tui/db.rs around lines 408-430, the memory FTS query uses format! string interpolation inste...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 24/25: [V-1] Full workspace verification
+[22:00:27]   [dry-run] prompt: Run a comprehensive verification of the entire workspace:
+
+1. cargo fmt --all -- --check
+2. cargo clippy --workspace -- ...
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Task 25/25: [V-2] Update tracking documents
+[22:00:27]   [dry-run] prompt: Read TRACKING.md and prd/DIAGNOSTIC-FINDINGS.md. Based on what was actually fixed in the previous tasks, update:
+
+1. TRA...
+[22:00:27] 
+──────────────────────────────────────────────────────────────────────
+[22:00:27] Overnight run complete
+[22:00:27]   Passed:  0
+[22:00:27]   Failed:  0
+[22:00:28]   Skipped: 0
+[22:00:28]   Time:    0m0s
+[22:00:28]   Report:  /Users/will/dev/par/polkagent/OVERNIGHT-REPORT.md
+──────────────────────────────────────────────────────────────────────

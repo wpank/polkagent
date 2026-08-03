@@ -1,0 +1,69 @@
+────────────────────────────────────────────────────────────
+[21:52:39] Polkagent Overnight Build
+[21:52:39] Started: 2026-08-03 21:52:39
+[21:52:39] Log:     /Users/will/dev/par/polkagent/logs/overnight/run-20260803-215239.log
+────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────
+[21:52:39] Step 1/18: Environment check
+  [dry-run] would execute: step_env_check
+────────────────────────────────────────────────────────────
+[21:52:39] Step 2/18: Fetch dependencies
+  [dry-run] would execute: step_cargo_fetch
+────────────────────────────────────────────────────────────
+[21:52:39] Step 3/18: Format check (cargo fmt)
+  [dry-run] would execute: step_fmt_check
+────────────────────────────────────────────────────────────
+[21:52:39] Step 4/18: Compile check (cargo check)
+  [dry-run] would execute: step_cargo_check
+────────────────────────────────────────────────────────────
+[21:52:39] Step 5/18: Lint (cargo clippy)
+  [dry-run] would execute: step_clippy
+────────────────────────────────────────────────────────────
+[21:52:39] Step 6/18: Workspace tests
+  [dry-run] would execute: step_test_unit
+────────────────────────────────────────────────────────────
+[21:52:39] Step 7/18: Ignored / slow tests
+  [dry-run] would execute: step_test_ignored
+────────────────────────────────────────────────────────────
+[21:52:39] Step 8/18: Security tests
+  [dry-run] would execute: step_test_security
+────────────────────────────────────────────────────────────
+[21:52:39] Step 9/18: Property tests (proptest)
+  [dry-run] would execute: step_test_property
+────────────────────────────────────────────────────────────
+[21:52:39] Step 10/18: Integration tests
+  [dry-run] would execute: step_test_integration
+────────────────────────────────────────────────────────────
+[21:52:39] Step 11/18: Store contract tests
+  [dry-run] would execute: step_test_store_contracts
+────────────────────────────────────────────────────────────
+[21:52:39] Step 12/18: Eval suites
+  [dry-run] would execute: step_eval_suites
+────────────────────────────────────────────────────────────
+[21:52:39] Step 13/18: Documentation build
+  [dry-run] would execute: step_doc_build
+────────────────────────────────────────────────────────────
+[21:52:39] Step 14/18: Security audit (cargo-audit)
+  [dry-run] would execute: step_audit
+────────────────────────────────────────────────────────────
+[21:52:39] Step 15/18: Dependency check (cargo-deny)
+  [dry-run] would execute: step_deny
+────────────────────────────────────────────────────────────
+[21:52:39] Step 16/18: Fuzz targets (nightly)
+  [dry-run] would execute: step_fuzz
+────────────────────────────────────────────────────────────
+[21:52:39] Step 17/18: Release build
+  [dry-run] would execute: step_release_build
+────────────────────────────────────────────────────────────
+[21:52:39] Step 18/18: polkagent doctor
+  [dry-run] would execute: step_doctor
+[21:52:40] 
+────────────────────────────────────────────────────────────
+[21:52:40] Overnight run complete
+[21:52:40]   Passed:  0
+[21:52:40]   Failed:  0
+[21:52:40]   Skipped: 0
+[21:52:40]   Time:    0m0s
+[21:52:40]   Report:  /Users/will/dev/par/polkagent/OVERNIGHT-REPORT.md
+[21:52:40]   Log:     /Users/will/dev/par/polkagent/logs/overnight/run-20260803-215239.log
+────────────────────────────────────────────────────────────

@@ -1,0 +1,334 @@
+──────────────────────────────────────────────────────────────────────
+[22:31:37] Polkagent Overnight Implementation Driver
+[22:31:37] Tool:    claude (model: sonnet)
+[22:31:37] Tasks:   64
+[22:31:37] Budget:  $5.00 per task
+[22:31:37] Turns:   50 per task
+[22:31:37] Verify:  true
+[22:31:37] Logs:    /Users/will/dev/par/polkagent/logs/overnight/20260803-223137/
+[22:31:37] Started: 2026-08-03 22:31:37
+──────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────
+[22:31:37] Task 1/64: [D0-1] Fix run_events column names
+[22:31:37]   [dry-run] prompt: Fix SQL schema mismatches in the polkagent CLI crate. The production schema in crates/polkagent-store-sqlite/src/schema....
+──────────────────────────────────────────────────────────────────────
+[22:31:37] Task 2/64: [D0-2] Fix effect store schema mismatches
+[22:31:37]   [dry-run] prompt: Fix SQL schema mismatches in crates/polkagent-store-sqlite/src/store.rs for the effect pipeline tables.
+
+Read crates/pol...
+──────────────────────────────────────────────────────────────────────
+[22:31:37] Task 3/64: [D0-3] Create skills table migration
+[22:31:37]   [dry-run] prompt: The polkagent skill CLI commands (crates/polkagent-cli/src/commands/skill.rs) query a 'skills' table that does not exist...
+──────────────────────────────────────────────────────────────────────
+[22:31:37] Task 4/64: [D1-1] Fix event sequence numbering
+[22:31:37]   [dry-run] prompt: In crates/polkagent-run/src/manager.rs around line 386, every emit_event call passes sequence = 0 (hardcoded). This caus...
+──────────────────────────────────────────────────────────────────────
+[22:31:37] Task 5/64: [D1-2] Add startup reaper for zombie runs
+[22:31:37]   [dry-run] prompt: In crates/polkagent-run/src/lifecycle.rs, there is no startup sweep to clean up runs stuck in running/queued/completing ...
+──────────────────────────────────────────────────────────────────────
+[22:31:37] Task 6/64: [D1-3] Fix timeout state and orchestrator error path
+[22:31:37]   [dry-run] prompt: Two related fixes in crates/polkagent-run/src/orchestrator.rs:
+
+1. Around line 574-584: wall-clock timeout calls fail_ru...
+──────────────────────────────────────────────────────────────────────
+[22:31:37] Task 7/64: [D1-4] Fix duplicate event emission
+[22:31:37]   [dry-run] prompt: In crates/polkagent-service/src/app.rs around lines 832-854, both the orchestrator AND AppService emit terminal run even...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 8/64: [D2-1] Wire TUI widget data computation
+[22:31:38]   [dry-run] prompt: In the TUI, recompute_widget_data() (in crates/polkagent-cli/src/tui/state.rs) is never called, so sparkline/gauge widge...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 9/64: [D2-2] Fix TUI approve/deny to write effect_outcomes
+[22:31:38]   [dry-run] prompt: In crates/polkagent-cli/src/tui/db.rs around lines 612-648, the approve/deny functions set claimed_by = 'tui-approved' i...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 10/64: [D2-3] Implement TUI memory search
+[22:31:38]   [dry-run] prompt: The TUI memory tab documents '/' for search but it's not implemented.
+
+In crates/polkagent-cli/src/tui/:
+1. Add a TuiAct...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 11/64: [D2-4] Fix TUI scroll and footer issues
+[22:31:38]   [dry-run] prompt: Multiple TUI rendering issues:
+
+1. crates/polkagent-cli/src/tui/app.rs lines 327, 379: scroll visible=20 is hardcoded — ...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 12/64: [D3-1] Wire export and inspect commands
+[22:31:38]   [dry-run] prompt: Two entire command modules exist but are dead code:
+- crates/polkagent-cli/src/commands/export.rs
+- crates/polkagent-cli...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 13/64: [D3-2] Fix config loading and memory runtime
+[22:31:38]   [dry-run] prompt: Two CLI fixes:
+
+1. crates/polkagent-cli/src/commands/run.rs has a load_config() function (around line 332-350) that reim...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 14/64: [D4-1] Fix API route ordering and health endpoints
+[22:31:38]   [dry-run] prompt: In crates/polkagent-api/src/routes/mod.rs:
+
+1. /events/stream is registered AFTER /events/{id} — the {id} capture matche...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 15/64: [D4-2] Fix WebSocket and API issues
+[22:31:38]   [dry-run] prompt: In crates/polkagent-api/src/routes/:
+
+1. ws.rs lines 479-502: pong timeout logic is inverted — it measures time since po...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 16/64: [D5-1] Fix effect pipeline issues
+[22:31:38]   [dry-run] prompt: Multiple effect pipeline fixes in crates/polkagent-cli/src/commands/inbox.rs and crates/polkagent-store-sqlite/src/store...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 17/64: [D6-1] Fix config and provider issues
+[22:31:38]   [dry-run] prompt: Several config/provider fixes:
+
+1. crates/polkagent-cli/src/commands/run.rs model_registry.rs around line 520-535: synth...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 18/64: [D7-1] Fix memory and eval issues
+[22:31:38]   [dry-run] prompt: Four fixes:
+
+1. crates/polkagent-cli/src/commands/memory.rs: cross-agent search uses AgentId::from_uuid(Uuid::nil()) whi...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 19/64: [D8-1] Clean up dead code
+[22:31:38]   [dry-run] prompt: Remove or wire dead code across the CLI crate:
+
+1. If export.rs and inspect.rs were wired in task D3-1, skip this. Other...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 20/64: [F1-1] Wire SubxtChainClient into CLI
+[22:31:38]   [dry-run] prompt: This is the single most important remaining task. The SubxtChainClient in polkagent-chain-subxt is fully implemented (90...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 21/64: [F1-2] Wire chain client to tool execution
+[22:31:38]   [dry-run] prompt: After F1-1 wired SubxtChainClient into the CLI, the governance and treasury tools also need it.
+
+The tools in polkagent-...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 22/64: [F2-1] Implement explain command
+[22:31:38]   [dry-run] prompt: The polkagent explain command (crates/polkagent-cli/src/commands/explain.rs) is a stub that always prints 'Extrinsic dec...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 23/64: [F3-1] Fix SQL injection in TUI memory search
+[22:31:38]   [dry-run] prompt: In crates/polkagent-cli/src/tui/db.rs around lines 408-430, the memory FTS query uses format! string interpolation inste...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 24/64: [DX-1] Persist token usage to DB
+[22:31:38]   [dry-run] prompt: Token usage from model responses is computed but never written to the database — all token counts show 0.
+
+Steps:
+1. Rea...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 25/64: [DX-2] Fix AwaitingApproval state after restart
+[22:31:38]   [dry-run] prompt: When a run enters AwaitingApproval state, the pending intent IDs and request ID are stored in memory only. After process...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 26/64: [DX-3] Wire TimeoutEnforcer
+[22:31:38]   [dry-run] prompt: TimeoutEnforcer in crates/polkagent-run/src/timeout.rs exists but is never instantiated anywhere. Also the runs table ma...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 27/64: [P3-2] Storage migration rehearsal tool
+[22:31:38]   [dry-run] prompt: Create a builder tool for Polkadot storage migration rehearsal (PRD-05 workflow A1).
+
+This tool should:
+1. Accept a runt...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 28/64: [P3-3] Upgrade impact brief tool
+[22:31:38]   [dry-run] prompt: Create a metadata comparison tool (PRD-05 workflow A2).
+
+This tool should:
+1. Accept two metadata snapshots (by block nu...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 29/64: [P3-4] Metadata-grounded RAG
+[22:31:38]   [dry-run] prompt: Implement metadata-grounded RAG for Polkadot chain knowledge (PRD-05 workflow A9).
+
+Use the existing HybridRetriever in ...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 30/64: [P3-5] Error/recovery explainer
+[22:31:38]   [dry-run] prompt: Implement an error explainer for failed runs (PRD-13 deliverable 3.7).
+
+When a run fails:
+1. Extract the error type from...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 31/64: [P3-6] Identity signal display
+[22:31:38]   [dry-run] prompt: Implement identity signal display for Polkadot addresses (PRD-07 deliverable 3.8).
+
+Add functionality to:
+1. Look up a P...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 32/64: [P3-7] PCA C0 integration test
+[22:31:38]   [dry-run] prompt: AC-P3-003 (PCA C0 bot connects and exchanges messages) has never been verified end-to-end. The polkagent-transport-pca c...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 33/64: [P3-8] Wire Gemini and OpenRouter executors
+[22:31:38]   [dry-run] prompt: The polkagent-executor-gemini and polkagent-executor-openrouter crates exist but are NOT registered in polkagent-cli.
+
+S...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 34/64: [P3-9] Phase 3 AC verification
+[22:31:38]   [dry-run] prompt: Verify all Phase 3 acceptance criteria. Read TRACKING.md and prd/PRD-00-MASTER-INDEX.md section 9.2.
+
+Check each criteri...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 35/64: [P4-1] Create polkagent-action-sign (risk gates)
+[22:31:38]   [dry-run] prompt: Create crate polkagent-action-sign for pre-sign risk analysis (PRD-08 deliverable 4.1).
+
+This crate should:
+1. Accept de...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 36/64: [P4-2] Create polkagent-action-governance (multisig coordinator)
+[22:31:38]   [dry-run] prompt: Create crate polkagent-action-governance for multisig/proxy coordination (PRD-08 deliverable 4.2).
+
+This crate should:
+1...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 37/64: [P4-3] Create polkagent-action-transfer (XCM planner)
+[22:31:38]   [dry-run] prompt: Create crate polkagent-action-transfer for XCM route planning (PRD-05 deliverable 4.3).
+
+This crate should:
+1. Given sou...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 38/64: [P4-4] Metadata drift watcher
+[22:31:38]   [dry-run] prompt: Wire metadata drift detection into a background watcher (PRD-05 deliverable 4.4).
+
+Steps:
+1. Read crates/polkagent-metad...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 39/64: [P4-5] Product kits v1
+[22:31:38]   [dry-run] prompt: Implement product kit manifest format and lifecycle (PRD-12 deliverable 4.5).
+
+Steps:
+1. Define the kit manifest TOML fo...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 40/64: [P4-6] PCA C1 bridge protocol
+[22:31:38]   [dry-run] prompt: Implement PCA C1 bridge protocol (PRD-06 deliverable 4.6).
+
+The C1 bridge allows a PCA client to send instructions to a ...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 41/64: [P4-7] Harness session persistence and resume
+[22:31:38]   [dry-run] prompt: Add session persistence and resume to all harness crates (PRD-04 deliverable 4.7).
+
+All harnesses currently lack session...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 42/64: [P4-8] Provenanced memory v1
+[22:31:38]   [dry-run] prompt: Add provenance tracking and tenant isolation to the memory system (PRD-09 deliverable 4.8).
+
+Three sub-tasks:
+1. Add pro...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 43/64: [P4-9] Create harness-opencode and harness-bridge crates
+[22:31:38]   [dry-run] prompt: Create two new harness crates specified in PRD-00 section 14 crate layout:
+
+1. polkagent-harness-opencode: follows the A...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 44/64: [P4-10] Phase 4 test suite
+[22:31:38]   [dry-run] prompt: Create Phase 4 acceptance tests in polkagent-integration-tests and polkagent-security-tests.
+
+Required test suites:
+1. R...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 45/64: [P5-1] Create polkagent-signer-proxy (funded accounts)
+[22:31:38]   [dry-run] prompt: Create crate polkagent-signer-proxy for funded pure-proxy accounts (PRD-08 deliverable 5.1).
+
+This crate should:
+1. Impl...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 46/64: [P5-2] Agent earn/spend prototype
+[22:31:38]   [dry-run] prompt: Prototype agent earn/spend mechanics (PRD-08 deliverable 5.2). This is a RESEARCH PROTOTYPE, not production.
+
+1. Model a...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 47/64: [P5-3] Agent-to-agent escrow research
+[22:31:38]   [dry-run] prompt: Research and document agent-to-agent escrow (PRD-08 deliverable 5.3). This is a RESEARCH TASK.
+
+1. Read available Polkad...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 48/64: [P5-4] Capability-disclosed marketplace packages
+[22:31:38]   [dry-run] prompt: Implement Wasmtime WIT sandbox for marketplace packages (PRD-12 deliverable 5.4).
+
+Steps:
+1. Modify polkagent-plugin to ...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 49/64: [P5-5] Public agent-service listings
+[22:31:38]   [dry-run] prompt: Add public agent-service listing endpoints (PRD-12 deliverable 5.5).
+
+Steps:
+1. Add to polkagent-api: POST /v1/registry/...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 50/64: [P5-6] Create fleet worker crates (cloud control/worker)
+[22:31:38]   [dry-run] prompt: Create polkagent-cloud-control and polkagent-cloud-worker crates (PRD-11 deliverable 5.6).
+
+Control plane (crates/polkag...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 51/64: [P5-7] Regional isolation
+[22:31:38]   [dry-run] prompt: Add data residency constraints to the cloud control plane (PRD-11 deliverable 5.7).
+
+Steps:
+1. Add region configuration ...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 52/64: [P5-8] Create polkagent-store-postgres
+[22:31:38]   [dry-run] prompt: Create polkagent-store-postgres for multi-tenant cloud deployments (PRD-11 deliverable 5.8).
+
+Create crates/polkagent-st...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 53/64: [P5-9] Create polkagent-billing
+[22:31:38]   [dry-run] prompt: Create polkagent-billing crate for usage metering (PRD-11 deliverable 5.9).
+
+Create crates/polkagent-billing/:
+1. Per-ru...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 54/64: [P5-10] Create polkagent-signer-kms
+[22:31:38]   [dry-run] prompt: Create polkagent-signer-kms for external key management (PRD-07 deliverable).
+
+Create crates/polkagent-signer-kms/:
+1. I...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 55/64: [P5-11] PCA C2/C3 compatibility
+[22:31:38]   [dry-run] prompt: Extend polkagent-transport-pca for C2/C3 compatibility tiers (PRD-06 deliverable 5.10).
+
+C2 additions:
+1. End-to-end enc...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 56/64: [P5-12] Phase 5 test and AC verification
+[22:31:38]   [dry-run] prompt: Run Phase 5 acceptance criteria verification (PRD-00 section 11.2):
+
+- AC-P5-001: Funded agent cannot exceed budget — ru...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 57/64: [P6-1] Create polkagent-chain-jam (JAM testnet)
+[22:31:38]   [dry-run] prompt: Create experimental polkagent-chain-jam crate for JAM testnet connection (PRD-05 deliverable 6.1).
+
+This is EXPERIMENTAL...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 58/64: [P6-2] Personhood gating
+[22:31:38]   [dry-run] prompt: Implement experimental personhood gating (PRD-07 deliverable 6.2).
+
+Feature-gated experimental module:
+1. Add a Cedar po...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 59/64: [P6-3] Create polkagent-vitality (affect modules)
+[22:31:38]   [dry-run] prompt: Create experimental polkagent-vitality crate (PRD-09 deliverable 6.4).
+
+Feature-gated experimental module:
+1. Create cra...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 60/64: [P6-4] Evolutionary skill selection
+[22:31:38]   [dry-run] prompt: Implement experimental evolutionary skill selection (PRD-09 deliverable 6.5).
+
+Feature-gated experimental module:
+1. Mod...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 61/64: [P6-5] Always-on watchers
+[22:31:38]   [dry-run] prompt: Implement always-on watcher agents (PRD-08 deliverable 6.6).
+
+Feature-gated:
+1. Allow agent config to declare a watcher ...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 62/64: [P6-6] Phase 6 gate verification
+[22:31:38]   [dry-run] prompt: Verify all Phase 6 experimental items meet gate criteria from PRD-00 section 12.2:
+
+1. Primary implementation evidence e...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 63/64: [V-1] Full workspace verification
+[22:31:38]   [dry-run] prompt: Run a comprehensive verification of the entire workspace:
+
+1. cargo fmt --all -- --check
+2. cargo clippy --workspace -- ...
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Task 64/64: [V-2] Update tracking documents
+[22:31:38]   [dry-run] prompt: Read TRACKING.md and prd/DIAGNOSTIC-FINDINGS.md. Based on what was actually fixed across ALL previous tasks (D0 through ...
+[22:31:38] 
+──────────────────────────────────────────────────────────────────────
+[22:31:38] Overnight run complete
+[22:31:38]   Passed:  0
+[22:31:38]   Failed:  0
+[22:31:38]   Skipped: 0
+[22:31:38]   Time:    0m1s
+[22:31:38]   Report:  /Users/will/dev/par/polkagent/OVERNIGHT-REPORT.md
+──────────────────────────────────────────────────────────────────────

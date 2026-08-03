@@ -1,0 +1,15 @@
+Everything compiles cleanly. Here's my audit summary:
+
+**All 4 files already use the correct column names.** No changes needed:
+
+| File | Status | Details |
+|------|--------|---------|
+| `tui/db.rs` — `audit_events()` | ✅ Correct | Uses `kind`, `data_json`, `timestamp` (line 475) |
+| `tui/db.rs` — `recent_error_count()` | ✅ Correct | Uses `kind` (line 553) |
+| `tui/db.rs` — test schema | ✅ Correct | `run_events` table has `kind`, `data_json`, `timestamp` (lines 935–942) |
+| `commands/logs.rs` — all 4 SELECT variants | ✅ Correct | Uses `kind`, `data_json`, `timestamp` (lines 127–157) |
+| `commands/inbox.rs` — approve INSERT | ✅ Correct | Uses `kind`, `data_json`, `timestamp` (line 221) |
+| `commands/inbox.rs` — deny INSERT | ✅ Correct | Uses `kind`, `data_json`, `timestamp` (line 312) |
+| `commands/export.rs` — `export_events()` | ✅ Correct | Uses `kind`, `data_json`, `timestamp` (line 697) |
+
+The old column names (`event_type`, `payload_json`, `created_at` on `run_events`) do **not** appear in any SQL strings in these files. `cargo check -p polkagent-cli` passes with zero errors or warnings.

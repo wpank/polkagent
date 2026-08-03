@@ -1,0 +1,137 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+ Downloading crates ...
+  Downloaded opaque-debug v0.3.1
+  Downloaded universal-hash v0.5.1
+  Downloaded aead v0.5.2
+  Downloaded inout v0.1.4
+  Downloaded poly1305 v0.8.0
+  Downloaded chacha20 v0.9.1
+  Downloaded x25519-dalek v2.0.1
+  Downloaded chacha20poly1305 v0.10.1
+  Downloaded cipher v0.4.4
+    Checking num-traits v0.2.19
+    Checking tokio v1.53.1
+    Checking crypto-common v0.1.7
+    Checking rustix v1.1.4
+    Checking fastrand v2.5.0
+    Checking clap_builder v4.6.2
+    Checking inout v0.1.4
+    Checking polkagent-codec v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-codec)
+    Checking wait-timeout v0.2.1
+    Checking bit-vec v0.8.0
+    Checking hex v0.4.3
+    Checking opaque-debug v0.3.1
+    Checking quick-error v1.2.3
+    Checking digest v0.10.7
+    Checking universal-hash v0.5.1
+    Checking cipher v0.4.4
+    Checking aead v0.5.2
+    Checking rand_xorshift v0.4.0
+    Checking unarray v0.1.4
+    Checking poly1305 v0.8.0
+    Checking sha2 v0.10.9
+    Checking curve25519-dalek v4.1.3
+    Checking sha1 v0.10.7
+    Checking bit-set v0.8.0
+    Checking tungstenite v0.29.0
+    Checking chacha20 v0.9.1
+    Checking chacha20poly1305 v0.10.1
+    Checking chrono v0.4.45
+    Checking ed25519-dalek v2.2.0
+    Checking x25519-dalek v2.0.1
+    Checking tempfile v3.27.0
+    Checking rusty-fork v0.3.1
+    Checking proptest v1.11.0
+    Checking polkagent-core v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-core)
+    Checking clap v4.6.4
+    Checking clap_complete v4.6.8
+    Checking polkagent-store-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-trait)
+    Checking polkagent-card v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-card)
+    Checking polkagent-chain-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-chain-trait)
+    Checking polkagent-identity v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-identity)
+    Checking polkagent-config v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-config)
+    Checking polkagent-transport-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-transport-trait)
+    Checking polkagent-executor-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-trait)
+    Checking tokio-util v0.7.19
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.4
+    Checking polkagent-effect v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-effect)
+    Checking polkagent-grant v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-grant)
+    Checking polkagent-signer-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-trait)
+    Checking polkagent-conversation v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-conversation)
+    Checking polkagent-memory v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-memory)
+    Checking polkagent-payment v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-payment)
+    Checking polkagent-artifact v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-artifact)
+    Checking polkagent-event v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-event)
+    Checking tokio-stream v0.1.19
+    Checking polkagent-skill v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-skill)
+    Checking polkagent-plugin v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-plugin)
+    Checking polkagent-harness-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-trait)
+    Checking tower-http v0.6.11
+    Checking axum v0.7.9
+    Checking h2 v0.4.15
+    Checking tower v0.4.13
+    Checking polkagent-rate-limit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-rate-limit)
+    Checking polkagent-retry v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-retry)
+    Checking polkagent-executor-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-fake)
+    Checking polkagent-audit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-audit)
+    Checking polkagent-scheduler v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-scheduler)
+    Checking polkagent-store-sqlite v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-sqlite)
+    Checking tokio-tungstenite v0.29.0
+    Checking polkagent-eval v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-eval)
+    Checking polkagent-chain-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-chain-fake)
+    Checking polkagent-group v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-group)
+    Checking polkagent-harness-acp v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-acp)
+    Checking polkagent-batch v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-batch)
+    Checking polkagent-harness-codex v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-codex)
+    Checking polkagent-harness-claude v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-claude)
+    Checking polkagent-run v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-run)
+    Checking polkagent-outbox v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-outbox)
+    Checking polkagent-metadata v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-metadata)
+    Checking polkagent-feed v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-feed)
+    Checking polkagent-fault v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-fault)
+    Checking polkagent-test-fixtures v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-test-fixtures)
+    Checking polkagent-signer-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-fake)
+    Checking polkagent-transport-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-transport-fake)
+    Checking polkagent-tool v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool)
+    Checking polkagent-cache v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cache)
+    Checking polkagent-harness-cursor v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-cursor)
+    Checking polkagent-harness-goose v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-goose)
+    Checking polkagent-harness-kiro v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-kiro)
+    Checking polkagent-harness-copilot v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-copilot)
+    Checking polkagent-context v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-context)
+    Checking polkagent-signer-watchonly v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-watchonly)
+    Checking polkagent-transport-pca v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-transport-pca)
+    Checking polkagent-health v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-health)
+    Checking polkagent-secret v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-secret)
+    Checking polkagent-store-sqlite-group v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-sqlite-group)
+    Checking polkagent-migration v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-migration)
+    Checking polkagent-store-sqlite-feed v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-sqlite-feed)
+    Checking polkagent-tool-governance v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-governance)
+    Checking polkagent-security-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-security-tests)
+    Checking polkagent-tool-treasury v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-treasury)
+    Checking hyper v1.11.0
+    Checking hyper-util v0.1.20
+    Checking hyper-rustls v0.27.9
+    Checking hyper-timeout v0.5.2
+    Checking axum v0.8.9
+    Checking tonic v0.12.3
+    Checking reqwest v0.12.28
+    Checking polkagent-surface-webhook v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-surface-webhook)
+    Checking polkagent-executor-local v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-local)
+    Checking polkagent-executor-openai v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-openai)
+    Checking polkagent-executor-anthropic v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-anthropic)
+    Checking polkagent-signer-external v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-external)
+    Checking polkagent-chain-subxt v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-chain-subxt)
+    Checking polkagent-executor-gemini v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-gemini)
+    Checking polkagent-executor-openrouter v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-openrouter)
+    Checking polkagent-service v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-service)
+    Checking opentelemetry-proto v0.27.0
+    Checking opentelemetry-otlp v0.27.0
+    Checking polkagent-telemetry v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-telemetry)
+    Checking polkagent-integration-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-integration-tests)
+    Checking polkagent-api v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-api)
+    Checking polkagent-cli v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.30s
