@@ -8,6 +8,8 @@
 //! - [`AttemptState`] — state machine for an attempt's progression.
 //! - [`OutcomeResult`] — the five terminal outcomes an attempt can produce.
 //! - [`EffectKind`] — discriminant for the type of external I/O.
+//! - [`ApprovalType`] — who or what granted/denied approval.
+//! - [`ApprovalRecord`] — the durable record of an approval decision.
 //!
 //! ## Key invariants (from PRD-03 §5.5)
 //!
@@ -510,6 +512,62 @@ pub enum ResolutionHint {
     ManualInvestigation,
     /// The effect can be safely abandoned.
     SafeToAbandon,
+}
+
+// ---------------------------------------------------------------------------
+// ApprovalType
+// ---------------------------------------------------------------------------
+
+/// Identifies the principal type that granted or denied an approval decision.
+///
+/// Used in [`ApprovalRecord`] to record how the approval was obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalType {
+    /// A human operator approved/denied via the API.
+    Human,
+    /// A quorum of principals reached a consensus decision.
+    Quorum,
+    /// An automated service principal made the decision.
+    Service,
+    /// A pre-configured mandate (policy rule) applied automatically.
+    Mandate,
+}
+
+// ---------------------------------------------------------------------------
+// ApprovalRecord
+// ---------------------------------------------------------------------------
+
+/// The durable record of an approval or denial decision for an effect intent.
+///
+/// Created when `POST /effects/:id/approve` or `POST /effects/:id/deny` is
+/// called. Stored alongside the intent so the decision can be audited.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalRecord {
+    /// Stable identifier for this approval record.
+    pub id: uuid::Uuid,
+    /// The effect intent this record belongs to.
+    pub effect_id: EffectId,
+    /// Who or what made the decision.
+    pub approval_type: ApprovalType,
+    /// Identifier of the principal (user, service, quorum) that made the decision.
+    pub principal_id: String,
+    /// Optional free-text comment explaining the decision.
+    pub comment: Option<String>,
+    /// Optional conditions attached to an approval (e.g. `["max_value:100"]`).
+    pub conditions: Vec<String>,
+    /// Whether the intent was approved or denied.
+    pub decision: ApprovalDecision,
+    /// When this record was created (UTC).
+    pub created_at: DateTime<Utc>,
+}
+
+/// The binary outcome of an approval decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approved,
+    Denied,
 }
 
 // ---------------------------------------------------------------------------

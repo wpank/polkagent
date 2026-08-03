@@ -56,8 +56,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use polkagent_chain_trait::{
-    BlockRef, ChainClient, ChainError, ChainProfileId, DecodedCall, FinalityObservation,
-    MetadataDigest, PinnedMetadata, SimulationResult, TxHash,
+    BlockRef, ChainClient, ChainError, ChainProfileId, DecodedCall, DryRunResult,
+    FinalityObservation, GenesisHash, MetadataDigest, PinnedMetadata, SimulationResult, TxHash,
 };
 use polkagent_core::now;
 
@@ -351,6 +351,112 @@ impl ChainClient for FakeChainClient {
 
         let guard = self.state.storage_values.lock();
         Ok(guard.get(storage_key).cloned())
+    }
+
+    /// Dry-run an extrinsic using the DryRunApi.
+    ///
+    /// The fake always returns a successful result with a single test event
+    /// and a destination fee of 100_000.
+    async fn dry_run_call(
+        &self,
+        extrinsic: &[u8],
+    ) -> Result<DryRunResult, ChainError> {
+        self.maybe_sleep().await;
+
+        let record = CallRecord::DryRunCall { extrinsic_len: extrinsic.len() };
+        if self.state.record_and_check_fault(record) {
+            return Err(self.fault_error());
+        }
+
+        Ok(DryRunResult {
+            execution_ok: true,
+            events: vec![serde_json::json!({
+                "pallet": "Balances",
+                "event": "Transfer",
+                "data": { "from": "5GrwvaEF", "to": "5FHneW46", "amount": 1000 }
+            })],
+            dest_weight_fee: Some(100_000),
+        })
+    }
+
+    /// Query acceptable XCM payment assets.
+    ///
+    /// The fake returns two test asset identifiers: `"DOT"` and `"USDT"`.
+    async fn xcm_query_acceptable_payment_assets(
+        &self,
+        version: u8,
+    ) -> Result<Vec<String>, ChainError> {
+        self.maybe_sleep().await;
+
+        let record = CallRecord::XcmQueryAcceptablePaymentAssets { version };
+        if self.state.record_and_check_fault(record) {
+            return Err(self.fault_error());
+        }
+
+        Ok(vec!["DOT".into(), "USDT".into()])
+    }
+
+    /// Query the XCM delivery fee to a destination.
+    ///
+    /// The fake returns a fixed delivery fee of 50_000 planck.
+    async fn xcm_query_delivery_fee(
+        &self,
+        dest: &GenesisHash,
+        message: &[u8],
+    ) -> Result<u128, ChainError> {
+        self.maybe_sleep().await;
+
+        let record = CallRecord::XcmQueryDeliveryFee {
+            dest: dest.0.clone(),
+            message_len: message.len(),
+        };
+        if self.state.record_and_check_fault(record) {
+            return Err(self.fault_error());
+        }
+
+        Ok(50_000)
+    }
+
+    /// Check if a destination is a trusted teleporter for the given asset.
+    ///
+    /// The fake returns `true` for asset `"DOT"` and `false` for all others.
+    async fn is_trusted_teleporter(
+        &self,
+        dest: &ChainProfileId,
+        asset: &str,
+    ) -> Result<bool, ChainError> {
+        self.maybe_sleep().await;
+
+        let record = CallRecord::IsTrustedTeleporter {
+            dest: dest.0.clone(),
+            asset: asset.to_string(),
+        };
+        if self.state.record_and_check_fault(record) {
+            return Err(self.fault_error());
+        }
+
+        Ok(asset == "DOT")
+    }
+
+    /// Check if reserve transfer is supported to a destination for an asset.
+    ///
+    /// The fake returns `true` for asset `"USDT"` and `false` for all others.
+    async fn is_reserve_transfer_supported(
+        &self,
+        dest: &ChainProfileId,
+        asset: &str,
+    ) -> Result<bool, ChainError> {
+        self.maybe_sleep().await;
+
+        let record = CallRecord::IsReserveTransferSupported {
+            dest: dest.0.clone(),
+            asset: asset.to_string(),
+        };
+        if self.state.record_and_check_fault(record) {
+            return Err(self.fault_error());
+        }
+
+        Ok(asset == "USDT")
     }
 
     /// Health check.
@@ -1052,5 +1158,233 @@ mod tests {
             &calls[0],
             CallRecord::Simulate { extrinsic_len: 77, block_number: 12_345 }
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // 43. dry_run_call returns successful DryRunResult
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dry_run_call_returns_successful_result() {
+        let client = builder().build();
+        let result = client.dry_run_call(&[1, 2, 3]).await.expect("dry_run ok");
+        assert!(result.execution_ok);
+        assert!(!result.events.is_empty());
+        assert_eq!(result.dest_weight_fee, Some(100_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // 44. dry_run_call records extrinsic length
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dry_run_call_records_extrinsic_length() {
+        let client = builder().build();
+        client.dry_run_call(&[0u8; 42]).await.ok();
+        let calls = client.calls();
+        assert!(matches!(
+            &calls[0],
+            CallRecord::DryRunCall { extrinsic_len: 42 }
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // 45. dry_run_call respects fault injection
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dry_run_call_respects_fault_injection() {
+        let client = builder().fail_next_n(1).build();
+        assert!(client.dry_run_call(&[1]).await.is_err());
+        assert!(client.dry_run_call(&[1]).await.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // 46. xcm_query_acceptable_payment_assets returns test assets
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn xcm_query_acceptable_payment_assets_returns_test_assets() {
+        let client = builder().build();
+        let assets = client
+            .xcm_query_acceptable_payment_assets(4)
+            .await
+            .expect("ok");
+        assert_eq!(assets.len(), 2);
+        assert!(assets.contains(&"DOT".to_string()));
+        assert!(assets.contains(&"USDT".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // 47. xcm_query_acceptable_payment_assets records version
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn xcm_query_acceptable_payment_assets_records_version() {
+        let client = builder().build();
+        client.xcm_query_acceptable_payment_assets(3).await.ok();
+        let calls = client.calls();
+        assert!(matches!(
+            &calls[0],
+            CallRecord::XcmQueryAcceptablePaymentAssets { version: 3 }
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // 48. xcm_query_delivery_fee returns fixed fee
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn xcm_query_delivery_fee_returns_fixed_fee() {
+        use polkagent_chain_trait::GenesisHash;
+        let client = builder().build();
+        let dest = GenesisHash::new("0xabc");
+        let fee = client
+            .xcm_query_delivery_fee(&dest, &[1, 2])
+            .await
+            .expect("ok");
+        assert_eq!(fee, 50_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // 49. xcm_query_delivery_fee records dest and message_len
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn xcm_query_delivery_fee_records_call() {
+        use polkagent_chain_trait::GenesisHash;
+        let client = builder().build();
+        let dest = GenesisHash::new("0xdead");
+        client.xcm_query_delivery_fee(&dest, &[0u8; 10]).await.ok();
+        let calls = client.calls();
+        assert!(matches!(
+            &calls[0],
+            CallRecord::XcmQueryDeliveryFee { dest, message_len: 10 }
+                if dest == "0xdead"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // 50. is_trusted_teleporter returns true for DOT
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn is_trusted_teleporter_dot_returns_true() {
+        let client = builder().build();
+        let dest = ChainProfileId::new("asset-hub");
+        let result = client.is_trusted_teleporter(&dest, "DOT").await.expect("ok");
+        assert!(result);
+    }
+
+    // -----------------------------------------------------------------------
+    // 51. is_trusted_teleporter returns false for non-DOT
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn is_trusted_teleporter_non_dot_returns_false() {
+        let client = builder().build();
+        let dest = ChainProfileId::new("asset-hub");
+        let result = client.is_trusted_teleporter(&dest, "KSM").await.expect("ok");
+        assert!(!result);
+    }
+
+    // -----------------------------------------------------------------------
+    // 52. is_trusted_teleporter records call
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn is_trusted_teleporter_records_call() {
+        let client = builder().build();
+        let dest = ChainProfileId::new("my-para");
+        client.is_trusted_teleporter(&dest, "DOT").await.ok();
+        let calls = client.calls();
+        assert!(matches!(
+            &calls[0],
+            CallRecord::IsTrustedTeleporter { dest, asset }
+                if dest == "my-para" && asset == "DOT"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // 53. is_reserve_transfer_supported returns true for USDT
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn is_reserve_transfer_supported_usdt_returns_true() {
+        let client = builder().build();
+        let dest = ChainProfileId::new("asset-hub");
+        let result = client
+            .is_reserve_transfer_supported(&dest, "USDT")
+            .await
+            .expect("ok");
+        assert!(result);
+    }
+
+    // -----------------------------------------------------------------------
+    // 54. is_reserve_transfer_supported returns false for non-USDT
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn is_reserve_transfer_supported_non_usdt_returns_false() {
+        let client = builder().build();
+        let dest = ChainProfileId::new("asset-hub");
+        let result = client
+            .is_reserve_transfer_supported(&dest, "DOT")
+            .await
+            .expect("ok");
+        assert!(!result);
+    }
+
+    // -----------------------------------------------------------------------
+    // 55. is_reserve_transfer_supported records call
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn is_reserve_transfer_supported_records_call() {
+        let client = builder().build();
+        let dest = ChainProfileId::new("bridge-hub");
+        client.is_reserve_transfer_supported(&dest, "USDT").await.ok();
+        let calls = client.calls();
+        assert!(matches!(
+            &calls[0],
+            CallRecord::IsReserveTransferSupported { dest, asset }
+                if dest == "bridge-hub" && asset == "USDT"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // 56. dry_run_call event contains expected fields
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dry_run_call_event_has_pallet_field() {
+        let client = builder().build();
+        let result = client.dry_run_call(&[0xAA]).await.expect("ok");
+        let event = &result.events[0];
+        assert_eq!(event["pallet"], "Balances");
+        assert_eq!(event["event"], "Transfer");
+    }
+
+    // -----------------------------------------------------------------------
+    // 57. new methods respect disconnected mode
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dry_run_call_disconnected_returns_error() {
+        let client = builder().disconnected().build();
+        assert!(client.dry_run_call(&[1]).await.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // 58. xcm_query_delivery_fee respects fault injection
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn xcm_query_delivery_fee_respects_fault_injection() {
+        use polkagent_chain_trait::GenesisHash;
+        let client = builder().fail_next_n(1).build();
+        let dest = GenesisHash::new("0x1");
+        assert!(client.xcm_query_delivery_fee(&dest, &[]).await.is_err());
+        assert!(client.xcm_query_delivery_fee(&dest, &[]).await.is_ok());
     }
 }

@@ -40,6 +40,16 @@ thiserror = { workspace = true }
 # Concurrency
 parking_lot = { workspace = true }
 
+# Regex
+regex = { workspace = true }
+
+# Compression
+zstd = { workspace = true }
+
+# Streaming
+futures = { workspace = true }
+async-stream = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }

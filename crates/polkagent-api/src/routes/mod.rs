@@ -81,6 +81,9 @@
 //! /openapi.json                     (no version prefix)
 //!   GET    /openapi.json
 //!
+//! /ws/v1alpha1                      (WebSocket, no version prefix in path)
+//!   GET    /ws/v1alpha1
+//!
 //! /health
 //!   GET    /health/live
 //!   GET    /health/ready
@@ -105,6 +108,7 @@ pub mod runs;
 pub mod skills;
 pub mod system;
 pub mod tools;
+pub mod ws;
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -252,10 +256,18 @@ pub fn register(state: AppState) -> Router {
         // Apply default 1 MiB body limit to all routes in this sub-router.
         .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT));
 
+    // -----------------------------------------------------------------------
+    // WebSocket v1alpha1 route (no version prefix in the path segment; the
+    // `v1alpha1` is part of the path literal per PRD-14 §4).
+    // -----------------------------------------------------------------------
+    let ws_route = Router::new()
+        .route("/ws/v1alpha1", get(ws::ws_handler));
+
     Router::new()
         .merge(health_routes)
         .merge(metrics_route)
         .merge(openapi_route)
+        .merge(ws_route)
         .nest("/api/v1alpha1", api_routes)
         .with_state(state)
 }

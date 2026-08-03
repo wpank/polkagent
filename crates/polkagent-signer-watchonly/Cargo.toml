@@ -1,0 +1,22 @@
+[package]
+name = "polkagent-signer-watchonly"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Watch-only Signer adapter that can never produce signatures"
+
+[dependencies]
+polkagent-core = { path = "../polkagent-core" }
+polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+chrono = { workspace = true }
+polkagent-signer-trait = { path = "../polkagent-signer-trait", features = ["test-contracts"] }
+
+[lints]
+workspace = true

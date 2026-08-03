@@ -768,6 +768,7 @@ fn bench_payment_ops(c: &mut Criterion) {
                     idempotency_key: Uuid::now_v7().to_string(),
                     created_at: Utc::now(),
                     status: PaymentStatus::Pending,
+                    metadata: None,
                 };
                 rt.block_on(PaymentStore::create_intent(&pool, intent))
                     .expect("create intent");

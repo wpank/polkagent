@@ -309,6 +309,7 @@ impl PaymentStore for SqlitePool {
                 idempotency_key,
                 created_at,
                 status,
+                metadata: None,
             })
         })
         .await
@@ -557,6 +558,7 @@ mod tests {
             idempotency_key: Uuid::now_v7().to_string(),
             created_at: Utc::now(),
             status: PaymentStatus::Pending,
+            metadata: None,
         }
     }
 
@@ -1050,6 +1052,7 @@ mod tests {
             idempotency_key: "unique-key-abc".to_string(),
             created_at,
             status: PaymentStatus::Submitted,
+            metadata: None,
         };
 
         PaymentStore::create_intent(&pool, intent).await.expect("create");

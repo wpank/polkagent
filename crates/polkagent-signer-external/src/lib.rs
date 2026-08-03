@@ -374,6 +374,7 @@ impl Signer for ExternalSigner {
             chain_profiles: vec![],
             hardware_backed: false,
             display_name: format!("ExternalSigner({})", self.config.endpoint_url),
+            can_sign: true,
         })
     }
 
@@ -992,6 +993,7 @@ mod tests {
             chain_profiles: vec![],
             hardware_backed: false,
             display_name: String::new(),
+            can_sign: true,
         });
         assert_eq!(caps.accounts.len(), 1);
         assert_eq!(caps.accounts[0].account_id, [0xAA; 32]);
@@ -1013,6 +1015,7 @@ mod tests {
             chain_profiles: vec![],
             hardware_backed: false,
             display_name: String::new(),
+            can_sign: true,
         });
         assert!(caps.accounts.is_empty());
     }

@@ -32,6 +32,10 @@ pub enum MemoryError {
     /// An operation was logically invalid (e.g. ending an already-ended episode).
     #[error("invalid operation: {0}")]
     InvalidOperation(String),
+
+    /// An I/O operation failed (e.g. writing or reading episode log files).
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Convenience alias.

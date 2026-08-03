@@ -479,6 +479,12 @@ pub enum ConfigCmd {
 
     /// Validate the configuration file without starting the daemon.
     Validate(ConfigValidateCmd),
+
+    /// Show the resolved config file paths (system, user, project).
+    Path(ConfigPathCmd),
+
+    /// Get a specific configuration value by dotted key path.
+    Get(ConfigGetCmd),
 }
 
 #[derive(Debug, Args)]
@@ -497,6 +503,26 @@ pub struct ConfigValidateCmd {
     /// Path to validate (defaults to the auto-discovered config).
     #[arg(value_name = "PATH")]
     pub path: Option<std::path::PathBuf>,
+}
+
+/// Show resolved config file paths.
+#[derive(Debug, Args)]
+pub struct ConfigPathCmd {
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Get a single config value by dotted key path (e.g. `log.level`).
+#[derive(Debug, Args)]
+pub struct ConfigGetCmd {
+    /// Dotted key path to look up (e.g. `log.level`, `api.bind_address`).
+    #[arg(value_name = "KEY")]
+    pub key: String,
+
+    /// Emit raw JSON for the value (instead of plain text).
+    #[arg(long)]
+    pub json: bool,
 }
 
 // ---------------------------------------------------------------------------

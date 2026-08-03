@@ -25,6 +25,7 @@
 pub mod digest;
 pub mod lineage;
 pub mod memory;
+pub mod retention;
 pub mod service;
 pub mod store;
 pub mod types;
@@ -36,7 +37,10 @@ pub mod types;
 /// Domain types re-exported from `polkagent-core`.
 pub use polkagent_core::artifact::{Artifact, ArtifactKind, BlobRef};
 
-pub use digest::{compute_digest, verify_digest};
+pub use digest::{
+    compute_digest, compute_dual_digest, compute_sha256_digest, verify_digest, verify_sha256,
+    Blake3Digest, Sha256Digest,
+};
 pub use lineage::LineageGraph;
 pub use memory::MemoryStore;
 pub use service::{ArtifactError, ArtifactService};

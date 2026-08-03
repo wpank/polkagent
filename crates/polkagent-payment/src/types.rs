@@ -216,6 +216,10 @@ pub struct PaymentIntent {
     pub created_at: DateTime<Utc>,
     /// Current lifecycle status.
     pub status: PaymentStatus,
+    /// Optional structured metadata (e.g. batch call details for risk
+    /// analysis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

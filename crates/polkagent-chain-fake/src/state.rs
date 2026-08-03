@@ -25,6 +25,11 @@ pub enum CallRecord {
     WatchFinality { tx_hash: String, chain_profile: String, timeout_ms: u64 },
     DecodeCall { call_len: usize },
     QueryStorage { key: Vec<u8>, chain_profile: String },
+    DryRunCall { extrinsic_len: usize },
+    XcmQueryAcceptablePaymentAssets { version: u8 },
+    XcmQueryDeliveryFee { dest: String, message_len: usize },
+    IsTrustedTeleporter { dest: String, asset: String },
+    IsReserveTransferSupported { dest: String, asset: String },
     Health,
 }
 

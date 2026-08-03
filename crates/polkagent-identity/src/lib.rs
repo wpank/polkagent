@@ -46,6 +46,7 @@
 
 pub mod agent_identity;
 pub mod error;
+pub mod resolver;
 pub mod ss58;
 pub mod types;
 
@@ -55,5 +56,9 @@ pub mod types;
 
 pub use agent_identity::{AgentCard, AgentIdentity};
 pub use error::IdentityError;
+pub use resolver::{
+    CachedIdentityResolver, IdentityField, IdentityResolution, IdentityResolver, JudgmentLevel,
+    RegistrarJudgment, SubIdentity,
+};
 pub use ss58::{decode_ss58, encode_ss58};
 pub use types::{AccountId32, ChainAccount, NetworkId, SS58Address};

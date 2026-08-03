@@ -255,8 +255,8 @@ impl EffectStore for InMemoryEffectStore {
             id: intent_id.to_string(),
         })?;
 
-        // Only allow transitions from "pending" or "waiting_approval".
-        let valid_source = ["pending", "waiting_approval"];
+        // Only allow transitions from "awaiting_approval" (PRD-14 §4).
+        let valid_source = ["awaiting_approval"];
         if !valid_source.contains(&intent.state.as_str()) {
             return Err(StoreError::InvalidTransition {
                 message: format!(
@@ -2701,13 +2701,13 @@ async fn event_bus_no_events_before_subscribe_are_replayed() {
 // Effect approval / denial tests
 // ===========================================================================
 
-/// POST /effects/:id/approve on an existing pending intent returns 200 with
-/// the updated state set to "approved".
+/// POST /effects/:id/approve on an existing awaiting_approval intent returns 200
+/// with the updated state set to "approved" and an approval record.
 #[tokio::test]
 async fn approve_effect_pending_returns_200_with_approved_state() {
     let (server, store) = test_server_with_effect_store();
     let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "pending");
+    let intent = make_stored_intent(run_id, "awaiting_approval");
     let effect_id = intent.id.to_string();
     store.seed_intent(intent).await;
 
@@ -2721,6 +2721,9 @@ async fn approve_effect_pending_returns_200_with_approved_state() {
     assert_eq!(body["effect_id"], effect_id.as_str());
     assert_eq!(body["new_state"], "approved");
     assert!(body["approved_at"].is_string(), "approved_at must be a timestamp string");
+    // PRD-14 §4: response must include an approval record.
+    assert!(body["approval"]["id"].is_string());
+    assert_eq!(body["approval"]["decision"], "approved");
 }
 
 /// POST /effects/:id/approve on a non-existent effect returns 404.
@@ -2755,36 +2758,39 @@ async fn approve_effect_already_resolved_returns_409() {
     assert_eq!(body["error"]["code"], "INVALID_STATE");
 }
 
-/// POST /effects/:id/approve on a waiting_approval intent also succeeds.
+/// POST /effects/:id/approve on an awaiting_approval intent with comment and conditions.
 #[tokio::test]
 async fn approve_effect_waiting_approval_returns_200() {
     let (server, store) = test_server_with_effect_store();
     let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "waiting_approval");
+    let intent = make_stored_intent(run_id, "awaiting_approval");
     let effect_id = intent.id.to_string();
     store.seed_intent(intent).await;
 
     let resp = server
         .post(&format!("/api/v1alpha1/effects/{effect_id}/approve"))
+        .json(&json!({ "comment": "Approved per policy", "conditions": ["max_value:500"] }))
         .await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
     assert_eq!(body["new_state"], "approved");
+    assert_eq!(body["approval"]["comment"], "Approved per policy");
+    assert_eq!(body["approval"]["conditions"][0], "max_value:500");
 }
 
-/// POST /effects/:id/deny on an existing pending intent returns 200 with
-/// the updated state set to "denied".
+/// POST /effects/:id/deny on an existing awaiting_approval intent returns 200
+/// with the updated state set to "denied" and a denial record.
 #[tokio::test]
 async fn deny_effect_pending_returns_200_with_denied_state() {
     let (server, store) = test_server_with_effect_store();
     let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "pending");
+    let intent = make_stored_intent(run_id, "awaiting_approval");
     let effect_id = intent.id.to_string();
     store.seed_intent(intent).await;
 
     let resp = server
         .post(&format!("/api/v1alpha1/effects/{effect_id}/deny"))
-        .json(&json!({ "reason": "budget exceeded" }))
+        .json(&json!({ "comment": "Over budget", "reason": "budget exceeded" }))
         .await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
@@ -2794,6 +2800,10 @@ async fn deny_effect_pending_returns_200_with_denied_state() {
     assert!(body["denied_at"].is_string(), "denied_at must be a timestamp string");
     // The denial reason is recorded.
     assert_eq!(body["reason"], "budget exceeded");
+    // PRD-14 §4: response must include a denial record.
+    assert!(body["approval"]["id"].is_string());
+    assert_eq!(body["approval"]["decision"], "denied");
+    assert_eq!(body["approval"]["comment"], "Over budget");
 }
 
 /// POST /effects/:id/deny with no reason body records null/absent reason.
@@ -2801,7 +2811,7 @@ async fn deny_effect_pending_returns_200_with_denied_state() {
 async fn deny_effect_without_reason_omits_reason_field() {
     let (server, store) = test_server_with_effect_store();
     let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "pending");
+    let intent = make_stored_intent(run_id, "awaiting_approval");
     let effect_id = intent.id.to_string();
     store.seed_intent(intent).await;
 

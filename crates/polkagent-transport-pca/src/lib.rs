@@ -35,6 +35,9 @@
 //! | [`session`] | Encrypted session lifecycle and key rotation |
 //! | [`channel`] | Reliable ordered in-memory message queue |
 //! | [`config`] | Transport configuration and peer endpoints |
+//! | [`dedup`] | Deduplication store for at-least-once delivery |
+//! | [`device_channels`] | Per-device channel subscription tracking |
+//! | [`persistence`] | Crash-safe state persistence |
 //! | [`error`] | PCA-specific error types |
 
 #![forbid(unsafe_code)]
@@ -54,7 +57,11 @@
 pub mod channel;
 pub mod config;
 pub mod crypto;
+pub mod dedup;
+pub mod device_channels;
 pub mod error;
+pub mod outbound;
+pub mod persistence;
 pub mod session;
 
 use std::sync::Arc;

@@ -189,6 +189,7 @@ pub fn test_signer_capabilities() -> SignerCapabilities {
         chain_profiles: vec![test_chain_profile_id()],
         hardware_backed: false,
         display_name: "TestSigner".into(),
+        can_sign: true,
     }
 }
 

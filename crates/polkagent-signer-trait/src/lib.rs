@@ -175,6 +175,11 @@ pub struct SignerCapabilities {
     pub hardware_backed: bool,
     /// Human-readable display name for operator interfaces.
     pub display_name: String,
+    /// Whether this signer can produce signatures.
+    ///
+    /// A watch-only signer reports `false` here — it can enumerate accounts
+    /// but will always refuse to sign.
+    pub can_sign: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +235,10 @@ pub enum SignerError {
         /// How long the signer waited.
         elapsed_ms: u64,
     },
+
+    /// This signer is watch-only and cannot produce signatures.
+    #[error("signer is watch-only and cannot sign")]
+    WatchOnly,
 
     /// An unexpected internal error.
     #[error("signer internal error: {message}")]

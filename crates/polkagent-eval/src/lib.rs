@@ -13,6 +13,9 @@
 //! | [`report`] | [`EvalReport`](report::EvalReport), [`CaseResult`](report::CaseResult), report rendering |
 //! | [`corpus`] | Suite loading from disk; [`builtin_safety_suite`](corpus::builtin_safety_suite) |
 //! | [`regression`] | [`RegressionDetector`](regression::RegressionDetector), [`compare_reports`](regression::compare_reports) |
+//! | [`corpus_manifest`] | [`CorpusManifest`](corpus_manifest::CorpusManifest), [`compute_corpus_digest`](corpus_manifest::compute_corpus_digest), [`verify_corpus_integrity`](corpus_manifest::verify_corpus_integrity), [`load_corpus_from_toml`](corpus_manifest::load_corpus_from_toml) |
+//! | [`judge`] | [`ModelAsJudgeScorer`](judge::ModelAsJudgeScorer), [`JudgeConfig`](judge::JudgeConfig), [`JudgeCriterion`](judge::JudgeCriterion), [`JudgeScore`](judge::JudgeScore) |
+//! | [`promotion`] | [`PromotionCandidate`](promotion::PromotionCandidate) |
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -29,6 +32,9 @@
 )]
 
 pub mod corpus;
+pub mod corpus_manifest;
+pub mod judge;
+pub mod promotion;
 pub mod regression;
 pub mod report;
 pub mod runner;

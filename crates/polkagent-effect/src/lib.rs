@@ -74,8 +74,9 @@ pub use idempotency::IdempotencyKey;
 pub use pipeline::{EffectIntentSpec, EffectPipeline};
 pub use recovery::{CrashRecovery, RecoveryAction};
 pub use types::{
-    AttemptState, CancellationReason, EffectAttempt, EffectIntent, EffectIntentState, EffectKind,
-    EffectOutcome, EffectPriority, ErrorClass, OutcomeResult, ResolutionHint, SupersessionReason,
+    ApprovalDecision, ApprovalRecord, ApprovalType, AttemptState, CancellationReason,
+    EffectAttempt, EffectIntent, EffectIntentState, EffectKind, EffectOutcome, EffectPriority,
+    ErrorClass, OutcomeResult, ResolutionHint, SupersessionReason,
 };
 
 #[cfg(feature = "audit")]

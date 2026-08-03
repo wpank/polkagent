@@ -2427,6 +2427,7 @@ mod tests {
                 chain_profiles: vec![polkagent_signer_trait::ChainProfileId::new("test-chain")],
                 hardware_backed: false,
                 display_name: "FakeSigner".into(),
+                can_sign: true,
             })
         }
 
@@ -2533,6 +2534,54 @@ mod tests {
             _chain_profile: polkagent_chain_trait::ChainProfileId,
         ) -> Result<Option<Vec<u8>>, ChainError> {
             Ok(None)
+        }
+
+        async fn dry_run_call(
+            &self,
+            _extrinsic: &[u8],
+        ) -> Result<polkagent_chain_trait::DryRunResult, ChainError> {
+            Err(ChainError::Unsupported {
+                operation: "dry_run_call".into(),
+            })
+        }
+
+        async fn xcm_query_acceptable_payment_assets(
+            &self,
+            _version: u8,
+        ) -> Result<Vec<String>, ChainError> {
+            Err(ChainError::Unsupported {
+                operation: "xcm_query_acceptable_payment_assets".into(),
+            })
+        }
+
+        async fn xcm_query_delivery_fee(
+            &self,
+            _dest: &polkagent_chain_trait::GenesisHash,
+            _message: &[u8],
+        ) -> Result<u128, ChainError> {
+            Err(ChainError::Unsupported {
+                operation: "xcm_query_delivery_fee".into(),
+            })
+        }
+
+        async fn is_trusted_teleporter(
+            &self,
+            _dest: &polkagent_chain_trait::ChainProfileId,
+            _asset: &str,
+        ) -> Result<bool, ChainError> {
+            Err(ChainError::Unsupported {
+                operation: "is_trusted_teleporter".into(),
+            })
+        }
+
+        async fn is_reserve_transfer_supported(
+            &self,
+            _dest: &polkagent_chain_trait::ChainProfileId,
+            _asset: &str,
+        ) -> Result<bool, ChainError> {
+            Err(ChainError::Unsupported {
+                operation: "is_reserve_transfer_supported".into(),
+            })
         }
 
         async fn health(&self) -> Result<(), ChainError> {

@@ -22,6 +22,13 @@
 #[cfg(feature = "test-contracts")]
 pub mod conformance;
 
+pub mod xcm;
+
+pub use xcm::{
+    estimate_xcm_fees, resolve_xcm_mechanism, FeeEstimate, XcmError, XcmHop, XcmMechanism,
+    XcmPlan, XcmRoute, XcmVersionCompat,
+};
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -161,6 +168,21 @@ pub struct DecodedCall {
     pub metadata_digest: MetadataDigest,
 }
 
+/// Result of a DryRunApi dry-run call.
+///
+/// Captures whether execution succeeded, the emitted events, and an optional
+/// destination weight/fee estimate (populated when the extrinsic triggers an
+/// XCM message).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DryRunResult {
+    /// Whether the dry-run execution succeeded.
+    pub execution_ok: bool,
+    /// Events emitted during the dry-run (JSON-encoded).
+    pub events: Vec<serde_json::Value>,
+    /// Estimated weight/fee for the destination leg, if applicable.
+    pub dest_weight_fee: Option<u128>,
+}
+
 /// Result of a dry-run / simulation of a transaction.
 ///
 /// Provides fee estimates and storage change previews for the approval
@@ -287,6 +309,10 @@ pub enum ChainError {
     #[error("extrinsic rejected: {reason}")]
     ExtrinsicRejected { reason: String },
 
+    /// The operation is not supported by this adapter.
+    #[error("unsupported operation: {operation}")]
+    Unsupported { operation: String },
+
     /// An unexpected internal error.
     #[error("chain client internal error: {message}")]
     Internal { message: String },
@@ -396,6 +422,49 @@ pub trait ChainClient: Send + Sync + 'static {
         chain_profile: ChainProfileId,
     ) -> Result<Option<Vec<u8>>, ChainError>;
 
+    /// Execute a DryRunApi dry-run against the given extrinsic bytes.
+    ///
+    /// Returns execution outcome, events, and an optional destination fee
+    /// estimate. Adapters that do not support this runtime API should return
+    /// [`ChainError::Unsupported`].
+    async fn dry_run_call(
+        &self,
+        extrinsic: &[u8],
+    ) -> Result<DryRunResult, ChainError>;
+
+    /// Query the XCM payment assets accepted by the runtime.
+    ///
+    /// Returns a list of asset identifiers (JSON-encoded) that the runtime
+    /// accepts for XCM fee payment at the given XCM version.
+    async fn xcm_query_acceptable_payment_assets(
+        &self,
+        version: u8,
+    ) -> Result<Vec<String>, ChainError>;
+
+    /// Query the delivery fee for sending an XCM message to `dest`.
+    ///
+    /// Returns the fee in the chain's native token (planck units).
+    async fn xcm_query_delivery_fee(
+        &self,
+        dest: &GenesisHash,
+        message: &[u8],
+    ) -> Result<u128, ChainError>;
+
+    /// Check whether `dest` is a trusted teleporter for the given asset.
+    async fn is_trusted_teleporter(
+        &self,
+        dest: &ChainProfileId,
+        asset: &str,
+    ) -> Result<bool, ChainError>;
+
+    /// Check whether reserve-backed transfers are supported to `dest` for
+    /// the given asset.
+    async fn is_reserve_transfer_supported(
+        &self,
+        dest: &ChainProfileId,
+        asset: &str,
+    ) -> Result<bool, ChainError>;
+
     /// Health check: return `Ok(())` if the chain client is connected and
     /// the node is responsive.
     async fn health(&self) -> Result<(), ChainError>;
@@ -463,6 +532,40 @@ mod tests {
         };
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(json.contains("1000000"));
+    }
+
+    #[test]
+    fn dry_run_result_serializes() {
+        let result = DryRunResult {
+            execution_ok: true,
+            events: vec![serde_json::json!({"pallet": "Balances", "event": "Transfer"})],
+            dest_weight_fee: Some(500_000),
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(json.contains("execution_ok"));
+        assert!(json.contains("500000"));
+    }
+
+    #[test]
+    fn dry_run_result_without_dest_fee() {
+        let result = DryRunResult {
+            execution_ok: false,
+            events: vec![],
+            dest_weight_fee: None,
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(json.contains("\"execution_ok\":false"));
+    }
+
+    #[test]
+    fn unsupported_error_display() {
+        let e = ChainError::Unsupported {
+            operation: "dry_run_call".into(),
+        };
+        let msg = format!("{e}");
+        assert!(msg.contains("unsupported"));
+        assert!(msg.contains("dry_run_call"));
+        assert!(!e.is_retryable());
     }
 
     #[test]
