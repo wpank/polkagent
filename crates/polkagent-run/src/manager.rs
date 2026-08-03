@@ -16,10 +16,12 @@
 //! it can be freely shared across Tokio tasks. Concurrent writes for the same
 //! run are serialised by the store's atomic `update_state` contract.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use polkagent_core::{
     event::{EventCorrelation, EventKind, RunEvent},
+    turn::Turn,
     AgentId, EventId, RunId, RunState,
 };
 use polkagent_event::EventRecorder;
@@ -50,6 +52,10 @@ pub struct RunManager {
     store: Arc<dyn RunStore>,
     events: EventRecorder,
     machine: RunStateMachine,
+    /// Per-run sequence counters. Each run gets a monotonically increasing
+    /// sequence number for its events. The `Mutex` is held only briefly to
+    /// read-and-increment, so contention is negligible.
+    sequences: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl std::fmt::Debug for RunManager {
@@ -66,6 +72,7 @@ impl RunManager {
             store,
             events,
             machine: RunStateMachine::new(),
+            sequences: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -334,6 +341,55 @@ impl RunManager {
         self.current_state(run_id).await
     }
 
+    /// Persist a completed [`Turn`] (including token usage) to the store.
+    ///
+    /// The turn's `sequence` is stored as 1-based in the database (the
+    /// schema uses 1-based sequences). Callers should pass the turn exactly
+    /// as returned by [`TurnManager::complete_turn`](crate::turn::TurnManager::complete_turn).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunError::Store`] if the store write fails.
+    #[instrument(skip(self, turn), fields(turn_id = %turn.id, run_id = %turn.run_id))]
+    pub async fn record_turn(&self, turn: &Turn) -> Result<(), RunError> {
+        let role = match turn.role {
+            polkagent_core::turn::MessageRole::User => "user",
+            polkagent_core::turn::MessageRole::Assistant => "assistant",
+            polkagent_core::turn::MessageRole::System => "system",
+        };
+
+        let started_at = turn.started_at.to_rfc3339();
+        let completed_at = turn.completed_at.map(|t| t.to_rfc3339());
+
+        // The schema uses 1-based sequences.
+        let sequence = turn.sequence.saturating_add(1);
+
+        self.store
+            .insert_turn(
+                turn.id,
+                turn.run_id,
+                sequence,
+                role,
+                &started_at,
+                completed_at.as_deref(),
+                turn.token_usage.input_tokens,
+                turn.token_usage.output_tokens,
+            )
+            .await
+            .map_err(|e| RunError::Store(e.to_string()))?;
+
+        info!(
+            turn_id = %turn.id,
+            run_id = %turn.run_id,
+            sequence,
+            input_tokens = turn.token_usage.input_tokens,
+            output_tokens = turn.token_usage.output_tokens,
+            "turn persisted"
+        );
+
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
@@ -379,11 +435,18 @@ impl RunManager {
 
     /// Build a minimal [`RunEvent`] and record it via the [`EventRecorder`].
     async fn emit_event(&self, run_id: RunId, kind: EventKind) -> Result<(), RunError> {
+        let sequence = {
+            let mut seqs = self.sequences.lock().expect("sequence lock poisoned");
+            let entry = seqs.entry(run_id.to_string()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+
         let correlation = EventCorrelation {
             run_id: run_id.clone(),
             ..Default::default()
         };
-        let event = RunEvent::new_durable(EventId::new(), run_id, 0, kind, correlation);
+        let event = RunEvent::new_durable(EventId::new(), run_id, sequence, kind, correlation);
 
         self.events
             .record(event)
@@ -549,6 +612,21 @@ mod tests {
             runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
             runs.truncate(limit as usize);
             Ok(runs)
+        }
+
+        async fn insert_turn(
+            &self,
+            _turn_id: polkagent_core::TurnId,
+            _run_id: RunId,
+            _sequence: u32,
+            _role: &str,
+            _started_at: &str,
+            _completed_at: Option<&str>,
+            _input_tokens: u32,
+            _output_tokens: u32,
+        ) -> Result<(), StoreError> {
+            // In-memory test store: no-op — turns are not queried in manager tests.
+            Ok(())
         }
     }
 

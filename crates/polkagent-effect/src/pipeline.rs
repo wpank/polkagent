@@ -408,7 +408,7 @@ pub(crate) mod tests {
         async fn release_claim(&self, intent_id: EffectId, worker_id: WorkerId) -> Result<(), StoreError> {
             let mut intents = self.intents.lock().expect("lock");
             if let Some(intent) = intents.get_mut(&intent_id) {
-                if intent.lease_owner == Some(worker_id) {
+                if intent.lease_owner == Some(worker_id) && intent.state != "resolved" {
                     intent.state = "pending".to_string();
                     intent.lease_owner = None;
                     intent.lease_expires = None;

@@ -181,7 +181,71 @@ impl CrashRecovery {
             }
         }
 
+        // Apply the recovery actions to the store so that intents are
+        // actually transitioned, not just reported on.
+        self.apply_recovery_actions(&actions).await?;
+
         Ok(actions)
+    }
+
+    /// Apply a list of recovery actions to the store.
+    ///
+    /// - **Retry**: resets the intent state to `"pending"` so a worker can
+    ///   re-claim it.
+    /// - **MarkFailed**: transitions the intent to `"permanently_failed"`.
+    /// - **RequiresManualResolution**: logs a warning; no automatic state
+    ///   change is made. An operator must investigate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Store`] if any store call fails. Actions are
+    /// applied sequentially; a failure on one action aborts the remaining
+    /// actions.
+    pub async fn apply_recovery_actions(
+        &self,
+        actions: &[RecoveryAction],
+    ) -> Result<(), PipelineError> {
+        for action in actions {
+            match action {
+                RecoveryAction::Retry { intent_id, retry_class, reason } => {
+                    info!(
+                        intent_id = %intent_id,
+                        retry_class = ?retry_class,
+                        reason = reason,
+                        "applying recovery: resetting intent to pending"
+                    );
+                    self.store
+                        .update_intent_state(*intent_id, "pending")
+                        .await
+                        .map_err(PipelineError::Store)?;
+                }
+                RecoveryAction::MarkFailed { intent_id, reason } => {
+                    warn!(
+                        intent_id = %intent_id,
+                        reason = reason,
+                        "applying recovery: marking intent as permanently_failed"
+                    );
+                    self.store
+                        .update_intent_state(*intent_id, "permanently_failed")
+                        .await
+                        .map_err(PipelineError::Store)?;
+                }
+                RecoveryAction::RequiresManualResolution {
+                    intent_id,
+                    context,
+                    resolution_hint,
+                } => {
+                    warn!(
+                        intent_id = %intent_id,
+                        context = context,
+                        hint = resolution_hint,
+                        "recovery: intent requires manual resolution — no automatic \
+                         state change applied"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Check whether a specific intent is idempotent (safe to retry).

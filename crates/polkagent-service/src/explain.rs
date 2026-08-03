@@ -21,8 +21,8 @@ use polkagent_card::builder::ActionCardBuilder;
 use polkagent_card::card::ActionCard;
 use polkagent_card::sections::SectionSource;
 use polkagent_chain_trait::{
-    BlockRef, ChainClient, ChainError, ChainProfileId, DecodedCall, FinalityObservation,
-    GenesisHash, MetadataDigest, PinnedMetadata, TxHash,
+    ChainClient, ChainError, ChainProfileId, DecodedCall, FinalityObservation, GenesisHash,
+    PinnedMetadata, TxHash,
 };
 use polkagent_core::{AgentId, RunId};
 use polkagent_signer_trait::{
@@ -468,7 +468,7 @@ pub async fn full_pipeline(
         .await?;
     // Use a sentinel genesis hash for the validation check — in production
     // this would come from the resolved ChainProfile.
-    let expected_genesis = GenesisHash::new("expected");
+    let _expected_genesis = GenesisHash::new("expected");
     // We skip genesis validation here since fetch_metadata already did it.
     // Instead, validate metadata structure.
     validate_metadata_structure(&metadata)?;
@@ -526,11 +526,10 @@ mod tests {
 
     use async_trait::async_trait;
     use polkagent_chain_trait::{
-        BlockRef, ChainError, ChainProfile, ChainProfileId, DecodedCall, DryRunResult,
-        FinalityObservation, GenesisHash, MetadataDigest, NetworkType, PinnedMetadata,
+        BlockRef, ChainError, ChainProfileId, DecodedCall, DryRunResult,
+        FinalityObservation, GenesisHash, MetadataDigest, PinnedMetadata,
         SimulationResult, TxHash,
     };
-    use polkagent_core::Timestamp;
     use polkagent_signer_trait::{
         AccountRef, CanonicalSignRequest, SignedPayload, Signer, SignerCapabilities, SignerError,
     };
@@ -540,6 +539,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// A configurable mock [`ChainClient`] for testing pipeline stages.
+    #[allow(dead_code)]
     struct MockChainClient {
         /// If set, `fetch_metadata` returns this error.
         fetch_error: Option<ChainError>,
@@ -604,6 +604,7 @@ mod tests {
             self
         }
 
+        #[allow(dead_code)]
         fn with_genesis_hash(mut self, hash: GenesisHash) -> Self {
             self.genesis_hash = hash;
             self
@@ -686,7 +687,7 @@ mod tests {
             _chain_profile: ChainProfileId,
             _timeout_ms: u64,
         ) -> Result<FinalityObservation, ChainError> {
-            if let Some(ref err) = self.finality_error {
+            if self.finality_error.is_some() {
                 return Err(ChainError::FinalityTimeout {
                     elapsed_ms: DEFAULT_FINALITY_TIMEOUT_MS,
                 });
@@ -696,7 +697,7 @@ mod tests {
 
         async fn decode_call(
             &self,
-            call_bytes: &[u8],
+            _call_bytes: &[u8],
             _metadata: &PinnedMetadata,
         ) -> Result<DecodedCall, ChainError> {
             if let Some(ref err) = self.decode_error {

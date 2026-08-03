@@ -451,6 +451,10 @@ impl RunOrchestrator {
                 .await;
         }
 
+        // NOTE(persistence): `total_usage` is accumulated across turns and
+        // included in the returned `RunOutcome`. Individual turn records
+        // (including per-turn token counts) are persisted to the `turns`
+        // table via `RunManager::record_turn`.
         let mut total_usage = TokenUsage::default();
         let mut turn_count: u32 = 0;
         let artifacts: Vec<ArtifactId> = Vec::new();
@@ -570,12 +574,11 @@ impl RunOrchestrator {
             // Guard: wall-clock timeout.
             if let Some(deadline) = run_deadline {
                 if Instant::now() >= deadline {
-                    let reason = "run timeout exceeded".to_owned();
-                    warn!(%run_id, "run deadline exceeded");
-                    self.run_manager.fail_run(run_id.clone(), &reason).await?;
+                    warn!(%run_id, "run deadline exceeded — transitioning to TimedOut");
+                    self.run_manager.timeout_run(run_id.clone()).await?;
                     break RunOutcome {
                         run_id: run_id.clone(),
-                        final_state: RunState::Failed { reason },
+                        final_state: RunState::TimedOut,
                         total_tokens: total_usage,
                         turn_count,
                         artifacts: artifacts.clone(),
@@ -716,7 +719,15 @@ impl RunOrchestrator {
             } else {
                 TurnOutput::continuing().with_usage(turn_usage)
             };
-            let _completed_turn = self.turn_manager.complete_turn(turn, &turn_output);
+            let completed_turn = self.turn_manager.complete_turn(turn, &turn_output);
+            if let Err(e) = self.run_manager.record_turn(&completed_turn).await {
+                warn!(
+                    %run_id,
+                    turn = turn_count,
+                    error = %e,
+                    "failed to persist turn record (non-fatal)"
+                );
+            }
 
             debug!(
                 %run_id,
@@ -1254,6 +1265,20 @@ mod tests {
                 .collect();
             runs.truncate(limit as usize);
             Ok(runs)
+        }
+
+        async fn insert_turn(
+            &self,
+            _turn_id: polkagent_core::TurnId,
+            _run_id: RunId,
+            _sequence: u32,
+            _role: &str,
+            _started_at: &str,
+            _completed_at: Option<&str>,
+            _input_tokens: u32,
+            _output_tokens: u32,
+        ) -> Result<(), StoreError> {
+            Ok(())
         }
     }
 
