@@ -1,5 +1,1 @@
-    Checking polkagent-run v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-run)
-    Checking polkagent-service v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-service)
-    Checking polkagent-cli v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cli)
-    Checking polkagent-integration-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-integration-tests)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.74s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s

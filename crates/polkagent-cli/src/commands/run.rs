@@ -247,7 +247,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
                         "\nRun timed out after {} seconds",
                         cmd.timeout
                     );
-                    let _ = app_service.cancel_run(run_id).await;
+                    let _ = app_service.timeout_run(run_id).await;
                     return Err(anyhow::anyhow!(
                         "run timed out after {} seconds",
                         cmd.timeout

@@ -906,6 +906,18 @@ impl AppService {
         Ok(())
     }
 
+    /// Time out a running or queued run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::RunNotFound`] if the run does not exist, or
+    /// [`ServiceError::InvalidTransition`] if the run is already terminal.
+    #[instrument(skip(self), fields(%run_id))]
+    pub async fn timeout_run(&self, run_id: RunId) -> Result<(), ServiceError> {
+        self.run_manager.timeout_run(run_id).await?;
+        Ok(())
+    }
+
     /// Approve a pending effect, allowing it to proceed.
     ///
     /// Transitions the effect intent's approval state and broadcasts

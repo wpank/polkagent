@@ -111,3 +111,19 @@ To https://github.com/wpank/polkagent.git
 [23:30:42]   Verifying: cargo test --workspace (quick)
   PASS   cargo test passed
   PASS   Verified: D1-2
+[auto/impl-20260803-231923 c84df51] [auto] D1-2: Add startup reaper for zombie runs
+ 6 files changed, 1947 insertions(+), 1744 deletions(-)
+ create mode 100644 logs/auto-impl/20260803-231923/D1-2.log
+To https://github.com/wpank/polkagent.git
+   06a24f5..c84df51  auto/impl-20260803-231923 -> auto/impl-20260803-231923
+  PASS   Committed and pushed: D1-2
+──────────────────────────────────────────────────────────────────────
+[23:31:38] Task 6/64: [D1-3] Fix timeout state and orchestrator error path
+[23:31:38]   Invoking claude for D1-3...
+[23:31:38]   Log: /Users/will/dev/par/polkagent/logs/auto-impl/20260803-231923/D1-3.log
+  PASS   claude completed D1-3
+[23:32:58]   Verifying: cargo check --workspace
+  PASS   cargo check passed
+[23:32:59]   Verifying: cargo test --workspace (quick)
+  PASS   cargo test passed
+  PASS   Verified: D1-3

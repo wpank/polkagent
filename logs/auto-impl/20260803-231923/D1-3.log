@@ -1,0 +1,9 @@
+Clean build. Here's a summary of what was done:
+
+**Already fixed (no changes needed):**
+1. **`orchestrator.rs` (lines 574-587)** — Already uses `RunState::TimedOut` and calls `self.run_manager.timeout_run()`. This was previously corrected.
+2. **`app.rs` (lines 853-881)** — The error handler already checks if the run is terminal, and if not, calls `run_manager.fail_run()` to persist the failure to the DB.
+
+**Fixed:**
+3. **`app.rs`** — Added a `timeout_run` method to `AppService` that delegates to `run_manager.timeout_run()`, mirroring the existing `cancel_run` pattern.
+4. **`run.rs` (line 250)** — Changed `app_service.cancel_run(run_id)` → `app_service.timeout_run(run_id)` in the CLI timeout handler, so a wall-clock timeout correctly transitions the run to `TimedOut` instead of `Cancelled`.
