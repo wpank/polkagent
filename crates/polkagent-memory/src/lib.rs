@@ -58,6 +58,7 @@ pub mod embedding;
 pub mod episode;
 pub mod error;
 pub mod export;
+pub mod metadata_rag;
 pub mod retention;
 pub mod retrieval;
 pub mod service;
@@ -81,6 +82,9 @@ pub use episode::{
 };
 pub use error::{MemoryError, MemoryResult};
 pub use export::ImportResult;
+pub use metadata_rag::{
+    CitedResult, MetadataCitation, MetadataDocument, MetadataRagService,
+};
 pub use retention::{RetentionPolicy, RetentionSweeper, SweepResult};
 pub use retrieval::{
     ContextBudget, HybridRetriever, InMemoryVectorIndex, RankedResult, RetrievalConfig,

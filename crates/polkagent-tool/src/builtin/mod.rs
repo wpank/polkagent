@@ -9,6 +9,7 @@
 //! Use [`register_builtins`] to add all built-in tools to a [`ToolRegistry`]
 //! in one call.
 
+pub mod chain_knowledge;
 pub mod file;
 pub mod search;
 pub mod shell;
@@ -35,5 +36,8 @@ pub fn register_builtins(registry: &mut ToolRegistry, memory_store: Arc<dyn Memo
     registry.register(Box::new(shell::ShellTool::default()));
 
     // Memory search tool.
-    registry.register(Box::new(search::SearchMemoryTool::new(memory_store)));
+    registry.register(Box::new(search::SearchMemoryTool::new(memory_store.clone())));
+
+    // Chain knowledge tool (metadata-grounded RAG).
+    registry.register(Box::new(chain_knowledge::ChainKnowledgeTool::new(memory_store)));
 }

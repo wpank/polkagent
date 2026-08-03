@@ -1,0 +1,35 @@
+All done. Here's a summary of what was implemented:
+
+## Summary
+
+### 3 files created, 2 files modified
+
+#### 1. `crates/polkagent-memory/src/metadata_rag.rs` (new)
+Core metadata-grounded RAG module with:
+- **`MetadataDocument`** — Input struct for ingesting metadata knowledge (chain_id, pallet_name, section, item_name, content, metadata_hash, block_number)
+- **`MetadataCitation`** — Citation struct containing: metadata hash, block number, pallet name, and source section
+- **`CitedResult`** — Query result bundling content + citation + relevance score
+- **`MetadataRagService`** — Service wrapping MemoryStore with:
+  - `ingest(&[MetadataDocument])` — Stores documents as `Semantic` memory entries with citation metadata in the JSON metadata field and `"runtime_metadata_ingest"` provenance. Enters the FTS5 index automatically via SQLite triggers.
+  - `query(query_text, limit)` — Searches FTS5 index, filters to metadata-sourced entries, reconstructs citations from stored metadata
+- **Helper formatters** — `format_call_doc()`, `format_storage_doc()`, `format_constant_doc()`, `format_event_doc()` for building human-readable content from parsed metadata
+- **8 tests** — All passing
+
+#### 2. `crates/polkagent-tool/src/builtin/chain_knowledge.rs` (new)
+Agent-callable tool implementing `ToolHandler`:
+- **Tool name**: `polkagent.chain.knowledge`
+- **Required grant**: `chain.query`
+- **Input**: `{ "query": "...", "limit": N }`
+- **Output**: Results with full citation objects (metadata_hash, block_number, pallet_name, source_section)
+- **4 tests** — All passing
+
+#### 3. `crates/polkagent-memory/src/lib.rs` (modified)
+Added `pub mod metadata_rag` and re-exports for `CitedResult`, `MetadataCitation`, `MetadataDocument`, `MetadataRagService`
+
+#### 4. `crates/polkagent-tool/src/builtin/mod.rs` (modified)
+Added `pub mod chain_knowledge` and registered `ChainKnowledgeTool` in `register_builtins()`
+
+### Verification
+- `cargo check --workspace` — ✅ Clean
+- `cargo test -p polkagent-memory -- metadata_rag` — ✅ 8/8 pass
+- `cargo test -p polkagent-tool -- chain_knowledge` — ✅ 4/4 pass
