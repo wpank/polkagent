@@ -64,6 +64,8 @@ pub enum TuiAction {
     TogglePanel,
 
     // -- Memory / audit ------------------------------------------------------
+    /// Activate the memory search bar (switches to insert mode on the Memory tab).
+    Search,
     /// Delete the selected memory entry.
     DeleteEntry,
     /// Scroll to the bottom of the active list (G in audit/timeline).
@@ -170,10 +172,14 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
         KeyCode::Tab => Some(TuiAction::TogglePanel),
 
         // ── Approval actions ─────────────────────────────────────────────
+        // NOTE: These fire globally but the handler in App::apply_action
+        // guards with `if self.active_tab == Tab::Approvals`, so they are
+        // effectively no-ops on other tabs.
         KeyCode::Char('a') => Some(TuiAction::ApproveEffect),
         KeyCode::Char('d') => Some(TuiAction::DenyEffect),
 
         // ── Memory / audit actions ───────────────────────────────────────
+        KeyCode::Char('/') => Some(TuiAction::Search),
         KeyCode::Delete => Some(TuiAction::DeleteEntry),
         KeyCode::Char('f') => Some(TuiAction::CycleFilter),
 

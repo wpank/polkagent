@@ -253,50 +253,7 @@ impl TuiDb {
     // ── Run events ──────────────────────────────────────────────────────
 
     /// Load events for a specific run, ordered by sequence.
-    ///
-    /// Prefers the `durable_events` table (V2 event store) and falls back
-    /// to the legacy `run_events` table when the V2 table is absent.
     pub fn run_events(&self, run_id: &str, limit: usize) -> Result<Vec<EventSummary>> {
-        // Try durable_events first (V2 schema).
-        let has_durable: bool = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='durable_events'",
-                [],
-                |row| row.get::<_, i64>(0).map(|n| n > 0),
-            )
-            .unwrap_or(false);
-
-        if has_durable {
-            let mut stmt = self.conn.prepare(
-                "SELECT id, event_type, timestamp, payload
-                 FROM durable_events
-                 WHERE run_id = ?1
-                 ORDER BY sequence ASC
-                 LIMIT ?2",
-            )?;
-
-            let events = stmt
-                .query_map(rusqlite::params![run_id, limit as i64], |row| {
-                    let ts_str: String = row.get(2)?;
-                    let payload: String = row.get(3)?;
-                    let event_type: String = row.get(1)?;
-                    let description = event_description(&event_type, &payload);
-                    Ok(EventSummary {
-                        id: row.get(0)?,
-                        timestamp: parse_datetime(&ts_str).unwrap_or_else(Utc::now),
-                        event_type,
-                        description,
-                        payload,
-                    })
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            return Ok(events);
-        }
-
-        // Fallback: legacy run_events table.
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, timestamp, data_json
              FROM run_events
@@ -424,29 +381,46 @@ impl TuiDb {
             Err(_) => return Ok(vec![]),
         };
 
-        let sql = if let Some(q) = query {
-            format!(
+        let (sql, has_query) = if query.is_some() {
+            (
                 "SELECT id, memory_type, agent_id, content, relevance_score, created_at
                  FROM memories
-                 WHERE content LIKE '%{q}%'
+                 WHERE content LIKE '%' || ?1 || '%'
                  ORDER BY relevance_score DESC
-                 LIMIT {limit}",
-                q = q.replace('\'', "''"),
-                limit = limit,
+                 LIMIT ?2"
+                    .to_owned(),
+                true,
             )
         } else {
-            format!(
+            (
                 "SELECT id, memory_type, agent_id, content, relevance_score, created_at
                  FROM memories
                  ORDER BY created_at DESC
-                 LIMIT {limit}",
-                limit = limit,
+                 LIMIT ?1"
+                    .to_owned(),
+                false,
             )
         };
 
         let mut stmt = conn.prepare(&sql)?;
-        let entries = stmt
-            .query_map([], |row| {
+        let entries = if has_query {
+            stmt.query_map(
+                rusqlite::params![query.unwrap_or_default(), limit as i64],
+                |row| {
+                    let created_str: String = row.get(5)?;
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, f64>(4)?,
+                        created_str,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(rusqlite::params![limit as i64], |row| {
                 let created_str: String = row.get(5)?;
                 Ok((
                     row.get::<_, String>(0)?,
@@ -457,7 +431,8 @@ impl TuiDb {
                     created_str,
                 ))
             })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+        };
 
         let parsed = entries
             .into_iter()
@@ -497,7 +472,7 @@ impl TuiDb {
     /// Load recent audit events from the run_events table.
     pub fn audit_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, run_id, event_type, payload_json, created_at
+            "SELECT id, run_id, kind, data_json, timestamp
              FROM run_events
              ORDER BY sequence DESC
              LIMIT {limit}",
@@ -523,13 +498,21 @@ impl TuiDb {
                     .map(|dt| dt.with_timezone(&Utc))
                     .ok()?;
                 let short_run = run_id[..run_id.len().min(8)].to_owned();
+                let kind_lower = kind.to_lowercase();
+                let severity = if kind_lower.contains("error") || kind_lower.contains("fail") {
+                    "error"
+                } else if kind_lower.contains("warn") {
+                    "warn"
+                } else {
+                    "info"
+                };
                 Some(AuditEvent {
                     id,
                     kind,
                     run_id: Some(run_id),
                     agent_name: format!("run:{short_run}"),
                     message: payload,
-                    severity: "info".to_owned(),
+                    severity: severity.to_owned(),
                     timestamp,
                 })
             })
@@ -561,13 +544,13 @@ impl TuiDb {
 
     // ── Recent error count ───────────────────────────────────────────────
 
-    /// Count run events whose `event_type` contains "error" (case-insensitive).
+    /// Count run events whose `kind` contains "error" (case-insensitive).
     /// Returns 0 on any DB error so it is safe to call in non-critical UI paths.
     #[allow(dead_code)]
     pub fn recent_error_count(&self) -> u32 {
         self.conn
             .query_row(
-                "SELECT COUNT(*) FROM run_events WHERE LOWER(event_type) LIKE '%error%'",
+                "SELECT COUNT(*) FROM run_events WHERE LOWER(kind) LIKE '%error%'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -609,11 +592,12 @@ impl TuiDb {
         let writer = Connection::open(&db_path)
             .with_context(|| "opening writable connection for approve")?;
 
+        let outcome_id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         writer.execute(
-            "UPDATE effect_intents SET claimed_by = 'tui-approved', claimed_until = ?1
-             WHERE id = ?2 AND claimed_by IS NULL",
-            rusqlite::params![now, effect_id],
+            "INSERT INTO effect_outcomes (id, intent_id, status, result_json, created_at)
+             VALUES (?1, ?2, 'approved', '{\"source\":\"tui\"}', ?3)",
+            rusqlite::params![outcome_id, effect_id, now],
         )?;
         Ok(())
     }
@@ -624,11 +608,12 @@ impl TuiDb {
         let writer = Connection::open(&db_path)
             .with_context(|| "opening writable connection for deny")?;
 
+        let outcome_id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         writer.execute(
-            "UPDATE effect_intents SET claimed_by = 'tui-denied', claimed_until = ?1
-             WHERE id = ?2 AND claimed_by IS NULL",
-            rusqlite::params![now, effect_id],
+            "INSERT INTO effect_outcomes (id, intent_id, status, result_json, created_at)
+             VALUES (?1, ?2, 'denied', '{\"source\":\"tui\"}', ?3)",
+            rusqlite::params![outcome_id, effect_id, now],
         )?;
         Ok(())
     }
@@ -761,11 +746,6 @@ impl ChainPoller {
             last_poll: None,
             interval: Self::DEFAULT_INTERVAL,
         }
-    }
-
-    /// Returns `true` if an RPC URL is configured.
-    pub fn is_configured(&self) -> bool {
-        self.rpc_url.is_some()
     }
 
     /// Returns `true` if enough time has elapsed since the last poll.
@@ -949,14 +929,15 @@ mod tests {
                 id TEXT PRIMARY KEY,
                 intent_id TEXT NOT NULL,
                 status TEXT NOT NULL,
+                result_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
             );
             CREATE TABLE run_events (
                 id TEXT PRIMARY KEY,
                 run_id TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                data_json TEXT NOT NULL DEFAULT '{}',
+                timestamp TEXT NOT NULL,
                 sequence INTEGER NOT NULL DEFAULT 0
             );
             ",
@@ -1049,7 +1030,7 @@ mod tests {
         let now = chrono::Utc::now().to_rfc3339();
         for (id, event_type) in [("e1", "TurnError"), ("e2", "RunComplete"), ("e3", "ToolError")] {
             conn.execute(
-                "INSERT INTO run_events (id, run_id, event_type, payload_json, created_at) VALUES (?, 'r3', ?, '{}', ?)",
+                "INSERT INTO run_events (id, run_id, kind, data_json, timestamp) VALUES (?, 'r3', ?, '{}', ?)",
                 rusqlite::params![id, event_type, now],
             ).unwrap();
         }
@@ -1173,16 +1154,14 @@ mod tests {
     // ── ChainPoller ──────────────────────────────────────────────────────────
 
     #[test]
-    fn test_chain_poller_no_url_is_not_configured() {
+    fn test_chain_poller_no_url_should_not_poll() {
         let poller = ChainPoller::with_url(None);
-        assert!(!poller.is_configured());
         assert!(!poller.should_poll());
     }
 
     #[test]
-    fn test_chain_poller_with_url_is_configured() {
+    fn test_chain_poller_with_url_should_poll_immediately() {
         let poller = ChainPoller::with_url(Some("wss://rpc.polkadot.io".to_owned()));
-        assert!(poller.is_configured());
         assert!(poller.should_poll(), "should poll immediately on first call");
     }
 

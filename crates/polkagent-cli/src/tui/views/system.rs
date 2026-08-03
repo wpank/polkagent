@@ -148,11 +148,9 @@ fn render_stats(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // DB size on disk.
-    let db_size = if state.health.db_ok {
-        std::fs::metadata(&state.health.db_path)
-            .map(|m| format_bytes(m.len()))
-            .unwrap_or_else(|_| "unknown".into())
+    // DB size — avoid filesystem I/O on the render path.
+    let db_size: String = if state.health.db_ok {
+        "see health".into()
     } else {
         "N/A".into()
     };
@@ -394,9 +392,8 @@ fn format_bytes(n: u64) -> String {
 }
 
 /// Attempt to read the process RSS from the OS.
-/// Returns `None` when unavailable (non-Linux, or permission error).
+/// Returns `None` when unavailable or on permission error.
 fn process_rss_kb() -> Option<u64> {
-    // /proc/self/status is Linux-specific.
     #[cfg(target_os = "linux")]
     {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -411,30 +408,41 @@ fn process_rss_kb() -> Option<u64> {
             }
         }
     }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Use `ps` to read RSS for the current process (in KiB).
+        let pid = std::process::id();
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let kb: u64 = text.trim().parse().ok()?;
+        return Some(kb);
+    }
+
+    #[allow(unreachable_code)]
     None
 }
 
 /// Return a list of config file paths that exist on disk.
+///
+/// Matches the paths checked by `ConfigLoader`:
+///   1. `$HOME/.config/polkagent/polkagent.toml`
+///   2. `$HOME/.polkagent/polkagent.toml`  (legacy / convenience)
 fn detect_config_sources() -> Vec<String> {
     let mut sources = Vec::new();
 
     let home = std::env::var("HOME").unwrap_or_default();
     let candidates = [
         format!("{home}/.config/polkagent/polkagent.toml"),
-        "/etc/polkagent/polkagent.toml".to_owned(),
-        "polkagent.toml".to_owned(),
+        format!("{home}/.polkagent/polkagent.toml"),
     ];
 
     for path in &candidates {
         if std::path::Path::new(path).exists() {
             sources.push(path.clone());
-        }
-    }
-
-    // Also check POLKAGENT_CONFIG env var.
-    if let Ok(p) = std::env::var("POLKAGENT_CONFIG") {
-        if !sources.contains(&p) {
-            sources.push(p);
         }
     }
 
