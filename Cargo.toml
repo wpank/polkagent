@@ -65,6 +65,7 @@ members = [
     "crates/polkagent-surface-webhook",
     "crates/polkagent-tool-governance",
     "crates/polkagent-tool-treasury",
+    "crates/polkagent-tool-workbench",
     "crates/polkagent-transport-pca",
     "crates/polkagent-harness-acp",
     "crates/polkagent-harness-cursor",

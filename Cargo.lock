@@ -3395,6 +3395,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-tool-workbench"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "polkagent-chain-trait",
+ "polkagent-core",
+ "polkagent-tool",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-transport-fake"
 version = "0.1.0"
 dependencies = [
