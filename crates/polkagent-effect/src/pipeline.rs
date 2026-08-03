@@ -260,13 +260,24 @@ impl EffectPipeline {
     }
 
     /// Record an immutable outcome (EFF-INV-3).
+    ///
+    /// The BLAKE3 digest of the serialised result is computed here so that
+    /// callers do not need to supply it — the pipeline owns integrity.
     pub async fn record_outcome(
         &self,
         intent_id: EffectId,
         outcome: &EffectOutcome,
     ) -> Result<(), PipelineError> {
-        let payload = serde_json::to_value(&outcome.result)
+        let result_bytes = serde_json::to_vec(&outcome.result)
             .map_err(|e| PipelineError::Internal(format!("failed to serialise outcome: {e}")))?;
+        let hash = blake3::hash(&result_bytes);
+        let digest_hex = hash.to_hex().to_string();
+
+        let mut payload: serde_json::Value = serde_json::from_slice(&result_bytes)
+            .map_err(|e| PipelineError::Internal(format!("failed to parse outcome: {e}")))?;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("digest_hex".to_string(), serde_json::Value::String(digest_hex.clone()));
+        }
 
         let stored = StoredOutcome {
             id: outcome.id,
@@ -292,6 +303,7 @@ impl EffectPipeline {
             outcome_id = %outcome.id,
             intent_id = %intent_id,
             attempt_id = %outcome.attempt_id,
+            digest = %digest_hex,
             "outcome recorded (immutable)"
         );
         Ok(())
@@ -532,14 +544,18 @@ pub(crate) mod tests {
         attempt_id: EffectAttemptId,
         run_id: RunId,
     ) -> EffectOutcome {
+        let result = OutcomeResult::Success { data: serde_json::json!({"ok": true}) };
+        let digest = *blake3::hash(
+            &serde_json::to_vec(&result).unwrap_or_default(),
+        ).as_bytes();
         EffectOutcome {
             id: EffectOutcomeId::new(),
             attempt_id,
             intent_id,
             run_id,
-            result: OutcomeResult::Success { data: serde_json::json!({"ok": true}) },
+            result,
             observed_at: Utc::now(),
-            digest: [0u8; 32],
+            digest,
         }
     }
 

@@ -1495,6 +1495,11 @@ impl EffectStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             let id_str = intent.id.to_string();
             let run_id_str = intent.run_id.to_string();
+            let turn_id_str: Option<String> = intent
+                .payload
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
             let step_id_str = intent.step_id.to_string();
             let created_at_str = intent.created_at.to_rfc3339();
 
@@ -1516,21 +1521,39 @@ impl EffectStore for SqlitePool {
                 }
             })?;
 
+            let priority: i64 = intent
+                .payload
+                .get("priority")
+                .and_then(|v| match v {
+                    serde_json::Value::Number(n) => n.as_i64(),
+                    serde_json::Value::String(s) => match s.as_str() {
+                        "low" => Some(0),
+                        "normal" => Some(1),
+                        "high" => Some(2),
+                        "critical" => Some(3),
+                        _ => Some(1),
+                    },
+                    _ => Some(1),
+                })
+                .unwrap_or(1);
+
             let writer = pool.writer();
             writer
                 .execute(
                     "INSERT INTO effect_intents \
-                     (id, run_id, step_id, kind, params_json, idempotency_key, \
-                      created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (id, run_id, turn_id, step_id, kind, params_json, idempotency_key, \
+                      created_at, priority) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     rusqlite::params![
                         id_str,
                         run_id_str,
+                        turn_id_str,
                         step_id_str,
                         kind,
                         params_json,
                         intent.idempotency_key,
                         created_at_str,
+                        priority,
                     ],
                 )
                 .map_err(|e| {
@@ -1573,12 +1596,12 @@ impl EffectStore for SqlitePool {
             writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
 
             let result = (|| -> Result<Option<StoredIntent>, TraitStoreError> {
-                // Find the first pending intent (claimed_by IS NULL).
+                // Find the highest-priority pending intent (claimed_by IS NULL).
                 let maybe_id: Option<String> = writer
                     .query_row(
                         "SELECT id FROM effect_intents \
                          WHERE claimed_by IS NULL \
-                         ORDER BY created_at ASC LIMIT 1",
+                         ORDER BY priority DESC, created_at ASC LIMIT 1",
                         [],
                         |r| r.get(0),
                     )

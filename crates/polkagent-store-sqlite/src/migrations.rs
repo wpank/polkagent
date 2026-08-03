@@ -46,6 +46,9 @@ const SCHEMA_V7: &str = include_str!("v7_feed_store.sql");
 /// V8: Skill registry table (skills).
 const SCHEMA_V8: &str = include_str!("v8_skill_store.sql");
 
+/// V9: Add priority column to effect_intents for claim ordering.
+const SCHEMA_V9: &str = include_str!("v9_intent_priority.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -56,6 +59,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (6, "group store tables", SCHEMA_V6),
     (7, "feed store tables", SCHEMA_V7),
     (8, "skill registry table", SCHEMA_V8),
+    (9, "intent priority column", SCHEMA_V9),
 ];
 
 // ---------------------------------------------------------------------------
@@ -190,7 +194,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
@@ -199,7 +203,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
