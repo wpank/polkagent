@@ -35,6 +35,7 @@ members = [
     "crates/polkagent-telemetry",
     "crates/polkagent-harness-trait",
     "crates/polkagent-harness-claude",
+    "crates/polkagent-harness-codex",
     "crates/polkagent-security-tests",
     "crates/polkagent-secret",
     "crates/polkagent-identity",
@@ -63,6 +64,8 @@ members = [
     "crates/polkagent-tool-governance",
     "crates/polkagent-tool-treasury",
     "crates/polkagent-transport-pca",
+    "crates/polkagent-harness-acp",
+    "crates/polkagent-harness-cursor",
 ]
 
 [workspace.package]

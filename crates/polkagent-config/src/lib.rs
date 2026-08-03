@@ -39,6 +39,7 @@
 pub mod env;
 pub mod error;
 pub mod loader;
+pub mod model_registry;
 pub mod schema;
 pub mod validate;
 pub mod watch;
@@ -49,12 +50,16 @@ pub mod watch;
 
 pub use error::{ConfigError, Result};
 pub use loader::{merge, ConfigLoader};
+pub use model_registry::{
+    BuiltInModelCatalog, ModelCatalog, ModelDescriptor, ProviderKind, ToolFormat,
+    synthesize_providers_from_env,
+};
 pub use schema::{
     ApiConfig, ArtifactConfig, AuthConfig, BudgetConfig, Config, DatabaseBackend, DatabaseConfig,
-    ExecutionConfig, HarnessConfig, LogConfig, LogFormat, MemoryConfig, MetaConfig,
-    ObservabilityConfig, PolicyConfig, PostgresConfig, ProviderConfig, RateLimitConfig,
-    SecurityConfig, ServerConfig, SkillsConfig, SqliteConfig, TlsConfig, TuiConfig, TuiTheme,
-    CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
+    ExecutionConfig, HarnessConfig, HarnessEntryConfig, LogConfig, LogFormat, MemoryConfig,
+    MetaConfig, ModelOverrideConfig, ObservabilityConfig, PolicyConfig, PostgresConfig,
+    ProviderConfig, RateLimitConfig, SecurityConfig, ServerConfig, SkillsConfig, SqliteConfig,
+    TlsConfig, TuiConfig, TuiTheme, CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
 };
 pub use validate::ValidationError;
 pub use watch::{AtomicConfig, ConfigDiff, ConfigSnapshot, ConfigWatcher, ReloadPolicy, WatchEvent, WatchEventKind, WatchError};

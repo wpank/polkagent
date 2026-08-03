@@ -57,8 +57,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
 
 use polkagent_harness_trait::{
-    Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent, HarnessId,
-    HarnessStatus, SessionConfig, SessionId,
+    CancelMode, Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent,
+    HarnessId, HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode,
+    ToolInjection, TransportFlavor,
 };
 
 // ---------------------------------------------------------------------------
@@ -312,6 +313,13 @@ impl Harness for ClaudeHarness {
                 "claude-opus-4-6".into(),
                 "claude-sonnet-4-6".into(),
             ],
+            transport: Some(TransportFlavor::JsonRpcStdio),
+            model_override: None,
+            session_resume: SessionResumeMode::ById,
+            mcp_passthrough: McpMode::Configurable,
+            tool_injection: ToolInjection::McpConfig,
+            cancel: CancelMode::Signal,
+            multiplex_safe: false,
         }
     }
 

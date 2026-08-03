@@ -16,6 +16,7 @@ polkagent-executor-trait = { path = "../polkagent-executor-trait" }
 polkagent-effect = { path = "../polkagent-effect" }
 polkagent-grant = { path = "../polkagent-grant" }
 polkagent-card = { path = "../polkagent-card" }
+polkagent-harness-trait = { path = "../polkagent-harness-trait" }
 polkagent-payment = { path = "../polkagent-payment", optional = true }
 polkagent-context = { path = "../polkagent-context", optional = true }
 
@@ -28,6 +29,7 @@ chrono = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+futures = { workspace = true }
 
 # Observability
 tracing = { workspace = true }

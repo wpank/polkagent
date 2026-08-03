@@ -52,6 +52,9 @@ use uuid::Uuid;
 
 use polkagent_executor_trait::ToolDefinition;
 
+pub mod process;
+pub mod tool_names;
+
 // ---------------------------------------------------------------------------
 // HarnessId
 // ---------------------------------------------------------------------------
@@ -170,6 +173,113 @@ impl From<SessionId> for Uuid {
 }
 
 // ---------------------------------------------------------------------------
+// TransportFlavor & CliOutputFormat
+// ---------------------------------------------------------------------------
+
+/// The transport/protocol flavor used to communicate with a harness process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportFlavor {
+    /// HTTP-based API (e.g., Codex `app-server`).
+    HttpApi,
+    /// One-shot CLI invocation that exits after a single response.
+    OneShotCli {
+        /// How the CLI formats its output.
+        output_format: CliOutputFormat,
+    },
+    /// JSON-RPC over stdin/stdout.
+    JsonRpcStdio,
+    /// WebSocket-based streaming protocol.
+    WebSocket,
+    /// The harness itself is an MCP server.
+    McpServer,
+}
+
+/// Output format for one-shot CLI harness invocations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliOutputFormat {
+    /// Streaming JSON (one event per line, each is a complete JSON object).
+    StreamJson,
+    /// A single JSON envelope wrapping the entire response.
+    JsonEnvelope,
+    /// Newline-delimited JSON (NDJSON).
+    NdJson,
+    /// Plain text output.
+    PlainText,
+}
+
+// ---------------------------------------------------------------------------
+// SessionResumeMode
+// ---------------------------------------------------------------------------
+
+/// How a harness supports session resumption.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionResumeMode {
+    /// No session resume support.
+    #[default]
+    None,
+    /// Resume by passing a session/conversation ID flag.
+    ById,
+    /// Resume by replaying the conversation history.
+    ByReplay,
+}
+
+// ---------------------------------------------------------------------------
+// McpMode
+// ---------------------------------------------------------------------------
+
+/// How a harness interacts with MCP (Model Context Protocol) servers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpMode {
+    /// No MCP support.
+    #[default]
+    None,
+    /// The harness can be configured to connect to MCP servers.
+    Configurable,
+    /// MCP connections are passed through from the caller.
+    Passthrough,
+}
+
+// ---------------------------------------------------------------------------
+// ToolInjection
+// ---------------------------------------------------------------------------
+
+/// How tools are injected into a harness session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolInjection {
+    /// No external tool injection supported.
+    #[default]
+    None,
+    /// Tools are passed as MCP server definitions.
+    McpConfig,
+    /// Tools are injected via command-line flags.
+    CliFlags,
+    /// Tools are configured via a config file.
+    ConfigFile,
+}
+
+// ---------------------------------------------------------------------------
+// CancelMode
+// ---------------------------------------------------------------------------
+
+/// How in-flight requests can be cancelled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelMode {
+    /// No cancellation support; must wait for completion or kill the process.
+    #[default]
+    None,
+    /// Cancel by sending a signal (e.g. SIGINT) to the subprocess.
+    Signal,
+    /// Cancel via an API call or protocol message.
+    Api,
+}
+
+// ---------------------------------------------------------------------------
 // HarnessCapabilities
 // ---------------------------------------------------------------------------
 
@@ -178,6 +288,7 @@ impl From<SessionId> for Uuid {
 /// This is used by the kernel to understand what features a given harness
 /// supports and to select appropriate interaction strategies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct HarnessCapabilities {
     /// Whether the harness supports streaming output (as opposed to only
     /// batch responses).
@@ -191,6 +302,30 @@ pub struct HarnessCapabilities {
     pub max_context_tokens: u32,
     /// List of model identifiers available through this harness.
     pub models: Vec<String>,
+
+    // -- New fields (all default for backward compat) --
+
+    /// The transport/protocol flavor used by this harness.
+    #[serde(default)]
+    pub transport: Option<TransportFlavor>,
+    /// Override the default model for this harness.
+    #[serde(default)]
+    pub model_override: Option<String>,
+    /// How the harness supports session resumption.
+    #[serde(default)]
+    pub session_resume: SessionResumeMode,
+    /// How the harness handles MCP passthrough.
+    #[serde(default)]
+    pub mcp_passthrough: McpMode,
+    /// How tools are injected into the harness.
+    #[serde(default)]
+    pub tool_injection: ToolInjection,
+    /// How in-flight requests can be cancelled.
+    #[serde(default)]
+    pub cancel: CancelMode,
+    /// Whether the harness is safe for concurrent/multiplexed sessions.
+    #[serde(default)]
+    pub multiplex_safe: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +457,7 @@ pub enum HarnessEvent {
 // ---------------------------------------------------------------------------
 
 /// Configuration for starting a new harness session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionConfig {
     /// System prompt to initialize the session with.
     pub system_prompt: Option<String>,
@@ -333,16 +468,6 @@ pub struct SessionConfig {
     /// If `None`, the harness's configured workspace path (or current
     /// working directory) is used.
     pub working_directory: Option<PathBuf>,
-}
-
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            system_prompt: None,
-            tools: Vec::new(),
-            working_directory: None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +532,168 @@ pub enum HarnessError {
         /// Human-readable description.
         message: String,
     },
+}
+
+// ---------------------------------------------------------------------------
+// EventParser trait
+// ---------------------------------------------------------------------------
+
+/// Trait for parsing raw stdout/stderr lines into structured [`HarnessEvent`]s.
+///
+/// Each harness adapter implements this to translate its specific output
+/// format into the unified event model.
+pub trait EventParser: Send {
+    /// Parse a single line from the harness process's stdout.
+    fn parse_stdout_line(&mut self, line: &str) -> Vec<HarnessEvent>;
+
+    /// Parse a single line from the harness process's stderr.
+    ///
+    /// The default implementation wraps each line as an [`HarnessEvent::Error`].
+    fn parse_stderr_line(&mut self, line: &str) -> Vec<HarnessEvent> {
+        vec![HarnessEvent::Error {
+            session_id: SessionId::default(),
+            message: line.to_string(),
+        }]
+    }
+
+    /// Called when the subprocess exits to flush any buffered state.
+    fn finalize(&mut self) -> Vec<HarnessEvent> {
+        vec![]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ServiceStatus
+// ---------------------------------------------------------------------------
+
+/// The lifecycle status of a [`HarnessService`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceStatus {
+    /// The service is running and accepting requests.
+    Running,
+    /// The service is stopped.
+    Stopped,
+    /// The service is in the process of starting.
+    Starting,
+    /// The service status cannot be determined.
+    Unknown,
+}
+
+impl fmt::Display for ServiceStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Running => write!(f, "running"),
+            Self::Stopped => write!(f, "stopped"),
+            Self::Starting => write!(f, "starting"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HarnessService trait
+// ---------------------------------------------------------------------------
+
+/// Trait for harnesses that run as long-lived services (e.g. Codex `app-server`).
+///
+/// Unlike one-shot CLI harnesses, a service harness must be started before
+/// sessions can be created, and stopped when no longer needed.
+#[async_trait]
+pub trait HarnessService: Send + Sync {
+    /// Return the name of this service (e.g. `"codex-app-server"`).
+    fn service_name(&self) -> &str;
+
+    /// Start the service process.
+    async fn start(&self) -> Result<(), HarnessError>;
+
+    /// Stop the service process gracefully.
+    async fn stop(&self) -> Result<(), HarnessError>;
+
+    /// Return the current lifecycle status of the service.
+    async fn status(&self) -> ServiceStatus;
+
+    /// Perform a health check against the running service.
+    async fn healthcheck(&self) -> Result<(), HarnessError>;
+
+    /// Return the PID of the service process, if running.
+    fn pid(&self) -> Option<u32>;
+}
+
+// ---------------------------------------------------------------------------
+// HarnessTaskRequirements & validate_for_task
+// ---------------------------------------------------------------------------
+
+/// Describes what a task requires from a harness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct HarnessTaskRequirements {
+    /// Whether the task needs tool calling support.
+    pub needs_tools: bool,
+    /// Whether the task needs streaming output.
+    pub needs_streaming: bool,
+    /// Whether the task needs MCP passthrough.
+    pub needs_mcp: bool,
+    /// Whether the task needs session resume support.
+    pub needs_session_resume: bool,
+    /// Whether the task needs in-flight cancellation.
+    pub needs_cancel: bool,
+}
+
+/// A mismatch between a task's requirements and a harness's capabilities.
+#[derive(Debug, Clone)]
+pub struct CapabilityMismatch {
+    /// The requirement that was not met.
+    pub requirement: String,
+    /// Why the capability is insufficient.
+    pub reason: String,
+}
+
+impl fmt::Display for CapabilityMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.requirement, self.reason)
+    }
+}
+
+/// Validate that a harness's capabilities satisfy a task's requirements.
+///
+/// Returns `Ok(())` if all requirements are met, or `Err(CapabilityMismatch)`
+/// describing the first unmet requirement.
+pub fn validate_for_task(
+    capabilities: &HarnessCapabilities,
+    requirements: &HarnessTaskRequirements,
+) -> Result<(), CapabilityMismatch> {
+    if requirements.needs_tools && !capabilities.supports_tools {
+        return Err(CapabilityMismatch {
+            requirement: "tools".to_string(),
+            reason: "harness does not support tool calling".to_string(),
+        });
+    }
+    if requirements.needs_streaming && !capabilities.supports_streaming {
+        return Err(CapabilityMismatch {
+            requirement: "streaming".to_string(),
+            reason: "harness does not support streaming output".to_string(),
+        });
+    }
+    if requirements.needs_mcp && capabilities.mcp_passthrough == McpMode::None {
+        return Err(CapabilityMismatch {
+            requirement: "mcp".to_string(),
+            reason: "harness does not support MCP passthrough".to_string(),
+        });
+    }
+    if requirements.needs_session_resume && capabilities.session_resume == SessionResumeMode::None {
+        return Err(CapabilityMismatch {
+            requirement: "session_resume".to_string(),
+            reason: "harness does not support session resumption".to_string(),
+        });
+    }
+    if requirements.needs_cancel && capabilities.cancel == CancelMode::None {
+        return Err(CapabilityMismatch {
+            requirement: "cancel".to_string(),
+            reason: "harness does not support in-flight cancellation".to_string(),
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +863,13 @@ mod tests {
             supports_sessions: false,
             max_context_tokens: 200_000,
             models: vec!["claude-opus-4-6".into()],
+            transport: None,
+            model_override: None,
+            session_resume: SessionResumeMode::default(),
+            mcp_passthrough: McpMode::default(),
+            tool_injection: ToolInjection::default(),
+            cancel: CancelMode::default(),
+            multiplex_safe: false,
         };
         let json = serde_json::to_string(&caps).expect("serialize");
         assert!(json.contains("supports_streaming"));
@@ -709,4 +1003,312 @@ mod tests {
     /// Compile-time check: `Harness` can be used as a `dyn` trait object.
     #[allow(dead_code)]
     fn _harness_is_object_safe(_h: &dyn Harness) {}
+
+    // -----------------------------------------------------------------------
+    // New type tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn transport_flavor_serde_round_trip() {
+        let variants = vec![
+            TransportFlavor::HttpApi,
+            TransportFlavor::OneShotCli {
+                output_format: CliOutputFormat::StreamJson,
+            },
+            TransportFlavor::JsonRpcStdio,
+            TransportFlavor::WebSocket,
+            TransportFlavor::McpServer,
+        ];
+        for v in &variants {
+            let json = serde_json::to_string(v).expect("serialize");
+            let back: TransportFlavor = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*v, back);
+        }
+    }
+
+    #[test]
+    fn cli_output_format_serde_round_trip() {
+        let variants = vec![
+            CliOutputFormat::StreamJson,
+            CliOutputFormat::JsonEnvelope,
+            CliOutputFormat::NdJson,
+            CliOutputFormat::PlainText,
+        ];
+        for v in &variants {
+            let json = serde_json::to_string(v).expect("serialize");
+            let back: CliOutputFormat = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*v, back);
+        }
+    }
+
+    #[test]
+    fn session_resume_mode_serde_round_trip() {
+        let variants = vec![
+            SessionResumeMode::None,
+            SessionResumeMode::ById,
+            SessionResumeMode::ByReplay,
+        ];
+        for v in &variants {
+            let json = serde_json::to_string(v).expect("serialize");
+            let back: SessionResumeMode = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*v, back);
+        }
+    }
+
+    #[test]
+    fn mcp_mode_serde_round_trip() {
+        let variants = vec![McpMode::None, McpMode::Configurable, McpMode::Passthrough];
+        for v in &variants {
+            let json = serde_json::to_string(v).expect("serialize");
+            let back: McpMode = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*v, back);
+        }
+    }
+
+    #[test]
+    fn tool_injection_serde_round_trip() {
+        let variants = vec![
+            ToolInjection::None,
+            ToolInjection::McpConfig,
+            ToolInjection::CliFlags,
+            ToolInjection::ConfigFile,
+        ];
+        for v in &variants {
+            let json = serde_json::to_string(v).expect("serialize");
+            let back: ToolInjection = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*v, back);
+        }
+    }
+
+    #[test]
+    fn cancel_mode_serde_round_trip() {
+        let variants = vec![CancelMode::None, CancelMode::Signal, CancelMode::Api];
+        for v in &variants {
+            let json = serde_json::to_string(v).expect("serialize");
+            let back: CancelMode = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*v, back);
+        }
+    }
+
+    #[test]
+    fn harness_capabilities_backward_compat_deserialize() {
+        let old_json = r#"{
+            "supports_streaming": true,
+            "supports_tools": false,
+            "supports_sessions": true,
+            "max_context_tokens": 128000,
+            "models": ["gpt-4o"]
+        }"#;
+        let caps: HarnessCapabilities = serde_json::from_str(old_json).expect("deserialize");
+        assert!(caps.supports_streaming);
+        assert!(!caps.supports_tools);
+        assert!(caps.transport.is_none());
+        assert_eq!(caps.session_resume, SessionResumeMode::None);
+        assert_eq!(caps.mcp_passthrough, McpMode::None);
+        assert_eq!(caps.tool_injection, ToolInjection::None);
+        assert_eq!(caps.cancel, CancelMode::None);
+        assert!(!caps.multiplex_safe);
+    }
+
+    #[test]
+    fn harness_capabilities_full_round_trip() {
+        let caps = HarnessCapabilities {
+            supports_streaming: true,
+            supports_tools: true,
+            supports_sessions: true,
+            max_context_tokens: 200_000,
+            models: vec!["claude-opus-4-6".into()],
+            transport: Some(TransportFlavor::JsonRpcStdio),
+            model_override: Some("claude-sonnet-4-6".into()),
+            session_resume: SessionResumeMode::ById,
+            mcp_passthrough: McpMode::Passthrough,
+            tool_injection: ToolInjection::McpConfig,
+            cancel: CancelMode::Signal,
+            multiplex_safe: true,
+        };
+        let json = serde_json::to_string(&caps).expect("serialize");
+        let back: HarnessCapabilities = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.transport, Some(TransportFlavor::JsonRpcStdio));
+        assert_eq!(back.session_resume, SessionResumeMode::ById);
+        assert_eq!(back.mcp_passthrough, McpMode::Passthrough);
+        assert_eq!(back.tool_injection, ToolInjection::McpConfig);
+        assert_eq!(back.cancel, CancelMode::Signal);
+        assert!(back.multiplex_safe);
+    }
+
+    fn make_caps(
+        tools: bool,
+        streaming: bool,
+        mcp: McpMode,
+        resume: SessionResumeMode,
+        cancel: CancelMode,
+    ) -> HarnessCapabilities {
+        HarnessCapabilities {
+            supports_streaming: streaming,
+            supports_tools: tools,
+            supports_sessions: false,
+            max_context_tokens: 128_000,
+            models: vec![],
+            transport: None,
+            model_override: None,
+            session_resume: resume,
+            mcp_passthrough: mcp,
+            tool_injection: ToolInjection::default(),
+            cancel,
+            multiplex_safe: false,
+        }
+    }
+
+    #[test]
+    fn validate_for_task_all_satisfied() {
+        let caps = make_caps(
+            true,
+            true,
+            McpMode::Passthrough,
+            SessionResumeMode::ById,
+            CancelMode::Signal,
+        );
+        let reqs = HarnessTaskRequirements {
+            needs_tools: true,
+            needs_streaming: true,
+            needs_mcp: true,
+            needs_session_resume: true,
+            needs_cancel: true,
+        };
+        assert!(validate_for_task(&caps, &reqs).is_ok());
+    }
+
+    #[test]
+    fn validate_for_task_tools_mismatch() {
+        let caps = make_caps(
+            false,
+            true,
+            McpMode::default(),
+            SessionResumeMode::default(),
+            CancelMode::default(),
+        );
+        let reqs = HarnessTaskRequirements {
+            needs_tools: true,
+            needs_streaming: false,
+            needs_mcp: false,
+            needs_session_resume: false,
+            needs_cancel: false,
+        };
+        let err = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(err.requirement, "tools");
+    }
+
+    #[test]
+    fn validate_for_task_streaming_mismatch() {
+        let caps = make_caps(
+            true,
+            false,
+            McpMode::default(),
+            SessionResumeMode::default(),
+            CancelMode::default(),
+        );
+        let reqs = HarnessTaskRequirements {
+            needs_tools: false,
+            needs_streaming: true,
+            needs_mcp: false,
+            needs_session_resume: false,
+            needs_cancel: false,
+        };
+        let err = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(err.requirement, "streaming");
+    }
+
+    #[test]
+    fn validate_for_task_mcp_mismatch() {
+        let caps = make_caps(
+            true,
+            true,
+            McpMode::None,
+            SessionResumeMode::default(),
+            CancelMode::default(),
+        );
+        let reqs = HarnessTaskRequirements {
+            needs_tools: false,
+            needs_streaming: false,
+            needs_mcp: true,
+            needs_session_resume: false,
+            needs_cancel: false,
+        };
+        let err = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(err.requirement, "mcp");
+    }
+
+    #[test]
+    fn validate_for_task_cancel_mismatch() {
+        let caps = make_caps(
+            true,
+            true,
+            McpMode::Passthrough,
+            SessionResumeMode::ById,
+            CancelMode::None,
+        );
+        let reqs = HarnessTaskRequirements {
+            needs_tools: false,
+            needs_streaming: false,
+            needs_mcp: false,
+            needs_session_resume: false,
+            needs_cancel: true,
+        };
+        let err = validate_for_task(&caps, &reqs).unwrap_err();
+        assert_eq!(err.requirement, "cancel");
+    }
+
+    #[test]
+    fn validate_for_task_no_requirements() {
+        let caps = make_caps(
+            false,
+            false,
+            McpMode::default(),
+            SessionResumeMode::default(),
+            CancelMode::default(),
+        );
+        let reqs = HarnessTaskRequirements {
+            needs_tools: false,
+            needs_streaming: false,
+            needs_mcp: false,
+            needs_session_resume: false,
+            needs_cancel: false,
+        };
+        assert!(validate_for_task(&caps, &reqs).is_ok());
+    }
+
+    #[test]
+    fn service_status_display() {
+        assert_eq!(ServiceStatus::Running.to_string(), "running");
+        assert_eq!(ServiceStatus::Stopped.to_string(), "stopped");
+        assert_eq!(ServiceStatus::Starting.to_string(), "starting");
+        assert_eq!(ServiceStatus::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn service_status_serde_round_trip() {
+        let variants = vec![
+            ServiceStatus::Running,
+            ServiceStatus::Stopped,
+            ServiceStatus::Starting,
+            ServiceStatus::Unknown,
+        ];
+        for v in &variants {
+            let json = serde_json::to_string(v).expect("serialize");
+            let back: ServiceStatus = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*v, back);
+        }
+    }
+
+    #[test]
+    fn capability_mismatch_display() {
+        let m = CapabilityMismatch {
+            requirement: "tools".to_string(),
+            reason: "harness does not support tool calling".to_string(),
+        };
+        assert_eq!(
+            m.to_string(),
+            "tools: harness does not support tool calling"
+        );
+    }
 }

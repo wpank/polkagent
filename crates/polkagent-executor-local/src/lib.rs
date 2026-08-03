@@ -628,6 +628,7 @@ pub struct LocalExecutor {
     model: String,
     base_url: String,
     timeout: Duration,
+    concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl LocalExecutor {
@@ -660,6 +661,7 @@ impl LocalExecutor {
             model,
             base_url,
             timeout: DEFAULT_TIMEOUT,
+            concurrency_semaphore: None,
         })
     }
 
@@ -678,6 +680,7 @@ impl LocalExecutor {
             model,
             base_url,
             timeout: DEFAULT_TIMEOUT,
+            concurrency_semaphore: None,
         }
     }
 
@@ -698,6 +701,17 @@ impl LocalExecutor {
             .timeout(duration)
             .build()
             .unwrap_or_else(|_| Client::new());
+        self
+    }
+
+    /// Set the maximum number of concurrent requests to the provider.
+    ///
+    /// When set, a [`tokio::sync::Semaphore`] is used to limit concurrency
+    /// in [`complete`](ModelExecutor::complete) and
+    /// [`stream`](ModelExecutor::stream).
+    #[must_use]
+    pub fn with_max_concurrent(mut self, n: u32) -> Self {
+        self.concurrency_semaphore = Some(Arc::new(tokio::sync::Semaphore::new(n as usize)));
         self
     }
 
@@ -831,6 +845,14 @@ impl ModelExecutor for LocalExecutor {
             "executing local inference"
         );
 
+        let _permit = match &self.concurrency_semaphore {
+            Some(sem) => Some(sem.acquire().await.map_err(|_| ExecutorError::Transport {
+                message: "concurrency semaphore closed".to_string(),
+                retryable: false,
+            })?),
+            None => None,
+        };
+
         let body = build_request_body(&request, false);
         let api_response = self.execute_request(&body).await?;
         let response = to_inference_response(&api_response);
@@ -858,6 +880,14 @@ impl ModelExecutor for LocalExecutor {
             step_id = %request.step_id,
             "starting local streaming inference"
         );
+
+        let _permit = match &self.concurrency_semaphore {
+            Some(sem) => Some(sem.acquire().await.map_err(|_| ExecutorError::Transport {
+                message: "concurrency semaphore closed".to_string(),
+                retryable: false,
+            })?),
+            None => None,
+        };
 
         let body = build_request_body(&request, true);
         let events = self.execute_streaming(&body).await?;
@@ -1642,6 +1672,41 @@ mod tests {
             .build();
         assert_eq!(executor.timeout, Duration::from_secs(60));
         assert_eq!(executor.model, "llama3.2");
+    }
+
+    #[test]
+    fn with_max_concurrent_creates_semaphore() {
+        let executor = LocalExecutor::ollama_builder("llama3.2".to_string())
+            .with_max_concurrent(3);
+        assert!(executor.concurrency_semaphore.is_some());
+        let sem = executor.concurrency_semaphore.as_ref().unwrap();
+        assert_eq!(sem.available_permits(), 3);
+    }
+
+    #[test]
+    fn without_max_concurrent_no_semaphore() {
+        let executor = LocalExecutor::ollama_builder("llama3.2".to_string());
+        assert!(executor.concurrency_semaphore.is_none());
+    }
+
+    #[test]
+    fn ollama_constructor_has_no_semaphore() {
+        let executor = LocalExecutor::ollama("llama3.2".to_string());
+        assert!(executor.concurrency_semaphore.is_none());
+    }
+
+    #[test]
+    fn builder_chain_with_max_concurrent() {
+        let executor = LocalExecutor::ollama_builder("llama3.2".to_string())
+            .with_timeout(Duration::from_secs(60))
+            .with_max_concurrent(8)
+            .build();
+        assert_eq!(executor.timeout, Duration::from_secs(60));
+        assert!(executor.concurrency_semaphore.is_some());
+        assert_eq!(
+            executor.concurrency_semaphore.as_ref().unwrap().available_permits(),
+            8
+        );
     }
 
     // -----------------------------------------------------------------------

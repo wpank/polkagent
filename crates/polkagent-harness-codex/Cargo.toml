@@ -1,14 +1,15 @@
 [package]
-name = "polkagent-harness-trait"
+name = "polkagent-harness-codex"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Harness port trait abstractions for the Polkagent platform"
+description = "OpenAI Codex harness adapter for the Polkagent platform"
 
 [dependencies]
 polkagent-core = { path = "../polkagent-core" }
+polkagent-harness-trait = { path = "../polkagent-harness-trait" }
 polkagent-executor-trait = { path = "../polkagent-executor-trait" }
 
 serde = { workspace = true }
@@ -17,14 +18,14 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+async-stream = { workspace = true }
 futures = { workspace = true }
-uuid = { workspace = true }
 chrono = { workspace = true }
 nix = { version = "0.29", features = ["signal"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
-serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

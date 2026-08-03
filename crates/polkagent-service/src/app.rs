@@ -22,6 +22,7 @@ use polkagent_core::{
 };
 use polkagent_event::{EventBus, EventReceiver, EventRecorder};
 use polkagent_executor_trait::ModelExecutor;
+use polkagent_harness_trait::Harness;
 use polkagent_grant::{
     grant::{GrantResolver, ResolverConfig},
     policy::PolicySet,
@@ -154,6 +155,7 @@ impl EffectStore for NoopEffectStore {
 pub struct AppServiceBuilder {
     config: Option<Config>,
     executor: Option<Arc<dyn ModelExecutor>>,
+    harness: Option<Arc<dyn Harness>>,
     run_store: Option<Arc<dyn RunStore>>,
     effect_store: Option<Arc<dyn EffectStore>>,
     event_bus: Option<EventBus>,
@@ -189,6 +191,16 @@ impl AppServiceBuilder {
     #[must_use]
     pub fn with_executor(mut self, executor: Arc<dyn ModelExecutor>) -> Self {
         self.executor = Some(executor);
+        self
+    }
+
+    /// Set the harness for delegating runs to an external agent CLI.
+    ///
+    /// When set, the orchestrator will route runs through this harness
+    /// instead of calling the model executor directly.
+    #[must_use]
+    pub fn with_harness(mut self, harness: Arc<dyn Harness>) -> Self {
+        self.harness = Some(harness);
         self
     }
 
@@ -361,8 +373,15 @@ impl AppServiceBuilder {
 
         let run_manager = RunManager::new(Arc::clone(&run_store), event_recorder.clone());
 
-        // Build an optional RunOrchestrator when an executor is present.
-        let orchestrator = self.executor.as_ref().map(|exec| {
+        // Build orchestrator when executor OR harness is present.
+        let orchestrator = if self.executor.is_some() || self.harness.is_some() {
+            let exec: Arc<dyn ModelExecutor> = self.executor.clone()
+                .unwrap_or_else(|| {
+                    // When only a harness is provided, create a minimal fake executor
+                    // as a placeholder -- the harness will handle all actual execution.
+                    polkagent_executor_fake::FakeExecutor::new()
+                });
+
             // Use the configured effect store or fall back to the noop stub.
             let effect_store: Arc<dyn EffectStore> = self
                 .effect_store
@@ -379,14 +398,20 @@ impl AppServiceBuilder {
                 ResolverConfig::default(),
             );
 
-            Arc::new(RunOrchestrator::new(
+            let mut orch = RunOrchestrator::new(
                 Arc::new(run_manager.clone()),
-                Arc::clone(exec),
+                exec,
                 pipeline,
                 event_recorder.clone(),
                 grant_resolver,
-            ))
-        });
+            );
+            if let Some(ref harness) = self.harness {
+                orch = orch.with_harness(Arc::clone(harness));
+            }
+            Some(Arc::new(orch))
+        } else {
+            None
+        };
 
         // Create the approval broadcast channel.
         let (approval_tx, _) = broadcast::channel::<(EffectId, bool)>(256);
@@ -394,6 +419,7 @@ impl AppServiceBuilder {
         Ok(AppService {
             atomic_config: Arc::new(AtomicConfig::new(config)),
             executor: self.executor,
+            harness: self.harness,
             run_store,
             effect_store: self.effect_store,
             event_bus,
@@ -441,6 +467,9 @@ pub struct AppService {
     /// Default model executor (used when no provider-specific executor is
     /// requested).
     executor: Option<Arc<dyn ModelExecutor>>,
+    /// Harness for delegating runs to external agent CLIs (optional).
+    #[allow(dead_code)]
+    harness: Option<Arc<dyn Harness>>,
     /// Run persistence store.
     run_store: Arc<dyn RunStore>,
     /// Effect persistence store (optional — effects are disabled if absent).

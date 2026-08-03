@@ -1406,6 +1406,7 @@ async fn list_providers_returns_configured_providers() {
             default_model: "claude-sonnet-4-6".to_owned(),
             timeout_secs: 120,
             max_retries: 3,
+            ..Default::default()
         },
         ProviderConfig {
             id: "openai-compat".to_owned(),
@@ -1415,6 +1416,7 @@ async fn list_providers_returns_configured_providers() {
             default_model: "gpt-4o".to_owned(),
             timeout_secs: 60,
             max_retries: 2,
+            ..Default::default()
         },
     ];
 
@@ -1452,6 +1454,7 @@ async fn get_provider_by_id() {
         default_model: "test-model".to_owned(),
         timeout_secs: 30,
         max_retries: 1,
+        ..Default::default()
     }];
 
     let server = test_server_with_config(config);
@@ -1717,6 +1720,7 @@ async fn list_all_models_returns_one_per_provider() {
             default_model: "claude-opus-4-6".to_owned(),
             timeout_secs: 60,
             max_retries: 2,
+            ..Default::default()
         },
         ProviderConfig {
             id: "openai-1".to_owned(),
@@ -1726,6 +1730,7 @@ async fn list_all_models_returns_one_per_provider() {
             default_model: "gpt-4o".to_owned(),
             timeout_secs: 60,
             max_retries: 2,
+            ..Default::default()
         },
     ];
     let server = test_server_with_config(config);
@@ -1757,6 +1762,7 @@ async fn get_model_by_id_returns_correct_details() {
         default_model: "claude-opus-4-6".to_owned(),
         timeout_secs: 60,
         max_retries: 2,
+        ..Default::default()
     }];
     let server = test_server_with_config(config);
     let resp = server.get("/api/v1alpha1/models/claude-opus-4-6").await;
@@ -1793,6 +1799,7 @@ async fn list_provider_models_returns_models_for_provider() {
         default_model: "claude-sonnet-4-6".to_owned(),
         timeout_secs: 60,
         max_retries: 2,
+        ..Default::default()
     }];
     let server = test_server_with_config(config);
     let resp = server

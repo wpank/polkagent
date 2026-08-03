@@ -35,6 +35,11 @@ polkagent-event           = { path = "../polkagent-event" }
 polkagent-service         = { path = "../polkagent-service" }
 polkagent-chain-trait     = { path = "../polkagent-chain-trait" }
 polkagent-chain-fake      = { path = "../polkagent-chain-fake" }
+polkagent-harness-trait   = { path = "../polkagent-harness-trait" }
+polkagent-harness-codex   = { path = "../polkagent-harness-codex" }
+polkagent-harness-cursor  = { path = "../polkagent-harness-cursor" }
+polkagent-harness-claude  = { path = "../polkagent-harness-claude" }
+polkagent-harness-acp     = { path = "../polkagent-harness-acp" }
 futures                   = { workspace = true }
 
 # CLI

@@ -526,6 +526,7 @@ pub struct AnthropicExecutor {
     model: String,
     base_url: String,
     max_retries: u32,
+    concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl AnthropicExecutor {
@@ -545,6 +546,7 @@ impl AnthropicExecutor {
             model,
             base_url: DEFAULT_BASE_URL.to_string(),
             max_retries: DEFAULT_MAX_RETRIES,
+            concurrency_semaphore: None,
         })
     }
 
@@ -572,6 +574,17 @@ impl AnthropicExecutor {
         self
     }
 
+    /// Set the maximum number of concurrent requests to the provider.
+    ///
+    /// When set, a [`tokio::sync::Semaphore`] is used to limit concurrency
+    /// in [`complete`](ModelExecutor::complete) and
+    /// [`stream`](ModelExecutor::stream).
+    #[must_use]
+    pub fn with_max_concurrent(mut self, n: u32) -> Self {
+        self.concurrency_semaphore = Some(Arc::new(tokio::sync::Semaphore::new(n as usize)));
+        self
+    }
+
     /// Build an `Arc<Self>` after applying builder methods.
     pub fn build(self) -> Arc<Self> {
         Arc::new(self)
@@ -590,6 +603,7 @@ impl AnthropicExecutor {
             model,
             base_url: DEFAULT_BASE_URL.to_string(),
             max_retries: DEFAULT_MAX_RETRIES,
+            concurrency_semaphore: None,
         }
     }
 
@@ -745,6 +759,14 @@ impl ModelExecutor for AnthropicExecutor {
             "executing anthropic inference"
         );
 
+        let _permit = match &self.concurrency_semaphore {
+            Some(sem) => Some(sem.acquire().await.map_err(|_| ExecutorError::Transport {
+                message: "concurrency semaphore closed".to_string(),
+                retryable: false,
+            })?),
+            None => None,
+        };
+
         let body = build_request_body(&request, false);
         let api_response = self.execute_with_retries(&body).await?;
         let response = to_inference_response(&api_response);
@@ -772,6 +794,14 @@ impl ModelExecutor for AnthropicExecutor {
             step_id = %request.step_id,
             "starting anthropic streaming inference"
         );
+
+        let _permit = match &self.concurrency_semaphore {
+            Some(sem) => Some(sem.acquire().await.map_err(|_| ExecutorError::Transport {
+                message: "concurrency semaphore closed".to_string(),
+                retryable: false,
+            })?),
+            None => None,
+        };
 
         let body = build_request_body(&request, true);
         let events = self.execute_streaming(&body).await?;
@@ -1764,6 +1794,43 @@ mod tests {
             .build();
         assert_eq!(executor.base_url, "http://localhost");
         assert_eq!(executor.max_retries, 10);
+    }
+
+    #[test]
+    fn with_max_concurrent_creates_semaphore() {
+        let executor = AnthropicExecutor::new_builder("key".into(), "model".into())
+            .with_max_concurrent(5);
+        assert!(executor.concurrency_semaphore.is_some());
+        let sem = executor.concurrency_semaphore.as_ref().unwrap();
+        assert_eq!(sem.available_permits(), 5);
+    }
+
+    #[test]
+    fn without_max_concurrent_no_semaphore() {
+        let executor = AnthropicExecutor::new_builder("key".into(), "model".into());
+        assert!(executor.concurrency_semaphore.is_none());
+    }
+
+    #[test]
+    fn new_constructor_has_no_semaphore() {
+        let executor = AnthropicExecutor::new("key".into(), "model".into());
+        assert!(executor.concurrency_semaphore.is_none());
+    }
+
+    #[test]
+    fn builder_chain_with_max_concurrent() {
+        let executor = AnthropicExecutor::new_builder("key".into(), "model".into())
+            .with_base_url("http://localhost".into())
+            .with_max_retries(2)
+            .with_max_concurrent(10)
+            .build();
+        assert_eq!(executor.base_url, "http://localhost");
+        assert_eq!(executor.max_retries, 2);
+        assert!(executor.concurrency_semaphore.is_some());
+        assert_eq!(
+            executor.concurrency_semaphore.as_ref().unwrap().available_permits(),
+            10
+        );
     }
 
     // -----------------------------------------------------------------------

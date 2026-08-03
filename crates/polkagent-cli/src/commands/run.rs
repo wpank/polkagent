@@ -26,6 +26,14 @@ use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
 use crate::cli::RunCmd;
 
+/// Known harnesses and their binary names used for PATH probing.
+const KNOWN_HARNESSES: &[(&str, &str)] = &[
+    ("claude-code", "claude"),
+    ("codex", "codex"),
+    ("cursor", "cursor"),
+    ("goose", "goose"),
+];
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -53,12 +61,59 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
         .parse()
         .with_context(|| format!("invalid agent ID in database: {}", agent.id))?;
 
-    // Detect executor based on environment.
-    let (executor, executor_note) = detect_executor(cmd.model.as_deref());
+    // Load config for provider/harness resolution.
+    let config = load_config();
+
+    // Resolve provider and executor.
+    let (executor, executor_note) =
+        resolve_provider(cmd.provider.as_deref(), cmd.model.as_deref(), &config);
 
     if let Some(note) = &executor_note {
         eprintln!("{note}");
     }
+
+    // Resolve harness.
+    let (harness_name, harness_note) = resolve_harness(cmd.harness.as_deref(), &config);
+
+    if let Some(note) = &harness_note {
+        eprintln!("{note}");
+    }
+
+    if let Some(ref name) = harness_name {
+        info!(harness = %name, "harness selected");
+    }
+
+    // Instantiate the harness when one was resolved.
+    let harness: Option<Arc<dyn polkagent_harness_trait::Harness>> =
+        match harness_name.as_deref() {
+            Some("codex") => {
+                let hcfg = polkagent_harness_trait::HarnessConfig::new("codex");
+                let codex = polkagent_harness_codex::CodexHarness::new(
+                    hcfg,
+                    polkagent_harness_codex::CodexHarnessConfig::default(),
+                )
+                .context("creating CodexHarness")?;
+                Some(Arc::new(codex))
+            }
+            Some("claude-code") => {
+                let hcfg = polkagent_harness_trait::HarnessConfig::new("claude-code");
+                let claude = polkagent_harness_claude::ClaudeHarness::new(
+                    hcfg,
+                    polkagent_harness_claude::ClaudeHarnessConfig::default(),
+                )
+                .context("creating ClaudeHarness")?;
+                Some(Arc::new(claude))
+            }
+            Some("cursor") => {
+                let hcfg = polkagent_harness_trait::HarnessConfig::new("cursor");
+                let cursor = polkagent_harness_acp::AcpHarness::new(
+                    polkagent_harness_cursor::CursorConfigurator::default(),
+                    hcfg,
+                );
+                Some(Arc::new(cursor))
+            }
+            _ => None,
+        };
 
     // -----------------------------------------------------------------------
     // Build AppService inline
@@ -73,16 +128,20 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     // Arc<dyn EventStore> for the EventRecorder.
     let event_recorder = EventRecorder::new(Arc::new(pool.clone()), event_bus.clone());
 
-    let config = Config::default();
-
     // Wrap AppService in Arc so it can be shared with the Ctrl-C handler task.
+    let mut builder = AppService::builder()
+        .with_config(config)
+        .with_run_store(Arc::new(pool.clone()))
+        .with_event_bus(event_bus.clone())
+        .with_event_recorder(event_recorder)
+        .with_executor(executor);
+
+    if let Some(h) = harness {
+        builder = builder.with_harness(h);
+    }
+
     let app_service = Arc::new(
-        AppService::builder()
-            .with_config(config)
-            .with_run_store(Arc::new(pool.clone()))
-            .with_event_bus(event_bus.clone())
-            .with_event_recorder(event_recorder)
-            .with_executor(executor)
+        builder
             .build()
             .context("building AppService")?,
     );
@@ -255,20 +314,164 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Executor detection
+// Config loading
 // ---------------------------------------------------------------------------
+
+/// Attempt to load the Polkagent config from standard locations.
+///
+/// Returns [`Config::default()`] if no config file is found.
+fn load_config() -> Config {
+    // Project-local config.
+    if let Ok(content) = std::fs::read_to_string(".polkagent/polkagent.toml") {
+        if let Ok(cfg) = toml::from_str(&content) {
+            return cfg;
+        }
+    }
+
+    // User-global config.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let user_cfg = format!("{home}/.config/polkagent/polkagent.toml");
+    if let Ok(content) = std::fs::read_to_string(&user_cfg) {
+        if let Ok(cfg) = toml::from_str(&content) {
+            return cfg;
+        }
+    }
+
+    Config::default()
+}
+
+// ---------------------------------------------------------------------------
+// Provider resolution (§ 11.1)
+// ---------------------------------------------------------------------------
+
+/// Resolve which provider and executor to use.
+///
+/// Resolution order:
+/// 1. CLI flag: `--provider anthropic --model claude-opus-4-6`
+/// 2. Config default: first provider in `[[providers]]` list
+/// 3. Environment detection: first available API key
+/// 4. Fallback: FakeExecutor with warning
+fn resolve_provider(
+    provider_flag: Option<&str>,
+    model_override: Option<&str>,
+    config: &Config,
+) -> (Arc<dyn ModelExecutor>, Option<String>) {
+    // 1. CLI flag — look up in config providers.
+    if let Some(provider_id) = provider_flag {
+        if let Some(pc) = config.providers.iter().find(|p| p.id == provider_id) {
+            if let Some(result) = try_provider_from_config(pc, model_override) {
+                return result;
+            }
+        }
+        // Provider flag given but not in config — try env-based matching.
+        if let Some(result) = try_provider_by_name(provider_id, model_override) {
+            return result;
+        }
+        eprintln!(
+            "Warning: provider '{provider_id}' not found in config and no matching \
+             API key detected. Falling back to environment detection."
+        );
+    }
+
+    // 2. Config default — use first configured provider with a valid key.
+    for pc in &config.providers {
+        if let Some(result) = try_provider_from_config(pc, model_override) {
+            return result;
+        }
+    }
+
+    // 3. Environment detection.
+    detect_executor(model_override)
+}
+
+/// Try to build an executor from a [`ProviderConfig`] entry.
+///
+/// Returns `None` if the required API key env var is not set.
+fn try_provider_from_config(
+    pc: &polkagent_config::ProviderConfig,
+    model_override: Option<&str>,
+) -> Option<(Arc<dyn ModelExecutor>, Option<String>)> {
+    let api_key = if pc.api_key_env.is_empty() {
+        // No key env configured — only valid for local providers.
+        String::new()
+    } else {
+        match std::env::var(&pc.api_key_env) {
+            Ok(k) if !k.is_empty() => k,
+            _ => return None,
+        }
+    };
+
+    let model = model_override
+        .map(String::from)
+        .unwrap_or_else(|| pc.default_model.clone());
+
+    match pc.provider_type.as_str() {
+        "anthropic" => {
+            let executor = AnthropicExecutor::new(api_key, model.clone());
+            let note = format!("Using provider '{}': Anthropic (model: {model}).", pc.id);
+            Some((executor, Some(note)))
+        }
+        "openai" | "openai_compatible" => {
+            let executor = OpenAiExecutor::new(api_key, model.clone());
+            let note = format!("Using provider '{}': OpenAI (model: {model}).", pc.id);
+            Some((executor, Some(note)))
+        }
+        "local" | "ollama" => {
+            let url = if pc.base_url.is_empty() {
+                "http://localhost:11434/v1".to_owned()
+            } else {
+                pc.base_url.clone()
+            };
+            let executor = LocalExecutor::custom(url.clone(), model.clone());
+            let note = format!(
+                "Using provider '{}': local at {url} (model: {model}).",
+                pc.id
+            );
+            Some((executor, Some(note)))
+        }
+        _ => None,
+    }
+}
+
+/// Try to build an executor by matching a provider name to well-known types.
+fn try_provider_by_name(
+    name: &str,
+    model_override: Option<&str>,
+) -> Option<(Arc<dyn ModelExecutor>, Option<String>)> {
+    match name {
+        "anthropic" => {
+            let api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty())?;
+            let model = model_override.unwrap_or("claude-sonnet-4-20250514").to_string();
+            let executor = AnthropicExecutor::new(api_key, model.clone());
+            Some((executor, Some(format!("Using Anthropic executor (model: {model})."))))
+        }
+        "openai" => {
+            let api_key = std::env::var("OPENAI_API_KEY").ok().filter(|k| !k.is_empty())?;
+            let model = model_override.unwrap_or("gpt-4o").to_string();
+            let executor = OpenAiExecutor::new(api_key, model.clone());
+            Some((executor, Some(format!("Using OpenAI executor (model: {model})."))))
+        }
+        "ollama" | "local" => {
+            let url = std::env::var("OLLAMA_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "http://localhost:11434/v1".to_owned());
+            let model = model_override.unwrap_or("llama3.2").to_string();
+            let executor = LocalExecutor::custom(url.clone(), model.clone());
+            Some((executor, Some(format!("Using local executor at {url} (model: {model})."))))
+        }
+        _ => None,
+    }
+}
 
 /// Detect which model executor to use based on environment variables.
 ///
 /// Priority:
-/// 1. `ANTHROPIC_API_KEY` present → [`AnthropicExecutor`] with the key.
-/// 2. `OPENAI_API_KEY` present → [`OpenAiExecutor`] with the key.
+/// 1. `ANTHROPIC_API_KEY` present → [`AnthropicExecutor`].
+/// 2. `OPENAI_API_KEY` present → [`OpenAiExecutor`].
 /// 3. `OLLAMA_URL` present → [`LocalExecutor`] targeting the given URL.
-/// 4. `OLLAMA_MODEL` present (without URL) → [`LocalExecutor`] targeting
-///    the default Ollama endpoint (`http://localhost:11434/v1`).
+/// 4. `OLLAMA_MODEL` present → [`LocalExecutor`] with default Ollama endpoint.
 /// 5. Otherwise → [`FakeExecutor`] with a helpful note.
-///
-/// An optional `model_override` replaces the executor's default model.
 fn detect_executor(
     model_override: Option<&str>,
 ) -> (Arc<dyn ModelExecutor>, Option<String>) {
@@ -331,6 +534,91 @@ fn detect_executor(
             .to_string(),
     );
     (FakeExecutor::new(), note)
+}
+
+// ---------------------------------------------------------------------------
+// Harness resolution (§ 11.2)
+// ---------------------------------------------------------------------------
+
+/// Resolve which harness to use.
+///
+/// Resolution order:
+/// 1. CLI flag: `--harness codex`
+/// 2. Config default: `[harness] default` from config
+/// 3. First available: probe harnesses in order
+/// 4. Fallback: `None` (executor-only mode)
+///
+/// Returns the harness name (if any) and an informational note.
+fn resolve_harness(
+    harness_flag: Option<&str>,
+    config: &Config,
+) -> (Option<String>, Option<String>) {
+    // 1. CLI flag.
+    if let Some(name) = harness_flag {
+        if probe_harness_binary(name).is_some() {
+            let note = format!("Using harness '{name}' (from --harness flag).");
+            return (Some(name.to_owned()), Some(note));
+        }
+        let note = format!(
+            "Warning: harness '{name}' binary not found on PATH. \
+             Falling back to executor-only mode."
+        );
+        return (None, Some(note));
+    }
+
+    // 2. Config default.
+    if let Some(ref default_harness) = config.harness.default {
+        if !default_harness.is_empty() {
+            if probe_harness_binary(default_harness).is_some() {
+                let note = format!(
+                    "Using harness '{default_harness}' (from config default)."
+                );
+                return (Some(default_harness.clone()), Some(note));
+            }
+            let note = format!(
+                "Warning: configured default harness '{default_harness}' not found on PATH."
+            );
+            eprintln!("{note}");
+        }
+    }
+
+    // 3. First available.
+    for &(harness_name, _binary) in KNOWN_HARNESSES {
+        if probe_harness_binary(harness_name).is_some() {
+            let note = format!(
+                "Auto-detected harness '{harness_name}' on PATH."
+            );
+            return (Some(harness_name.to_owned()), Some(note));
+        }
+    }
+
+    // 4. Fallback — executor-only mode.
+    (None, Some("No harness found. Running in executor-only mode.".to_owned()))
+}
+
+/// Look up the binary for a harness name. Returns the binary path if found.
+fn probe_harness_binary(harness_name: &str) -> Option<String> {
+    // Check config-defined harnesses first (for custom binary paths).
+    let binary = KNOWN_HARNESSES
+        .iter()
+        .find(|&&(name, _)| name == harness_name)
+        .map(|&(_, bin)| bin.to_owned())
+        .unwrap_or_else(|| harness_name.to_owned());
+
+    which_binary(&binary)
+}
+
+/// Check if a binary is available on PATH. Returns the full path if found.
+fn which_binary(name: &str) -> Option<String> {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let path = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+            if path.is_empty() { None } else { Some(path) }
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -424,10 +712,15 @@ mod tests {
         assert_eq!(spec.model, "openai/gpt-4o");
     }
 
+    /// Mutex to serialize tests that mutate process-wide environment variables.
+    /// Without this, parallel tests race on `std::env::set_var`/`remove_var`.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Helper: save, clear, and restore executor-related env vars so that
     /// individual tests are isolated from the host environment.
     struct EnvGuard {
         vars: Vec<(&'static str, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvGuard {
@@ -439,6 +732,7 @@ mod tests {
         ];
 
         fn new() -> Self {
+            let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             let vars: Vec<_> = Self::KEYS
                 .iter()
                 .map(|&k| (k, std::env::var(k).ok()))
@@ -447,7 +741,7 @@ mod tests {
             for &k in Self::KEYS {
                 std::env::remove_var(k);
             }
-            Self { vars }
+            Self { vars, _lock: lock }
         }
     }
 
@@ -587,5 +881,173 @@ mod tests {
             note_text.contains("fake executor"),
             "empty key should fall through to fake executor, got: {note_text}",
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Provider resolution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_provider_cli_flag_anthropic() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+
+        let config = Config::default();
+        let (_exec, note) = resolve_provider(Some("anthropic"), None, &config);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("Anthropic"),
+            "expected note to mention 'Anthropic', got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn resolve_provider_cli_flag_openai() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("OPENAI_API_KEY", "sk-test");
+
+        let config = Config::default();
+        let (_exec, note) = resolve_provider(Some("openai"), None, &config);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("OpenAI"),
+            "expected note to mention 'OpenAI', got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn resolve_provider_from_config_entry() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("MY_ANTHROPIC_KEY", "sk-custom");
+
+        let mut config = Config::default();
+        config.providers.push(polkagent_config::ProviderConfig {
+            id: "my-anthropic".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "MY_ANTHROPIC_KEY".to_owned(),
+            default_model: "claude-opus-4-6".to_owned(),
+            ..Default::default()
+        });
+
+        let (_exec, note) = resolve_provider(Some("my-anthropic"), None, &config);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("my-anthropic"),
+            "expected note to mention provider id, got: {note_text}",
+        );
+        assert!(
+            note_text.contains("claude-opus-4-6"),
+            "expected note to mention model, got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn resolve_provider_model_override_with_config() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("MY_ANTHROPIC_KEY", "sk-custom");
+
+        let mut config = Config::default();
+        config.providers.push(polkagent_config::ProviderConfig {
+            id: "my-anthropic".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "MY_ANTHROPIC_KEY".to_owned(),
+            default_model: "claude-sonnet-4-6".to_owned(),
+            ..Default::default()
+        });
+
+        let (_exec, note) =
+            resolve_provider(Some("my-anthropic"), Some("claude-opus-4-6"), &config);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("claude-opus-4-6"),
+            "model override should win, got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn resolve_provider_fallback_to_env_detection() {
+        let _guard = EnvGuard::new();
+        #[allow(deprecated)]
+        std::env::set_var("OPENAI_API_KEY", "sk-test");
+
+        let config = Config::default();
+        // No provider flag, no config providers — should fall to env detection.
+        let (_exec, note) = resolve_provider(None, None, &config);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("OpenAI"),
+            "should detect OpenAI from env, got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn resolve_provider_fallback_to_fake() {
+        let _guard = EnvGuard::new();
+
+        let config = Config::default();
+        let (_exec, note) = resolve_provider(None, None, &config);
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("fake executor"),
+            "should fall back to fake, got: {note_text}",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Harness resolution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_harness_no_flag_no_config_falls_back() {
+        let config = Config::default();
+        let (name, note) = resolve_harness(None, &config);
+        // We can't guarantee any harness is on PATH in CI, but the fallback
+        // message should appear if none is found.
+        if name.is_none() {
+            let note_text = note.expect("expected a note");
+            assert!(
+                note_text.contains("executor-only mode")
+                    || note_text.contains("Auto-detected"),
+                "expected fallback or auto-detect note, got: {note_text}",
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_harness_nonexistent_binary_falls_back() {
+        let config = Config::default();
+        let (name, note) = resolve_harness(Some("nonexistent-harness-xyz"), &config);
+        assert!(name.is_none());
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("not found on PATH"),
+            "expected 'not found' note, got: {note_text}",
+        );
+    }
+
+    #[test]
+    fn which_binary_finds_sh() {
+        // `sh` should exist on any Unix system.
+        let result = which_binary("sh");
+        assert!(result.is_some(), "expected `sh` to be found on PATH");
+    }
+
+    #[test]
+    fn which_binary_returns_none_for_nonexistent() {
+        let result = which_binary("nonexistent-binary-abc123xyz");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn known_harnesses_has_expected_entries() {
+        let names: Vec<&str> = KNOWN_HARNESSES.iter().map(|&(n, _)| n).collect();
+        assert!(names.contains(&"claude-code"));
+        assert!(names.contains(&"codex"));
+        assert!(names.contains(&"cursor"));
+        assert!(names.contains(&"goose"));
     }
 }

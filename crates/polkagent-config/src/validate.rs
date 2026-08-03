@@ -15,7 +15,7 @@
 
 use std::net::SocketAddr;
 
-use crate::schema::{Config, DatabaseBackend, CURRENT_SCHEMA_VERSION};
+use crate::schema::{Config, DatabaseBackend, HarnessEntryConfig, CURRENT_SCHEMA_VERSION};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -67,6 +67,7 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
     validate_database(config, &mut errors);
     validate_execution(config, &mut errors);
     validate_providers(config, &mut errors);
+    validate_models(config, &mut errors);
     validate_api(config, &mut errors);
     validate_no_secrets_in_config(config, &mut errors);
     validate_server(config, &mut errors);
@@ -236,6 +237,91 @@ fn validate_providers(config: &Config, errors: &mut Vec<ValidationError>) {
                 format!("{prefix}.api_key_env"),
                 "should specify an env var name for the API key (e.g. 'ANTHROPIC_API_KEY')",
             ));
+        }
+
+        // `kind` is typed as `Option<ProviderKind>` — serde rejects invalid
+        // values at parse time, so no manual validation is needed here.
+
+        // Validate max_concurrent if specified.
+        if let Some(mc) = provider.max_concurrent {
+            if mc == 0 {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.max_concurrent"),
+                    "must be at least 1",
+                ));
+            }
+        }
+    }
+}
+
+fn validate_models(config: &Config, errors: &mut Vec<ValidationError>) {
+    let provider_ids: std::collections::HashSet<&str> = config
+        .providers
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect();
+    let mut seen_slugs = std::collections::HashSet::new();
+
+    for (idx, model) in config.models.iter().enumerate() {
+        let prefix = format!("models[{idx}]");
+
+        if model.slug.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.slug"),
+                "must not be empty",
+            ));
+        } else if !seen_slugs.insert(model.slug.clone()) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.slug"),
+                format!("duplicate model slug '{}'", model.slug),
+            ));
+        }
+
+        if model.provider.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.provider"),
+                "must not be empty",
+            ));
+        } else if !provider_ids.contains(model.provider.as_str()) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.provider"),
+                format!(
+                    "references unknown provider '{}'; must match a [[providers]].id",
+                    model.provider
+                ),
+            ));
+        }
+
+        if let Some(cost) = model.cost_input_per_m {
+            if cost < 0.0 {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.cost_input_per_m"),
+                    "must be non-negative",
+                ));
+            }
+        }
+
+        if let Some(cost) = model.cost_output_per_m {
+            if cost < 0.0 {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.cost_output_per_m"),
+                    "must be non-negative",
+                ));
+            }
+        }
+
+        if let Some(fmt) = &model.tool_format {
+            let valid_formats = ["json", "xml", "native"];
+            if !valid_formats.contains(&fmt.as_str()) {
+                errors.push(ValidationError::new(
+                    format!("{prefix}.tool_format"),
+                    format!(
+                        "unknown tool format '{}'; expected one of: {}",
+                        fmt,
+                        valid_formats.join(", ")
+                    ),
+                ));
+            }
         }
     }
 }
@@ -518,6 +604,70 @@ fn validate_harness(config: &Config, errors: &mut Vec<ValidationError>) {
             ));
         }
     }
+
+    // If a default harness is named, it must appear in the harnesses map.
+    if let Some(default_name) = &config.harness.default {
+        if !config.harness.harnesses.contains_key(default_name) && !config.harness.harnesses.is_empty() {
+            errors.push(ValidationError::new(
+                "harness.default",
+                format!(
+                    "default harness '{}' does not match any entry in [harness.harnesses]",
+                    default_name
+                ),
+            ));
+        }
+    }
+
+    // Validate each harness entry.
+    for (name, entry) in &config.harness.harnesses {
+        validate_harness_entry(name, entry, errors);
+    }
+}
+
+fn validate_harness_entry(
+    name: &str,
+    entry: &HarnessEntryConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    let prefix = format!("harness.harnesses.{name}");
+
+    if let Some(transport) = &entry.transport {
+        let valid_transports = ["stdio", "http", "grpc"];
+        if !valid_transports.contains(&transport.as_str()) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.transport"),
+                format!(
+                    "unknown transport '{}'; expected one of: {}",
+                    transport,
+                    valid_transports.join(", ")
+                ),
+            ));
+        }
+    }
+
+    if let Some(mode) = &entry.approval_mode {
+        let valid_modes = ["auto", "manual", "policy"];
+        if !valid_modes.contains(&mode.as_str()) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.approval_mode"),
+                format!(
+                    "unknown approval mode '{}'; expected one of: {}",
+                    mode,
+                    valid_modes.join(", ")
+                ),
+            ));
+        }
+    }
+
+    // http_port of 0 is invalid.
+    if let Some(port) = entry.http_port {
+        if port == 0 {
+            errors.push(ValidationError::new(
+                format!("{prefix}.http_port"),
+                "must be in the range 1-65535",
+            ));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -588,8 +738,9 @@ mod tests {
 
     use super::*;
     use crate::schema::{
-        ArtifactConfig, AuthConfig, Config, DatabaseBackend, HarnessConfig, ObservabilityConfig,
-        RateLimitConfig, SecurityConfig, ServerConfig, SkillsConfig, TlsConfig,
+        ArtifactConfig, AuthConfig, Config, DatabaseBackend, HarnessConfig, HarnessEntryConfig,
+        ModelOverrideConfig, ObservabilityConfig, RateLimitConfig, SecurityConfig, ServerConfig,
+        SkillsConfig, TlsConfig,
     };
 
     /// Serialise tests that read or mutate process-level env vars.
@@ -1115,5 +1266,299 @@ mod tests {
         let _obs = ObservabilityConfig::default();
         let _rl = RateLimitConfig::default();
         let _tls = TlsConfig::default();
+        let _he = HarnessEntryConfig::default();
+        let _mo = ModelOverrideConfig::default();
+    }
+
+    // -----------------------------------------------------------------------
+    // Provider expanded fields (PRD-04a §8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn provider_invalid_kind_is_rejected_at_parse_time() {
+        // ProviderKind is now a typed enum — invalid values are rejected by
+        // serde at parse time, not by the validator.
+        let toml_str = r#"
+            [[providers]]
+            id = "p1"
+            provider_type = "anthropic"
+            api_key_env = "KEY"
+            kind = "unknown_kind"
+        "#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err(), "unknown kind should fail deserialization");
+    }
+
+    #[test]
+    fn provider_valid_kind_is_accepted() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![crate::schema::ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            kind: Some(crate::model_registry::ProviderKind::AnthropicApi),
+            ..Default::default()
+        }];
+        validate(&cfg).expect("valid provider kind should pass");
+    }
+
+    #[test]
+    fn provider_zero_max_concurrent_is_rejected() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![crate::schema::ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            max_concurrent: Some(0),
+            ..Default::default()
+        }];
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field.ends_with(".max_concurrent")),
+            "expected provider max_concurrent error, got: {errs:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Model overrides (PRD-04a §8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn model_empty_slug_is_rejected() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![crate::schema::ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            ..Default::default()
+        }];
+        cfg.models = vec![ModelOverrideConfig {
+            slug: String::new(),
+            provider: "p1".to_owned(),
+            ..Default::default()
+        }];
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field.ends_with(".slug")),
+            "expected model slug error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn model_empty_provider_is_rejected() {
+        let mut cfg = Config::default();
+        cfg.models = vec![ModelOverrideConfig {
+            slug: "my-model".to_owned(),
+            provider: String::new(),
+            ..Default::default()
+        }];
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field.ends_with(".provider")),
+            "expected model provider error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn model_unknown_provider_is_rejected() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![crate::schema::ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            ..Default::default()
+        }];
+        cfg.models = vec![ModelOverrideConfig {
+            slug: "my-model".to_owned(),
+            provider: "nonexistent".to_owned(),
+            ..Default::default()
+        }];
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("unknown provider")),
+            "expected unknown provider error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn model_duplicate_slugs_are_rejected() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![crate::schema::ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            ..Default::default()
+        }];
+        let m = ModelOverrideConfig {
+            slug: "dup-model".to_owned(),
+            provider: "p1".to_owned(),
+            ..Default::default()
+        };
+        cfg.models = vec![m.clone(), m];
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("duplicate")),
+            "expected duplicate model slug error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn model_negative_cost_is_rejected() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![crate::schema::ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            ..Default::default()
+        }];
+        cfg.models = vec![ModelOverrideConfig {
+            slug: "m1".to_owned(),
+            provider: "p1".to_owned(),
+            cost_input_per_m: Some(-1.0),
+            ..Default::default()
+        }];
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field.ends_with(".cost_input_per_m")),
+            "expected negative cost error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn model_invalid_tool_format_is_rejected() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![crate::schema::ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            ..Default::default()
+        }];
+        cfg.models = vec![ModelOverrideConfig {
+            slug: "m1".to_owned(),
+            provider: "p1".to_owned(),
+            tool_format: Some("binary".to_owned()),
+            ..Default::default()
+        }];
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field.ends_with(".tool_format")),
+            "expected tool_format error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn model_valid_config_is_accepted() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![crate::schema::ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            ..Default::default()
+        }];
+        cfg.models = vec![ModelOverrideConfig {
+            slug: "my-model".to_owned(),
+            provider: "p1".to_owned(),
+            context_window: Some(200_000),
+            max_output: Some(8192),
+            supports_tools: Some(true),
+            tool_format: Some("native".to_owned()),
+            cost_input_per_m: Some(3.0),
+            cost_output_per_m: Some(15.0),
+            ..Default::default()
+        }];
+        validate(&cfg).expect("valid model config should pass");
+    }
+
+    // -----------------------------------------------------------------------
+    // Harness entry validation (PRD-04a §8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn harness_default_not_in_harnesses_is_rejected() {
+        let mut cfg = Config::default();
+        let mut harnesses = std::collections::HashMap::new();
+        harnesses.insert("codex".to_owned(), HarnessEntryConfig::default());
+        cfg.harness.harnesses = harnesses;
+        cfg.harness.default = Some("nonexistent".to_owned());
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "harness.default"),
+            "expected harness.default error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn harness_entry_invalid_transport_is_rejected() {
+        let mut cfg = Config::default();
+        let mut harnesses = std::collections::HashMap::new();
+        harnesses.insert(
+            "bad".to_owned(),
+            HarnessEntryConfig {
+                transport: Some("websocket".to_owned()),
+                ..Default::default()
+            },
+        );
+        cfg.harness.harnesses = harnesses;
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field.contains("transport")),
+            "expected transport error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn harness_entry_invalid_approval_mode_is_rejected() {
+        let mut cfg = Config::default();
+        let mut harnesses = std::collections::HashMap::new();
+        harnesses.insert(
+            "bad".to_owned(),
+            HarnessEntryConfig {
+                approval_mode: Some("yolo".to_owned()),
+                ..Default::default()
+            },
+        );
+        cfg.harness.harnesses = harnesses;
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field.contains("approval_mode")),
+            "expected approval_mode error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn harness_entry_zero_http_port_is_rejected() {
+        let mut cfg = Config::default();
+        let mut harnesses = std::collections::HashMap::new();
+        harnesses.insert(
+            "bad".to_owned(),
+            HarnessEntryConfig {
+                http_port: Some(0),
+                ..Default::default()
+            },
+        );
+        cfg.harness.harnesses = harnesses;
+        let errs = validate(&cfg).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field.contains("http_port")),
+            "expected http_port error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn harness_entry_valid_config_is_accepted() {
+        let mut cfg = Config::default();
+        let mut harnesses = std::collections::HashMap::new();
+        harnesses.insert(
+            "codex".to_owned(),
+            HarnessEntryConfig {
+                binary_path: Some("/usr/local/bin/codex".to_owned()),
+                transport: Some("http".to_owned()),
+                approval_mode: Some("auto".to_owned()),
+                http_port: Some(8080),
+            },
+        );
+        cfg.harness.harnesses = harnesses;
+        cfg.harness.default = Some("codex".to_owned());
+        validate(&cfg).expect("valid harness entry config should pass");
     }
 }

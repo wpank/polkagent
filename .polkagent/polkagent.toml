@@ -1,0 +1,210 @@
+# Polkagent configuration
+# Schema version: v1alpha1
+#
+# Copy this file to one of:
+#   ~/.config/polkagent/polkagent.toml   (user-global)
+#   .polkagent/polkagent.toml            (project-local, takes precedence)
+#
+# Secrets (API keys, database URLs) must NEVER be stored here.
+# Use the environment variables listed in each section comment.
+
+[meta]
+api_version = "polkagent.dev/v1alpha1"
+schema_version = 1
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+# Override with: POLKAGENT_LOG_LEVEL=debug
+
+[log]
+level = "info"     # trace | debug | info | warn | error
+format = "pretty"  # pretty | json
+
+# ─── Database ────────────────────────────────────────────────────────────────
+# Postgres URL: set POLKAGENT_DATABASE_POSTGRES_URL (never in this file)
+
+[database]
+backend = "sqlite"  # sqlite | postgres
+
+[database.sqlite]
+path = "~/.local/share/polkagent/polkagent.db"
+wal_mode = true
+busy_timeout_ms = 5000
+checkpoint_on_startup = false
+
+[database.postgres]
+# url — set via POLKAGENT_DATABASE_POSTGRES_URL env var
+max_connections = 20
+ssl_mode = "require"
+
+# ─── Execution ───────────────────────────────────────────────────────────────
+
+[execution]
+max_concurrent_runs = 10
+default_timeout_secs = 600
+
+[execution.budget]
+max_usd_per_run = 5.00
+max_usd_per_day = 50.00
+warn_threshold_percent = 80
+
+# ─── Providers ───────────────────────────────────────────────────────────────
+# API keys are read from the env var named in `api_key_env`.
+# Set ANTHROPIC_API_KEY and/or OPENAI_API_KEY in your environment.
+
+[[providers]]
+id = "anthropic-default"
+provider_type = "anthropic"
+# kind = "anthropic_api"
+api_key_env = "ANTHROPIC_API_KEY"
+base_url = "https://api.anthropic.com"
+default_model = "claude-sonnet-4-6"
+timeout_secs = 120
+max_retries = 3
+# ttft_timeout_secs = 15
+# connect_timeout_secs = 5
+# max_concurrent = 10
+# [providers.extra_headers]
+# X-Custom-Header = "value"
+
+# [[providers]]
+# id = "openai-compat"
+# provider_type = "openai_compatible"
+# kind = "openai_compat"
+# api_key_env = "OPENAI_API_KEY"
+# base_url = "https://api.openai.com/v1"
+# default_model = "gpt-4o"
+# timeout_secs = 120
+# max_retries = 3
+
+# ─── Policy ──────────────────────────────────────────────────────────────────
+
+[policy]
+policy_dir = "~/.config/polkagent/policies"
+default_policy = "default"
+
+# ─── Memory ──────────────────────────────────────────────────────────────────
+
+[memory]
+enabled = false
+backend = "sqlite"  # sqlite | postgres | external
+
+# ─── API server ──────────────────────────────────────────────────────────────
+# Override bind address: POLKAGENT_API_BIND=0.0.0.0:4840
+
+[api]
+enabled = true
+bind_address = "127.0.0.1:4840"
+cors_origins = ["http://localhost:*"]
+
+# ─── TUI ─────────────────────────────────────────────────────────────────────
+
+[tui]
+theme = "dark"                # dark | no_color | high_contrast
+atmospheric_effects = true
+
+# ─── Server ──────────────────────────────────────────────────────────────────
+# gRPC/HTTP agent-facing server (distinct from the REST [api] server above).
+# Override bind address: POLKAGENT_SERVER_BIND=0.0.0.0:9090
+
+[server]
+bind_address = "127.0.0.1:9090"
+cors_origins = ["*"]
+
+[server.rate_limit]
+requests_per_second = 100
+burst = 200
+
+# TLS is disabled by default. Uncomment to enable:
+# [server.tls]
+# cert_path = "/etc/polkagent/tls/cert.pem"
+# key_path  = "/etc/polkagent/tls/key.pem"
+# ca_path   = "/etc/polkagent/tls/ca.pem"   # required only for mTLS
+
+# ─── Auth ────────────────────────────────────────────────────────────────────
+# Override: POLKAGENT_AUTH_ENABLED=true
+# JWT secret: set POLKAGENT_JWT_SECRET in your environment (never in this file)
+
+[auth]
+enabled = false
+# api_keys contains HASHED key digests, not plaintext secrets.
+api_keys = []
+# jwt_secret_env = "POLKAGENT_JWT_SECRET"
+session_timeout_secs = 3600
+
+# ─── Security ────────────────────────────────────────────────────────────────
+# Override sandbox: POLKAGENT_SECURITY_SANDBOX=true
+
+[security]
+sandbox_enabled = false
+max_file_size_bytes = 10485760   # 10 MiB
+allowed_paths = []               # empty = all paths allowed
+denied_paths = [
+  "/etc/shadow",
+  "/etc/passwd",
+  "/etc/sudoers",
+  "/root",
+  "/proc",
+  "/sys",
+]
+max_memory_mb = 512
+max_cpu_seconds = 300
+
+# ─── Skills ──────────────────────────────────────────────────────────────────
+# Override skill dir: POLKAGENT_SKILLS_DIR=/path/to/skills
+
+[skills]
+directories = []    # extra skill search paths
+auto_load = true
+# registry_url = "https://registry.polkagent.dev"
+# cache_dir = "~/.cache/polkagent/skills"
+
+# ─── Models ──────────────────────────────────────────────────────────────────
+# Override or register custom models. Each [[models]] entry maps a slug to a
+# provider and optionally overrides context window, cost, tool support, etc.
+
+# [[models]]
+# slug = "my-custom-model"
+# provider = "anthropic-default"
+# context_window = 200000
+# max_output = 8192
+# supports_tools = true
+# supports_thinking = true
+# tool_format = "native"
+# cost_input_per_m = 3.0
+# cost_output_per_m = 15.0
+
+# ─── Harness ─────────────────────────────────────────────────────────────────
+# Override: POLKAGENT_HARNESS_DEFAULT=codex
+#           POLKAGENT_HARNESS_TIMEOUT=600
+#           POLKAGENT_HARNESS_MAX_CONCURRENT=4
+
+[harness]
+harness_type = "claude"   # claude | custom
+# binary_path = "/usr/local/bin/polkagent-harness"
+timeout_secs = 300
+max_concurrent = 1
+# default = "claude"
+
+# Per-harness entries:
+# [harness.harnesses.codex]
+# binary_path = "/usr/local/bin/codex"
+# transport = "http"
+# approval_mode = "auto"
+# http_port = 8080
+
+# ─── Artifacts ───────────────────────────────────────────────────────────────
+
+[artifacts]
+max_size_bytes = 104857600   # 100 MiB
+retention_days = 90
+compression_enabled = true
+
+# ─── Observability ───────────────────────────────────────────────────────────
+# Override OTLP endpoint: POLKAGENT_OTLP_ENDPOINT=http://localhost:4317
+
+[observability]
+# otlp_endpoint = "http://localhost:4317"
+otlp_protocol = "grpc"     # grpc | http/protobuf
+metrics_enabled = true
+traces_enabled = true
+service_name = "polkagent"

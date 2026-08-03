@@ -16,9 +16,12 @@
 //! The `api_key_env` field on [`ProviderConfig`] names the environment variable
 //! from which the runtime should read the key.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+use crate::model_registry::ProviderKind;
 
 // ---------------------------------------------------------------------------
 // Top-level
@@ -41,6 +44,8 @@ pub struct Config {
     pub execution: ExecutionConfig,
     /// AI provider connections. Supports multiple providers.
     pub providers: Vec<ProviderConfig>,
+    /// Model overrides and custom model definitions.
+    pub models: Vec<ModelOverrideConfig>,
     /// Policy evaluation settings.
     pub policy: PolicyConfig,
     /// Conversational memory settings.
@@ -274,13 +279,23 @@ impl Default for BudgetConfig {
 /// Multiple providers can be listed under `[[providers]]` in TOML.
 /// The `api_key_env` field names the environment variable that holds the key;
 /// the key itself must **never** appear in the config file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// # Environment variable overrides
+///
+/// - `POLKAGENT_PROVIDER_{ID}_BASE_URL` — override `base_url` for provider with given id
+/// - `POLKAGENT_PROVIDER_{ID}_TIMEOUT` — override `timeout_secs`
+/// - `POLKAGENT_PROVIDER_{ID}_MAX_CONCURRENT` — override `max_concurrent`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
     /// Stable identifier used to reference this provider in agent specs.
     pub id: String,
     /// Provider type string (e.g. `"anthropic"`, `"openai_compatible"`).
     pub provider_type: String,
+    /// Typed provider backend kind (e.g. `anthropic_api`, `openai_compat`).
+    /// When `None`, inferred from `provider_type`.
+    #[serde(default)]
+    pub kind: Option<ProviderKind>,
     /// Name of the environment variable that holds the API key.
     /// Example: `"ANTHROPIC_API_KEY"`.
     pub api_key_env: String,
@@ -292,6 +307,33 @@ pub struct ProviderConfig {
     pub timeout_secs: u64,
     /// Maximum number of automatic retries on transient failures. Default: `3`.
     pub max_retries: u32,
+    /// Time-to-first-token timeout in seconds. Default: `15`.
+    #[serde(default = "default_ttft_timeout")]
+    pub ttft_timeout_secs: Option<u64>,
+    /// TCP connection timeout in seconds. Default: `5`.
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_secs: Option<u64>,
+    /// Maximum concurrent requests to this provider. Default: `10`.
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: Option<u32>,
+    /// Extra HTTP headers sent with every request to this provider.
+    #[serde(default)]
+    pub extra_headers: HashMap<String, String>,
+    /// Provider-specific extension data (arbitrary JSON).
+    #[serde(default)]
+    pub extra: Option<serde_json::Value>,
+}
+
+fn default_ttft_timeout() -> Option<u64> {
+    Some(15)
+}
+
+fn default_connect_timeout() -> Option<u64> {
+    Some(5)
+}
+
+fn default_max_concurrent() -> Option<u32> {
+    Some(10)
 }
 
 impl Default for ProviderConfig {
@@ -299,13 +341,57 @@ impl Default for ProviderConfig {
         Self {
             id: String::new(),
             provider_type: String::new(),
+            kind: None,
             api_key_env: String::new(),
             base_url: String::new(),
             default_model: String::new(),
             timeout_secs: 120,
             max_retries: 3,
+            ttft_timeout_secs: Some(15),
+            connect_timeout_secs: Some(5),
+            max_concurrent: Some(10),
+            extra_headers: HashMap::new(),
+            extra: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+/// Configuration for a model override or custom model definition.
+///
+/// Listed under `[[models]]` in TOML. Allows operators to register custom
+/// models or override properties of known models (context window, cost, tool
+/// support, etc.).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelOverrideConfig {
+    /// Model slug used to reference this model (e.g. `"claude-sonnet-4-6"`).
+    pub slug: String,
+    /// Provider id this model belongs to (must match a `[[providers]].id`).
+    pub provider: String,
+    /// Context window size in tokens.
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// Maximum output tokens the model can produce.
+    #[serde(default)]
+    pub max_output: Option<u64>,
+    /// Whether the model supports tool/function calling.
+    #[serde(default)]
+    pub supports_tools: Option<bool>,
+    /// Whether the model supports extended thinking / chain-of-thought.
+    #[serde(default)]
+    pub supports_thinking: Option<bool>,
+    /// Tool calling format: `"json"`, `"xml"`, `"native"`, etc.
+    #[serde(default)]
+    pub tool_format: Option<String>,
+    /// Cost per million input tokens in USD.
+    #[serde(default)]
+    pub cost_input_per_m: Option<f64>,
+    /// Cost per million output tokens in USD.
+    #[serde(default)]
+    pub cost_output_per_m: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +711,12 @@ impl Default for SkillsConfig {
 /// The harness is the subprocess or in-process executor that runs agent code.
 /// `harness_type` selects the backend; `binary_path` overrides the harness
 /// executable location when the type requires an external binary.
+///
+/// # Environment variable overrides
+///
+/// - `POLKAGENT_HARNESS_DEFAULT` — override `default`
+/// - `POLKAGENT_HARNESS_TIMEOUT` — override `timeout_secs`
+/// - `POLKAGENT_HARNESS_MAX_CONCURRENT` — override `max_concurrent`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HarnessConfig {
@@ -637,6 +729,12 @@ pub struct HarnessConfig {
     /// Maximum number of harness processes that may run simultaneously.
     /// Default: `1`.
     pub max_concurrent: u32,
+    /// Default harness name used when none is specified. Default: `None`.
+    #[serde(default)]
+    pub default: Option<String>,
+    /// Per-harness configurations keyed by harness name.
+    #[serde(default)]
+    pub harnesses: HashMap<String, HarnessEntryConfig>,
 }
 
 impl Default for HarnessConfig {
@@ -646,8 +744,29 @@ impl Default for HarnessConfig {
             binary_path: None,
             timeout_secs: 300,
             max_concurrent: 1,
+            default: None,
+            harnesses: HashMap::new(),
         }
     }
+}
+
+/// Configuration for an individual named harness entry.
+///
+/// Listed under `[harness.harnesses.<name>]` in TOML.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessEntryConfig {
+    /// Path to the harness binary. `None` resolves from `PATH`.
+    #[serde(default)]
+    pub binary_path: Option<String>,
+    /// Transport protocol: `"stdio"`, `"http"`, `"grpc"`, etc.
+    #[serde(default)]
+    pub transport: Option<String>,
+    /// Approval mode: `"auto"`, `"manual"`, `"policy"`, etc.
+    #[serde(default)]
+    pub approval_mode: Option<String>,
+    /// HTTP port for HTTP-transport harnesses.
+    #[serde(default)]
+    pub http_port: Option<u16>,
 }
 
 // ---------------------------------------------------------------------------
@@ -782,15 +901,22 @@ warn_threshold_percent = 80
 [[providers]]
 id = "anthropic-default"
 provider_type = "anthropic"
+# kind = "anthropic_api"
 api_key_env = "ANTHROPIC_API_KEY"
 base_url = "https://api.anthropic.com"
 default_model = "claude-sonnet-4-6"
 timeout_secs = 120
 max_retries = 3
+# ttft_timeout_secs = 15
+# connect_timeout_secs = 5
+# max_concurrent = 10
+# [providers.extra_headers]
+# X-Custom-Header = "value"
 
 # [[providers]]
 # id = "openai-compat"
 # provider_type = "openai_compatible"
+# kind = "openai_compat"
 # api_key_env = "OPENAI_API_KEY"
 # base_url = "https://api.openai.com/v1"
 # default_model = "gpt-4o"
@@ -879,13 +1005,39 @@ auto_load = true
 # registry_url = "https://registry.polkagent.dev"
 # cache_dir = "~/.cache/polkagent/skills"
 
+# ─── Models ──────────────────────────────────────────────────────────────────
+# Override or register custom models. Each [[models]] entry maps a slug to a
+# provider and optionally overrides context window, cost, tool support, etc.
+
+# [[models]]
+# slug = "my-custom-model"
+# provider = "anthropic-default"
+# context_window = 200000
+# max_output = 8192
+# supports_tools = true
+# supports_thinking = true
+# tool_format = "native"
+# cost_input_per_m = 3.0
+# cost_output_per_m = 15.0
+
 # ─── Harness ─────────────────────────────────────────────────────────────────
+# Override: POLKAGENT_HARNESS_DEFAULT=codex
+#           POLKAGENT_HARNESS_TIMEOUT=600
+#           POLKAGENT_HARNESS_MAX_CONCURRENT=4
 
 [harness]
 harness_type = "claude"   # claude | custom
 # binary_path = "/usr/local/bin/polkagent-harness"
 timeout_secs = 300
 max_concurrent = 1
+# default = "claude"
+
+# Per-harness entries:
+# [harness.harnesses.codex]
+# binary_path = "/usr/local/bin/codex"
+# transport = "http"
+# approval_mode = "auto"
+# http_port = 8080
 
 # ─── Artifacts ───────────────────────────────────────────────────────────────
 
@@ -1116,6 +1268,8 @@ mod tests {
         assert!(cfg.binary_path.is_none());
         assert_eq!(cfg.timeout_secs, 300);
         assert_eq!(cfg.max_concurrent, 1);
+        assert!(cfg.default.is_none());
+        assert!(cfg.harnesses.is_empty());
     }
 
     #[test]
@@ -1125,6 +1279,8 @@ mod tests {
             binary_path: Some(PathBuf::from("/usr/local/bin/my-harness")),
             timeout_secs: 600,
             max_concurrent: 4,
+            default: None,
+            harnesses: HashMap::new(),
         };
         let toml = toml::to_string_pretty(&original).expect("serialize");
         let back: HarnessConfig = toml::from_str(&toml).expect("deserialize");
@@ -1261,5 +1417,224 @@ mod tests {
             DEFAULT_CONFIG_TEMPLATE.contains("[observability]"),
             "template must contain [observability] section"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // ProviderConfig expanded fields (PRD-04a §8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn provider_config_expanded_defaults() {
+        let cfg = ProviderConfig::default();
+        assert!(cfg.kind.is_none());
+        assert_eq!(cfg.ttft_timeout_secs, Some(15));
+        assert_eq!(cfg.connect_timeout_secs, Some(5));
+        assert_eq!(cfg.max_concurrent, Some(10));
+        assert!(cfg.extra_headers.is_empty());
+        assert!(cfg.extra.is_none());
+    }
+
+    #[test]
+    fn provider_config_expanded_toml_round_trip() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom".to_owned(), "value".to_owned());
+        let original = ProviderConfig {
+            id: "test".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            kind: Some(crate::model_registry::ProviderKind::AnthropicApi),
+            api_key_env: "KEY".to_owned(),
+            base_url: "https://api.example.com".to_owned(),
+            default_model: "model-1".to_owned(),
+            timeout_secs: 60,
+            max_retries: 5,
+            ttft_timeout_secs: Some(20),
+            connect_timeout_secs: Some(10),
+            max_concurrent: Some(5),
+            extra_headers: headers,
+            extra: None,
+        };
+        let serialized = toml::to_string_pretty(&original).expect("serialize");
+        let back: ProviderConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn provider_config_backward_compat_minimal_toml() {
+        // A minimal TOML with only the old fields should still parse.
+        let toml_str = r#"
+id = "p1"
+provider_type = "anthropic"
+api_key_env = "MY_KEY"
+base_url = "https://api.anthropic.com"
+default_model = "claude-sonnet-4-6"
+timeout_secs = 120
+max_retries = 3
+"#;
+        let cfg: ProviderConfig = toml::from_str(toml_str).expect("should parse minimal provider");
+        assert_eq!(cfg.id, "p1");
+        assert!(cfg.kind.is_none());
+        // Defaults should kick in for new fields.
+        assert_eq!(cfg.ttft_timeout_secs, Some(15));
+        assert_eq!(cfg.connect_timeout_secs, Some(5));
+        assert_eq!(cfg.max_concurrent, Some(10));
+        assert!(cfg.extra_headers.is_empty());
+        assert!(cfg.extra.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // ModelOverrideConfig (PRD-04a §8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn model_override_config_defaults() {
+        let cfg = ModelOverrideConfig::default();
+        assert!(cfg.slug.is_empty());
+        assert!(cfg.provider.is_empty());
+        assert!(cfg.context_window.is_none());
+        assert!(cfg.max_output.is_none());
+        assert!(cfg.supports_tools.is_none());
+        assert!(cfg.supports_thinking.is_none());
+        assert!(cfg.tool_format.is_none());
+        assert!(cfg.cost_input_per_m.is_none());
+        assert!(cfg.cost_output_per_m.is_none());
+    }
+
+    #[test]
+    fn model_override_config_toml_round_trip() {
+        let original = ModelOverrideConfig {
+            slug: "my-model".to_owned(),
+            provider: "anthropic-default".to_owned(),
+            context_window: Some(200_000),
+            max_output: Some(8192),
+            supports_tools: Some(true),
+            supports_thinking: Some(true),
+            tool_format: Some("native".to_owned()),
+            cost_input_per_m: Some(3.0),
+            cost_output_per_m: Some(15.0),
+        };
+        let serialized = toml::to_string_pretty(&original).expect("serialize");
+        let back: ModelOverrideConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn models_array_parses_from_toml() {
+        let toml_str = r#"
+[[models]]
+slug = "model-a"
+provider = "p1"
+context_window = 100000
+
+[[models]]
+slug = "model-b"
+provider = "p2"
+supports_tools = false
+cost_input_per_m = 1.5
+"#;
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            models: Vec<ModelOverrideConfig>,
+        }
+        let w: Wrapper = toml::from_str(toml_str).expect("parse");
+        assert_eq!(w.models.len(), 2);
+        assert_eq!(w.models[0].slug, "model-a");
+        assert_eq!(w.models[0].context_window, Some(100_000));
+        assert_eq!(w.models[1].slug, "model-b");
+        assert_eq!(w.models[1].supports_tools, Some(false));
+    }
+
+    // -----------------------------------------------------------------------
+    // HarnessEntryConfig (PRD-04a §8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn harness_entry_config_defaults() {
+        let cfg = HarnessEntryConfig::default();
+        assert!(cfg.binary_path.is_none());
+        assert!(cfg.transport.is_none());
+        assert!(cfg.approval_mode.is_none());
+        assert!(cfg.http_port.is_none());
+    }
+
+    #[test]
+    fn harness_entry_config_toml_round_trip() {
+        let original = HarnessEntryConfig {
+            binary_path: Some("/usr/local/bin/codex".to_owned()),
+            transport: Some("http".to_owned()),
+            approval_mode: Some("auto".to_owned()),
+            http_port: Some(8080),
+        };
+        let serialized = toml::to_string_pretty(&original).expect("serialize");
+        let back: HarnessEntryConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn harness_config_with_entries_toml_round_trip() {
+        let mut harnesses = HashMap::new();
+        harnesses.insert(
+            "codex".to_owned(),
+            HarnessEntryConfig {
+                binary_path: Some("/usr/local/bin/codex".to_owned()),
+                transport: Some("http".to_owned()),
+                approval_mode: Some("auto".to_owned()),
+                http_port: Some(8080),
+            },
+        );
+        let original = HarnessConfig {
+            harness_type: "claude".to_owned(),
+            binary_path: None,
+            timeout_secs: 300,
+            max_concurrent: 4,
+            default: Some("codex".to_owned()),
+            harnesses,
+        };
+        let serialized = toml::to_string_pretty(&original).expect("serialize");
+        let back: HarnessConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn harness_config_backward_compat_minimal_toml() {
+        // Old-style TOML without new fields should parse fine.
+        let toml_str = r#"
+harness_type = "claude"
+timeout_secs = 300
+max_concurrent = 1
+"#;
+        let cfg: HarnessConfig = toml::from_str(toml_str).expect("should parse minimal harness");
+        assert_eq!(cfg.harness_type, "claude");
+        assert!(cfg.default.is_none());
+        assert!(cfg.harnesses.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Full Config with models field
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_default_has_empty_models() {
+        let cfg = Config::default();
+        assert!(cfg.models.is_empty());
+    }
+
+    #[test]
+    fn full_config_with_models_toml_round_trip() {
+        let mut cfg = Config::default();
+        cfg.providers = vec![ProviderConfig {
+            id: "p1".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            ..Default::default()
+        }];
+        cfg.models = vec![ModelOverrideConfig {
+            slug: "custom-model".to_owned(),
+            provider: "p1".to_owned(),
+            context_window: Some(200_000),
+            ..Default::default()
+        }];
+        let serialized = toml::to_string_pretty(&cfg).expect("serialize");
+        let back: Config = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(cfg, back);
     }
 }

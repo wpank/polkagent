@@ -175,8 +175,10 @@ async fn status(cmd: &NetworkStatusCmd) -> Result<()> {
         return Ok(());
     }
 
-    // RPC is configured — probe endpoints.
-    let rpc = configured_rpc.unwrap();
+    // RPC is configured — probe endpoints (None case returned above).
+    let Some(rpc) = configured_rpc else {
+        return Ok(());
+    };
 
     // Also collect additional endpoints.
     let mut endpoints: Vec<(String, String)> = vec![("primary".to_owned(), rpc)];

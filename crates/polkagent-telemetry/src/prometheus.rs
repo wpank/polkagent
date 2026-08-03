@@ -292,9 +292,12 @@ impl Histogram {
         });
         entry.count += 1;
         entry.sum += value;
+        // Increment only the first (smallest) bucket that the value fits into.
+        // The render method accumulates cumulative counts for Prometheus output.
         for bucket in &mut entry.bucket_counts {
             if value <= bucket.0 {
                 bucket.1 += 1;
+                break;
             }
         }
     }

@@ -31,6 +31,8 @@ use polkagent_executor_trait::{
     MessageRole, ModelExecutor,
 };
 use polkagent_grant::grant::GrantResolver;
+use polkagent_harness_trait::{Harness, HarnessEvent, SessionConfig};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
@@ -116,6 +118,10 @@ pub struct RunOrchestrator {
     grant_resolver: Arc<GrantResolver>,
     config: RunOrchestratorConfig,
     turn_manager: TurnManager,
+    /// Optional harness for delegating runs to an external agent CLI.
+    /// When present, the run is driven through the harness instead of
+    /// the executor.
+    harness: Option<Arc<dyn Harness>>,
     /// Optional context assembler for building and truncating context
     /// before each turn's model call.
     ///
@@ -168,6 +174,7 @@ impl RunOrchestrator {
             grant_resolver,
             config: RunOrchestratorConfig::default(),
             turn_manager: TurnManager::new(),
+            harness: None,
             #[cfg(feature = "context")]
             context_assembler: None,
             #[cfg(feature = "payment")]
@@ -179,6 +186,17 @@ impl RunOrchestrator {
     #[must_use]
     pub fn with_config(mut self, config: RunOrchestratorConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Attach a [`Harness`] for delegating runs to an external agent CLI.
+    ///
+    /// When a harness is attached, [`execute_run`](Self::execute_run) will
+    /// start a harness session and send the prompt through it instead of
+    /// calling the model executor directly.
+    #[must_use]
+    pub fn with_harness(mut self, harness: Arc<dyn Harness>) -> Self {
+        self.harness = Some(harness);
         self
     }
 
@@ -217,6 +235,145 @@ impl RunOrchestrator {
         self
     }
 
+    /// Execute a run by delegating to a harness subprocess.
+    ///
+    /// Instead of calling the model executor, this method:
+    /// 1. Starts a harness session
+    /// 2. Sends the user prompt
+    /// 3. Consumes the event stream until the session ends
+    /// 4. Collects the agent's response text
+    /// 5. Transitions the run to Completed
+    #[instrument(skip(self, agent_spec, initial_prompt, harness), fields(%run_id))]
+    async fn execute_run_via_harness(
+        &self,
+        run_id: RunId,
+        agent_spec: &AgentSpec,
+        initial_prompt: &str,
+        harness: &Arc<dyn Harness>,
+    ) -> Result<RunOutcome, RunError> {
+        let start = Instant::now();
+
+        // Transition to Running.
+        let current_state = self.run_manager.get_state(run_id.clone()).await?;
+        if current_state == RunState::Created {
+            self.run_manager.enqueue_run(run_id.clone()).await?;
+        }
+        self.run_manager.start_run(run_id.clone()).await?;
+
+        // Build session config from agent spec.
+        let session_config = SessionConfig {
+            system_prompt: agent_spec.system_prompt.clone(),
+            working_directory: None,
+            ..Default::default()
+        };
+
+        // Start a harness session.
+        let session_id = harness
+            .start_session(session_config)
+            .await
+            .map_err(|e| RunError::Store(
+                format!("harness session start failed: {e}"),
+            ))?;
+
+        info!(%run_id, %session_id, harness_id = %harness.id(), "harness session started");
+
+        // Send the user prompt.
+        harness
+            .send_message(session_id, initial_prompt)
+            .await
+            .map_err(|e| RunError::Store(
+                format!("harness send_message failed: {e}"),
+            ))?;
+
+        // Consume events from the harness.
+        let mut event_stream = harness
+            .receive_events(session_id)
+            .await
+            .map_err(|e| RunError::Store(
+                format!("harness receive_events failed: {e}"),
+            ))?;
+
+        let mut response_text = String::new();
+        let mut tool_call_count: u32 = 0;
+        let mut had_error = false;
+        let mut error_message = String::new();
+
+        while let Some(event) = event_stream.next().await {
+            match event {
+                HarnessEvent::MessageReceived { content, .. } => {
+                    if !response_text.is_empty() {
+                        response_text.push('\n');
+                    }
+                    response_text.push_str(&content);
+                    debug!(%run_id, content_len = content.len(), "harness message received");
+                }
+                HarnessEvent::ToolCallRequested { tool_name, .. } => {
+                    tool_call_count += 1;
+                    debug!(%run_id, %tool_name, "harness tool call (handled by harness)");
+                }
+                HarnessEvent::ToolResultProvided { tool_name, is_error, .. } => {
+                    if is_error {
+                        debug!(%run_id, %tool_name, "harness tool call returned error");
+                    }
+                }
+                HarnessEvent::SessionEnded { .. } => {
+                    info!(%run_id, "harness session ended");
+                    break;
+                }
+                HarnessEvent::Error { message, .. } => {
+                    warn!(%run_id, %message, "harness error");
+                    had_error = true;
+                    error_message = message;
+                }
+                HarnessEvent::SessionStarted { .. } => {
+                    debug!(%run_id, "harness session started event");
+                }
+            }
+        }
+
+        // End the session (cleanup).
+        if let Err(e) = harness.end_session(session_id).await {
+            warn!(%run_id, %e, "harness end_session failed (non-fatal)");
+        }
+
+        // Transition to terminal state.
+        if had_error && response_text.is_empty() {
+            let reason = format!("harness error: {error_message}");
+            self.run_manager
+                .fail_run(run_id.clone(), &reason)
+                .await?;
+            Ok(RunOutcome {
+                run_id,
+                final_state: RunState::Failed { reason },
+                total_tokens: TokenUsage::default(),
+                turn_count: 1,
+                artifacts: Vec::new(),
+                duration: start.elapsed(),
+            })
+        } else {
+            self.run_manager.completing_run(run_id.clone()).await?;
+            self.run_manager
+                .complete_run(run_id.clone(), None)
+                .await?;
+
+            info!(
+                %run_id,
+                response_len = response_text.len(),
+                tool_calls = tool_call_count,
+                "harness run completed"
+            );
+
+            Ok(RunOutcome {
+                run_id,
+                final_state: RunState::Completed,
+                total_tokens: TokenUsage::default(),
+                turn_count: 1,
+                artifacts: Vec::new(),
+                duration: start.elapsed(),
+            })
+        }
+    }
+
     /// Execute a run from start to terminal state.
     ///
     /// # Algorithm
@@ -251,6 +408,14 @@ impl RunOrchestrator {
         initial_prompt: &str,
     ) -> Result<RunOutcome, RunError> {
         let start = Instant::now();
+
+        // If a harness is attached, delegate the entire run to it.
+        if let Some(ref harness) = self.harness {
+            return self
+                .execute_run_via_harness(run_id, agent_spec, initial_prompt, harness)
+                .await;
+        }
+
         let mut total_usage = TokenUsage::default();
         let mut turn_count: u32 = 0;
         let artifacts: Vec<ArtifactId> = Vec::new();
@@ -317,8 +482,15 @@ impl RunOrchestrator {
             .and_then(|mp| mp.system_prompt.clone())
             .or_else(|| agent_spec.system_prompt.clone());
 
-        // Step 1: Transition Created -> Queued -> Running.
-        self.run_manager.enqueue_run(run_id.clone()).await?;
+        // Step 1: Transition to Running.
+        // In production, AppService::start_run enqueues before spawning us
+        // (Created → Queued), so we just claim (Queued → Running).
+        // In tests, execute_run is called directly on a Created run, so
+        // we enqueue first if needed.
+        let current_state = self.run_manager.get_state(run_id.clone()).await?;
+        if current_state == RunState::Created {
+            self.run_manager.enqueue_run(run_id.clone()).await?;
+        }
         self.run_manager.start_run(run_id.clone()).await?;
 
         // Step 2: Build initial message list.

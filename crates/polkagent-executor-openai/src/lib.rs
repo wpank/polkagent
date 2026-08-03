@@ -40,6 +40,7 @@ use polkagent_executor_trait::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,8 @@ struct ChatCompletionRequest {
     messages: Vec<ApiMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -330,7 +333,11 @@ fn to_api_tool(tool: &ToolDefinition) -> ApiTool {
 }
 
 /// Build the API request body from an `InferenceRequest`.
-fn build_request_body(request: &InferenceRequest, stream: bool) -> ChatCompletionRequest {
+fn build_request_body(
+    request: &InferenceRequest,
+    stream: bool,
+    use_max_completion_tokens: bool,
+) -> ChatCompletionRequest {
     let mut messages: Vec<ApiMessage> = Vec::new();
 
     // OpenAI uses a system message as the first message with role "system".
@@ -356,10 +363,19 @@ fn build_request_body(request: &InferenceRequest, stream: bool) -> ChatCompletio
         None
     };
 
+    // For reasoning models (o3, o4-mini, gpt-5.x, codex-mini) use
+    // max_completion_tokens instead of max_tokens.
+    let (max_tokens, max_completion_tokens) = if use_max_completion_tokens {
+        (None, Some(request.max_tokens))
+    } else {
+        (Some(request.max_tokens), None)
+    };
+
     ChatCompletionRequest {
         model: request.model_id.clone(),
         messages,
-        max_tokens: Some(request.max_tokens),
+        max_tokens,
+        max_completion_tokens,
         temperature: request.temperature,
         tools,
         tool_choice,
@@ -432,16 +448,36 @@ fn map_finish_reason(finish_reason: &str) -> String {
     }
 }
 
+/// Parse the `Retry-After` header from an HTTP response as whole seconds.
+fn parse_retry_after(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
 /// Map an HTTP status code and optional error body to an `ExecutorError`.
-fn map_api_error(status: u16, body: &str) -> ExecutorError {
+///
+/// `retry_after_secs` is parsed from the `Retry-After` header when available
+/// (relevant for 429 responses).
+fn map_api_error(status: u16, body: &str, retry_after_secs: Option<u64>) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
         .map(|e| e.error.message)
         .unwrap_or_else(|_| body.to_string());
 
     match status {
-        401 => ExecutorError::Authentication { message: detail },
-        429 => ExecutorError::RateLimit {
-            retry_after_secs: None,
+        401 | 403 => ExecutorError::Authentication {
+            message: if status == 403 {
+                format!("forbidden: {detail}")
+            } else {
+                detail
+            },
+        },
+        429 => ExecutorError::RateLimit { retry_after_secs },
+        408 => ExecutorError::Timeout { elapsed_ms: 0 },
+        404 => ExecutorError::Internal {
+            message: format!("model not found: {detail}"),
         },
         400 => {
             // Check for context window errors.
@@ -460,10 +496,7 @@ fn map_api_error(status: u16, body: &str) -> ExecutorError {
                 }
             }
         }
-        403 => ExecutorError::Authentication {
-            message: format!("forbidden: {detail}"),
-        },
-        status if status >= 500 => ExecutorError::Transport {
+        500..=599 => ExecutorError::Transport {
             message: format!("server error ({status}): {detail}"),
             retryable: true,
         },
@@ -630,6 +663,8 @@ pub struct OpenAiExecutor {
     model: String,
     base_url: String,
     max_retries: u32,
+    use_max_completion_tokens: bool,
+    concurrency_semaphore: Option<Arc<Semaphore>>,
 }
 
 impl OpenAiExecutor {
@@ -649,6 +684,8 @@ impl OpenAiExecutor {
             model,
             base_url: DEFAULT_BASE_URL.to_string(),
             max_retries: DEFAULT_MAX_RETRIES,
+            use_max_completion_tokens: false,
+            concurrency_semaphore: None,
         })
     }
 
@@ -686,6 +723,26 @@ impl OpenAiExecutor {
         self
     }
 
+    /// Use `max_completion_tokens` instead of `max_tokens` in the request.
+    ///
+    /// Required for OpenAI reasoning models (o3, o4-mini, gpt-5.x, codex-mini)
+    /// which use the newer parameter name.
+    #[must_use]
+    pub fn with_use_max_completion_tokens(mut self, val: bool) -> Self {
+        self.use_max_completion_tokens = val;
+        self
+    }
+
+    /// Limit the number of concurrent HTTP requests to the provider.
+    ///
+    /// When set, a [`tokio::sync::Semaphore`] is used to cap in-flight
+    /// requests. Callers will wait for a permit before issuing the HTTP call.
+    #[must_use]
+    pub fn with_max_concurrent(mut self, n: u32) -> Self {
+        self.concurrency_semaphore = Some(Arc::new(Semaphore::new(n as usize)));
+        self
+    }
+
     /// Build an `Arc<Self>` after applying builder methods.
     pub fn build(self) -> Arc<Self> {
         Arc::new(self)
@@ -704,6 +761,8 @@ impl OpenAiExecutor {
             model,
             base_url: DEFAULT_BASE_URL.to_string(),
             max_retries: DEFAULT_MAX_RETRIES,
+            use_max_completion_tokens: false,
+            concurrency_semaphore: None,
         }
     }
 
@@ -776,8 +835,9 @@ impl OpenAiExecutor {
                 return Ok(parsed);
             }
 
+            let retry_after = parse_retry_after(&response);
             let error_body = response.text().await.unwrap_or_default();
-            let error = map_api_error(status, &error_body);
+            let error = map_api_error(status, &error_body, retry_after);
 
             if error.is_retryable() && attempt < self.max_retries {
                 warn!(attempt, status, "retryable API error, will retry");
@@ -823,8 +883,9 @@ impl OpenAiExecutor {
 
         let status = response.status().as_u16();
         if status != 200 {
+            let retry_after = parse_retry_after(&response);
             let error_body = response.text().await.unwrap_or_default();
-            return Err(map_api_error(status, &error_body));
+            return Err(map_api_error(status, &error_body, retry_after));
         }
 
         let full_body = response.text().await.map_err(|e| {
@@ -857,7 +918,14 @@ impl ModelExecutor for OpenAiExecutor {
             "executing openai inference"
         );
 
-        let body = build_request_body(&request, false);
+        let body = build_request_body(&request, false, self.use_max_completion_tokens);
+
+        // Acquire concurrency permit if configured, held for the request duration.
+        let _permit = match &self.concurrency_semaphore {
+            Some(sem) => Some(sem.acquire().await.map_err(|_| ExecutorError::Cancelled)?),
+            None => None,
+        };
+
         let api_response = self.execute_with_retries(&body).await?;
         let response = to_inference_response(&api_response);
 
@@ -885,7 +953,14 @@ impl ModelExecutor for OpenAiExecutor {
             "starting openai streaming inference"
         );
 
-        let body = build_request_body(&request, true);
+        let body = build_request_body(&request, true, self.use_max_completion_tokens);
+
+        // Acquire concurrency permit if configured, held for the request duration.
+        let _permit = match &self.concurrency_semaphore {
+            Some(sem) => Some(sem.acquire().await.map_err(|_| ExecutorError::Cancelled)?),
+            None => None,
+        };
+
         let events = self.execute_streaming(&body).await?;
 
         Ok(Box::new(stream::iter(events)))
@@ -910,8 +985,9 @@ impl ModelExecutor for OpenAiExecutor {
         if status == 200 {
             Ok(())
         } else {
+            let retry_after = parse_retry_after(&response);
             let error_body = response.text().await.unwrap_or_default();
-            Err(map_api_error(status, &error_body))
+            Err(map_api_error(status, &error_body, retry_after))
         }
     }
 }
@@ -1175,7 +1251,7 @@ mod tests {
     #[test]
     fn request_body_includes_model_and_max_tokens() {
         let req = minimal_request();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize request body");
 
         assert_eq!(json["model"], "gpt-4o");
@@ -1186,7 +1262,7 @@ mod tests {
     #[test]
     fn request_body_includes_system_as_first_message() {
         let req = minimal_request();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages array");
@@ -1198,7 +1274,7 @@ mod tests {
     fn request_body_omits_system_message_when_none() {
         let mut req = minimal_request();
         req.system = None;
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
@@ -1209,7 +1285,7 @@ mod tests {
     #[test]
     fn request_body_includes_temperature_when_set() {
         let req = minimal_request();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let temp = json["temperature"]
@@ -1225,7 +1301,7 @@ mod tests {
     fn request_body_omits_temperature_when_none() {
         let mut req = minimal_request();
         req.temperature = None;
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert!(json.get("temperature").is_none());
@@ -1234,7 +1310,7 @@ mod tests {
     #[test]
     fn request_body_sets_stream_flag() {
         let req = minimal_request();
-        let body = build_request_body(&req, true);
+        let body = build_request_body(&req, true, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert_eq!(json["stream"], true);
@@ -1243,7 +1319,7 @@ mod tests {
     #[test]
     fn request_body_maps_user_message_correctly() {
         let req = minimal_request();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages array");
@@ -1255,7 +1331,7 @@ mod tests {
     #[test]
     fn request_body_maps_tools_correctly() {
         let req = request_with_tools();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let tools = json["tools"].as_array().expect("tools array");
@@ -1270,7 +1346,7 @@ mod tests {
     #[test]
     fn request_body_omits_tools_when_empty() {
         let req = minimal_request();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         // tools should be omitted entirely (skip_serializing_if = "Vec::is_empty")
@@ -1280,7 +1356,7 @@ mod tests {
     #[test]
     fn request_body_sets_tool_choice_auto_when_tools_present() {
         let req = request_with_tools();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert_eq!(json["tool_choice"], "auto");
@@ -1289,7 +1365,7 @@ mod tests {
     #[test]
     fn request_body_omits_tool_choice_when_no_tools() {
         let req = minimal_request();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert!(json.get("tool_choice").is_none());
@@ -1298,7 +1374,7 @@ mod tests {
     #[test]
     fn request_body_maps_tool_use_as_assistant_tool_calls() {
         let req = request_with_tool_result();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
@@ -1321,7 +1397,7 @@ mod tests {
     #[test]
     fn request_body_maps_tool_result_as_tool_role_message() {
         let req = request_with_tool_result();
-        let body = build_request_body(&req, false);
+        let body = build_request_body(&req, false, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
@@ -1514,7 +1590,7 @@ mod tests {
             "invalid_api_key",
             "Incorrect API key provided.",
         );
-        let err = map_api_error(401, &body);
+        let err = map_api_error(401, &body, None);
         assert!(matches!(err, ExecutorError::Authentication { .. }));
         assert!(!err.is_retryable());
     }
@@ -1525,7 +1601,7 @@ mod tests {
             "rate_limit_exceeded",
             "Rate limit reached for model",
         );
-        let err = map_api_error(429, &body);
+        let err = map_api_error(429, &body, None);
         assert!(matches!(err, ExecutorError::RateLimit { .. }));
         assert!(err.is_retryable());
     }
@@ -1536,7 +1612,7 @@ mod tests {
             "invalid_request_error",
             "messages is a required field",
         );
-        let err = map_api_error(400, &body);
+        let err = map_api_error(400, &body, None);
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1550,21 +1626,21 @@ mod tests {
     #[test]
     fn error_mapping_400_context_window() {
         let body = r#"{"error":{"message":"This model's maximum context length is 8192 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}"#;
-        let err = map_api_error(400, body);
+        let err = map_api_error(400, body, None);
         assert!(matches!(err, ExecutorError::ContextWindowExceeded { .. }));
     }
 
     #[test]
     fn error_mapping_400_context_window_alternative_message() {
         let body = r#"{"error":{"message":"maximum context length exceeded","type":"invalid_request_error","code":null}}"#;
-        let err = map_api_error(400, body);
+        let err = map_api_error(400, body, None);
         assert!(matches!(err, ExecutorError::ContextWindowExceeded { .. }));
     }
 
     #[test]
     fn error_mapping_403_forbidden() {
         let body = sample_error_response_json("permission_error", "not allowed");
-        let err = map_api_error(403, &body);
+        let err = map_api_error(403, &body, None);
         assert!(matches!(err, ExecutorError::Authentication { .. }));
         assert!(!err.is_retryable());
     }
@@ -1573,7 +1649,7 @@ mod tests {
     fn error_mapping_500_server_error() {
         let body =
             sample_error_response_json("server_error", "internal server error");
-        let err = map_api_error(500, &body);
+        let err = map_api_error(500, &body, None);
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1586,7 +1662,7 @@ mod tests {
 
     #[test]
     fn error_mapping_502_server_error() {
-        let err = map_api_error(502, "Bad Gateway");
+        let err = map_api_error(502, "Bad Gateway", None);
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1601,7 +1677,7 @@ mod tests {
     fn error_mapping_503_server_error() {
         let body =
             sample_error_response_json("server_error", "service unavailable");
-        let err = map_api_error(503, &body);
+        let err = map_api_error(503, &body, None);
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1613,7 +1689,7 @@ mod tests {
 
     #[test]
     fn error_mapping_unknown_status() {
-        let err = map_api_error(418, "I'm a teapot");
+        let err = map_api_error(418, "I'm a teapot", None);
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1625,7 +1701,7 @@ mod tests {
 
     #[test]
     fn error_mapping_handles_invalid_json_body() {
-        let err = map_api_error(500, "not json at all");
+        let err = map_api_error(500, "not json at all", None);
         assert!(matches!(
             err,
             ExecutorError::Transport {
@@ -1895,5 +1971,129 @@ mod tests {
         let api_msgs = to_api_messages(&msg);
         assert_eq!(api_msgs.len(), 1);
         assert!(api_msgs[0].content.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // max_completion_tokens tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn max_completion_tokens_serialized_when_enabled() {
+        let req = minimal_request();
+        let body = build_request_body(&req, false, true);
+        let json = serde_json::to_value(&body).expect("serialize");
+
+        assert_eq!(json["max_completion_tokens"], 1024);
+        assert!(json.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn max_tokens_used_when_use_max_completion_tokens_is_false() {
+        let req = minimal_request();
+        let body = build_request_body(&req, false, false);
+        let json = serde_json::to_value(&body).expect("serialize");
+
+        assert_eq!(json["max_tokens"], 1024);
+        assert!(json.get("max_completion_tokens").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Concurrency semaphore tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn concurrency_semaphore_limits_concurrent_access() {
+        let sem = Arc::new(Semaphore::new(2));
+
+        // Acquire two permits.
+        let p1 = sem.clone().acquire_owned().await.unwrap();
+        let p2 = sem.clone().acquire_owned().await.unwrap();
+
+        // Third acquire should not succeed immediately.
+        let sem2 = sem.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = sem2.acquire().await.unwrap();
+            true
+        });
+
+        // Give the spawned task a moment to run.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!handle.is_finished(), "third acquire should be blocked");
+
+        // Drop one permit to unblock.
+        drop(p1);
+        let result = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("should complete within timeout")
+            .expect("task should succeed");
+        assert!(result);
+
+        drop(p2);
+    }
+
+    #[test]
+    fn builder_with_max_concurrent_creates_semaphore() {
+        let exec = OpenAiExecutor::new_builder("key".into(), "model".into())
+            .with_max_concurrent(5);
+        assert!(exec.concurrency_semaphore.is_some());
+    }
+
+    #[test]
+    fn builder_without_max_concurrent_has_no_semaphore() {
+        let exec = OpenAiExecutor::new_builder("key".into(), "model".into());
+        assert!(exec.concurrency_semaphore.is_none());
+    }
+
+    #[test]
+    fn builder_with_use_max_completion_tokens() {
+        let exec = OpenAiExecutor::new_builder("key".into(), "model".into())
+            .with_use_max_completion_tokens(true);
+        assert!(exec.use_max_completion_tokens);
+    }
+
+    // -----------------------------------------------------------------------
+    // Error classification tests (PRD-04a § 4.5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn error_mapping_429_with_retry_after() {
+        let body = sample_error_response_json("rate_limit_exceeded", "Rate limited");
+        let err = map_api_error(429, &body, Some(30));
+        match err {
+            ExecutorError::RateLimit { retry_after_secs } => {
+                assert_eq!(retry_after_secs, Some(30));
+            }
+            other => panic!("expected RateLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_mapping_408_timeout() {
+        let err = map_api_error(408, "", None);
+        assert!(matches!(err, ExecutorError::Timeout { .. }));
+    }
+
+    #[test]
+    fn error_mapping_404_model_not_found() {
+        let body = sample_error_response_json("not_found", "model xyz not found");
+        let err = map_api_error(404, &body, None);
+        match err {
+            ExecutorError::Internal { message } => {
+                assert!(message.contains("model not found"), "got: {message}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_mapping_599_server_error_retryable() {
+        let err = map_api_error(599, "edge error", None);
+        assert!(matches!(
+            err,
+            ExecutorError::Transport {
+                retryable: true,
+                ..
+            }
+        ));
     }
 }

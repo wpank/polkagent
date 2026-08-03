@@ -168,9 +168,23 @@ pub struct RunCmd {
     #[arg(long, default_value_t = true)]
     pub wait: bool,
 
+    /// Provider to use for model inference (e.g. `anthropic`, `openai`).
+    ///
+    /// Resolution order: CLI flag > config `[execution] default_provider` >
+    /// environment detection (first API key found) > fake executor fallback.
+    #[arg(long, value_name = "PROVIDER")]
+    pub provider: Option<String>,
+
     /// Override the model for this run (e.g. `anthropic/claude-opus-4-6`).
     #[arg(long, short = 'm', value_name = "MODEL")]
     pub model: Option<String>,
+
+    /// Harness to use for agent execution (e.g. `claude-code`, `codex`, `cursor`, `goose`).
+    ///
+    /// Resolution order: CLI flag > config `[harness] default` >
+    /// first available harness on PATH > executor-only mode.
+    #[arg(long, value_name = "HARNESS")]
+    pub harness: Option<String>,
 
     /// Stream live token output as it arrives (default: enabled).
     #[arg(long, default_value_t = true, action = clap::ArgAction::SetTrue)]

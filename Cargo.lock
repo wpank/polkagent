@@ -1813,6 +1813,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2280,6 +2292,11 @@ dependencies = [
  "polkagent-executor-local",
  "polkagent-executor-openai",
  "polkagent-executor-trait",
+ "polkagent-harness-acp",
+ "polkagent-harness-claude",
+ "polkagent-harness-codex",
+ "polkagent-harness-cursor",
+ "polkagent-harness-trait",
  "polkagent-identity",
  "polkagent-memory",
  "polkagent-service",
@@ -2574,6 +2591,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-harness-acp"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "chrono",
+ "futures",
+ "polkagent-harness-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "polkagent-harness-claude"
 version = "0.1.0"
 dependencies = [
@@ -2593,12 +2628,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-harness-codex"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "chrono",
+ "futures",
+ "nix",
+ "polkagent-core",
+ "polkagent-executor-trait",
+ "polkagent-harness-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "polkagent-harness-cursor"
+version = "0.1.0"
+dependencies = [
+ "polkagent-harness-acp",
+ "polkagent-harness-trait",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "polkagent-harness-trait"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "nix",
  "polkagent-core",
  "polkagent-executor-trait",
  "serde",
@@ -2842,6 +2908,7 @@ dependencies = [
  "polkagent-event",
  "polkagent-executor-trait",
  "polkagent-grant",
+ "polkagent-harness-trait",
  "polkagent-payment",
  "polkagent-store-trait",
  "serde",
@@ -2931,8 +2998,10 @@ dependencies = [
  "polkagent-core",
  "polkagent-effect",
  "polkagent-event",
+ "polkagent-executor-fake",
  "polkagent-executor-trait",
  "polkagent-grant",
+ "polkagent-harness-trait",
  "polkagent-identity",
  "polkagent-memory",
  "polkagent-payment",
