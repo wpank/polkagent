@@ -459,7 +459,7 @@ fn arb_event_kind() -> impl Strategy<Value = polkagent_core::EventKind> {
         ".*".prop_map(|s: String| EventKind::ApprovalGranted { approval_id: s }),
         ".*".prop_map(|s: String| EventKind::ApprovalDenied { reason: s }),
         Just(EventKind::RunCompleting),
-        Just(()).prop_map(|()| EventKind::RunCompleted { output_artifact_id: None }),
+        Just(()).prop_map(|()| EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 }),
         ".*".prop_map(|s: String| EventKind::RunFailed { reason: s }),
         ".*".prop_map(|s: String| EventKind::RunCancelled { reason: s }),
         Just(EventKind::RunTimedOut),

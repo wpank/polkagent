@@ -236,10 +236,10 @@ pub fn map_event(event: &RunEvent) -> Option<RunProgressEvent> {
             })
         }
 
-        EventKind::RunCompleted { .. } => Some(RunProgressEvent::Completed {
+        EventKind::RunCompleted { input_tokens, output_tokens, .. } => Some(RunProgressEvent::Completed {
             run_id,
             summary: RunSummary {
-                tokens_used: 0,
+                tokens_used: input_tokens + output_tokens,
                 duration: Duration::ZERO,
                 effects_count: 0,
             },
@@ -696,6 +696,8 @@ mod tests {
             8,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         );
         let progress = map_event(&event);
@@ -842,6 +844,8 @@ mod tests {
             4,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ));
 
@@ -876,6 +880,8 @@ mod tests {
             2,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ));
 
@@ -905,6 +911,8 @@ mod tests {
             4,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ));
 
@@ -936,6 +944,8 @@ mod tests {
             2,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ));
 
@@ -969,6 +979,8 @@ mod tests {
             5,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ));
 
@@ -1091,6 +1103,8 @@ mod tests {
             4,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ));
 

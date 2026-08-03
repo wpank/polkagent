@@ -389,6 +389,8 @@ mod tests {
             run_id.clone(),
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ))
         .unwrap();
@@ -471,6 +473,8 @@ mod tests {
             run_b.clone(),
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         ))
         .unwrap();

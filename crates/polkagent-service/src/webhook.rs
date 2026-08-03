@@ -531,6 +531,8 @@ mod tests {
 
         let event = make_event(EventKind::RunCompleted {
             output_artifact_id: None,
+            input_tokens: 0,
+            output_tokens: 0,
         });
         assert_eq!(event_type_string(&event).as_deref(), Some("run_completed"));
 

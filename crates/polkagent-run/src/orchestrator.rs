@@ -388,7 +388,7 @@ impl RunOrchestrator {
         } else {
             self.run_manager.completing_run(run_id.clone()).await?;
             self.run_manager
-                .complete_run(run_id.clone(), None)
+                .complete_run(run_id.clone(), None, 0, 0)
                 .await?;
 
             info!(
@@ -764,7 +764,12 @@ impl RunOrchestrator {
                 // Transition: Running -> Completing -> Completed.
                 self.run_manager.completing_run(run_id.clone()).await?;
                 self.run_manager
-                    .complete_run(run_id.clone(), None)
+                    .complete_run(
+                        run_id.clone(),
+                        None,
+                        u64::from(total_usage.input_tokens),
+                        u64::from(total_usage.output_tokens),
+                    )
                     .await?;
 
                 info!(%run_id, turn_count, "run completed successfully");
@@ -824,7 +829,12 @@ impl RunOrchestrator {
                         // this as a completion point.
                         self.run_manager.completing_run(run_id.clone()).await?;
                         self.run_manager
-                            .complete_run(run_id.clone(), None)
+                            .complete_run(
+                                run_id.clone(),
+                                None,
+                                u64::from(total_usage.input_tokens),
+                                u64::from(total_usage.output_tokens),
+                            )
                             .await?;
                         return Ok(RunOutcome {
                             run_id,

@@ -188,6 +188,8 @@ async fn e4_01_deterministic_replay_produces_same_sequence() {
         },
         EventKind::RunCompleted {
             output_artifact_id: None,
+            input_tokens: 0,
+            output_tokens: 0,
         },
     ];
 
@@ -244,7 +246,7 @@ async fn e4_01_replay_content_matches_original_run() {
         EventKind::RunCreated,
         EventKind::RunQueued,
         EventKind::RunStarted,
-        EventKind::RunCompleted { output_artifact_id: None },
+        EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 },
     ];
 
     for kind in &kinds {
@@ -397,7 +399,7 @@ async fn e4_03_nondeterminism_flagged_by_sequence_comparison() {
         EventKind::RunCreated,
         EventKind::RunQueued,
         EventKind::RunStarted,
-        EventKind::RunCompleted { output_artifact_id: None },
+        EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 },
     ] {
         recorder_a.record(run_event(run_a.clone(), kind)).await.expect("a");
     }
@@ -449,7 +451,7 @@ async fn e4_03_identical_runs_show_no_divergence() {
         EventKind::RunCreated,
         EventKind::RunQueued,
         EventKind::RunStarted,
-        EventKind::RunCompleted { output_artifact_id: None },
+        EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 },
     ];
 
     for kind in &kinds {
@@ -518,7 +520,7 @@ async fn e4_04_crash_recover_resumes_from_last_durable_event() {
     recorder
         .record(run_event(
             run_id.clone(),
-            EventKind::RunCompleted { output_artifact_id: None },
+            EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 },
         ))
         .await
         .expect("recovery: RunCompleted");
@@ -552,7 +554,7 @@ async fn e4_04_post_recovery_sequences_are_correct() {
 
     // Record post-crash event — must get sequence 4.
     let post_crash = recorder
-        .record(run_event(run_id.clone(), EventKind::RunCompleted { output_artifact_id: None }))
+        .record(run_event(run_id.clone(), EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 }))
         .await
         .expect("post-crash event");
     assert_eq!(post_crash.sequence, 4, "post-recovery event must get sequence 4");
@@ -574,7 +576,7 @@ async fn e4_05_event_timestamps_are_monotonically_increasing() {
         EventKind::RunQueued,
         EventKind::RunStarted,
         EventKind::EffectIntentCreated { intent_id: EffectId::new() },
-        EventKind::RunCompleted { output_artifact_id: None },
+        EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 },
     ];
 
     let mut recorded_timestamps: Vec<DateTime<Utc>> = Vec::new();

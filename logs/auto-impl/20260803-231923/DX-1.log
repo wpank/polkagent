@@ -1,0 +1,40 @@
+Here's a summary of what was found and fixed:
+
+## Findings
+
+### Schema ✅ — already correct
+The `turns` table in `schema.sql` already has `input_tokens` and `output_tokens` columns (lines 64-65).
+
+### Per-turn DB writes ✅ — already correct  
+The direct executor path in the orchestrator computes `turn_usage` from the model response (line 679), attaches it via `TurnOutput::with_usage()` (lines 718/720), and `RunManager::record_turn()` correctly passes `turn.token_usage.input_tokens/output_tokens` to `RunStore::insert_turn()` which writes them to the `turns` table.
+
+### Root cause: `RunCompleted` event carried no token data
+The **`EventKind::RunCompleted`** variant only carried `output_artifact_id`. When the `progress.rs::map_event()` function converted this to a client-facing `RunProgressEvent::Completed`, it **hardcoded `tokens_used: 0`** because the event had no token information to use.
+
+## Changes Made
+
+### 1. `polkagent-core/src/event.rs` — Added token fields to `RunCompleted`
+Added `input_tokens: u64` and `output_tokens: u64` fields with `#[serde(default)]` for backward-compatible deserialization of existing stored events.
+
+### 2. `polkagent-run/src/manager.rs` — `complete_run()` accepts token counts  
+Added `input_tokens: u64` and `output_tokens: u64` parameters and passes them into the `EventKind::RunCompleted` event.
+
+### 3. `polkagent-run/src/orchestrator.rs` — Pass real token counts on completion
+- **Direct executor path** (2 sites): Passes `u64::from(total_usage.input_tokens)` and `u64::from(total_usage.output_tokens)` — accumulated across all turns.
+- **Harness path** (1 site): Passes `0, 0` since harness events don't expose token usage.
+
+### 4. `polkagent-run/src/progress.rs` — Use event data instead of hardcoded zeros
+The `map_event` function now destructures `input_tokens` and `output_tokens` from the `RunCompleted` event and sums them into `tokens_used`.
+
+### 5. Test files (7 files) — Updated all `RunCompleted` construction sites
+Added `input_tokens: 0, output_tokens: 0` to all test constructions across core, event, run, service, security-tests, api, and cli crates.
+
+### Data flow (fixed):
+```
+Model response → executor TokenUsage → orchestrator accumulates total_usage
+  → complete_run(total_usage.input, total_usage.output) 
+    → EventKind::RunCompleted { input_tokens, output_tokens }
+      → progress::map_event → RunProgressEvent::Completed { tokens_used }
+```
+
+**Verification**: `cargo check --workspace --tests` passes clean. All 270+ tests pass across polkagent-core, polkagent-run, polkagent-event, polkagent-store-sqlite, and polkagent-service.

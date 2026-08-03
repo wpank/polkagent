@@ -452,6 +452,8 @@ mod tests {
             run_id.clone(),
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         );
         recorder.record(e1).await.expect("first terminal ok");

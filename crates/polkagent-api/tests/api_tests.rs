@@ -2648,7 +2648,7 @@ async fn event_bus_subscribe_before_publish_receives_event() {
         EventId::new(),
         run_id,
         1,
-        EventKind::RunCompleted { output_artifact_id: None },
+        EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 },
         EventCorrelation {
             run_id,
             ..Default::default()

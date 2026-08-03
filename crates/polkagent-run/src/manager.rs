@@ -234,6 +234,8 @@ impl RunManager {
         &self,
         run_id: RunId,
         output_artifact_id: Option<polkagent_core::ArtifactId>,
+        input_tokens: u64,
+        output_tokens: u64,
     ) -> Result<(), RunError> {
         let current = self.current_state(run_id.clone()).await?;
         let next = self.machine.transition(&current, RunTransition::Complete)?;
@@ -241,11 +243,11 @@ impl RunManager {
         self.apply_transition(
             run_id.clone(),
             next,
-            EventKind::RunCompleted { output_artifact_id },
+            EventKind::RunCompleted { output_artifact_id, input_tokens, output_tokens },
         )
         .await?;
 
-        info!(%run_id, "run completed");
+        info!(%run_id, input_tokens, output_tokens, "run completed");
         Ok(())
     }
 
@@ -844,7 +846,7 @@ mod tests {
         mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
         mgr.start_run(run_id.clone()).await.expect("start");
         mgr.completing_run(run_id.clone()).await.expect("completing");
-        mgr.complete_run(run_id.clone(), None).await.expect("complete");
+        mgr.complete_run(run_id.clone(), None, 0, 0).await.expect("complete");
 
         let state = mgr.get_state(run_id.clone()).await.expect("get_state");
         assert_eq!(state, RunState::Completed);
@@ -919,7 +921,7 @@ mod tests {
         mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
         mgr.start_run(run_id.clone()).await.expect("start");
         mgr.completing_run(run_id.clone()).await.expect("completing");
-        mgr.complete_run(run_id.clone(), None).await.expect("complete");
+        mgr.complete_run(run_id.clone(), None, 0, 0).await.expect("complete");
 
         // Now try to cancel the already-completed run.
         let err = mgr
@@ -1040,7 +1042,7 @@ mod tests {
         mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
         mgr.start_run(run_id.clone()).await.expect("start");
         mgr.completing_run(run_id.clone()).await.expect("completing");
-        mgr.complete_run(run_id.clone(), None).await.expect("complete");
+        mgr.complete_run(run_id.clone(), None, 0, 0).await.expect("complete");
 
         let recovered = mgr.recover_stuck_runs().await.expect("recover");
         assert_eq!(recovered, 0);

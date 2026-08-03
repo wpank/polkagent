@@ -93,6 +93,12 @@ pub enum EventKind {
     RunCompleted {
         /// The ID of the terminal output artifact.
         output_artifact_id: Option<ArtifactId>,
+        /// Total input tokens consumed across all turns.
+        #[serde(default)]
+        input_tokens: u64,
+        /// Total output tokens consumed across all turns.
+        #[serde(default)]
+        output_tokens: u64,
     },
     /// The run reached the `Failed` terminal state.
     RunFailed {
@@ -472,6 +478,8 @@ mod tests {
             42,
             EventKind::RunCompleted {
                 output_artifact_id: Some(ArtifactId::new()),
+                input_tokens: 0,
+                output_tokens: 0,
             },
             make_correlation(run_id),
         );

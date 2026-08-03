@@ -689,6 +689,8 @@ mod tests {
             1,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
             polkagent_core::event::EventCorrelation::default(),
         );
