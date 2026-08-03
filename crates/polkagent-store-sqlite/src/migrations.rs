@@ -43,6 +43,9 @@ const SCHEMA_V6: &str = include_str!("v6_group_store.sql");
 /// V7: Feed store tables (feeds, feed_triggers, feed_recipes, feed_items).
 const SCHEMA_V7: &str = include_str!("v7_feed_store.sql");
 
+/// V8: Skill registry table (skills).
+const SCHEMA_V8: &str = include_str!("v8_skill_store.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -52,6 +55,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (5, "conversation store tables", SCHEMA_V5),
     (6, "group store tables", SCHEMA_V6),
     (7, "feed store tables", SCHEMA_V7),
+    (8, "skill registry table", SCHEMA_V8),
 ];
 
 // ---------------------------------------------------------------------------
@@ -186,7 +190,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -195,7 +199,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -243,6 +247,7 @@ mod tests {
             "feed_triggers",
             "feed_recipes",
             "feed_items",
+            "skills",
         ];
 
         for table in &tables {

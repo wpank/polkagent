@@ -16,6 +16,7 @@ use chrono::Utc;
 use polkagent_core::ids::{RunId, StepId};
 use polkagent_store_sqlite::{migrations, SqlitePool};
 use polkagent_store_trait::conformance;
+use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
 
 // ---------------------------------------------------------------------------
 // Setup helpers
@@ -39,6 +40,83 @@ fn setup_pool() -> SqlitePool {
         .expect("insert conformance agent");
     }
     pool
+}
+
+/// Wrapper around `SqlitePool` that auto-inserts prerequisite run records
+/// when `append_durable` is called with a `run_id` not yet in the `runs`
+/// table.  This satisfies the `run_events.run_id REFERENCES runs(id)` FK
+/// constraint without modifying the shared conformance test functions.
+struct EventStoreWithRunSetup {
+    pool: SqlitePool,
+}
+
+impl EventStoreWithRunSetup {
+    fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// Ensure a run with the given `run_id` exists in the `runs` table.
+    /// Uses `INSERT OR IGNORE` so it is safe to call multiple times.
+    fn ensure_run_exists(&self, run_id: &str) {
+        let now = Utc::now().to_rfc3339();
+        let w = self.pool.writer();
+        w.execute(
+            "INSERT OR IGNORE INTO runs (id, agent_id, state, params_json, created_at, updated_at) \
+             VALUES (?1, ?2, 'created', '{}', ?3, ?4)",
+            rusqlite::params![run_id, TEST_AGENT, &now, &now],
+        )
+        .expect("ensure run exists for event store conformance test");
+    }
+}
+
+#[async_trait::async_trait]
+impl EventStore for EventStoreWithRunSetup {
+    async fn append_durable(&self, event: StoredEvent) -> Result<StoredEvent, EventStoreError> {
+        self.ensure_run_exists(&event.run_id);
+        self.pool.append_durable(event).await
+    }
+
+    async fn append_diagnostic(
+        &self,
+        event: StoredEvent,
+        expires_at: String,
+    ) -> Result<(), EventStoreError> {
+        self.ensure_run_exists(&event.run_id);
+        self.pool.append_diagnostic(event, expires_at).await
+    }
+
+    async fn read_from_cursor(
+        &self,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        self.pool.read_from_cursor(cursor, limit).await
+    }
+
+    async fn read_run_events(
+        &self,
+        run_id: polkagent_core::RunId,
+    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        self.pool.read_run_events(run_id).await
+    }
+
+    async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
+        self.pool.query(filter).await
+    }
+
+    async fn max_sequence(
+        &self,
+        run_id: polkagent_core::RunId,
+    ) -> Result<u64, EventStoreError> {
+        self.pool.max_sequence(run_id).await
+    }
+
+    async fn has_terminal_event(
+        &self,
+        run_id: polkagent_core::RunId,
+    ) -> Result<bool, EventStoreError> {
+        self.pool.has_terminal_event(run_id).await
+    }
 }
 
 /// Insert run + turn + step into `pool`, returning the `StepId`.
@@ -142,38 +220,38 @@ async fn effect_store_release_restores_pending() {
 
 #[tokio::test]
 async fn event_store_append_and_query() {
-    let pool = setup_pool();
-    conformance::test_event_store_append_and_query(&pool).await;
+    let store = EventStoreWithRunSetup::new(setup_pool());
+    conformance::test_event_store_append_and_query(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_non_monotonic_sequence_rejected() {
-    let pool = setup_pool();
-    conformance::test_event_store_non_monotonic_sequence_rejected(&pool).await;
+    let store = EventStoreWithRunSetup::new(setup_pool());
+    conformance::test_event_store_non_monotonic_sequence_rejected(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_duplicate_terminal_rejected() {
-    let pool = setup_pool();
-    conformance::test_event_store_duplicate_terminal_rejected(&pool).await;
+    let store = EventStoreWithRunSetup::new(setup_pool());
+    conformance::test_event_store_duplicate_terminal_rejected(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_cursor_pagination() {
-    let pool = setup_pool();
-    conformance::test_event_store_cursor_pagination(&pool).await;
+    let store = EventStoreWithRunSetup::new(setup_pool());
+    conformance::test_event_store_cursor_pagination(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_max_sequence() {
-    let pool = setup_pool();
-    conformance::test_event_store_max_sequence(&pool).await;
+    let store = EventStoreWithRunSetup::new(setup_pool());
+    conformance::test_event_store_max_sequence(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_has_terminal_event() {
-    let pool = setup_pool();
-    conformance::test_event_store_has_terminal_event(&pool).await;
+    let store = EventStoreWithRunSetup::new(setup_pool());
+    conformance::test_event_store_has_terminal_event(&store).await;
 }
 
 // Note: ArtifactStore conformance tests require an implementor of

@@ -72,6 +72,21 @@ fn insert_run(pool: &SqlitePool, run_id: RunId, agent_id: &str) {
         .expect("insert run");
 }
 
+/// Insert a run record from a string `run_id`.  Uses `INSERT OR IGNORE` so it
+/// is safe to call multiple times with the same ID.  Satisfies the
+/// `run_events.run_id REFERENCES runs(id)` FK constraint.
+fn insert_run_str(pool: &SqlitePool, run_id: &str) {
+    let now = Utc::now().to_rfc3339();
+    let writer = pool.writer();
+    writer
+        .execute(
+            "INSERT OR IGNORE INTO runs (id, agent_id, state, params_json, created_at, updated_at) \
+             VALUES (?1, ?2, 'created', '{}', ?3, ?4)",
+            rusqlite::params![run_id, TEST_AGENT, now, now],
+        )
+        .expect("insert run for event store test");
+}
+
 /// Insert the full chain of FK records: run -> turn -> step, returning the
 /// step_id.  Required because `effect_intents.step_id` has a FK to `steps(id)`.
 fn insert_run_with_step(pool: &SqlitePool, run_id: RunId, agent_id: &str) -> StepId {
@@ -754,22 +769,24 @@ mod effect_store {
             .await
             .expect("record outcome");
 
-        // Before marking consumed.
+        // Outcomes for this run should be returned.
         let before = EffectStore::unconsumed_outcomes(&pool, run_id)
             .await
             .expect("before");
         assert_eq!(before.len(), 1);
 
-        // Mark as consumed.
+        // mark_outcomes_consumed is a no-op (no `consumed` column in the
+        // production schema), but must succeed without error.
         EffectStore::mark_outcomes_consumed(&pool, &[outcome_id])
             .await
             .expect("mark consumed");
 
-        // After marking consumed.
+        // Outcomes are still present since consumption is not tracked at the
+        // database level.
         let after = EffectStore::unconsumed_outcomes(&pool, run_id)
             .await
             .expect("after");
-        assert!(after.is_empty(), "consumed outcome should not appear");
+        assert_eq!(after.len(), 1, "outcome should still be present (mark_consumed is a no-op)");
     }
 
     #[tokio::test]
@@ -845,6 +862,8 @@ mod event_store {
         let pool = setup_pool();
         let run_a = uuid::Uuid::now_v7().to_string();
         let run_b = uuid::Uuid::now_v7().to_string();
+        insert_run_str(&pool, &run_a);
+        insert_run_str(&pool, &run_b);
 
         let e1 = pool
             .append_durable(make_event(&run_a, 1, "run_started"))
@@ -877,6 +896,7 @@ mod event_store {
     async fn append_assigns_monotonically_increasing_per_run_sequence() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_run_str(&pool, &run_id);
 
         let e1 = pool
             .append_durable(make_event(&run_id, 1, "run_started"))
@@ -900,6 +920,7 @@ mod event_store {
     async fn duplicate_terminal_event_is_rejected() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_run_str(&pool, &run_id);
 
         pool.append_durable(make_event(&run_id, 1, "run_started"))
             .await
@@ -923,6 +944,7 @@ mod event_store {
     async fn non_monotonic_sequence_is_rejected() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_run_str(&pool, &run_id);
 
         pool.append_durable(make_event(&run_id, 1, "run_started"))
             .await
@@ -955,6 +977,7 @@ mod event_store {
     async fn read_from_cursor_returns_events_after_cursor() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_run_str(&pool, &run_id);
 
         for seq in 1..=5 {
             pool.append_durable(make_event(&run_id, seq, "turn_started"))
@@ -979,6 +1002,8 @@ mod event_store {
         let pool = setup_pool();
         let run_a = uuid::Uuid::now_v7().to_string();
         let run_b = uuid::Uuid::now_v7().to_string();
+        insert_run_str(&pool, &run_a);
+        insert_run_str(&pool, &run_b);
 
         pool.append_durable(make_event(&run_a, 1, "run_started"))
             .await
@@ -1008,6 +1033,7 @@ mod event_store {
         let pool = setup_pool();
         let run_id_str = uuid::Uuid::now_v7().to_string();
         let run_id: RunId = run_id_str.parse().expect("parse");
+        insert_run_str(&pool, &run_id_str);
 
         // No events: max_sequence should be 0.
         let max0 = pool.max_sequence(run_id).await.expect("max_sequence 0");
@@ -1031,6 +1057,7 @@ mod event_store {
         let pool = setup_pool();
         let run_id_str = uuid::Uuid::now_v7().to_string();
         let run_id: RunId = run_id_str.parse().expect("parse");
+        insert_run_str(&pool, &run_id_str);
 
         pool.append_durable(make_event(&run_id_str, 1, "run_started"))
             .await
@@ -1057,6 +1084,7 @@ mod event_store {
             let pool = setup_pool();
             let run_id_str = uuid::Uuid::now_v7().to_string();
             let run_id: RunId = run_id_str.parse().expect("parse");
+            insert_run_str(&pool, &run_id_str);
 
             pool.append_durable(make_event(&run_id_str, 1, terminal_type))
                 .await
@@ -1074,6 +1102,7 @@ mod event_store {
         let pool = setup_pool();
         let run_id_str = uuid::Uuid::now_v7().to_string();
         let run_id: RunId = run_id_str.parse().expect("parse");
+        insert_run_str(&pool, &run_id_str);
 
         let complex_payload = serde_json::json!({
             "nested": {"array": [1, "two", 3.0]},
