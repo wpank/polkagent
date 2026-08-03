@@ -96,6 +96,7 @@ pub struct ExportConfig {
     pub limit: Option<usize>,
 }
 
+#[allow(dead_code)]
 impl ExportConfig {
     /// Parse `--since` into a [`DateTime<Utc>`], if provided.
     pub fn since_dt(&self) -> Result<Option<DateTime<Utc>>> {
@@ -240,6 +241,7 @@ pub struct StreamingWriter {
     count: usize,
 }
 
+#[allow(dead_code)]
 impl StreamingWriter {
     /// Create a new streaming writer.
     ///
@@ -374,6 +376,7 @@ fn value_to_csv_cell(v: &serde_json::Value) -> String {
 // ---------------------------------------------------------------------------
 
 /// Serialise a slice of records as a pretty-printed JSON array.
+#[allow(dead_code)]
 pub fn to_json<T: Serialize>(records: &[T]) -> Result<String> {
     serde_json::to_string_pretty(records).context("serialising to JSON")
 }
@@ -381,6 +384,7 @@ pub fn to_json<T: Serialize>(records: &[T]) -> Result<String> {
 /// Serialise records as CSV with the given column headers.
 ///
 /// Columns are extracted from each record's serialised JSON form by key name.
+#[allow(dead_code)]
 pub fn to_csv<T: Serialize>(records: &[T], columns: &[&str]) -> Result<String> {
     let mut buf = Vec::new();
     let mut w = StreamingWriter::new(Format::Csv, columns);
@@ -393,6 +397,7 @@ pub fn to_csv<T: Serialize>(records: &[T], columns: &[&str]) -> Result<String> {
 }
 
 /// Serialise records as newline-delimited JSON (JSON Lines).
+#[allow(dead_code)]
 pub fn to_jsonl<T: Serialize>(records: &[T]) -> Result<String> {
     let mut buf = Vec::new();
     let mut w = StreamingWriter::new(Format::JsonLines, &[]);
@@ -414,20 +419,20 @@ pub struct RunRow {
     pub id: String,
     pub agent_id: String,
     pub state: String,
-    pub prompt: String,
+    pub params_json: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// A row from the `effects` table.
+/// A row from the `effect_intents` table.
 #[derive(Debug, Clone, Serialize)]
 pub struct EffectRow {
     pub id: String,
     pub run_id: String,
-    pub agent_id: String,
-    pub effect_type: String,
-    pub state: String,
-    pub payload: String,
+    pub turn_id: String,
+    pub kind: String,
+    pub claimed_by: String,
+    pub params_json: String,
     pub created_at: String,
 }
 
@@ -436,8 +441,8 @@ pub struct EffectRow {
 pub struct ArtifactRow {
     pub id: String,
     pub run_id: String,
-    pub name: String,
-    pub mime_type: String,
+    pub kind: String,
+    pub digest_hex: String,
     pub size_bytes: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
@@ -449,12 +454,12 @@ pub struct ArtifactRow {
 pub struct EventRow {
     pub sequence: i64,
     pub run_id: String,
-    pub event_type: String,
-    pub payload: String,
-    pub created_at: String,
+    pub kind: String,
+    pub data_json: String,
+    pub timestamp: String,
 }
 
-/// A row from the `audit_log` table.
+/// A row from the `run_events` table (used for audit export).
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditRow {
     pub id: String,
@@ -462,7 +467,7 @@ pub struct AuditRow {
     pub action: String,
     pub target: String,
     pub detail: String,
-    pub created_at: String,
+    pub timestamp: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -516,7 +521,7 @@ fn export_runs(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     let limit_sql = cfg.sql_limit();
 
     let sql = format!(
-        "SELECT id, agent_id, state, prompt, created_at, updated_at \
+        "SELECT id, agent_id, state, params_json, created_at, updated_at \
          FROM runs{where_sql} ORDER BY created_at DESC{limit_sql}"
     );
 
@@ -527,13 +532,13 @@ fn export_runs(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
                 id: row.get(0)?,
                 agent_id: row.get(1)?,
                 state: row.get(2)?,
-                prompt: row.get(3)?,
+                params_json: row.get(3)?,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
             })
         })?;
 
-    let columns = &["id", "agent_id", "state", "prompt", "created_at", "updated_at"];
+    let columns = &["id", "agent_id", "state", "params_json", "created_at", "updated_at"];
     let mut out = open_output(&cfg.output)?;
     let mut writer = StreamingWriter::new(cfg.format, columns);
     writer.begin(&mut out)?;
@@ -561,8 +566,8 @@ fn export_effects(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     let limit_sql = cfg.sql_limit();
 
     let sql = format!(
-        "SELECT id, run_id, agent_id, effect_type, state, payload_json, created_at \
-         FROM effects{where_sql} ORDER BY created_at DESC{limit_sql}"
+        "SELECT id, run_id, turn_id, kind, claimed_by, params_json, created_at \
+         FROM effect_intents{where_sql} ORDER BY created_at DESC{limit_sql}"
     );
 
     let mut stmt = reader.prepare(&sql)?;
@@ -571,10 +576,10 @@ fn export_effects(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
             Ok(EffectRow {
                 id: row.get(0)?,
                 run_id: row.get(1)?,
-                agent_id: row.get(2)?,
-                effect_type: row.get(3)?,
-                state: row.get(4)?,
-                payload: row.get(5)?,
+                turn_id: row.get(2)?,
+                kind: row.get(3)?,
+                claimed_by: row.get(4)?,
+                params_json: row.get(5)?,
                 created_at: row.get(6)?,
             })
         })?;
@@ -582,10 +587,10 @@ fn export_effects(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     let columns = &[
         "id",
         "run_id",
-        "agent_id",
-        "effect_type",
-        "state",
-        "payload",
+        "turn_id",
+        "kind",
+        "claimed_by",
+        "params_json",
         "created_at",
     ];
     let mut out = open_output(&cfg.output)?;
@@ -620,7 +625,7 @@ fn export_artifacts(
 
     let body_col = if include_bodies { ", body" } else { "" };
     let sql = format!(
-        "SELECT id, run_id, name, mime_type, size_bytes{body_col}, created_at \
+        "SELECT id, run_id, kind, digest_hex, size_bytes{body_col}, created_at \
          FROM artifacts{where_sql} ORDER BY created_at DESC{limit_sql}"
     );
 
@@ -631,8 +636,8 @@ fn export_artifacts(
                 Ok(ArtifactRow {
                     id: row.get(0)?,
                     run_id: row.get(1)?,
-                    name: row.get(2)?,
-                    mime_type: row.get(3)?,
+                    kind: row.get(2)?,
+                    digest_hex: row.get(3)?,
                     size_bytes: row.get(4)?,
                     body: row.get(5)?,
                     created_at: row.get(6)?,
@@ -641,8 +646,8 @@ fn export_artifacts(
                 Ok(ArtifactRow {
                     id: row.get(0)?,
                     run_id: row.get(1)?,
-                    name: row.get(2)?,
-                    mime_type: row.get(3)?,
+                    kind: row.get(2)?,
+                    digest_hex: row.get(3)?,
                     size_bytes: row.get(4)?,
                     body: None,
                     created_at: row.get(5)?,
@@ -653,8 +658,8 @@ fn export_artifacts(
     let mut columns: Vec<&str> = vec![
         "id",
         "run_id",
-        "name",
-        "mime_type",
+        "kind",
+        "digest_hex",
         "size_bytes",
     ];
     if include_bodies {
@@ -689,7 +694,7 @@ fn export_events(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     let limit_sql = cfg.sql_limit();
 
     let sql = format!(
-        "SELECT sequence, run_id, event_type, payload_json, created_at \
+        "SELECT sequence, run_id, kind, data_json, timestamp \
          FROM run_events{where_sql} ORDER BY sequence ASC{limit_sql}"
     );
 
@@ -699,15 +704,15 @@ fn export_events(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
             Ok(EventRow {
                 sequence: row.get(0)?,
                 run_id: row.get(1)?,
-                event_type: row.get(2)?,
-                payload: row.get(3)?,
-                created_at: row.get(4)?,
+                kind: row.get(2)?,
+                data_json: row.get(3)?,
+                timestamp: row.get(4)?,
             })
         })?;
 
     // Events default to JSONL format when no explicit format is given, but we
     // respect the user's choice.
-    let columns = &["sequence", "run_id", "event_type", "payload", "created_at"];
+    let columns = &["sequence", "run_id", "kind", "data_json", "timestamp"];
     let mut out = open_output(&cfg.output)?;
     let mut writer = StreamingWriter::new(cfg.format, columns);
     writer.begin(&mut out)?;
@@ -735,8 +740,8 @@ fn export_audit(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     let limit_sql = cfg.sql_limit();
 
     let sql = format!(
-        "SELECT id, actor, action, target, detail, created_at \
-         FROM audit_log{where_sql} ORDER BY created_at DESC{limit_sql}"
+        "SELECT id, run_id, kind, data_json, timestamp \
+         FROM run_events{where_sql} ORDER BY timestamp DESC{limit_sql}"
     );
 
     let mut stmt = reader.prepare(&sql)?;
@@ -744,15 +749,15 @@ fn export_audit(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok(AuditRow {
                 id: row.get(0)?,
-                actor: row.get(1)?,
+                actor: row.get::<_, String>(1)?,
                 action: row.get(2)?,
-                target: row.get(3)?,
-                detail: row.get(4)?,
-                created_at: row.get(5)?,
+                target: String::new(),
+                detail: row.get(3)?,
+                timestamp: row.get(4)?,
             })
         })?;
 
-    let columns = &["id", "actor", "action", "target", "detail", "created_at"];
+    let columns = &["id", "actor", "action", "target", "detail", "timestamp"];
     let mut out = open_output(&cfg.output)?;
     let mut writer = StreamingWriter::new(cfg.format, columns);
     writer.begin(&mut out)?;
@@ -787,6 +792,7 @@ fn export_config(output_path: &Option<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     // -- Format parsing ---------------------------------------------------
 
@@ -917,7 +923,7 @@ mod tests {
                 id: "r1".into(),
                 agent_id: "a1".into(),
                 state: "completed".into(),
-                prompt: "hello".into(),
+                params_json: "hello".into(),
                 created_at: "2024-01-01T00:00:00Z".into(),
                 updated_at: "2024-01-01T00:00:00Z".into(),
             },
@@ -925,7 +931,7 @@ mod tests {
                 id: "r2".into(),
                 agent_id: "a2".into(),
                 state: "running".into(),
-                prompt: "world".into(),
+                params_json: "world".into(),
                 created_at: "2024-01-02T00:00:00Z".into(),
                 updated_at: "2024-01-02T00:00:00Z".into(),
             },
@@ -953,16 +959,16 @@ mod tests {
             EventRow {
                 sequence: 1,
                 run_id: "r1".into(),
-                event_type: "RunCreated".into(),
-                payload: "{}".into(),
-                created_at: "2024-01-01T00:00:00Z".into(),
+                kind: "RunCreated".into(),
+                data_json: "{}".into(),
+                timestamp: "2024-01-01T00:00:00Z".into(),
             },
             EventRow {
                 sequence: 2,
                 run_id: "r1".into(),
-                event_type: "RunCompleted".into(),
-                payload: "{}".into(),
-                created_at: "2024-01-01T00:01:00Z".into(),
+                kind: "RunCompleted".into(),
+                data_json: "{}".into(),
+                timestamp: "2024-01-01T00:01:00Z".into(),
             },
         ];
         let jsonl = to_jsonl(&records).unwrap();
@@ -985,7 +991,7 @@ mod tests {
                 action: "create".into(),
                 target: "agent".into(),
                 detail: "created agent".into(),
-                created_at: "2024-01-01T00:00:00Z".into(),
+                timestamp: "2024-01-01T00:00:00Z".into(),
             },
         ];
         let csv = to_csv(&records, &["id", "actor", "action"]).unwrap();
@@ -1003,7 +1009,7 @@ mod tests {
             action: "update".into(),
             target: "config".into(),
             detail: "changed".into(),
-            created_at: "2024-01-01T00:00:00Z".into(),
+            timestamp: "2024-01-01T00:00:00Z".into(),
         }];
         let csv = to_csv(&records, &["id", "actor"]).unwrap();
         let lines: Vec<&str> = csv.trim().lines().collect();
@@ -1244,13 +1250,13 @@ mod tests {
             id: "abc".into(),
             agent_id: "def".into(),
             state: "completed".into(),
-            prompt: "do stuff".into(),
+            params_json: "do stuff".into(),
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         };
         let v = serde_json::to_value(&row).unwrap();
         assert_eq!(v["id"], "abc");
-        assert_eq!(v["prompt"], "do stuff");
+        assert_eq!(v["params_json"], "do stuff");
     }
 
     #[test]
@@ -1258,8 +1264,8 @@ mod tests {
         let row = ArtifactRow {
             id: "a1".into(),
             run_id: "r1".into(),
-            name: "file.txt".into(),
-            mime_type: "text/plain".into(),
+            kind: "file.txt".into(),
+            digest_hex: "text/plain".into(),
             size_bytes: 1024,
             body: None,
             created_at: "2024-01-01T00:00:00Z".into(),
@@ -1273,8 +1279,8 @@ mod tests {
         let row = ArtifactRow {
             id: "a1".into(),
             run_id: "r1".into(),
-            name: "file.txt".into(),
-            mime_type: "text/plain".into(),
+            kind: "file.txt".into(),
+            digest_hex: "text/plain".into(),
             size_bytes: 5,
             body: Some("hello".into()),
             created_at: "2024-01-01T00:00:00Z".into(),

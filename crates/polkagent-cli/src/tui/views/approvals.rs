@@ -201,13 +201,13 @@ fn render_list(
     frame.render_widget(table, inner);
 
     // Footer with key hints.
-    let footer_y = area.y + area.height.saturating_sub(1);
-    if footer_y < area.y + area.height {
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    if footer_y < inner.y + inner.height {
         let footer_area = Rect {
             y: footer_y,
             height: 1,
-            x: area.x + 1,
-            width: area.width.saturating_sub(2),
+            x: inner.x,
+            width: inner.width,
         };
         frame.render_widget(
             Paragraph::new(Span::styled(

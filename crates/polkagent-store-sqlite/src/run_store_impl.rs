@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use chrono::DateTime;
-use polkagent_core::RunId;
+use polkagent_core::{RunId, TurnId};
 use polkagent_store_trait::{RunStatus, RunStore, RunSummary, StoreError};
 
 use crate::pool::SqlitePool;
@@ -282,6 +282,50 @@ impl RunStore for SqlitePool {
                 .into_iter()
                 .map(RawRunSummary::into_run_summary)
                 .collect()
+        })
+        .await
+        .map_err(|e| StoreError::Internal {
+            message: format!("blocking task panicked: {e}"),
+        })?
+    }
+
+    async fn insert_turn(
+        &self,
+        turn_id: TurnId,
+        run_id: RunId,
+        sequence: u32,
+        role: &str,
+        started_at: &str,
+        completed_at: Option<&str>,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<(), StoreError> {
+        let pool = self.clone();
+        let role = role.to_string();
+        let started_at = started_at.to_string();
+        let completed_at = completed_at.map(String::from);
+
+        tokio::task::spawn_blocking(move || {
+            let turn_id_str = turn_id.to_string();
+            let run_id_str = run_id.to_string();
+            let writer = pool.writer();
+            writer
+                .execute(
+                    "INSERT INTO turns (id, run_id, sequence, role, started_at, completed_at, input_tokens, output_tokens)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    rusqlite::params![
+                        turn_id_str,
+                        run_id_str,
+                        sequence,
+                        role,
+                        started_at,
+                        completed_at,
+                        input_tokens,
+                        output_tokens,
+                    ],
+                )
+                .map_err(|e| map_sqlite_err_with_id(e, &turn_id_str))?;
+            Ok(())
         })
         .await
         .map_err(|e| StoreError::Internal {

@@ -18,7 +18,7 @@ pub mod event;
 pub mod conformance;
 
 use async_trait::async_trait;
-use polkagent_core::{ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, WorkerId};
+use polkagent_core::{ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, TurnId, WorkerId};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
@@ -283,6 +283,23 @@ pub trait EffectStore: Send + Sync {
     /// Fetch all intents for a given run (pending, claimed, and resolved).
     async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError>;
 
+    /// Fetch an intent by its idempotency key.
+    ///
+    /// Returns `Ok(None)` if no intent with the given key exists.
+    ///
+    /// Implementations backed by SQL should use the
+    /// `idx_effects_by_idempotency_key` index for O(1) lookup. The default
+    /// implementation falls back to `get_by_run` + linear scan, which is
+    /// O(N) in the number of intents for the run.
+    async fn get_by_idempotency_key(
+        &self,
+        key: &str,
+        run_id: RunId,
+    ) -> Result<Option<StoredIntent>, StoreError> {
+        let intents = self.get_by_run(run_id).await?;
+        Ok(intents.into_iter().find(|i| i.idempotency_key == key))
+    }
+
     /// Fetch all intents whose lease has expired (i.e., state is `"claimed"`
     /// and `lease_expires < cutoff`).
     async fn expired_leases(
@@ -401,6 +418,27 @@ pub trait RunStore: Send + Sync + 'static {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<RunSummary>, StoreError>;
+
+    /// Persist a completed turn record (including token usage).
+    ///
+    /// The turn is identified by `turn_id` and linked to its parent run via
+    /// `run_id`. `sequence` is 1-based and monotonic within the run. The
+    /// `role`, `started_at`, `completed_at`, `input_tokens`, and
+    /// `output_tokens` fields are stored verbatim.
+    ///
+    /// Returns [`StoreError::Conflict`] if a turn with the same `turn_id`
+    /// already exists.
+    async fn insert_turn(
+        &self,
+        turn_id: TurnId,
+        run_id: RunId,
+        sequence: u32,
+        role: &str,
+        started_at: &str,
+        completed_at: Option<&str>,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<(), StoreError>;
 }
 
 // ---------------------------------------------------------------------------

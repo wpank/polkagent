@@ -7,21 +7,21 @@
 //!
 //! ## Schema
 //!
-//! Events are stored in two tables created by migration V2:
+//! Events are stored in the `run_events` table with columns:
 //!
-//! - `durable_events` — the authoritative, globally-ordered event log.
-//! - `diagnostic_events` — shorter-retention diagnostic events with an
-//!   `expires_at` column for retention enforcement.
+//!   `id, run_id, sequence, kind, data_json, timestamp, correlation_id, schema_version`
 //!
-//! A single-row `global_sequence_counter` table provides a monotonic counter
-//! that is incremented inside the same transaction as each INSERT, so no
-//! `SELECT MAX()` race is possible.
+//! Diagnostic events are stored in the same table; the `kind` column value
+//! distinguishes them (prefixed with `diagnostic:` by convention).
+//!
+//! Global ordering uses SQLite's `rowid` as a monotonic proxy since no
+//! dedicated `global_sequence` column exists in the production schema.
 //!
 //! ## Terminal-event invariant
 //!
 //! The four terminal event types (`run_completed`, `run_failed`,
 //! `run_cancelled`, `run_timed_out`) are tracked: before appending a durable
-//! event whose `event_type` is terminal, the implementation checks whether the
+//! event whose `kind` is terminal, the implementation checks whether the
 //! run already has a terminal event and rejects duplicates with
 //! [`EventStoreError::DuplicateTerminalEvent`].
 
@@ -64,63 +64,49 @@ fn is_terminal(event_type: &str) -> bool {
 }
 
 /// Read a single `StoredEvent` from the current row of a `rusqlite::Row`.
+///
+/// Expected column order (matching `RUN_EVENTS_COLS`):
+///   0: id, 1: run_id, 2: sequence, 3: kind, 4: data_json,
+///   5: timestamp, 6: correlation_id, 7: schema_version, 8: rowid
 fn row_to_stored_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent> {
-    let payload_str: String = row.get(11)?;
-    let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap_or_default();
+    let data_json_str: String = row.get(4)?;
+    let payload: serde_json::Value = serde_json::from_str(&data_json_str).unwrap_or_default();
+    let correlation_id: Option<String> = row.get(6)?;
+    // Use rowid as global_sequence proxy.
+    let rowid: u64 = row.get(8)?;
 
     Ok(StoredEvent {
         id: row.get(0)?,
-        event_type: row.get(1)?,
+        run_id: row.get(1)?,
         sequence: row.get(2)?,
-        global_sequence: row.get(3)?,
-        run_id: row.get(4)?,
-        conversation_id: row.get(5)?,
-        correlation_id: row.get(6)?,
-        causation_id: row.get(7)?,
-        scope_id: row.get(8)?,
-        timestamp: row.get(9)?,
-        durability: row.get(10)?,
+        event_type: row.get(3)?,
         payload,
-        trace_id: row.get(12)?,
-        span_id: row.get(13)?,
-        schema_version: row.get(14)?,
+        timestamp: row.get(5)?,
+        correlation_id: correlation_id.unwrap_or_default(),
+        schema_version: row.get(7)?,
+        // Fields not stored in run_events -- use defaults.
+        global_sequence: rowid,
+        conversation_id: None,
+        causation_id: None,
+        scope_id: String::new(),
+        durability: String::new(),
+        trace_id: None,
+        span_id: None,
     })
 }
 
-/// The standard SELECT column list for `durable_events`.
-const DURABLE_COLS: &str = "\
-    id, event_type, sequence, global_sequence, run_id, \
-    conversation_id, correlation_id, causation_id, scope_id, \
-    timestamp, durability, payload, trace_id, span_id, schema_version";
+/// The standard SELECT column list for `run_events`, including `rowid` for
+/// global ordering.
+const RUN_EVENTS_COLS: &str = "\
+    id, run_id, sequence, kind, data_json, \
+    timestamp, correlation_id, schema_version, rowid";
 
-/// Allocate the next global sequence number inside an existing transaction.
-///
-/// This increments the single-row `global_sequence_counter` and returns the
-/// new value. Must be called while the writer lock is held.
-fn next_global_sequence(conn: &Connection) -> Result<u64, EventStoreError> {
-    conn.execute(
-        "UPDATE global_sequence_counter SET value = value + 1 WHERE id = 1",
-        [],
-    )
-    .map_err(map_rusqlite)?;
-
-    let seq: u64 = conn
-        .query_row(
-            "SELECT value FROM global_sequence_counter WHERE id = 1",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(map_rusqlite)?;
-
-    Ok(seq)
-}
-
-/// Check whether a run already has a terminal event in `durable_events`.
+/// Check whether a run already has a terminal event in `run_events`.
 fn check_terminal(conn: &Connection, run_id: &str) -> Result<bool, EventStoreError> {
     let count: u64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM durable_events \
-             WHERE run_id = ?1 AND event_type IN ('run_completed','run_failed','run_cancelled','run_timed_out')",
+            "SELECT COUNT(*) FROM run_events \
+             WHERE run_id = ?1 AND kind IN ('run_completed','run_failed','run_cancelled','run_timed_out')",
             params![run_id],
             |r| r.get(0),
         )
@@ -129,11 +115,11 @@ fn check_terminal(conn: &Connection, run_id: &str) -> Result<bool, EventStoreErr
     Ok(count > 0)
 }
 
-/// Fetch the current max sequence for a run from `durable_events`.
+/// Fetch the current max sequence for a run from `run_events`.
 fn current_max_sequence(conn: &Connection, run_id: &str) -> Result<u64, EventStoreError> {
     let max: Option<u64> = conn
         .query_row(
-            "SELECT MAX(sequence) FROM durable_events WHERE run_id = ?1",
+            "SELECT MAX(sequence) FROM run_events WHERE run_id = ?1",
             params![run_id],
             |r| r.get(0),
         )
@@ -173,36 +159,25 @@ impl EventStore for SqlitePool {
                 });
             }
 
-            // 3. Allocate global_sequence.
-            let global_seq = next_global_sequence(&writer)?;
-
-            // 4. Serialise payload.
+            // 3. Serialise payload.
             let payload_str = serde_json::to_string(&event.payload)
                 .map_err(|e| EventStoreError::Serialisation(e.to_string()))?;
 
-            // 5. INSERT.
+            // 4. INSERT into run_events.
             writer
                 .execute(
-                    "INSERT INTO durable_events \
-                     (id, event_type, sequence, global_sequence, run_id, \
-                      conversation_id, correlation_id, causation_id, scope_id, \
-                      timestamp, durability, payload, trace_id, span_id, schema_version) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    "INSERT INTO run_events \
+                     (id, run_id, sequence, kind, data_json, \
+                      timestamp, correlation_id, schema_version) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         event.id,
-                        event.event_type,
-                        event.sequence,
-                        global_seq,
                         event.run_id,
-                        event.conversation_id,
-                        event.correlation_id,
-                        event.causation_id,
-                        event.scope_id,
-                        event.timestamp,
-                        event.durability,
+                        event.sequence,
+                        event.event_type,
                         payload_str,
-                        event.trace_id,
-                        event.span_id,
+                        event.timestamp,
+                        event.correlation_id,
                         event.schema_version,
                     ],
                 )
@@ -212,14 +187,26 @@ impl EventStore for SqlitePool {
                             "event with id {} already exists",
                             event.id
                         ))
+                    } else if crate::error::StoreError::is_fk_violation(&e) {
+                        EventStoreError::Backend(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "foreign key constraint failed for run_id {}; \
+                                 ensure the run exists before appending events",
+                                event.run_id
+                            ),
+                        )))
                     } else {
                         map_rusqlite(e)
                     }
                 })?;
 
+            // 5. Retrieve the rowid assigned by SQLite to use as global_sequence.
+            let rowid = writer.last_insert_rowid() as u64;
+
             // 6. Return the completed event with assigned global_sequence.
             Ok(StoredEvent {
-                global_sequence: global_seq,
+                global_sequence: rowid,
                 ..event
             })
         })
@@ -230,45 +217,35 @@ impl EventStore for SqlitePool {
     async fn append_diagnostic(
         &self,
         event: StoredEvent,
-        expires_at: String,
+        _expires_at: String,
     ) -> Result<(), EventStoreError> {
         let pool = self.clone();
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
 
-            // Allocate a global_sequence for ordering consistency even though
-            // diagnostic events have relaxed invariants.
-            let global_seq = next_global_sequence(&writer)?;
-
             let payload_str = serde_json::to_string(&event.payload)
                 .map_err(|e| EventStoreError::Serialisation(e.to_string()))?;
 
+            // Store diagnostic events in run_events with a `diagnostic:` kind
+            // prefix so they can be distinguished from durable events.
+            let kind = format!("diagnostic:{}", event.event_type);
+
             writer
                 .execute(
-                    "INSERT INTO diagnostic_events \
-                     (id, event_type, sequence, global_sequence, run_id, \
-                      conversation_id, correlation_id, causation_id, scope_id, \
-                      timestamp, durability, payload, trace_id, span_id, \
-                      schema_version, expires_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    "INSERT INTO run_events \
+                     (id, run_id, sequence, kind, data_json, \
+                      timestamp, correlation_id, schema_version) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         event.id,
-                        event.event_type,
-                        event.sequence,
-                        global_seq,
                         event.run_id,
-                        event.conversation_id,
-                        event.correlation_id,
-                        event.causation_id,
-                        event.scope_id,
-                        event.timestamp,
-                        event.durability,
+                        event.sequence,
+                        kind,
                         payload_str,
-                        event.trace_id,
-                        event.span_id,
+                        event.timestamp,
+                        event.correlation_id,
                         event.schema_version,
-                        expires_at,
                     ],
                 )
                 .map_err(map_rusqlite)?;
@@ -290,9 +267,9 @@ impl EventStore for SqlitePool {
             let writer = pool.writer();
             let mut stmt = writer
                 .prepare(&format!(
-                    "SELECT {DURABLE_COLS} FROM durable_events \
-                     WHERE global_sequence > ?1 \
-                     ORDER BY global_sequence ASC \
+                    "SELECT {RUN_EVENTS_COLS} FROM run_events \
+                     WHERE rowid > ?1 AND kind NOT LIKE 'diagnostic:%' \
+                     ORDER BY rowid ASC \
                      LIMIT ?2"
                 ))
                 .map_err(map_rusqlite)?;
@@ -320,8 +297,8 @@ impl EventStore for SqlitePool {
             let writer = pool.writer();
             let mut stmt = writer
                 .prepare(&format!(
-                    "SELECT {DURABLE_COLS} FROM durable_events \
-                     WHERE run_id = ?1 \
+                    "SELECT {RUN_EVENTS_COLS} FROM run_events \
+                     WHERE run_id = ?1 AND kind NOT LIKE 'diagnostic:%' \
                      ORDER BY sequence ASC"
                 ))
                 .map_err(map_rusqlite)?;
@@ -351,26 +328,12 @@ impl EventStore for SqlitePool {
 
             // Filter: run_id
             if let Some(ref run_id) = filter.run_id {
-                conditions.push(format!("d.run_id = ?{param_idx}"));
+                conditions.push(format!("run_id = ?{param_idx}"));
                 param_values.push(Box::new(run_id.to_string()));
                 param_idx += 1;
             }
 
-            // Filter: conversation_id
-            if let Some(ref conv_id) = filter.conversation_id {
-                conditions.push(format!("d.conversation_id = ?{param_idx}"));
-                param_values.push(Box::new(conv_id.clone()));
-                param_idx += 1;
-            }
-
-            // Filter: scope_id
-            if let Some(ref scope_id) = filter.scope_id {
-                conditions.push(format!("d.scope_id = ?{param_idx}"));
-                param_values.push(Box::new(scope_id.clone()));
-                param_idx += 1;
-            }
-
-            // Filter: event_types (IN clause)
+            // Filter: event_types (IN clause) -- maps to `kind` column
             if !filter.event_types.is_empty() {
                 let placeholders: Vec<String> = filter
                     .event_types
@@ -382,18 +345,21 @@ impl EventStore for SqlitePool {
                         p
                     })
                     .collect();
-                conditions.push(format!("d.event_type IN ({})", placeholders.join(",")));
+                conditions.push(format!("kind IN ({})", placeholders.join(",")));
             }
 
-            // Filter: since_global_sequence
+            // Filter: since_global_sequence -- maps to rowid
             if let Some(since) = filter.since_global_sequence {
-                conditions.push(format!("d.global_sequence >= ?{param_idx}"));
+                conditions.push(format!("rowid >= ?{param_idx}"));
                 param_values.push(Box::new(since));
                 param_idx += 1;
             }
 
-            // Base query.  When `include_diagnostic` is true we UNION both
-            // tables; otherwise we only query durable_events.
+            // Exclude diagnostic events unless requested.
+            if !filter.include_diagnostic {
+                conditions.push("kind NOT LIKE 'diagnostic:%'".to_string());
+            }
+
             let where_clause = if conditions.is_empty() {
                 String::new()
             } else {
@@ -401,48 +367,22 @@ impl EventStore for SqlitePool {
             };
 
             let limit_clause = if let Some(limit) = filter.limit {
-                format!("LIMIT ?{param_idx}")
-                    .to_string()
-                    .tap(|_| {
-                        param_values.push(Box::new(limit as u64));
-                    })
+                let clause = format!("LIMIT ?{param_idx}");
+                param_values.push(Box::new(limit as u64));
+                // param_idx is no longer used after this, suppress the warning.
+                let _ = param_idx;
+                clause
             } else {
                 String::new()
             };
 
-            // We always need a well-defined column set alias.
-            let durable_cols_prefixed = "\
-                d.id, d.event_type, d.sequence, d.global_sequence, d.run_id, \
-                d.conversation_id, d.correlation_id, d.causation_id, d.scope_id, \
-                d.timestamp, d.durability, d.payload, d.trace_id, d.span_id, d.schema_version";
+            let sql = format!(
+                "SELECT {RUN_EVENTS_COLS} FROM run_events \
+                 {where_clause} ORDER BY rowid ASC {limit_clause}"
+            );
 
-            let sql = if filter.include_diagnostic {
-                // UNION both tables, re-apply the same WHERE to diagnostic.
-                // For simplicity we build two SELECTs with the same filters.
-                format!(
-                    "SELECT {durable_cols_prefixed} FROM durable_events d {where_clause} \
-                     UNION ALL \
-                     SELECT {durable_cols_prefixed} FROM diagnostic_events d {where_clause} \
-                     ORDER BY global_sequence ASC {limit_clause}"
-                )
-            } else {
-                format!(
-                    "SELECT {durable_cols_prefixed} FROM durable_events d \
-                     {where_clause} ORDER BY global_sequence ASC {limit_clause}"
-                )
-            };
-
-            // For the UNION ALL variant, we duplicate the params.
-            let params_for_query: Vec<&dyn rusqlite::types::ToSql> = if filter.include_diagnostic {
-                // Double the params: once for durable, once for diagnostic.
-                let base: Vec<&dyn rusqlite::types::ToSql> =
-                    param_values.iter().map(|b| b.as_ref()).collect();
-                let mut doubled = base.clone();
-                doubled.extend(base);
-                doubled
-            } else {
-                param_values.iter().map(|b| b.as_ref()).collect()
-            };
+            let params_for_query: Vec<&dyn rusqlite::types::ToSql> =
+                param_values.iter().map(|b| b.as_ref()).collect();
 
             let mut stmt = writer.prepare(&sql).map_err(map_rusqlite)?;
 
@@ -487,19 +427,6 @@ impl EventStore for SqlitePool {
 }
 
 // ---------------------------------------------------------------------------
-// Utility trait for inline side-effects (avoids a let binding)
-// ---------------------------------------------------------------------------
-
-trait Tap: Sized {
-    fn tap(self, f: impl FnOnce(&Self)) -> Self {
-        f(&self);
-        self
-    }
-}
-
-impl<T> Tap for T {}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -539,15 +466,36 @@ mod tests {
         }
     }
 
+    /// Insert a dummy run row into the `runs` table so that the FK constraint
+    /// on `run_events.run_id` is satisfied. Also inserts a dummy agent.
+    fn insert_dummy_run(pool: &SqlitePool, run_id: &str) {
+        let writer = pool.writer();
+        let now = chrono::Utc::now().to_rfc3339();
+        let agent_id = uuid::Uuid::now_v7().to_string();
+        writer
+            .execute(
+                "INSERT OR IGNORE INTO agents (id, name, created_at, updated_at) VALUES (?1, 'test-agent', ?2, ?2)",
+                params![agent_id, now],
+            )
+            .expect("insert agent");
+        writer
+            .execute(
+                "INSERT OR IGNORE INTO runs (id, agent_id, state, created_at, updated_at) VALUES (?1, ?2, 'created', ?3, ?3)",
+                params![run_id, agent_id, now],
+            )
+            .expect("insert run");
+    }
+
     #[tokio::test]
     async fn append_durable_assigns_global_sequence() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         let evt = make_event(&run_id, 1, "run_started");
         let stored = pool.append_durable(evt).await.expect("append");
 
-        assert_eq!(stored.global_sequence, 1);
+        assert!(stored.global_sequence > 0);
         assert_eq!(stored.sequence, 1);
     }
 
@@ -556,6 +504,8 @@ mod tests {
         let pool = setup_pool();
         let run_a = uuid::Uuid::now_v7().to_string();
         let run_b = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_a);
+        insert_dummy_run(&pool, &run_b);
 
         let e1 = pool
             .append_durable(make_event(&run_a, 1, "run_started"))
@@ -570,15 +520,16 @@ mod tests {
             .await
             .expect("e3");
 
-        assert_eq!(e1.global_sequence, 1);
-        assert_eq!(e2.global_sequence, 2);
-        assert_eq!(e3.global_sequence, 3);
+        // Global sequence (rowid) must be strictly increasing.
+        assert!(e1.global_sequence < e2.global_sequence);
+        assert!(e2.global_sequence < e3.global_sequence);
     }
 
     #[tokio::test]
     async fn append_durable_rejects_non_monotonic_sequence() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         pool.append_durable(make_event(&run_id, 1, "run_started"))
             .await
@@ -600,6 +551,7 @@ mod tests {
     async fn append_durable_rejects_lower_sequence() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         pool.append_durable(make_event(&run_id, 5, "run_started"))
             .await
@@ -617,6 +569,7 @@ mod tests {
     async fn append_durable_rejects_duplicate_terminal_event() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         pool.append_durable(make_event(&run_id, 1, "run_started"))
             .await
@@ -641,6 +594,7 @@ mod tests {
     async fn append_durable_rejects_duplicate_id() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         let evt = make_event(&run_id, 1, "run_started");
         let dup_id = evt.id.clone();
@@ -664,6 +618,7 @@ mod tests {
         let pool = setup_pool();
         let run_id_str = uuid::Uuid::now_v7().to_string();
         let run_id: RunId = run_id_str.parse().expect("parse RunId");
+        insert_dummy_run(&pool, &run_id_str);
 
         pool.append_durable(make_event(&run_id_str, 1, "run_started"))
             .await
@@ -686,30 +641,35 @@ mod tests {
     async fn read_from_cursor_paginates() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
+        let mut rowids = Vec::new();
         for seq in 1..=5 {
-            pool.append_durable(make_event(&run_id, seq, "turn_started"))
+            let stored = pool
+                .append_durable(make_event(&run_id, seq, "turn_started"))
                 .await
                 .expect("append");
+            rowids.push(stored.global_sequence);
         }
 
-        // Read after cursor 2, limit 2.
-        let page = pool.read_from_cursor(2, 2).await.expect("read");
+        // Read after cursor = rowid of event 2, limit 2.
+        let page = pool.read_from_cursor(rowids[1], 2).await.expect("read");
         assert_eq!(page.len(), 2);
-        assert_eq!(page[0].global_sequence, 3);
-        assert_eq!(page[1].global_sequence, 4);
+        assert_eq!(page[0].global_sequence, rowids[2]);
+        assert_eq!(page[1].global_sequence, rowids[3]);
     }
 
     #[tokio::test]
     async fn read_from_cursor_returns_empty_past_end() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         pool.append_durable(make_event(&run_id, 1, "run_started"))
             .await
             .expect("append");
 
-        let page = pool.read_from_cursor(100, 10).await.expect("read");
+        let page = pool.read_from_cursor(100_000, 10).await.expect("read");
         assert!(page.is_empty());
     }
 
@@ -727,6 +687,7 @@ mod tests {
         let pool = setup_pool();
         let run_id_str = uuid::Uuid::now_v7().to_string();
         let run_id: RunId = run_id_str.parse().expect("parse");
+        insert_dummy_run(&pool, &run_id_str);
 
         pool.append_durable(make_event(&run_id_str, 1, "run_started"))
             .await
@@ -744,6 +705,7 @@ mod tests {
         let pool = setup_pool();
         let run_id_str = uuid::Uuid::now_v7().to_string();
         let run_id: RunId = run_id_str.parse().expect("parse");
+        insert_dummy_run(&pool, &run_id_str);
 
         pool.append_durable(make_event(&run_id_str, 1, "run_started"))
             .await
@@ -758,6 +720,7 @@ mod tests {
         let pool = setup_pool();
         let run_id_str = uuid::Uuid::now_v7().to_string();
         let run_id: RunId = run_id_str.parse().expect("parse");
+        insert_dummy_run(&pool, &run_id_str);
 
         pool.append_durable(make_event(&run_id_str, 1, "run_started"))
             .await
@@ -774,6 +737,7 @@ mod tests {
     async fn append_diagnostic_succeeds() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         let evt = StoredEvent {
             durability: "diagnostic".to_string(),
@@ -789,6 +753,8 @@ mod tests {
         let pool = setup_pool();
         let run_a = uuid::Uuid::now_v7().to_string();
         let run_b = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_a);
+        insert_dummy_run(&pool, &run_b);
 
         pool.append_durable(make_event(&run_a, 1, "run_started"))
             .await
@@ -817,6 +783,7 @@ mod tests {
     async fn query_filters_by_event_types() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         pool.append_durable(make_event(&run_id, 1, "run_started"))
             .await
@@ -845,29 +812,34 @@ mod tests {
     async fn query_filters_by_since_global_sequence() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
+        let mut rowids = Vec::new();
         for seq in 1..=5 {
-            pool.append_durable(make_event(&run_id, seq, "turn_started"))
+            let stored = pool
+                .append_durable(make_event(&run_id, seq, "turn_started"))
                 .await
                 .expect("append");
+            rowids.push(stored.global_sequence);
         }
 
         let results = pool
             .query(EventFilter {
-                since_global_sequence: Some(3),
+                since_global_sequence: Some(rowids[2]),
                 ..Default::default()
             })
             .await
             .expect("query");
 
         assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|e| e.global_sequence >= 3));
+        assert!(results.iter().all(|e| e.global_sequence >= rowids[2]));
     }
 
     #[tokio::test]
     async fn query_with_limit() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         for seq in 1..=10 {
             pool.append_durable(make_event(&run_id, seq, "turn_started"))
@@ -890,6 +862,7 @@ mod tests {
     async fn query_empty_filter_returns_all() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         pool.append_durable(make_event(&run_id, 1, "run_started"))
             .await
@@ -910,6 +883,7 @@ mod tests {
     async fn payload_round_trips_through_store() {
         let pool = setup_pool();
         let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
 
         let payload = serde_json::json!({
             "nested": {"array": [1, 2, 3]},
@@ -933,6 +907,7 @@ mod tests {
             let pool = setup_pool();
             let run_id_str = uuid::Uuid::now_v7().to_string();
             let run_id: RunId = run_id_str.parse().expect("parse");
+            insert_dummy_run(&pool, &run_id_str);
 
             pool.append_durable(make_event(&run_id_str, 1, terminal_type))
                 .await

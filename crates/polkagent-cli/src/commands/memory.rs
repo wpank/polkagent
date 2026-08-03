@@ -4,8 +4,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::info;
-use uuid::Uuid;
-
 use polkagent_core::ids::AgentId;
 use polkagent_memory::retention::{RetentionPolicy, RetentionSweeper};
 use polkagent_memory::sqlite::SqliteMemoryStore;
@@ -39,8 +37,8 @@ pub fn run(cmd: &MemoryCmd) -> Result<()> {
 // search
 // ---------------------------------------------------------------------------
 
-fn search(cmd: &MemorySearchCmd, svc: &MemoryService, store: &SqliteMemoryStore) -> Result<()> {
-    let rt = tokio::runtime::Handle::current();
+fn search(cmd: &MemorySearchCmd, svc: &MemoryService, _store: &SqliteMemoryStore) -> Result<()> {
+    let rt = tokio_handle()?;
 
     let limit = cmd.limit;
     let query = &cmd.query;
@@ -53,21 +51,10 @@ fn search(cmd: &MemorySearchCmd, svc: &MemoryService, store: &SqliteMemoryStore)
             .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", agent_id_str))?;
         rt.block_on(async { svc.recall(agent_id, query, limit).await })
     } else {
-        // Cross-agent search: use the store directly with a nil agent_id, which
-        // in LIKE mode returns entries matching the text across all agents.
-        // We also try a direct raw search using the store's search method.
-        rt.block_on(async {
-            let q = polkagent_memory::types::MemoryQuery {
-                agent_id: AgentId::from_uuid(Uuid::nil()),
-                query_text: query.clone(),
-                memory_types: None,
-                limit,
-                min_relevance: None,
-                since: None,
-                episode_id: None,
-            };
-            store.search(&q).await
-        })
+        anyhow::bail!(
+            "Error: --agent-id is required for search. \
+             Use `polkagent agent list` to see available agents."
+        );
     };
 
     match results {
@@ -119,13 +106,25 @@ fn search(cmd: &MemorySearchCmd, svc: &MemoryService, store: &SqliteMemoryStore)
 // ---------------------------------------------------------------------------
 
 fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
-    let rt = tokio::runtime::Handle::current();
+    let rt = tokio_handle()?;
+
+    let agent_id: AgentId = match cmd.agent_id {
+        Some(ref id_str) => id_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+        None => {
+            anyhow::bail!(
+                "Error: --agent-id is required for list. \
+                 Use `polkagent agent list` to see available agents."
+            );
+        }
+    };
 
     // Build a query that lists memories. We search with empty text to get all.
     let type_filter: Option<Vec<MemoryType>> = cmd.memory_type.as_ref().map(|t| vec![*t]);
 
     let query = polkagent_memory::types::MemoryQuery {
-        agent_id: AgentId::from_uuid(Uuid::nil()),
+        agent_id,
         query_text: String::new(),
         memory_types: type_filter,
         limit: cmd.limit,
@@ -191,7 +190,7 @@ fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn forget(cmd: &MemoryForgetCmd, svc: &MemoryService) -> Result<()> {
-    let rt = tokio::runtime::Handle::current();
+    let rt = tokio_handle()?;
 
     let id: MemoryId = cmd
         .memory_id
@@ -304,7 +303,7 @@ fn stats(cmd: &MemoryStatsCmd, store: &SqliteMemoryStore) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn export(cmd: &MemoryExportCmd, svc: &MemoryService) -> Result<()> {
-    let rt = tokio::runtime::Handle::current();
+    let rt = tokio_handle()?;
 
     let agent_id: AgentId = cmd
         .agent_id
@@ -357,7 +356,7 @@ fn export(cmd: &MemoryExportCmd, svc: &MemoryService) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn import(cmd: &MemoryImportCmd, svc: &MemoryService) -> Result<()> {
-    let rt = tokio::runtime::Handle::current();
+    let rt = tokio_handle()?;
 
     let path = &cmd.input_path;
 
@@ -419,7 +418,7 @@ fn import(cmd: &MemoryImportCmd, svc: &MemoryService) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
-    let rt = tokio::runtime::Handle::current();
+    let rt = tokio_handle()?;
 
     let agent_id: AgentId = cmd
         .agent_id
@@ -550,6 +549,24 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Obtain a tokio runtime handle.
+///
+/// Prefers the current runtime (when called from inside `#[tokio::main]`).
+/// Falls back to creating a new multi-threaded runtime if no current one
+/// exists.
+fn tokio_handle() -> Result<tokio::runtime::Handle> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => Ok(h),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| anyhow::anyhow!("failed to build tokio runtime: {e}"))?;
+            Ok(rt.handle().clone())
+        }
+    }
+}
 
 fn open_memory_store() -> Result<SqliteMemoryStore> {
     let home = std::env::var("HOME").unwrap_or_default();

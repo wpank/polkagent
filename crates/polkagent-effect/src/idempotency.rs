@@ -171,34 +171,34 @@ pub async fn check_duplicate(
     key: &IdempotencyKey,
     run_id: RunId,
 ) -> Result<(), PipelineError> {
-    // Fetch all intents for the run and scan for a matching idempotency key.
-    // In a real SQL-backed store this would be a single indexed lookup;
-    // the store trait's minimal surface area means we do a full scan here and
-    // leave the indexed-lookup optimisation to the SQL implementation.
-    let intents = store
-        .get_by_run(run_id)
+    let key_hex = key.to_hex();
+
+    // Use the indexed lookup when available (O(1) in SQL-backed stores).
+    // The default trait implementation falls back to get_by_run + linear scan.
+    let maybe_stored = store
+        .get_by_idempotency_key(&key_hex, run_id)
         .await
         .map_err(PipelineError::Store)?;
 
-    let key_hex = key.to_hex();
-
-    for stored in &intents {
-        // The idempotency key is stored as a string field on StoredIntent.
-        if stored.idempotency_key == key_hex {
-            let intent_id = stored.id;
-            let state_tag = stored.state.as_str();
-            debug!(
-                intent_id = %intent_id,
-                state = state_tag,
-                "deduplication: found existing intent with matching key"
-            );
-            return match state_tag {
-                "pending" => Err(PipelineError::DuplicatePending(intent_id)),
-                "claimed" | "executing" => Err(PipelineError::DuplicateClaimed(intent_id)),
-                "resolved" => Err(PipelineError::DuplicateResolved(intent_id)),
-                _ => Err(PipelineError::DuplicatePending(intent_id)),
-            };
-        }
+    if let Some(stored) = maybe_stored {
+        let intent_id = stored.id;
+        let state_tag = stored.state.as_str();
+        debug!(
+            intent_id = %intent_id,
+            state = state_tag,
+            "deduplication: found existing intent with matching key"
+        );
+        return match state_tag {
+            "pending" => Err(PipelineError::DuplicatePending(intent_id)),
+            "claimed" | "executing" => Err(PipelineError::DuplicateClaimed(intent_id)),
+            "resolved" => Err(PipelineError::DuplicateResolved(intent_id)),
+            "permanently_failed" | "failed" => Err(PipelineError::DuplicateResolved(intent_id)),
+            other => Err(PipelineError::Internal(format!(
+                "deduplication: intent {} has unexpected state '{}'; \
+                 treating as duplicate to prevent double-execution",
+                intent_id, other,
+            ))),
+        };
     }
 
     Ok(())

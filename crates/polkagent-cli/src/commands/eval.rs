@@ -125,8 +125,8 @@ fn run_suite(cmd: &EvalRunCmd) -> Result<()> {
         }
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
-        print!("{}", report_to_markdown(&report));
-        eprintln!("{}", report_summary(&report));
+        println!("{}", report_to_markdown(&report));
+        println!("{}", report_summary(&report));
     }
 
     // Optionally save JSON report.

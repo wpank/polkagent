@@ -16,8 +16,7 @@ use polkagent_chain_trait::ChainClient;
 use polkagent_config::watch::{AtomicConfig, ConfigWatcher, ReloadPolicy, WatchEventKind};
 use polkagent_config::{Config, ConfigLoader};
 use polkagent_core::{
-    event::{EventCorrelation, EventKind, RunEvent},
-    AgentId, AgentSpec, EffectAttemptId, EffectId, EffectOutcomeId, EventId, RunId, RunState,
+    AgentId, AgentSpec, EffectAttemptId, EffectId, EffectOutcomeId, RunId, RunState,
     Timestamp, WorkerId,
 };
 use polkagent_event::{EventBus, EventReceiver, EventRecorder};
@@ -35,7 +34,7 @@ use polkagent_store_trait::{
     EffectStore, RunStore, RunSummary, StoredIntent, StoredOutcome, StoreError,
 };
 use tokio::sync::broadcast;
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::error::ServiceError;
 use crate::explain::{ExplainRequest, SignAndSubmitResult};
@@ -822,52 +821,64 @@ impl AppService {
         // the turn loop.
         if let Some(orchestrator) = self.orchestrator.clone() {
             let prompt_owned = prompt.to_owned();
-            let event_bus = self.event_bus.clone();
+            let run_manager = self.run_manager.clone();
 
+            // NOTE: If the spawned future panics, tokio::spawn will catch it
+            // and return a JoinError. The run will be left in a non-terminal
+            // state and must be recovered by the startup reaper (see
+            // lifecycle::recover_stuck_runs). A CatchUnwind wrapper is not
+            // used here because most panics in async code are non-resumable
+            // and the reaper provides a safer recovery path.
             tokio::spawn(async move {
                 match orchestrator
                     .execute_run(run_id.clone(), &agent_spec, &prompt_owned)
                     .await
                 {
                     Ok(outcome) => {
-                        let kind = match &outcome.final_state {
-                            RunState::Completed => EventKind::RunCompleted {
-                                output_artifact_id: None,
-                            },
-                            RunState::Failed { reason } => EventKind::RunFailed {
-                                reason: reason.clone(),
-                            },
-                            other => EventKind::RunFailed {
-                                reason: format!("unexpected terminal state: {other}"),
-                            },
-                        };
-                        let ev = RunEvent::new_durable(
-                            EventId::new(),
-                            run_id.clone(),
-                            3,
-                            kind,
-                            EventCorrelation {
-                                run_id: run_id.clone(),
-                                ..Default::default()
-                            },
+                        // The orchestrator already emitted the terminal
+                        // RunCompleted / RunFailed event via the EventRecorder
+                        // during execute_run. Publishing a second durable
+                        // event here would violate the event store's
+                        // duplicate-terminal-event invariant.
+                        //
+                        // We log the outcome for observability; subscribers
+                        // that need the terminal event should listen to the
+                        // events the orchestrator already published.
+                        info!(
+                            %run_id,
+                            final_state = %outcome.final_state,
+                            "orchestrator task finished"
                         );
-                        event_bus.publish(ev);
                     }
                     Err(err) => {
+                        // The orchestrator returned an error. It may or may
+                        // not have already transitioned the run to a terminal
+                        // state (e.g. HarnessValidation errors exit before
+                        // any transition). Only emit a RunFailed event when
+                        // the run is still non-terminal to avoid duplicates.
                         warn!(%run_id, %err, "orchestrator task failed");
-                        let ev = RunEvent::new_durable(
-                            EventId::new(),
-                            run_id.clone(),
-                            3,
-                            EventKind::RunFailed {
-                                reason: err.to_string(),
-                            },
-                            EventCorrelation {
-                                run_id: run_id.clone(),
-                                ..Default::default()
-                            },
-                        );
-                        event_bus.publish(ev);
+                        let already_terminal = run_manager
+                            .get_state(run_id.clone())
+                            .await
+                            .map(|s| s.is_terminal())
+                            .unwrap_or(false);
+                        if !already_terminal {
+                            if let Err(fail_err) = run_manager
+                                .fail_run(run_id.clone(), &err.to_string())
+                                .await
+                            {
+                                error!(
+                                    %run_id,
+                                    %fail_err,
+                                    "failed to transition run to Failed state"
+                                );
+                            }
+                        } else {
+                            debug!(
+                                %run_id,
+                                "run already terminal; skipping duplicate fail_run"
+                            );
+                        }
                     }
                 }
             });
@@ -1319,6 +1330,7 @@ impl AppService {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use polkagent_core::event::EventKind;
     use polkagent_executor_trait::{
         ExecutorError, InferenceRequest, InferenceResponse, StreamEvent,
     };
@@ -1477,6 +1489,20 @@ mod tests {
             runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
             runs.truncate(limit as usize);
             Ok(runs)
+        }
+
+        async fn insert_turn(
+            &self,
+            _turn_id: polkagent_core::TurnId,
+            _run_id: RunId,
+            _sequence: u32,
+            _role: &str,
+            _started_at: &str,
+            _completed_at: Option<&str>,
+            _input_tokens: u32,
+            _output_tokens: u32,
+        ) -> Result<(), StoreError> {
+            Ok(())
         }
     }
 

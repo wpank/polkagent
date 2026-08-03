@@ -25,8 +25,6 @@ use crate::tui::theme::Theme;
 // ---------------------------------------------------------------------------
 
 /// Risk classification for an action.
-// Public widget API — will be wired to the approvals/effects view.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RiskLevel {
     Low,
@@ -36,8 +34,6 @@ pub enum RiskLevel {
 
 impl RiskLevel {
     /// Short label for display.
-    // Used in the action card render footer.
-    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Self::Low    => "LOW",
@@ -47,8 +43,6 @@ impl RiskLevel {
     }
 
     /// The glyph shown before the risk label.
-    // Used in the action card render footer.
-    #[allow(dead_code)]
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Low    => "●",
@@ -72,8 +66,6 @@ impl RiskLevel {
 // ---------------------------------------------------------------------------
 
 /// Input data for a single action card.
-// Public widget API — will be constructed when the approvals view is wired.
-#[allow(dead_code)]
 pub struct ActionCardData<'a> {
     /// Pallet name (e.g. "Balances").
     pub pallet: &'a str,
@@ -97,8 +89,6 @@ pub struct ActionCardData<'a> {
 ///
 /// The card occupies the full `area` and draws its own border. Minimum
 /// useful height is around 8 rows.
-// Public widget API — called by the approvals view once wired.
-#[allow(dead_code)]
 pub fn render(frame: &mut Frame, area: Rect, data: &ActionCardData<'_>, theme: &Theme) {
     // Outer card border.
     let card_block = Block::default()

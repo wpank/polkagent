@@ -120,17 +120,16 @@ fn render_standard(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Them
 // ---------------------------------------------------------------------------
 
 fn render_wide(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
-    // Rows: panels | health (6) | widget strip (4)
+    // Rows: panels | widget strip (4)
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(8),
-            Constraint::Length(6),
             Constraint::Length(4),
         ])
         .split(area);
 
-    // Three columns: agents | runs | health sidebar
+    // Three columns: agents | runs | sidebar (health + activity)
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -142,9 +141,19 @@ fn render_wide(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
 
     render_agents_panel(frame, cols[0], &state.agents, theme);
     render_runs_panel(frame, cols[1], &state.runs, theme);
-    render_health_sidebar(frame, cols[2], &state.health, theme);
-    render_health_panel(frame, rows[1], &state.health, theme);
-    render_widget_strip(frame, rows[2], state, theme);
+
+    // Split the right sidebar: health (top) + recent activity (bottom)
+    let sidebar = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(8),
+            Constraint::Min(4),
+        ])
+        .split(cols[2]);
+
+    render_health_sidebar(frame, sidebar[0], &state.health, theme);
+    render_activity_panel(frame, sidebar[1], state, theme);
+    render_widget_strip(frame, rows[1], state, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +393,99 @@ fn stat_line(
             Style::default().fg(value_color).add_modifier(Modifier::BOLD),
         ),
     ])
+}
+
+// ---------------------------------------------------------------------------
+// Activity panel (wide layout sidebar — recent activity & chain status)
+// ---------------------------------------------------------------------------
+
+/// Render a compact activity summary below the health sidebar in the wide
+/// layout.  Shows chain connection status, budget remaining, and recent
+/// run events so the right column provides useful information beyond
+/// health metrics alone.
+fn render_activity_panel(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TuiState,
+    theme: &Theme,
+) {
+    let block = styled_block(" ACTIVITY ", theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Chain connection status
+    let (chain_color, chain_label) = if state.chain_connected {
+        (theme.success, "Connected")
+    } else {
+        (theme.text_dim, "Offline")
+    };
+    let chain_display = if state.chain_connected && !state.chain_name.is_empty() {
+        format!("{} #{}", state.chain_name, state.best_block)
+    } else {
+        chain_label.to_owned()
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Chain   ", Style::default().fg(theme.text_dim)),
+        Span::styled(
+            chain_display,
+            Style::default().fg(chain_color).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    // Budget remaining
+    let budget_pct = (state.budget_remaining * 100.0).round() as u64;
+    let budget_color = if budget_pct > 50 {
+        theme.success
+    } else if budget_pct > 20 {
+        theme.warning
+    } else {
+        theme.danger
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Budget  ", Style::default().fg(theme.text_dim)),
+        Span::styled(
+            format!("{budget_pct}%"),
+            Style::default().fg(budget_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" remaining", Style::default().fg(theme.text_dim)),
+    ]));
+
+    // Separator
+    lines.push(Line::from(""));
+
+    // Recent events header
+    if !state.run_events.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Recent events",
+            Style::default().fg(theme.text_dim),
+        )));
+
+        let max_events = (inner.height as usize).saturating_sub(lines.len());
+        for event in state.run_events.iter().take(max_events) {
+            let ts = event.timestamp.format("%H:%M:%S").to_string();
+            // Truncate description to fit the sidebar width.
+            let desc_max = inner.width as usize;
+            let desc_max = desc_max.saturating_sub(12); // account for timestamp + padding
+            let desc = if event.description.len() > desc_max {
+                format!("{}…", &event.description[..desc_max.saturating_sub(1)])
+            } else {
+                event.description.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {ts} "), Style::default().fg(theme.text_dim)),
+                Span::styled(desc, Style::default().fg(theme.text_primary)),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  No recent events.",
+            Style::default().fg(theme.text_dim),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ---------------------------------------------------------------------------

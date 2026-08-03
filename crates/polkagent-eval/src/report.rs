@@ -80,7 +80,7 @@ impl EvalReport {
         let total_cases = results.len();
         let passed = results.iter().filter(|r| r.score.passed).count();
         let skipped = results.iter().filter(|r| r.error.is_some()).count();
-        let failed = total_cases - passed - skipped;
+        let failed = total_cases.saturating_sub(passed).saturating_sub(skipped);
 
         let mean_score = if total_cases == 0 {
             0.0

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use polkagent_rate_limit::config::{RateLimitConfig, Strategy, Tier, TierLimits};
 use polkagent_rate_limit::keyed::{KeyedRateLimiter, TokenBucketFactory};
-use polkagent_rate_limit::middleware::{RateLimitLayer, RateLimitServiceError};
+use polkagent_rate_limit::middleware::RateLimitLayer;
 use polkagent_rate_limit::quota::{Quota, QuotaResult};
 use polkagent_rate_limit::{
     CompositeRateLimiter, LeakyBucket, RateLimiter, SlidingWindowCounter, TokenBucket,

@@ -33,8 +33,8 @@ fn tail(cmd: &LogsCmd, pool: &SqlitePool) -> Result<()> {
     if rows.is_empty() {
         println!("No events found.");
     } else {
-        for (seq, event_type, run_id, payload, created_at) in &rows {
-            print_event(*seq, event_type, run_id, payload, created_at);
+        for (seq, kind, run_id, data, timestamp) in &rows {
+            print_event(*seq, kind, run_id, data, timestamp);
         }
     }
 
@@ -54,8 +54,8 @@ fn follow(cmd: &LogsCmd, pool: &SqlitePool) -> Result<()> {
     let initial = fetch_events(&reader, cmd, None)?;
     let mut last_seq: i64 = 0;
 
-    for (seq, event_type, run_id, payload, created_at) in &initial {
-        print_event(*seq, event_type, run_id, payload, created_at);
+    for (seq, kind, run_id, data, timestamp) in &initial {
+        print_event(*seq, kind, run_id, data, timestamp);
         last_seq = last_seq.max(*seq);
     }
 
@@ -65,8 +65,8 @@ fn follow(cmd: &LogsCmd, pool: &SqlitePool) -> Result<()> {
 
         let new_events = fetch_events(&reader, cmd, Some(last_seq))?;
 
-        for (seq, event_type, run_id, payload, created_at) in &new_events {
-            print_event(*seq, event_type, run_id, payload, created_at);
+        for (seq, kind, run_id, data, timestamp) in &new_events {
+            print_event(*seq, kind, run_id, data, timestamp);
             last_seq = last_seq.max(*seq);
         }
     }
@@ -124,7 +124,7 @@ fn build_query(cmd: &LogsCmd, after_seq: Option<i64>) -> (String, Vec<String>) {
         if let Some(seq) = after_seq {
             params.push(seq.to_string());
             format!(
-                "SELECT sequence, event_type, run_id, payload_json, created_at
+                "SELECT sequence, kind, run_id, data_json, timestamp
                  FROM run_events
                  WHERE run_id = ?1 AND sequence > ?2
                  ORDER BY sequence ASC
@@ -132,7 +132,7 @@ fn build_query(cmd: &LogsCmd, after_seq: Option<i64>) -> (String, Vec<String>) {
             )
         } else {
             format!(
-                "SELECT sequence, event_type, run_id, payload_json, created_at
+                "SELECT sequence, kind, run_id, data_json, timestamp
                  FROM run_events
                  WHERE run_id = ?1
                  ORDER BY sequence DESC
@@ -142,7 +142,7 @@ fn build_query(cmd: &LogsCmd, after_seq: Option<i64>) -> (String, Vec<String>) {
     } else if let Some(seq) = after_seq {
         params.push(seq.to_string());
         format!(
-            "SELECT sequence, event_type, run_id, payload_json, created_at
+            "SELECT sequence, kind, run_id, data_json, timestamp
              FROM run_events
              WHERE sequence > ?1
              ORDER BY sequence ASC
@@ -150,7 +150,7 @@ fn build_query(cmd: &LogsCmd, after_seq: Option<i64>) -> (String, Vec<String>) {
         )
     } else {
         format!(
-            "SELECT sequence, event_type, run_id, payload_json, created_at
+            "SELECT sequence, kind, run_id, data_json, timestamp
              FROM run_events
              ORDER BY sequence DESC
              LIMIT {limit}"
@@ -162,25 +162,25 @@ fn build_query(cmd: &LogsCmd, after_seq: Option<i64>) -> (String, Vec<String>) {
 
 fn print_event(
     seq: i64,
-    event_type: &str,
+    kind: &str,
     run_id: &str,
-    payload: &str,
-    created_at: &str,
+    data: &str,
+    timestamp: &str,
 ) {
     // Shorten the timestamp to just the time portion for readability.
-    let ts = created_at
+    let ts = timestamp
         .split('T')
         .nth(1)
         .and_then(|s| s.split('.').next())
-        .unwrap_or(created_at);
+        .unwrap_or(timestamp);
 
     // Truncate run_id to first 8 chars.
     let short_run = &run_id[..run_id.len().min(8)];
 
-    // Truncate payload for human display.
-    let short_payload = truncate(payload, 80);
+    // Truncate data for human display.
+    let short_data = truncate(data, 80);
 
-    println!("[{ts}] #{seq:<6} run={short_run}  {event_type:<24}  {short_payload}");
+    println!("[{ts}] #{seq:<6} run={short_run}  {kind:<24}  {short_data}");
 }
 
 fn truncate(s: &str, max: usize) -> String {

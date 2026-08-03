@@ -673,7 +673,6 @@ fn sorted_labels(labels: &[Label]) -> Vec<Label> {
 /// decimal point (e.g. `42` not `42.0`).
 fn format_f64(v: f64) -> String {
     if v.fract() == 0.0 && v.is_finite() {
-        #[allow(clippy::cast_possible_truncation)]
         format!("{}", v as i64)
     } else {
         format!("{v}")

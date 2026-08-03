@@ -505,6 +505,20 @@ required = ["network.http"]
             {
                 Ok(vec![])
             }
+
+            async fn insert_turn(
+                &self,
+                _turn_id: polkagent_core::TurnId,
+                _run_id: polkagent_core::RunId,
+                _sequence: u32,
+                _role: &str,
+                _started_at: &str,
+                _completed_at: Option<&str>,
+                _input_tokens: u32,
+                _output_tokens: u32,
+            ) -> Result<(), polkagent_store_trait::StoreError> {
+                Ok(())
+            }
         }
 
         let dir = empty_plugin_dir();

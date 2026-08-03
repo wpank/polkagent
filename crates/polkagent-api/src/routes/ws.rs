@@ -375,9 +375,8 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
     // Consume the immediate first tick so pings start after PING_INTERVAL.
     ping_interval.tick().await;
 
-    // Track when the last pong was received (start at now so first ping has
-    // the full PING_INTERVAL window before the timeout applies).
-    let mut last_pong: Option<Instant> = None;
+    // Track when the last ping was sent so we can detect pong timeouts.
+    let mut last_ping_sent: Option<Instant> = None;
     let mut waiting_for_pong = false;
 
     loop {
@@ -395,7 +394,7 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
                     }
                     Some(Ok(Message::Pong(_))) => {
                         trace!("WebSocket v1alpha1: received Pong");
-                        last_pong = Some(Instant::now());
+                        last_ping_sent = None;
                         waiting_for_pong = false;
                     }
                     Some(Ok(Message::Ping(data))) => {
@@ -480,15 +479,13 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
             _ = ping_interval.tick() => {
                 // Check pong timeout from the previous ping.
                 if waiting_for_pong {
-                    if let Some(t) = last_pong {
+                    if let Some(t) = last_ping_sent {
                         if t.elapsed() > PONG_TIMEOUT {
                             debug!("WebSocket v1alpha1: pong timeout; closing connection");
                             break;
                         }
                     } else {
-                        // Never received a pong; close.
-                        debug!("WebSocket v1alpha1: pong timeout (no pong received); closing");
-                        break;
+                        // Ping was sent but pong already cleared it; no timeout.
                     }
                 }
 
@@ -498,6 +495,7 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
                     break;
                 }
                 trace!("WebSocket v1alpha1: sent Ping");
+                last_ping_sent = Some(Instant::now());
                 waiting_for_pong = true;
             }
         }
@@ -513,7 +511,8 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
 fn handle_client_text(text: &str, session: &mut WsSession) -> Option<WsMessage> {
     let client_msg: ClientMessage = match serde_json::from_str(text) {
         Ok(m) => m,
-        Err(_) => {
+        Err(e) => {
+            debug!(error = %e, "WS: failed to parse client message");
             return Some(WsMessage::error(None, "invalid JSON or unknown msg_type"));
         }
     };

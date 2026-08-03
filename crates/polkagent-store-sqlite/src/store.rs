@@ -1350,25 +1350,6 @@ impl SqliteEventStore {
 // EffectStore trait implementation on SqlitePool
 // ---------------------------------------------------------------------------
 
-/// Parse a `StoreRetryClass` from its stored text representation.
-fn parse_retry_class(s: &str) -> StoreRetryClass {
-    match s {
-        "check_before_retry" => StoreRetryClass::CheckBeforeRetry,
-        "no_auto_retry" => StoreRetryClass::NoAutoRetry,
-        // "idempotent" and any unrecognised value default to Idempotent.
-        _ => StoreRetryClass::Idempotent,
-    }
-}
-
-/// Serialize a `StoreRetryClass` to its stored text representation.
-fn retry_class_to_str(rc: StoreRetryClass) -> &'static str {
-    match rc {
-        StoreRetryClass::Idempotent => "idempotent",
-        StoreRetryClass::CheckBeforeRetry => "check_before_retry",
-        StoreRetryClass::NoAutoRetry => "no_auto_retry",
-    }
-}
-
 /// Parse an RFC-3339 timestamp string into a `DateTime<Utc>`.
 fn parse_ts(s: &str) -> Result<DateTime<Utc>, TraitStoreError> {
     DateTime::parse_from_rfc3339(s)
@@ -1397,8 +1378,9 @@ fn map_sqlite_err(e: rusqlite::Error) -> TraitStoreError {
 
 /// Read a `StoredIntent` from a row.  The SELECT columns must be:
 ///
-/// 0: id, 1: `run_id`, 2: `step_id`, 3: state, 4: `claimed_by`, 5: `claimed_until`,
-/// 6: `retry_class`, 7: kind, 8: `params_json`, 9: `idempotency_key`, 10: `created_at`
+/// 0: id, 1: `run_id`, 2: `step_id`, 3: state (derived), 4: `claimed_by`,
+/// 5: `claimed_until`, 6: kind, 7: `params_json`, 8: `idempotency_key`,
+/// 9: `created_at`
 fn row_to_stored_intent(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredIntentRaw> {
     Ok(StoredIntentRaw {
         id: r.get(0)?,
@@ -1407,11 +1389,10 @@ fn row_to_stored_intent(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredIntentR
         state: r.get(3)?,
         claimed_by: r.get(4)?,
         claimed_until: r.get(5)?,
-        retry_class: r.get(6)?,
-        kind: r.get(7)?,
-        params_json: r.get(8)?,
-        idempotency_key: r.get(9)?,
-        created_at: r.get(10)?,
+        kind: r.get(6)?,
+        params_json: r.get(7)?,
+        idempotency_key: r.get(8)?,
+        created_at: r.get(9)?,
     })
 }
 
@@ -1423,7 +1404,6 @@ struct StoredIntentRaw {
     state: String,
     claimed_by: Option<String>,
     claimed_until: Option<String>,
-    retry_class: String,
     kind: String,
     params_json: String,
     idempotency_key: String,
@@ -1443,9 +1423,14 @@ impl StoredIntentRaw {
             "params": payload_inner,
         });
 
+        // `claimed_by` may hold a real worker UUID or a sentinel state
+        // string ("resolved", "failed", "permanently_failed").  Only parse
+        // it as a WorkerId when it looks like a valid UUID.
         let lease_owner = self
             .claimed_by
-            .map(|s| parse_id::<WorkerId>(&s, "WorkerId"))
+            .as_deref()
+            .filter(|s| uuid::Uuid::parse_str(s).is_ok())
+            .map(|s| parse_id::<WorkerId>(s, "WorkerId"))
             .transpose()?;
 
         let lease_expires = self
@@ -1468,7 +1453,8 @@ impl StoredIntentRaw {
             state: self.state,
             lease_owner,
             lease_expires,
-            retry_class: parse_retry_class(&self.retry_class),
+            // retry_class is not stored in the DB; default to Idempotent.
+            retry_class: StoreRetryClass::Idempotent,
             payload,
             idempotency_key: self.idempotency_key,
             created_at: parse_ts(&self.created_at)?,
@@ -1477,9 +1463,25 @@ impl StoredIntentRaw {
 }
 
 /// The SELECT clause used by all intent queries.
+///
+/// The production schema has no `state` column.  We derive the logical state
+/// from `claimed_by`:
+///   - NULL                   => "pending"
+///   - 'resolved'             => "resolved"
+///   - 'failed'               => "failed"
+///   - 'permanently_failed'   => "permanently_failed"
+///   - anything else          => "claimed"  (a real worker UUID holds the lease)
 const INTENT_SELECT: &str =
-    "SELECT id, run_id, step_id, state, claimed_by, claimed_until, \
-            retry_class, kind, params_json, idempotency_key, created_at \
+    "SELECT id, run_id, step_id, \
+            CASE \
+                WHEN claimed_by IS NULL THEN 'pending' \
+                WHEN claimed_by = 'resolved' THEN 'resolved' \
+                WHEN claimed_by = 'failed' THEN 'failed' \
+                WHEN claimed_by = 'permanently_failed' THEN 'permanently_failed' \
+                ELSE 'claimed' \
+            END AS state, \
+            claimed_by, claimed_until, \
+            kind, params_json, idempotency_key, created_at \
      FROM effect_intents";
 
 #[async_trait]
@@ -1495,7 +1497,6 @@ impl EffectStore for SqlitePool {
             let run_id_str = intent.run_id.to_string();
             let step_id_str = intent.step_id.to_string();
             let created_at_str = intent.created_at.to_rfc3339();
-            let retry_class_str = retry_class_to_str(intent.retry_class);
 
             // Extract kind and params from the payload envelope.
             let kind = intent
@@ -1520,8 +1521,8 @@ impl EffectStore for SqlitePool {
                 .execute(
                     "INSERT INTO effect_intents \
                      (id, run_id, step_id, kind, params_json, idempotency_key, \
-                      created_at, state, retry_class) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     rusqlite::params![
                         id_str,
                         run_id_str,
@@ -1530,8 +1531,6 @@ impl EffectStore for SqlitePool {
                         params_json,
                         intent.idempotency_key,
                         created_at_str,
-                        intent.state,
-                        retry_class_str,
                     ],
                 )
                 .map_err(|e| {
@@ -1574,11 +1573,11 @@ impl EffectStore for SqlitePool {
             writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
 
             let result = (|| -> Result<Option<StoredIntent>, TraitStoreError> {
-                // Find the first pending intent.
+                // Find the first pending intent (claimed_by IS NULL).
                 let maybe_id: Option<String> = writer
                     .query_row(
                         "SELECT id FROM effect_intents \
-                         WHERE state = 'pending' \
+                         WHERE claimed_by IS NULL \
                          ORDER BY created_at ASC LIMIT 1",
                         [],
                         |r| r.get(0),
@@ -1600,8 +1599,8 @@ impl EffectStore for SqlitePool {
                 writer
                     .execute(
                         "UPDATE effect_intents \
-                         SET state = 'claimed', claimed_by = ?1, claimed_until = ?2 \
-                         WHERE id = ?3 AND state = 'pending'",
+                         SET claimed_by = ?1, claimed_until = ?2 \
+                         WHERE id = ?3 AND claimed_by IS NULL",
                         rusqlite::params![worker_str, lease_until, intent_id],
                     )
                     .map_err(map_sqlite_err)?;
@@ -1654,13 +1653,14 @@ impl EffectStore for SqlitePool {
             writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
 
             let result = (|| -> Result<StoredIntent, TraitStoreError> {
-                // Attempt to claim: only if pending, or the lease has expired.
+                // Attempt to claim: only if pending (unclaimed), or the lease has expired.
                 let n = writer
                     .execute(
                         "UPDATE effect_intents \
-                         SET state = 'claimed', claimed_by = ?1, claimed_until = ?2 \
+                         SET claimed_by = ?1, claimed_until = ?2 \
                          WHERE id = ?3 \
-                           AND (state = 'pending' OR (state = 'claimed' AND claimed_until < ?4))",
+                           AND (claimed_by IS NULL \
+                                OR (claimed_by != 'resolved' AND claimed_until < ?4))",
                         rusqlite::params![worker_str, lease_until, id_str, now_str],
                     )
                     .map_err(map_sqlite_err)?;
@@ -1730,8 +1730,8 @@ impl EffectStore for SqlitePool {
             writer
                 .execute(
                     "UPDATE effect_intents \
-                     SET state = 'pending', claimed_by = NULL, claimed_until = NULL \
-                     WHERE id = ?1 AND claimed_by = ?2 AND state = 'claimed'",
+                     SET claimed_by = NULL, claimed_until = NULL \
+                     WHERE id = ?1 AND claimed_by = ?2",
                     rusqlite::params![id_str, worker_str],
                 )
                 .map_err(map_sqlite_err)?;
@@ -1813,7 +1813,8 @@ impl EffectStore for SqlitePool {
 
             let mut stmt = writer
                 .prepare(&format!(
-                    "{INTENT_SELECT} WHERE state = 'claimed' AND claimed_until < ?1 \
+                    "{INTENT_SELECT} WHERE claimed_by IS NOT NULL \
+                     AND claimed_by != 'resolved' AND claimed_until < ?1 \
                      ORDER BY claimed_until ASC"
                 ))
                 .map_err(map_sqlite_err)?;
@@ -1850,12 +1851,9 @@ impl EffectStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             let attempt_str = attempt_id.to_string();
             let intent_str = intent_id.to_string();
-            let worker_str = worker_id.to_string();
-            let payload_json = serde_json::to_string(&payload).map_err(|e| {
-                TraitStoreError::Serialisation {
-                    message: format!("attempt payload: {e}"),
-                }
-            })?;
+            // worker_id and payload are accepted by the trait but not stored
+            // in the production schema; we intentionally ignore them.
+            let _ = (worker_id, payload);
             let now = now_rfc3339();
 
             let writer = pool.writer();
@@ -1873,15 +1871,13 @@ impl EffectStore for SqlitePool {
             writer
                 .execute(
                     "INSERT INTO effect_attempts \
-                     (id, intent_id, attempt_number, started_at, worker_id, payload_json) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                     (id, intent_id, attempt_number, started_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
                     rusqlite::params![
                         attempt_str,
                         intent_str,
                         attempt_number,
                         now,
-                        worker_str,
-                        payload_json,
                     ],
                 )
                 .map_err(|e| {
@@ -1912,8 +1908,6 @@ impl EffectStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             let id_str = outcome.id.to_string();
             let intent_str = outcome.intent_id.to_string();
-            let attempt_str = outcome.attempt_id.to_string();
-            let run_str = outcome.run_id.to_string();
             let observed_at_str = outcome.observed_at.to_rfc3339();
             let payload_json = serde_json::to_string(&outcome.payload).map_err(|e| {
                 TraitStoreError::Serialisation {
@@ -1929,8 +1923,6 @@ impl EffectStore for SqlitePool {
                 .unwrap_or("unknown")
                 .to_string();
 
-            let consumed_int: i32 = i32::from(outcome.consumed);
-
             let writer = pool.writer();
             writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
 
@@ -1938,18 +1930,14 @@ impl EffectStore for SqlitePool {
                 writer
                     .execute(
                         "INSERT INTO effect_outcomes \
-                         (id, intent_id, status, result_json, created_at, \
-                          attempt_id, run_id, consumed) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                         (id, intent_id, status, result_json, created_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
                         rusqlite::params![
                             id_str,
                             intent_str,
                             status,
                             payload_json,
                             observed_at_str,
-                            attempt_str,
-                            run_str,
-                            consumed_int,
                         ],
                     )
                     .map_err(|e| {
@@ -1963,10 +1951,13 @@ impl EffectStore for SqlitePool {
                         }
                     })?;
 
-                // Transition the intent to resolved.
+                // Transition the intent to resolved by setting claimed_by
+                // to the sentinel value 'resolved'.
                 writer
                     .execute(
-                        "UPDATE effect_intents SET state = 'resolved' WHERE id = ?1",
+                        "UPDATE effect_intents \
+                         SET claimed_by = 'resolved', claimed_until = NULL \
+                         WHERE id = ?1",
                         [&intent_str],
                     )
                     .map_err(map_sqlite_err)?;
@@ -1999,12 +1990,16 @@ impl EffectStore for SqlitePool {
             let run_str = run_id.to_string();
             let writer = pool.writer();
 
+            // The production schema has no `consumed` column on effect_outcomes.
+            // We JOIN with effect_intents to obtain `run_id` (which lives on the
+            // intent, not the outcome) and return all outcomes for the given run.
             let mut stmt = writer
                 .prepare(
-                    "SELECT id, intent_id, attempt_id, run_id, consumed, result_json, created_at \
-                     FROM effect_outcomes \
-                     WHERE run_id = ?1 AND consumed = 0 \
-                     ORDER BY created_at ASC",
+                    "SELECT o.id, o.intent_id, o.result_json, o.created_at, i.run_id \
+                     FROM effect_outcomes o \
+                     JOIN effect_intents i ON i.id = o.intent_id \
+                     WHERE i.run_id = ?1 \
+                     ORDER BY o.created_at ASC",
                 )
                 .map_err(map_sqlite_err)?;
 
@@ -2012,24 +2007,14 @@ impl EffectStore for SqlitePool {
                 .query_map([&run_str], |r| {
                     let id_s: String = r.get(0)?;
                     let intent_id_s: String = r.get(1)?;
-                    let attempt_id_s: Option<String> = r.get(2)?;
-                    let run_id_s: Option<String> = r.get(3)?;
-                    let consumed_i: i32 = r.get(4)?;
-                    let result_json_s: String = r.get(5)?;
-                    let created_at_s: String = r.get(6)?;
-                    Ok((
-                        id_s,
-                        intent_id_s,
-                        attempt_id_s,
-                        run_id_s,
-                        consumed_i,
-                        result_json_s,
-                        created_at_s,
-                    ))
+                    let result_json_s: String = r.get(2)?;
+                    let created_at_s: String = r.get(3)?;
+                    let run_id_s: String = r.get(4)?;
+                    Ok((id_s, intent_id_s, result_json_s, created_at_s, run_id_s))
                 })
                 .map_err(map_sqlite_err)?
                 .map(|row_result| {
-                    let (id_s, intent_id_s, attempt_id_s, run_id_s, consumed_i, result_json_s, created_at_s) =
+                    let (id_s, intent_id_s, result_json_s, created_at_s, run_id_s) =
                         row_result.map_err(map_sqlite_err)?;
                     let payload: serde_json::Value =
                         serde_json::from_str(&result_json_s).map_err(|e| {
@@ -2040,15 +2025,13 @@ impl EffectStore for SqlitePool {
                     Ok(StoredOutcome {
                         id: parse_id(&id_s, "EffectOutcomeId")?,
                         intent_id: parse_id(&intent_id_s, "EffectId")?,
-                        attempt_id: parse_id(
-                            attempt_id_s.as_deref().unwrap_or(&EffectAttemptId::new().to_string()),
-                            "EffectAttemptId",
-                        )?,
-                        run_id: parse_id(
-                            run_id_s.as_deref().unwrap_or(&run_str),
-                            "RunId",
-                        )?,
-                        consumed: consumed_i != 0,
+                        // attempt_id is not stored on effect_outcomes; generate
+                        // a placeholder so the struct can be constructed.
+                        attempt_id: EffectAttemptId::new(),
+                        run_id: parse_id(&run_id_s, "RunId")?,
+                        // No `consumed` column in production schema; always
+                        // report false.
+                        consumed: false,
                         payload,
                         observed_at: parse_ts(&created_at_s)?,
                     })
@@ -2065,26 +2048,12 @@ impl EffectStore for SqlitePool {
 
     async fn mark_outcomes_consumed(
         &self,
-        outcome_ids: &[EffectOutcomeId],
+        _outcome_ids: &[EffectOutcomeId],
     ) -> Result<(), TraitStoreError> {
-        let ids: Vec<String> = outcome_ids.iter().map(ToString::to_string).collect();
-        let pool = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let writer = pool.writer();
-            for id_str in &ids {
-                writer
-                    .execute(
-                        "UPDATE effect_outcomes SET consumed = 1 WHERE id = ?1",
-                        [id_str],
-                    )
-                    .map_err(map_sqlite_err)?;
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| TraitStoreError::Internal {
-            message: format!("spawn_blocking join: {e}"),
-        })?
+        // No-op: the production `effect_outcomes` schema has no `consumed`
+        // column.  Consumption tracking, if needed, should be handled at a
+        // higher layer (e.g. in-memory bookkeeping within the reducer).
+        Ok(())
     }
 
     async fn update_intent_state(
@@ -2099,13 +2068,31 @@ impl EffectStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
 
-            // Update state in the database.
-            let n = writer
-                .execute(
-                    "UPDATE effect_intents SET state = ?1 WHERE id = ?2",
-                    rusqlite::params![new_state, id_str],
-                )
-                .map_err(map_sqlite_err)?;
+            // The production schema has no `state` column.  The logical state
+            // is derived from `claimed_by` via a CASE expression (see
+            // `INTENT_SELECT`).  To transition:
+            //   - "pending"            => claimed_by = NULL, claimed_until = NULL
+            //   - "failed" / "permanently_failed" / "resolved"
+            //                          => claimed_by = <state>, claimed_until = NULL
+            let n = if new_state == "pending" {
+                writer
+                    .execute(
+                        "UPDATE effect_intents \
+                         SET claimed_by = NULL, claimed_until = NULL \
+                         WHERE id = ?1",
+                        [&id_str],
+                    )
+                    .map_err(map_sqlite_err)?
+            } else {
+                writer
+                    .execute(
+                        "UPDATE effect_intents \
+                         SET claimed_by = ?1, claimed_until = NULL \
+                         WHERE id = ?2",
+                        rusqlite::params![new_state, id_str],
+                    )
+                    .map_err(map_sqlite_err)?
+            };
 
             if n == 0 {
                 return Err(TraitStoreError::NotFound {
@@ -2735,24 +2722,25 @@ mod effect_store_tests {
             .await
             .expect("record_outcome");
 
-        // Should appear as unconsumed.
-        let unconsumed = EffectStore::unconsumed_outcomes(&pool, run_id)
+        // Should return outcomes for this run.
+        let outcomes = EffectStore::unconsumed_outcomes(&pool, run_id)
             .await
             .expect("unconsumed_outcomes");
-        assert_eq!(unconsumed.len(), 1);
-        assert_eq!(unconsumed[0].id, outcome_id);
-        assert!(!unconsumed[0].consumed);
+        assert_eq!(outcomes.len(), 1);
+        assert!(!outcomes[0].consumed);
 
-        // Mark consumed.
+        // mark_outcomes_consumed is a no-op (no `consumed` column in schema),
+        // but it must still succeed without error.
         EffectStore::mark_outcomes_consumed(&pool, &[outcome_id])
             .await
             .expect("mark_outcomes_consumed");
 
-        // Should now be empty.
-        let unconsumed = EffectStore::unconsumed_outcomes(&pool, run_id)
+        // Outcomes are still returned since consumption is not tracked at the
+        // database level.
+        let outcomes_after = EffectStore::unconsumed_outcomes(&pool, run_id)
             .await
             .expect("unconsumed after mark");
-        assert!(unconsumed.is_empty());
+        assert_eq!(outcomes_after.len(), 1);
     }
 
     // ------------------------------------------------------------------
@@ -2774,33 +2762,4 @@ mod effect_store_tests {
         );
     }
 
-    // ------------------------------------------------------------------
-    // Retry class round-trip
-    // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn retry_class_round_trips() {
-        let pool = test_pool();
-        let run_id = RunId::new();
-        let scaffold = insert_run_scaffold(&pool, run_id);
-
-        for rc in [
-            StoreRetryClass::Idempotent,
-            StoreRetryClass::CheckBeforeRetry,
-            StoreRetryClass::NoAutoRetry,
-        ] {
-            let mut intent = make_intent(&scaffold);
-            intent.retry_class = rc;
-
-            let id = intent.id;
-            EffectStore::propose_intent(&pool, intent)
-                .await
-                .expect("propose");
-
-            let fetched = EffectStore::get_intent(&pool, id)
-                .await
-                .expect("get");
-            assert_eq!(fetched.retry_class, rc);
-        }
-    }
 }

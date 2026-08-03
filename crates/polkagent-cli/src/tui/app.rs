@@ -324,7 +324,8 @@ impl App {
             }
 
             TuiAction::NavigateDown => {
-                let visible = 20usize; // conservative; actual rows computed on render
+                // conservative estimate; actual visible rows depend on terminal height
+                let visible = 15usize;
                 match self.active_tab {
                     Tab::Agents => {
                         let total = self.tui_state.agents.len();
@@ -376,7 +377,8 @@ impl App {
             }
 
             TuiAction::ScrollDown(n) => {
-                let visible = 20usize;
+                // conservative estimate; actual visible rows depend on terminal height
+                let visible = 15usize;
                 for _ in 0..n {
                     match self.active_tab {
                         Tab::Agents => {
@@ -604,14 +606,16 @@ impl App {
                         let total = self.tui_state.audit_log.len();
                         if total > 0 {
                             self.tui_state.audit_scroll.selected = Some(total - 1);
-                            self.tui_state.audit_scroll.offset = total.saturating_sub(20);
+                            // conservative estimate; actual visible rows depend on terminal height
+                            self.tui_state.audit_scroll.offset = total.saturating_sub(15);
                         }
                     }
                     Tab::Timeline => {
                         let total = self.tui_state.run_events.len();
                         if total > 0 {
                             self.tui_state.timeline_scroll.selected = Some(total - 1);
-                            self.tui_state.timeline_scroll.offset = total.saturating_sub(20);
+                            // conservative estimate; actual visible rows depend on terminal height
+                            self.tui_state.timeline_scroll.offset = total.saturating_sub(15);
                         }
                     }
                     _ => {}
@@ -666,6 +670,18 @@ impl App {
                         _ => AuditFilter::None,
                     };
                 }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::Search => {
+                // Activate the memory search bar. Switch to the Memory tab
+                // if not already there, then enter Insert mode so subsequent
+                // keystrokes are captured as search input.
+                if self.active_tab != Tab::Memory {
+                    self.active_tab = Tab::Memory;
+                    self.refresh_memory();
+                }
+                self.input_mode = InputMode::Insert;
                 self.tui_state.mark_dirty();
             }
 
@@ -756,11 +772,23 @@ impl App {
                     }
                 }
 
+                // Error count for dashboard digest.
+                self.tui_state.error_count = db.recent_error_count() as usize;
+
+                // Budget remaining for the budget gauge.
+                let (spent, ceiling) = db.budget_status();
+                self.tui_state.budget_remaining = if ceiling > 0.0 {
+                    (ceiling - spent) / ceiling * 100.0
+                } else {
+                    100.0
+                };
+
                 // Clear error if all queries succeeded.
                 if self.tui_state.last_error.is_none() {
                     self.tui_state.last_error = None;
                 }
                 self.tui_state.last_refresh = Some(chrono::Utc::now());
+                self.tui_state.recompute_widget_data();
                 self.tui_state.mark_dirty();
             }
             Err(e) => {

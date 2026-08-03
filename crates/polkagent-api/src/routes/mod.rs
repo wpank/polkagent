@@ -139,17 +139,13 @@ pub fn register(state: AppState) -> Router {
     // -----------------------------------------------------------------------
     // Health routes (no version prefix — reachable by load balancer probes)
     // -----------------------------------------------------------------------
-    // Liveness is stateless (always 200). Readiness and startup use simple
-    // inline handlers that return 200 — the full HealthState-based probes
-    // are available via `health::health_router()` for production deployments.
+    // Liveness is stateless (always 200). Readiness and startup delegate to
+    // the full HealthState-based probes in the health module. The
+    // `Arc<HealthState>` is extracted from `AppState` via `FromRef`.
     let health_routes = Router::new()
         .route("/health/live", get(health::liveness))
-        .route("/health/ready", get(|| async {
-            axum::Json(serde_json::json!({ "status": "ok", "ready": true }))
-        }))
-        .route("/health/startup", get(|| async {
-            axum::Json(serde_json::json!({ "status": "ok", "detail": "initialisation complete" }))
-        }));
+        .route("/health/ready", get(health::readiness))
+        .route("/health/startup", get(health::startup));
 
     // -----------------------------------------------------------------------
     // Prometheus metrics (no version prefix — scrapeable by collectors)
@@ -205,8 +201,8 @@ pub fn register(state: AppState) -> Router {
         .merge(artifact_content_route)
         // Events (REST + WebSocket)
         .route("/events", get(events_rest::list_events))
-        .route("/events/{id}", get(events_rest::get_event))
         .route("/events/stream", get(events::event_stream))
+        .route("/events/{id}", get(events_rest::get_event))
         // Providers
         .route("/providers", get(providers::list_providers))
         .route("/providers/{id}", get(providers::get_provider))

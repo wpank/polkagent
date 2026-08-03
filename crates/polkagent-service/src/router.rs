@@ -23,7 +23,6 @@ use polkagent_config::model_registry::{ModelCatalog, ModelDescriptor};
 use polkagent_retry::provider_health::HealthState;
 use crate::negotiate::{
     Capability, CapabilityRequirement, NegotiatedCapabilities, negotiate,
-    capabilities_from_descriptor,
 };
 
 // ---------------------------------------------------------------------------
@@ -564,6 +563,7 @@ impl fmt::Debug for DefaultModelRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::negotiate::capabilities_from_descriptor;
     use polkagent_config::model_registry::BuiltInModelCatalog;
 
     fn test_catalog() -> Arc<dyn ModelCatalog + Send + Sync> {

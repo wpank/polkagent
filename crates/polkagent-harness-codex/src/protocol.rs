@@ -85,10 +85,13 @@ pub struct InitializeResult {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadStartParams {
+    /// The approval policy for the thread (e.g. `"auto"` or `"manual"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<String>,
+    /// Working directory for the thread.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Model identifier to use for the thread.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }

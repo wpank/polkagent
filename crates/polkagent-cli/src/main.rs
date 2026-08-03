@@ -92,6 +92,9 @@ async fn main() -> Result<()> {
         Some(Commands::Eval(cmd)) => {
             return commands::eval::run(cmd);
         }
+        Some(Commands::Inspect(cmd)) => {
+            return commands::inspect::run(cmd).await;
+        }
         Some(Commands::Auth(cmd)) => {
             return commands::auth::run(cmd);
         }
@@ -142,6 +145,10 @@ async fn main() -> Result<()> {
             commands::skill::run(cmd, &pool)?;
         }
 
+        Some(Commands::Export(cmd)) => {
+            commands::export::run(cmd, &pool)?;
+        }
+
         Some(Commands::Inbox(cmd)) => {
             commands::inbox::run(cmd, &pool)?;
         }
@@ -165,6 +172,7 @@ async fn main() -> Result<()> {
             | Commands::Memory(_)
             | Commands::Completions(_)
             | Commands::Eval(_)
+            | Commands::Inspect(_)
             | Commands::Auth(_)
             | Commands::Network(_)
             | Commands::Serve(_),

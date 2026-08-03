@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 // ---------------------------------------------------------------------------
 // WatchEvent
@@ -383,7 +383,7 @@ struct DebounceState {
     /// The event that is being debounced.
     pending_event: WatchEvent,
     /// When the pending event was first detected.
-    first_seen: Instant,
+    _first_seen: Instant,
     /// The latest detection time (resets on each new change within the window).
     last_seen: Instant,
 }
@@ -586,7 +586,7 @@ impl ConfigWatcher {
                     None => {
                         *debounce = Some(DebounceState {
                             pending_event: event,
-                            first_seen: now,
+                            _first_seen: now,
                             last_seen: now,
                         });
                         // We need to wait for the debounce window to expire
@@ -697,6 +697,7 @@ impl std::error::Error for WatchError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
     use std::fs;
     use std::thread;
     use tempfile::TempDir;

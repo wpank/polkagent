@@ -26,8 +26,8 @@ use polkagent_config::Config;
 use polkagent_event::{EventBus, EventRecorder};
 use polkagent_executor_trait::ModelExecutor;
 use polkagent_store_trait::event::EventStore;
-use polkagent_store_trait::RunStore;
-use tracing::info;
+use polkagent_store_trait::{RunStatus, RunStore};
+use tracing::{info, warn};
 
 use crate::app::AppService;
 use crate::error::ServiceError;
@@ -125,6 +125,84 @@ pub fn startup(
     info!("polkagent service started successfully");
 
     Ok(service)
+}
+
+// ---------------------------------------------------------------------------
+// recover_stuck_runs (startup reaper)
+// ---------------------------------------------------------------------------
+
+/// Non-terminal run states that should not survive a process restart.
+///
+/// Any run found in one of these states during startup is assumed to have been
+/// abandoned when the previous process exited and is transitioned to `failed`.
+const STUCK_STATES: &[&str] = &[
+    "running",
+    "queued",
+    "completing",
+    "awaiting_approval",
+    "waiting_effect",
+];
+
+/// Scan for runs stuck in non-terminal states and transition them to `failed`.
+///
+/// This should be called once during startup, **after** the database is
+/// available but before the service begins accepting new work. It acts as a
+/// crash-recovery mechanism: any run that was in-flight when the previous
+/// process exited is marked as failed with a recovery reason.
+///
+/// Returns the total number of recovered runs.
+///
+/// # Errors
+///
+/// Returns [`ServiceError`] if a store query or update fails. Partial
+/// recovery is possible: runs that were already transitioned before the
+/// error occurred remain in their new state.
+pub async fn recover_stuck_runs(
+    run_store: &dyn RunStore,
+) -> Result<usize, ServiceError> {
+    let mut recovered = 0usize;
+
+    for &state_str in STUCK_STATES {
+        let status = RunStatus::new(state_str);
+        // Fetch up to 10 000 runs per state; in practice there should be very
+        // few (if any) after a clean shutdown.
+        let stuck = run_store
+            .list_by_state(status, 10_000, 0)
+            .await
+            .map_err(|e| ServiceError::Store {
+                message: format!("failed to list runs in state '{state_str}': {e}"),
+            })?;
+
+        for run in &stuck {
+            let failed_status = RunStatus::new("failed");
+            if let Err(e) = run_store
+                .update_state(run.id, failed_status)
+                .await
+            {
+                warn!(
+                    run_id = %run.id,
+                    previous_state = state_str,
+                    %e,
+                    "failed to recover stuck run"
+                );
+            } else {
+                info!(
+                    run_id = %run.id,
+                    previous_state = state_str,
+                    "recovered stuck run: process restarted"
+                );
+                recovered += 1;
+            }
+        }
+    }
+
+    if recovered > 0 {
+        info!(recovered, "startup reaper: recovered stuck runs");
+    } else {
+        info!("startup reaper: no stuck runs found");
+    }
+
+    Ok(recovered)
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +323,20 @@ mod tests {
             _offset: u32,
         ) -> Result<Vec<RunSummary>, StoreError> {
             Ok(vec![])
+        }
+
+        async fn insert_turn(
+            &self,
+            _turn_id: polkagent_core::TurnId,
+            _run_id: RunId,
+            _sequence: u32,
+            _role: &str,
+            _started_at: &str,
+            _completed_at: Option<&str>,
+            _input_tokens: u32,
+            _output_tokens: u32,
+        ) -> Result<(), StoreError> {
+            Ok(())
         }
     }
 

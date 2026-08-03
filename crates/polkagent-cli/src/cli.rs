@@ -114,6 +114,14 @@ pub enum Commands {
     #[command(subcommand)]
     Eval(EvalCmd),
 
+    /// Export data from the Polkagent database (runs, effects, artifacts, events, audit, config).
+    #[command(subcommand)]
+    Export(crate::commands::export::ExportArgs),
+
+    /// Inspect runs, effects, artifacts, agents, policies, and database stats.
+    #[command(subcommand)]
+    Inspect(crate::commands::inspect::InspectCmd),
+
     /// Manage API keys and authentication credentials.
     #[command(subcommand)]
     Auth(AuthCmd),
@@ -753,6 +761,10 @@ pub struct MemorySearchCmd {
 
 #[derive(Debug, Args)]
 pub struct MemoryListCmd {
+    /// Agent ID to list memories for.
+    #[arg(long, value_name = "AGENT_ID")]
+    pub agent_id: Option<String>,
+
     /// Filter by memory type.
     #[arg(long, value_name = "TYPE", value_parser = parse_memory_type)]
     pub memory_type: Option<polkagent_memory::types::MemoryType>,

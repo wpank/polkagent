@@ -26,6 +26,8 @@ use polkagent_skill::manifest::SkillManifest;
 use polkagent_store_trait::{ArtifactStore, EffectStore};
 use polkagent_store_trait::event::EventStore;
 use polkagent_telemetry::{MetricRecorder, PrometheusRegistry};
+
+use crate::routes::health::HealthState;
 use polkagent_tool::ToolSpec;
 
 use crate::run::RunManagerTrait;
@@ -210,6 +212,8 @@ pub struct AppState {
     pub metrics: Arc<MetricRecorder>,
     /// Prometheus metrics registry for the `/metrics` endpoint.
     pub prometheus: PrometheusRegistry,
+    /// Health state for readiness and startup probes.
+    pub health_state: Arc<HealthState>,
 
     // ------------------------------------------------------------------
     // Optional stores — return 501 Not Implemented when None
@@ -260,6 +264,7 @@ impl AppState {
             started_at_utc: Utc::now(),
             metrics: Arc::new(MetricRecorder::new()),
             prometheus: PrometheusRegistry::with_default_metrics(),
+            health_state: Arc::new(HealthState::new_ready()),
             event_store: None,
             artifact_store: None,
             skill_registry: None,
@@ -330,9 +335,26 @@ impl AppState {
         self
     }
 
+    /// Set the health state (for readiness/startup probes).
+    #[must_use]
+    pub fn with_health_state(mut self, state: Arc<HealthState>) -> Self {
+        self.health_state = state;
+        self
+    }
+
     /// Seconds elapsed since the server started.
     #[must_use]
     pub fn uptime_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FromRef implementations for sub-state extraction
+// ---------------------------------------------------------------------------
+
+impl axum::extract::FromRef<AppState> for Arc<HealthState> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::clone(&state.health_state)
     }
 }

@@ -695,6 +695,174 @@ port. If the daemon is not running, the CLI offers to start it.
 - Disk space and database integrity
 - Network connectivity to configured RPC endpoints
 
+### 4.7 `polkagent run` inline output
+
+The `run` command is the primary way users interact with agents. Its output must
+be polished, informative, and scannable — not a dump of raw internal state.
+Output uses inline ANSI styling via crossterm (not full-screen ratatui) so it
+coexists with piped/redirected workflows and with the separate `polkagent tui`
+full-screen interface.
+
+#### 4.7.1 Output structure
+
+A run produces three distinct output streams:
+
+| Stream | Content | Destination |
+|---|---|---|
+| **Styled run output** | Banner, event rendering, summary card | stdout |
+| **Diagnostic tracing** | Internal tracing spans, `INFO`/`DEBUG`/`TRACE` logs | stderr (or log file) |
+| **Provider notes** | One-line provider/harness resolution messages | stderr |
+
+**Requirement UX-CLI-12:** `polkagent run` must suppress all `tracing` output
+from stdout. Tracing logs go to stderr only, and must default to `warn` level
+(not `info`) when running interactively. The rationale: a user running
+`polkagent run -a my-agent -p "hello"` should see *only* the styled run
+output — not dozens of `INFO` lines about harness registration, agent creation,
+run state transitions, and internal service plumbing. Verbose tracing is
+available via `-v` (debug) or `-vv` (trace) flags, and is always written to the
+log file regardless of verbosity flag.
+
+**Requirement UX-CLI-13:** Provider and harness resolution notes (e.g.
+"Using provider 'anthropic'", "Using harness 'codex'") must print to stderr,
+not stdout, so they do not pollute piped output.
+
+#### 4.7.2 Startup banner
+
+When not in `--json` mode, the run begins with a ROSEDUST-styled box-drawn
+banner:
+
+```
+ ┌───────────────────────────────────────────────┐
+ │  POLKAGENT RUN                      v0.1.0    │
+ │  Agent: dev-helper  Model: claude-opus-4-6    │
+ │  Run:   ab12cd34                              │
+ └───────────────────────────────────────────────┘
+```
+
+- "POLKAGENT RUN" in `rose_bright` + bold.
+- Agent/model in `bone`.
+- Run ID truncated to first 8 characters, in `rose_dim`.
+- Box-drawing characters in `rose_ember`.
+
+**Requirement UX-CLI-14:** The banner must convey the three critical facts
+(agent, model, run ID) in a single glanceable card. Full UUIDs are noise for
+human consumption; the truncated 8-character prefix is sufficient for
+identification and can be expanded via `polkagent inspect run <id>`.
+
+#### 4.7.3 Event rendering
+
+All 28 `EventKind` variants are rendered with ROSEDUST palette colors, Unicode
+glyphs, and consistent indentation. Events fall into four display categories:
+
+**Visible lifecycle events** — rendered with status glyphs:
+
+```
+  ▶ Running                          # RunStarted — success color
+
+ ── Turn 1 ──                        # TurnStarted — rose color
+
+  ◉ read_file                        # ToolCallStarted — bone + bold
+  ✓ read_file (0.3s)                 # ToolCallCompleted — success + elapsed
+
+  ▲ Effect pending: ab12cd34         # EffectIntentCreated — warning
+    ▶ Attempt: cd34ef56              # EffectAttemptStarted — rose_dim
+    ✓ Outcome: ef56ab78              # EffectOutcomeRecorded — success
+  ✓ Effects resolved                 # EffectsResolved — success
+
+  ◆ Artifact: 12345678               # ArtifactCreated — dream
+
+  ⏸ Awaiting approval: ab12cd34     # ApprovalRequested — warning + bold
+  ✓ Approved                         # ApprovalGranted — success
+  ✗ Denied: insufficient evidence   # ApprovalDenied — danger
+
+  ▶ Delivering...                    # DeliveryStarted — rose_dim
+  ✓ Delivered                        # DeliveryCompleted — success
+
+  $ tokens: 1,234                    # BudgetConsumed — text_dim
+  ⚠ Budget low: tokens (500 left)   # BudgetWarning — warning + bold
+
+  [WARN] rate limit approaching      # DiagnosticLog — colored by level
+  ↻ Retry queued                     # RunRetryQueued — warning
+```
+
+**Streaming tokens** — printed character-by-character in `text_primary`, flushed
+immediately. When `--no-stream` is set, tokens are buffered and printed at run
+completion.
+
+**Silent events** — suppressed because they are redundant or too granular:
+`RunCreated` (banner already shown), `RunQueued`, `TurnCompleted` (implicit),
+`StepStarted`, `StepCompleted`.
+
+**Terminal events** — trigger a summary card and exit the event loop:
+`RunCompleted`, `RunFailed`, `RunCancelled`, `RunTimedOut`.
+
+**Requirement UX-CLI-15:** Every displayed event must use a distinct Unicode
+glyph *and* a semantic ROSEDUST color, so information is conveyed through both
+shape and color (per accessibility requirement UX-A11Y-11). Tool IDs and effect
+IDs are truncated to 8 characters for scannability.
+
+#### 4.7.4 Progress bars
+
+`ProgressUpdate` events with a percentage render an inline Unicode block
+progress bar (20 characters wide) using the `BLOCKS` character set
+(`▏▎▍▌▋▊▉█`). Color transitions from success (jade) through warning (amber)
+to rose_bright at completion, matching the TUI progress bar widget.
+
+```
+  ████████████████░░░░  80.0%  Indexing codebase
+```
+
+When no percentage is available, only the message is shown:
+```
+  ▶ Indexing codebase
+```
+
+#### 4.7.5 Completion and failure cards
+
+Terminal events produce a box-drawn summary card:
+
+**Success:**
+```
+ ┌───────────────────────────────────────────────┐
+ │  ✓ Run completed                    12.4s     │
+ │  Turns: 3   Tools: 5   Effects: 2            │
+ └───────────────────────────────────────────────┘
+```
+
+**Failure:**
+```
+ ┌───────────────────────────────────────────────┐
+ │  ✗ Run failed                       8.2s      │
+ │  API rate limit exceeded                      │
+ └───────────────────────────────────────────────┘
+```
+
+The summary card provides closure: the user knows the run is done, how long it
+took, and what happened. For success, tool/effect/turn counts give a sense of
+the work performed without requiring `polkagent inspect`.
+
+#### 4.7.6 TTY detection and NO_COLOR compliance
+
+**Requirement UX-CLI-16:** Styling behavior follows a three-tier model:
+
+| Condition | Styling | Unicode glyphs |
+|---|---|---|
+| Interactive TTY, no `NO_COLOR` | Full ANSI color + bold | Yes |
+| Interactive TTY, `NO_COLOR` set | No ANSI escapes | Yes |
+| Piped / redirected (not a TTY) | No ANSI escapes | Yes (valid UTF-8) |
+
+Detection uses `std::io::IsTerminal` (stable since Rust 1.70) and
+`std::env::var_os("NO_COLOR")`. The `Theme::from_env()` constructor already
+handles `NO_COLOR` by returning `Theme::no_color()` (all `Color::Reset`).
+
+#### 4.7.7 JSON mode
+
+**Requirement UX-CLI-17:** `--json` mode completely bypasses all styled output.
+The initial response is a JSON object with `run_id`, `agent_id`, and `state`.
+Terminal events emit plain-text messages. This mode is for programmatic
+consumption and must produce no ANSI escapes, no Unicode glyphs, and no
+box-drawing characters.
+
 ---
 
 ## 5. Agent Studio (web)
@@ -2215,6 +2383,12 @@ All requirements defined in this document, for traceability.
 | UX-CLI-09 | 4.5 | Layered configuration with source annotations |
 | UX-CLI-10 | 4.6 | Daemon connection via socket/port |
 | UX-CLI-11 | 4.6 | polkagent doctor checks environment |
+| UX-CLI-12 | 4.7.1 | `run` suppresses tracing from stdout; default warn level interactively |
+| UX-CLI-13 | 4.7.1 | Provider/harness notes print to stderr, not stdout |
+| UX-CLI-14 | 4.7.2 | Startup banner shows agent, model, truncated run ID |
+| UX-CLI-15 | 4.7.3 | Each event uses distinct glyph + semantic ROSEDUST color |
+| UX-CLI-16 | 4.7.6 | Three-tier TTY/NO_COLOR/pipe styling detection |
+| UX-CLI-17 | 4.7.7 | --json bypasses all styled output completely |
 | UX-STUDIO-01 | 5.2.1 | Dashboard loads in < 2 seconds |
 | UX-STUDIO-02 | 5.2.2 | Timeline events expandable |
 | UX-STUDIO-03 | 5.2.2 | Action cards in timeline are interactive |
@@ -4886,6 +5060,14 @@ handles Ctrl+C/q to exit cleanly, raw mode is always restored.
 - [ ] CLI entry point with clap derive (M) — `polkagent --help` shows all commands
 - [ ] `polkagent agent` command group (M) — list, show, create, start, stop, pause, resume
 - [ ] `polkagent run` command (M) — interactive and non-interactive modes
+      - [x] `run_printer.rs` — ROSEDUST-styled inline output (RunPrinter struct)
+      - [x] Startup banner with agent/model/run ID in box-drawn card
+      - [x] All 28 EventKind variants rendered with glyphs + semantic colors
+      - [x] Completion/failure summary cards with elapsed time and stats
+      - [x] TTY detection + NO_COLOR compliance
+      - [x] Progress bar using Unicode BLOCKS characters
+      - [ ] Tracing log suppression — default to `warn` in interactive mode (UX-CLI-12)
+      - [ ] Provider/harness notes to stderr (UX-CLI-13)
 - [ ] `polkagent inbox` command group (M) — list, show, approve, deny, history
 - [ ] `polkagent chain` command group (L) — query, decode, profile, submit
 - [ ] `polkagent doctor` (M) — environment diagnostics

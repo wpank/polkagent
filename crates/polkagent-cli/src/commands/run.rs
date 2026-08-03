@@ -5,7 +5,6 @@
 //! and streams events to stdout until a terminal event arrives or the timeout
 //! expires.
 
-use std::io::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +25,8 @@ use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
 use crate::cli::RunCmd;
+use crate::commands::run_printer::RunPrinter;
+use crate::tui::theme::Theme;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -157,6 +158,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
 
     // Reconstruct the AgentSpec from the DB row and register it with AppService.
     let agent_spec = build_agent_spec(agent_id, &agent.name, &agent.spec_json, cmd.model.clone());
+    let agent_model = agent_spec.model.clone();
     app_service
         .create_agent(agent_spec)
         .context("registering agent with AppService")?;
@@ -178,8 +180,15 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
             "state":    "running",
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
-    } else {
-        println!("Run started: {run_id}");
+    }
+
+    // Build styled printer for non-JSON output.
+    let theme = Theme::from_env();
+    let mut printer = RunPrinter::new(theme, cmd.stream);
+    let mut stdout = std::io::stdout();
+
+    if !cmd.json {
+        printer.print_header(&mut stdout, &run_id, &agent.name, &agent_model)?;
     }
 
     // -----------------------------------------------------------------------
@@ -212,8 +221,6 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     // Event streaming loop
     // -----------------------------------------------------------------------
     // `stream` is true by default; --no-stream sets it to false.
-    let stream_tokens = cmd.stream;
-    let mut final_text = String::new();
 
     let result: Result<()> = async {
         // Set up the timeout future — either a real sleep or one that never
@@ -268,49 +275,28 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
                 continue;
             }
 
-            match &event.kind {
-                EventKind::RunCreated => {
-                    // Already printed "Run started: {id}" above.
-                }
-                EventKind::RunQueued | EventKind::RunStarted => {
-                    // Lifecycle noise; skip for normal output.
-                }
-                EventKind::StreamingToken { text } => {
-                    if stream_tokens {
-                        print!("{text}");
-                        // Flush immediately so tokens appear in the terminal.
-                        let _ = std::io::stdout().flush();
-                    } else {
-                        final_text.push_str(text);
+            if cmd.json {
+                // JSON mode: only emit terminal events as JSON.
+                match &event.kind {
+                    EventKind::RunCompleted { .. } => break,
+                    EventKind::RunFailed { reason } => {
+                        println!("\nRun failed: {reason}");
+                        break;
                     }
-                }
-                EventKind::ToolCallStarted { tool_name } => {
-                    println!("\n[Tool: {tool_name}]");
-                }
-                EventKind::EffectIntentCreated { intent_id } => {
-                    println!("\n[Effect pending approval: {intent_id}]");
-                }
-                EventKind::RunCompleted { .. } => {
-                    if !stream_tokens && !final_text.is_empty() {
-                        println!("{final_text}");
+                    EventKind::RunCancelled { reason } => {
+                        println!("\nRun cancelled: {reason}");
+                        break;
                     }
-                    println!("\nRun completed successfully");
-                    break;
+                    EventKind::RunTimedOut => {
+                        println!("\nRun timed out");
+                        break;
+                    }
+                    _ => {}
                 }
-                EventKind::RunFailed { reason } => {
-                    println!("\nRun failed: {reason}");
+            } else {
+                let flow = printer.handle_event(&mut stdout, &event);
+                if flow.is_break() {
                     break;
-                }
-                EventKind::RunCancelled { reason } => {
-                    println!("\nRun cancelled: {reason}");
-                    break;
-                }
-                EventKind::RunTimedOut => {
-                    println!("\nRun timed out");
-                    break;
-                }
-                _ => {
-                    // Ignore all other event kinds (TurnStarted, diagnostics, etc.)
                 }
             }
         }
@@ -326,27 +312,18 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
 // Config loading
 // ---------------------------------------------------------------------------
 
-/// Attempt to load the Polkagent config from standard locations.
+/// Attempt to load the Polkagent config from standard locations via
+/// [`ConfigLoader`].
 ///
-/// Returns [`Config::default()`] if no config file is found.
+/// Returns [`Config::default()`] if no config file is found or loading fails.
 fn load_config() -> Config {
-    // Project-local config.
-    if let Ok(content) = std::fs::read_to_string(".polkagent/polkagent.toml") {
-        if let Ok(cfg) = toml::from_str(&content) {
-            return cfg;
+    match polkagent_config::ConfigLoader::new().load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!("Failed to load config: {e}, using defaults");
+            Config::default()
         }
     }
-
-    // User-global config.
-    let home = std::env::var("HOME").unwrap_or_default();
-    let user_cfg = format!("{home}/.config/polkagent/polkagent.toml");
-    if let Ok(content) = std::fs::read_to_string(&user_cfg) {
-        if let Ok(cfg) = toml::from_str(&content) {
-            return cfg;
-        }
-    }
-
-    Config::default()
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +391,7 @@ fn executor_from_provider_config(
         }
         "gemini" => {
             // Gemini executor not yet available; use OpenAI-compat shim.
+            tracing::warn!("Gemini executor not yet available; falling back to OpenAI-compatible shim");
             Some(OpenAiExecutor::new(api_key, pc.default_model.clone()))
         }
         _ => None,
@@ -499,7 +477,7 @@ fn try_provider_by_name(
     match name {
         "anthropic" => {
             let api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty())?;
-            let model = model_override.unwrap_or("claude-sonnet-4-20250514").to_string();
+            let model = model_override.unwrap_or("claude-sonnet-4-6").to_string();
             let executor = AnthropicExecutor::new(api_key, model.clone());
             Some((executor, Some(format!("Using Anthropic executor (model: {model})."))))
         }
@@ -541,7 +519,7 @@ fn detect_executor(
     if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
         if !api_key.is_empty() {
             let model = model_override
-                .unwrap_or("claude-sonnet-4-20250514")
+                .unwrap_or("claude-sonnet-4-6")
                 .to_string();
             let executor = AnthropicExecutor::new(api_key, model.clone());
             let note = Some(format!(

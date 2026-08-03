@@ -145,9 +145,10 @@ fn render_list(
 
     frame.render_widget(table, inner);
 
-    // Summary footer line.
-    let footer_y = area.y + area.height.saturating_sub(1);
-    if footer_y < area.y + area.height {
+    // Summary footer line — render inside the inner area so it does not
+    // overlap the block border.
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    if footer_y < inner.y + inner.height {
         let active_count = agents.iter().filter(|a| a.state == "active").count();
         let idle_count = agents.iter().filter(|a| matches!(a.state.as_str(), "configured" | "created")).count();
         let err_count = agents.iter().filter(|a| a.active_runs == 0 && !matches!(a.state.as_str(), "active" | "configured" | "created" | "archived")).count();
@@ -159,8 +160,8 @@ fn render_list(
         let footer_area = Rect {
             y: footer_y,
             height: 1,
-            x: area.x + 1,
-            width: area.width.saturating_sub(2),
+            x: inner.x,
+            width: inner.width,
         };
         frame.render_widget(
             Paragraph::new(Span::styled(summary, Style::default().fg(theme.text_dim))),

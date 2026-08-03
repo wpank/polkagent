@@ -48,8 +48,16 @@ pub enum StoreError {
 pub type StoreResult<T> = Result<T, StoreError>;
 
 impl StoreError {
-    /// Returns `true` if this error represents a UNIQUE constraint violation
-    /// from SQLite (error code 2067 or 19 with extended code 2067).
+    /// Returns `true` if this error represents a UNIQUE or PRIMARY KEY
+    /// constraint violation from SQLite.
+    ///
+    /// This checks the `extended_code` to distinguish uniqueness violations
+    /// from other constraint errors such as FOREIGN KEY violations
+    /// (extended code 787 = SQLITE_CONSTRAINT_FOREIGNKEY).
+    ///
+    /// Matched extended codes:
+    /// - 2067 = `SQLITE_CONSTRAINT_UNIQUE`
+    /// - 1555 = `SQLITE_CONSTRAINT_PRIMARYKEY`
     #[must_use]
     pub fn is_unique_violation(err: &rusqlite::Error) -> bool {
         matches!(
@@ -57,7 +65,23 @@ impl StoreError {
             rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error {
                     code: rusqlite::ffi::ErrorCode::ConstraintViolation,
-                    ..
+                    extended_code: 2067 | 1555,
+                },
+                _,
+            )
+        )
+    }
+
+    /// Returns `true` if this error represents a FOREIGN KEY constraint
+    /// violation from SQLite (extended code 787 = SQLITE_CONSTRAINT_FOREIGNKEY).
+    #[must_use]
+    pub fn is_fk_violation(err: &rusqlite::Error) -> bool {
+        matches!(
+            err,
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                    extended_code: 787, // SQLITE_CONSTRAINT_FOREIGNKEY
                 },
                 _,
             )
