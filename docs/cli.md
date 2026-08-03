@@ -1,5 +1,44 @@
 # CLI Reference
 
+```mermaid
+graph LR
+    PA["polkagent"] --> INIT["init"]
+    PA --> RUN["run"]
+    PA --> AGENT["agent"]
+    PA --> SKILL["skill"]
+    PA --> TUI["tui"]
+    PA --> SERVE["serve"]
+    PA --> CONFIG["config"]
+    PA --> DOCTOR["doctor"]
+    PA --> STATUS["status"]
+    PA --> LOGS["logs"]
+    PA --> INBOX["inbox"]
+    PA --> EXPLAIN["explain"]
+    PA --> CHAIN["chain"]
+    PA --> MEMORY["memory"]
+    PA --> EVAL["eval"]
+    PA --> AUTH["auth"]
+    PA --> NET["network"]
+    PA --> COMP["completions"]
+    PA --> VER["version"]
+
+    AGENT --> AC["create"]
+    AGENT --> AL["list"]
+    AGENT --> AS["show"]
+    AGENT --> AD["delete"]
+    AGENT --> AST["start/stop"]
+
+    INBOX --> IL["list"]
+    INBOX --> IS["show"]
+    INBOX --> IA["approve"]
+    INBOX --> ID["deny"]
+
+    CHAIN --> CS["status"]
+    CHAIN --> CM["metadata"]
+    CHAIN --> CD["decode"]
+    CHAIN --> CB["balance"]
+```
+
 ## Global Flags
 
 These flags are available on all commands.
@@ -596,4 +635,28 @@ Print version information and exit.
 
 ```bash
 polkagent version
+```
+
+---
+
+## Provider Resolution
+
+```mermaid
+flowchart TD
+    A["polkagent run -a my-agent -p 'Hello'"] --> B{--provider flag?}
+    B -->|Yes| C[Use specified provider]
+    B -->|No| D{Agent has provider?}
+    D -->|Yes| E[Use agent's provider]
+    D -->|No| F{Default in config?}
+    F -->|Yes| G[Use config default]
+    F -->|No| H[Use first auto-detected]
+
+    C --> I{--model flag?}
+    E --> I
+    G --> I
+    H --> I
+    I -->|Yes| J[Override model]
+    I -->|No| K[Use provider's default model]
+    J --> L[Execute run]
+    K --> L
 ```

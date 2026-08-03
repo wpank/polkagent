@@ -2,6 +2,40 @@
 
 Harnesses are abstractions for wrapping and orchestrating external coding agents. Polkagent can delegate execution to various coding agent tools through a unified harness interface defined in `polkagent-harness-trait`.
 
+```mermaid
+graph LR
+    subgraph Polkagent
+        RM["Run Manager"]
+        HT["Harness Trait"]
+    end
+
+    subgraph Harnesses
+        HC["polkagent-harness-claude"]
+        HX["polkagent-harness-codex"]
+        HA["polkagent-harness-acp"]
+    end
+
+    subgraph External Agents
+        CC["Claude Code"]
+        CX["Codex CLI"]
+        CU["Cursor"]
+        CP["Copilot"]
+        GO["Goose"]
+        KI["Kiro"]
+    end
+
+    RM --> HT
+    HT --> HC
+    HT --> HX
+    HT --> HA
+    HC --> CC
+    HX --> CX
+    HA --> CU
+    HA --> CP
+    HA --> GO
+    HA --> KI
+```
+
 ## Transport Types
 
 Each harness communicates with its underlying agent via one of the following transport flavors, defined in the `TransportFlavor` enum:
@@ -48,6 +82,27 @@ The `polkagent-harness-acp` crate provides a shared JSON-RPC 2.0 over stdio clie
 4. Send prompts.
 5. Receive streaming notifications.
 
+```mermaid
+sequenceDiagram
+    participant PA as Polkagent
+    participant ACP as ACP Client
+    participant AG as External Agent
+
+    PA->>ACP: Start harness session
+    ACP->>AG: initialize (JSON-RPC 2.0)
+    AG-->>ACP: capabilities response
+    ACP->>AG: initialized notification
+    ACP->>AG: sessions/create
+    AG-->>ACP: session_id
+    ACP->>AG: prompts/send (with prompt)
+    loop Streaming
+        AG-->>ACP: notifications/progress
+        AG-->>ACP: notifications/tool_call
+        AG-->>ACP: notifications/completion
+    end
+    ACP-->>PA: Harness result
+```
+
 ## Configuration
 
 ### Global Harness Config
@@ -91,3 +146,28 @@ polkagent run -a my-agent -p "Fix the bug" --harness codex
 | `POLKAGENT_HARNESS_TYPE` | Default harness type. |
 | `POLKAGENT_HARNESS_TIMEOUT_SECS` | Per-operation timeout in seconds. |
 | `POLKAGENT_HARNESS_MAX_CONCURRENT` | Maximum number of concurrent harness operations. |
+
+## Harness Selection
+
+```mermaid
+flowchart TD
+    A[Run Request] --> B{--harness flag?}
+    B -->|Yes| C[Use specified harness]
+    B -->|No| D{Agent has harness config?}
+    D -->|Yes| E[Use agent's harness]
+    D -->|No| F{Global harness.harness_type?}
+    F -->|Yes| G[Use global default]
+    F -->|No| H[Use built-in executor\nNo harness]
+
+    C --> I{Harness binary found?}
+    E --> I
+    G --> I
+    I -->|Yes| J[Initialize harness session]
+    I -->|No| K[Error: harness not available]
+
+    J --> L{Transport type?}
+    L -->|OneShotCli| M[Spawn CLI process]
+    L -->|JsonRpcStdio| N[Open stdin/stdout JSON-RPC]
+    L -->|HttpApi| O[Connect HTTP endpoint]
+    L -->|WebSocket| P[Connect WebSocket]
+```

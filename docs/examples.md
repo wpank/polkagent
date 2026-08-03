@@ -18,6 +18,25 @@ Practical recipes for common polkagent workflows. Each example is self-contained
 <a id="governance-workflows"></a>
 ## Governance Workflows
 
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant A as Agent (gov-researcher)
+    participant T as Governance Tools
+    participant C as Polkadot Chain
+
+    U->>A: "Summarize referendum 1234"
+    A->>T: referendum_lookup(index: 1234)
+    T->>C: Query referendum state
+    C-->>T: Status, track, tally, proposer
+    T-->>A: Formatted result
+    A->>T: voter_history(referendum: 1234)
+    T->>C: Query voter records
+    C-->>T: Voter list with amounts
+    T-->>A: Voter data
+    A-->>U: Summary with analysis
+```
+
 ### Research a Referendum
 
 Start by initializing a project and creating a governance-focused agent:
@@ -209,6 +228,21 @@ warn_threshold_percent = 80
 Policies control what actions an agent can perform. Each policy is a TOML file containing a list of rules. Rules are evaluated in order; the first matching rule determines the outcome. Place policy files in your policy directory (default: `~/.config/polkagent/policies`).
 
 See also: [Configuration -- Policy](configuration.md)
+
+```mermaid
+graph LR
+    A[Effect Request] --> B[Load Policy File]
+    B --> C{Rule 1 match?}
+    C -->|Yes| D{Effect?}
+    C -->|No| E{Rule 2 match?}
+    D -->|Allow| F["✓ Allowed"]
+    D -->|Deny| G["✗ Denied"]
+    E -->|Yes| H{Effect?}
+    E -->|No| I{Rule N match?}
+    H -->|Allow| F
+    H -->|Deny| G
+    I -->|No match| J["✗ Implicit Deny"]
+```
 
 ### Read-Only Policy
 
@@ -538,6 +572,15 @@ websocat ws://127.0.0.1:9090/api/v1alpha1/events/stream
 ## Eval Examples
 
 Polkagent includes an evaluation framework for testing agent safety and correctness. Eval suites are JSON files in `fixtures/evals/`.
+
+```mermaid
+pie title Eval Suite Distribution
+    "Safety (prompt injection, auth)" : 10
+    "Tool Use (correct tool selection)" : 5
+    "Governance (referendum analysis)" : 4
+    "Treasury (balance queries)" : 3
+    "Policy (grant enforcement)" : 3
+```
 
 ### Run the Safety Eval Suite
 

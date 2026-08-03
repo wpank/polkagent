@@ -10,6 +10,37 @@ polkagent serve --port 9090 --host 127.0.0.1
 
 **Body limits:** 1 MiB for standard requests, 10 MiB for artifact content.
 
+```mermaid
+graph LR
+    subgraph API["/api/v1alpha1"]
+        AG["/agents"]
+        RN["/runs"]
+        EF["/effects"]
+        AR["/artifacts"]
+        EV["/events"]
+        PR["/providers"]
+        MD["/models"]
+        SK["/skills"]
+        TL["/tools"]
+        PM["/payments"]
+        MM["/memory"]
+        AU["/audit"]
+        CV["/conversations"]
+        SY["/system"]
+    end
+
+    subgraph Health["Health & Metrics"]
+        HL["/health/live"]
+        HR["/health/ready"]
+        HS["/health/startup"]
+        MT["/metrics"]
+        OA["/openapi.json"]
+    end
+
+    CLIENT["Client"] --> API
+    CLIENT --> Health
+```
+
 ---
 
 ## Endpoints
@@ -41,6 +72,31 @@ polkagent serve --port 9090 --host 127.0.0.1
 | `GET` | `/api/v1alpha1/runs/:id/effects` | Get effects for a run |
 | `POST` | `/api/v1alpha1/runs/:id/resume` | Resume a run |
 
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as Polkagent API
+    participant RM as Run Manager
+    participant LLM as LLM Provider
+
+    C->>API: POST /agents/:id/runs {prompt}
+    API->>RM: Create Run
+    RM-->>API: Run (state: created)
+    API-->>C: 201 Created {run_id, state: "created"}
+
+    Note over RM: Async execution begins
+    RM->>RM: Created → Queued → Running
+    RM->>LLM: Model inference
+    LLM-->>RM: Response
+    RM->>RM: Running → Completed
+
+    C->>API: GET /runs/:id
+    API-->>C: 200 {state: "completed", turns, usage}
+
+    C->>API: GET /runs/:id/artifacts
+    API-->>C: 200 [{artifact_id, content_type}]
+```
+
 ### Effects
 
 | Method | Path | Description |
@@ -48,6 +104,32 @@ polkagent serve --port 9090 --host 127.0.0.1
 | `GET` | `/api/v1alpha1/effects/:id` | Get effect by ID |
 | `POST` | `/api/v1alpha1/effects/:id/approve` | Approve a pending effect |
 | `POST` | `/api/v1alpha1/effects/:id/deny` | Deny a pending effect |
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as Polkagent API
+    participant EP as Effect Pipeline
+    participant EXT as External System
+
+    Note over EP: Effect requires approval
+    EP->>EP: Run → AwaitingApproval
+
+    C->>API: GET /runs/:id
+    API-->>C: {state: "awaiting_approval"}
+
+    C->>API: GET /runs/:id/effects
+    API-->>C: [{id, kind, state: "pending"}]
+
+    C->>API: POST /effects/:id/approve
+    API->>EP: Approve effect
+    EP->>EP: Claim → Execute
+    EP->>EXT: Perform I/O
+    EXT-->>EP: Result
+    EP->>EP: Record outcome
+    EP-->>API: Effect resolved
+    API-->>C: 200 {state: "resolved"}
+```
 
 ### Artifacts
 
@@ -157,6 +239,26 @@ These endpoints are served without the `/api/v1alpha1` prefix.
 ## WebSocket event streaming
 
 Connect to `/api/v1alpha1/events/stream` to receive real-time events. The stream delivers run lifecycle events including `RunStarted`, `TurnCompleted`, `EffectResolved`, `TokensStreamed`, and others.
+
+```mermaid
+stateDiagram-v2
+    [*] --> created : POST /agents/:id/runs
+    created --> queued : automatic
+    queued --> running : automatic
+    running --> awaiting_approval : effect needs approval
+    awaiting_approval --> running : POST /effects/:id/approve
+    running --> waiting_effect : effects in flight
+    waiting_effect --> running : effects resolved
+    running --> completing : final turn
+    completing --> completed : artifacts finalized
+    running --> failed : unrecoverable error
+    running --> cancelled : POST /runs/:id/cancel
+    running --> timed_out : deadline exceeded
+    completed --> [*]
+    failed --> [*]
+    cancelled --> [*]
+    timed_out --> [*]
+```
 
 ---
 

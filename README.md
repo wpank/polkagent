@@ -1,6 +1,9 @@
 ![CI](https://github.com/nicovince/polkagent/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![MSRV](https://img.shields.io/badge/rustc-1.80+-orange.svg)
+![Crates](https://img.shields.io/badge/crates-74-brightgreen)
+![Tests](https://img.shields.io/badge/tests-1200%2B-brightgreen)
+![Providers](https://img.shields.io/badge/providers-9-blue)
 
 # Polkagent
 
@@ -182,66 +185,155 @@ Environment variables prefixed with `POLKAGENT_*` override both. See [docs/confi
 
 Polkagent is organized as a Cargo workspace following a hexagonal (ports and adapters) architecture. Domain logic lives in pure crates with no I/O dependencies. External systems are accessed through narrow trait-based ports, with concrete adapters provided separately.
 
+```mermaid
+graph TB
+    User([User])
+
+    subgraph Surfaces["Surfaces"]
+        CLI["CLI + TUI<br/>(ROSEDUST)"]
+        API["REST + WebSocket<br/>API"]
+        Webhook["Webhook<br/>Surface"]
+    end
+
+    subgraph Core["Application Core"]
+        RM["Run Manager"]
+        GR["Grant Resolver"]
+        EP["Effect Pipeline"]
+        EB["Event Bus"]
+        AS["Artifact Store"]
+        OB["Outbox"]
+    end
+
+    subgraph Ports["Ports (Trait Interfaces)"]
+        ET["Executor"]
+        ST["Signer"]
+        SR["Store"]
+        CT["Chain"]
+        TT["Transport"]
+        HT["Harness"]
+    end
+
+    subgraph Adapters["Adapters"]
+        direction LR
+        A1["Anthropic"]
+        A2["OpenAI"]
+        A3["Gemini"]
+        A4["SQLite"]
+        A5["Subxt"]
+        A6["Fake"]
+    end
+
+    subgraph External["External Systems"]
+        direction LR
+        LLM["LLM APIs"]
+        DOT["Polkadot"]
+        FS["Filesystem"]
+    end
+
+    User --> Surfaces
+    Surfaces --> Core
+    Core --> Ports
+    Ports --> Adapters
+    Adapters --> External
 ```
-                      +-----------+
-                      |    User   |
-                      +-----+-----+
-                            |
-                +-----------+-----------+
-                |  Surfaces (CLI / API) |
-                +-----------+-----------+
-                            |
-          +-----------------+-----------------+
-          |          Application Core         |
-          |  +-----------+  +-------------+   |
-          |  |    Run    |  |    Grant     |   |
-          |  |  Manager  |  |   Resolver   |   |
-          |  +-----+-----+  +------+------+   |
-          |        |               |           |
-          |  +-----+-----+  +-----+-----+     |
-          |  |  Effect   |  |   Event    |     |
-          |  |  Pipeline |  |    Bus     |     |
-          |  +-----+-----+  +-----+-----+     |
-          |        |               |           |
-          |  +-----+-----+  +-----+-----+     |
-          |  |  Artifact |  |   Outbox   |     |
-          |  |  Store    |  |            |     |
-          |  +-----------+  +-----------+     |
-          +-----------------+-----------------+
-                            |
-          +-----------------+-----------------+
-          |              Ports                |
-          |  (executor, signer, store,        |
-          |   chain, transport traits)        |
-          +-----------------+-----------------+
-                            |
-          +-----------------+-----------------+
-          |            Adapters               |
-          |  SQLite  Anthropic  OpenAI  Fake  |
-          |  Ollama  External-Signer  ...     |
-          +-----------------+-----------------+
-                            |
-          +-----------------+-----------------+
-          |         External Systems          |
-          |  LLM APIs  Polkadot  Filesystem   |
-          +-----------------------------------+
+
+### How It Works
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant S as Surface (CLI/API)
+    participant R as Run Manager
+    participant G as Grant Resolver
+    participant E as Executor (LLM)
+    participant P as Effect Pipeline
+
+    U->>S: polkagent run -p "Summarize referendum 42"
+    S->>R: Create Run (state: Created)
+    R->>R: Transition to Running
+    R->>G: Check grants & budget
+    G-->>R: Approved
+    R->>E: Send prompt to model
+    E-->>R: Response with tool calls
+    R->>P: Create EffectIntent (persisted before I/O)
+    P->>P: Claim → Execute → Record Outcome
+    P-->>R: EffectOutcome (Success)
+    R->>R: Transition to Completed
+    R-->>S: Final response
+    S-->>U: Display results
+```
+
+### Run Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created
+    Created --> Queued
+    Queued --> Running
+    Running --> AwaitingApproval
+    AwaitingApproval --> Running
+    Running --> WaitingEffect
+    WaitingEffect --> Running
+    Running --> Completing
+    Completing --> Completed
+    Running --> Failed
+    Running --> Cancelled
+    Running --> TimedOut
+    Completed --> [*]
+    Failed --> [*]
+    Cancelled --> [*]
+    TimedOut --> [*]
+```
+
+### Provider Ecosystem
+
+```mermaid
+pie title Provider Ecosystem
+    "Anthropic" : 3
+    "OpenAI" : 5
+    "Google Gemini" : 2
+    "Perplexity" : 2
+    "OpenRouter" : 1
 ```
 
 See [docs/architecture.md](docs/architecture.md) for a full description of the layered design, crate dependency diagram, and key invariants.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) -- installation, first agent, and initial configuration
-- [Configuration](docs/configuration.md) -- TOML schema, environment variables, and precedence rules
-- [CLI Reference](docs/cli.md) -- every command, flag, and subcommand
-- [Architecture](docs/architecture.md) -- hexagonal design, crate map, and dependency rules
-- [Providers](docs/providers.md) -- supported LLM providers and auto-detection
-- [Harnesses](docs/harnesses.md) -- integrating with Claude Code, Codex, Cursor, and others
-- [Tools & Skills](docs/tools-and-skills.md) -- built-in tools, TOML skill manifests, and custom skills
-- [Safety](docs/safety.md) -- the four invariants, grant policies, and crash recovery
-- [API Reference](docs/api.md) -- REST endpoints, WebSocket streaming, and authentication
-- [Deployment](docs/deployment.md) -- production setup, Docker, and reverse proxy configuration
-- [Examples](docs/examples.md) -- practical workflows, policy templates, and API cookbook
+### Core Guides
+- [Getting Started](docs/getting-started.md) — installation, first agent, and initial configuration
+- [Configuration](docs/configuration.md) — TOML schema, environment variables, and precedence rules
+- [CLI Reference](docs/cli.md) — every command, flag, and subcommand
+- [Architecture](docs/architecture.md) — hexagonal design, crate map, and dependency rules
+
+### Platform Features
+- [Run Lifecycle](docs/run-lifecycle.md) — execution model, state machine, and budget enforcement
+- [Safety](docs/safety.md) — the four invariants, grant policies, and crash recovery
+- [Tools & Skills](docs/tools-and-skills.md) — built-in tools, TOML skill manifests, and custom skills
+- [Providers](docs/providers.md) — supported LLM providers and auto-detection
+- [Harnesses](docs/harnesses.md) — integrating with Claude Code, Codex, Cursor, and others
+
+### Polkadot Integration
+- [Chain Integration](docs/chain.md) — blockchain interaction, metadata management, identity types
+- [Identity & Security](docs/identity-security.md) — signing stack, signer isolation, policy evaluation
+- [Payments & Autonomy](docs/payments.md) — payment intents, signer isolation, autonomy levels
+
+### Data & Observability
+- [Storage](docs/storage.md) — store architecture, migrations, content-addressed artifacts
+- [Memory](docs/memory.md) — episodic, semantic, and working memory
+- [Outbox & Events](docs/outbox-events.md) — event system, outbox delivery, artifact lineage
+- [Telemetry](docs/telemetry.md) — observability pipeline, metrics, distributed tracing
+
+### Operations
+- [API Reference](docs/api.md) — REST endpoints, WebSocket streaming, and authentication
+- [Deployment](docs/deployment.md) — production setup, Docker, and reverse proxy configuration
+- [Resilience](docs/resilience.md) — circuit breakers, cache-aside, rate limiting
+- [Groups](docs/groups.md) — multi-agent groups, parent/child coordination
+
+### Ecosystem
+- [Plugins](docs/plugins.md) — plugin architecture, skill vs plugin, load lifecycle
+- [Evals](docs/evals.md) — evaluation framework, suites, and category coverage
+- [Examples](docs/examples.md) — practical workflows, policy templates, and API cookbook
 
 ## Contributing
 
