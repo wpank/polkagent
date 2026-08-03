@@ -3077,6 +3077,7 @@ dependencies = [
  "polkagent-memory",
  "polkagent-payment",
  "polkagent-plugin",
+ "polkagent-retry",
  "polkagent-run",
  "polkagent-scheduler",
  "polkagent-signer-trait",

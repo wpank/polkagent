@@ -152,6 +152,11 @@ define_id!(
     WorkerId
 );
 
+define_id!(
+    /// Unique identifier for a [`UsageRecord`](crate::usage::UsageRecord).
+    UsageRecordId
+);
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

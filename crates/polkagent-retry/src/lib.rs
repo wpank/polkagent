@@ -35,8 +35,11 @@ pub mod circuit_breaker;
 pub mod classifier;
 pub mod error;
 pub mod executor;
+pub mod fallback;
 pub mod model_executor;
 pub mod policy;
+pub mod provider_health;
+pub mod retry_class;
 pub mod timeout;
 
 // Re-export key types at the crate root for convenience.
@@ -46,8 +49,11 @@ pub use circuit_breaker::{CircuitBreaker, CircuitState};
 pub use classifier::{ErrorClass, ErrorClassifier};
 pub use error::{BulkheadFull, CircuitOpen, RetryError, RetryExhausted};
 pub use executor::{retry_with_policy, retry_with_policy_and_classifier};
+pub use fallback::{FallbackChain, FallbackEntry, FallbackTrigger, ModelRoute};
 pub use model_executor::RetryModelExecutor;
 pub use policy::RetryPolicy;
+pub use provider_health::{HealthState, LatencyTracker, ProviderHealthStatus};
+pub use retry_class::{classify_provider_error, RetryClass};
 pub use timeout::TimeoutWrapper;
 
 #[cfg(test)]

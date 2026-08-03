@@ -16,11 +16,13 @@
 //! | [`timeout`] | [`TimeoutEnforcer`], [`TimeoutConfig`]: deadline enforcement |
 //! | [`error`] | [`RunError`], [`TransitionError`]: error types |
 
+pub mod budget;
 pub mod cost_tracker;
 pub mod dag;
 pub mod error;
 pub mod manager;
 pub mod orchestrator;
+pub mod progress;
 pub mod state_machine;
 pub mod timeout;
 pub mod turn;
@@ -29,11 +31,16 @@ pub mod turn;
 // Flat re-exports — the public API surface
 // ---------------------------------------------------------------------------
 
+pub use budget::{BudgetEnforcer, BudgetViolation};
 pub use cost_tracker::{BudgetExceededReason, CostTracker};
 pub use dag::{DagError, DagExecutor, ExecutionDag, NodeId, NodeState};
 pub use error::{RunError, TransitionError};
 pub use manager::RunManager;
 pub use orchestrator::{RunOrchestrator, RunOrchestratorConfig, RunOutcome};
+pub use progress::{
+    ApprovalRequest, ArtifactSummary, RunProgressError, RunProgressEvent, RunProgressStream,
+    RunSummary, ToolUseStatus,
+};
 pub use state_machine::{RunStateMachine, RunTransition};
 pub use timeout::{TimeoutConfig, TimeoutEnforcer};
 pub use turn::{TurnInput, TurnManager, TurnOutput};

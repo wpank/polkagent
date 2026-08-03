@@ -32,6 +32,7 @@ polkagent-scheduler = { path = "../polkagent-scheduler" }
 polkagent-surface-webhook = { path = "../polkagent-surface-webhook" }
 polkagent-harness-trait = { path = "../polkagent-harness-trait" }
 polkagent-executor-fake = { path = "../polkagent-executor-fake" }
+polkagent-retry = { path = "../polkagent-retry" }
 
 # Async
 tokio = { workspace = true, features = ["full"] }
