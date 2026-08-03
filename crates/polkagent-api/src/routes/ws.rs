@@ -376,7 +376,7 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
     ping_interval.tick().await;
 
     // Track when the last ping was sent so we can detect pong timeouts.
-    let mut last_ping_sent: Option<Instant> = None;
+    let mut ping_sent_at: Option<Instant> = None;
     let mut waiting_for_pong = false;
 
     loop {
@@ -394,7 +394,6 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
                     }
                     Some(Ok(Message::Pong(_))) => {
                         trace!("WebSocket v1alpha1: received Pong");
-                        last_ping_sent = None;
                         waiting_for_pong = false;
                     }
                     Some(Ok(Message::Ping(data))) => {
@@ -479,13 +478,11 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
             _ = ping_interval.tick() => {
                 // Check pong timeout from the previous ping.
                 if waiting_for_pong {
-                    if let Some(t) = last_ping_sent {
+                    if let Some(t) = ping_sent_at {
                         if t.elapsed() > PONG_TIMEOUT {
                             debug!("WebSocket v1alpha1: pong timeout; closing connection");
                             break;
                         }
-                    } else {
-                        // Ping was sent but pong already cleared it; no timeout.
                     }
                 }
 
@@ -495,7 +492,7 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
                     break;
                 }
                 trace!("WebSocket v1alpha1: sent Ping");
-                last_ping_sent = Some(Instant::now());
+                ping_sent_at = Some(Instant::now());
                 waiting_for_pong = true;
             }
         }
