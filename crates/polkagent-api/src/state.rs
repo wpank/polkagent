@@ -21,6 +21,7 @@ use polkagent_config::Config;
 use polkagent_conversation::ConversationStore;
 use polkagent_core::{AgentId, agent::AgentSpec};
 use polkagent_event::EventBus;
+use polkagent_marketplace::ServiceRegistryStore;
 use polkagent_payment::PaymentStore;
 use polkagent_skill::manifest::SkillManifest;
 use polkagent_store_trait::{ArtifactStore, EffectStore};
@@ -235,6 +236,8 @@ pub struct AppState {
     pub audit_store: Option<Arc<dyn AuditStore>>,
     /// Conversation store (optional — returns 501 when not configured).
     pub conversation_store: Option<Arc<dyn ConversationStore>>,
+    /// Service registry store (optional — returns 501 when not configured).
+    pub service_registry_store: Option<Arc<dyn ServiceRegistryStore>>,
 }
 
 impl AppState {
@@ -273,6 +276,7 @@ impl AppState {
             memory_store: None,
             audit_store: None,
             conversation_store: None,
+            service_registry_store: None,
         }
     }
 
@@ -332,6 +336,13 @@ impl AppState {
     #[must_use]
     pub fn with_conversation_store(mut self, store: Arc<dyn ConversationStore>) -> Self {
         self.conversation_store = Some(store);
+        self
+    }
+
+    /// Set the service registry store.
+    #[must_use]
+    pub fn with_service_registry_store(mut self, store: Arc<dyn ServiceRegistryStore>) -> Self {
+        self.service_registry_store = Some(store);
         self
     }
 

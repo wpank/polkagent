@@ -17,6 +17,7 @@ use chrono::{DateTime, Utc};
 use polkagent_core::{AgentId, RunId};
 use polkagent_core::agent::{AgentSpec, AgentState, ModelPreference, ResourceLimits};
 use polkagent_core::run::RunState;
+use polkagent_marketplace::types::{ServiceAvailability, ServicePricing};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -1173,4 +1174,74 @@ pub struct CreateMessageResponse {
     pub content: String,
     /// When the message was created.
     pub created_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Registry — service listing requests and responses (PRD-12 §5.5)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /registry/listings`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateServiceListingRequest {
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub pricing: ServicePricing,
+    #[serde(default = "default_service_availability")]
+    pub availability: ServiceAvailability,
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sla_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_schema: Option<serde_json::Value>,
+}
+
+fn default_service_availability() -> ServiceAvailability {
+    ServiceAvailability::Available
+}
+
+/// Response body for a single service listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceListingResponse {
+    pub version: String,
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub service_version: String,
+    pub capabilities: Vec<String>,
+    pub tags: Vec<String>,
+    pub pricing: ServicePricing,
+    pub availability: String,
+    pub protocols: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sla_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_schema: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Response body for `GET /registry/search`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListServiceListingsResponse {
+    pub version: String,
+    pub data: Vec<ServiceListingResponse>,
+}
+
+/// Query parameters for `GET /registry/search`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchListingsQuery {
+    pub q: Option<String>,
+    pub capability: Option<String>,
+    pub tag: Option<String>,
+    pub author: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }

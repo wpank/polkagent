@@ -2185,6 +2185,7 @@ dependencies = [
  "polkagent-conversation",
  "polkagent-core",
  "polkagent-event",
+ "polkagent-marketplace",
  "polkagent-payment",
  "polkagent-rate-limit",
  "polkagent-skill",
@@ -2950,6 +2951,19 @@ dependencies = [
  "thiserror 2.0.19",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "polkagent-marketplace"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

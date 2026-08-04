@@ -76,6 +76,10 @@
 //!   POST   /conversations/:id/messages
 //!   DELETE /conversations/:id
 //!
+//!   POST   /registry/listings
+//!   GET    /registry/listings/:id
+//!   GET    /registry/search
+//!
 //!   GET    /system/info
 //!
 //! /openapi.json                     (no version prefix)
@@ -112,6 +116,7 @@ pub mod models;
 pub mod openapi;
 pub mod payments;
 pub mod providers;
+pub mod registry;
 pub mod runs;
 pub mod skills;
 pub mod system;
@@ -255,6 +260,10 @@ pub fn register(state: AppState) -> Router {
             "/conversations/{id}/messages",
             post(conversations::add_message),
         )
+        // Registry (PRD-12 §5.5 — agent-service listings)
+        .route("/registry/listings", post(registry::create_listing))
+        .route("/registry/listings/{id}", get(registry::get_listing))
+        .route("/registry/search", get(registry::search_listings))
         // System
         .route("/system/info", get(system::system_info))
         // Apply default 1 MiB body limit to all routes in this sub-router.
