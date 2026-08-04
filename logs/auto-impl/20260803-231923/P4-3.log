@@ -1,0 +1,37 @@
+Done. Here's a summary of everything created:
+
+## New crate: `polkagent-action-transfer`
+
+### Files created
+- **`crates/polkagent-action-transfer/Cargo.toml`** — depends on `polkagent-core`, `polkagent-chain-trait`; dev-depends on `polkagent-chain-fake` and `tokio`
+- **`crates/polkagent-action-transfer/src/lib.rs`** — all types, trait, implementations, and tests
+
+### Files modified
+- **`Cargo.toml`** (workspace root) — added `"crates/polkagent-action-transfer"` to members list
+
+### Types & API
+
+| Type | Purpose |
+|------|---------|
+| `TransferError` | Error enum with `RouteUnsupported`, `AssetNotAccepted`, `Chain`, `Xcm` variants |
+| `RoutePlan` | Contains `XcmPlan` + source/destination/asset metadata |
+| `RoutePlanner` (trait) | Async trait: `plan_route(source, destination, asset) → Result<RoutePlan>` |
+| `ChainRoutePlanner<C>` | Concrete `RoutePlanner` backed by a `ChainClient`, configurable XCM version |
+| `plan_route()` (free fn) | Convenience wrapper taking `&dyn ChainClient` directly |
+
+### Route planning logic
+1. Resolves XCM mechanism via `resolve_xcm_mechanism()` (teleport preferred over reserve)
+2. Checks asset is accepted for fee payment via `xcm_query_acceptable_payment_assets()`
+3. Builds `XcmRoute` with hop information
+4. Estimates fees via `estimate_xcm_fees()`
+5. Identifies risks (heuristic fees, reserve-locked assets)
+6. Returns `RouteUnsupported` for unknown routes — no transaction submission
+
+### Tests: 20/20 passing
+- Teleport route for DOT, reserve route for USDT
+- `RouteUnsupported` for unknown assets (BTC) and unknown chain pairs
+- Fee estimate validation, version compat, hop structure
+- Serde roundtrip, error display messages
+- `ChainRoutePlanner` trait-based usage with custom XCM version
+- Fault injection via `FakeChainClientBuilder`
+- Risk annotation checks (reserve warns about locked assets, teleport doesn't)

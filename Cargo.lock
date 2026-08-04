@@ -2157,6 +2157,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-action-transfer"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "polkagent-chain-fake",
+ "polkagent-chain-trait",
+ "polkagent-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "polkagent-api"
 version = "0.1.0"
 dependencies = [

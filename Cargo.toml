@@ -75,6 +75,7 @@ members = [
     "crates/polkagent-executor-openrouter",
     "crates/polkagent-action-sign",
     "crates/polkagent-action-governance",
+    "crates/polkagent-action-transfer",
 ]
 
 [workspace.package]
