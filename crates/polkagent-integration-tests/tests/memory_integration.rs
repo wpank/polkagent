@@ -246,6 +246,9 @@ async fn memory_provenance_is_tracked() {
         extraction_method: "user_input".into(),
         confidence: 0.95,
         verified: true,
+        source_artifact_id: None,
+        source_agent_id: None,
+        ingested_at: None,
     };
 
     let id = svc

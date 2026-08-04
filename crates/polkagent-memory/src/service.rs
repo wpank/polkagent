@@ -515,6 +515,9 @@ mod tests {
             extraction_method: "user_input".into(),
             confidence: 0.95,
             verified: true,
+            source_artifact_id: None,
+            source_agent_id: None,
+            ingested_at: None,
         };
 
         let id = source_svc
@@ -581,6 +584,9 @@ mod tests {
             extraction_method: "user_input".into(),
             confidence: 1.0,
             verified: true,
+            source_artifact_id: None,
+            source_agent_id: None,
+            ingested_at: None,
         };
 
         let id = svc

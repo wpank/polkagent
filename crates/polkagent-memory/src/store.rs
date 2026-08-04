@@ -56,6 +56,15 @@ pub trait MemoryStore: Send + Sync {
     /// Delete a memory entry by its identifier.
     async fn delete_memory(&self, id: MemoryId) -> MemoryResult<()>;
 
+    /// Delete all memories whose provenance references the given artifact id.
+    ///
+    /// Removes from both the primary `memories` table (which cascades to
+    /// `memory_provenance`) and from the FTS5 index atomically within a
+    /// single transaction.
+    ///
+    /// Returns the number of entries removed.
+    async fn forget(&self, artifact_id: &str) -> MemoryResult<usize>;
+
     /// Return the total number of memory entries belonging to `agent_id`.
     async fn count_entries(&self, agent_id: &AgentId) -> MemoryResult<usize>;
 

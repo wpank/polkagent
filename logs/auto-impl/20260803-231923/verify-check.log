@@ -1,1 +1,11 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+    Checking polkagent-memory v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-memory)
+    Checking polkagent-tool v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool)
+    Checking polkagent-service v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-service)
+    Checking polkagent-api v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-api)
+    Checking polkagent-tool-treasury v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-treasury)
+    Checking polkagent-tool-governance v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-governance)
+    Checking polkagent-tool-workbench v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-workbench)
+    Checking polkagent-security-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-security-tests)
+    Checking polkagent-integration-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-integration-tests)
+    Checking polkagent-cli v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.82s

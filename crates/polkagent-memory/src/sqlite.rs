@@ -70,8 +70,13 @@ CREATE TABLE IF NOT EXISTS memory_provenance (
     source_turn         INTEGER,
     extraction_method   TEXT NOT NULL,
     confidence          REAL NOT NULL DEFAULT 1.0,
-    verified            INTEGER NOT NULL DEFAULT 0
+    verified            INTEGER NOT NULL DEFAULT 0,
+    source_artifact_id  TEXT,
+    source_agent_id     TEXT,
+    ingested_at         TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_provenance_artifact ON memory_provenance(source_artifact_id);
 ";
 
 /// SQL to create the FTS5 virtual table for full-text search on memory content.
@@ -225,8 +230,9 @@ impl MemoryStore for SqliteMemoryStore {
         if let Some(ref prov) = entry.provenance {
             conn.execute(
                 "INSERT OR REPLACE INTO memory_provenance
-                     (memory_id, source_run_id, source_turn, extraction_method, confidence, verified)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                     (memory_id, source_run_id, source_turn, extraction_method, confidence, verified,
+                      source_artifact_id, source_agent_id, ingested_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     entry.id.to_string(),
                     prov.source_run_id,
@@ -234,6 +240,9 @@ impl MemoryStore for SqliteMemoryStore {
                     prov.extraction_method,
                     prov.confidence,
                     i32::from(prov.verified),
+                    prov.source_artifact_id,
+                    prov.source_agent_id,
+                    prov.ingested_at.map(|t| t.to_rfc3339()),
                 ],
             )?;
         }
@@ -309,6 +318,34 @@ impl MemoryStore for SqliteMemoryStore {
             return Err(MemoryError::NotFound(format!("memory {id}")));
         }
         Ok(())
+    }
+
+    async fn forget(&self, artifact_id: &str) -> MemoryResult<usize> {
+        let conn = self.inner.conn.lock();
+        // Use a SAVEPOINT so both FTS5 and primary table are updated atomically.
+        conn.execute_batch("SAVEPOINT forget_artifact")?;
+
+        let result = (|| -> MemoryResult<usize> {
+            let rows = conn.execute(
+                "DELETE FROM memories WHERE id IN (
+                     SELECT memory_id FROM memory_provenance
+                     WHERE source_artifact_id = ?1
+                 )",
+                params![artifact_id],
+            )?;
+            Ok(rows)
+        })();
+
+        match result {
+            Ok(count) => {
+                conn.execute_batch("RELEASE forget_artifact")?;
+                Ok(count)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK TO forget_artifact");
+                Err(e)
+            }
+        }
     }
 
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
@@ -999,6 +1036,9 @@ mod tests {
                 extraction_method: "llm_extraction".into(),
                 confidence: 0.9,
                 verified: false,
+                source_artifact_id: None,
+                source_agent_id: None,
+                ingested_at: None,
             }),
             created_at: now,
             accessed_at: now,
@@ -1260,6 +1300,200 @@ mod tests {
 
         let entries = store.list_entries(&agent, 10, 0).await.unwrap();
         assert!(entries.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Provenance tracking tests (PRD-09 §4.8)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn provenance_source_artifact_id_round_trip() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+        let now = Utc::now();
+
+        let entry = MemoryEntry {
+            provenance: Some(MemoryProvenance {
+                source_run_id: Some("run-100".into()),
+                source_turn: Some(1),
+                extraction_method: "tool_output".into(),
+                confidence: 0.8,
+                verified: false,
+                source_artifact_id: Some("artifact-abc-123".into()),
+                source_agent_id: Some("agent-xyz".into()),
+                ingested_at: Some(now),
+            }),
+            ..make_entry(agent, "provenance artifact test", MemoryType::Semantic)
+        };
+        let id = entry.id;
+
+        store.store_memory(&entry).await.unwrap();
+        let retrieved = store.get_memory(id).await.unwrap();
+
+        let prov = retrieved.provenance.unwrap();
+        assert_eq!(prov.source_artifact_id.as_deref(), Some("artifact-abc-123"));
+        assert_eq!(prov.source_agent_id.as_deref(), Some("agent-xyz"));
+        assert!(prov.ingested_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn provenance_fields_default_to_none() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+
+        let entry = MemoryEntry {
+            provenance: Some(MemoryProvenance {
+                source_run_id: None,
+                source_turn: None,
+                extraction_method: "user_input".into(),
+                confidence: 1.0,
+                verified: true,
+                source_artifact_id: None,
+                source_agent_id: None,
+                ingested_at: None,
+            }),
+            ..make_entry(agent, "no artifact provenance", MemoryType::Semantic)
+        };
+        let id = entry.id;
+
+        store.store_memory(&entry).await.unwrap();
+        let retrieved = store.get_memory(id).await.unwrap();
+
+        let prov = retrieved.provenance.unwrap();
+        assert!(prov.source_artifact_id.is_none());
+        assert!(prov.source_agent_id.is_none());
+        assert!(prov.ingested_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn forget_removes_memories_by_artifact_id() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+
+        // Store 2 memories from artifact-A, 1 from artifact-B.
+        for i in 0..2 {
+            let entry = MemoryEntry {
+                provenance: Some(MemoryProvenance {
+                    source_run_id: None,
+                    source_turn: None,
+                    extraction_method: "ingest".into(),
+                    confidence: 1.0,
+                    verified: false,
+                    source_artifact_id: Some("artifact-A".into()),
+                    source_agent_id: None,
+                    ingested_at: None,
+                }),
+                ..make_entry(agent, &format!("from A #{i}"), MemoryType::Semantic)
+            };
+            store.store_memory(&entry).await.unwrap();
+        }
+
+        let entry_b = MemoryEntry {
+            provenance: Some(MemoryProvenance {
+                source_run_id: None,
+                source_turn: None,
+                extraction_method: "ingest".into(),
+                confidence: 1.0,
+                verified: false,
+                source_artifact_id: Some("artifact-B".into()),
+                source_agent_id: None,
+                ingested_at: None,
+            }),
+            ..make_entry(agent, "from B", MemoryType::Semantic)
+        };
+        store.store_memory(&entry_b).await.unwrap();
+
+        assert_eq!(store.count_entries(&agent).await.unwrap(), 3);
+
+        let deleted = store.forget("artifact-A").await.unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(store.count_entries(&agent).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn forget_nonexistent_artifact_returns_zero() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let deleted = store.forget("no-such-artifact").await.unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[tokio::test]
+    async fn forget_removes_fts5_entries() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+
+        let entry = MemoryEntry {
+            provenance: Some(MemoryProvenance {
+                source_run_id: None,
+                source_turn: None,
+                extraction_method: "ingest".into(),
+                confidence: 1.0,
+                verified: false,
+                source_artifact_id: Some("fts-artifact".into()),
+                source_agent_id: None,
+                ingested_at: None,
+            }),
+            ..make_entry(agent, "unique_fts_token_zxyqw", MemoryType::Semantic)
+        };
+        store.store_memory(&entry).await.unwrap();
+
+        // Verify searchable before forget.
+        let query = MemoryQuery {
+            agent_id: Some(agent),
+            query_text: "unique_fts_token_zxyqw".to_string(),
+            memory_types: None,
+            limit: 10,
+            min_relevance: None,
+            since: None,
+            episode_id: None,
+        };
+        let before = store.search(&query).await.unwrap();
+        assert_eq!(before.len(), 1);
+
+        store.forget("fts-artifact").await.unwrap();
+
+        // Must not be searchable after forget.
+        let after = store.search(&query).await.unwrap();
+        assert!(after.is_empty(), "FTS5 index should be cleaned up after forget");
+    }
+
+    #[tokio::test]
+    async fn provenance_table_populated_with_new_fields() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+        let now = Utc::now();
+
+        let entry = MemoryEntry {
+            provenance: Some(MemoryProvenance {
+                source_run_id: Some("run-prov".into()),
+                source_turn: Some(7),
+                extraction_method: "llm_extraction".into(),
+                confidence: 0.75,
+                verified: true,
+                source_artifact_id: Some("art-999".into()),
+                source_agent_id: Some("agent-007".into()),
+                ingested_at: Some(now),
+            }),
+            ..make_entry(agent, "check provenance table directly", MemoryType::Procedural)
+        };
+        let id = entry.id;
+
+        store.store_memory(&entry).await.unwrap();
+
+        // Query the provenance table directly to verify new columns.
+        let conn = store.inner.conn.lock();
+        let (art_id, agent_id_col, ingested): (Option<String>, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT source_artifact_id, source_agent_id, ingested_at
+                 FROM memory_provenance WHERE memory_id = ?1",
+                params![id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(art_id.as_deref(), Some("art-999"));
+        assert_eq!(agent_id_col.as_deref(), Some("agent-007"));
+        assert!(ingested.is_some());
     }
 
     #[tokio::test]
