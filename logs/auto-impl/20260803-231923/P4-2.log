@@ -1,0 +1,27 @@
+All done. Here's what was created:
+
+## `polkagent-action-governance` crate
+
+**`crates/polkagent-action-governance/Cargo.toml`** — depends on `polkagent-core`, `polkagent-chain-trait`; dev-depends on `polkagent-chain-fake` + `tokio`.
+
+**`crates/polkagent-action-governance/src/lib.rs`** contains:
+
+### Types
+- **`MultisigState`** — tracks a multisig account's signatories, threshold, and local approval set (`BTreeSet<String>`)
+  - `record_approval(signer)` — adds a co-signer's approval; rejects duplicates and unknown signers
+  - `is_threshold_met()` — returns `true` when `approvals.len() >= threshold`
+  - `missing_signers()` — lists signatories who haven't approved yet
+  - `summary()` → `MultisigSummary` with all status fields
+- **`MultisigSummary`** — serializable status snapshot (threshold, total signatories, current approvals, who approved, who's missing, `threshold_met` flag)
+- **`ProxyConfig`** — pure-proxy configuration: `pure_proxy`, `controllers`, optional `agent_proxy`/`proxy_filter`, `announcement_delay`
+- **`GovernanceError`** — error enum covering chain errors, missing multisigs, duplicate/unknown signers
+
+### Chain integration
+- **`GovernanceReader` trait** — async interface with `fetch_multisig_state` and `fetch_proxy_config`
+- **`StorageKeyGovernanceReader<C: ChainClient>`** — concrete implementation that reads multisig/proxy state from chain storage via `query_storage`
+
+### Tests (15/15 passing)
+- Pure unit tests for `MultisigState` (approval tracking, threshold, missing signers, duplicates, unknown signers, serde roundtrip)
+- Unit tests for `ProxyConfig` (builder pattern, serde roundtrip)
+- Integration tests using `FakeChainClient` with seeded storage (fetch multisig, fetch proxy, not-found, empty proxy)
+- End-to-end test: fetch from chain → record approvals → verify threshold → produce summary
