@@ -74,6 +74,8 @@ tags:
     description: Platform version and configuration summary.
   - name: health
     description: Liveness, readiness, and startup probes.
+  - name: bridge
+    description: PCA C1 bridge compatibility API for harness integrations.
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -1432,6 +1434,126 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
 
+  # ==========================================================================
+  # PCA C1 Bridge (PRD-06)
+  # ==========================================================================
+
+  /v1/compat/pca/health:
+    get:
+      operationId: bridgeHealth
+      summary: Bridge health status
+      tags: [bridge]
+      security: []
+      description: |
+        Returns identity, transport connectivity, and supported capabilities
+        so that PCA clients can discover what the bridge instance supports.
+      responses:
+        "200":
+          description: Bridge health report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeHealthResponse"
+
+  /v1/compat/pca/inbound:
+    get:
+      operationId: bridgeInbound
+      summary: Poll inbound deliveries
+      tags: [bridge]
+      description: |
+        Long-poll for pending inbound deliveries. Each delivery includes a
+        lease that must be ACKed or renewed before it expires.
+      responses:
+        "200":
+          description: Zero or more pending deliveries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeInboundResponse"
+
+  /v1/compat/pca/inbound/ack:
+    post:
+      operationId: bridgeAck
+      summary: Acknowledge a delivery
+      tags: [bridge]
+      description: |
+        Confirm that the harness has safely processed a delivery. The
+        delivery_id and lease_id must match an active lease.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BridgeAckRequest"
+      responses:
+        "200":
+          description: Delivery acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeAckResponse"
+        "422":
+          description: Missing or invalid delivery_id / lease_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/compat/pca/inbound/renew:
+    post:
+      operationId: bridgeRenew
+      summary: Renew a delivery lease
+      tags: [bridge]
+      description: |
+        Extend the lease on a delivery that is still being processed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BridgeRenewRequest"
+      responses:
+        "200":
+          description: Lease renewed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeRenewResponse"
+        "422":
+          description: Missing or invalid delivery_id / lease_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/compat/pca/send:
+    post:
+      operationId: bridgeSend
+      summary: Send a reply through the bridge
+      tags: [bridge]
+      description: |
+        Deliver a response back to the chat via the bridge. The message is
+        routed to the appropriate transport for outbound delivery.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BridgeSendRequest"
+      responses:
+        "201":
+          description: Message sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeSendResponse"
+        "422":
+          description: Missing required fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 # ---------------------------------------------------------------------------
 # Components
 # ---------------------------------------------------------------------------
@@ -2706,3 +2828,173 @@ components:
           example: 3600
         config_summary:
           $ref: "#/components/schemas/ConfigSummary"
+
+    # -----------------------------------------------------------------------
+    # PCA C1 Bridge schemas (PRD-06 §20.4)
+    # -----------------------------------------------------------------------
+
+    BridgeHealthResponse:
+      type: object
+      required: [identity, transport, capabilities]
+      description: C1 bridge health report.
+      properties:
+        identity:
+          $ref: "#/components/schemas/BridgeIdentityInfo"
+        transport:
+          $ref: "#/components/schemas/BridgeTransportInfo"
+        capabilities:
+          $ref: "#/components/schemas/BridgeCapabilities"
+        degraded:
+          type: array
+          items:
+            type: string
+          description: List of degraded subsystems, if any.
+
+    BridgeIdentityInfo:
+      type: object
+      required: [bot_id, display_name]
+      properties:
+        bot_id:
+          type: string
+          example: my-bot
+        display_name:
+          type: string
+          example: My Bot
+
+    BridgeTransportInfo:
+      type: object
+      required: [connected, protocol]
+      properties:
+        connected:
+          type: boolean
+          example: true
+        protocol:
+          type: string
+          example: polkagent-c1
+
+    BridgeCapabilities:
+      type: object
+      required: [send, edit, react, typing, media]
+      properties:
+        send:
+          type: boolean
+        edit:
+          type: boolean
+        react:
+          type: boolean
+        typing:
+          type: boolean
+        media:
+          type: boolean
+
+    BridgeInboundResponse:
+      type: object
+      required: [deliveries]
+      description: Pending inbound deliveries.
+      properties:
+        deliveries:
+          type: array
+          items:
+            $ref: "#/components/schemas/BridgeDelivery"
+
+    BridgeDelivery:
+      type: object
+      required: [delivery_id, lease_id, lease_ms, chat_id, message_id, kind, text]
+      description: A single inbound delivery with an active lease.
+      properties:
+        delivery_id:
+          type: string
+        lease_id:
+          type: string
+        lease_ms:
+          type: integer
+          format: int64
+        chat_id:
+          type: string
+        message_id:
+          type: string
+        kind:
+          type: string
+        text:
+          type: string
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/BridgeAttachment"
+
+    BridgeAttachment:
+      type: object
+      required: [id, mime, size, media_id, url]
+      properties:
+        id:
+          type: string
+        mime:
+          type: string
+        size:
+          type: integer
+          format: int64
+        media_id:
+          type: string
+        url:
+          type: string
+
+    BridgeAckRequest:
+      type: object
+      required: [delivery_id, lease_id]
+      properties:
+        delivery_id:
+          type: string
+        lease_id:
+          type: string
+
+    BridgeAckResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+
+    BridgeRenewRequest:
+      type: object
+      required: [delivery_id, lease_id]
+      properties:
+        delivery_id:
+          type: string
+        lease_id:
+          type: string
+
+    BridgeRenewResponse:
+      type: object
+      required: [ok, new_lease_ms]
+      properties:
+        ok:
+          type: boolean
+        new_lease_ms:
+          type: integer
+          format: int64
+
+    BridgeSendRequest:
+      type: object
+      required: [chat_id, text]
+      properties:
+        chat_id:
+          type: string
+        text:
+          type: string
+        delivery_id:
+          type: string
+        lease_id:
+          type: string
+        reply_to:
+          type: string
+        edit:
+          type: string
+
+    BridgeSendResponse:
+      type: object
+      required: [ok, message_id]
+      properties:
+        ok:
+          type: boolean
+        message_id:
+          type: string

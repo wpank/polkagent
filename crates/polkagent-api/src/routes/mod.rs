@@ -84,6 +84,13 @@
 //! /ws/v1alpha1                      (WebSocket, no version prefix in path)
 //!   GET    /ws/v1alpha1
 //!
+//! /v1/compat/pca                    (C1 bridge, no version prefix)
+//!   GET    /v1/compat/pca/health
+//!   GET    /v1/compat/pca/inbound
+//!   POST   /v1/compat/pca/inbound/ack
+//!   POST   /v1/compat/pca/inbound/renew
+//!   POST   /v1/compat/pca/send
+//!
 //! /health
 //!   GET    /health/live
 //!   GET    /health/ready
@@ -93,6 +100,7 @@
 pub mod agents;
 pub mod artifacts;
 pub mod audit;
+pub mod bridge;
 pub mod conversations;
 pub mod effects;
 pub mod events;
@@ -259,11 +267,25 @@ pub fn register(state: AppState) -> Router {
     let ws_route = Router::new()
         .route("/ws/v1alpha1", get(ws::ws_handler));
 
+    // -----------------------------------------------------------------------
+    // PCA C1 bridge compatibility routes (PRD-06 §12, §20.4).
+    //
+    // These are mounted at `/v1/compat/pca/` without the v1alpha1 prefix so
+    // that existing PCA tooling can interact without changes.
+    // -----------------------------------------------------------------------
+    let bridge_routes = Router::new()
+        .route("/v1/compat/pca/health", get(bridge::bridge_health))
+        .route("/v1/compat/pca/inbound", get(bridge::bridge_inbound))
+        .route("/v1/compat/pca/inbound/ack", post(bridge::bridge_ack))
+        .route("/v1/compat/pca/inbound/renew", post(bridge::bridge_renew))
+        .route("/v1/compat/pca/send", post(bridge::bridge_send));
+
     Router::new()
         .merge(health_routes)
         .merge(metrics_route)
         .merge(openapi_route)
         .merge(ws_route)
+        .merge(bridge_routes)
         .nest("/api/v1alpha1", api_routes)
         .with_state(state)
 }

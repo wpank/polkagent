@@ -2955,3 +2955,126 @@ async fn resume_run_awaiting_approval_returns_200_with_running_state() {
     // After resume the state should be Running.
     assert_eq!(body["status"]["state"], "running");
 }
+
+// ===========================================================================
+// PCA C1 Bridge tests (PRD-06)
+// ===========================================================================
+
+#[tokio::test]
+async fn bridge_health_returns_identity_and_capabilities() {
+    let server = test_server();
+    let resp = server.get("/v1/compat/pca/health").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert!(body["identity"]["bot_id"].is_string());
+    assert!(body["transport"]["connected"].as_bool().unwrap_or(false));
+    assert_eq!(body["transport"]["protocol"], "polkagent-c1");
+    assert!(body["capabilities"]["send"].as_bool().unwrap_or(false));
+}
+
+#[tokio::test]
+async fn bridge_inbound_returns_empty_deliveries() {
+    let server = test_server();
+    let resp = server.get("/v1/compat/pca/inbound").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    let deliveries = body["deliveries"].as_array().expect("deliveries array");
+    assert!(deliveries.is_empty());
+}
+
+#[tokio::test]
+async fn bridge_ack_validates_required_fields() {
+    let server = test_server();
+    let resp = server
+        .post("/v1/compat/pca/inbound/ack")
+        .json(&json!({ "delivery_id": "", "lease_id": "" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn bridge_ack_succeeds_with_valid_ids() {
+    let server = test_server();
+    let resp = server
+        .post("/v1/compat/pca/inbound/ack")
+        .json(&json!({ "delivery_id": "del-1", "lease_id": "lease-1" }))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert!(body["ok"].as_bool().unwrap_or(false));
+}
+
+#[tokio::test]
+async fn bridge_renew_validates_required_fields() {
+    let server = test_server();
+    let resp = server
+        .post("/v1/compat/pca/inbound/renew")
+        .json(&json!({ "delivery_id": "", "lease_id": "" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn bridge_renew_returns_new_lease() {
+    let server = test_server();
+    let resp = server
+        .post("/v1/compat/pca/inbound/renew")
+        .json(&json!({ "delivery_id": "del-1", "lease_id": "lease-1" }))
+        .await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert!(body["ok"].as_bool().unwrap_or(false));
+    assert!(body["new_lease_ms"].as_u64().unwrap_or(0) > 0);
+}
+
+#[tokio::test]
+async fn bridge_send_validates_chat_id() {
+    let server = test_server();
+    let resp = server
+        .post("/v1/compat/pca/send")
+        .json(&json!({ "chat_id": "", "text": "hello" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn bridge_send_validates_text() {
+    let server = test_server();
+    let resp = server
+        .post("/v1/compat/pca/send")
+        .json(&json!({ "chat_id": "chat-1", "text": "" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn bridge_send_returns_message_id() {
+    let server = test_server();
+    let resp = server
+        .post("/v1/compat/pca/send")
+        .json(&json!({ "chat_id": "chat-1", "text": "Hello from harness" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let body: serde_json::Value = resp.json();
+    assert!(body["ok"].as_bool().unwrap_or(false));
+    assert!(body["message_id"].is_string());
+    assert!(!body["message_id"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn bridge_send_with_optional_fields() {
+    let server = test_server();
+    let resp = server
+        .post("/v1/compat/pca/send")
+        .json(&json!({
+            "chat_id": "chat-1",
+            "text": "Reply",
+            "delivery_id": "del-1",
+            "lease_id": "lease-1",
+            "reply_to": "msg-42"
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let body: serde_json::Value = resp.json();
+    assert!(body["ok"].as_bool().unwrap_or(false));
+}
