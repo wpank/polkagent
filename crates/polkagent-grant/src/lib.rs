@@ -67,6 +67,8 @@ pub mod grant;
 #[cfg(any(feature = "identity", test))]
 pub mod identity;
 pub mod loader;
+#[cfg(any(feature = "personhood", test))]
+pub mod personhood;
 pub mod policy;
 
 // ---------------------------------------------------------------------------
@@ -91,3 +93,7 @@ pub use policy::{
 };
 #[cfg(feature = "identity")]
 pub use identity::{context_from_identity, IdentityPrincipal, SS58EncodedAccount};
+#[cfg(feature = "personhood")]
+pub use personhood::{
+    check_personhood, PersonhoodDecision, PersonhoodPolicy, PersonhoodRequirement,
+};

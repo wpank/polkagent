@@ -45,6 +45,7 @@
 )]
 
 pub mod agent_identity;
+pub mod did;
 pub mod error;
 pub mod resolver;
 pub mod ss58;
@@ -55,6 +56,7 @@ pub mod types;
 // ---------------------------------------------------------------------------
 
 pub use agent_identity::{AgentCard, AgentIdentity};
+pub use did::{Did, DidCredential, DidVerificationResult, MockDidVerifier};
 pub use error::IdentityError;
 pub use resolver::{
     CachedIdentityResolver, IdentityField, IdentityResolution, IdentityResolver, JudgmentLevel,
