@@ -73,6 +73,8 @@ members = [
     "crates/polkagent-harness-copilot",
     "crates/polkagent-harness-goose",
     "crates/polkagent-harness-kiro",
+    "crates/polkagent-harness-opencode",
+    "crates/polkagent-harness-bridge",
     "crates/polkagent-executor-openrouter",
     "crates/polkagent-action-sign",
     "crates/polkagent-action-governance",

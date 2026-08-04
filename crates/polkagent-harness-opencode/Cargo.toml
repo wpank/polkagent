@@ -1,0 +1,21 @@
+[package]
+name = "polkagent-harness-opencode"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OpenCode harness adapter for the Polkagent platform"
+
+[dependencies]
+polkagent-harness-trait = { path = "../polkagent-harness-trait" }
+polkagent-harness-acp = { path = "../polkagent-harness-acp" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

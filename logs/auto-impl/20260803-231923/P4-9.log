@@ -1,0 +1,37 @@
+All done. Here's a summary of everything created:
+
+## Summary
+
+### 1. `polkagent-harness-opencode` — ACP-pattern harness for OpenCode
+
+**`crates/polkagent-harness-opencode/Cargo.toml`** — workspace crate depending on `polkagent-harness-trait` and `polkagent-harness-acp`
+
+**`crates/polkagent-harness-opencode/src/lib.rs`** — follows the exact same pattern as cursor/goose/kiro:
+- `OpenCodeTransport` enum (ACP variant)
+- `OpenCodeHarnessConfig` + builder
+- `OpenCodeConfigurator` implementing `AcpConfigurator` trait (harness ID `"opencode"`, binary `opencode acp`, 200K context, claude-sonnet-4-6 model)
+- `OpenCodeHarness` type alias for `AcpHarness<OpenCodeConfigurator>`
+- 15 tests covering configurator, config, serde, builder, binary resolution
+
+### 2. `polkagent-harness-bridge` — generic HTTP/WebSocket bridge harness
+
+**`crates/polkagent-harness-bridge/Cargo.toml`** — workspace crate depending on `polkagent-harness-trait` and `reqwest`
+
+**`crates/polkagent-harness-bridge/src/lib.rs`** — directly implements the `Harness` trait (no ACP):
+- `BridgeTransport` enum (`HttpPost`, `WebSocket`)
+- `BridgeConfig` with `endpoint`, `auth_token`, `timeout`, `transport` fields + builder
+- `BridgeHarness` implementing all `Harness` trait methods over HTTP POST using `reqwest`
+- Proper session tracking, auth header injection, health endpoint
+- 14 tests covering config, capabilities, serde, session error handling
+
+### 3. Supporting changes
+
+- **`crates/polkagent-harness-acp/src/lib.rs`** — added `AcpConfig::opencode()` constructor
+- **`Cargo.toml`** — added both crates to workspace members
+
+### Verification
+
+- `cargo check --workspace` — ✅ clean (no warnings, no errors)
+- `cargo test -p polkagent-harness-opencode` — ✅ 15/15 passed + 1 doc-test
+- `cargo test -p polkagent-harness-bridge` — ✅ 14/14 passed + 1 doc-test
+- `cargo test -p polkagent-harness-acp` — ✅ 52/52 passed (no regressions)

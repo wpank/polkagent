@@ -2717,6 +2717,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-harness-bridge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "polkagent-harness-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "polkagent-harness-claude"
 version = "0.1.0"
 dependencies = [
@@ -2797,6 +2814,16 @@ dependencies = [
 
 [[package]]
 name = "polkagent-harness-kiro"
+version = "0.1.0"
+dependencies = [
+ "polkagent-harness-acp",
+ "polkagent-harness-trait",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "polkagent-harness-opencode"
 version = "0.1.0"
 dependencies = [
  "polkagent-harness-acp",

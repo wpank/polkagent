@@ -1,11 +1,15 @@
-   Compiling polkagent-memory v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-memory)
-   Compiling polkagent-tool v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool)
-   Compiling polkagent-service v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-service)
-   Compiling polkagent-security-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-security-tests)
+   Compiling polkagent-harness-acp v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-acp)
+   Compiling polkagent-integration-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-integration-tests)
+   Compiling polkagent-harness-bridge v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-bridge)
    Compiling polkagent-api v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-api)
-   Compiling polkagent-tool-governance v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-governance)
-   Compiling polkagent-tool-treasury v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-treasury)
-   Compiling polkagent-tool-workbench v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-workbench)
+   Compiling polkagent-security-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-security-tests)
+   Compiling polkagent-harness-cursor v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-cursor)
+   Compiling polkagent-harness-goose v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-goose)
+   Compiling polkagent-cli v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cli)
+   Compiling polkagent-harness-kiro v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-kiro)
+   Compiling polkagent-harness-opencode v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-opencode)
+   Compiling polkagent-service v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-service)
+   Compiling polkagent-tool v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool)
 error[E0046]: not all trait items implemented, missing: `forget`
    --> crates/polkagent-tool/src/builtin/chain_knowledge.rs:226:5
     |
@@ -22,9 +26,6 @@ error[E0046]: not all trait items implemented, missing: `forget`
     |
     = help: implement the missing item: `fn forget<'life0: 'async_trait, 'life1: 'async_trait, 'async_trait>(&'life0 self, _: &'life1 str) -> Pin<Box<(dyn Future<Output = Result<usize, MemoryError>> + Send + 'async_trait)>> { todo!() }`
 
-For more information about this error, try `rustc --explain E0046`.
-error: could not compile `polkagent-tool` (lib test) due to 2 previous errors
-warning: build failed, waiting for other jobs to finish...
 error[E0046]: not all trait items implemented, missing: `forget`
     --> crates/polkagent-service/src/app.rs:1764:5
      |
@@ -33,4 +34,7 @@ error[E0046]: not all trait items implemented, missing: `forget`
      |
      = help: implement the missing item: `fn forget<'life0: 'async_trait, 'life1: 'async_trait, 'async_trait>(&'life0 self, _: &'life1 str) -> Pin<Box<(dyn futures::Future<Output = Result<usize, MemoryError>> + std::marker::Send + 'async_trait)>> { todo!() }`
 
+For more information about this error, try `rustc --explain E0046`.
+error: could not compile `polkagent-tool` (lib test) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
 error: could not compile `polkagent-service` (lib test) due to 1 previous error

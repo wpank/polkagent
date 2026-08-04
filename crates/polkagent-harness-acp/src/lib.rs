@@ -177,6 +177,20 @@ impl AcpConfig {
             timeout: Duration::from_secs(300),
         }
     }
+
+    /// Create a configuration for the OpenCode ACP agent.
+    ///
+    /// Spawns `opencode acp` (or the given binary path).
+    pub fn opencode(binary: impl Into<String>, cwd: Option<PathBuf>) -> Self {
+        Self {
+            command: binary.into(),
+            args: vec!["acp".into()],
+            cwd,
+            env: HashMap::new(),
+            protocol_version: "0.12.2".into(),
+            timeout: Duration::from_secs(300),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
