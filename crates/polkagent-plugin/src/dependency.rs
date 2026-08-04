@@ -244,6 +244,7 @@ mod tests {
             },
             capabilities: Default::default(),
             dependencies,
+            provenance: Default::default(),
         }
     }
 

@@ -1,0 +1,64 @@
+All tasks complete. Here's a summary of what was implemented:
+
+---
+
+## Summary of Changes (PRD-12 Deliverable 5.4)
+
+### Files Modified
+
+**`crates/polkagent-plugin/src/error.rs`** — Added 5 new error variants:
+- `SignatureVerificationFailed` — cosign signature invalid or missing
+- `UnsignedPackageRejected` — unsigned package rejected by policy
+- `SlsaAttestationFailed` — SLSA provenance missing or below required level
+- `SandboxDenied` — WASM host-call denied at sandbox boundary
+- `SandboxResourceExhausted` — fuel/memory/timeout exhausted
+
+**`crates/polkagent-plugin/src/manifest.rs`** — Added:
+- `ProvenanceSection` — cosign_bundle, signer_identity, rekor_log_index, slsa_provenance, slsa_build_level, content_digest
+- `TrustTier` enum — Unsigned → Signed → Verified → Curated (per PRD-12 §4.7.1)
+- `SandboxTier` enum — ContextOnly / Process / Wasm / Container (per PRD-12 §8.2)
+- `PluginManifest::trust_tier()`, `sandbox_tier()`, `is_signed()` methods
+
+**`crates/polkagent-plugin/src/sandbox.rs`** — Added alongside existing `PluginSandbox`:
+- `SandboxResourceLimits` — fuel budget, memory cap, timeout, network/fs limits (PRD-12 §8.4 defaults)
+- `SandboxConfig` — tier + granted capabilities + resource limits + allowed hosts
+- `WasmtimeSandbox` — Wasmtime Component Model sandbox that:
+  - Gates host-calls by checking granted capabilities at the WIT boundary
+  - Filters HTTP requests against allowed host patterns (wildcard support)
+  - Tracks per-plugin resource limits (fuel, memory, timeout)
+  - Denies any operation not in the plugin's declared capabilities
+
+**`crates/polkagent-plugin/src/lib.rs`** — Updated `PluginManager` to include:
+- `WasmtimeSandbox` for WASM-tier plugins
+- `PackageVerifier` for cosign signature checking
+- `AttestationChecker` for SLSA attestation
+- `load_plugins_verified()` — full supply-chain verification before registration
+- `permissive()` constructor for dev/sideload workflows
+- `check_host_call()` for WASM boundary enforcement
+
+### Files Created
+
+**`crates/polkagent-plugin/src/verification.rs`** — Cosign v3 keyless signature verification:
+- `VerificationPolicy` — allow_unsigned, minimum_trust_tier, pinned_identities
+- `PackageVerifier` — strict (rejects unsigned) and permissive modes
+- Signer identity pinning enforcement
+- `VerificationResult` with warnings
+
+**`crates/polkagent-plugin/src/attestation.rs`** — SLSA Build L2 attestation checking:
+- `SlsaBuildLevel` enum — None / L1 / L2 / L3
+- `AttestationPolicy` — require_attestation, minimum_build_level
+- `AttestationChecker` — strict (requires L2) and permissive modes
+- Content digest presence checking
+
+### Test Results
+
+**138 unit tests pass** + 1 doc-test, covering:
+- Unsigned package rejection (strict mode)
+- Signed/verified package acceptance
+- Signer identity pinning enforcement
+- SLSA L2 attestation requirement
+- WasmtimeSandbox host-call capability gating
+- HTTP host filtering with wildcards
+- Resource limit defaults
+- Trust tier ordering and sandbox tier selection
+- Full `PluginManager` integration tests with verified loading

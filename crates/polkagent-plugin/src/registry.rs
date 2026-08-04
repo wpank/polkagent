@@ -193,6 +193,7 @@ mod tests {
                 optional: Vec::new(),
             },
             dependencies: HashMap::new(),
+            provenance: Default::default(),
         }
     }
 
