@@ -21,6 +21,7 @@
 //! | [`finality`] | [`TransactionOutcome`] and [`FinalityWatcher`] trait. |
 //! | [`preflight`] | Pre-flight checks: [`PreFlightCheck`] trait, [`CompositePreFlight`], balance/fee/ED/address/nonce/metadata checks. |
 //! | [`error`] | [`PaymentError`] enum. |
+//! | [`ledger`] | **EXPERIMENTAL** — Agent earn/spend [`Ledger`], [`X402PaymentHeader`] (PRD-08 §5.2 prototype). |
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -43,6 +44,7 @@ pub mod error;
 pub mod estimator;
 pub mod finality;
 pub mod intent;
+pub mod ledger;
 pub mod preflight;
 pub mod risk;
 pub mod store;
@@ -68,6 +70,7 @@ pub use risk::{
     BatchHidingDetector, CompositeRiskGate, HighValueDetector, HomoglyphDetector, RiskCode,
     RiskFinding, RiskGate, RiskSeverity,
 };
+pub use ledger::{Ledger, LedgerEntry, LedgerEntryKind, X402PaymentHeader};
 pub use store::{BalanceSummary, PaymentStore};
 pub use types::{
     Amount, AssetId, CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary,
