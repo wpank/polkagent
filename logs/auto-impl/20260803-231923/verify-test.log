@@ -1,15 +1,5 @@
-   Compiling polkagent-transport-pca v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-transport-pca)
    Compiling polkagent-service v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-service)
    Compiling polkagent-tool v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool)
-   Compiling polkagent-outbox v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-outbox)
-   Compiling polkagent-memory v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-memory)
-   Compiling polkagent-action-governance v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-action-governance)
-   Compiling polkagent-chain-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-chain-fake)
-   Compiling polkagent-artifact v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-artifact)
-   Compiling polkagent-plugin v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-plugin)
-   Compiling polkagent-rate-limit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-rate-limit)
-   Compiling polkagent-skill v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-skill)
-   Compiling polkagent-kit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-kit)
 error[E0046]: not all trait items implemented, missing: `forget`
    --> crates/polkagent-tool/src/builtin/chain_knowledge.rs:226:5
     |
@@ -34,7 +24,6 @@ error[E0046]: not all trait items implemented, missing: `forget`
      |
      = help: implement the missing item: `fn forget<'life0: 'async_trait, 'life1: 'async_trait, 'async_trait>(&'life0 self, _: &'life1 str) -> Pin<Box<(dyn futures::Future<Output = Result<usize, MemoryError>> + std::marker::Send + 'async_trait)>> { todo!() }`
 
-   Compiling polkagent-core v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-core)
 For more information about this error, try `rustc --explain E0046`.
 error: could not compile `polkagent-tool` (lib test) due to 2 previous errors
 warning: build failed, waiting for other jobs to finish...
