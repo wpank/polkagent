@@ -3527,6 +3527,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-signer-kms"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "chrono",
+ "polkagent-core",
+ "polkagent-signer-trait",
+ "serde",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-signer-proxy"
 version = "0.1.0"
 dependencies = [

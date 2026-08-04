@@ -1,0 +1,33 @@
+[package]
+name = "polkagent-signer-kms"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "KMS/HSM signer adapter for Polkagent (AWS KMS, HashiCorp Vault)"
+
+[features]
+default = ["mock"]
+mock = []
+aws-kms = []
+hashicorp-vault = []
+
+[dependencies]
+polkagent-core = { path = "../polkagent-core" }
+polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+toml = { workspace = true }
+polkagent-signer-trait = { path = "../polkagent-signer-trait", features = ["test-contracts"] }
+
+[lints]
+workspace = true

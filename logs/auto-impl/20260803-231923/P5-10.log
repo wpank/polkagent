@@ -1,0 +1,24 @@
+All done. Here's a summary of what was created:
+
+## Created: `polkagent-signer-kms`
+
+### Files
+- **`crates/polkagent-signer-kms/Cargo.toml`** — new crate with feature flags `mock` (default), `aws-kms`, `hashicorp-vault`
+- **`crates/polkagent-signer-kms/src/lib.rs`** — full `Signer` trait implementation
+- **`Cargo.toml`** — added `"crates/polkagent-signer-kms"` to workspace members
+
+### Implementation
+| Component | Details |
+|---|---|
+| **`KmsProvider`** enum | `Mock`, `AwsKms`, `HashiCorpVault` — all variants deserializable, non-mock backends return clear "not yet implemented" / "feature required" errors |
+| **`KmsSignerConfig`** | `provider`, `key_id`, `region`, `endpoint`, `accounts`, `chain_profiles` — serializable to TOML |
+| **`KmsSigner`** | Implements `Signer` trait with mock backend |
+| **Mock backend** | Uses BLAKE3 to derive deterministic public keys from `key_id` and deterministic 64-byte signatures from `key_id + payload`. Key material never exists — the mock simulates the KMS flow where signing happens "remotely" |
+| **Key isolation** | No private key bytes stored or exposed. Logging uses only `key_id` and `request_id` |
+| **Expiry checks** | Rejects expired requests before any processing (trait contract) |
+| **Account validation** | Rejects requests for unknown accounts with `AccountNotFound` |
+
+### Test results: **20/20 passing**
+- 8 conformance tests (`conformance::test_*`) — determinism, different-inputs-different-sigs, no-plaintext-secrets, expired rejection, etc.
+- 4 contract tests (`contracts::test_*`) — describe, sign, payload matching, health
+- 8 unit tests — unknown account rejection, sign count, TOML serialization, hardware_backed flag, key derivation uniqueness
