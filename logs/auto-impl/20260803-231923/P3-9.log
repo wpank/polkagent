@@ -1,0 +1,151 @@
+---
+
+# Phase 3 Acceptance Criteria — Verification Report
+
+**Date:** 2026-08-04  
+**Sources:** TRACKING.md, PRD-00 §9.2, codebase audit, `cargo test -p polkagent-security-tests`
+
+---
+
+## Summary
+
+| ID | Criterion | Verdict | Confidence |
+|----|-----------|---------|------------|
+| AC-P3-001 | Read-only workflows produce zero write effects | ⚠️ **PARTIAL PASS** | High |
+| AC-P3-002 | RAG answers cite metadata hash, block, and source | ❌ **FAIL** | High |
+| AC-P3-003 | PCA C0 bot can connect and exchange messages | ❌ **FAIL** | High |
+| AC-P3-004 | Real bounded jobs show repeat use | ❌ **FAIL** | High |
+| AC-P3-005 | No source or privacy regressions | ✅ **PASS** | High |
+
+**Result: 1 PASS, 1 PARTIAL, 3 FAIL — Phase 3 gate is NOT met.**
+
+---
+
+## Detailed Findings
+
+### AC-P3-001: Read-only workflows produce zero write effects — ⚠️ PARTIAL PASS
+
+**Verification method:** "Effect audit: no write-type effects in any run"
+
+**What exists:**
+- 6 write-type `EffectKind` variants identified: `SignatureRequest`, `Broadcast`, `FinalityWatch`, `Delivery`, `ToolCall`, `HarnessOperation`
+- 3 read-only variants: `ChainRead`, `Simulation`, `ModelCall`
+- All 10 governance/treasury tools (the read-only tools) require only the `chain.query` grant
+- A `read-only-agent` policy template in `polkagent-grant` explicitly **denies** `chain.submit`, `chain.sign`, `file.write`, `shell.execute`
+- Test `read_only_blocks_writes()` verifies the policy rejects all four write actions
+- Tests `all_tools_require_chain_query_grant()` verify governance and treasury tools only request read grants
+
+**What's missing:**
+- No integration-level test that runs a full read-only workflow and asserts zero write-type `EffectKind` values appear in the effect log
+- Policy enforcement is tested, but the "effect audit" verification method (checking the effect pipeline output) is not
+
+**Verdict:** The enforcement mechanism is sound and tested at the grant layer, but the specific verification method (effect audit) called for in the AC is not implemented. **Partial pass.**
+
+---
+
+### AC-P3-002: RAG answers cite metadata hash, block, and source — ❌ FAIL
+
+**Verification method:** "Citation coverage evaluation corpus"
+
+**What exists (more than TRACKING.md suggests):**
+- `MetadataRagService` in `polkagent-memory/src/metadata_rag.rs` — 410 lines, 8 unit tests
+- `MetadataCitation` struct with all required fields: `metadata_hash`, `block_number`, `pallet_name`, `source_section`
+- `ChainKnowledgeTool` wrapper in `polkagent-tool/src/builtin/chain_knowledge.rs` — 4 unit tests
+- Unit tests verify citation reconstruction roundtrips correctly
+
+**What's missing (critical gaps):**
+- **No evaluation corpus** — the AC verification method requires a citation coverage evaluation corpus; none exists
+- **No integration test** exercising the RAG end-to-end
+- **No citation coverage metrics** (e.g., ≥90% of answers cite all three fields)
+- **No stale-metadata rejection test**
+- TRACKING.md says deliverable 3.3 "Metadata-grounded RAG" is "NOT STARTED" — the code is actually ~70% built but not integrated
+
+**Verdict:** Citation structures are implemented but the evaluation method is entirely absent. **Fail.**
+
+---
+
+### AC-P3-003: PCA C0 bot can connect and exchange messages — ❌ FAIL
+
+**Verification method:** "Integration test with PCA transport"
+
+**What exists:**
+- `polkagent-transport-pca` crate: 10 modules, 156 unit tests (all passing)
+- Real cryptography: X25519 key agreement + ChaCha20-Poly1305 AEAD
+- 12 integration tests in `pca_transport_e2e.rs` (all passing) covering:
+  - Session establishment via handshake
+  - Bidirectional message exchange
+  - FIFO ordering, deduplication, acknowledgement
+  - Disconnect handling, content integrity
+
+**What's missing (critical gap):**
+- **All tests use in-memory simulation**, not real network transport
+- Code comment in `lib.rs` explicitly states: *"In a real network implementation, the public keys would be exchanged over the wire. Here, both sides of the handshake are performed in-process for testing."*
+- Tests use `inject_plaintext()` and `drain_outgoing()` to simulate wire delivery — no TCP/HTTP/WebSocket layer exists
+- No real or containerized PCA C0 server endpoint to connect to
+
+**Verdict:** Transport logic is well-implemented and thoroughly tested in-memory, but the AC requires a bot that can "connect and exchange messages" — no real network connection is demonstrated. **Fail.**
+
+---
+
+### AC-P3-004: Real bounded jobs show repeat use — ❌ FAIL
+
+**Verification method:** "Usage metrics over test period"
+
+**What exists:**
+- `polkagent-scheduler` crate: 84 tests — task lifecycle, `Schedule::Interval`, `Schedule::Cron`, `SchedulerRunner`
+- `ScheduledTaskManager` in `polkagent-service/src/scheduled.rs`: 10 tests — registration, history tracking, interval scheduling
+- Test `task_history_is_tracked_across_multiple_executions()` shows repeat execution with history
+
+**What's missing (critical gaps):**
+- **No real-chain execution** — governance/treasury tools execute against `FakeChainClient`, not `SubxtChainClient`. TRACKING.md explicitly states: *"No real-chain usage yet"*
+- **No "bounded" semantics** — no resource limits (max_runs, max_cost, timeout). `TimeoutEnforcer` is dead code (P0 issue 2.7)
+- **No persistent usage metrics** — history is in-memory `Vec<HistoryEntry>` only
+- **No integration test** with repeat execution against a real or test chain
+- **Critical blocker:** SubxtChainClient not wired into CLI (TRACKING.md: "single biggest gap")
+
+**Verdict:** Scheduler infrastructure exists but nothing demonstrates "real bounded jobs" with "usage metrics over test period." **Fail.**
+
+---
+
+### AC-P3-005: No source or privacy regressions — ✅ PASS
+
+**Verification method:** "Security regression test suite"
+
+**`cargo test -p polkagent-security-tests` results:**
+
+| Test File | Tests | Result |
+|-----------|-------|--------|
+| `effect_audit.rs` | 13 | ✅ all pass |
+| `secrets_not_in_debug.rs` | 19 | ✅ all pass |
+| `supply_chain.rs` | 39 | ✅ all pass |
+| **Total** | **71** | **71 passed, 0 failed** |
+
+**Coverage areas verified:**
+- Secret leakage: API keys, private keys, config values never appear in error messages or debug output
+- Grant escalation: read-only agents cannot execute write/broadcast effects; grant TTL prevents stale escalation
+- Policy bypass: empty policies deny all; wildcard doesn't bypass chain.submit deny rules
+- Replay protection: idempotency keys prevent duplicates; completed effects are immutable
+- Metadata integrity: BLAKE3 hashes are deterministic; tampering detected via drift
+- Config tampering: byte-flip, truncation, and empty-string tampering all detected
+
+**Verdict:** Full security regression suite passes with zero failures. **Pass.**
+
+---
+
+## Overall Assessment
+
+| Status | Count | Items |
+|--------|-------|-------|
+| ✅ Pass | 1 | AC-P3-005 |
+| ⚠️ Partial | 1 | AC-P3-001 (enforcement works, but effect-level audit test missing) |
+| ❌ Fail | 3 | AC-P3-002, AC-P3-003, AC-P3-004 |
+
+**Phase 3 gate is NOT met.** The three failures share a common root cause: **the real chain adapter (`polkagent-chain-subxt`) is not wired into the CLI**, which blocks real-world execution for governance tools (AC-P3-001 e2e), bounded jobs (AC-P3-004), and prevents meaningful integration testing. RAG (AC-P3-002) needs an evaluation corpus. PCA (AC-P3-003) needs a real network transport layer.
+
+### Recommended Priority to Close the Gap
+
+1. **Wire SubxtChainClient into CLI** — unblocks AC-P3-001 (full pass), AC-P3-004
+2. **Add effect-level audit integration test** — promotes AC-P3-001 from partial to full pass
+3. **Create RAG evaluation corpus** — closes AC-P3-002 (code is 70% done)
+4. **Add real network layer to PCA transport** — closes AC-P3-003 (crypto/logic is complete)
+5. **Implement bounded job resource limits + persistent metrics** — closes AC-P3-004
