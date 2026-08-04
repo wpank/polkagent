@@ -1171,6 +1171,104 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
             }
         }
     }
+
+    async fn save_session_state(
+        &self,
+        session_id: SessionId,
+    ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let session = sessions.get(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+
+        let mut backend_state = std::collections::HashMap::new();
+        backend_state.insert("session_key".into(), serde_json::json!(session.session_key));
+
+        let snapshot = polkagent_harness_trait::SessionSnapshot {
+            session_id,
+            harness_id: self.configurator.harness_id(),
+            process_pid: None,
+            started_at: chrono::Utc::now(),
+            working_directory: self.harness_config.workspace_path.clone(),
+            turn_count: 0,
+            backend_state,
+        };
+
+        polkagent_harness_trait::persist_session_state(&snapshot)?;
+        debug!(session_id = %session_id, "ACP session state saved");
+        Ok(snapshot)
+    }
+
+    async fn resume_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<SessionId, HarnessError> {
+        let snapshot = polkagent_harness_trait::load_session_state(session_id)?;
+
+        let session_key = snapshot
+            .backend_state
+            .get("session_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError {
+                message: "missing session_key in saved state".into(),
+            })?
+            .to_owned();
+
+        // Re-connect the ACP client if needed.
+        let mut client_guard = self.client.lock().await;
+        if client_guard.is_none() {
+            let acp_config = self.configurator.build_config(&self.harness_config);
+            let mut client = AcpStdioClient::new(acp_config);
+            client.connect().await?;
+            *client_guard = Some(client);
+        }
+
+        // Re-register the session in our local map.
+        {
+            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            sessions.insert(
+                session_id,
+                AcpSessionState {
+                    session_key,
+                    active: true,
+                },
+            );
+        }
+
+        {
+            let mut status = self.status.lock().expect("status mutex poisoned");
+            *status = HarnessStatus::Running {
+                since: chrono::Utc::now(),
+                run_id: None,
+            };
+        }
+
+        polkagent_harness_trait::remove_session_state(session_id)?;
+        info!(session_id = %session_id, "ACP session resumed");
+        Ok(session_id)
+    }
+
+    async fn cancel_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), HarnessError> {
+        let session_key = {
+            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let state = sessions.get(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+            state.session_key.clone()
+        };
+
+        let mut client_guard = self.client.lock().await;
+        if let Some(client) = client_guard.as_mut() {
+            let _ = client.cancel(&session_key).await;
+        }
+        drop(client_guard);
+
+        polkagent_harness_trait::remove_session_state(session_id).ok();
+        self.end_session(session_id).await
+    }
+
+    fn health_interval(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
+    }
 }
 
 // ---------------------------------------------------------------------------

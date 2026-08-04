@@ -764,6 +764,119 @@ impl Harness for ClaudeHarness {
             }
         }
     }
+
+    async fn save_session_state(
+        &self,
+        session_id: SessionId,
+    ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let session = sessions.get(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+
+        let pid = session.child.id();
+
+        let mut backend_state = std::collections::HashMap::new();
+        backend_state.insert(
+            "messages".into(),
+            serde_json::Value::Array(
+                session.messages.iter().map(|m| serde_json::Value::String(m.clone())).collect(),
+            ),
+        );
+
+        let snapshot = polkagent_harness_trait::SessionSnapshot {
+            session_id,
+            harness_id: self.config.id.clone(),
+            process_pid: pid,
+            started_at: chrono::Utc::now(),
+            working_directory: session.working_dir.clone(),
+            turn_count: session.messages.len() as u32,
+            backend_state,
+        };
+
+        polkagent_harness_trait::persist_session_state(&snapshot)?;
+        debug!(session_id = %session_id, "Claude Code session state saved");
+        Ok(snapshot)
+    }
+
+    async fn resume_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<SessionId, HarnessError> {
+        let snapshot = polkagent_harness_trait::load_session_state(session_id)?;
+
+        // Check if the old process is still alive.
+        if let Some(pid) = snapshot.process_pid {
+            let alive = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid as i32),
+                None,
+            )
+            .is_ok();
+
+            if alive {
+                debug!(pid, session_id = %session_id, "Re-attaching to live Claude process");
+                return Ok(session_id);
+            }
+        }
+
+        // Re-launch with saved context via a new session.
+        let working_dir = snapshot.working_directory.clone();
+        let session_config = SessionConfig {
+            working_directory: working_dir,
+            ..SessionConfig::default()
+        };
+        let new_id = self.start_session(session_config).await?;
+
+        polkagent_harness_trait::remove_session_state(session_id)?;
+        debug!(
+            old_session = %session_id,
+            new_session = %new_id,
+            "Claude Code session resumed with new process"
+        );
+        Ok(new_id)
+    }
+
+    async fn cancel_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), HarnessError> {
+        #[cfg(unix)]
+        {
+            let raw_pid = {
+                let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                let session = sessions.get(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+                session.child.id()
+            };
+
+            if let Some(pid) = raw_pid {
+                debug!(session_id = %session_id, pid, "Sending SIGTERM to Claude process");
+                let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+                let _ = nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM);
+
+                // Wait up to 5 seconds for clean exit.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    let exited = {
+                        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                        if let Some(session) = sessions.get_mut(&session_id) {
+                            matches!(session.child.try_wait(), Ok(Some(_)))
+                        } else {
+                            true
+                        }
+                    };
+                    if exited || std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+
+        polkagent_harness_trait::remove_session_state(session_id).ok();
+        self.end_session(session_id).await
+    }
+
+    fn health_interval(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -2724,6 +2724,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "nix",
  "polkagent-core",
  "polkagent-executor-trait",
  "polkagent-harness-trait",

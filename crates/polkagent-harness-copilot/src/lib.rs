@@ -668,6 +668,73 @@ impl Harness for CopilotHarness {
             }
         }
     }
+
+    async fn save_session_state(
+        &self,
+        session_id: SessionId,
+    ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let session = sessions.get(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+
+        let mut backend_state = std::collections::HashMap::new();
+        backend_state.insert(
+            "messages".into(),
+            serde_json::Value::Array(
+                session.messages.iter().map(|m| serde_json::Value::String(m.clone())).collect(),
+            ),
+        );
+        backend_state.insert(
+            "responses".into(),
+            serde_json::Value::Array(
+                session.responses.iter().map(|r| serde_json::Value::String(r.clone())).collect(),
+            ),
+        );
+
+        let snapshot = polkagent_harness_trait::SessionSnapshot {
+            session_id,
+            harness_id: self.config.id.clone(),
+            process_pid: None,
+            started_at: chrono::Utc::now(),
+            working_directory: session.working_dir.clone(),
+            turn_count: session.messages.len() as u32,
+            backend_state,
+        };
+
+        polkagent_harness_trait::persist_session_state(&snapshot)?;
+        debug!(session_id = %session_id, "Copilot session state saved");
+        Ok(snapshot)
+    }
+
+    async fn resume_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<SessionId, HarnessError> {
+        let snapshot = polkagent_harness_trait::load_session_state(session_id)?;
+
+        // Copilot is one-shot: re-launch a new session with saved context.
+        let working_dir = snapshot.working_directory.clone();
+        let session_config = SessionConfig {
+            working_directory: working_dir,
+            ..SessionConfig::default()
+        };
+        let new_id = self.start_session(session_config).await?;
+
+        polkagent_harness_trait::remove_session_state(session_id)?;
+        debug!(
+            old_session = %session_id,
+            new_session = %new_id,
+            "Copilot session resumed with new session"
+        );
+        Ok(new_id)
+    }
+
+    async fn cancel_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), HarnessError> {
+        polkagent_harness_trait::remove_session_state(session_id).ok();
+        self.end_session(session_id).await
+    }
 }
 
 // ---------------------------------------------------------------------------

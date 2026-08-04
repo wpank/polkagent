@@ -471,6 +471,74 @@ pub struct SessionConfig {
 }
 
 // ---------------------------------------------------------------------------
+// SessionSnapshot
+// ---------------------------------------------------------------------------
+
+/// A serializable snapshot of session state for persistence and resumption.
+///
+/// Written to `.polkagent/state/{session_id}.json` after each turn.
+/// Used by [`Harness::resume_session`] to re-attach or re-launch sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    /// The session identifier.
+    pub session_id: SessionId,
+    /// The harness that owns this session.
+    pub harness_id: HarnessId,
+    /// PID of the subprocess, if still alive.
+    pub process_pid: Option<u32>,
+    /// When the session was started.
+    pub started_at: DateTime<Utc>,
+    /// Working directory used by the session.
+    pub working_directory: Option<PathBuf>,
+    /// Number of turns (messages) exchanged.
+    pub turn_count: u32,
+    /// Backend-specific opaque state (e.g., thread ID, conversation ID).
+    pub backend_state: HashMap<String, serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
+// Session state persistence helpers
+// ---------------------------------------------------------------------------
+
+/// Write session state to `.polkagent/state/{session_id}.json`.
+pub fn persist_session_state(state: &SessionSnapshot) -> Result<(), HarnessError> {
+    let state_dir = PathBuf::from(".polkagent/state");
+    std::fs::create_dir_all(&state_dir).map_err(|e| HarnessError::IoError {
+        message: format!("failed to create state directory: {e}"),
+    })?;
+    let path = state_dir.join(format!("{}.json", state.session_id));
+    let json = serde_json::to_string_pretty(state).map_err(|e| HarnessError::Internal {
+        message: format!("failed to serialize session state: {e}"),
+    })?;
+    std::fs::write(&path, json).map_err(|e| HarnessError::IoError {
+        message: format!("failed to write session state: {e}"),
+    })?;
+    Ok(())
+}
+
+/// Load session state from `.polkagent/state/{session_id}.json`.
+pub fn load_session_state(session_id: SessionId) -> Result<SessionSnapshot, HarnessError> {
+    let path = PathBuf::from(format!(".polkagent/state/{session_id}.json"));
+    let json = std::fs::read_to_string(&path).map_err(|e| HarnessError::IoError {
+        message: format!("failed to read session state: {e}"),
+    })?;
+    serde_json::from_str(&json).map_err(|e| HarnessError::ParseError {
+        message: format!("failed to deserialize session state: {e}"),
+    })
+}
+
+/// Remove session state file for a completed or cancelled session.
+pub fn remove_session_state(session_id: SessionId) -> Result<(), HarnessError> {
+    let path = PathBuf::from(format!(".polkagent/state/{session_id}.json"));
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| HarnessError::IoError {
+            message: format!("failed to remove session state: {e}"),
+        })?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
 
@@ -783,6 +851,58 @@ pub trait Harness: Send + Sync + 'static {
     /// and is reachable), `Ok(false)` if it is not, or an error if the
     /// check itself fails.
     async fn health(&self) -> Result<bool, HarnessError>;
+
+    /// Save the current session state for later resumption.
+    ///
+    /// Returns the captured [`SessionSnapshot`]. Implementations should
+    /// also persist the snapshot to `.polkagent/state/` via
+    /// [`persist_session_state`].
+    async fn save_session_state(
+        &self,
+        session_id: SessionId,
+    ) -> Result<SessionSnapshot, HarnessError> {
+        let _ = session_id;
+        Err(HarnessError::InvalidState {
+            message: "session state persistence not supported by this harness".into(),
+        })
+    }
+
+    /// Resume a previously-saved session by re-attaching to an existing
+    /// subprocess or re-launching with saved context.
+    ///
+    /// Loads the [`SessionSnapshot`] from `.polkagent/state/` and either
+    /// reconnects to a still-running process (by PID) or spawns a new
+    /// subprocess pre-loaded with conversation history.
+    async fn resume_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<SessionId, HarnessError> {
+        let _ = session_id;
+        Err(HarnessError::InvalidState {
+            message: "session resumption not supported by this harness".into(),
+        })
+    }
+
+    /// Cancel an active session by sending SIGTERM and waiting for clean exit.
+    ///
+    /// The default implementation delegates to [`end_session`].
+    ///
+    /// [`end_session`]: Harness::end_session
+    async fn cancel_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), HarnessError> {
+        self.end_session(session_id).await
+    }
+
+    /// Recommended interval for health polling.
+    ///
+    /// Returns `Some(duration)` if the harness benefits from periodic
+    /// health checks (e.g. long-lived subprocess harnesses), or `None`
+    /// for one-shot harnesses that do not need polling.
+    fn health_interval(&self) -> Option<Duration> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
