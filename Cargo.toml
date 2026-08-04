@@ -79,6 +79,7 @@ members = [
     "crates/polkagent-action-sign",
     "crates/polkagent-action-governance",
     "crates/polkagent-action-transfer",
+    "crates/polkagent-signer-proxy",
 ]
 
 [workspace.package]

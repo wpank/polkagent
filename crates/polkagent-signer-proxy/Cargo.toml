@@ -1,0 +1,29 @@
+[package]
+name = "polkagent-signer-proxy"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure-proxy signer adapter with budget enforcement for funded proxy accounts"
+
+[dependencies]
+polkagent-core = { path = "../polkagent-core" }
+polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+polkagent-grant = { path = "../polkagent-grant" }
+polkagent-chain-trait = { path = "../polkagent-chain-trait" }
+
+async-trait = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+polkagent-signer-trait = { path = "../polkagent-signer-trait", features = ["test-contracts"] }
+polkagent-signer-fake = { path = "../polkagent-signer-fake" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

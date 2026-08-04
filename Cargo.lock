@@ -3259,6 +3259,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-signer-proxy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "polkagent-chain-trait",
+ "polkagent-core",
+ "polkagent-grant",
+ "polkagent-signer-fake",
+ "polkagent-signer-trait",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-signer-trait"
 version = "0.1.0"
 dependencies = [
