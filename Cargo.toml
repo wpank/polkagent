@@ -84,6 +84,7 @@ members = [
     "crates/polkagent-cloud-control",
     "crates/polkagent-cloud-worker",
     "crates/polkagent-store-postgres",
+    "crates/polkagent-billing",
 ]
 
 [workspace.package]

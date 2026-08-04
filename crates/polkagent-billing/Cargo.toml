@@ -1,0 +1,40 @@
+[package]
+name = "polkagent-billing"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Usage metering, per-run cost computation, and billing export for the Polkagent platform"
+
+[dependencies]
+# Internal
+polkagent-core = { path = "../polkagent-core" }
+polkagent-payment = { path = "../polkagent-payment" }
+polkagent-event = { path = "../polkagent-event" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true
