@@ -101,16 +101,8 @@ impl RawRunSummary {
             agent_id: self.agent_id,
             status: RunStatus::new(self.state),
             created_at: parse_ts(&self.created_at)?,
-            started_at: self
-                .started_at
-                .as_deref()
-                .map(parse_ts)
-                .transpose()?,
-            completed_at: self
-                .completed_at
-                .as_deref()
-                .map(parse_ts)
-                .transpose()?,
+            started_at: self.started_at.as_deref().map(parse_ts).transpose()?,
+            completed_at: self.completed_at.as_deref().map(parse_ts).transpose()?,
         })
     }
 }
@@ -178,11 +170,7 @@ impl RunStore for SqlitePool {
         })?
     }
 
-    async fn update_state(
-        &self,
-        run_id: RunId,
-        new_status: RunStatus,
-    ) -> Result<(), StoreError> {
+    async fn update_state(&self, run_id: RunId, new_status: RunStatus) -> Result<(), StoreError> {
         let pool = self.clone();
         let status_str = new_status.0;
 
@@ -595,17 +583,15 @@ mod tests {
             .await
             .expect("create 2");
 
-        let created_runs =
-            RunStore::list_by_state(&pool, RunStatus::new("created"), 10, 0)
-                .await
-                .expect("list created");
+        let created_runs = RunStore::list_by_state(&pool, RunStatus::new("created"), 10, 0)
+            .await
+            .expect("list created");
         assert_eq!(created_runs.len(), 1);
         assert_eq!(created_runs[0].id, id1);
 
-        let running_runs =
-            RunStore::list_by_state(&pool, RunStatus::new("running"), 10, 0)
-                .await
-                .expect("list running");
+        let running_runs = RunStore::list_by_state(&pool, RunStatus::new("running"), 10, 0)
+            .await
+            .expect("list running");
         assert_eq!(running_runs.len(), 1);
         assert_eq!(running_runs[0].id, id2);
     }

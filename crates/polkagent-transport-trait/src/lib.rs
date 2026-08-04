@@ -351,7 +351,9 @@ mod tests {
                 display_name: Some("Alice".into()),
                 trust_tier: SenderTrustTier::Authenticated,
             },
-            body: MessageBody::Text { content: "Hello!".into() },
+            body: MessageBody::Text {
+                content: "Hello!".into(),
+            },
             received_at: chrono::Utc::now(),
         };
         let json = serde_json::to_string(&msg).expect("serialize");
@@ -364,7 +366,9 @@ mod tests {
         let msg = OutgoingMessage {
             conversation_id: polkagent_core::ConversationId::new(),
             run_id: None,
-            body: OutgoingBody::Text { content: "Response text".into() },
+            body: OutgoingBody::Text {
+                content: "Response text".into(),
+            },
             classification: Classification::Internal,
         };
         let json = serde_json::to_string(&msg).expect("serialize");
@@ -381,13 +385,17 @@ mod tests {
 
     #[test]
     fn transport_error_authentication_message() {
-        let e = TransportError::Authentication { message: "expired token".into() };
+        let e = TransportError::Authentication {
+            message: "expired token".into(),
+        };
         assert!(format!("{e}").contains("expired token"));
     }
 
     #[test]
     fn transport_error_rate_limit_with_retry() {
-        let e = TransportError::RateLimit { retry_after: Some(Duration::from_secs(5)) };
+        let e = TransportError::RateLimit {
+            retry_after: Some(Duration::from_secs(5)),
+        };
         let msg = format!("{e}");
         assert!(msg.contains("rate limit") || msg.contains("Rate limit"));
     }

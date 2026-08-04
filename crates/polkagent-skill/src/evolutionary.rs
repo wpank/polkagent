@@ -280,9 +280,7 @@ impl SimpleRng {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{
-        CapabilitiesSection, PromptsSection, SkillManifest, SkillSection,
-    };
+    use crate::manifest::{CapabilitiesSection, PromptsSection, SkillManifest, SkillSection};
 
     fn test_manifest(name: &str, version: &str) -> SkillManifest {
         SkillManifest {

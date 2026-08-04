@@ -101,9 +101,7 @@ impl MemoryService {
             episode_id: None,
             memory_type,
             content: content.to_string(),
-            embedding: embedding_vec
-                .as_ref()
-                .map(|v| v.as_slice().to_vec()),
+            embedding: embedding_vec.as_ref().map(|v| v.as_slice().to_vec()),
             metadata: serde_json::json!({}),
             provenance,
             created_at: now,
@@ -165,11 +163,7 @@ impl MemoryService {
     ///
     /// Returns [`MemoryError::InvalidOperation`] if no embedding provider has
     /// been configured (see [`with_embedding_index`](Self::with_embedding_index)).
-    pub async fn semantic_search(
-        &self,
-        query: &str,
-        k: usize,
-    ) -> MemoryResult<Vec<SearchResult>> {
+    pub async fn semantic_search(&self, query: &str, k: usize) -> MemoryResult<Vec<SearchResult>> {
         let provider = self.embedding_provider.as_ref().ok_or_else(|| {
             MemoryError::InvalidOperation(
                 "semantic search requires an embedding provider; \
@@ -177,9 +171,10 @@ impl MemoryService {
                     .into(),
             )
         })?;
-        let index = self.vector_index.as_ref().ok_or_else(|| {
-            MemoryError::InvalidOperation("vector index not initialised".into())
-        })?;
+        let index = self
+            .vector_index
+            .as_ref()
+            .ok_or_else(|| MemoryError::InvalidOperation("vector index not initialised".into()))?;
 
         let query_vec = provider.embed(query).await?;
         let results = index
@@ -190,11 +185,7 @@ impl MemoryService {
     }
 
     /// Start a new episode (conversation session).
-    pub async fn start_episode(
-        &self,
-        agent_id: AgentId,
-        title: &str,
-    ) -> MemoryResult<EpisodeId> {
+    pub async fn start_episode(&self, agent_id: AgentId, title: &str) -> MemoryResult<EpisodeId> {
         let episode = Episode {
             id: EpisodeId::new(),
             agent_id,
@@ -217,11 +208,7 @@ impl MemoryService {
     }
 
     /// End an episode with a summary.
-    pub async fn end_episode(
-        &self,
-        id: EpisodeId,
-        summary: &str,
-    ) -> MemoryResult<()> {
+    pub async fn end_episode(&self, id: EpisodeId, summary: &str) -> MemoryResult<()> {
         debug!(episode_id = %id, "ending episode");
         self.store.end_episode(id, summary).await
     }
@@ -248,8 +235,7 @@ impl MemoryService {
         let archive = export_archive(self.store.as_ref(), agent_id).await?;
         let total = archive.entries.len() + archive.episodes.len();
 
-        let json = serde_json::to_string_pretty(&archive)
-            .map_err(MemoryError::Json)?;
+        let json = serde_json::to_string_pretty(&archive).map_err(MemoryError::Json)?;
 
         std::fs::write(path, json.as_bytes())
             .map_err(|e| MemoryError::InvalidOperation(format!("writing archive: {e}")))?;
@@ -277,8 +263,8 @@ impl MemoryService {
         let bytes = std::fs::read(path)
             .map_err(|e| MemoryError::InvalidOperation(format!("reading archive: {e}")))?;
 
-        let archive: crate::export::MemoryArchive = serde_json::from_slice(&bytes)
-            .map_err(MemoryError::Json)?;
+        let archive: crate::export::MemoryArchive =
+            serde_json::from_slice(&bytes).map_err(MemoryError::Json)?;
 
         let result = import_archive(self.store.as_ref(), &archive).await?;
 
@@ -297,10 +283,7 @@ impl MemoryService {
     ///
     /// For now this concatenates all memory content with newlines. A future
     /// version will use LLM summarisation.
-    pub async fn summarize_episode(
-        &self,
-        episode_id: EpisodeId,
-    ) -> MemoryResult<String> {
+    pub async fn summarize_episode(&self, episode_id: EpisodeId) -> MemoryResult<String> {
         // Retrieve the episode to get the agent_id.
         let episode = self.store.get_episode(episode_id).await?;
 
@@ -443,8 +426,7 @@ mod tests {
 
         // Parse the file back and verify it is valid JSON.
         let bytes = std::fs::read(&path).unwrap();
-        let archive: crate::export::MemoryArchive =
-            serde_json::from_slice(&bytes).unwrap();
+        let archive: crate::export::MemoryArchive = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(archive.agent_id, agent);
         assert_eq!(archive.entries.len(), 2);
@@ -470,8 +452,7 @@ mod tests {
         assert_eq!(count, 3);
 
         let bytes = std::fs::read(&path).unwrap();
-        let archive: crate::export::MemoryArchive =
-            serde_json::from_slice(&bytes).unwrap();
+        let archive: crate::export::MemoryArchive = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(archive.episodes.len(), 2);
         assert_eq!(archive.entries.len(), 1);
     }
@@ -637,7 +618,12 @@ mod tests {
         let agent = AgentId::new();
 
         let id = svc
-            .remember(agent, "Rust is a systems language", MemoryType::Semantic, None)
+            .remember(
+                agent,
+                "Rust is a systems language",
+                MemoryType::Semantic,
+                None,
+            )
             .await
             .unwrap();
 
@@ -661,20 +647,38 @@ mod tests {
         let agent = AgentId::new();
 
         // Store several memories.
-        svc.remember(agent, "Rust is a systems language", MemoryType::Semantic, None)
-            .await
-            .unwrap();
-        svc.remember(agent, "Python is great for scripting", MemoryType::Semantic, None)
-            .await
-            .unwrap();
-        svc.remember(agent, "Rust has a borrow checker", MemoryType::Semantic, None)
-            .await
-            .unwrap();
+        svc.remember(
+            agent,
+            "Rust is a systems language",
+            MemoryType::Semantic,
+            None,
+        )
+        .await
+        .unwrap();
+        svc.remember(
+            agent,
+            "Python is great for scripting",
+            MemoryType::Semantic,
+            None,
+        )
+        .await
+        .unwrap();
+        svc.remember(
+            agent,
+            "Rust has a borrow checker",
+            MemoryType::Semantic,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Semantic search should return results (the MockEmbeddingProvider
         // produces deterministic hash-based vectors, so identical text
         // always gets the highest cosine similarity).
-        let results = svc.semantic_search("Rust is a systems language", 10).await.unwrap();
+        let results = svc
+            .semantic_search("Rust is a systems language", 10)
+            .await
+            .unwrap();
 
         assert!(
             !results.is_empty(),
@@ -729,7 +733,10 @@ mod tests {
         let svc = make_service();
 
         let result = svc.semantic_search("test", 5).await;
-        assert!(result.is_err(), "semantic_search without provider should error");
+        assert!(
+            result.is_err(),
+            "semantic_search without provider should error"
+        );
 
         let err_msg = format!("{}", result.unwrap_err());
         assert!(

@@ -8,18 +8,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use polkagent_core::{
-    EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, TurnId, WorkerId,
-};
+use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, TurnId, WorkerId};
 use polkagent_effect::error::PipelineError;
 use polkagent_effect::idempotency::IdempotencyKey;
 use polkagent_effect::pipeline::{EffectIntentSpec, EffectPipeline};
 use polkagent_effect::types::{
     CancellationReason, EffectKind, EffectOutcome, OutcomeResult, ResolutionHint,
 };
-use polkagent_store_trait::{
-    EffectStore, StoredIntent, StoredOutcome, StoreError,
-};
+use polkagent_store_trait::{EffectStore, StoreError, StoredIntent, StoredOutcome};
 
 // ---------------------------------------------------------------------------
 // In-memory test store (re-implements the pattern from polkagent-effect tests)
@@ -135,15 +131,22 @@ impl EffectStore for InMemoryStore {
 
     async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
         let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
-        intents.get(&intent_id).cloned().ok_or_else(|| StoreError::NotFound {
-            resource_type: "EffectIntent",
-            id: intent_id.to_string(),
-        })
+        intents
+            .get(&intent_id)
+            .cloned()
+            .ok_or_else(|| StoreError::NotFound {
+                resource_type: "EffectIntent",
+                id: intent_id.to_string(),
+            })
     }
 
     async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
         let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(intents.values().filter(|i| i.run_id == run_id).cloned().collect())
+        Ok(intents
+            .values()
+            .filter(|i| i.run_id == run_id)
+            .cloned()
+            .collect())
     }
 
     async fn expired_leases(
@@ -193,10 +196,7 @@ impl EffectStore for InMemoryStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         let outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
         Ok(outcomes
             .iter()
@@ -368,10 +368,9 @@ fn unknown_outcome_is_never_collapsed_to_success() {
 
     // Verify the Unknown variant survives serde round-trip without being
     // silently promoted to Success or Failure.
-    let json = serde_json::to_string(&unknown)
-        .unwrap_or_else(|e| panic!("serialize failed: {e}"));
-    let back: OutcomeResult = serde_json::from_str(&json)
-        .unwrap_or_else(|e| panic!("deserialize failed: {e}"));
+    let json = serde_json::to_string(&unknown).unwrap_or_else(|e| panic!("serialize failed: {e}"));
+    let back: OutcomeResult =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("deserialize failed: {e}"));
 
     match back {
         OutcomeResult::Unknown {
@@ -524,7 +523,10 @@ fn idempotency_key_is_deterministic() {
     let k1 = IdempotencyKey::generate(run_id, 1, 0, EffectKind::Broadcast, params_hash);
     let k2 = IdempotencyKey::generate(run_id, 1, 0, EffectKind::Broadcast, params_hash);
 
-    assert_eq!(k1, k2, "same inputs must produce the same idempotency key (EFF-INV-4)");
+    assert_eq!(
+        k1, k2,
+        "same inputs must produce the same idempotency key (EFF-INV-4)"
+    );
 }
 
 #[test]

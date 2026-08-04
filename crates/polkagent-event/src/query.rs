@@ -99,8 +99,8 @@ pub async fn latest_state(
 
     for stored in &stored_events {
         // Deserialise the EventKind from the stored payload.
-        let kind: EventKind = serde_json::from_value(stored.payload.clone())
-            .map_err(EventError::Serialisation)?;
+        let kind: EventKind =
+            serde_json::from_value(stored.payload.clone()).map_err(EventError::Serialisation)?;
 
         let event_id: polkagent_core::EventId = stored.id.parse().map_err(|_| {
             EventError::Store(polkagent_store_trait::event::EventStoreError::NotFound(
@@ -131,10 +131,11 @@ pub async fn latest_state(
                 .unwrap_or_else(|_| chrono::Utc::now()),
         };
 
-        proj.apply(&event).map_err(|source| EventError::ProjectionApply {
-            name: proj.name().to_owned(),
-            source,
-        })?;
+        proj.apply(&event)
+            .map_err(|source| EventError::ProjectionApply {
+                name: proj.name().to_owned(),
+                source,
+            })?;
     }
 
     Ok(proj.state(&run_id).cloned())
@@ -164,7 +165,12 @@ mod tests {
         terminal: Mutex<std::collections::HashSet<String>>,
     }
 
-    const LOCAL_TERMINAL: &[&str] = &["run_completed", "run_failed", "run_cancelled", "run_timed_out"];
+    const LOCAL_TERMINAL: &[&str] = &[
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_timed_out",
+    ];
 
     #[async_trait::async_trait]
     impl EventStore for MemStore {
@@ -232,10 +238,7 @@ mod tests {
                 .collect())
         }
 
-        async fn query(
-            &self,
-            filter: EventFilter,
-        ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
             let durable = self.durable.lock().expect("lock");
             Ok(durable
                 .iter()
@@ -295,9 +298,7 @@ mod tests {
     async fn events_for_run_returns_empty_for_unknown_run() {
         let store = MemStore::default();
         let run_id = RunId::new();
-        let events = events_for_run(&store, run_id, None)
-            .await
-            .expect("query");
+        let events = events_for_run(&store, run_id, None).await.expect("query");
         assert!(events.is_empty());
     }
 
@@ -309,9 +310,7 @@ mod tests {
         write_event(&store, &run_id, "run_created", 1).await;
         write_event(&store, &run_id, "run_started", 2).await;
 
-        let events = events_for_run(&store, run_id, None)
-            .await
-            .expect("query");
+        let events = events_for_run(&store, run_id, None).await.expect("query");
         assert_eq!(events.len(), 2);
     }
 
@@ -345,9 +344,7 @@ mod tests {
         write_event(&store, &run_a, "run_created", 1).await;
         write_event(&store, &run_b, "run_created", 1).await;
 
-        let events = events_for_run(&store, run_a, None)
-            .await
-            .expect("query");
+        let events = events_for_run(&store, run_a, None).await.expect("query");
         assert_eq!(events.len(), 1);
     }
 
@@ -392,9 +389,7 @@ mod tests {
             .await
             .expect("write created");
 
-        let state = latest_state(&store, run_id.clone())
-            .await
-            .expect("query");
+        let state = latest_state(&store, run_id.clone()).await.expect("query");
         assert_eq!(state, Some(RunState::Created));
 
         let event_id_2 = EventId::new();
@@ -419,9 +414,7 @@ mod tests {
             .await
             .expect("write started");
 
-        let state = latest_state(&store, run_id)
-            .await
-            .expect("query");
+        let state = latest_state(&store, run_id).await.expect("query");
         assert_eq!(state, Some(RunState::Running));
     }
 }

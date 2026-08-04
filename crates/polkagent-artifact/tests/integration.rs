@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use polkagent_artifact::{
-    ArtifactError, ArtifactKind, ArtifactService, BlobRef, MemoryStore,
-    compute_digest, verify_digest,
+    compute_digest, verify_digest, ArtifactError, ArtifactKind, ArtifactService, BlobRef,
+    MemoryStore,
 };
 use polkagent_core::ids::{ArtifactId, RunId};
 
@@ -70,7 +70,10 @@ fn digest_verification_wrong_body_returns_false() {
 fn blob_ref_display_via_blake3_hex_is_64_chars() {
     let digest = compute_digest(b"hex display");
     assert_eq!(digest.blake3_hex.len(), 64);
-    assert!(digest.blake3_hex.chars().all(|c| "0123456789abcdef".contains(c)));
+    assert!(digest
+        .blake3_hex
+        .chars()
+        .all(|c| "0123456789abcdef".contains(c)));
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +263,10 @@ fn same_content_produces_same_blob_ref() {
     let content = b"idempotent artifact content";
     let d1 = compute_digest(content);
     let d2 = compute_digest(content);
-    assert_eq!(d1.blake3_hex, d2.blake3_hex, "same content must always produce the same BlobRef");
+    assert_eq!(
+        d1.blake3_hex, d2.blake3_hex,
+        "same content must always produce the same BlobRef"
+    );
 }
 
 #[tokio::test]
@@ -382,11 +388,19 @@ async fn duplicate_lineage_edge_is_idempotent() {
         .await
         .expect("create child");
 
-    svc.add_lineage(child.id, parent.id).await.expect("first add_lineage");
-    svc.add_lineage(child.id, parent.id).await.expect("second add_lineage");
+    svc.add_lineage(child.id, parent.id)
+        .await
+        .expect("first add_lineage");
+    svc.add_lineage(child.id, parent.id)
+        .await
+        .expect("second add_lineage");
 
     let ancestors = svc.get_lineage(child.id).await.expect("get_lineage");
-    assert_eq!(ancestors.len(), 1, "duplicate edges must not duplicate ancestors");
+    assert_eq!(
+        ancestors.len(),
+        1,
+        "duplicate edges must not duplicate ancestors"
+    );
     assert_eq!(ancestors[0], parent.id);
 }
 

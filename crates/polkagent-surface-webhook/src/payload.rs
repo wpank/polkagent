@@ -141,10 +141,22 @@ mod tests {
         let wid = Uuid::nil();
         let did = Uuid::nil();
         let data = json!({});
-        assert_eq!(run_started(wid, did, data.clone()).event_type, "run.started");
-        assert_eq!(run_completed(wid, did, data.clone()).event_type, "run.completed");
-        assert_eq!(effect_executed(wid, did, data.clone()).event_type, "effect.executed");
-        assert_eq!(approval_requested(wid, did, data).event_type, "approval.requested");
+        assert_eq!(
+            run_started(wid, did, data.clone()).event_type,
+            "run.started"
+        );
+        assert_eq!(
+            run_completed(wid, did, data.clone()).event_type,
+            "run.completed"
+        );
+        assert_eq!(
+            effect_executed(wid, did, data.clone()).event_type,
+            "effect.executed"
+        );
+        assert_eq!(
+            approval_requested(wid, did, data).event_type,
+            "approval.requested"
+        );
     }
 
     #[test]
@@ -152,13 +164,8 @@ mod tests {
         let ts = DateTime::parse_from_rfc3339("2024-06-01T12:00:00Z")
             .expect("parse")
             .with_timezone(&Utc);
-        let p = WebhookPayload::with_timestamp(
-            "run.started",
-            Uuid::nil(),
-            Uuid::nil(),
-            json!({}),
-            ts,
-        );
+        let p =
+            WebhookPayload::with_timestamp("run.started", Uuid::nil(), Uuid::nil(), json!({}), ts);
         assert_eq!(p.timestamp, ts);
     }
 

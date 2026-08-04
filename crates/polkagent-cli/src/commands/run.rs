@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing::info;
 
+use polkagent_chain_trait::ChainClient;
 use polkagent_config::model_registry::synthesize_providers_from_env;
 use polkagent_config::Config;
 use polkagent_core::event::EventKind;
@@ -18,12 +19,11 @@ use polkagent_core::{AgentId, AgentSpec};
 use polkagent_event::{EventBus, EventRecorder};
 use polkagent_executor_anthropic::AnthropicExecutor;
 use polkagent_executor_fake::FakeExecutor;
-use polkagent_executor_local::LocalExecutor;
 use polkagent_executor_gemini::GeminiExecutor;
+use polkagent_executor_local::LocalExecutor;
 use polkagent_executor_openai::OpenAiExecutor;
 use polkagent_executor_openrouter::OpenRouterExecutor;
 use polkagent_executor_trait::{ExecutorError, ModelExecutor};
-use polkagent_chain_trait::ChainClient;
 use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
@@ -65,8 +65,12 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     let registry = build_provider_registry(&config);
 
     // Resolve provider and executor.
-    let (executor, executor_note) =
-        resolve_provider(cmd.provider.as_deref(), cmd.model.as_deref(), &config, &registry);
+    let (executor, executor_note) = resolve_provider(
+        cmd.provider.as_deref(),
+        cmd.model.as_deref(),
+        &config,
+        &registry,
+    );
 
     if let Some(note) = &executor_note {
         eprintln!("{note}");
@@ -82,10 +86,8 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
             harness_registry.register(id, id);
         }
     }
-    let resolution = harness_registry.resolve(
-        cmd.harness.as_deref(),
-        config.harness.default.as_deref(),
-    );
+    let resolution =
+        harness_registry.resolve(cmd.harness.as_deref(), config.harness.default.as_deref());
 
     if let Some(note) = &resolution.note {
         eprintln!("{note}");
@@ -147,10 +149,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     let chain_client: Arc<dyn ChainClient> = build_chain_client();
 
     let mut tool_registry = polkagent_tool::ToolRegistry::new();
-    polkagent_tool_governance::register_governance_tools(
-        &mut tool_registry,
-        chain_client.clone(),
-    );
+    polkagent_tool_governance::register_governance_tools(&mut tool_registry, chain_client.clone());
     polkagent_tool_treasury::register_treasury_tools(&mut tool_registry);
 
     // Wrap AppService in Arc so it can be shared with the Ctrl-C handler task.
@@ -168,11 +167,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
         builder = builder.with_harness(h);
     }
 
-    let app_service = Arc::new(
-        builder
-            .build()
-            .context("building AppService")?,
-    );
+    let app_service = Arc::new(builder.build().context("building AppService")?);
 
     // Reconstruct the AgentSpec from the DB row and register it with AppService.
     let agent_spec = build_agent_spec(agent_id, &agent.name, &agent.spec_json, cmd.model.clone());
@@ -487,12 +482,8 @@ fn executor_from_provider_config(
             };
             Some(LocalExecutor::custom(url, pc.default_model.clone()))
         }
-        "gemini" => {
-            Some(GeminiExecutor::new(api_key, pc.default_model.clone()))
-        }
-        "openrouter" => {
-            Some(OpenRouterExecutor::new(api_key, pc.default_model.clone()))
-        }
+        "gemini" => Some(GeminiExecutor::new(api_key, pc.default_model.clone())),
+        "openrouter" => Some(OpenRouterExecutor::new(api_key, pc.default_model.clone())),
         _ => None,
     }
 }
@@ -532,12 +523,7 @@ fn resolve_provider(
     let mut note_text = note.unwrap_or_default();
     if !fallback_ids.is_empty() {
         use std::fmt::Write;
-        write!(
-            note_text,
-            " Fallback chain: {}.",
-            fallback_ids.join(" → ")
-        )
-        .ok();
+        write!(note_text, " Fallback chain: {}.", fallback_ids.join(" → ")).ok();
     }
 
     let executor = FallbackExecutor::new(primary, fallbacks);
@@ -570,14 +556,10 @@ fn resolve_primary_provider(
     if let Some(ref default_id) = config.execution.default_provider {
         if !default_id.is_empty() {
             if let Ok(executor) = registry.get_executor(default_id) {
-                let note = format!(
-                    "Using provider '{default_id}' (from config default_provider)."
-                );
+                let note = format!("Using provider '{default_id}' (from config default_provider).");
                 return (executor, Some(default_id.clone()), Some(note));
             }
-            eprintln!(
-                "Warning: configured default_provider '{default_id}' not found in registry."
-            );
+            eprintln!("Warning: configured default_provider '{default_id}' not found in registry.");
         }
     }
 
@@ -624,16 +606,26 @@ fn try_provider_by_name(
 ) -> Option<(Arc<dyn ModelExecutor>, Option<String>)> {
     match name {
         "anthropic" => {
-            let api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty())?;
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())?;
             let model = model_override.unwrap_or("claude-sonnet-4-6").to_string();
             let executor = AnthropicExecutor::new(api_key, model.clone());
-            Some((executor, Some(format!("Using Anthropic executor (model: {model})."))))
+            Some((
+                executor,
+                Some(format!("Using Anthropic executor (model: {model}).")),
+            ))
         }
         "openai" => {
-            let api_key = std::env::var("OPENAI_API_KEY").ok().filter(|k| !k.is_empty())?;
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())?;
             let model = model_override.unwrap_or("gpt-4o").to_string();
             let executor = OpenAiExecutor::new(api_key, model.clone());
-            Some((executor, Some(format!("Using OpenAI executor (model: {model})."))))
+            Some((
+                executor,
+                Some(format!("Using OpenAI executor (model: {model}).")),
+            ))
         }
         "ollama" | "local" => {
             let url = std::env::var("OLLAMA_URL")
@@ -642,7 +634,10 @@ fn try_provider_by_name(
                 .unwrap_or_else(|| "http://localhost:11434/v1".to_owned());
             let model = model_override.unwrap_or("llama3.2").to_string();
             let executor = LocalExecutor::custom(url.clone(), model.clone());
-            Some((executor, Some(format!("Using local executor at {url} (model: {model})."))))
+            Some((
+                executor,
+                Some(format!("Using local executor at {url} (model: {model}).")),
+            ))
         }
         "gemini" => {
             let api_key = std::env::var("GEMINI_API_KEY")
@@ -651,13 +646,23 @@ fn try_provider_by_name(
                 .filter(|k| !k.is_empty())?;
             let model = model_override.unwrap_or("gemini-2.5-flash").to_string();
             let executor = GeminiExecutor::new(api_key, model.clone());
-            Some((executor, Some(format!("Using Gemini executor (model: {model})."))))
+            Some((
+                executor,
+                Some(format!("Using Gemini executor (model: {model}).")),
+            ))
         }
         "openrouter" => {
-            let api_key = std::env::var("OPENROUTER_API_KEY").ok().filter(|k| !k.is_empty())?;
-            let model = model_override.unwrap_or("anthropic/claude-sonnet-4-6").to_string();
+            let api_key = std::env::var("OPENROUTER_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())?;
+            let model = model_override
+                .unwrap_or("anthropic/claude-sonnet-4-6")
+                .to_string();
             let executor = OpenRouterExecutor::new(api_key, model.clone());
-            Some((executor, Some(format!("Using OpenRouter executor (model: {model})."))))
+            Some((
+                executor,
+                Some(format!("Using OpenRouter executor (model: {model}).")),
+            ))
         }
         _ => None,
     }
@@ -675,19 +680,13 @@ fn try_provider_by_name(
 /// 4. `OLLAMA_MODEL` present → [`LocalExecutor`] with default Ollama endpoint.
 /// 5. Otherwise → [`FakeExecutor`] with a helpful note.
 #[cfg(test)]
-fn detect_executor(
-    model_override: Option<&str>,
-) -> (Arc<dyn ModelExecutor>, Option<String>) {
+fn detect_executor(model_override: Option<&str>) -> (Arc<dyn ModelExecutor>, Option<String>) {
     // 1. Anthropic
     if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
         if !api_key.is_empty() {
-            let model = model_override
-                .unwrap_or("claude-sonnet-4-6")
-                .to_string();
+            let model = model_override.unwrap_or("claude-sonnet-4-6").to_string();
             let executor = AnthropicExecutor::new(api_key, model.clone());
-            let note = Some(format!(
-                "Using Anthropic executor (model: {model})."
-            ));
+            let note = Some(format!("Using Anthropic executor (model: {model})."));
             return (executor, note);
         }
     }
@@ -697,9 +696,7 @@ fn detect_executor(
         if !api_key.is_empty() {
             let model = model_override.unwrap_or("gpt-4o").to_string();
             let executor = OpenAiExecutor::new(api_key, model.clone());
-            let note = Some(format!(
-                "Using OpenAI executor (model: {model})."
-            ));
+            let note = Some(format!("Using OpenAI executor (model: {model})."));
             return (executor, note);
         }
     }
@@ -709,9 +706,7 @@ fn detect_executor(
         if !url.is_empty() {
             let model = model_override.unwrap_or("llama3.2").to_string();
             let executor = LocalExecutor::custom(url.clone(), model.clone());
-            let note = Some(format!(
-                "Using local executor at {url} (model: {model})."
-            ));
+            let note = Some(format!("Using local executor at {url} (model: {model})."));
             return (executor, note);
         }
     }
@@ -721,9 +716,7 @@ fn detect_executor(
         if !ollama_model.is_empty() {
             let model = model_override.unwrap_or(&ollama_model).to_string();
             let executor = LocalExecutor::ollama(model.clone());
-            let note = Some(format!(
-                "Using local Ollama executor (model: {model})."
-            ));
+            let note = Some(format!("Using local Ollama executor (model: {model})."));
             return (executor, note);
         }
     }
@@ -754,9 +747,8 @@ fn build_agent_spec(
     spec_json: &str,
     model_override: Option<String>,
 ) -> AgentSpec {
-    let mut spec: AgentSpec = serde_json::from_str(spec_json).unwrap_or_else(|_| {
-        AgentSpec::new(agent_id, name, "fake/default-model")
-    });
+    let mut spec: AgentSpec = serde_json::from_str(spec_json)
+        .unwrap_or_else(|_| AgentSpec::new(agent_id, name, "fake/default-model"));
 
     // Force the ID to match what is stored in the database.
     spec.id = agent_id;
@@ -874,12 +866,7 @@ mod tests {
         })
         .to_string();
 
-        let spec = build_agent_spec(
-            id,
-            "test-agent",
-            &json,
-            Some("openai/gpt-4o".to_string()),
-        );
+        let spec = build_agent_spec(id, "test-agent", &json, Some("openai/gpt-4o".to_string()));
         assert_eq!(spec.model, "openai/gpt-4o");
     }
 

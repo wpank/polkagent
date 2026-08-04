@@ -83,20 +83,14 @@ impl std::fmt::Display for IntentStatus {
 pub fn validate_transition(from: IntentStatus, to: IntentStatus) -> Result<(), PaymentError> {
     let valid = match from {
         IntentStatus::Drafting => to == IntentStatus::Proposed || to == IntentStatus::Refused,
-        IntentStatus::Proposed => {
-            to == IntentStatus::Verified || to == IntentStatus::Refused
-        }
+        IntentStatus::Proposed => to == IntentStatus::Verified || to == IntentStatus::Refused,
         IntentStatus::Verified => {
             to == IntentStatus::AwaitingApproval || to == IntentStatus::Refused
         }
-        IntentStatus::AwaitingApproval => {
-            to == IntentStatus::Ready || to == IntentStatus::Refused
-        }
+        IntentStatus::AwaitingApproval => to == IntentStatus::Ready || to == IntentStatus::Refused,
         IntentStatus::Ready => to == IntentStatus::Signing || to == IntentStatus::Refused,
         IntentStatus::Signing => to == IntentStatus::Submitted || to == IntentStatus::Refused,
-        IntentStatus::Submitted => {
-            to == IntentStatus::Finalized || to == IntentStatus::Refused
-        }
+        IntentStatus::Submitted => to == IntentStatus::Finalized || to == IntentStatus::Refused,
         IntentStatus::Finalized => to == IntentStatus::Receipted,
         // Terminal states
         IntentStatus::Refused | IntentStatus::Receipted => false,
@@ -199,7 +193,10 @@ mod tests {
         assert_eq!(IntentStatus::Proposed.to_string(), "proposed");
         assert_eq!(IntentStatus::Verified.to_string(), "verified");
         assert_eq!(IntentStatus::Refused.to_string(), "refused");
-        assert_eq!(IntentStatus::AwaitingApproval.to_string(), "awaiting_approval");
+        assert_eq!(
+            IntentStatus::AwaitingApproval.to_string(),
+            "awaiting_approval"
+        );
         assert_eq!(IntentStatus::Ready.to_string(), "ready");
         assert_eq!(IntentStatus::Signing.to_string(), "signing");
         assert_eq!(IntentStatus::Submitted.to_string(), "submitted");
@@ -323,7 +320,8 @@ mod tests {
     #[test]
     fn transition_records_history() {
         let mut sm = IntentStateMachine::new();
-        sm.transition(IntentStatus::Proposed).expect("valid transition");
+        sm.transition(IntentStatus::Proposed)
+            .expect("valid transition");
         assert_eq!(sm.current_status(), IntentStatus::Proposed);
         assert_eq!(sm.history().len(), 2);
         assert_eq!(sm.history()[1].0, IntentStatus::Proposed);
@@ -334,7 +332,8 @@ mod tests {
         let mut sm = IntentStateMachine::new();
         sm.transition(IntentStatus::Proposed).expect("valid");
         sm.transition(IntentStatus::Verified).expect("valid");
-        sm.transition(IntentStatus::AwaitingApproval).expect("valid");
+        sm.transition(IntentStatus::AwaitingApproval)
+            .expect("valid");
         sm.transition(IntentStatus::Ready).expect("valid");
         sm.transition(IntentStatus::Signing).expect("valid");
         sm.transition(IntentStatus::Submitted).expect("valid");

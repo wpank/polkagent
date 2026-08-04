@@ -27,24 +27,23 @@
 
 use chrono::{Duration, Utc};
 use polkagent_executor_trait::{
-    ContentBlock, InferenceMessage, InferenceRequest, InferenceResponse, MessageRole,
-    ToolCall, ToolDefinition, TokenUsage,
+    ContentBlock, InferenceMessage, InferenceRequest, InferenceResponse, MessageRole, TokenUsage,
+    ToolCall, ToolDefinition,
 };
 use polkagent_signer_trait::{
     AccountRef, ApprovalId, CanonicalSignRequest, ChainProfileId, GrantDigest, MetadataDigest,
     SignerCapabilities,
 };
 use polkagent_transport_trait::{
-    AuthenticatedSender, Classification,
-    DeliveryId, IncomingMessage, MessageBody, OutgoingBody, OutgoingMessage, SenderTrustTier,
-    UserId,
+    AuthenticatedSender, Classification, DeliveryId, IncomingMessage, MessageBody, OutgoingBody,
+    OutgoingMessage, SenderTrustTier, UserId,
 };
 
 // ---------------------------------------------------------------------------
 // Re-exports for convenience
 // ---------------------------------------------------------------------------
 
-pub use polkagent_core::{RunId, StepId, ConversationId};
+pub use polkagent_core::{ConversationId, RunId, StepId};
 
 // ---------------------------------------------------------------------------
 // Core ID fixtures
@@ -226,7 +225,9 @@ pub fn test_incoming_message() -> IncomingMessage {
         delivery_id: test_delivery_id(),
         conversation_id: ConversationId::new(),
         sender: test_sender(),
-        body: MessageBody::Text { content: "What is Polkadot?".into() },
+        body: MessageBody::Text {
+            content: "What is Polkadot?".into(),
+        },
         received_at: Utc::now(),
     }
 }
@@ -238,7 +239,9 @@ pub fn test_incoming_message_with_text(text: impl Into<String>) -> IncomingMessa
         delivery_id: DeliveryId::new(format!("test-delivery-{}", Utc::now().timestamp_millis())),
         conversation_id: ConversationId::new(),
         sender: test_sender(),
-        body: MessageBody::Text { content: text.into() },
+        body: MessageBody::Text {
+            content: text.into(),
+        },
         received_at: Utc::now(),
     }
 }
@@ -249,7 +252,9 @@ pub fn test_outgoing_message() -> OutgoingMessage {
     OutgoingMessage {
         conversation_id: ConversationId::new(),
         run_id: None,
-        body: OutgoingBody::Text { content: "Polkadot is a multi-chain network.".into() },
+        body: OutgoingBody::Text {
+            content: "Polkadot is a multi-chain network.".into(),
+        },
         classification: Classification::Public,
     }
 }
@@ -279,7 +284,9 @@ impl InferenceRequestBuilder {
     /// Create a builder pre-populated with [`test_inference_request`] defaults.
     #[must_use]
     pub fn new() -> Self {
-        Self { inner: test_inference_request() }
+        Self {
+            inner: test_inference_request(),
+        }
     }
 
     /// Override the model identifier.
@@ -322,7 +329,9 @@ impl InferenceRequestBuilder {
     pub fn user_message(mut self, content: impl Into<String>) -> Self {
         self.inner.messages.push(InferenceMessage {
             role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: content.into() }],
+            content: vec![ContentBlock::Text {
+                text: content.into(),
+            }],
         });
         self
     }
@@ -374,7 +383,9 @@ impl SignRequestBuilder {
     /// Create a builder pre-populated with [`test_sign_request`] defaults.
     #[must_use]
     pub fn new() -> Self {
-        Self { inner: test_sign_request() }
+        Self {
+            inner: test_sign_request(),
+        }
     }
 
     /// Override the account to sign for.
@@ -427,7 +438,9 @@ impl OutgoingMessageBuilder {
     /// Create a builder pre-populated with [`test_outgoing_message`] defaults.
     #[must_use]
     pub fn new() -> Self {
-        Self { inner: test_outgoing_message() }
+        Self {
+            inner: test_outgoing_message(),
+        }
     }
 
     /// Override the conversation ID.
@@ -447,7 +460,9 @@ impl OutgoingMessageBuilder {
     /// Override the text body content.
     #[must_use]
     pub fn text(mut self, content: impl Into<String>) -> Self {
-        self.inner.body = OutgoingBody::Text { content: content.into() };
+        self.inner.body = OutgoingBody::Text {
+            content: content.into(),
+        };
         self
     }
 
@@ -577,13 +592,17 @@ mod tests {
 
     #[test]
     fn inference_request_builder_adds_system_prompt() {
-        let req = InferenceRequestBuilder::new().system("You are a Polkadot expert.").build();
+        let req = InferenceRequestBuilder::new()
+            .system("You are a Polkadot expert.")
+            .build();
         assert_eq!(req.system.as_deref(), Some("You are a Polkadot expert."));
     }
 
     #[test]
     fn inference_request_builder_appends_user_message() {
-        let req = InferenceRequestBuilder::new().user_message("second question").build();
+        let req = InferenceRequestBuilder::new()
+            .user_message("second question")
+            .build();
         assert_eq!(req.messages.len(), 2);
     }
 
@@ -609,7 +628,9 @@ mod tests {
 
     #[test]
     fn outgoing_message_builder_overrides_text() {
-        let msg = OutgoingMessageBuilder::new().text("custom response").build();
+        let msg = OutgoingMessageBuilder::new()
+            .text("custom response")
+            .build();
         if let OutgoingBody::Text { content } = &msg.body {
             assert_eq!(content, "custom response");
         } else {
@@ -619,7 +640,9 @@ mod tests {
 
     #[test]
     fn outgoing_message_builder_overrides_classification() {
-        let msg = OutgoingMessageBuilder::new().classification(Classification::Sensitive).build();
+        let msg = OutgoingMessageBuilder::new()
+            .classification(Classification::Sensitive)
+            .build();
         assert_eq!(msg.classification, Classification::Sensitive);
     }
 

@@ -78,7 +78,12 @@ impl VariantComparison {
         let mut ranking: Vec<(VariantId, f64)> = reports
             .iter()
             .map(|vr| {
-                let scores: Vec<f64> = vr.eval_report.results.iter().map(|r| r.score.score).collect();
+                let scores: Vec<f64> = vr
+                    .eval_report
+                    .results
+                    .iter()
+                    .map(|r| r.score.score)
+                    .collect();
                 (vr.variant_id.clone(), mean_score(&scores))
             })
             .collect();

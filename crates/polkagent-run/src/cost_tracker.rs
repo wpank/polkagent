@@ -285,7 +285,10 @@ mod tests {
         // With the `payment` feature: 1 input + 1 output at $3/$15 per million
         // = effectively zero cost; without the feature also returns None.
         let result = tracker.check_budget("anthropic", "claude-sonnet-4", 1);
-        assert!(result.is_none(), "tiny token request should be under budget");
+        assert!(
+            result.is_none(),
+            "tiny token request should be under budget"
+        );
     }
 
     #[tokio::test]

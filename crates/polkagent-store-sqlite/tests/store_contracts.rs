@@ -17,8 +17,10 @@ use std::time::Duration;
 use chrono::Utc;
 
 use polkagent_core::artifact::{Artifact, ArtifactKind};
-use polkagent_core::ids::{ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, WorkerId};
-use polkagent_store_sqlite::{SqlitePool, migrations};
+use polkagent_core::ids::{
+    ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, WorkerId,
+};
+use polkagent_store_sqlite::{migrations, SqlitePool};
 use polkagent_store_trait::event::{EventStore, EventStoreError, StoredEvent};
 use polkagent_store_trait::{
     EffectStore, RunStatus, RunStore, StoreError, StoreRetryClass, StoredIntent, StoredOutcome,
@@ -432,7 +434,9 @@ mod effect_store {
         let intent = make_intent(run_id, step_id, "propose-get-1");
         let intent_id = intent.id;
 
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         let fetched = EffectStore::get_intent(&pool, intent_id)
             .await
@@ -460,7 +464,9 @@ mod effect_store {
             ..dup
         };
 
-        EffectStore::propose_intent(&pool, intent).await.expect("first");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("first");
 
         let err = EffectStore::propose_intent(&pool, dup_with_same_id)
             .await
@@ -480,7 +486,9 @@ mod effect_store {
 
         let intent = make_intent(run_id, step_id, "claim-1");
         let intent_id = intent.id;
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         let worker = WorkerId::new();
         let claimed = EffectStore::claim_intent(&pool, worker, Duration::from_secs(30))
@@ -514,7 +522,9 @@ mod effect_store {
         let step_id = insert_run_with_step(&pool, run_id, TEST_AGENT);
 
         let intent = make_intent(run_id, step_id, "exclusive-claim-1");
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         let worker1 = WorkerId::new();
         let worker2 = WorkerId::new();
@@ -529,7 +539,10 @@ mod effect_store {
         let second = EffectStore::claim_intent(&pool, worker2, Duration::from_secs(300))
             .await
             .expect("claim 2");
-        assert!(second.is_none(), "already-claimed intent should not be claimable");
+        assert!(
+            second.is_none(),
+            "already-claimed intent should not be claimable"
+        );
     }
 
     #[tokio::test]
@@ -540,7 +553,9 @@ mod effect_store {
 
         let intent = make_intent(run_id, step_id, "release-1");
         let intent_id = intent.id;
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         let worker = WorkerId::new();
         let claimed = EffectStore::claim_intent(&pool, worker, Duration::from_secs(300))
@@ -577,7 +592,9 @@ mod effect_store {
 
         let intent = make_intent(run_id, step_id, "outcome-1");
         let intent_id = intent.id;
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         // Record an attempt start first.
         let attempt_id = EffectAttemptId::new();
@@ -616,13 +633,19 @@ mod effect_store {
 
         let intent = make_intent(run_id, step_id, "double-outcome-1");
         let intent_id = intent.id;
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         // Record an attempt first (FK on effect_outcomes.attempt_id).
         let attempt_id = EffectAttemptId::new();
         let worker = WorkerId::new();
         EffectStore::record_attempt_start(
-            &pool, attempt_id, intent_id, worker, serde_json::json!({}),
+            &pool,
+            attempt_id,
+            intent_id,
+            worker,
+            serde_json::json!({}),
         )
         .await
         .expect("attempt start");
@@ -664,7 +687,9 @@ mod effect_store {
 
         let intent = make_intent(run_id, step_id, "expire-1");
         let intent_id = intent.id;
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         let worker = WorkerId::new();
 
@@ -696,23 +721,35 @@ mod effect_store {
         // Create two intents, record attempts and outcomes for both.
         let intent1 = make_intent(run_id, step_id, "unconsumed-1");
         let intent1_id = intent1.id;
-        EffectStore::propose_intent(&pool, intent1).await.expect("propose 1");
+        EffectStore::propose_intent(&pool, intent1)
+            .await
+            .expect("propose 1");
 
         let attempt1_id = EffectAttemptId::new();
         let worker = WorkerId::new();
         EffectStore::record_attempt_start(
-            &pool, attempt1_id, intent1_id, worker, serde_json::json!({}),
+            &pool,
+            attempt1_id,
+            intent1_id,
+            worker,
+            serde_json::json!({}),
         )
         .await
         .expect("attempt 1");
 
         let intent2 = make_intent(run_id, step_id, "unconsumed-2");
         let intent2_id = intent2.id;
-        EffectStore::propose_intent(&pool, intent2).await.expect("propose 2");
+        EffectStore::propose_intent(&pool, intent2)
+            .await
+            .expect("propose 2");
 
         let attempt2_id = EffectAttemptId::new();
         EffectStore::record_attempt_start(
-            &pool, attempt2_id, intent2_id, worker, serde_json::json!({}),
+            &pool,
+            attempt2_id,
+            intent2_id,
+            worker,
+            serde_json::json!({}),
         )
         .await
         .expect("attempt 2");
@@ -749,13 +786,19 @@ mod effect_store {
 
         let intent = make_intent(run_id, step_id, "consume-1");
         let intent_id = intent.id;
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         // Record an attempt first (FK on effect_outcomes.attempt_id).
         let attempt_id = EffectAttemptId::new();
         let worker = WorkerId::new();
         EffectStore::record_attempt_start(
-            &pool, attempt_id, intent_id, worker, serde_json::json!({}),
+            &pool,
+            attempt_id,
+            intent_id,
+            worker,
+            serde_json::json!({}),
         )
         .await
         .expect("attempt start");
@@ -786,7 +829,11 @@ mod effect_store {
         let after = EffectStore::unconsumed_outcomes(&pool, run_id)
             .await
             .expect("after");
-        assert_eq!(after.len(), 1, "outcome should still be present (mark_consumed is a no-op)");
+        assert_eq!(
+            after.len(),
+            1,
+            "outcome should still be present (mark_consumed is a no-op)"
+        );
     }
 
     #[tokio::test]
@@ -827,7 +874,9 @@ mod effect_store {
 
         let intent = make_intent(run_id, step_id, "release-wrong-worker");
         let intent_id = intent.id;
-        EffectStore::propose_intent(&pool, intent).await.expect("propose");
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
 
         let worker1 = WorkerId::new();
         let worker2 = WorkerId::new();
@@ -1080,7 +1129,12 @@ mod event_store {
 
     #[tokio::test]
     async fn has_terminal_event_detects_all_terminal_types() {
-        for terminal_type in &["run_completed", "run_failed", "run_cancelled", "run_timed_out"] {
+        for terminal_type in &[
+            "run_completed",
+            "run_failed",
+            "run_cancelled",
+            "run_timed_out",
+        ] {
             let pool = setup_pool();
             let run_id_str = uuid::Uuid::now_v7().to_string();
             let run_id: RunId = run_id_str.parse().expect("parse");
@@ -1156,9 +1210,7 @@ mod artifact_store {
             .await
             .expect("store");
 
-        let fetched_body = ArtifactStore::get_body(&pool, id)
-            .await
-            .expect("get_body");
+        let fetched_body = ArtifactStore::get_body(&pool, id).await.expect("get_body");
         assert_eq!(fetched_body, body);
     }
 
@@ -1189,7 +1241,10 @@ mod artifact_store {
             .expect_err("should detect tampered body");
 
         assert!(
-            matches!(err, polkagent_artifact::store::StoreError::DigestMismatch(_)),
+            matches!(
+                err,
+                polkagent_artifact::store::StoreError::DigestMismatch(_)
+            ),
             "expected DigestMismatch, got: {err:?}"
         );
     }
@@ -1295,7 +1350,11 @@ mod artifact_store {
             .await
             .expect("list");
 
-        assert_eq!(list.len(), 2, "should only list artifacts for the given run");
+        assert_eq!(
+            list.len(),
+            2,
+            "should only list artifacts for the given run"
+        );
         assert!(list.iter().all(|a| a.run_id == Some(run_id)));
         assert_eq!(list[0].id, art1.id);
         assert_eq!(list[1].id, art2.id);
@@ -1465,6 +1524,9 @@ mod artifact_store {
         let lineage = ArtifactStore::get_lineage(&pool, art.id)
             .await
             .expect("lineage");
-        assert!(lineage.is_empty(), "standalone artifact should have no lineage");
+        assert!(
+            lineage.is_empty(),
+            "standalone artifact should have no lineage"
+        );
     }
 }

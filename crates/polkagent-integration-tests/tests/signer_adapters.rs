@@ -73,10 +73,7 @@ async fn fake_signer_sign_is_deterministic_across_calls() {
         .sign(valid_request(account.clone()))
         .await
         .expect("sign 1");
-    let signed2 = signer
-        .sign(valid_request(account))
-        .await
-        .expect("sign 2");
+    let signed2 = signer.sign(valid_request(account)).await.expect("sign 2");
 
     // Same payload + account should produce identical signatures.
     assert_eq!(signed1.signature, signed2.signature);
@@ -103,10 +100,7 @@ async fn fake_signer_rejecting_denies_all_requests() {
 async fn fake_signer_rejecting_health_returns_error() {
     let signer = FakeSigner::rejecting();
     let result = signer.health().await;
-    assert!(
-        result.is_err(),
-        "health should fail for rejecting signer"
-    );
+    assert!(result.is_err(), "health should fail for rejecting signer");
 }
 
 #[tokio::test]
@@ -241,8 +235,6 @@ async fn fake_signer_records_last_request() {
 
     signer.sign(req).await.expect("sign ok");
 
-    let captured = signer
-        .last_request()
-        .expect("should have recorded request");
+    let captured = signer.last_request().expect("should have recorded request");
     assert_eq!(captured.request_id, req_id);
 }

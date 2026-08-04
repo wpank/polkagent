@@ -15,12 +15,12 @@ pub fn run(cmd: &AgentCmd, pool: &SqlitePool) -> Result<()> {
     let store = SqliteRunStore::new(pool.clone());
     match cmd {
         AgentCmd::Create(c) => create(c, &store),
-        AgentCmd::List(c)   => list(c, &store),
-        AgentCmd::Show(c)   => show(c, &store),
+        AgentCmd::List(c) => list(c, &store),
+        AgentCmd::Show(c) => show(c, &store),
         AgentCmd::Delete(c) => delete(c, &store),
-        AgentCmd::Start(c)  => start(c, &store),
-        AgentCmd::Stop(c)   => stop(c, &store),
-        AgentCmd::Pause(c)  => pause(c, &store),
+        AgentCmd::Start(c) => start(c, &store),
+        AgentCmd::Stop(c) => stop(c, &store),
+        AgentCmd::Pause(c) => pause(c, &store),
         AgentCmd::Resume(c) => resume(c, &store),
     }
 }
@@ -35,18 +35,16 @@ fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
     let now = Utc::now().to_rfc3339();
 
     // Build resource_limits object when any limit flag is provided.
-    let resource_limits = if cmd.max_turns.is_some()
-        || cmd.timeout.is_some()
-        || cmd.max_tokens_per_turn.is_some()
-    {
-        serde_json::json!({
-            "max_tokens_per_turn": cmd.max_tokens_per_turn,
-            "max_turns":           cmd.max_turns,
-            "timeout_secs":        cmd.timeout,
-        })
-    } else {
-        serde_json::Value::Null
-    };
+    let resource_limits =
+        if cmd.max_turns.is_some() || cmd.timeout.is_some() || cmd.max_tokens_per_turn.is_some() {
+            serde_json::json!({
+                "max_tokens_per_turn": cmd.max_tokens_per_turn,
+                "max_turns":           cmd.max_turns,
+                "timeout_secs":        cmd.timeout,
+            })
+        } else {
+            serde_json::Value::Null
+        };
 
     // Build model_preference object when a preferred model is specified.
     let model_preference = if let Some(ref mid) = cmd.preferred_model {
@@ -135,9 +133,9 @@ fn list(cmd: &AgentListCmd, store: &SqliteRunStore) -> Result<()> {
     // Map CLI filter strings to the optional state_filter argument.
     let state_filter = match cmd.filter.as_str() {
         "active" => Some("active"),
-        "idle"   => Some("configured"),
-        "error"  => None, // handled via post-filter below
-        _        => None, // "all"
+        "idle" => Some("configured"),
+        "error" => None, // handled via post-filter below
+        _ => None,       // "all"
     };
 
     let rows = store.list_agents(state_filter, false)?;
@@ -145,7 +143,12 @@ fn list(cmd: &AgentListCmd, store: &SqliteRunStore) -> Result<()> {
     // For the "error" filter, post-filter to states that are not normal.
     let rows: Vec<_> = if cmd.filter == "error" {
         rows.into_iter()
-            .filter(|r| !matches!(r.state.as_str(), "active" | "configured" | "created" | "archived"))
+            .filter(|r| {
+                !matches!(
+                    r.state.as_str(),
+                    "active" | "configured" | "created" | "archived"
+                )
+            })
             .collect()
     } else {
         rows
@@ -173,12 +176,15 @@ fn list(cmd: &AgentListCmd, store: &SqliteRunStore) -> Result<()> {
     println!("{}", "-".repeat(90));
     for r in &rows {
         let glyph = match r.state.as_str() {
-            "active"     => "◉",
+            "active" => "◉",
             "configured" => "○",
-            "paused"     => "⏸",
-            _            => "■",
+            "paused" => "⏸",
+            _ => "■",
         };
-        println!("{}  {} {:<22}  {:<14}  {}", r.id, glyph, r.name, r.state, r.updated_at);
+        println!(
+            "{}  {} {:<22}  {:<14}  {}",
+            r.id, glyph, r.name, r.state, r.updated_at
+        );
     }
     println!();
     println!("{} agent(s)", rows.len());
@@ -195,8 +201,8 @@ fn show(cmd: &AgentShowCmd, store: &SqliteRunStore) -> Result<()> {
         .get_agent_by_name_or_id(&cmd.agent)
         .map_err(|e| anyhow::anyhow!("Agent not found: {} ({})", cmd.agent, e))?;
 
-    let spec: serde_json::Value = serde_json::from_str(&agent.spec_json)
-        .unwrap_or(serde_json::Value::Null);
+    let spec: serde_json::Value =
+        serde_json::from_str(&agent.spec_json).unwrap_or(serde_json::Value::Null);
 
     if cmd.json {
         let out = serde_json::json!({
@@ -294,8 +300,11 @@ fn show(cmd: &AgentShowCmd, store: &SqliteRunStore) -> Result<()> {
 
 fn delete(cmd: &AgentDeleteCmd, store: &SqliteRunStore) -> Result<()> {
     if !cmd.yes {
-        use std::io::{Write, self};
-        print!("Archive agent '{}'? This cannot be undone. [y/N] ", cmd.agent);
+        use std::io::{self, Write};
+        print!(
+            "Archive agent '{}'? This cannot be undone. [y/N] ",
+            cmd.agent
+        );
         io::stdout().flush()?;
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;

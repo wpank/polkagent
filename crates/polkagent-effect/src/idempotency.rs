@@ -277,9 +277,8 @@ mod hex_bytes {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
         let hex_str = String::deserialize(d)?;
-        let bytes = super::hex_decode(&hex_str).map_err(|()| {
-            serde::de::Error::custom("invalid hex string for IdempotencyKey")
-        })?;
+        let bytes = super::hex_decode(&hex_str)
+            .map_err(|()| serde::de::Error::custom("invalid hex string for IdempotencyKey"))?;
         if bytes.len() != 32 {
             return Err(serde::de::Error::custom(
                 "IdempotencyKey must be exactly 32 bytes (64 hex chars)",
@@ -379,15 +378,13 @@ mod tests {
 
     #[test]
     fn key_as_bytes_is_32_bytes() {
-        let key =
-            IdempotencyKey::generate(sample_run_id(), 1, 0, EffectKind::Broadcast, [0u8; 32]);
+        let key = IdempotencyKey::generate(sample_run_id(), 1, 0, EffectKind::Broadcast, [0u8; 32]);
         assert_eq!(key.as_bytes().len(), 32);
     }
 
     #[test]
     fn key_to_hex_is_64_chars() {
-        let key =
-            IdempotencyKey::generate(sample_run_id(), 1, 0, EffectKind::Delivery, [0u8; 32]);
+        let key = IdempotencyKey::generate(sample_run_id(), 1, 0, EffectKind::Delivery, [0u8; 32]);
         assert_eq!(key.to_hex().len(), 64);
     }
 
@@ -428,8 +425,7 @@ mod tests {
 
     #[test]
     fn extract_idempotency_key_round_trip() {
-        let key =
-            IdempotencyKey::generate(sample_run_id(), 1, 0, EffectKind::ModelCall, [0u8; 32]);
+        let key = IdempotencyKey::generate(sample_run_id(), 1, 0, EffectKind::ModelCall, [0u8; 32]);
         let payload = serde_json::json!({ "idempotency_key": key.to_hex() });
         let extracted = extract_idempotency_key_from_payload(&payload);
         assert_eq!(extracted, Some(key));

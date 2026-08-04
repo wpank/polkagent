@@ -80,10 +80,9 @@ impl ToolHandler for VestingScheduleTool {
             next_unlock_block: None,
         };
 
-        let output =
-            serde_json::to_value(&info).map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("failed to serialize vesting info: {e}"),
-            })?;
+        let output = serde_json::to_value(&info).map_err(|e| ToolError::ExecutionFailed {
+            reason: format!("failed to serialize vesting info: {e}"),
+        })?;
 
         Ok(ToolResult {
             output,
@@ -139,8 +138,7 @@ mod tests {
             .await
             .expect("should succeed");
 
-        let info: VestingInfo =
-            serde_json::from_value(result.output).expect("deserialize output");
+        let info: VestingInfo = serde_json::from_value(result.output).expect("deserialize output");
         assert!(info.schedules.is_empty());
         assert_eq!(info.total_unlocked, 0);
         assert_eq!(info.total_locked, 0);
@@ -176,8 +174,7 @@ mod tests {
             .expect("should succeed");
 
         // Should succeed with default chain (polkadot).
-        let info: VestingInfo =
-            serde_json::from_value(result.output).expect("deserialize output");
+        let info: VestingInfo = serde_json::from_value(result.output).expect("deserialize output");
         assert!(info.schedules.is_empty());
     }
 }

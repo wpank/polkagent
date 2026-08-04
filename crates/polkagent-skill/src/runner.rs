@@ -180,7 +180,9 @@ system = "Hello world."
         let registry = FakeRegistry::new(&["search_memory", "chain_query", "extra_tool"]);
         let runner = SkillRunner::new();
 
-        let prepared = runner.prepare(&manifest, &registry).expect("should prepare");
+        let prepared = runner
+            .prepare(&manifest, &registry)
+            .expect("should prepare");
         assert_eq!(prepared.manifest.skill.name, "test-skill");
         assert_eq!(prepared.system_prompt, "You are a test assistant.");
         assert_eq!(
@@ -208,7 +210,9 @@ system = "Hello world."
         let registry = FakeRegistry::new(&[]);
         let runner = SkillRunner::new();
 
-        let prepared = runner.prepare(&manifest, &registry).expect("should prepare");
+        let prepared = runner
+            .prepare(&manifest, &registry)
+            .expect("should prepare");
         assert!(prepared.available_tools.is_empty());
         assert_eq!(prepared.system_prompt, "Hello world.");
     }
@@ -229,7 +233,9 @@ system = "Hello world."
         let registry = FakeRegistry::new(&[]);
         let runner = SkillRunner::default();
 
-        let prepared = runner.prepare(&manifest, &registry).expect("should prepare");
+        let prepared = runner
+            .prepare(&manifest, &registry)
+            .expect("should prepare");
         assert_eq!(prepared.manifest.skill.name, "simple-skill");
         assert_eq!(prepared.manifest.skill.version, "0.1.0");
     }

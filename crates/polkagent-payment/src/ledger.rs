@@ -145,12 +145,11 @@ impl Ledger {
         amount_planck: u128,
         description: impl Into<String>,
     ) -> Result<Uuid, PaymentError> {
-        let new_balance = self
-            .balance_planck
-            .checked_add(amount_planck)
-            .ok_or(PaymentError::ArithmeticOverflow {
+        let new_balance = self.balance_planck.checked_add(amount_planck).ok_or(
+            PaymentError::ArithmeticOverflow {
                 context: "ledger earning overflow".into(),
-            })?;
+            },
+        )?;
 
         let id = Uuid::now_v7();
         self.entries.push(LedgerEntry {

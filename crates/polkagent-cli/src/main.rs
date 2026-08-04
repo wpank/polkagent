@@ -49,8 +49,7 @@ async fn main() -> Result<()> {
 
     // Initialise telemetry (before any command runs). Hold the guard for the
     // entire program lifetime so that OTLP spans are flushed on exit.
-    let _telemetry_guard =
-        init_telemetry(cli.verbose, &obs_config, log_file_path.as_deref())?;
+    let _telemetry_guard = init_telemetry(cli.verbose, &obs_config, log_file_path.as_deref())?;
 
     // Metrics recorder — shared across the process lifetime.
     let _metrics = MetricRecorder::new();
@@ -209,14 +208,13 @@ fn open_pool(db_path: &str) -> Result<SqlitePool> {
             .with_context(|| format!("creating database directory {}", parent.display()))?;
     }
 
-    let pool = SqlitePool::open(&expanded)
-        .with_context(|| format!("opening database at {expanded}"))?;
+    let pool =
+        SqlitePool::open(&expanded).with_context(|| format!("opening database at {expanded}"))?;
 
     // Apply any pending schema migrations (idempotent).
     {
         let writer = pool.writer();
-        migrations::migrate(&writer)
-            .with_context(|| "running database migrations")?;
+        migrations::migrate(&writer).with_context(|| "running database migrations")?;
     }
 
     Ok(pool)
@@ -228,7 +226,7 @@ fn open_pool(db_path: &str) -> Result<SqlitePool> {
 
 /// Launch the interactive ROSEDUST TUI and ensure teardown on exit.
 fn launch_tui(pool: SqlitePool) -> Result<()> {
-    use crate::tui::app::{App, enter_tui, exit_tui};
+    use crate::tui::app::{enter_tui, exit_tui, App};
     use crate::tui::theme::Theme;
 
     let theme = Theme::from_env();
@@ -237,9 +235,7 @@ fn launch_tui(pool: SqlitePool) -> Result<()> {
     let mut terminal = enter_tui()?;
 
     // Ensure the terminal is restored even on panic.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        app.run(&mut terminal)
-    }));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.run(&mut terminal)));
 
     exit_tui(&mut terminal)?;
 

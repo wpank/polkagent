@@ -470,7 +470,10 @@ mod tests {
     async fn budget_gate_denies_over_limit() {
         let gate = BudgetGate::new(100);
         let r = gate.check(&req("alice", "account/bob", Some(200))).await;
-        assert!(matches!(r, GateResult::Deny { .. }), "should deny over limit");
+        assert!(
+            matches!(r, GateResult::Deny { .. }),
+            "should deny over limit"
+        );
     }
 
     #[tokio::test]
@@ -513,10 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn allowlist_gate_denies_unlisted_resource() {
-        let gate = AllowlistGate::new(
-            AllowlistField::Resource,
-            vec!["known_address".to_string()],
-        );
+        let gate = AllowlistGate::new(AllowlistField::Resource, vec!["known_address".to_string()]);
         let r = gate.check(&req("alice", "unknown_address", None)).await;
         assert!(matches!(r, GateResult::Deny { .. }));
     }

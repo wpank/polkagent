@@ -18,7 +18,10 @@ pub mod event;
 pub mod conformance;
 
 use async_trait::async_trait;
-use polkagent_core::{ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, TurnId, WorkerId};
+use polkagent_core::{
+    ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, TurnId,
+    WorkerId,
+};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
@@ -275,8 +278,11 @@ pub trait EffectStore: Send + Sync {
     ///
     /// Must be a no-op if the intent is already `Resolved` or if the claim
     /// is held by a different worker.
-    async fn release_claim(&self, intent_id: EffectId, worker_id: WorkerId)
-        -> Result<(), StoreError>;
+    async fn release_claim(
+        &self,
+        intent_id: EffectId,
+        worker_id: WorkerId,
+    ) -> Result<(), StoreError>;
 
     /// Fetch a single intent by ID.
     async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError>;
@@ -303,10 +309,7 @@ pub trait EffectStore: Send + Sync {
 
     /// Fetch all intents whose lease has expired (i.e., state is `"claimed"`
     /// and `lease_expires < cutoff`).
-    async fn expired_leases(
-        &self,
-        cutoff: Timestamp,
-    ) -> Result<Vec<StoredIntent>, StoreError>;
+    async fn expired_leases(&self, cutoff: Timestamp) -> Result<Vec<StoredIntent>, StoreError>;
 
     /// Atomically update the state of an existing intent.
     ///
@@ -351,10 +354,7 @@ pub trait EffectStore: Send + Sync {
 
     /// Fetch all unconsumed outcomes for a run (i.e., outcomes that have not
     /// yet been fed to the reducer).
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError>;
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError>;
 
     /// Mark outcomes as consumed after the reducer has processed them.
     async fn mark_outcomes_consumed(
@@ -397,11 +397,7 @@ pub trait RunStore: Send + Sync + 'static {
     async fn get(&self, run_id: RunId) -> Result<RunSummary, StoreError>;
 
     /// Atomically update the status of an existing run.
-    async fn update_state(
-        &self,
-        run_id: RunId,
-        new_status: RunStatus,
-    ) -> Result<(), StoreError>;
+    async fn update_state(&self, run_id: RunId, new_status: RunStatus) -> Result<(), StoreError>;
 
     /// List runs belonging to a specific agent, ordered by creation time
     /// descending.
@@ -506,26 +502,37 @@ mod tests {
 
     #[test]
     fn store_error_not_found_is_not_retryable() {
-        let e = StoreError::NotFound { resource_type: "Run", id: "abc".into() };
+        let e = StoreError::NotFound {
+            resource_type: "Run",
+            id: "abc".into(),
+        };
         assert!(!e.is_retryable());
     }
 
     #[test]
     fn store_error_connection_is_retryable() {
-        let e = StoreError::ConnectionError { message: "lost".into() };
+        let e = StoreError::ConnectionError {
+            message: "lost".into(),
+        };
         assert!(e.is_retryable());
     }
 
     #[test]
     fn store_error_conflict_is_not_retryable() {
-        let e = StoreError::Conflict { resource_type: "Artifact", id: "123".into() };
+        let e = StoreError::Conflict {
+            resource_type: "Artifact",
+            id: "123".into(),
+        };
         assert!(!e.is_retryable());
     }
 
     #[test]
     fn store_error_sequence_conflict_display() {
         let run_id = RunId::new();
-        let e = StoreError::SequenceConflict { run_id, sequence: 7 };
+        let e = StoreError::SequenceConflict {
+            run_id,
+            sequence: 7,
+        };
         let msg = format!("{e}");
         assert!(msg.contains('7'));
     }

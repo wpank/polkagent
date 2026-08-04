@@ -6,7 +6,7 @@ use polkagent_card::builder::ActionCardBuilder;
 use polkagent_card::render::render_text;
 use polkagent_card::sections::SectionSource;
 use polkagent_codec::decode::{DecodedExtrinsic, DecodedField, FieldValue};
-use polkagent_codec::{decode_extrinsic, is_transfer_call, extract_transfer_amount};
+use polkagent_codec::{decode_extrinsic, extract_transfer_amount, is_transfer_call};
 
 use crate::cli::ExplainCmd;
 
@@ -67,10 +67,12 @@ fn hex_nibble(b: u8) -> Result<u8, anyhow::Error> {
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -169,16 +171,20 @@ fn print_text(cmd: &ExplainCmd, decoded: &DecodedExtrinsic) {
     // Action card preview
     let card_title = format!(
         "{}.{}",
-        decoded.pallet_name.as_deref().unwrap_or(&format!("pallet#{}", decoded.pallet_index)),
-        decoded.call_name.as_deref().unwrap_or(&format!("call#{}", decoded.call_index)),
+        decoded
+            .pallet_name
+            .as_deref()
+            .unwrap_or(&format!("pallet#{}", decoded.pallet_index)),
+        decoded
+            .call_name
+            .as_deref()
+            .unwrap_or(&format!("call#{}", decoded.call_index)),
     );
 
     let mut builder = ActionCardBuilder::new(&card_title)
         .add_canonical("Pallet", pallet_display(decoded), SectionSource::Metadata)
         .add_canonical("Call", call_display(decoded), SectionSource::Metadata)
-        .with_payload_hash(hex_encode(
-            &[decoded.pallet_index, decoded.call_index],
-        ));
+        .with_payload_hash(hex_encode(&[decoded.pallet_index, decoded.call_index]));
 
     if !decoded.args.is_empty() {
         let args_summary: String = decoded
@@ -197,7 +203,11 @@ fn print_text(cmd: &ExplainCmd, decoded: &DecodedExtrinsic) {
 
     if is_transfer_call(decoded) {
         if let Some(amount) = extract_transfer_amount(decoded) {
-            builder = builder.add_canonical("Transfer amount", format!("{amount}"), SectionSource::Metadata);
+            builder = builder.add_canonical(
+                "Transfer amount",
+                format!("{amount}"),
+                SectionSource::Metadata,
+            );
         }
     }
 
@@ -210,6 +220,10 @@ fn hex_abbrev(bytes: &[u8]) -> String {
     if bytes.len() <= 8 {
         hex_encode(bytes)
     } else {
-        format!("{}…{}", hex_encode(&bytes[..4]), hex_encode(&bytes[bytes.len()-4..]))
+        format!(
+            "{}…{}",
+            hex_encode(&bytes[..4]),
+            hex_encode(&bytes[bytes.len() - 4..])
+        )
     }
 }

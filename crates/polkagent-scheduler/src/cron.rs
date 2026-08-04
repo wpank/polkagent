@@ -63,11 +63,12 @@ impl CronField {
                 }
             } else if let Some(step_str) = part.strip_prefix("*/") {
                 // Step: */N
-                let step: u32 = step_str.parse().map_err(|_| {
-                    SchedulerError::InvalidCronExpression {
-                        message: format!("invalid step value: {step_str}"),
-                    }
-                })?;
+                let step: u32 =
+                    step_str
+                        .parse()
+                        .map_err(|_| SchedulerError::InvalidCronExpression {
+                            message: format!("invalid step value: {step_str}"),
+                        })?;
                 if step == 0 {
                     return Err(SchedulerError::InvalidCronExpression {
                         message: "step value must not be zero".into(),
@@ -81,16 +82,18 @@ impl CronField {
             } else if part.contains('-') {
                 // Range: N-M
                 let parts: Vec<&str> = part.splitn(2, '-').collect();
-                let lo: u32 = parts[0].parse().map_err(|_| {
-                    SchedulerError::InvalidCronExpression {
-                        message: format!("invalid range start: {}", parts[0]),
-                    }
-                })?;
-                let hi: u32 = parts[1].parse().map_err(|_| {
-                    SchedulerError::InvalidCronExpression {
-                        message: format!("invalid range end: {}", parts[1]),
-                    }
-                })?;
+                let lo: u32 =
+                    parts[0]
+                        .parse()
+                        .map_err(|_| SchedulerError::InvalidCronExpression {
+                            message: format!("invalid range start: {}", parts[0]),
+                        })?;
+                let hi: u32 =
+                    parts[1]
+                        .parse()
+                        .map_err(|_| SchedulerError::InvalidCronExpression {
+                            message: format!("invalid range end: {}", parts[1]),
+                        })?;
                 if lo > hi || lo < min || hi > max {
                     return Err(SchedulerError::InvalidCronExpression {
                         message: format!("range {lo}-{hi} out of bounds [{min},{max}]"),
@@ -101,11 +104,11 @@ impl CronField {
                 }
             } else {
                 // Single value.
-                let v: u32 = part.parse().map_err(|_| {
-                    SchedulerError::InvalidCronExpression {
+                let v: u32 = part
+                    .parse()
+                    .map_err(|_| SchedulerError::InvalidCronExpression {
                         message: format!("invalid value: {part}"),
-                    }
-                })?;
+                    })?;
                 if v < min || v > max {
                     return Err(SchedulerError::InvalidCronExpression {
                         message: format!("value {v} out of bounds [{min},{max}]"),
@@ -215,7 +218,9 @@ impl CronExpr {
                 } else {
                     candidate.year()
                 };
-                candidate = Utc.with_ymd_and_hms(year, next_month, 1, 0, 0, 0).single()?;
+                candidate = Utc
+                    .with_ymd_and_hms(year, next_month, 1, 0, 0, 0)
+                    .single()?;
                 continue;
             }
 
@@ -226,19 +231,21 @@ impl CronExpr {
                     // Advance to next matching month.
                     candidate += Duration::days(1);
                     candidate = Utc
-                        .with_ymd_and_hms(candidate.year(), candidate.month(), candidate.day(), 0, 0, 0)
+                        .with_ymd_and_hms(
+                            candidate.year(),
+                            candidate.month(),
+                            candidate.day(),
+                            0,
+                            0,
+                            0,
+                        )
                         .single()?;
                     continue;
                 }
                 // Try to set the day; if invalid (e.g. Feb 30), advance month.
-                if let chrono::LocalResult::Single(dt) = Utc.with_ymd_and_hms(
-                    candidate.year(),
-                    candidate.month(),
-                    next_day,
-                    0,
-                    0,
-                    0,
-                ) {
+                if let chrono::LocalResult::Single(dt) =
+                    Utc.with_ymd_and_hms(candidate.year(), candidate.month(), next_day, 0, 0, 0)
+                {
                     candidate = dt;
                     continue;
                 }
@@ -247,15 +254,8 @@ impl CronExpr {
                     Utc.with_ymd_and_hms(candidate.year() + 1, 1, 1, 0, 0, 0)
                         .single()?
                 } else {
-                    Utc.with_ymd_and_hms(
-                        candidate.year(),
-                        candidate.month() + 1,
-                        1,
-                        0,
-                        0,
-                        0,
-                    )
-                    .single()?
+                    Utc.with_ymd_and_hms(candidate.year(), candidate.month() + 1, 1, 0, 0, 0)
+                        .single()?
                 };
                 candidate = next_month_start;
                 continue;
@@ -266,7 +266,14 @@ impl CronExpr {
             if !self.day_of_week.matches(cron_dow) {
                 candidate += Duration::days(1);
                 candidate = Utc
-                    .with_ymd_and_hms(candidate.year(), candidate.month(), candidate.day(), 0, 0, 0)
+                    .with_ymd_and_hms(
+                        candidate.year(),
+                        candidate.month(),
+                        candidate.day(),
+                        0,
+                        0,
+                        0,
+                    )
                     .single()?;
                 continue;
             }
@@ -411,8 +418,8 @@ mod tests {
         let expr = CronExpr::parse("0 9 * * 1-5").expect("valid cron");
         assert_eq!(expr.day_of_week.values.len(), 5);
         assert!(!expr.day_of_week.matches(0)); // Sunday
-        assert!(expr.day_of_week.matches(1));  // Monday
-        assert!(expr.day_of_week.matches(5));  // Friday
+        assert!(expr.day_of_week.matches(1)); // Monday
+        assert!(expr.day_of_week.matches(5)); // Friday
         assert!(!expr.day_of_week.matches(6)); // Saturday
     }
 

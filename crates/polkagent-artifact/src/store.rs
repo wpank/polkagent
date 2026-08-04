@@ -66,29 +66,20 @@ pub trait ArtifactStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// Retrieve artifact metadata by ID.
-    fn get(
-        &self,
-        id: ArtifactId,
-    ) -> impl Future<Output = Result<Artifact, StoreError>> + Send;
+    fn get(&self, id: ArtifactId) -> impl Future<Output = Result<Artifact, StoreError>> + Send;
 
     /// Retrieve and **verify** the raw body for an artifact.
     ///
     /// Implementations MUST check that the returned bytes hash to
     /// `artifact.blob_ref.blake3_hex`; a failed check MUST produce
     /// [`StoreError::DigestMismatch`].
-    fn get_body(
-        &self,
-        id: ArtifactId,
-    ) -> impl Future<Output = Result<Vec<u8>, StoreError>> + Send;
+    fn get_body(&self, id: ArtifactId) -> impl Future<Output = Result<Vec<u8>, StoreError>> + Send;
 
     /// Verify the integrity of a stored artifact without returning the body.
     ///
     /// Returns `Ok(true)` when the stored body matches the record's digest,
     /// `Ok(false)` when the body is absent or the digest does not match.
-    fn verify(
-        &self,
-        id: ArtifactId,
-    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    fn verify(&self, id: ArtifactId) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Return all artifact metadata records for the given run, in creation
     /// order (ascending by `created_at`).

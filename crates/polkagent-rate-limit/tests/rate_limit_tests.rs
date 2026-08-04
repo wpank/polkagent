@@ -66,8 +66,14 @@ fn token_bucket_cost_greater_than_one() {
     let bucket = TokenBucket::per_second(5, 0.0);
     assert!(bucket.try_acquire("key", 3).allowed);
     assert_eq!(bucket.remaining("key"), 2);
-    assert!(!bucket.try_acquire("key", 3).allowed, "not enough for cost=3");
-    assert!(bucket.try_acquire("key", 2).allowed, "just enough for cost=2");
+    assert!(
+        !bucket.try_acquire("key", 3).allowed,
+        "not enough for cost=3"
+    );
+    assert!(
+        bucket.try_acquire("key", 2).allowed,
+        "just enough for cost=2"
+    );
 }
 
 #[test]
@@ -78,8 +84,14 @@ fn token_bucket_retry_after_is_reasonable() {
     assert!(!result.allowed);
     let retry = result.retry_after.expect("should have retry_after");
     // Should be roughly 1 second (1 token / 1 token per second).
-    assert!(retry.as_secs_f64() > 0.5, "retry should be > 0.5s, got {retry:?}");
-    assert!(retry.as_secs_f64() < 2.0, "retry should be < 2s, got {retry:?}");
+    assert!(
+        retry.as_secs_f64() > 0.5,
+        "retry should be > 0.5s, got {retry:?}"
+    );
+    assert!(
+        retry.as_secs_f64() < 2.0,
+        "retry should be < 2s, got {retry:?}"
+    );
 }
 
 #[test]
@@ -162,7 +174,10 @@ fn sliding_window_approximation_accuracy() {
 
     // After a full window has passed, new requests should be allowed.
     let result = sw.try_acquire("key", 1);
-    assert!(result.allowed, "should be allowed after full window elapses");
+    assert!(
+        result.allowed,
+        "should be allowed after full window elapses"
+    );
 }
 
 // =========================================================================
@@ -231,8 +246,7 @@ fn leaky_bucket_retry_after_calculation() {
 fn composite_allows_when_all_allow() {
     let a = TokenBucket::per_second(10, 0.0);
     let b = TokenBucket::per_second(10, 0.0);
-    let composite =
-        CompositeRateLimiter::new(vec![Box::new(a), Box::new(b)]);
+    let composite = CompositeRateLimiter::new(vec![Box::new(a), Box::new(b)]);
     let result = composite.try_acquire("key", 1);
     assert!(result.allowed);
 }
@@ -242,10 +256,7 @@ fn composite_denies_when_any_deny() {
     let generous = TokenBucket::per_second(100, 0.0);
     let strict = TokenBucket::per_second(2, 0.0);
 
-    let composite = CompositeRateLimiter::new(vec![
-        Box::new(generous),
-        Box::new(strict),
-    ]);
+    let composite = CompositeRateLimiter::new(vec![Box::new(generous), Box::new(strict)]);
 
     assert!(composite.try_acquire("key", 1).allowed);
     assert!(composite.try_acquire("key", 1).allowed);
@@ -261,8 +272,7 @@ fn composite_remaining_is_minimum() {
     let a = TokenBucket::per_second(10, 0.0);
     let b = TokenBucket::per_second(5, 0.0);
 
-    let composite =
-        CompositeRateLimiter::new(vec![Box::new(a), Box::new(b)]);
+    let composite = CompositeRateLimiter::new(vec![Box::new(a), Box::new(b)]);
 
     // Use one from each => a has 9, b has 4 => min is 4
     composite.try_acquire("key", 1);
@@ -493,13 +503,12 @@ fn config_serialization_roundtrip() {
 #[test]
 fn config_endpoint_override_lookup() {
     let mut cfg = RateLimitConfig::development();
-    cfg.endpoint_overrides.push(
-        polkagent_rate_limit::config::EndpointOverride {
+    cfg.endpoint_overrides
+        .push(polkagent_rate_limit::config::EndpointOverride {
             endpoint: "/api/v1/execute".into(),
             limits: None,
             exempt: true,
-        },
-    );
+        });
     let found = cfg.override_for_endpoint("/api/v1/execute");
     assert!(found.is_some());
     assert!(found.expect("override").exempt);
@@ -584,8 +593,8 @@ fn rate_limit_layer_debug() {
 #[test]
 fn rate_limit_layer_with_cost() {
     let limiter: Arc<dyn RateLimiter> = Arc::new(TokenBucket::per_second(10, 10.0));
-    let layer = RateLimitLayer::new(limiter, |_req: &String| Some("global".to_string()))
-        .with_cost(5);
+    let layer =
+        RateLimitLayer::new(limiter, |_req: &String| Some("global".to_string())).with_cost(5);
     let debug = format!("{layer:?}");
     assert!(debug.contains("cost"));
 }

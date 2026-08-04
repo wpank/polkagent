@@ -599,8 +599,14 @@ mod tests {
 
         state.recompute_widget_data();
 
-        assert_eq!(state.context_used, 0, "context_used must be 0 with no detail");
-        assert_eq!(state.context_total, 200_000, "context_total must be 200k default");
+        assert_eq!(
+            state.context_used, 0,
+            "context_used must be 0 with no detail"
+        );
+        assert_eq!(
+            state.context_total, 200_000,
+            "context_total must be 200k default"
+        );
     }
 
     #[test]
@@ -620,10 +626,7 @@ mod tests {
     #[test]
     fn test_recompute_sets_context_used_from_total_tokens() {
         let mut state = TuiState::default();
-        let turns = vec![
-            make_turn(1, 1_000, 500),
-            make_turn(2, 2_000, 1_000),
-        ];
+        let turns = vec![make_turn(1, 1_000, 500), make_turn(2, 2_000, 1_000)];
         state.run_detail = Some(make_run_detail(turns));
         state.recompute_widget_data();
 
@@ -674,10 +677,22 @@ mod tests {
     fn test_chain_data_defaults_show_zeros_and_not_connected() {
         let state = TuiState::default();
         assert_eq!(state.best_block, 0, "default best_block must be 0");
-        assert_eq!(state.finalized_block, 0, "default finalized_block must be 0");
-        assert!(state.chain_name.is_empty(), "default chain_name must be empty");
-        assert!(state.node_version.is_empty(), "default node_version must be empty");
-        assert!(!state.chain_connected, "default chain_connected must be false");
+        assert_eq!(
+            state.finalized_block, 0,
+            "default finalized_block must be 0"
+        );
+        assert!(
+            state.chain_name.is_empty(),
+            "default chain_name must be empty"
+        );
+        assert!(
+            state.node_version.is_empty(),
+            "default node_version must be empty"
+        );
+        assert!(
+            !state.chain_connected,
+            "default chain_connected must be false"
+        );
     }
 
     #[test]

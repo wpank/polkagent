@@ -54,21 +54,16 @@ impl EventStore for PgPool {
     async fn append_durable(&self, event: StoredEvent) -> Result<StoredEvent, EventStoreError> {
         let tenant = self.tenant_id().to_string();
 
-        let mut tx = self
-            .pool()
-            .begin()
-            .await
-            .map_err(map_pg_err)?;
+        let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
         self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
 
         // 1. Non-monotonic sequence check.
-        let current_max: Option<i64> = sqlx::query_scalar(
-            "SELECT MAX(sequence) FROM durable_events WHERE run_id = $1",
-        )
-        .bind(&event.run_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_pg_err)?;
+        let current_max: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(sequence) FROM durable_events WHERE run_id = $1")
+                .bind(&event.run_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(map_pg_err)?;
 
         let current_max = current_max.unwrap_or(0) as u64;
         if event.sequence <= current_max {
@@ -200,10 +195,7 @@ impl EventStore for PgPool {
         rows.iter().map(row_to_event).collect()
     }
 
-    async fn read_run_events(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+    async fn read_run_events(&self, run_id: RunId) -> Result<Vec<StoredEvent>, EventStoreError> {
         let run_str = run_id.to_string();
 
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
@@ -297,13 +289,12 @@ impl EventStore for PgPool {
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
         self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
 
-        let max: Option<i64> = sqlx::query_scalar(
-            "SELECT MAX(sequence) FROM durable_events WHERE run_id = $1",
-        )
-        .bind(&run_str)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_pg_err)?;
+        let max: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(sequence) FROM durable_events WHERE run_id = $1")
+                .bind(&run_str)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(map_pg_err)?;
 
         Ok(max.unwrap_or(0) as u64)
     }

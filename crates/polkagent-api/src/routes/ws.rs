@@ -37,11 +37,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
     response::IntoResponse,
 };
-use axum::extract::ws::{Message, WebSocket};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
@@ -185,15 +185,9 @@ pub enum ClientMessage {
     /// Authenticate using a bearer token.
     Auth { token: Option<String> },
     /// Subscribe to a channel.
-    Subscribe {
-        id: Option<String>,
-        channel: String,
-    },
+    Subscribe { id: Option<String>, channel: String },
     /// Unsubscribe from a channel.
-    Unsubscribe {
-        id: Option<String>,
-        channel: String,
-    },
+    Unsubscribe { id: Option<String>, channel: String },
     /// Client ping — server responds with `"pong"`.
     Ping { id: Option<String> },
 }
@@ -349,12 +343,13 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     // Check if a token was provided as query parameter.
-    let pre_authenticated = query.token.as_deref().map(|t| !t.is_empty()).unwrap_or(false);
+    let pre_authenticated = query
+        .token
+        .as_deref()
+        .map(|t| !t.is_empty())
+        .unwrap_or(false);
 
-    debug!(
-        pre_authenticated,
-        "WebSocket v1alpha1 upgrade accepted"
-    );
+    debug!(pre_authenticated, "WebSocket v1alpha1 upgrade accepted");
 
     let session = if pre_authenticated {
         WsSession::authenticated()
@@ -767,17 +762,13 @@ mod tests {
     fn client_message_subscribe_parses() {
         let json = r#"{"msg_type":"subscribe","id":"r1","channel":"system"}"#;
         let msg: ClientMessage = serde_json::from_str(json).expect("parse");
-        assert!(
-            matches!(msg, ClientMessage::Subscribe { ref channel, .. } if channel == "system")
-        );
+        assert!(matches!(msg, ClientMessage::Subscribe { ref channel, .. } if channel == "system"));
     }
 
     #[test]
     fn client_message_unsubscribe_parses() {
         let run_id = RunId::new();
-        let json = format!(
-            r#"{{"msg_type":"unsubscribe","id":"r2","channel":"runs:{run_id}"}}"#
-        );
+        let json = format!(r#"{{"msg_type":"unsubscribe","id":"r2","channel":"runs:{run_id}"}}"#);
         let msg: ClientMessage = serde_json::from_str(&json).expect("parse");
         assert!(matches!(msg, ClientMessage::Unsubscribe { .. }));
     }

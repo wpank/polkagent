@@ -237,8 +237,7 @@ mod tests {
         };
         let json = serde_json::to_value(&change).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(json["modified"]["key"], "0xab");
-        let back: StorageKeyChange =
-            serde_json::from_value(json).unwrap_or_else(|e| panic!("{e}"));
+        let back: StorageKeyChange = serde_json::from_value(json).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(back, change);
     }
 

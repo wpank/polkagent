@@ -94,7 +94,9 @@ fn render_list(
             let is_selected = abs_idx == selected_idx;
 
             let row_style = if is_selected {
-                Style::default().bg(theme.bg_highlight).fg(theme.rose_bright)
+                Style::default()
+                    .bg(theme.bg_highlight)
+                    .fg(theme.rose_bright)
             } else {
                 Style::default().fg(theme.text_primary)
             };
@@ -118,7 +120,10 @@ fn render_list(
                 )),
                 Cell::from(r.short_id.clone()),
                 Cell::from(agent),
-                Cell::from(Span::styled(r.state.clone(), Style::default().fg(state_color))),
+                Cell::from(Span::styled(
+                    r.state.clone(),
+                    Style::default().fg(state_color),
+                )),
                 Cell::from(duration),
                 Cell::from(Span::styled(token_str, Style::default().fg(theme.text_dim))),
             ])
@@ -178,7 +183,9 @@ fn render_detail(frame: &mut Frame, area: Rect, run: &RunSummary, theme: &Theme)
             Span::raw("  "),
             Span::styled(
                 run.state.clone(),
-                Style::default().fg(state_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(state_color)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),

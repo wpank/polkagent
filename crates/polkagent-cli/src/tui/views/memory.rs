@@ -47,14 +47,26 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(list_area);
 
-        render_list(frame, cols[0], &state.memory_entries, &state.memory_scroll, theme);
+        render_list(
+            frame,
+            cols[0],
+            &state.memory_entries,
+            &state.memory_scroll,
+            theme,
+        );
         if let Some(sel) = state.memory_scroll.selected {
             if let Some(entry) = state.memory_entries.get(sel) {
                 render_detail(frame, cols[1], entry, theme);
             }
         }
     } else {
-        render_list(frame, list_area, &state.memory_entries, &state.memory_scroll, theme);
+        render_list(
+            frame,
+            list_area,
+            &state.memory_entries,
+            &state.memory_scroll,
+            theme,
+        );
     }
 }
 
@@ -78,11 +90,17 @@ fn render_search_bar(frame: &mut Frame, area: Rect, query: &str, theme: &Theme) 
     let block = Block::default()
         .title(Span::styled(
             " SEARCH ",
-            Style::default().fg(theme.dream).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.dream)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if query.is_empty() { theme.border } else { theme.border_dream }))
+        .border_style(Style::default().fg(if query.is_empty() {
+            theme.border
+        } else {
+            theme.border_dream
+        }))
         .style(Style::default().bg(theme.bg_raised));
 
     let inner = block.inner(area);
@@ -105,15 +123,14 @@ fn render_list(
     scroll: &ScrollState,
     theme: &Theme,
 ) {
-    let title = format!(
-        " MEMORY BROWSER ({} entries) ",
-        entries.len()
-    );
+    let title = format!(" MEMORY BROWSER ({} entries) ", entries.len());
 
     let block = Block::default()
         .title(Span::styled(
             title,
-            Style::default().fg(theme.dream).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.dream)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -146,9 +163,15 @@ fn render_list(
     // Header row.
     let header = Row::new(vec![
         Cell::from(Span::styled("Type", Style::default().fg(theme.text_dim))),
-        Cell::from(Span::styled("Relevance", Style::default().fg(theme.text_dim))),
+        Cell::from(Span::styled(
+            "Relevance",
+            Style::default().fg(theme.text_dim),
+        )),
         Cell::from(Span::styled("Agent", Style::default().fg(theme.text_dim))),
-        Cell::from(Span::styled("Content (preview)", Style::default().fg(theme.text_dim))),
+        Cell::from(Span::styled(
+            "Content (preview)",
+            Style::default().fg(theme.text_dim),
+        )),
     ])
     .height(1)
     .style(Style::default().add_modifier(Modifier::UNDERLINED));
@@ -186,14 +209,19 @@ fn render_list(
 
             // Preview: first 40 chars of content, single line.
             let preview_max = (inner.width as usize).saturating_sub(50).min(60);
-            let preview = entry.content
+            let preview = entry
+                .content
                 .lines()
                 .next()
                 .unwrap_or("")
                 .chars()
                 .take(preview_max.max(10))
                 .collect::<String>();
-            let preview = if entry.content.len() > preview_max { format!("{preview}…") } else { preview };
+            let preview = if entry.content.len() > preview_max {
+                format!("{preview}…")
+            } else {
+                preview
+            };
 
             Row::new(vec![
                 Cell::from(Span::styled(
@@ -202,7 +230,9 @@ fn render_list(
                 )),
                 Cell::from(Span::styled(
                     relevance_str,
-                    Style::default().fg(relevance_color).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(relevance_color)
+                        .add_modifier(Modifier::BOLD),
                 )),
                 Cell::from(agent),
                 Cell::from(Span::styled(
@@ -318,10 +348,7 @@ fn render_detail(frame: &mut Frame, area: Rect, entry: &MemoryEntry, theme: &The
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -357,10 +384,7 @@ fn kv_line(
     theme: &Theme,
 ) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("{key:<14}"),
-            Style::default().fg(theme.text_dim),
-        ),
+        Span::styled(format!("{key:<14}"), Style::default().fg(theme.text_dim)),
         Span::styled(value.to_owned(), Style::default().fg(value_color)),
     ])
 }

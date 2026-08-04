@@ -21,13 +21,11 @@ use polkagent_transport_trait::{
 // ---------------------------------------------------------------------------
 
 fn bot_config() -> PcaConfig {
-    PcaConfig::new("5BotAddr...")
-        .with_peer("5ServerAddr...", Some("MockServer".into()))
+    PcaConfig::new("5BotAddr...").with_peer("5ServerAddr...", Some("MockServer".into()))
 }
 
 fn server_config() -> PcaConfig {
-    PcaConfig::new("5ServerAddr...")
-        .with_peer("5BotAddr...", Some("Bot".into()))
+    PcaConfig::new("5ServerAddr...").with_peer("5BotAddr...", Some("Bot".into()))
 }
 
 fn make_wire_bytes(sender: &str, display_name: &str, body: &str) -> Vec<u8> {
@@ -107,7 +105,11 @@ async fn bot_sends_message_and_receives_ack() {
 
     // The outgoing message should be drainable from the transport.
     let drained = bot.drain_outgoing();
-    assert_eq!(drained.len(), 1, "exactly one message should be in outgoing");
+    assert_eq!(
+        drained.len(),
+        1,
+        "exactly one message should be in outgoing"
+    );
 
     // Verify the drained payload is valid JSON containing the sent content.
     let wire: PcaWireMessage =
@@ -220,10 +222,8 @@ async fn outgoing_messages_preserve_order() {
     assert_eq!(drained.len(), message_count);
 
     for (i, payload) in drained.iter().enumerate() {
-        let wire: PcaWireMessage =
-            serde_json::from_slice(payload).expect("valid wire message");
-        let body: OutgoingBody =
-            serde_json::from_str(&wire.body_json).expect("valid body JSON");
+        let wire: PcaWireMessage = serde_json::from_slice(payload).expect("valid wire message");
+        let body: OutgoingBody = serde_json::from_str(&wire.body_json).expect("valid body JSON");
         match body {
             OutgoingBody::Text { content } => {
                 assert_eq!(content, format!("out-{i}"), "outgoing message {i} mismatch");
@@ -317,9 +317,7 @@ async fn full_e2e_bot_server_conversation() {
         }
         other => panic!("expected Text, got {other:?}"),
     }
-    bot.ack(bot_received.delivery_id)
-        .await
-        .expect("bot ack");
+    bot.ack(bot_received.delivery_id).await.expect("bot ack");
 
     // Both channels should be clean.
     assert_eq!(bot.incoming_channel().pending_ack_count(), 0);
@@ -418,10 +416,7 @@ async fn content_integrity_roundtrip() {
         let msg = bot.receive().await.expect("receive");
         match &msg.body {
             MessageBody::Text { content } => {
-                assert_eq!(
-                    content, payload,
-                    "content mismatch for payload {i}"
-                );
+                assert_eq!(content, payload, "content mismatch for payload {i}");
             }
             other => panic!("expected Text body for payload {i}, got {other:?}"),
         }

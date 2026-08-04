@@ -304,7 +304,6 @@ pub struct HarnessCapabilities {
     pub models: Vec<String>,
 
     // -- New fields (all default for backward compat) --
-
     /// The transport/protocol flavor used by this harness.
     #[serde(default)]
     pub transport: Option<TransportFlavor>,
@@ -810,20 +809,13 @@ pub trait Harness: Send + Sync + 'static {
     ///
     /// Returns a [`SessionId`] that can be used to send messages and
     /// receive events.
-    async fn start_session(
-        &self,
-        config: SessionConfig,
-    ) -> Result<SessionId, HarnessError>;
+    async fn start_session(&self, config: SessionConfig) -> Result<SessionId, HarnessError>;
 
     /// Send a user message to an active session.
     ///
     /// The message is delivered to the underlying agent's stdin (or
     /// equivalent input channel).
-    async fn send_message(
-        &self,
-        session_id: SessionId,
-        message: &str,
-    ) -> Result<(), HarnessError>;
+    async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError>;
 
     /// Return a stream of events from the given session.
     ///
@@ -840,10 +832,7 @@ pub trait Harness: Send + Sync + 'static {
     /// Terminate an active session and release associated resources.
     ///
     /// After this call, the `session_id` is no longer valid.
-    async fn end_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError>;
+    async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError>;
 
     /// Perform a lightweight health check.
     ///
@@ -873,10 +862,7 @@ pub trait Harness: Send + Sync + 'static {
     /// Loads the [`SessionSnapshot`] from `.polkagent/state/` and either
     /// reconnects to a still-running process (by PID) or spawns a new
     /// subprocess pre-loaded with conversation history.
-    async fn resume_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<SessionId, HarnessError> {
+    async fn resume_session(&self, session_id: SessionId) -> Result<SessionId, HarnessError> {
         let _ = session_id;
         Err(HarnessError::InvalidState {
             message: "session resumption not supported by this harness".into(),
@@ -888,10 +874,7 @@ pub trait Harness: Send + Sync + 'static {
     /// The default implementation delegates to [`end_session`].
     ///
     /// [`end_session`]: Harness::end_session
-    async fn cancel_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError> {
+    async fn cancel_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         self.end_session(session_id).await
     }
 
@@ -1119,12 +1102,22 @@ mod tests {
     #[test]
     fn harness_error_variants() {
         // Ensure all error variants are constructible.
-        let _spawn = HarnessError::SpawnFailed { message: "fail".into() };
-        let _io = HarnessError::IoError { message: "broken pipe".into() };
-        let _parse = HarnessError::ParseError { message: "bad json".into() };
+        let _spawn = HarnessError::SpawnFailed {
+            message: "fail".into(),
+        };
+        let _io = HarnessError::IoError {
+            message: "broken pipe".into(),
+        };
+        let _parse = HarnessError::ParseError {
+            message: "bad json".into(),
+        };
         let _timeout = HarnessError::Timeout { elapsed_ms: 5000 };
-        let _state = HarnessError::InvalidState { message: "not idle".into() };
-        let _internal = HarnessError::Internal { message: "unexpected".into() };
+        let _state = HarnessError::InvalidState {
+            message: "not idle".into(),
+        };
+        let _internal = HarnessError::Internal {
+            message: "unexpected".into(),
+        };
     }
 
     /// Compile-time check: `Harness` can be used as a `dyn` trait object.

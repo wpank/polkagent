@@ -120,11 +120,7 @@ pub trait StatementStore: Send + Sync {
     /// 1. Persist the entry to the backing store.
     /// 2. Sign the entry with the local identity.
     /// 3. Return the anchor with `confirmed = true` once durable.
-    fn anchor(
-        &self,
-        entry: BulletinEntry,
-        signer: &str,
-    ) -> Result<StatementAnchor, PcaError>;
+    fn anchor(&self, entry: BulletinEntry, signer: &str) -> Result<StatementAnchor, PcaError>;
 
     /// Verify that a statement anchor is valid.
     ///
@@ -136,10 +132,7 @@ pub trait StatementStore: Send + Sync {
     fn lookup(&self, cid: &Cid) -> Result<Option<BulletinEntry>, PcaError>;
 
     /// List all bulletin entries for a conversation, ordered by sequence.
-    fn list_by_conversation(
-        &self,
-        conversation_id: &str,
-    ) -> Result<Vec<BulletinEntry>, PcaError>;
+    fn list_by_conversation(&self, conversation_id: &str) -> Result<Vec<BulletinEntry>, PcaError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,11 +176,7 @@ impl Default for InMemoryStatementStore {
 }
 
 impl StatementStore for InMemoryStatementStore {
-    fn anchor(
-        &self,
-        entry: BulletinEntry,
-        signer: &str,
-    ) -> Result<StatementAnchor, PcaError> {
+    fn anchor(&self, entry: BulletinEntry, signer: &str) -> Result<StatementAnchor, PcaError> {
         let cid_str = entry.cid.0.clone();
         let conv_id = entry.conversation_id.clone();
 
@@ -223,10 +212,7 @@ impl StatementStore for InMemoryStatementStore {
         // In-memory "verification": check that the signer matches the
         // signature bytes and the CID exists.
         let sig_matches = anchor.signature == anchor.signer.as_bytes();
-        let cid_exists = self
-            .entries
-            .read()
-            .contains_key(&anchor.entry.cid.0);
+        let cid_exists = self.entries.read().contains_key(&anchor.entry.cid.0);
         Ok(sig_matches && cid_exists)
     }
 
@@ -234,10 +220,7 @@ impl StatementStore for InMemoryStatementStore {
         Ok(self.entries.read().get(&cid.0).cloned())
     }
 
-    fn list_by_conversation(
-        &self,
-        conversation_id: &str,
-    ) -> Result<Vec<BulletinEntry>, PcaError> {
+    fn list_by_conversation(&self, conversation_id: &str) -> Result<Vec<BulletinEntry>, PcaError> {
         let by_conv = self.by_conversation.read();
         let entries = self.entries.read();
 

@@ -43,7 +43,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use polkagent_core::now;
 use polkagent_signer_trait::{
-    AccountRef, CanonicalSignRequest, ChainProfileId, Signer, SignedPayload, SignerCapabilities,
+    AccountRef, CanonicalSignRequest, ChainProfileId, SignedPayload, Signer, SignerCapabilities,
     SignerError,
 };
 
@@ -180,7 +180,11 @@ impl FakeSigner {
         let public_key = request.account.account_id.to_vec();
         let mut signed_extrinsic = request.payload.clone();
         signed_extrinsic.extend_from_slice(&signature);
-        SignedPayload { signed_extrinsic, public_key, signature }
+        SignedPayload {
+            signed_extrinsic,
+            public_key,
+            signature,
+        }
     }
 }
 
@@ -207,7 +211,9 @@ impl Signer for FakeSigner {
 
         // Check expiry before doing anything else.
         if request.expires_at <= now() {
-            return Err(SignerError::Expired { expired_at: request.expires_at });
+            return Err(SignerError::Expired {
+                expired_at: request.expires_at,
+            });
         }
 
         match &self.mode {
@@ -261,7 +267,10 @@ mod tests {
         assert_eq!(signed.signature.len(), 64);
         assert_eq!(signed.public_key.len(), 32);
         // signed_extrinsic = payload || signature
-        assert_eq!(&signed.signed_extrinsic[..payload.len()], payload.as_slice());
+        assert_eq!(
+            &signed.signed_extrinsic[..payload.len()],
+            payload.as_slice()
+        );
     }
 
     #[tokio::test]

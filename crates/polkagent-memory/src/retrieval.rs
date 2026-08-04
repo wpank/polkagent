@@ -101,10 +101,7 @@ impl VectorSearchIndex for InMemoryVectorIndex {
             })
             .collect();
 
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(k);
         Ok(scored)
     }
@@ -263,10 +260,7 @@ pub struct RankedResult {
 ///
 /// `score = sum(weight_i / (k + rank_i))` for each source where the item
 /// appears. `rank_i` is 1-based.
-pub fn rrf_fuse(
-    ranked_lists: &[(&[(MemoryId, f32)], f32)],
-    k: u32,
-) -> Vec<RankedResult> {
+pub fn rrf_fuse(ranked_lists: &[(&[(MemoryId, f32)], f32)], k: u32) -> Vec<RankedResult> {
     let mut scores: HashMap<MemoryId, f64> = HashMap::new();
 
     for (ranked_list, weight) in ranked_lists {
@@ -416,8 +410,8 @@ impl<'a> HybridRetriever<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedding::MockEmbeddingProvider;
     use crate::embedding::EmbeddingProvider;
+    use crate::embedding::MockEmbeddingProvider;
     use crate::sqlite::SqliteMemoryStore;
     use crate::store::MemoryStore;
     use crate::types::{MemoryEntry, MemoryType};
@@ -882,7 +876,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(results.len() <= 3, "budget should limit results, got {}", results.len());
+        assert!(
+            results.len() <= 3,
+            "budget should limit results, got {}",
+            results.len()
+        );
         assert!(!results.is_empty(), "should return at least one result");
     }
 

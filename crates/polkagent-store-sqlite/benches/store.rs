@@ -19,9 +19,7 @@
 //! PRD-15 performance benchmarks (enhanced).
 
 use chrono::{DateTime, Utc};
-use criterion::{
-    criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
@@ -587,9 +585,7 @@ fn bench_event_ops(c: &mut Criterion) {
 
         group.bench_function("events_for_run_100", |b| {
             b.iter(|| {
-                let rows = event_store
-                    .events_for_run(&run_id)
-                    .expect("events for run");
+                let rows = event_store.events_for_run(&run_id).expect("events for run");
                 criterion::black_box(rows.len());
             });
         });
@@ -611,9 +607,7 @@ fn bench_event_ops(c: &mut Criterion) {
 
         group.bench_function("events_after_seq_80", |b| {
             b.iter(|| {
-                let rows = event_store
-                    .events_after(&run_id, 80)
-                    .expect("events after");
+                let rows = event_store.events_after(&run_id, 80).expect("events after");
                 criterion::black_box(rows.len());
             });
         });
@@ -650,8 +644,8 @@ fn bench_event_ops(c: &mut Criterion) {
 
 fn bench_payment_ops(c: &mut Criterion) {
     use polkagent_payment::{
-        PaymentStore,
         types::{Amount, AssetId, CostRecord, PaymentIntent, PaymentStatus},
+        PaymentStore,
     };
 
     let mut group = c.benchmark_group("payment_ops");
@@ -763,8 +757,7 @@ fn bench_payment_ops(c: &mut Criterion) {
                     agent_id: "agent-bench".to_string(),
                     run_id: "run-bench".to_string(),
                     amount: Amount::new(1_000_000_000, AssetId::Native, 10),
-                    recipient: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
-                        .to_string(),
+                    recipient: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_string(),
                     idempotency_key: Uuid::now_v7().to_string(),
                     created_at: Utc::now(),
                     status: PaymentStatus::Pending,
@@ -785,8 +778,8 @@ fn bench_payment_ops(c: &mut Criterion) {
 
 fn bench_conversation_ops(c: &mut Criterion) {
     use polkagent_conversation::{
-        ConversationStore,
         types::{Conversation, Message, MessageContent, MessageRole},
+        ConversationStore,
     };
     use polkagent_core::ids::{AgentId, ConversationId};
 
@@ -975,9 +968,7 @@ fn bench_migration(c: &mut Criterion) {
                 let pool = SqlitePool::open(tmpfile.path()).expect("open db");
                 let writer = pool.writer();
                 migrations::migrate(&writer).expect("migrate");
-                criterion::black_box(
-                    migrations::current_version(&writer).expect("version"),
-                );
+                criterion::black_box(migrations::current_version(&writer).expect("version"));
             },
             BatchSize::SmallInput,
         );
@@ -1093,113 +1084,101 @@ fn bench_bulk_insert(c: &mut Criterion) {
         group.throughput(Throughput::Elements(count));
 
         // --- bulk insert runs ---
-        group.bench_with_input(
-            BenchmarkId::new("runs", count),
-            &count,
-            |b, &count| {
-                b.iter_batched(
-                    || {
-                        let tmpfile = NamedTempFile::new().expect("tempfile");
-                        let pool = SqlitePool::open(tmpfile.path()).expect("open db");
-                        {
-                            let writer = pool.writer();
-                            migrations::migrate(&writer).expect("migrate");
-                        }
-                        let run_store = SqliteRunStore::new(pool);
-                        let agent_id = seed_agent(&run_store);
-                        (run_store, tmpfile, agent_id)
-                    },
-                    |(run_store, _tmpfile, agent_id)| {
-                        for _ in 0..count {
-                            run_store
-                                .create_run(
-                                    &agent_id,
-                                    None,
-                                    r#"{"bulk":"insert","data":"realistic payload"}"#,
-                                )
-                                .expect("bulk insert run");
-                        }
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("runs", count), &count, |b, &count| {
+            b.iter_batched(
+                || {
+                    let tmpfile = NamedTempFile::new().expect("tempfile");
+                    let pool = SqlitePool::open(tmpfile.path()).expect("open db");
+                    {
+                        let writer = pool.writer();
+                        migrations::migrate(&writer).expect("migrate");
+                    }
+                    let run_store = SqliteRunStore::new(pool);
+                    let agent_id = seed_agent(&run_store);
+                    (run_store, tmpfile, agent_id)
+                },
+                |(run_store, _tmpfile, agent_id)| {
+                    for _ in 0..count {
+                        run_store
+                            .create_run(
+                                &agent_id,
+                                None,
+                                r#"{"bulk":"insert","data":"realistic payload"}"#,
+                            )
+                            .expect("bulk insert run");
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
 
         // --- bulk insert events ---
-        group.bench_with_input(
-            BenchmarkId::new("events", count),
-            &count,
-            |b, &count| {
-                b.iter_batched(
-                    || {
-                        let tmpfile = NamedTempFile::new().expect("tempfile");
-                        let pool = SqlitePool::open(tmpfile.path()).expect("open db");
-                        {
-                            let writer = pool.writer();
-                            migrations::migrate(&writer).expect("migrate");
-                        }
-                        let run_store = SqliteRunStore::new(pool.clone());
-                        let event_store = SqliteEventStore::new(pool);
-                        let agent_id = seed_agent(&run_store);
-                        let run_id = seed_run(&run_store, &agent_id);
-                        (event_store, tmpfile, run_id)
-                    },
-                    |(event_store, _tmpfile, run_id)| {
-                        for seq in 1..=count as i64 {
-                            event_store
-                                .append_event(
-                                    &run_id,
-                                    seq,
-                                    "step_executed",
-                                    r#"{"bulk":"event","step":"tool_use"}"#,
-                                    None,
-                                    1,
-                                )
-                                .expect("bulk insert event");
-                        }
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("events", count), &count, |b, &count| {
+            b.iter_batched(
+                || {
+                    let tmpfile = NamedTempFile::new().expect("tempfile");
+                    let pool = SqlitePool::open(tmpfile.path()).expect("open db");
+                    {
+                        let writer = pool.writer();
+                        migrations::migrate(&writer).expect("migrate");
+                    }
+                    let run_store = SqliteRunStore::new(pool.clone());
+                    let event_store = SqliteEventStore::new(pool);
+                    let agent_id = seed_agent(&run_store);
+                    let run_id = seed_run(&run_store, &agent_id);
+                    (event_store, tmpfile, run_id)
+                },
+                |(event_store, _tmpfile, run_id)| {
+                    for seq in 1..=count as i64 {
+                        event_store
+                            .append_event(
+                                &run_id,
+                                seq,
+                                "step_executed",
+                                r#"{"bulk":"event","step":"tool_use"}"#,
+                                None,
+                                1,
+                            )
+                            .expect("bulk insert event");
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
 
         // --- bulk insert effect intents ---
-        group.bench_with_input(
-            BenchmarkId::new("intents", count),
-            &count,
-            |b, &count| {
-                b.iter_batched(
-                    || {
-                        let tmpfile = NamedTempFile::new().expect("tempfile");
-                        let pool = SqlitePool::open(tmpfile.path()).expect("open db");
-                        {
-                            let writer = pool.writer();
-                            migrations::migrate(&writer).expect("migrate");
-                        }
-                        let run_store = SqliteRunStore::new(pool.clone());
-                        let effect_store = SqliteEffectStore::new(pool);
-                        let agent_id = seed_agent(&run_store);
-                        let run_id = seed_run(&run_store, &agent_id);
-                        (effect_store, tmpfile, run_id)
-                    },
-                    |(effect_store, _tmpfile, run_id)| {
-                        for i in 0..count {
-                            effect_store
-                                .create_intent(
-                                    &run_id,
-                                    None,
-                                    None,
-                                    "model_call",
-                                    r#"{"bulk":"intent","tokens":100}"#,
-                                    &format!("bulk-intent-{i}"),
-                                )
-                                .expect("bulk insert intent");
-                        }
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("intents", count), &count, |b, &count| {
+            b.iter_batched(
+                || {
+                    let tmpfile = NamedTempFile::new().expect("tempfile");
+                    let pool = SqlitePool::open(tmpfile.path()).expect("open db");
+                    {
+                        let writer = pool.writer();
+                        migrations::migrate(&writer).expect("migrate");
+                    }
+                    let run_store = SqliteRunStore::new(pool.clone());
+                    let effect_store = SqliteEffectStore::new(pool);
+                    let agent_id = seed_agent(&run_store);
+                    let run_id = seed_run(&run_store, &agent_id);
+                    (effect_store, tmpfile, run_id)
+                },
+                |(effect_store, _tmpfile, run_id)| {
+                    for i in 0..count {
+                        effect_store
+                            .create_intent(
+                                &run_id,
+                                None,
+                                None,
+                                "model_call",
+                                r#"{"bulk":"intent","tokens":100}"#,
+                                &format!("bulk-intent-{i}"),
+                            )
+                            .expect("bulk insert intent");
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
     }
 
     group.finish();
@@ -1255,11 +1234,7 @@ fn bench_query_filters(c: &mut Criterion) {
         // Create agents in various states.
         for i in 0..50 {
             let agent = run_store
-                .create_agent(
-                    &format!("state-agent-{i}"),
-                    None,
-                    r#"{"model":"test"}"#,
-                )
+                .create_agent(&format!("state-agent-{i}"), None, r#"{"model":"test"}"#)
                 .expect("create agent");
             if i % 3 == 0 {
                 run_store
@@ -1292,9 +1267,7 @@ fn bench_query_filters(c: &mut Criterion) {
 
         group.bench_function("list_agents_all_including_archived", |b| {
             b.iter(|| {
-                let rows = run_store
-                    .list_agents(None, true)
-                    .expect("list all");
+                let rows = run_store.list_agents(None, true).expect("list all");
                 criterion::black_box(rows.len());
             });
         });
@@ -1330,7 +1303,9 @@ fn bench_query_filters(c: &mut Criterion) {
         // Read last 10% of events (after seq 450).
         group.bench_function("events_after_90pct", |b| {
             b.iter(|| {
-                let rows = event_store.events_after(&run_id, 450).expect("events after");
+                let rows = event_store
+                    .events_after(&run_id, 450)
+                    .expect("events after");
                 criterion::black_box(rows.len());
             });
         });
@@ -1338,7 +1313,9 @@ fn bench_query_filters(c: &mut Criterion) {
         // Read last 50% of events (after seq 250).
         group.bench_function("events_after_50pct", |b| {
             b.iter(|| {
-                let rows = event_store.events_after(&run_id, 250).expect("events after");
+                let rows = event_store
+                    .events_after(&run_id, 250)
+                    .expect("events after");
                 criterion::black_box(rows.len());
             });
         });
@@ -1428,7 +1405,7 @@ fn bench_query_filters(c: &mut Criterion) {
 
     // --- query payment costs by run ---
     {
-        use polkagent_payment::{PaymentStore, types::CostRecord};
+        use polkagent_payment::{types::CostRecord, PaymentStore};
 
         let (pool, _tmpfile) = open_bench_db();
         let rt = build_rt();

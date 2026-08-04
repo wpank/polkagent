@@ -90,10 +90,7 @@ pub use voter::VoterHistoryTool;
 /// so the tools can query chain state.
 ///
 /// Call this once when setting up a new run or agent context.
-pub fn register_governance_tools(
-    registry: &mut ToolRegistry,
-    chain_client: Arc<dyn ChainClient>,
-) {
+pub fn register_governance_tools(registry: &mut ToolRegistry, chain_client: Arc<dyn ChainClient>) {
     registry.register(Box::new(ReferendumLookupTool::new(chain_client.clone())));
     registry.register(Box::new(TrackInfoTool::new(chain_client.clone())));
     registry.register(Box::new(VoterHistoryTool::new(chain_client.clone())));
@@ -211,19 +208,13 @@ pub(crate) mod tests {
             _block_ref: Option<&BlockRef>,
             _chain_profile: ChainProfileId,
         ) -> Result<Option<Vec<u8>>, ChainError> {
-            let map = self
-                .storage
-                .lock()
-                .map_err(|e| ChainError::Internal {
-                    message: format!("lock poisoned: {e}"),
-                })?;
+            let map = self.storage.lock().map_err(|e| ChainError::Internal {
+                message: format!("lock poisoned: {e}"),
+            })?;
             Ok(map.get(storage_key).cloned())
         }
 
-        async fn dry_run_call(
-            &self,
-            _extrinsic: &[u8],
-        ) -> Result<DryRunResult, ChainError> {
+        async fn dry_run_call(&self, _extrinsic: &[u8]) -> Result<DryRunResult, ChainError> {
             Err(ChainError::Unsupported {
                 operation: "dry_run_call".into(),
             })

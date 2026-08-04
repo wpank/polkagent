@@ -178,7 +178,10 @@ mod tests {
     #[test]
     fn compute_digest_sha256_field_is_none() {
         let d = compute_digest(b"no sha256 expected");
-        assert!(d.sha256_hex.is_none(), "sha256_hex must not be set by compute_digest");
+        assert!(
+            d.sha256_hex.is_none(),
+            "sha256_hex must not be set by compute_digest"
+        );
     }
 
     #[test]
@@ -223,7 +226,10 @@ mod tests {
         let content = b"idempotent content body";
         let d1 = compute_digest(content);
         let d2 = compute_digest(content);
-        assert_eq!(d1.blake3_hex, d2.blake3_hex, "same content must produce same BlobRef");
+        assert_eq!(
+            d1.blake3_hex, d2.blake3_hex,
+            "same content must produce same BlobRef"
+        );
     }
 
     // --- compute_sha256_digest ---
@@ -232,7 +238,10 @@ mod tests {
     fn sha256_digest_known_value() {
         // SHA-256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
         let hex = compute_sha256_digest(b"hello");
-        assert_eq!(hex, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            hex,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     #[test]
@@ -261,7 +270,10 @@ mod tests {
     fn sha256_digest_empty_data_known_value() {
         // SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
         let hex = compute_sha256_digest(b"");
-        assert_eq!(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            hex,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     // --- compute_dual_digest ---
@@ -303,7 +315,10 @@ mod tests {
         // BLAKE3 and SHA-256 should produce different output for the same input.
         let data = b"algorithm comparison";
         let (blake3, sha256) = compute_dual_digest(data);
-        assert_ne!(blake3, sha256, "BLAKE3 and SHA-256 must not produce identical output");
+        assert_ne!(
+            blake3, sha256,
+            "BLAKE3 and SHA-256 must not produce identical output"
+        );
     }
 
     // --- verify_sha256 ---

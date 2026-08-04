@@ -123,10 +123,7 @@ pub enum PersonhoodDecision {
     /// The credential was provided but failed verification.
     VerificationFailed(String),
     /// The credential type does not match the requirement.
-    WrongCredentialType {
-        expected: String,
-        got: String,
-    },
+    WrongCredentialType { expected: String, got: String },
 }
 
 impl PersonhoodDecision {
@@ -145,9 +142,9 @@ impl PersonhoodDecision {
             Self::MissingCredential => {
                 Some("personhood credential required but not provided".to_string())
             }
-            Self::VerificationFailed(reason) => {
-                Some(format!("personhood credential verification failed: {reason}"))
-            }
+            Self::VerificationFailed(reason) => Some(format!(
+                "personhood credential verification failed: {reason}"
+            )),
             Self::WrongCredentialType { expected, got } => Some(format!(
                 "expected credential type '{expected}', got '{got}'"
             )),
@@ -265,8 +262,7 @@ mod tests {
 
     #[test]
     fn gated_policy_requires_personhood() {
-        let policy =
-            PersonhoodPolicy::gated(sample_rule(), PersonhoodRequirement::any_issuer());
+        let policy = PersonhoodPolicy::gated(sample_rule(), PersonhoodRequirement::any_issuer());
         assert!(policy.requires_personhood());
     }
 
@@ -300,9 +296,8 @@ mod tests {
 
     #[test]
     fn valid_credential_satisfies_trusted_issuer() {
-        let req = PersonhoodRequirement::with_issuers(vec![
-            "did:web:issuer.example.com".to_string(),
-        ]);
+        let req =
+            PersonhoodRequirement::with_issuers(vec!["did:web:issuer.example.com".to_string()]);
         let cred = sample_credential();
         let decision = check_personhood(Some(&req), Some(&cred), &empty_ctx());
         assert_eq!(decision, PersonhoodDecision::Satisfied);
@@ -310,9 +305,7 @@ mod tests {
 
     #[test]
     fn untrusted_issuer_fails() {
-        let req = PersonhoodRequirement::with_issuers(vec![
-            "did:web:other-issuer.com".to_string(),
-        ]);
+        let req = PersonhoodRequirement::with_issuers(vec!["did:web:other-issuer.com".to_string()]);
         let cred = sample_credential();
         let decision = check_personhood(Some(&req), Some(&cred), &empty_ctx());
         assert!(!decision.is_ok());
@@ -360,9 +353,8 @@ mod tests {
 
     #[test]
     fn personhood_requirement_serde_round_trip() {
-        let req = PersonhoodRequirement::with_issuers(vec![
-            "did:web:issuer.example.com".to_string(),
-        ]);
+        let req =
+            PersonhoodRequirement::with_issuers(vec!["did:web:issuer.example.com".to_string()]);
         let json = serde_json::to_string(&req).expect("serialize");
         let back: PersonhoodRequirement = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.credential_type, "PersonhoodCredential");
@@ -371,8 +363,7 @@ mod tests {
 
     #[test]
     fn personhood_policy_serde_round_trip() {
-        let policy =
-            PersonhoodPolicy::gated(sample_rule(), PersonhoodRequirement::any_issuer());
+        let policy = PersonhoodPolicy::gated(sample_rule(), PersonhoodRequirement::any_issuer());
         let json = serde_json::to_string(&policy).expect("serialize");
         let back: PersonhoodPolicy = serde_json::from_str(&json).expect("deserialize");
         assert!(back.requires_personhood());
@@ -384,8 +375,7 @@ mod tests {
     #[test]
     fn ungated_check_is_noop() {
         let policy = PersonhoodPolicy::ungated(sample_rule());
-        let decision =
-            check_personhood(policy.personhood.as_ref(), None, &empty_ctx());
+        let decision = check_personhood(policy.personhood.as_ref(), None, &empty_ctx());
         assert_eq!(decision, PersonhoodDecision::NotRequired);
     }
 }

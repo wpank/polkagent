@@ -7,22 +7,15 @@ use thiserror::Error;
 pub enum JamError {
     /// The RPC endpoint returned a transport-level error.
     #[error("JAM RPC transport error: {message} (endpoint: {endpoint})")]
-    Transport {
-        endpoint: String,
-        message: String,
-    },
+    Transport { endpoint: String, message: String },
 
     /// The RPC response could not be parsed.
     #[error("JAM RPC invalid response: {message}")]
-    InvalidResponse {
-        message: String,
-    },
+    InvalidResponse { message: String },
 
     /// The requested block was not found.
     #[error("JAM block not found: slot {slot}")]
-    BlockNotFound {
-        slot: u64,
-    },
+    BlockNotFound { slot: u64 },
 
     /// The client is not connected to a JAM node.
     #[error("JAM client not connected")]

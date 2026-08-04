@@ -92,7 +92,10 @@ impl ToolHandler for TransferHistoryTool {
             .unwrap_or(DEFAULT_LIMIT)
             .min(MAX_LIMIT);
 
-        debug!(account = account_id, chain, limit, "querying transfer history");
+        debug!(
+            account = account_id,
+            chain, limit, "querying transfer history"
+        );
 
         // In production this would index transfer events from chain storage.
         // Return empty list as placeholder.

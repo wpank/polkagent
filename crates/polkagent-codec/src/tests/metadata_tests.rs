@@ -51,7 +51,11 @@ fn parse_metadata_truncated() {
     // Only the magic bytes, nothing more.
     let bytes = b"meta".to_vec();
     let err = parse_metadata_v14(&bytes).expect_err("truncated should fail");
-    assert!(err.to_string().contains("unexpected") || err.to_string().contains("decode") || err.to_string().contains("unsupported"));
+    assert!(
+        err.to_string().contains("unexpected")
+            || err.to_string().contains("decode")
+            || err.to_string().contains("unsupported")
+    );
 }
 
 #[test]

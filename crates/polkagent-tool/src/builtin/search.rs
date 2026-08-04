@@ -69,17 +69,15 @@ impl ToolHandler for SearchMemoryTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let query_text = input
-            .get("query")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput {
-                reason: "missing or invalid 'query' field".to_string(),
-            })?;
+        let query_text =
+            input
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::InvalidInput {
+                    reason: "missing or invalid 'query' field".to_string(),
+                })?;
 
-        let limit = input
-            .get("limit")
-            .and_then(Value::as_u64)
-            .unwrap_or(10) as usize;
+        let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
 
         let memory_types = input
             .get("memory_type")
@@ -291,6 +289,10 @@ mod tests {
             &self,
             _agent_id: &polkagent_core::AgentId,
         ) -> polkagent_memory::MemoryResult<usize> {
+            Ok(0)
+        }
+
+        async fn forget(&self, _artifact_id: &str) -> polkagent_memory::MemoryResult<usize> {
             Ok(0)
         }
 

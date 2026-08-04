@@ -51,7 +51,10 @@ impl TenantScope {
     /// Create a new scope for the given agent.
     #[must_use]
     pub fn new(agent_id: AgentId, allowed_scopes: Vec<String>) -> Self {
-        Self { agent_id, allowed_scopes }
+        Self {
+            agent_id,
+            allowed_scopes,
+        }
     }
 }
 
@@ -74,7 +77,10 @@ impl TenantAwareStore {
     /// Wrap a store with a tenant scope.
     #[must_use]
     pub fn with_scope(store: Arc<dyn MemoryStore>, scope: TenantScope) -> Self {
-        Self { inner: store, scope }
+        Self {
+            inner: store,
+            scope,
+        }
     }
 
     /// Return the tenant's `AgentId`.
@@ -140,7 +146,9 @@ impl MemoryStore for TenantAwareStore {
         // Always force agent_id to tenant scope — even if None was passed.
         let mut scoped = query.clone();
         scoped.agent_id = Some(self.scope.agent_id);
-        self.inner.search_with_classification(&scoped, max_classification).await
+        self.inner
+            .search_with_classification(&scoped, max_classification)
+            .await
     }
 
     async fn update_relevance(&self, id: MemoryId, score: f64) -> MemoryResult<()> {
@@ -289,8 +297,14 @@ mod tests {
         let agent_b = AgentId::new();
 
         // Store entries for both agents directly in the backing store.
-        store.store_memory(&make_entry(agent_a, "entry for A")).await.unwrap();
-        store.store_memory(&make_entry(agent_b, "entry for B")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent_a, "entry for A"))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent_b, "entry for B"))
+            .await
+            .unwrap();
 
         // Create a scoped store for agent_a.
         let scope = TenantScope::new(agent_a, vec![]);
@@ -307,14 +321,20 @@ mod tests {
         let agent_a = AgentId::new();
         let agent_b = AgentId::new();
 
-        store.store_memory(&make_entry(agent_b, "entry for B")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent_b, "entry for B"))
+            .await
+            .unwrap();
 
         // Scoped to agent_a but querying agent_b's id.
         let scope = TenantScope::new(agent_a, vec![]);
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
 
         let results = tenant_store.search(&make_query(agent_b)).await.unwrap();
-        assert!(results.is_empty(), "cross-tenant query must return empty results");
+        assert!(
+            results.is_empty(),
+            "cross-tenant query must return empty results"
+        );
     }
 
     #[tokio::test]
@@ -363,7 +383,10 @@ mod tests {
         let agent_a = AgentId::new();
         let agent_b = AgentId::new();
 
-        store.store_memory(&make_entry(agent_b, "B's entry")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent_b, "B's entry"))
+            .await
+            .unwrap();
 
         let scope = TenantScope::new(agent_a, vec![]);
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
@@ -382,8 +405,14 @@ mod tests {
         let agent_a = AgentId::new();
         let agent_b = AgentId::new();
 
-        store.store_memory(&make_entry(agent_a, "data from A")).await.unwrap();
-        store.store_memory(&make_entry(agent_b, "data from B")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent_a, "data from A"))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent_b, "data from B"))
+            .await
+            .unwrap();
 
         let scope = TenantScope::new(agent_a, vec![]);
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
@@ -410,8 +439,14 @@ mod tests {
         let agent_a = AgentId::new();
         let agent_b = AgentId::new();
 
-        store.store_memory(&make_entry(agent_a, "A public info")).await.unwrap();
-        store.store_memory(&make_entry(agent_b, "B public info")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent_a, "A public info"))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent_b, "B public info"))
+            .await
+            .unwrap();
 
         let scope = TenantScope::new(agent_a, vec![]);
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
@@ -447,7 +482,10 @@ mod tests {
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
 
         let result = tenant_store.delete_memory(id_b).await;
-        assert!(matches!(result, Err(crate::error::MemoryError::NotFound(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::MemoryError::NotFound(_))
+        ));
 
         // Verify B's memory still exists.
         let still_there = store.get_memory(id_b).await;
@@ -468,7 +506,10 @@ mod tests {
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
 
         let result = tenant_store.update_relevance(id_b, 0.0).await;
-        assert!(matches!(result, Err(crate::error::MemoryError::NotFound(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::MemoryError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -477,7 +518,10 @@ mod tests {
         let agent_a = AgentId::new();
         let agent_b = AgentId::new();
 
-        store.store_memory(&make_entry(agent_b, "B only")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent_b, "B only"))
+            .await
+            .unwrap();
 
         let scope = TenantScope::new(agent_a, vec![]);
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
@@ -492,7 +536,10 @@ mod tests {
         let agent_a = AgentId::new();
         let agent_b = AgentId::new();
 
-        store.store_memory(&make_entry(agent_b, "B's old entry")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent_b, "B's old entry"))
+            .await
+            .unwrap();
 
         let scope = TenantScope::new(agent_a, vec![]);
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
@@ -530,7 +577,10 @@ mod tests {
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
 
         let result = tenant_store.get_episode(ep_id).await;
-        assert!(matches!(result, Err(crate::error::MemoryError::NotFound(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::MemoryError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -556,7 +606,10 @@ mod tests {
         let tenant_store = TenantAwareStore::with_scope(Arc::clone(&store), scope);
 
         let result = tenant_store.end_episode(ep_id, "hijack").await;
-        assert!(matches!(result, Err(crate::error::MemoryError::NotFound(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::MemoryError::NotFound(_))
+        ));
     }
 
     #[tokio::test]

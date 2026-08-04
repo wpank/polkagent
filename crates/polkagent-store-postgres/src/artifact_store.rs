@@ -63,12 +63,18 @@ impl ArtifactStore for PgPool {
         let size_bytes = body.len() as i64;
         let body = body.to_vec();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         // Upsert artifact metadata (idempotent).
         sqlx::query(
@@ -110,12 +116,18 @@ impl ArtifactStore for PgPool {
     async fn get(&self, id: ArtifactId) -> Result<ArtifactSummary, StoreError> {
         let id_str = id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let row = sqlx::query(
             "SELECT id, run_id, kind, algorithm, digest_hex, classification, created_at
@@ -136,38 +148,42 @@ impl ArtifactStore for PgPool {
     async fn get_body(&self, id: ArtifactId) -> Result<Vec<u8>, StoreError> {
         let id_str = id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         // Get the digest for this artifact.
-        let digest_hex: String = sqlx::query_scalar(
-            "SELECT digest_hex FROM artifacts WHERE id = $1",
-        )
-        .bind(&id_str)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_pg_err)?
-        .ok_or_else(|| StoreError::NotFound {
-            resource_type: "Artifact",
-            id: id_str.clone(),
-        })?;
+        let digest_hex: String =
+            sqlx::query_scalar("SELECT digest_hex FROM artifacts WHERE id = $1")
+                .bind(&id_str)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_pg_err)?
+                .ok_or_else(|| StoreError::NotFound {
+                    resource_type: "Artifact",
+                    id: id_str.clone(),
+                })?;
 
         // Fetch body by digest.
-        let body: Vec<u8> = sqlx::query_scalar(
-            "SELECT body FROM artifact_bodies WHERE digest_hex = $1",
-        )
-        .bind(&digest_hex)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_pg_err)?
-        .ok_or_else(|| StoreError::NotFound {
-            resource_type: "ArtifactBody",
-            id: id_str.clone(),
-        })?;
+        let body: Vec<u8> =
+            sqlx::query_scalar("SELECT body FROM artifact_bodies WHERE digest_hex = $1")
+                .bind(&digest_hex)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_pg_err)?
+                .ok_or_else(|| StoreError::NotFound {
+                    resource_type: "ArtifactBody",
+                    id: id_str.clone(),
+                })?;
 
         // Verify BLAKE3 digest.
         let actual_hash = blake3::hash(&body);
@@ -184,21 +200,26 @@ impl ArtifactStore for PgPool {
     async fn verify(&self, id: ArtifactId) -> Result<bool, StoreError> {
         let id_str = id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         // Get digest.
-        let maybe_digest: Option<String> = sqlx::query_scalar(
-            "SELECT digest_hex FROM artifacts WHERE id = $1",
-        )
-        .bind(&id_str)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_pg_err)?;
+        let maybe_digest: Option<String> =
+            sqlx::query_scalar("SELECT digest_hex FROM artifacts WHERE id = $1")
+                .bind(&id_str)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_pg_err)?;
 
         let digest_hex = match maybe_digest {
             Some(d) => d,
@@ -206,13 +227,12 @@ impl ArtifactStore for PgPool {
         };
 
         // Fetch body.
-        let maybe_body: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT body FROM artifact_bodies WHERE digest_hex = $1",
-        )
-        .bind(&digest_hex)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_pg_err)?;
+        let maybe_body: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT body FROM artifact_bodies WHERE digest_hex = $1")
+                .bind(&digest_hex)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_pg_err)?;
 
         match maybe_body {
             Some(body) => {
@@ -226,12 +246,18 @@ impl ArtifactStore for PgPool {
     async fn list_for_run(&self, run_id: RunId) -> Result<Vec<ArtifactSummary>, StoreError> {
         let run_str = run_id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let rows = sqlx::query(
             "SELECT id, run_id, kind, algorithm, digest_hex, classification, created_at

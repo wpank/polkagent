@@ -45,9 +45,7 @@ fn spec_to_response(spec: polkagent_tool::ToolSpec) -> ToolResponse {
 /// List all registered tools.
 ///
 /// Returns 501 Not Implemented when no tool registry is configured.
-pub async fn list_tools(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_tools(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let registry = state
         .tool_registry
         .as_ref()

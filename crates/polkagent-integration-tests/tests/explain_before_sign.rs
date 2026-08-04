@@ -30,8 +30,7 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use polkagent_card::{
-    ActionCardBuilder, RiskFlag, RiskFlagType, SectionSource, Severity,
-    render::render_text,
+    render::render_text, ActionCardBuilder, RiskFlag, RiskFlagType, SectionSource, Severity,
 };
 use polkagent_chain_fake::FakeChainClientBuilder;
 use polkagent_chain_trait::{
@@ -40,26 +39,23 @@ use polkagent_chain_trait::{
 };
 use polkagent_codec::{
     call::{
-        call_index, decode_batch_call, extract_transfer_amount, is_batch_call,
-        is_transfer_call, pallet_index,
+        call_index, decode_batch_call, extract_transfer_amount, is_batch_call, is_transfer_call,
+        pallet_index,
     },
     decode::decode_extrinsic,
     scale::ScaleEncoder,
 };
-use polkagent_core::{
-    EffectAttemptId, EffectOutcomeId, RunId, StepId, TurnId,
-};
+use polkagent_core::{EffectAttemptId, EffectOutcomeId, RunId, StepId, TurnId};
 use polkagent_effect::{
     EffectIntentSpec, EffectKind, EffectOutcome, OutcomeResult, ResolutionHint,
 };
 use polkagent_metadata::{
-    ChainId, MetadataService, MetadataSnapshot, MetadataVersion,
-    validate_network, MetadataError,
+    validate_network, ChainId, MetadataError, MetadataService, MetadataSnapshot, MetadataVersion,
 };
 use polkagent_signer_fake::FakeSigner;
 use polkagent_signer_trait::{
-    AccountRef, ApprovalId, CanonicalSignRequest, ChainProfileId, GrantDigest,
-    MetadataDigest, Signer,
+    AccountRef, ApprovalId, CanonicalSignRequest, ChainProfileId, GrantDigest, MetadataDigest,
+    Signer,
 };
 use polkagent_store_trait::{RunStatus, RunStore};
 
@@ -120,23 +116,17 @@ fn transfer_fixture() -> Vec<u8> {
 
     let mut args = dest;
     args.extend(value_bytes);
-    build_unsigned_extrinsic(
-        pallet_index::BALANCES,
-        call_index::BALANCES_TRANSFER,
-        &args,
-    )
+    build_unsigned_extrinsic(pallet_index::BALANCES, call_index::BALANCES_TRANSFER, &args)
 }
 
 /// Compute a BLAKE3 hex hash for a byte slice.
 fn blake3_hex(data: &[u8]) -> String {
     let hash = blake3::hash(data);
     let bytes = hash.as_bytes();
-    bytes
-        .iter()
-        .fold(String::with_capacity(64), |mut s, b| {
-            s.push_str(&format!("{b:02x}"));
-            s
-        })
+    bytes.iter().fold(String::with_capacity(64), |mut s, b| {
+        s.push_str(&format!("{b:02x}"));
+        s
+    })
 }
 
 /// Build a `CanonicalSignRequest` from a payload, using test-only values.
@@ -216,7 +206,10 @@ async fn ac_p2_001_decode_via_fake_chain_client() {
     let call_bytes = vec![
         pallet_index::BALANCES,
         call_index::BALANCES_TRANSFER_KEEP_ALIVE,
-        0x00, 0x01, 0x02, 0x03,
+        0x00,
+        0x01,
+        0x02,
+        0x03,
     ];
 
     let decoded: DecodedCall = client
@@ -256,7 +249,9 @@ async fn ac_p2_001_decode_call_arguments_contain_call_data() {
     );
     // Also verify length is reported.
     assert!(
-        decoded.arguments_json.contains(&call_bytes.len().to_string()),
+        decoded
+            .arguments_json
+            .contains(&call_bytes.len().to_string()),
         "arguments_json must report the call byte length"
     );
 }
@@ -337,7 +332,8 @@ async fn ac_p2_003_signer_receives_bitwise_identical_bytes() {
     // The FakeSigner constructs signed_extrinsic = payload || signature.
     let payload_from_signed = &signed.signed_extrinsic[..raw_bytes.len()];
     assert_eq!(
-        payload_from_signed, &raw_bytes[..],
+        payload_from_signed,
+        &raw_bytes[..],
         "bytes in signed_extrinsic must be bitwise identical to original (AC-P2-003)"
     );
 }
@@ -529,9 +525,7 @@ fn ac_p2_004_drift_carries_identifying_info() {
 /// FakeChainClient decode_call with fault injection produces an explicit error.
 #[tokio::test]
 async fn ac_p2_004_fake_chain_decode_call_fault_returns_explicit_error() {
-    let client = FakeChainClientBuilder::polkadot()
-        .fail_next_n(1)
-        .build();
+    let client = FakeChainClientBuilder::polkadot().fail_next_n(1).build();
     let metadata = fake_pinned_metadata();
     let call_bytes = vec![0x05, 0x03, 0x00, 0x01];
 
@@ -558,23 +552,23 @@ async fn ac_p2_004_fake_chain_decode_call_fault_returns_explicit_error() {
 fn ac_p2_005_wrong_network_genesis_hash_mismatch() {
     // Polkadot genesis hash (from polkagent-chain-fake builder).
     let polkadot_genesis: [u8; 32] = [
-        0x91, 0xb1, 0x71, 0xbb, 0x15, 0x8e, 0x2d, 0x38, 0x48, 0xfa, 0x23,
-        0xa9, 0x7b, 0x64, 0x48, 0x77, 0x58, 0x08, 0x55, 0x00, 0x7d, 0x04,
-        0x47, 0x87, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x91, 0xb1, 0x71, 0xbb, 0x15, 0x8e, 0x2d, 0x38, 0x48, 0xfa, 0x23, 0xa9, 0x7b, 0x64, 0x48,
+        0x77, 0x58, 0x08, 0x55, 0x00, 0x7d, 0x04, 0x47, 0x87, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
     ];
 
     // Kusama genesis hash (from polkagent-chain-fake builder).
     let kusama_genesis: [u8; 32] = [
-        0xb0, 0xa8, 0xd4, 0x93, 0x28, 0x5c, 0x2d, 0xf7, 0x32, 0x90, 0xdf,
-        0xb7, 0xe6, 0x1f, 0x87, 0x0f, 0x17, 0xb4, 0x18, 0x01, 0x19, 0x7a,
-        0x14, 0x9c, 0xa9, 0x36, 0x54, 0x99, 0x9e, 0xbc, 0xae, 0x88,
+        0xb0, 0xa8, 0xd4, 0x93, 0x28, 0x5c, 0x2d, 0xf7, 0x32, 0x90, 0xdf, 0xb7, 0xe6, 0x1f, 0x87,
+        0x0f, 0x17, 0xb4, 0x18, 0x01, 0x19, 0x7a, 0x14, 0x9c, 0xa9, 0x36, 0x54, 0x99, 0x9e, 0xbc,
+        0xae, 0x88,
     ];
 
     // Extrinsic was built for Polkadot; try to validate against Kusama.
     let result = validate_network(
         "kusama",
-        &polkadot_genesis,  // extrinsic genesis
-        &kusama_genesis,    // expected genesis (Kusama)
+        &polkadot_genesis, // extrinsic genesis
+        &kusama_genesis,   // expected genesis (Kusama)
     );
 
     assert!(
@@ -597,16 +591,12 @@ fn ac_p2_005_wrong_network_genesis_hash_mismatch() {
 #[test]
 fn ac_p2_005_correct_network_genesis_hash_accepted() {
     let polkadot_genesis: [u8; 32] = [
-        0x91, 0xb1, 0x71, 0xbb, 0x15, 0x8e, 0x2d, 0x38, 0x48, 0xfa, 0x23,
-        0xa9, 0x7b, 0x64, 0x48, 0x77, 0x58, 0x08, 0x55, 0x00, 0x7d, 0x04,
-        0x47, 0x87, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x91, 0xb1, 0x71, 0xbb, 0x15, 0x8e, 0x2d, 0x38, 0x48, 0xfa, 0x23, 0xa9, 0x7b, 0x64, 0x48,
+        0x77, 0x58, 0x08, 0x55, 0x00, 0x7d, 0x04, 0x47, 0x87, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
     ];
 
-    let result = validate_network(
-        "polkadot",
-        &polkadot_genesis,
-        &polkadot_genesis,
-    );
+    let result = validate_network("polkadot", &polkadot_genesis, &polkadot_genesis);
     assert!(
         result.is_ok(),
         "matching genesis hashes must pass validation"
@@ -832,8 +822,7 @@ async fn ac_p2_006_json_representation_identical() {
         .expect("found");
 
     let json_by_id = serde_json::to_string(&by_id).expect("serialize by-id");
-    let json_by_agent =
-        serde_json::to_string(&by_agent).expect("serialize by-agent");
+    let json_by_agent = serde_json::to_string(&by_agent).expect("serialize by-agent");
 
     assert_eq!(
         json_by_id, json_by_agent,
@@ -871,10 +860,7 @@ async fn multiple_accounts_sign_independently() {
     let account_a = AccountRef::from_bytes([0xAA; 32]);
     let account_b = AccountRef::from_bytes([0xBB; 32]);
 
-    let signer = FakeSigner::with_accounts(vec![
-        account_a.clone(),
-        account_b.clone(),
-    ]);
+    let signer = FakeSigner::with_accounts(vec![account_a.clone(), account_b.clone()]);
 
     let raw_bytes = transfer_keep_alive_fixture();
 
@@ -959,8 +945,10 @@ fn batch_call_fully_decoded() {
         enc.encode_compact_u64(amount);
         let value_bytes = enc.finish();
 
-        let mut bare =
-            vec![pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE];
+        let mut bare = vec![
+            pallet_index::BALANCES,
+            call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+        ];
         bare.extend(dest);
         bare.extend(value_bytes);
         bare

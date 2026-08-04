@@ -101,20 +101,14 @@ impl MigrationRehearsalTool {
     ) -> Result<BTreeMap<String, String>, WorkbenchError> {
         let result = self
             .chain_client
-            .query_storage(
-                storage_key,
-                None,
-                ChainProfileId::new("default"),
-            )
+            .query_storage(storage_key, None, ChainProfileId::new("default"))
             .await
             .map_err(WorkbenchError::Chain)?;
 
         match result {
-            Some(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|e| WorkbenchError::Decode {
-                    message: format!("failed to decode storage snapshot: {e}"),
-                })
-            }
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| WorkbenchError::Decode {
+                message: format!("failed to decode storage snapshot: {e}"),
+            }),
             None => Ok(BTreeMap::new()),
         }
     }
@@ -185,10 +179,9 @@ impl ToolHandler for MigrationRehearsalTool {
                 reason: e.to_string(),
             })?;
 
-        let output =
-            serde_json::to_value(&report).map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("failed to serialize migration report: {e}"),
-            })?;
+        let output = serde_json::to_value(&report).map_err(|e| ToolError::ExecutionFailed {
+            reason: format!("failed to serialize migration report: {e}"),
+        })?;
 
         Ok(ToolResult {
             output,
@@ -220,10 +213,7 @@ fn build_snapshot_key(wasm_path: &str, block_number: u64, phase: &str) -> Vec<u8
 /// Diff two storage snapshots and produce a [`StorageDiff`].
 ///
 /// Both snapshots are maps of hex-encoded key -> hex-encoded value.
-fn diff_snapshots(
-    pre: &BTreeMap<String, String>,
-    post: &BTreeMap<String, String>,
-) -> StorageDiff {
+fn diff_snapshots(pre: &BTreeMap<String, String>, post: &BTreeMap<String, String>) -> StorageDiff {
     let all_keys: BTreeSet<&String> = pre.keys().chain(post.keys()).collect();
 
     let mut modified = Vec::new();
@@ -408,7 +398,7 @@ mod tests {
         let post_snapshot: BTreeMap<String, String> = [
             ("0xaaa1".to_string(), "0xff".to_string()), // modified
             ("0xbbb1".to_string(), "0xcc".to_string()), // added
-            // 0xaaa2 removed
+                                                        // 0xaaa2 removed
         ]
         .into_iter()
         .collect();
@@ -508,7 +498,7 @@ mod tests {
             ("0xa".to_string(), "0xff".to_string()), // modified
             ("0xb".to_string(), "0x2".to_string()),  // unchanged
             ("0xd".to_string(), "0x4".to_string()),  // added
-            // 0xc removed
+                                                     // 0xc removed
         ]
         .into_iter()
         .collect();

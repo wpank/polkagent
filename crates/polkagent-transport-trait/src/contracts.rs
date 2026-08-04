@@ -28,9 +28,7 @@
 //!
 //! This module is only available when the `test-contracts` feature is enabled.
 
-use crate::{
-    Classification, OutgoingBody, OutgoingMessage, Transport, TransportCapabilities,
-};
+use crate::{Classification, OutgoingBody, OutgoingMessage, Transport, TransportCapabilities};
 use polkagent_core::ConversationId;
 
 /// Build a minimal [`OutgoingMessage`] for contract tests.

@@ -713,7 +713,11 @@ mod tests {
     fn action_card_field_survives_serde_round_trip_with_effect_intent() {
         let mut intent = make_intent(EffectKind::Broadcast);
         let card = polkagent_card::ActionCardBuilder::new("Broadcast tx")
-            .add_canonical("Pallet", "Balances", polkagent_card::SectionSource::Metadata)
+            .add_canonical(
+                "Pallet",
+                "Balances",
+                polkagent_card::SectionSource::Metadata,
+            )
             .with_payload_hash("deadbeef")
             .build();
         let card_id = card.card_id.clone();
@@ -722,7 +726,9 @@ mod tests {
         let json = serde_json::to_string(&intent).expect("serialize");
         let back: EffectIntent = serde_json::from_str(&json).expect("deserialize");
 
-        let attached = back.action_card.expect("card must survive serde round-trip");
+        let attached = back
+            .action_card
+            .expect("card must survive serde round-trip");
         assert_eq!(attached.card_id, card_id);
         assert_eq!(attached.payload_hash, "deadbeef");
     }

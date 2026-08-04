@@ -2,7 +2,7 @@
 //!
 //! The manager reads `kit.toml` manifests, validates them, and tracks
 //! installed kits and their constituent skills. Kit state is stored
-//! externally (e.g. in SQLite via the CLI layer); this module provides
+//! externally (e.g. in `SQLite` via the CLI layer); this module provides
 //! the domain logic.
 
 use std::path::{Path, PathBuf};
@@ -127,10 +127,7 @@ pub fn validate_kit(
 ///
 /// This does not persist anything — the caller (CLI layer) is responsible
 /// for writing to the database.
-pub fn prepare_install(
-    manifest: &KitManifest,
-    path: &Path,
-) -> Result<InstalledKit, KitError> {
+pub fn prepare_install(manifest: &KitManifest, path: &Path) -> Result<InstalledKit, KitError> {
     let skill_names: Vec<String> = manifest.skills.keys().cloned().collect();
     let manifest_json = serde_json::to_string(manifest)
         .map_err(|e| KitError::Other(format!("failed to serialize manifest: {e}")))?;
@@ -242,8 +239,8 @@ skill-b = { version = "^1.0.0", role = "optional" }
     #[test]
     fn prepare_install_builds_record() {
         let manifest = KitManifest::from_toml(KIT_TOML).expect("parse");
-        let installed = prepare_install(&manifest, Path::new("/tmp/test-kit"))
-            .expect("should prepare");
+        let installed =
+            prepare_install(&manifest, Path::new("/tmp/test-kit")).expect("should prepare");
         assert_eq!(installed.name, "test-kit");
         assert_eq!(installed.version, "0.1.0");
         assert_eq!(installed.skill_names.len(), 2);

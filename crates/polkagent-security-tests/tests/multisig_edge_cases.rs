@@ -196,7 +196,10 @@ fn ms_09_action_card_multisig_risk_flags() {
     let card = ActionCardBuilder::new("Multisig Transfer")
         .add_canonical("Pallet", "Multisig.as_multi", SectionSource::Metadata)
         .add_canonical("Threshold", "2 of 3", SectionSource::Chain)
-        .add_narrative("Explanation", "This is a multisig transfer requiring 2 signatories.")
+        .add_narrative(
+            "Explanation",
+            "This is a multisig transfer requiring 2 signatories.",
+        )
         .add_risk_flag(RiskFlag::new(
             RiskFlagType::LargeApproval,
             "Multisig threshold change detected",

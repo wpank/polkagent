@@ -88,7 +88,6 @@ pub enum PcaError {
     },
 
     // -- C2: Group messaging errors ------------------------------------------
-
     /// A group operation failed (e.g. member already present, group not found).
     #[error("group error: {reason}")]
     GroupError {
@@ -104,7 +103,6 @@ pub enum PcaError {
     },
 
     // -- C3: Sync / statement errors -----------------------------------------
-
     /// A cross-device sync operation failed.
     #[error("sync error: {reason}")]
     SyncError {

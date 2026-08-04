@@ -266,10 +266,7 @@ impl PluginManifest {
         }
 
         // Must have SLSA provenance at Build Level 2+ to be Verified.
-        let has_slsa_l2 = prov
-            .slsa_provenance
-            .is_some()
-            && prov.slsa_build_level.unwrap_or(0) >= 2;
+        let has_slsa_l2 = prov.slsa_provenance.is_some() && prov.slsa_build_level.unwrap_or(0) >= 2;
 
         if has_slsa_l2 {
             TrustTier::Verified

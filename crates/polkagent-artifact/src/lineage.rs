@@ -50,14 +50,8 @@ impl LineageGraph {
     ///
     /// Adding a duplicate edge is a no-op.
     pub fn add_edge(&mut self, child: ArtifactId, parent: ArtifactId) {
-        self.parents
-            .entry(child)
-            .or_default()
-            .insert(parent);
-        self.children
-            .entry(parent)
-            .or_default()
-            .insert(child);
+        self.parents.entry(child).or_default().insert(parent);
+        self.children.entry(parent).or_default().insert(child);
         // Ensure every node appears in both maps even if it has no edges on
         // one side.  This simplifies traversal code.
         self.parents.entry(parent).or_default();

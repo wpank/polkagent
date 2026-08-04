@@ -450,10 +450,7 @@ pub fn generate_impact_brief(diff: &MetadataDiff) -> String {
 
     // Pallet summary
     if !diff.added_pallets.is_empty() {
-        lines.push(format!(
-            "Added pallets: {}",
-            diff.added_pallets.join(", ")
-        ));
+        lines.push(format!("Added pallets: {}", diff.added_pallets.join(", ")));
     }
     if !diff.removed_pallets.is_empty() {
         lines.push(format!(
@@ -462,7 +459,11 @@ pub fn generate_impact_brief(diff: &MetadataDiff) -> String {
         ));
     }
     if !diff.modified_pallets.is_empty() {
-        let names: Vec<&str> = diff.modified_pallets.iter().map(|p| p.name.as_str()).collect();
+        let names: Vec<&str> = diff
+            .modified_pallets
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
         lines.push(format!("Modified pallets: {}", names.join(", ")));
     }
 
@@ -484,10 +485,7 @@ pub fn generate_impact_brief(diff: &MetadataDiff) -> String {
 
     // Event summary
     if !diff.added_events.is_empty() {
-        lines.push(format!(
-            "Added events in: {}",
-            diff.added_events.join(", ")
-        ));
+        lines.push(format!("Added events in: {}", diff.added_events.join(", ")));
     }
     if !diff.removed_events.is_empty() {
         lines.push(format!(
@@ -537,7 +535,10 @@ pub fn generate_impact_brief(diff: &MetadataDiff) -> String {
 
     // Breaking change details
     if !diff.breaking_changes.is_empty() {
-        lines.push(format!("Breaking changes ({}):", diff.breaking_changes.len()));
+        lines.push(format!(
+            "Breaking changes ({}):",
+            diff.breaking_changes.len()
+        ));
         for bc in &diff.breaking_changes {
             lines.push(format!("  - {bc}"));
         }
@@ -645,10 +646,8 @@ mod tests {
 
     #[test]
     fn identical_metadata_empty_diff() {
-        let meta = metadata_with_pallets(vec![
-            make_pallet("System", 0),
-            make_pallet("Balances", 5),
-        ]);
+        let meta =
+            metadata_with_pallets(vec![make_pallet("System", 0), make_pallet("Balances", 5)]);
         let diff = diff_metadata(&meta, &meta);
         assert!(diff.is_empty());
         assert!(!is_breaking(&diff));
@@ -672,10 +671,7 @@ mod tests {
     #[test]
     fn added_pallet_detected() {
         let old = metadata_with_pallets(vec![make_pallet("System", 0)]);
-        let new = metadata_with_pallets(vec![
-            make_pallet("System", 0),
-            make_pallet("Balances", 5),
-        ]);
+        let new = metadata_with_pallets(vec![make_pallet("System", 0), make_pallet("Balances", 5)]);
         let diff = diff_metadata(&old, &new);
         assert_eq!(diff.added_pallets, vec!["Balances"]);
         assert!(diff.removed_pallets.is_empty());
@@ -688,10 +684,7 @@ mod tests {
 
     #[test]
     fn removed_pallet_is_breaking() {
-        let old = metadata_with_pallets(vec![
-            make_pallet("System", 0),
-            make_pallet("Balances", 5),
-        ]);
+        let old = metadata_with_pallets(vec![make_pallet("System", 0), make_pallet("Balances", 5)]);
         let new = metadata_with_pallets(vec![make_pallet("System", 0)]);
         let diff = diff_metadata(&old, &new);
         assert_eq!(diff.removed_pallets, vec!["Balances"]);
@@ -722,7 +715,9 @@ mod tests {
             ],
         )]);
         let diff = diff_metadata(&old, &new);
-        assert!(diff.added_calls.contains(&"Balances.transfer_keep_alive".to_string()));
+        assert!(diff
+            .added_calls
+            .contains(&"Balances.transfer_keep_alive".to_string()));
         assert!(diff.removed_calls.is_empty());
         assert!(!is_breaking(&diff));
     }
@@ -747,7 +742,9 @@ mod tests {
             vec![make_call("transfer", 0, vec![])],
         )]);
         let diff = diff_metadata(&old, &new);
-        assert!(diff.removed_calls.contains(&"Balances.set_balance".to_string()));
+        assert!(diff
+            .removed_calls
+            .contains(&"Balances.set_balance".to_string()));
         assert!(is_breaking(&diff));
     }
 
@@ -848,8 +845,7 @@ mod tests {
     #[test]
     fn added_storage_detected() {
         let old = metadata_with_pallets(vec![make_pallet("Balances", 5)]);
-        let new =
-            metadata_with_pallets(vec![make_pallet_with_storage("Balances", 5, "Balances")]);
+        let new = metadata_with_pallets(vec![make_pallet_with_storage("Balances", 5, "Balances")]);
         let diff = diff_metadata(&old, &new);
         assert!(!diff.added_storage.is_empty());
         assert!(diff.removed_storage.is_empty());
@@ -862,8 +858,7 @@ mod tests {
 
     #[test]
     fn removed_storage_is_breaking() {
-        let old =
-            metadata_with_pallets(vec![make_pallet_with_storage("Balances", 5, "Balances")]);
+        let old = metadata_with_pallets(vec![make_pallet_with_storage("Balances", 5, "Balances")]);
         let new = metadata_with_pallets(vec![make_pallet("Balances", 5)]);
         let diff = diff_metadata(&old, &new);
         assert!(!diff.removed_storage.is_empty());
@@ -910,10 +905,8 @@ mod tests {
     #[test]
     fn impact_brief_non_breaking() {
         let old = metadata_with_pallets(vec![make_pallet("System", 0)]);
-        let new = metadata_with_pallets(vec![
-            make_pallet("System", 0),
-            make_pallet("NewPallet", 99),
-        ]);
+        let new =
+            metadata_with_pallets(vec![make_pallet("System", 0), make_pallet("NewPallet", 99)]);
         let diff = diff_metadata(&old, &new);
         let brief = generate_impact_brief(&diff);
         assert!(brief.contains("Non-breaking"));
@@ -926,10 +919,7 @@ mod tests {
 
     #[test]
     fn impact_brief_breaking() {
-        let old = metadata_with_pallets(vec![
-            make_pallet("System", 0),
-            make_pallet("Balances", 5),
-        ]);
+        let old = metadata_with_pallets(vec![make_pallet("System", 0), make_pallet("Balances", 5)]);
         let new = metadata_with_pallets(vec![make_pallet("System", 0)]);
         let diff = diff_metadata(&old, &new);
         let brief = generate_impact_brief(&diff);
@@ -1078,10 +1068,7 @@ mod tests {
     #[test]
     fn metadata_diff_serde_round_trip() {
         let old = metadata_with_pallets(vec![make_pallet("System", 0)]);
-        let new = metadata_with_pallets(vec![
-            make_pallet("System", 0),
-            make_pallet("Balances", 5),
-        ]);
+        let new = metadata_with_pallets(vec![make_pallet("System", 0), make_pallet("Balances", 5)]);
         let diff = diff_metadata(&old, &new);
         let json = serde_json::to_string(&diff).expect("serialize");
         let back: MetadataDiff = serde_json::from_str(&json).expect("deserialize");
@@ -1144,11 +1131,7 @@ mod tests {
     fn removed_pallet_with_calls_adds_to_removed_calls() {
         let old = metadata_with_pallets(vec![
             make_pallet("System", 0),
-            make_pallet_with_calls(
-                "Governance",
-                10,
-                vec![make_call("propose", 0, vec![])],
-            ),
+            make_pallet_with_calls("Governance", 10, vec![make_call("propose", 0, vec![])]),
         ]);
         let new = metadata_with_pallets(vec![make_pallet("System", 0)]);
         let diff = diff_metadata(&old, &new);
@@ -1230,10 +1213,7 @@ mod tests {
         let new = metadata_with_pallets(vec![make_pallet_with_calls(
             "B",
             5,
-            vec![
-                make_call("a", 0, vec![]),
-                make_call("b", 1, vec![]),
-            ],
+            vec![make_call("a", 0, vec![]), make_call("b", 1, vec![])],
         )]);
         let diff = diff_metadata(&old, &new);
         let brief = generate_impact_brief(&diff);
@@ -1306,10 +1286,7 @@ mod tests {
 
     #[test]
     fn impact_brief_shows_breaking_change_count() {
-        let old = metadata_with_pallets(vec![
-            make_pallet("A", 1),
-            make_pallet("B", 2),
-        ]);
+        let old = metadata_with_pallets(vec![make_pallet("A", 1), make_pallet("B", 2)]);
         let new = metadata_with_pallets(vec![]);
         let diff = diff_metadata(&old, &new);
         let brief = generate_impact_brief(&diff);

@@ -58,8 +58,8 @@
 )]
 
 pub mod assembler;
-pub mod builder;
 pub mod budget;
+pub mod builder;
 pub mod error;
 pub mod estimator;
 pub mod section;
@@ -71,8 +71,8 @@ pub mod truncation;
 // ---------------------------------------------------------------------------
 
 pub use assembler::{AssembledContext, AssemblerConfig, ContextAssembler};
-pub use builder::ContextBuilder;
 pub use budget::{SectionAllocation, TokenBudget};
+pub use builder::ContextBuilder;
 pub use error::{ContextError, ContextResult};
 pub use estimator::TokenEstimator;
 pub use section::{ContextSection, SectionKind};

@@ -20,9 +20,9 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::Stream;
+use polkagent_core::event::{EventKind, RunEvent};
 use polkagent_core::{ApprovalId, ArtifactId, RunId};
 use polkagent_event::{EventBus, EventReceiver};
-use polkagent_core::event::{EventKind, RunEvent};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -214,29 +214,29 @@ pub fn map_event(event: &RunEvent) -> Option<RunProgressEvent> {
             status: ToolUseStatus::Completed,
         }),
 
-        EventKind::ApprovalRequested { request_id } => {
-            Some(RunProgressEvent::ApprovalRequired {
-                run_id,
-                approval: ApprovalRequest {
-                    id: ApprovalId::new(),
-                    description: format!("Approval required: {request_id}"),
-                    timeout: Duration::from_secs(300),
-                },
-            })
-        }
+        EventKind::ApprovalRequested { request_id } => Some(RunProgressEvent::ApprovalRequired {
+            run_id,
+            approval: ApprovalRequest {
+                id: ApprovalId::new(),
+                description: format!("Approval required: {request_id}"),
+                timeout: Duration::from_secs(300),
+            },
+        }),
 
-        EventKind::ArtifactCreated { artifact_id } => {
-            Some(RunProgressEvent::ArtifactProduced {
-                run_id,
-                artifact: ArtifactSummary {
-                    id: *artifact_id,
-                    kind: "unknown".to_string(),
-                    name: artifact_id.to_string(),
-                },
-            })
-        }
+        EventKind::ArtifactCreated { artifact_id } => Some(RunProgressEvent::ArtifactProduced {
+            run_id,
+            artifact: ArtifactSummary {
+                id: *artifact_id,
+                kind: "unknown".to_string(),
+                name: artifact_id.to_string(),
+            },
+        }),
 
-        EventKind::RunCompleted { input_tokens, output_tokens, .. } => Some(RunProgressEvent::Completed {
+        EventKind::RunCompleted {
+            input_tokens,
+            output_tokens,
+            ..
+        } => Some(RunProgressEvent::Completed {
             run_id,
             summary: RunSummary {
                 tokens_used: input_tokens + output_tokens,
@@ -568,8 +568,7 @@ mod tests {
             ToolUseStatus::Failed,
         ] {
             let json = serde_json::to_string(&status).unwrap_or_default();
-            let back: ToolUseStatus =
-                serde_json::from_str(&json).unwrap_or(ToolUseStatus::Failed);
+            let back: ToolUseStatus = serde_json::from_str(&json).unwrap_or(ToolUseStatus::Failed);
             assert_eq!(status, back);
         }
     }
@@ -674,11 +673,7 @@ mod tests {
     fn map_event_artifact_created() {
         let run_id = RunId::new();
         let artifact_id = ArtifactId::new();
-        let event = make_run_event(
-            run_id,
-            7,
-            EventKind::ArtifactCreated { artifact_id },
-        );
+        let event = make_run_event(run_id, 7, EventKind::ArtifactCreated { artifact_id });
         let progress = map_event(&event);
         match progress {
             Some(RunProgressEvent::ArtifactProduced { artifact, .. }) => {
@@ -701,10 +696,7 @@ mod tests {
             },
         );
         let progress = map_event(&event);
-        assert!(matches!(
-            progress,
-            Some(RunProgressEvent::Completed { .. })
-        ));
+        assert!(matches!(progress, Some(RunProgressEvent::Completed { .. })));
     }
 
     #[test]
@@ -886,9 +878,7 @@ mod tests {
         ));
 
         let e1 = stream.next().await;
-        assert!(
-            matches!(&e1, Some(RunProgressEvent::Working { run_id }) if *run_id == target_run)
-        );
+        assert!(matches!(&e1, Some(RunProgressEvent::Working { run_id }) if *run_id == target_run));
 
         let e2 = stream.next().await;
         assert!(matches!(e2, Some(RunProgressEvent::Completed { .. })));

@@ -47,7 +47,11 @@ fn enqueue_and_drain_preserves_fifo_order_within_partition() {
     assert_eq!(c3.id, id3, "third item must be third enqueued");
     ob.acknowledge(id3, "worker-a").expect("ack 3");
 
-    assert_eq!(ob.live_count(), 0, "queue must be empty after draining all items");
+    assert_eq!(
+        ob.live_count(),
+        0,
+        "queue must be empty after draining all items"
+    );
 }
 
 #[test]
@@ -145,7 +149,11 @@ fn item_is_dead_lettered_after_exhausting_max_retries() {
     ob.claim_next("c").expect("ok").expect("some");
     ob.nack(id).expect("nack2");
 
-    assert_eq!(ob.live_count(), 0, "exhausted item must be removed from live queue");
+    assert_eq!(
+        ob.live_count(),
+        0,
+        "exhausted item must be removed from live queue"
+    );
     assert_eq!(
         ob.dead_letter_items().len(),
         1,
@@ -166,7 +174,10 @@ fn dead_lettered_item_cannot_be_reprocessed() {
 
     // Further claim should return None — dead-lettered items are excluded.
     let next = ob.claim_next("c").expect("should not error");
-    assert!(next.is_none(), "dead-lettered item must not be claimable again");
+    assert!(
+        next.is_none(),
+        "dead-lettered item must not be claimable again"
+    );
 }
 
 #[test]
@@ -184,11 +195,11 @@ fn expired_lease_allows_reclaim() {
 
     // A different worker can now reclaim.
     let reclaim = ob.claim_next("worker-b").expect("c2");
-    assert!(reclaim.is_some(), "item must be reclaimable after lease expiry");
-    assert_eq!(
-        reclaim.unwrap().claimed_by.as_deref(),
-        Some("worker-b")
+    assert!(
+        reclaim.is_some(),
+        "item must be reclaimable after lease expiry"
     );
+    assert_eq!(reclaim.unwrap().claimed_by.as_deref(), Some("worker-b"));
 }
 
 // ---------------------------------------------------------------------------

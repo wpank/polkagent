@@ -122,7 +122,8 @@ mod tests {
 
     fn open_mem() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory db");
-        conn.execute_batch("PRAGMA foreign_keys = ON;").expect("pragma");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("pragma");
         conn
     }
 

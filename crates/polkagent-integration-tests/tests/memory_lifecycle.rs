@@ -10,11 +10,11 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 
 use polkagent_core::AgentId;
+use polkagent_memory::types::MemoryQuery;
 use polkagent_memory::{
-    Classification, MemoryEntry, MemoryId, MemoryService, MemoryStore,
-    MemoryType, RetentionPolicy, RetentionSweeper, SqliteMemoryStore,
+    Classification, MemoryEntry, MemoryId, MemoryService, MemoryStore, MemoryType, RetentionPolicy,
+    RetentionSweeper, SqliteMemoryStore,
 };
-use polkagent_memory::types::{MemoryQuery};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -96,22 +96,41 @@ async fn store_recall_update_relevance_delete_lifecycle() {
         .expect("store");
 
     // 2. Search – memory must be findable
-    let before = svc.recall(agent, "sharded protocol", 10).await.expect("recall before update");
+    let before = svc
+        .recall(agent, "sharded protocol", 10)
+        .await
+        .expect("recall before update");
     assert_eq!(before.len(), 1, "memory must be found after store");
     assert!(before[0].content.contains("sharded protocol"));
 
     // 3. Update relevance via the store directly
-    store.update_relevance(id, 0.1).await.expect("update relevance");
+    store
+        .update_relevance(id, 0.1)
+        .await
+        .expect("update relevance");
 
     // 4. The memory is still present after relevance update
-    let after = svc.recall(agent, "sharded protocol", 10).await.expect("recall after update");
-    assert_eq!(after.len(), 1, "memory must still be returned after relevance update");
+    let after = svc
+        .recall(agent, "sharded protocol", 10)
+        .await
+        .expect("recall after update");
+    assert_eq!(
+        after.len(),
+        1,
+        "memory must still be returned after relevance update"
+    );
 
     // 5. Delete (forget)
     svc.forget(id).await.expect("forget");
 
-    let after_delete = svc.recall(agent, "sharded protocol", 10).await.expect("recall after delete");
-    assert!(after_delete.is_empty(), "deleted memory must not appear in search");
+    let after_delete = svc
+        .recall(agent, "sharded protocol", 10)
+        .await
+        .expect("recall after delete");
+    assert!(
+        after_delete.is_empty(),
+        "deleted memory must not appear in search"
+    );
 }
 
 #[tokio::test]
@@ -137,20 +156,39 @@ async fn recall_returns_entries_containing_query_term() {
     let (svc, _) = make_service();
     let agent = AgentId::new();
 
-    svc.remember(agent, "Rust is a systems language", MemoryType::Semantic, None)
-        .await
-        .expect("store 1");
-    svc.remember(agent, "Rust is also great for WebAssembly", MemoryType::Semantic, None)
-        .await
-        .expect("store 2");
-    svc.remember(agent, "Python is a scripting language", MemoryType::Semantic, None)
-        .await
-        .expect("store 3");
+    svc.remember(
+        agent,
+        "Rust is a systems language",
+        MemoryType::Semantic,
+        None,
+    )
+    .await
+    .expect("store 1");
+    svc.remember(
+        agent,
+        "Rust is also great for WebAssembly",
+        MemoryType::Semantic,
+        None,
+    )
+    .await
+    .expect("store 2");
+    svc.remember(
+        agent,
+        "Python is a scripting language",
+        MemoryType::Semantic,
+        None,
+    )
+    .await
+    .expect("store 3");
 
     let results = svc.recall(agent, "Rust", 10).await.expect("recall");
     // All returned results should contain "Rust"
     for r in &results {
-        assert!(r.content.to_lowercase().contains("rust"), "result '{}' doesn't contain 'Rust'", r.content);
+        assert!(
+            r.content.to_lowercase().contains("rust"),
+            "result '{}' doesn't contain 'Rust'",
+            r.content
+        );
     }
     // Python entry must not appear
     assert!(results.iter().all(|r| !r.content.contains("Python")));
@@ -171,7 +209,10 @@ async fn update_relevance_changes_score_in_store() {
     assert!((entry.relevance_score - 1.0).abs() < f64::EPSILON);
 
     // Update to 0.3
-    store.update_relevance(id, 0.3).await.expect("update relevance");
+    store
+        .update_relevance(id, 0.3)
+        .await
+        .expect("update relevance");
     let updated = store.get_memory(id).await.expect("get updated");
     assert!((updated.relevance_score - 0.3).abs() < f64::EPSILON);
 }
@@ -199,7 +240,9 @@ async fn store_same_content_twice_is_accepted_or_rejected_consistently() {
         .await
         .expect("first store");
 
-    let result = svc.remember(agent, content, MemoryType::Semantic, None).await;
+    let result = svc
+        .remember(agent, content, MemoryType::Semantic, None)
+        .await;
 
     match result {
         Ok(_) => {
@@ -220,12 +263,22 @@ async fn similar_but_different_content_stored_separately() {
     let (svc, store) = make_service();
     let agent = AgentId::new();
 
-    svc.remember(agent, "Polkadot uses NPoS consensus", MemoryType::Semantic, None)
-        .await
-        .expect("store 1");
-    svc.remember(agent, "Polkadot uses NPoS consensus mechanism for validators", MemoryType::Semantic, None)
-        .await
-        .expect("store 2");
+    svc.remember(
+        agent,
+        "Polkadot uses NPoS consensus",
+        MemoryType::Semantic,
+        None,
+    )
+    .await
+    .expect("store 1");
+    svc.remember(
+        agent,
+        "Polkadot uses NPoS consensus mechanism for validators",
+        MemoryType::Semantic,
+        None,
+    )
+    .await
+    .expect("store 2");
 
     let count = store.count_entries(&agent).await.expect("count");
     assert_eq!(count, 2, "two distinct entries must be stored");
@@ -271,8 +324,14 @@ async fn agent_a_cannot_see_agent_b_memories() {
     .await
     .expect("store for B");
 
-    let results = svc.recall(agent_a, "Kusama staking yields", 10).await.expect("recall A");
-    assert!(results.is_empty(), "agent A must not see agent B's memories");
+    let results = svc
+        .recall(agent_a, "Kusama staking yields", 10)
+        .await
+        .expect("recall A");
+    assert!(
+        results.is_empty(),
+        "agent A must not see agent B's memories"
+    );
 }
 
 #[tokio::test]
@@ -282,18 +341,34 @@ async fn deleting_one_agent_memory_does_not_affect_another() {
     let agent_b = AgentId::new();
 
     let id_a = svc
-        .remember(agent_a, "Shared topic: parachain auctions", MemoryType::Semantic, None)
+        .remember(
+            agent_a,
+            "Shared topic: parachain auctions",
+            MemoryType::Semantic,
+            None,
+        )
         .await
         .expect("store A");
 
-    svc.remember(agent_b, "Shared topic: parachain auctions", MemoryType::Semantic, None)
-        .await
-        .expect("store B");
+    svc.remember(
+        agent_b,
+        "Shared topic: parachain auctions",
+        MemoryType::Semantic,
+        None,
+    )
+    .await
+    .expect("store B");
 
     svc.forget(id_a).await.expect("forget A");
 
-    let results_b = svc.recall(agent_b, "parachain auctions", 10).await.expect("recall B");
-    assert!(!results_b.is_empty(), "deleting A's memory must not affect B's");
+    let results_b = svc
+        .recall(agent_b, "parachain auctions", 10)
+        .await
+        .expect("recall B");
+    assert!(
+        !results_b.is_empty(),
+        "deleting A's memory must not affect B's"
+    );
 }
 
 #[tokio::test]
@@ -332,12 +407,23 @@ async fn internal_classification_visible_in_normal_recall() {
     let (svc, _) = make_service();
     let agent = AgentId::new();
 
-    svc.remember(agent, "Internal Polkadot configuration", MemoryType::Semantic, None)
-        .await
-        .expect("store");
+    svc.remember(
+        agent,
+        "Internal Polkadot configuration",
+        MemoryType::Semantic,
+        None,
+    )
+    .await
+    .expect("store");
 
-    let results = svc.recall(agent, "Polkadot configuration", 10).await.expect("recall");
-    assert!(!results.is_empty(), "internal memories must be visible to their owner");
+    let results = svc
+        .recall(agent, "Polkadot configuration", 10)
+        .await
+        .expect("recall");
+    assert!(
+        !results.is_empty(),
+        "internal memories must be visible to their owner"
+    );
 }
 
 #[tokio::test]
@@ -345,11 +431,27 @@ async fn search_with_classification_filters_confidential_entries() {
     let (_, store) = make_service();
     let agent = AgentId::new();
 
-    let public_entry = make_entry(agent, "Public block height info", 1.0, Classification::Public);
-    let confidential_entry = make_entry(agent, "Confidential validator key", 1.0, Classification::Confidential);
+    let public_entry = make_entry(
+        agent,
+        "Public block height info",
+        1.0,
+        Classification::Public,
+    );
+    let confidential_entry = make_entry(
+        agent,
+        "Confidential validator key",
+        1.0,
+        Classification::Confidential,
+    );
 
-    store.store_memory(&public_entry).await.expect("store public");
-    store.store_memory(&confidential_entry).await.expect("store confidential");
+    store
+        .store_memory(&public_entry)
+        .await
+        .expect("store public");
+    store
+        .store_memory(&confidential_entry)
+        .await
+        .expect("store confidential");
 
     let query = MemoryQuery {
         agent_id: Some(agent),
@@ -383,12 +485,25 @@ async fn search_with_classification_confidential_max_shows_all() {
     let agent = AgentId::new();
 
     let public = make_entry(agent, "Public validator count", 1.0, Classification::Public);
-    let internal = make_entry(agent, "Internal config setting", 1.0, Classification::Internal);
-    let confidential = make_entry(agent, "Confidential key material", 1.0, Classification::Confidential);
+    let internal = make_entry(
+        agent,
+        "Internal config setting",
+        1.0,
+        Classification::Internal,
+    );
+    let confidential = make_entry(
+        agent,
+        "Confidential key material",
+        1.0,
+        Classification::Confidential,
+    );
 
     store.store_memory(&public).await.expect("store public");
     store.store_memory(&internal).await.expect("store internal");
-    store.store_memory(&confidential).await.expect("store confidential");
+    store
+        .store_memory(&confidential)
+        .await
+        .expect("store confidential");
 
     let query = MemoryQuery {
         agent_id: Some(agent),
@@ -406,7 +521,11 @@ async fn search_with_classification_confidential_max_shows_all() {
         .await
         .expect("search with max classification");
 
-    assert_eq!(all.len(), 3, "all three entries must be visible with Confidential max");
+    assert_eq!(
+        all.len(),
+        3,
+        "all three entries must be visible with Confidential max"
+    );
 }
 
 #[tokio::test]
@@ -414,7 +533,12 @@ async fn public_classification_entries_visible_to_store() {
     let (_, store) = make_service();
     let agent = AgentId::new();
 
-    let entry = make_entry(agent, "Public Polkadot block height info", 1.0, Classification::Public);
+    let entry = make_entry(
+        agent,
+        "Public Polkadot block height info",
+        1.0,
+        Classification::Public,
+    );
     store.store_memory(&entry).await.expect("store public");
 
     let query = MemoryQuery {
@@ -443,7 +567,12 @@ async fn retention_sweep_deletes_old_entries() {
     // Store 2 old entries and 1 recent
     let old1 = make_dated_entry(agent, "Old memory about Polkadot from the past", 400);
     let old2 = make_dated_entry(agent, "Another old memory about governance", 400);
-    let recent = make_entry(agent, "Recent Polkadot memory", 1.0, Classification::Internal);
+    let recent = make_entry(
+        agent,
+        "Recent Polkadot memory",
+        1.0,
+        Classification::Internal,
+    );
 
     store.store_memory(&old1).await.expect("store old1");
     store.store_memory(&old2).await.expect("store old2");
@@ -472,9 +601,24 @@ async fn retention_sweep_deletes_low_relevance_entries() {
     let store = make_store();
     let agent = AgentId::new();
 
-    let high = make_entry(agent, "High relevance Polkadot fact", 0.9, Classification::Internal);
-    let low1 = make_entry(agent, "Low relevance irrelevant info", 0.05, Classification::Internal);
-    let low2 = make_entry(agent, "Very low relevance stale note", 0.03, Classification::Internal);
+    let high = make_entry(
+        agent,
+        "High relevance Polkadot fact",
+        0.9,
+        Classification::Internal,
+    );
+    let low1 = make_entry(
+        agent,
+        "Low relevance irrelevant info",
+        0.05,
+        Classification::Internal,
+    );
+    let low2 = make_entry(
+        agent,
+        "Very low relevance stale note",
+        0.03,
+        Classification::Internal,
+    );
 
     store.store_memory(&high).await.expect("store high");
     store.store_memory(&low1).await.expect("store low1");
@@ -489,7 +633,10 @@ async fn retention_sweep_deletes_low_relevance_entries() {
     let sweeper = RetentionSweeper::new(store.clone() as Arc<dyn MemoryStore>, policy, agent);
     let result = sweeper.sweep().await.expect("sweep");
 
-    assert_eq!(result.by_relevance, 2, "two low-relevance entries should be swept");
+    assert_eq!(
+        result.by_relevance, 2,
+        "two low-relevance entries should be swept"
+    );
     assert_eq!(store.count_entries(&agent).await.expect("count"), 1);
 }
 
@@ -499,7 +646,12 @@ async fn retention_sweep_enforces_count_limit() {
     let agent = AgentId::new();
 
     for i in 0..10 {
-        let entry = make_entry(agent, &format!("Memory {i} about Polkadot", ), 0.9, Classification::Internal);
+        let entry = make_entry(
+            agent,
+            &format!("Memory {i} about Polkadot",),
+            0.9,
+            Classification::Internal,
+        );
         store.store_memory(&entry).await.expect("store");
     }
 
@@ -512,7 +664,10 @@ async fn retention_sweep_enforces_count_limit() {
     let sweeper = RetentionSweeper::new(store.clone() as Arc<dyn MemoryStore>, policy, agent);
     let result = sweeper.sweep().await.expect("sweep");
 
-    assert_eq!(result.by_count_limit, 5, "5 entries should be deleted to cap at 5");
+    assert_eq!(
+        result.by_count_limit, 5,
+        "5 entries should be deleted to cap at 5"
+    );
     assert_eq!(store.count_entries(&agent).await.expect("count"), 5);
 }
 
@@ -535,7 +690,10 @@ async fn retention_sweep_no_deletions_within_policy() {
     let sweeper = RetentionSweeper::new(store.clone() as Arc<dyn MemoryStore>, policy, agent);
     let result = sweeper.sweep().await.expect("sweep");
 
-    assert_eq!(result.deleted_count, 0, "no entries should be deleted when within policy");
+    assert_eq!(
+        result.deleted_count, 0,
+        "no entries should be deleted when within policy"
+    );
     assert_eq!(store.count_entries(&agent).await.expect("count"), 2);
 }
 
@@ -546,9 +704,19 @@ async fn retention_sweep_combined_age_relevance_and_count() {
 
     // 1 old entry + 1 low-relevance + 5 normal — then cap at 3
     let old = make_dated_entry(agent, "Old archived Polkadot history", 10);
-    let low_rel = make_entry(agent, "Low relevance stale data", 0.01, Classification::Internal);
+    let low_rel = make_entry(
+        agent,
+        "Low relevance stale data",
+        0.01,
+        Classification::Internal,
+    );
     for i in 0..5 {
-        let e = make_entry(agent, &format!("Normal Polkadot memory {i}"), 0.9, Classification::Internal);
+        let e = make_entry(
+            agent,
+            &format!("Normal Polkadot memory {i}"),
+            0.9,
+            Classification::Internal,
+        );
         store.store_memory(&e).await.expect("store normal");
     }
     store.store_memory(&old).await.expect("store old");
@@ -577,7 +745,12 @@ async fn retention_sweep_isolation_across_agents() {
 
     // Agent A: 10 entries — policy caps at 5
     for i in 0..10 {
-        let e = make_entry(agent_a, &format!("Agent A memory {i}"), 0.9, Classification::Internal);
+        let e = make_entry(
+            agent_a,
+            &format!("Agent A memory {i}"),
+            0.9,
+            Classification::Internal,
+        );
         store.store_memory(&e).await.expect("store A");
     }
 
@@ -598,8 +771,16 @@ async fn retention_sweep_isolation_across_agents() {
     let sweeper_a = RetentionSweeper::new(store.clone() as Arc<dyn MemoryStore>, policy, agent_a);
     sweeper_a.sweep().await.expect("sweep A");
 
-    assert_eq!(store.count_entries(&agent_a).await.expect("count A"), 5, "A should have 5 entries");
-    assert_eq!(store.count_entries(&agent_b).await.expect("count B"), 2, "B entries should be untouched");
+    assert_eq!(
+        store.count_entries(&agent_a).await.expect("count A"),
+        5,
+        "A should have 5 entries"
+    );
+    assert_eq!(
+        store.count_entries(&agent_b).await.expect("count B"),
+        2,
+        "B entries should be untouched"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -619,9 +800,15 @@ async fn count_entries_increases_after_store() {
     let (svc, store) = make_service();
     let agent = AgentId::new();
 
-    svc.remember(agent, "one", MemoryType::Semantic, None).await.expect("store 1");
-    svc.remember(agent, "two", MemoryType::Semantic, None).await.expect("store 2");
-    svc.remember(agent, "three", MemoryType::Semantic, None).await.expect("store 3");
+    svc.remember(agent, "one", MemoryType::Semantic, None)
+        .await
+        .expect("store 1");
+    svc.remember(agent, "two", MemoryType::Semantic, None)
+        .await
+        .expect("store 2");
+    svc.remember(agent, "three", MemoryType::Semantic, None)
+        .await
+        .expect("store 3");
 
     let count = store.count_entries(&agent).await.expect("count");
     assert_eq!(count, 3);
@@ -645,7 +832,11 @@ async fn delete_by_age_removes_old_entries() {
         .expect("delete by age");
 
     assert_eq!(deleted, 1, "one entry should be deleted");
-    assert_eq!(store.count_entries(&agent).await.expect("count"), 1, "only recent survives");
+    assert_eq!(
+        store.count_entries(&agent).await.expect("count"),
+        1,
+        "only recent survives"
+    );
 }
 
 #[tokio::test]
@@ -653,9 +844,20 @@ async fn recall_with_multiple_types_returns_all_types() {
     let (svc, _) = make_service();
     let agent = AgentId::new();
 
-    svc.remember(agent, "Polkadot semantic fact", MemoryType::Semantic, None).await.expect("store semantic");
-    svc.remember(agent, "Polkadot procedural step", MemoryType::Procedural, None).await.expect("store procedural");
-    svc.remember(agent, "Polkadot episodic event", MemoryType::Episodic, None).await.expect("store episodic");
+    svc.remember(agent, "Polkadot semantic fact", MemoryType::Semantic, None)
+        .await
+        .expect("store semantic");
+    svc.remember(
+        agent,
+        "Polkadot procedural step",
+        MemoryType::Procedural,
+        None,
+    )
+    .await
+    .expect("store procedural");
+    svc.remember(agent, "Polkadot episodic event", MemoryType::Episodic, None)
+        .await
+        .expect("store episodic");
 
     let results = svc.recall(agent, "Polkadot", 10).await.expect("recall");
     assert_eq!(results.len(), 3, "all memory types must be recalled");

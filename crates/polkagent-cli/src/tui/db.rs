@@ -22,8 +22,8 @@ use rusqlite::Connection;
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::state::{
-    AgentSummary, ApprovalItem, AuditEvent, EventSummary, MemoryEntry as TuiMemoryEntry,
-    RunDetail, RunSummary, SystemHealth, TurnSummary,
+    AgentSummary, ApprovalItem, AuditEvent, EventSummary, MemoryEntry as TuiMemoryEntry, RunDetail,
+    RunSummary, SystemHealth, TurnSummary,
 };
 
 // ---------------------------------------------------------------------------
@@ -71,8 +71,7 @@ impl TuiDb {
                 let model = extract_json_string(&spec_json, "model")
                     .unwrap_or_else(|| String::from("unknown"));
 
-                let updated_at = parse_datetime(&updated_at_str)
-                    .unwrap_or_else(Utc::now);
+                let updated_at = parse_datetime(&updated_at_str).unwrap_or_else(Utc::now);
 
                 Ok(AgentSummary {
                     id: row.get(0)?,
@@ -117,8 +116,7 @@ impl TuiDb {
                 let input_tokens: u64 = row.get::<_, i64>(7)? as u64;
                 let output_tokens: u64 = row.get::<_, i64>(8)? as u64;
 
-                let created_at =
-                    parse_datetime(&created_at_str).unwrap_or_else(Utc::now);
+                let created_at = parse_datetime(&created_at_str).unwrap_or_else(Utc::now);
                 let completed_at = completed_at_str.as_deref().and_then(parse_datetime);
 
                 Ok(RunSummary {
@@ -237,14 +235,13 @@ impl TuiDb {
                 )
                 .optional()?
                 .and_then(|json: String| {
-                    extract_json_string(&json, "reason")
-                        .or_else(|| {
-                            if json.contains("RunTimedOut") {
-                                Some("run timed out".to_owned())
-                            } else {
-                                None
-                            }
-                        })
+                    extract_json_string(&json, "reason").or_else(|| {
+                        if json.contains("RunTimedOut") {
+                            Some("run timed out".to_owned())
+                        } else {
+                            None
+                        }
+                    })
                 });
             detail.failure_reason = reason;
         }
@@ -385,21 +382,15 @@ impl TuiDb {
     /// When `query` is `None` all recent entries are returned ordered by
     /// creation time descending. When a query is given, FTS/LIKE search is
     /// performed.
-    pub fn memory_entries(
-        &self,
-        query: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<TuiMemoryEntry>> {
+    pub fn memory_entries(&self, query: Option<&str>, limit: usize) -> Result<Vec<TuiMemoryEntry>> {
         // The memory store lives in a separate database file; open it
         // read-only here.
         let home = std::env::var("HOME").unwrap_or_default();
         let default_path = format!("{home}/.local/share/polkagent/memory.db");
         let mem_path = std::env::var("POLKAGENT_MEMORY_DB_PATH").unwrap_or(default_path);
 
-        let mem_conn = Connection::open_with_flags(
-            &mem_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        );
+        let mem_conn =
+            Connection::open_with_flags(&mem_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY);
 
         let conn = match mem_conn {
             Ok(c) => c,
@@ -462,19 +453,21 @@ impl TuiDb {
 
         let parsed = entries
             .into_iter()
-            .filter_map(|(id, memory_type, agent_name, content, relevance_score, created_str)| {
-                let created_at = DateTime::parse_from_rfc3339(&created_str)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .ok()?;
-                Some(TuiMemoryEntry {
-                    id,
-                    memory_type,
-                    agent_name,
-                    content,
-                    relevance_score,
-                    created_at,
-                })
-            })
+            .filter_map(
+                |(id, memory_type, agent_name, content, relevance_score, created_str)| {
+                    let created_at = DateTime::parse_from_rfc3339(&created_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .ok()?;
+                    Some(TuiMemoryEntry {
+                        id,
+                        memory_type,
+                        agent_name,
+                        content,
+                        relevance_score,
+                        created_at,
+                    })
+                },
+            )
             .collect();
 
         Ok(parsed)
@@ -489,7 +482,10 @@ impl TuiDb {
         let conn = Connection::open(&mem_path)
             .with_context(|| format!("opening memory database at {mem_path}"))?;
 
-        conn.execute("DELETE FROM memories WHERE id = ?1", rusqlite::params![entry_id])?;
+        conn.execute(
+            "DELETE FROM memories WHERE id = ?1",
+            rusqlite::params![entry_id],
+        )?;
         Ok(())
     }
 
@@ -630,8 +626,8 @@ impl TuiDb {
     /// Mark an effect intent as denied.
     pub fn deny_effect(&self, effect_id: &str) -> Result<()> {
         let db_path = self.conn.path().unwrap_or_default().to_owned();
-        let writer = Connection::open(&db_path)
-            .with_context(|| "opening writable connection for deny")?;
+        let writer =
+            Connection::open(&db_path).with_context(|| "opening writable connection for deny")?;
 
         let outcome_id = uuid::Uuid::now_v7().to_string();
         let now = chrono::Utc::now().to_rfc3339();
@@ -831,11 +827,8 @@ impl ChainPoller {
 
         // Finalized block: get hash, then header.
         let finalized_hash = self.rpc_call_string(url, "chain_getFinalizedHead", "[]")?;
-        let fin_header_json = self.rpc_call_raw(
-            url,
-            "chain_getHeader",
-            &format!("[\"{finalized_hash}\"]"),
-        )?;
+        let fin_header_json =
+            self.rpc_call_raw(url, "chain_getHeader", &format!("[\"{finalized_hash}\"]"))?;
         let finalized_block = parse_block_number_from_header(&fin_header_json);
 
         Ok(ChainStatus {
@@ -848,9 +841,7 @@ impl ChainPoller {
 
     /// Make a JSON-RPC call and return the `result` field as a string.
     fn rpc_call_string(&self, url: &str, method: &str, params: &str) -> Result<String> {
-        let body = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#,
-        );
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#,);
         let resp_body = ureq::post(url)
             .set("Content-Type", "application/json")
             .send_string(&body)
@@ -865,9 +856,7 @@ impl ChainPoller {
 
     /// Make a JSON-RPC call and return the raw `result` value as a JSON string.
     fn rpc_call_raw(&self, url: &str, method: &str, params: &str) -> Result<String> {
-        let body = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#,
-        );
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#,);
         let resp_body = ureq::post(url)
             .set("Content-Type", "application/json")
             .send_string(&body)
@@ -1051,9 +1040,13 @@ mod tests {
 
         // Insert events — some are errors, some are not.
         let now_iso = "2099-12-31T00:00:00Z"; // far future so within "last hour" check fails
-        // We use the current time so the window check passes.
+                                              // We use the current time so the window check passes.
         let now = chrono::Utc::now().to_rfc3339();
-        for (id, event_type) in [("e1", "TurnError"), ("e2", "RunComplete"), ("e3", "ToolError")] {
+        for (id, event_type) in [
+            ("e1", "TurnError"),
+            ("e2", "RunComplete"),
+            ("e3", "ToolError"),
+        ] {
             conn.execute(
                 "INSERT INTO run_events (id, run_id, kind, data_json, timestamp) VALUES (?, 'r3', ?, '{}', ?)",
                 rusqlite::params![id, event_type, now],
@@ -1098,7 +1091,10 @@ mod tests {
 
         let (spent, ceiling) = db.budget_status();
         // 1_000_000 tokens * 0.000_003 = 3.0
-        assert!((spent - 3.0).abs() < 0.001, "spent should be ~$3.00, got {spent}");
+        assert!(
+            (spent - 3.0).abs() < 0.001,
+            "spent should be ~$3.00, got {spent}"
+        );
         assert_eq!(ceiling, 10.0);
     }
 
@@ -1141,10 +1137,7 @@ mod tests {
     #[test]
     fn test_extract_json_string_with_spaces() {
         let json = r#"{"kind": "sign"}"#;
-        assert_eq!(
-            extract_json_string(json, "kind"),
-            Some("sign".to_owned())
-        );
+        assert_eq!(extract_json_string(json, "kind"), Some("sign".to_owned()));
     }
 
     // ── parse_block_number_from_header ────────────────────────────────────────
@@ -1187,7 +1180,10 @@ mod tests {
     #[test]
     fn test_chain_poller_with_url_should_poll_immediately() {
         let poller = ChainPoller::with_url(Some("wss://rpc.polkadot.io".to_owned()));
-        assert!(poller.should_poll(), "should poll immediately on first call");
+        assert!(
+            poller.should_poll(),
+            "should poll immediately on first call"
+        );
     }
 
     #[test]
@@ -1216,6 +1212,9 @@ mod tests {
         poller.poll(&mut state);
 
         // Unreachable endpoint should mark disconnected.
-        assert!(!state.chain_connected, "unreachable endpoint should disconnect");
+        assert!(
+            !state.chain_connected,
+            "unreachable endpoint should disconnect"
+        );
     }
 }

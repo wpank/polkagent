@@ -291,11 +291,7 @@ impl OutboundLane {
     ///
     /// Returns the payload of the cleared submission, or `None` if the slot
     /// was not in the expected `Pending` state with the given request ID.
-    pub fn clear_timeout(
-        &mut self,
-        request_id: &str,
-        now_ms: u64,
-    ) -> Option<Vec<u8>> {
+    pub fn clear_timeout(&mut self, request_id: &str, now_ms: u64) -> Option<Vec<u8>> {
         match &self.slot {
             OutboundSlot::Pending {
                 request_id: pending_id,
@@ -558,9 +554,7 @@ mod tests {
         let mut lane = OutboundLane::new(default_config());
         lane.enqueue(b"a".to_vec(), now_ms()).expect("first");
         lane.enqueue_reply(b"b".to_vec(), now_ms()).expect("second");
-        let id3 = lane
-            .enqueue_reply(b"c".to_vec(), now_ms())
-            .expect("third");
+        let id3 = lane.enqueue_reply(b"c".to_vec(), now_ms()).expect("third");
 
         match lane.slot() {
             OutboundSlot::Pending {
@@ -709,8 +703,7 @@ mod tests {
     #[test]
     fn snapshot_captures_slot_and_queue() {
         let mut lane = OutboundLane::new(default_config());
-        lane.enqueue(b"slot-msg".to_vec(), now_ms())
-            .expect("slot");
+        lane.enqueue(b"slot-msg".to_vec(), now_ms()).expect("slot");
         lane.enqueue(b"q-msg".to_vec(), now_ms()).expect("queue");
 
         let state = lane.snapshot();
@@ -738,8 +731,7 @@ mod tests {
         lane.enqueue(b"queued".to_vec(), now_ms()).expect("queue");
 
         let state = lane.snapshot();
-        let restored =
-            OutboundLane::restore(default_config(), state).expect("restore");
+        let restored = OutboundLane::restore(default_config(), state).expect("restore");
 
         assert!(!restored.slot_is_available());
         assert_eq!(restored.queue_len(), 1);
@@ -783,8 +775,7 @@ mod tests {
             slot: OutboundSlot::Empty,
             queue: Vec::new(),
         };
-        let lane =
-            OutboundLane::restore(default_config(), state).expect("restore");
+        let lane = OutboundLane::restore(default_config(), state).expect("restore");
         assert!(lane.slot_is_available());
         assert_eq!(lane.queue_len(), 0);
     }
@@ -822,7 +813,11 @@ mod tests {
         assert!(lane.handle_peer_ack(&id1, 2000));
         assert_eq!(lane.queue_len(), 1);
         let id2 = match lane.slot() {
-            OutboundSlot::Pending { request_id, payload, .. } => {
+            OutboundSlot::Pending {
+                request_id,
+                payload,
+                ..
+            } => {
                 assert_eq!(payload, b"m2");
                 request_id.clone()
             }
@@ -833,7 +828,11 @@ mod tests {
         assert!(lane.handle_peer_ack(&id2, 3000));
         assert_eq!(lane.queue_len(), 0);
         let id3 = match lane.slot() {
-            OutboundSlot::Pending { request_id, payload, .. } => {
+            OutboundSlot::Pending {
+                request_id,
+                payload,
+                ..
+            } => {
                 assert_eq!(payload, b"m3");
                 request_id.clone()
             }
@@ -922,7 +921,9 @@ mod tests {
         assert!(ids.insert(id));
         // Rest go to queue.
         for i in 0..20u32 {
-            let id = lane.enqueue(i.to_le_bytes().to_vec(), now_ms()).expect("enqueue");
+            let id = lane
+                .enqueue(i.to_le_bytes().to_vec(), now_ms())
+                .expect("enqueue");
             assert!(ids.insert(id), "duplicate request id");
         }
     }

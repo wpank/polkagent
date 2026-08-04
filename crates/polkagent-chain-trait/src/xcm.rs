@@ -180,17 +180,15 @@ pub async fn estimate_xcm_fees(
     source_fee_estimate: u128,
 ) -> Result<FeeEstimate, XcmError> {
     // Query delivery fee from the runtime.
-    let (delivery_fee, is_heuristic) = match client
-        .xcm_query_delivery_fee(dest_genesis, message)
-        .await
-    {
-        Ok(fee) => (fee, false),
-        Err(crate::ChainError::Unsupported { .. }) => {
-            // Fall back to a heuristic estimate.
-            (source_fee_estimate / 10, true)
-        }
-        Err(e) => return Err(XcmError::ChainClient(e)),
-    };
+    let (delivery_fee, is_heuristic) =
+        match client.xcm_query_delivery_fee(dest_genesis, message).await {
+            Ok(fee) => (fee, false),
+            Err(crate::ChainError::Unsupported { .. }) => {
+                // Fall back to a heuristic estimate.
+                (source_fee_estimate / 10, true)
+            }
+            Err(e) => return Err(XcmError::ChainClient(e)),
+        };
 
     // Use dry-run for destination weight fee if available.
     let dest_weight_fee = if !message.is_empty() {
@@ -274,11 +272,10 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for XcmTestClient {
-        async fn fetch_metadata(
-            &self,
-            _p: ChainProfileId,
-        ) -> Result<PinnedMetadata, ChainError> {
-            Err(ChainError::Unsupported { operation: "fetch_metadata".into() })
+        async fn fetch_metadata(&self, _p: ChainProfileId) -> Result<PinnedMetadata, ChainError> {
+            Err(ChainError::Unsupported {
+                operation: "fetch_metadata".into(),
+            })
         }
         async fn simulate(
             &self,
@@ -286,14 +283,18 @@ mod tests {
             _b: &BlockRef,
             _m: &PinnedMetadata,
         ) -> Result<SimulationResult, ChainError> {
-            Err(ChainError::Unsupported { operation: "simulate".into() })
+            Err(ChainError::Unsupported {
+                operation: "simulate".into(),
+            })
         }
         async fn submit_extrinsic(
             &self,
             _e: &[u8],
             _p: ChainProfileId,
         ) -> Result<TxHash, ChainError> {
-            Err(ChainError::Unsupported { operation: "submit_extrinsic".into() })
+            Err(ChainError::Unsupported {
+                operation: "submit_extrinsic".into(),
+            })
         }
         async fn watch_finality(
             &self,
@@ -301,14 +302,18 @@ mod tests {
             _p: ChainProfileId,
             _ms: u64,
         ) -> Result<FinalityObservation, ChainError> {
-            Err(ChainError::Unsupported { operation: "watch_finality".into() })
+            Err(ChainError::Unsupported {
+                operation: "watch_finality".into(),
+            })
         }
         async fn decode_call(
             &self,
             _c: &[u8],
             _m: &PinnedMetadata,
         ) -> Result<DecodedCall, ChainError> {
-            Err(ChainError::Unsupported { operation: "decode_call".into() })
+            Err(ChainError::Unsupported {
+                operation: "decode_call".into(),
+            })
         }
         async fn query_storage(
             &self,
@@ -318,12 +323,11 @@ mod tests {
         ) -> Result<Option<Vec<u8>>, ChainError> {
             Ok(None)
         }
-        async fn dry_run_call(
-            &self,
-            _e: &[u8],
-        ) -> Result<DryRunResult, ChainError> {
+        async fn dry_run_call(&self, _e: &[u8]) -> Result<DryRunResult, ChainError> {
             if self.unsupported {
-                return Err(ChainError::Unsupported { operation: "dry_run_call".into() });
+                return Err(ChainError::Unsupported {
+                    operation: "dry_run_call".into(),
+                });
             }
             Ok(DryRunResult {
                 execution_ok: true,
@@ -448,7 +452,10 @@ mod tests {
             total: 350,
             is_heuristic: false,
         };
-        assert_eq!(est.total, est.source_fee + est.dest_weight_fee + est.delivery_fee);
+        assert_eq!(
+            est.total,
+            est.source_fee + est.dest_weight_fee + est.delivery_fee
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -506,7 +513,10 @@ mod tests {
 
     #[test]
     fn version_compat_serializes() {
-        let vc = XcmVersionCompat { version: 3, compatible: false };
+        let vc = XcmVersionCompat {
+            version: 3,
+            compatible: false,
+        };
         let json = serde_json::to_string(&vc).expect("serialize");
         assert!(json.contains("\"version\":3"));
         assert!(json.contains("\"compatible\":false"));
@@ -543,7 +553,10 @@ mod tests {
         let client = XcmTestClient::new();
         let result = resolve_xcm_mechanism(&client, &src(), &dst(), "BTC").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), XcmError::NoSupportedMechanism { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            XcmError::NoSupportedMechanism { .. }
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -555,7 +568,10 @@ mod tests {
         let client = XcmTestClient::unsupported();
         let result = resolve_xcm_mechanism(&client, &src(), &dst(), "DOT").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), XcmError::NoSupportedMechanism { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            XcmError::NoSupportedMechanism { .. }
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -707,12 +723,10 @@ mod tests {
         let route = XcmRoute {
             source: ChainProfileId::new("polkadot"),
             destination: ChainProfileId::new("moonbeam"),
-            hops: vec![
-                XcmHop {
-                    chain: ChainProfileId::new("asset-hub"),
-                    mechanism: XcmMechanism::Teleport,
-                },
-            ],
+            hops: vec![XcmHop {
+                chain: ChainProfileId::new("asset-hub"),
+                mechanism: XcmMechanism::Teleport,
+            }],
             mechanisms: vec![XcmMechanism::Teleport, XcmMechanism::ReserveTransfer],
         };
         assert_eq!(route.hops.len(), 1);

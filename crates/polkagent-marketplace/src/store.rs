@@ -20,10 +20,7 @@ pub trait ServiceRegistryStore: Send + Sync {
     async fn get_listing(&self, id: ListingId) -> Result<Option<ServiceListing>, RegistryError>;
 
     /// Search listings matching the given filter.
-    async fn search(
-        &self,
-        filter: SearchFilter,
-    ) -> Result<Vec<ServiceListing>, RegistryError>;
+    async fn search(&self, filter: SearchFilter) -> Result<Vec<ServiceListing>, RegistryError>;
 }
 
 /// Errors returned by [`ServiceRegistryStore`] operations.

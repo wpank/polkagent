@@ -22,8 +22,7 @@ use crate::tui::theme::Theme;
 /// `area` to a height of 1.
 pub fn render(frame: &mut Frame, area: Rect, active_tab: Tab, theme: &Theme) {
     // Background fill.
-    let bg_block = Block::default()
-        .style(Style::default().bg(theme.bg_raised));
+    let bg_block = Block::default().style(Style::default().bg(theme.bg_raised));
     frame.render_widget(bg_block, area);
 
     // Divide area into [left | centre | right].
@@ -37,27 +36,23 @@ pub fn render(frame: &mut Frame, area: Rect, active_tab: Tab, theme: &Theme) {
         .split(area);
 
     // ── Left: brand ──────────────────────────────────────────────────────
-    let brand = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " POLKAGENT",
-            Style::default()
-                .fg(theme.rose_bright)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    let brand = Paragraph::new(Line::from(vec![Span::styled(
+        " POLKAGENT",
+        Style::default()
+            .fg(theme.rose_bright)
+            .add_modifier(Modifier::BOLD),
+    )]));
     frame.render_widget(brand, cols[0]);
 
     // ── Centre: active tab ───────────────────────────────────────────────
     let tab_label = active_tab.label();
-    let tab_fkey  = active_tab.fkey_label();
+    let tab_fkey = active_tab.fkey_label();
     let centre = Paragraph::new(Line::from(vec![
         Span::styled(tab_fkey, Style::default().fg(theme.rose_dim)),
         Span::raw(" "),
         Span::styled(
             tab_label,
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
         ),
     ]))
     .alignment(Alignment::Center);

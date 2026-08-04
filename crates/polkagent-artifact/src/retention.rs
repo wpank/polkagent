@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use polkagent_core::ids::ArtifactId;
 use polkagent_core::artifact::Artifact;
+use polkagent_core::ids::ArtifactId;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -157,8 +157,7 @@ pub trait RetentionStore: ArtifactStore {
     /// of lifecycle state.
     fn list_all(
         &self,
-    ) -> impl std::future::Future<Output = Result<Vec<(Artifact, ArtifactState)>, StoreError>>
-           + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<(Artifact, ArtifactState)>, StoreError>> + Send;
 
     /// Soft-delete an artifact: mark it as deleted and remove its body.
     ///
@@ -273,7 +272,12 @@ impl RetentionEnforcer {
         // artifacts so we can skip them.
         let protected_parents: HashSet<ArtifactId> = all
             .iter()
-            .filter(|(_, state)| !matches!(state, ArtifactState::SoftDeleted { .. } | ArtifactState::HardDeleted))
+            .filter(|(_, state)| {
+                !matches!(
+                    state,
+                    ArtifactState::SoftDeleted { .. } | ArtifactState::HardDeleted
+                )
+            })
             .flat_map(|(artifact, _)| artifact.parents.iter().copied())
             .collect();
 
@@ -281,10 +285,8 @@ impl RetentionEnforcer {
         // We need this to detect whether a soft-deleted artifact still has
         // living children that reference it via ArtifactStore::get_lineage.
         // (parents field on Artifact records the direct parents.)
-        let artifact_map: HashMap<ArtifactId, (Artifact, ArtifactState)> = all
-            .into_iter()
-            .map(|(a, s)| (a.id, (a, s)))
-            .collect();
+        let artifact_map: HashMap<ArtifactId, (Artifact, ArtifactState)> =
+            all.into_iter().map(|(a, s)| (a.id, (a, s))).collect();
 
         for (id, (artifact, state)) in &artifact_map {
             match state {
@@ -382,7 +384,9 @@ impl RetentionEnforcer {
                             }
                             Err(e) => {
                                 warn!(artifact_id = %id, error = %e, "soft-delete of archived artifact failed");
-                                report.errors.push(format!("soft_delete_archived {id}: {e}"));
+                                report
+                                    .errors
+                                    .push(format!("soft_delete_archived {id}: {e}"));
                                 report.skipped += 1;
                             }
                         }
@@ -429,7 +433,9 @@ impl RetentionEnforcer {
                 }
                 Err(e) => {
                     warn!(event_id = %event.id, error = %e, "event deletion failed");
-                    report.errors.push(format!("delete_event {}: {e}", event.id));
+                    report
+                        .errors
+                        .push(format!("delete_event {}: {e}", event.id));
                 }
             }
         }
@@ -486,7 +492,10 @@ impl ArtifactStore for MemoryRetentionStore {
 
     async fn get(&self, id: ArtifactId) -> Result<Artifact, StoreError> {
         let g = self.inner.read().await;
-        g.artifacts.get(&id).cloned().ok_or(StoreError::NotFound(id))
+        g.artifacts
+            .get(&id)
+            .cloned()
+            .ok_or(StoreError::NotFound(id))
     }
 
     async fn get_body(&self, id: ArtifactId) -> Result<Vec<u8>, StoreError> {
@@ -614,10 +623,7 @@ impl RetentionStore for MemoryRetentionStore {
 
     async fn get_state(&self, id: ArtifactId) -> Result<ArtifactState, StoreError> {
         let g = self.inner.read().await;
-        g.states
-            .get(&id)
-            .cloned()
-            .ok_or(StoreError::NotFound(id))
+        g.states.get(&id).cloned().ok_or(StoreError::NotFound(id))
     }
 }
 

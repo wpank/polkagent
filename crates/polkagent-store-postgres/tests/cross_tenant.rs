@@ -7,9 +7,7 @@
 
 use polkagent_core::ids::{ArtifactId, RunId};
 use polkagent_store_postgres::PgPool;
-use polkagent_store_trait::{
-    ArtifactStore, RunStatus, RunStore, StoreError,
-};
+use polkagent_store_trait::{ArtifactStore, RunStatus, RunStore, StoreError};
 
 const AGENT_ID: &str = "cross-tenant-agent";
 

@@ -1,7 +1,8 @@
 use crate::error::BillingError;
 use polkagent_payment::CostRecord;
 
-const CSV_HEADER: &str = "run_id,provider,model,input_tokens,output_tokens,estimated_usd,recorded_at";
+const CSV_HEADER: &str =
+    "run_id,provider,model,input_tokens,output_tokens,estimated_usd,recorded_at";
 
 pub fn export_csv(records: &[CostRecord]) -> Result<String, BillingError> {
     let mut buf = String::with_capacity(CSV_HEADER.len() + records.len() * 120);

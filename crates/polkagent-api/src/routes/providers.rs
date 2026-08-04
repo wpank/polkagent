@@ -29,9 +29,7 @@ use crate::{
 ///
 /// Returns provider metadata from the platform configuration. API keys
 /// and other secrets are never included in the response.
-pub async fn list_providers(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_providers(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let providers: Vec<ProviderResponse> = state
         .config
         .providers

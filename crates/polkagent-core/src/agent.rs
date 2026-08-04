@@ -20,7 +20,7 @@ use crate::ids::AgentId;
 ///
 /// All fields are optional; absent limits are inherited from the global
 /// execution configuration in `polkagent.toml`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ResourceLimits {
     /// Maximum number of tokens the model may generate in a single turn.
@@ -44,17 +44,6 @@ pub struct ResourceLimits {
     pub max_concurrent_effects: Option<u32>,
 }
 
-impl Default for ResourceLimits {
-    fn default() -> Self {
-        Self {
-            max_tokens_per_turn: None,
-            max_turns: None,
-            timeout_secs: None,
-            max_concurrent_effects: None,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // ModelPreference
 // ---------------------------------------------------------------------------
@@ -65,7 +54,7 @@ impl Default for ResourceLimits {
 /// defaults at execution time. The `provider` and `model_id` fields together
 /// select which adapter and model to call; the remaining fields tune the
 /// completion parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelPreference {
     /// Provider identifier, e.g. `"anthropic"` or `"openai"`.
@@ -89,17 +78,6 @@ pub struct ModelPreference {
     /// When set, this value is used instead of [`AgentSpec::system_prompt`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-}
-
-impl Default for ModelPreference {
-    fn default() -> Self {
-        Self {
-            provider: None,
-            model_id: None,
-            temperature: None,
-            system_prompt: None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +287,6 @@ pub struct AgentSpec {
     // ------------------------------------------------------------------
     // PRD-03 fields — all default to empty / None for backward compat.
     // ------------------------------------------------------------------
-
     /// Capabilities this agent declares (e.g. `"file.read"`, `"chain.query"`).
     ///
     /// Declared capabilities are used by the grant resolver to determine which
@@ -411,7 +388,11 @@ impl AgentSpec {
                 format!("exceeds maximum length of {MAX_NAME_LEN} bytes"),
             ));
         }
-        if self.name.chars().any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r')) {
+        if self
+            .name
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+        {
             return Err(PolkagentError::validation(
                 "name",
                 "contains control characters",
@@ -426,7 +407,10 @@ impl AgentSpec {
                     format!("exceeds maximum length of {MAX_DESCRIPTION_LEN} bytes"),
                 ));
             }
-            if desc.chars().any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r')) {
+            if desc
+                .chars()
+                .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+            {
                 return Err(PolkagentError::validation(
                     "description",
                     "contains control characters",
@@ -563,12 +547,30 @@ mod tests {
     #[test]
     fn agent_spec_prd03_defaults_are_empty_or_none() {
         let spec = make_spec();
-        assert!(spec.declared_capabilities.is_empty(), "declared_capabilities should default to empty");
-        assert!(spec.policy_refs.is_empty(), "policy_refs should default to empty");
-        assert!(spec.resource_limits.is_none(), "resource_limits should default to None");
-        assert!(spec.model_preference.is_none(), "model_preference should default to None");
-        assert!(spec.memory_config.is_none(), "memory_config should default to None");
-        assert!(spec.surface_bindings.is_empty(), "surface_bindings should default to empty");
+        assert!(
+            spec.declared_capabilities.is_empty(),
+            "declared_capabilities should default to empty"
+        );
+        assert!(
+            spec.policy_refs.is_empty(),
+            "policy_refs should default to empty"
+        );
+        assert!(
+            spec.resource_limits.is_none(),
+            "resource_limits should default to None"
+        );
+        assert!(
+            spec.model_preference.is_none(),
+            "model_preference should default to None"
+        );
+        assert!(
+            spec.memory_config.is_none(),
+            "memory_config should default to None"
+        );
+        assert!(
+            spec.surface_bindings.is_empty(),
+            "surface_bindings should default to empty"
+        );
     }
 
     /// Verifies backward compatibility: a JSON blob that has no PRD-03 fields
@@ -588,7 +590,8 @@ mod tests {
             "updated_at": "2024-01-01T00:00:00Z"
         });
 
-        let spec: AgentSpec = serde_json::from_value(legacy_json).expect("should deserialize legacy JSON");
+        let spec: AgentSpec =
+            serde_json::from_value(legacy_json).expect("should deserialize legacy JSON");
         assert!(spec.declared_capabilities.is_empty());
         assert!(spec.policy_refs.is_empty());
         assert!(spec.resource_limits.is_none());
@@ -660,7 +663,8 @@ mod tests {
     #[test]
     fn resource_limits_partial_fields_deserialize() {
         let json = r#"{"max_turns": 10}"#;
-        let rl: ResourceLimits = serde_json::from_str(json).expect("partial deserialization failed");
+        let rl: ResourceLimits =
+            serde_json::from_str(json).expect("partial deserialization failed");
         assert_eq!(rl.max_turns, Some(10));
         assert!(rl.max_tokens_per_turn.is_none());
         assert!(rl.timeout_secs.is_none());
@@ -669,7 +673,8 @@ mod tests {
 
     #[test]
     fn resource_limits_empty_json_gives_defaults() {
-        let rl: ResourceLimits = serde_json::from_str("{}").expect("empty object deserialization failed");
+        let rl: ResourceLimits =
+            serde_json::from_str("{}").expect("empty object deserialization failed");
         assert_eq!(rl, ResourceLimits::default());
     }
 
@@ -772,7 +777,10 @@ mod tests {
         let mut spec = make_spec();
         spec.name = String::new();
         let err = spec.validate().unwrap_err();
-        assert!(err.to_string().contains("name"), "error should mention 'name'");
+        assert!(
+            err.to_string().contains("name"),
+            "error should mention 'name'"
+        );
     }
 
     #[test]
@@ -787,7 +795,10 @@ mod tests {
         let mut spec = make_spec();
         spec.name = "a".repeat(MAX_NAME_LEN + 1);
         let err = spec.validate().unwrap_err();
-        assert!(err.to_string().contains("name"), "error should mention 'name'");
+        assert!(
+            err.to_string().contains("name"),
+            "error should mention 'name'"
+        );
     }
 
     #[test]

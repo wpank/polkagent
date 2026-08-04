@@ -6,9 +6,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use polkagent_artifact::digest::{compute_digest, verify_digest};
 use polkagent_artifact::memory::MemoryStore;
 use polkagent_artifact::service::ArtifactService;
-use polkagent_artifact::digest::{compute_digest, verify_digest};
 use polkagent_core::artifact::ArtifactKind;
 use polkagent_core::ids::RunId;
 
@@ -109,10 +109,7 @@ async fn lineage_parent_child_grandchild() {
         .expect("add lineage grandchild->child");
 
     // Query ancestors of grandchild: should find both child and root.
-    let ancestors = svc
-        .get_lineage(grandchild.id)
-        .await
-        .expect("get_lineage");
+    let ancestors = svc.get_lineage(grandchild.id).await.expect("get_lineage");
     assert_eq!(
         ancestors.len(),
         2,
@@ -122,18 +119,12 @@ async fn lineage_parent_child_grandchild() {
     assert!(ancestors.contains(&root.id));
 
     // Query ancestors of child: should find only root.
-    let child_ancestors = svc
-        .get_lineage(child.id)
-        .await
-        .expect("get_lineage child");
+    let child_ancestors = svc.get_lineage(child.id).await.expect("get_lineage child");
     assert_eq!(child_ancestors.len(), 1);
     assert!(child_ancestors.contains(&root.id));
 
     // Query ancestors of root: should find none.
-    let root_ancestors = svc
-        .get_lineage(root.id)
-        .await
-        .expect("get_lineage root");
+    let root_ancestors = svc.get_lineage(root.id).await.expect("get_lineage root");
     assert!(root_ancestors.is_empty());
 }
 
@@ -164,10 +155,7 @@ async fn digest_is_verified_on_retrieval() {
     assert_eq!(artifact.blob_ref.blake3_hex, expected_digest.blake3_hex);
 
     // Retrieve the body and verify integrity.
-    let retrieved = svc
-        .get_body(artifact.id)
-        .await
-        .expect("get_body");
+    let retrieved = svc.get_body(artifact.id).await.expect("get_body");
     assert_eq!(retrieved, body);
 
     // The verify method should return true.
@@ -294,16 +282,15 @@ async fn add_lineage_is_idempotent() {
         .expect("child");
 
     // Adding the same edge twice should not duplicate it.
-    svc.add_lineage(child.id, parent.id)
-        .await
-        .expect("first");
+    svc.add_lineage(child.id, parent.id).await.expect("first");
     svc.add_lineage(child.id, parent.id)
         .await
         .expect("second (idempotent)");
 
-    let ancestors = svc
-        .get_lineage(child.id)
-        .await
-        .expect("lineage");
-    assert_eq!(ancestors.len(), 1, "duplicate edge should not create two entries");
+    let ancestors = svc.get_lineage(child.id).await.expect("lineage");
+    assert_eq!(
+        ancestors.len(),
+        1,
+        "duplicate edge should not create two entries"
+    );
 }

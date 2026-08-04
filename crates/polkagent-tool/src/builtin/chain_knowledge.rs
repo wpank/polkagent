@@ -68,17 +68,15 @@ impl ToolHandler for ChainKnowledgeTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let query_text = input
-            .get("query")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput {
-                reason: "missing or invalid 'query' field".to_string(),
-            })?;
+        let query_text =
+            input
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::InvalidInput {
+                    reason: "missing or invalid 'query' field".to_string(),
+                })?;
 
-        let limit = input
-            .get("limit")
-            .and_then(Value::as_u64)
-            .unwrap_or(5) as usize;
+        let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
 
         debug!(
             query = query_text,
@@ -89,12 +87,12 @@ impl ToolHandler for ChainKnowledgeTool {
 
         let svc = MetadataRagService::new(self.store.as_ref(), context.agent_id);
 
-        let cited_results = svc
-            .query(query_text, limit)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("chain knowledge query failed: {e}"),
-            })?;
+        let cited_results =
+            svc.query(query_text, limit)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
+                    reason: format!("chain knowledge query failed: {e}"),
+                })?;
 
         let results: Vec<Value> = cited_results
             .iter()
@@ -140,10 +138,7 @@ mod tests {
         let spec = tool.spec();
 
         assert_eq!(spec.name, "polkagent.chain.knowledge");
-        assert_eq!(
-            spec.required_grant.as_deref(),
-            Some("chain.query")
-        );
+        assert_eq!(spec.required_grant.as_deref(), Some("chain.query"));
         assert_eq!(spec.output_classification, DataClassification::Internal);
     }
 
@@ -315,6 +310,10 @@ mod tests {
             &self,
             _agent_id: &polkagent_core::AgentId,
         ) -> polkagent_memory::MemoryResult<usize> {
+            Ok(0)
+        }
+
+        async fn forget(&self, _artifact_id: &str) -> polkagent_memory::MemoryResult<usize> {
             Ok(0)
         }
 

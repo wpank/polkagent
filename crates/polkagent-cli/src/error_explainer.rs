@@ -41,7 +41,10 @@ pub struct ErrorExplanation {
 
 impl ErrorExplanation {
     pub fn next_step_summary(&self) -> &'static str {
-        self.next_steps.first().copied().unwrap_or("Inspect logs for details")
+        self.next_steps
+            .first()
+            .copied()
+            .unwrap_or("Inspect logs for details")
     }
 }
 
@@ -54,7 +57,8 @@ pub fn explain(reason: &str) -> ErrorExplanation {
         ErrorCategory::Timeout => ErrorExplanation {
             category,
             what_happened: "The run exceeded its deadline and was terminated.",
-            what_is_safe: "All effects committed before the timeout are persisted. No partial writes.",
+            what_is_safe:
+                "All effects committed before the timeout are persisted. No partial writes.",
             next_steps: &[
                 "Retry with a longer deadline (--timeout flag or config)",
                 "Reduce task scope to fit within the time budget",
@@ -64,7 +68,8 @@ pub fn explain(reason: &str) -> ErrorExplanation {
         ErrorCategory::ProviderError => ErrorExplanation {
             category,
             what_happened: "The LLM provider returned an error or was unreachable.",
-            what_is_safe: "No model output was applied. Run state is unchanged from before this turn.",
+            what_is_safe:
+                "No model output was applied. Run state is unchanged from before this turn.",
             next_steps: &[
                 "Check provider status page for outages",
                 "Verify your API key is valid and has quota",
@@ -83,8 +88,10 @@ pub fn explain(reason: &str) -> ErrorExplanation {
         },
         ErrorCategory::ChainError => ErrorExplanation {
             category,
-            what_happened: "An on-chain operation failed (RPC error, submission rejected, or revert).",
-            what_is_safe: "Reverted extrinsics consumed fees but had no state effect. Check balances.",
+            what_happened:
+                "An on-chain operation failed (RPC error, submission rejected, or revert).",
+            what_is_safe:
+                "Reverted extrinsics consumed fees but had no state effect. Check balances.",
             next_steps: &[
                 "Verify RPC endpoint connectivity",
                 "Check account balance and nonce",
@@ -94,7 +101,8 @@ pub fn explain(reason: &str) -> ErrorExplanation {
         ErrorCategory::BudgetExceeded => ErrorExplanation {
             category,
             what_happened: "The run exhausted its token or spend budget.",
-            what_is_safe: "All completed turns and effects are persisted. No partial work was lost.",
+            what_is_safe:
+                "All completed turns and effects are persisted. No partial work was lost.",
             next_steps: &[
                 "Increase the budget limit in agent config",
                 "Reduce task complexity to use fewer tokens",

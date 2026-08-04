@@ -110,8 +110,7 @@ impl ArtifactStore for SqlitePool {
         let kind_json = serde_json::to_string(&artifact.kind).map_err(map_json)?;
         let digest_hex = artifact.blob_ref.blake3_hex.clone();
         let size_bytes = artifact.blob_ref.size_bytes as i64;
-        let metadata_json =
-            serde_json::to_string(&artifact.metadata).map_err(map_json)?;
+        let metadata_json = serde_json::to_string(&artifact.metadata).map_err(map_json)?;
         let created_at = artifact.created_at.to_rfc3339();
         let body = body.to_vec();
 
@@ -333,9 +332,7 @@ impl ArtifactStore for SqlitePool {
 
             while let Some(current) = queue.pop_front() {
                 let mut stmt = writer
-                    .prepare(
-                        "SELECT parent_id FROM artifact_lineage WHERE child_id = ?1",
-                    )
+                    .prepare("SELECT parent_id FROM artifact_lineage WHERE child_id = ?1")
                     .map_err(map_backend)?;
 
                 let parents: Vec<String> = stmt
@@ -443,9 +440,7 @@ mod tests {
             .await
             .expect("store");
 
-        let fetched_body = ArtifactStore::get_body(&pool, id)
-            .await
-            .expect("get_body");
+        let fetched_body = ArtifactStore::get_body(&pool, id).await.expect("get_body");
         assert_eq!(fetched_body, body);
     }
 
@@ -789,8 +784,7 @@ mod tests {
         assert_eq!(lineage.len(), 3);
 
         // The first two entries are the direct parents (left, right) in some order.
-        let first_two: HashSet<ArtifactId> =
-            lineage[..2].iter().copied().collect();
+        let first_two: HashSet<ArtifactId> = lineage[..2].iter().copied().collect();
         assert!(first_two.contains(&art_left.id));
         assert!(first_two.contains(&art_right.id));
 
@@ -839,12 +833,8 @@ mod tests {
         let pool = test_pool();
         let body = b"metadata test";
         let mut artifact = make_artifact(body);
-        artifact
-            .metadata
-            .insert("tool".into(), "write_file".into());
-        artifact
-            .metadata
-            .insert("commit".into(), "abc123".into());
+        artifact.metadata.insert("tool".into(), "write_file".into());
+        artifact.metadata.insert("commit".into(), "abc123".into());
         let id = artifact.id;
 
         ArtifactStore::store(&pool, &artifact, body)
@@ -852,8 +842,14 @@ mod tests {
             .expect("store");
 
         let fetched = ArtifactStore::get(&pool, id).await.expect("get");
-        assert_eq!(fetched.metadata.get("tool").map(String::as_str), Some("write_file"));
-        assert_eq!(fetched.metadata.get("commit").map(String::as_str), Some("abc123"));
+        assert_eq!(
+            fetched.metadata.get("tool").map(String::as_str),
+            Some("write_file")
+        );
+        assert_eq!(
+            fetched.metadata.get("commit").map(String::as_str),
+            Some("abc123")
+        );
     }
 
     #[tokio::test]

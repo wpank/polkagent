@@ -132,7 +132,11 @@ mod tests {
         let readiness = Arc::new(ReadinessProbe::new());
 
         // SQLite check against Cargo.toml (always exists in test cwd).
-        let sqlite = Arc::new(SqliteCheck::new("test-db", "Cargo.toml", CheckSeverity::Critical));
+        let sqlite = Arc::new(SqliteCheck::new(
+            "test-db",
+            "Cargo.toml",
+            CheckSeverity::Critical,
+        ));
         readiness.add_dependency(sqlite.clone());
 
         agg.register(liveness.clone());
@@ -164,8 +168,7 @@ mod tests {
 
         let health = agg.check_all().await;
         let json = serde_json::to_string(&health).expect("should serialize");
-        let deserialized: OverallHealth =
-            serde_json::from_str(&json).expect("should deserialize");
+        let deserialized: OverallHealth = serde_json::from_str(&json).expect("should deserialize");
         assert_eq!(deserialized.status, health.status);
         assert_eq!(deserialized.version, "v1");
         assert_eq!(deserialized.checks.len(), 1);
@@ -215,8 +218,12 @@ mod tests {
                     checked_at: Utc::now(),
                 }
             }
-            fn name(&self) -> &str { "down-dep" }
-            fn severity(&self) -> CheckSeverity { CheckSeverity::Critical }
+            fn name(&self) -> &str {
+                "down-dep"
+            }
+            fn severity(&self) -> CheckSeverity {
+                CheckSeverity::Critical
+            }
         }
 
         let agg = HealthAggregator::new("v1");
@@ -288,9 +295,7 @@ mod tests {
         assert!(err.to_string().contains("db"));
         assert!(err.to_string().contains("5000"));
 
-        let err = HealthError::CheckNotFound {
-            name: "foo".into(),
-        };
+        let err = HealthError::CheckNotFound { name: "foo".into() };
         assert!(err.to_string().contains("foo"));
 
         let err = HealthError::AlreadyRunning;

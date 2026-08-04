@@ -182,7 +182,10 @@ mod tests {
         unsafe { env::set_var("POLKAGENT_EXISTS_CHECK", "1") };
         let store = EnvSecretStore::new();
 
-        assert!(store.exists(&SecretId::new("exists-check")).await.expect("ok"));
+        assert!(store
+            .exists(&SecretId::new("exists-check"))
+            .await
+            .expect("ok"));
         assert!(!store.exists(&SecretId::new("nope")).await.expect("ok"));
 
         unsafe { env::remove_var("POLKAGENT_EXISTS_CHECK") };

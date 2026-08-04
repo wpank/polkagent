@@ -58,9 +58,9 @@ pub mod plugins;
 pub mod provider;
 pub mod router;
 pub mod scheduled;
-pub mod webhook;
 #[cfg(feature = "watcher")]
 pub mod watcher_agent;
+pub mod webhook;
 
 // ---------------------------------------------------------------------------
 // Convenience re-exports
@@ -69,18 +69,18 @@ pub mod watcher_agent;
 pub use app::{AppService, AppServiceBuilder};
 pub use error::ServiceError;
 pub use harness::{HarnessInfo, HarnessRegistry, HarnessResolution};
-pub use lifecycle::{StartupContext, shutdown, startup};
+pub use lifecycle::{shutdown, startup, StartupContext};
+pub use metadata_watcher::MetadataDriftWatcher;
 pub use negotiate::{
     Capability, CapabilityRequirement, MissingCapability, NegotiatedCapabilities, ProbeCache,
     ProviderRestrictions,
 };
-pub use provider::{ProviderInfo, ProviderRegistry, ProviderStatus};
 pub use plugins::{PluginInfo, ServicePluginManager};
+pub use provider::{ProviderInfo, ProviderRegistry, ProviderStatus};
 pub use router::{
     DefaultModelRouter, ModelRouter, ProviderHealthInfo, RouteDecision, RouteError, RouteReason,
     RouteRequest, RoutingPolicy, SelectedRoute,
 };
-pub use metadata_watcher::MetadataDriftWatcher;
 pub use scheduled::ScheduledTaskManager;
 #[cfg(feature = "watcher")]
 pub use watcher_agent::WatcherAgentManager;

@@ -135,10 +135,7 @@ impl ProviderRegistry {
     ///
     /// Returns [`ServiceError::ProviderNotFound`] if no provider with the
     /// given `provider_id` is registered.
-    pub fn get_executor(
-        &self,
-        provider_id: &str,
-    ) -> Result<Arc<dyn ModelExecutor>, ServiceError> {
+    pub fn get_executor(&self, provider_id: &str) -> Result<Arc<dyn ModelExecutor>, ServiceError> {
         self.entries
             .get(provider_id)
             .map(|entry| Arc::clone(&entry.executor))
@@ -231,11 +228,7 @@ mod tests {
             &self,
             _request: InferenceRequest,
         ) -> Result<
-            Box<
-                dyn futures::Stream<Item = Result<StreamEvent, ExecutorError>>
-                    + Send
-                    + Unpin,
-            >,
+            Box<dyn futures::Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
             ExecutorError,
         > {
             Err(ExecutorError::Internal {
@@ -275,10 +268,7 @@ mod tests {
     fn get_executor_not_found() {
         let registry = ProviderRegistry::new();
         let result = registry.get_executor("nonexistent");
-        assert!(matches!(
-            result,
-            Err(ServiceError::ProviderNotFound { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::ProviderNotFound { .. })));
     }
 
     #[test]

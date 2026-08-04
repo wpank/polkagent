@@ -3,8 +3,8 @@
 //! These tests verify that the DataClassification system enforces access
 //! boundaries correctly, including the critical SecretForbidden tier.
 
-use polkagent_core::config::DataClassification;
 use polkagent_core::artifact::{Artifact, ArtifactKind};
+use polkagent_core::config::DataClassification;
 use polkagent_core::ids::ArtifactId;
 
 // ===========================================================================
@@ -41,7 +41,10 @@ fn secret_forbidden_rejects_is_context_safe() {
     artifact.classification = DataClassification::SecretForbidden;
 
     let safe = artifact.is_context_safe();
-    assert!(!safe, "is_context_safe() must return false for SecretForbidden");
+    assert!(
+        !safe,
+        "is_context_safe() must return false for SecretForbidden"
+    );
 }
 
 // ===========================================================================
@@ -52,7 +55,9 @@ fn secret_forbidden_rejects_is_context_safe() {
 fn public_artifact_is_context_safe() {
     let artifact = Artifact::from_bytes(
         ArtifactId::new(),
-        ArtifactKind::Plan { format: "json".to_string() },
+        ArtifactKind::Plan {
+            format: "json".to_string(),
+        },
         b"{}",
     );
     assert_eq!(artifact.classification, DataClassification::Public);
@@ -66,7 +71,9 @@ fn public_artifact_is_context_safe() {
 fn internal_artifact_is_context_safe() {
     let mut artifact = Artifact::from_bytes(
         ArtifactId::new(),
-        ArtifactKind::Plan { format: "json".to_string() },
+        ArtifactKind::Plan {
+            format: "json".to_string(),
+        },
         b"internal data",
     );
     artifact.classification = DataClassification::Internal;
@@ -80,7 +87,9 @@ fn internal_artifact_is_context_safe() {
 fn private_artifact_is_context_safe() {
     let mut artifact = Artifact::from_bytes(
         ArtifactId::new(),
-        ArtifactKind::Plan { format: "json".to_string() },
+        ArtifactKind::Plan {
+            format: "json".to_string(),
+        },
         b"private data",
     );
     artifact.classification = DataClassification::Private;
@@ -94,7 +103,9 @@ fn private_artifact_is_context_safe() {
 fn sensitive_artifact_is_context_safe() {
     let mut artifact = Artifact::from_bytes(
         ArtifactId::new(),
-        ArtifactKind::Plan { format: "json".to_string() },
+        ArtifactKind::Plan {
+            format: "json".to_string(),
+        },
         b"sensitive PII data",
     );
     artifact.classification = DataClassification::Sensitive;

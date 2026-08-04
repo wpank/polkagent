@@ -208,8 +208,8 @@ fn to_gemini_contents(msg: &InferenceMessage) -> Vec<GeminiContent> {
                 arguments_json,
                 ..
             } => {
-                let args: serde_json::Value = serde_json::from_str(arguments_json)
-                    .unwrap_or_else(|_| serde_json::json!({}));
+                let args: serde_json::Value =
+                    serde_json::from_str(arguments_json).unwrap_or_else(|_| serde_json::json!({}));
                 function_call_parts.push(GeminiPart {
                     text: None,
                     function_call: Some(GeminiFunctionCall {
@@ -348,10 +348,7 @@ fn to_token_usage(usage: &UsageMetadata) -> TokenUsage {
 
 /// Convert a `GenerateContentResponse` to the trait-level `InferenceResponse`.
 fn to_inference_response(resp: &GenerateContentResponse) -> InferenceResponse {
-    let candidate = resp
-        .candidates
-        .as_ref()
-        .and_then(|c| c.first());
+    let candidate = resp.candidates.as_ref().and_then(|c| c.first());
 
     let mut text = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -412,7 +409,12 @@ fn map_finish_reason(finish_reason: &str) -> String {
 
 /// Map an HTTP status code, error body, and optional `Retry-After` header
 /// to an [`ExecutorError`] via [`ProviderError`] classification.
-fn map_api_error(status: u16, body: &str, retry_after_secs: Option<u64>, model_id: &str) -> ExecutorError {
+fn map_api_error(
+    status: u16,
+    body: &str,
+    retry_after_secs: Option<u64>,
+    model_id: &str,
+) -> ExecutorError {
     let detail = serde_json::from_str::<GeminiErrorResponse>(body)
         .map(|e| e.error.message)
         .unwrap_or_else(|_| body.to_string());
@@ -722,17 +724,17 @@ impl GeminiExecutor {
 
             let status = response.status().as_u16();
             if status == 200 {
-                let response_body = response.text().await.map_err(|e| {
-                    ExecutorError::InvalidResponse {
-                        message: format!("failed to read response body: {e}"),
-                    }
-                })?;
+                let response_body =
+                    response
+                        .text()
+                        .await
+                        .map_err(|e| ExecutorError::InvalidResponse {
+                            message: format!("failed to read response body: {e}"),
+                        })?;
 
-                let parsed: GenerateContentResponse =
-                    serde_json::from_str(&response_body).map_err(|e| {
-                        ExecutorError::InvalidResponse {
-                            message: format!("failed to parse response JSON: {e}"),
-                        }
+                let parsed: GenerateContentResponse = serde_json::from_str(&response_body)
+                    .map_err(|e| ExecutorError::InvalidResponse {
+                        message: format!("failed to parse response JSON: {e}"),
                     })?;
 
                 return Ok(parsed);
@@ -791,11 +793,12 @@ impl GeminiExecutor {
             return Err(map_api_error(status, &error_body, retry_after, model_id));
         }
 
-        let full_body = response.text().await.map_err(|e| {
-            ExecutorError::InvalidResponse {
+        let full_body = response
+            .text()
+            .await
+            .map_err(|e| ExecutorError::InvalidResponse {
                 message: format!("failed to read streaming response body: {e}"),
-            }
-        })?;
+            })?;
 
         let chunks = parse_streaming_response(&full_body);
         Ok(process_streaming_chunks(chunks))
@@ -876,20 +879,17 @@ impl ModelExecutor for GeminiExecutor {
 
     async fn health(&self) -> Result<(), ExecutorError> {
         // List models endpoint to verify connectivity and authentication.
-        let url = format!(
-            "{}/models?key={}",
-            self.base_url, self.api_key
-        );
+        let url = format!("{}/models?key={}", self.base_url, self.api_key);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ExecutorError::Transport {
-                message: format!("health check failed: {e}"),
-                retryable: true,
-            })?;
+        let response =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| ExecutorError::Transport {
+                    message: format!("health check failed: {e}"),
+                    retryable: true,
+                })?;
 
         let status = response.status().as_u16();
         if status == 200 {
@@ -1209,10 +1209,7 @@ mod tests {
         let json = serde_json::to_value(&body).expect("serialize");
 
         let system = &json["systemInstruction"];
-        assert_eq!(
-            system["parts"][0]["text"],
-            "You are a helpful assistant."
-        );
+        assert_eq!(system["parts"][0]["text"], "You are a helpful assistant.");
         // System instruction should not have a role field set.
         assert!(system.get("role").is_none() || system["role"].is_null());
     }
@@ -1238,7 +1235,10 @@ mod tests {
         let temp = config["temperature"]
             .as_f64()
             .expect("temperature is a number");
-        assert!((temp - 0.7).abs() < 0.001, "temperature should be ~0.7, got {temp}");
+        assert!(
+            (temp - 0.7).abs() < 0.001,
+            "temperature should be ~0.7, got {temp}"
+        );
     }
 
     #[test]
@@ -1353,13 +1353,15 @@ mod tests {
     #[test]
     fn deserialize_text_response() {
         let json = sample_text_response_json();
-        let parsed: GenerateContentResponse =
-            serde_json::from_str(&json).expect("parse response");
+        let parsed: GenerateContentResponse = serde_json::from_str(&json).expect("parse response");
 
         let candidates = parsed.candidates.as_ref().expect("candidates");
         assert_eq!(candidates.len(), 1);
         let content = candidates[0].content.as_ref().expect("content");
-        assert_eq!(content.parts[0].text.as_deref(), Some("Hello! How can I help you today?"));
+        assert_eq!(
+            content.parts[0].text.as_deref(),
+            Some("Hello! How can I help you today?")
+        );
         assert_eq!(candidates[0].finish_reason.as_deref(), Some("STOP"));
         let usage = parsed.usage_metadata.as_ref().expect("usage");
         assert_eq!(usage.prompt_token_count, Some(25));
@@ -1369,13 +1371,15 @@ mod tests {
     #[test]
     fn deserialize_tool_use_response() {
         let json = sample_tool_use_response_json();
-        let parsed: GenerateContentResponse =
-            serde_json::from_str(&json).expect("parse response");
+        let parsed: GenerateContentResponse = serde_json::from_str(&json).expect("parse response");
 
         let candidates = parsed.candidates.as_ref().expect("candidates");
         assert_eq!(candidates.len(), 1);
         let content = candidates[0].content.as_ref().expect("content");
-        let fc = content.parts[0].function_call.as_ref().expect("function_call");
+        let fc = content.parts[0]
+            .function_call
+            .as_ref()
+            .expect("function_call");
         assert_eq!(fc.name, "file_read");
         assert_eq!(fc.args["path"], "/tmp/test.txt");
     }
@@ -1453,8 +1457,7 @@ mod tests {
         let response = to_inference_response(&parsed);
 
         let args: serde_json::Value =
-            serde_json::from_str(&response.tool_calls[0].arguments_json)
-                .expect("valid JSON");
+            serde_json::from_str(&response.tool_calls[0].arguments_json).expect("valid JSON");
         assert_eq!(args["path"], "/tmp/test.txt");
     }
 
@@ -1501,8 +1504,7 @@ mod tests {
 
     #[test]
     fn error_mapping_403_permission() {
-        let body =
-            sample_error_response_json("PERMISSION_DENIED", "Permission denied");
+        let body = sample_error_response_json("PERMISSION_DENIED", "Permission denied");
         let err = map_api_error(403, &body, None, "test-model");
         assert!(matches!(err, ExecutorError::Authentication { .. }));
         assert!(!err.is_retryable());
@@ -1510,10 +1512,7 @@ mod tests {
 
     #[test]
     fn error_mapping_429_rate_limit() {
-        let body = sample_error_response_json(
-            "RESOURCE_EXHAUSTED",
-            "Rate limit exceeded",
-        );
+        let body = sample_error_response_json("RESOURCE_EXHAUSTED", "Rate limit exceeded");
         let err = map_api_error(429, &body, None, "test-model");
         assert!(matches!(err, ExecutorError::RateLimit { .. }));
         assert!(err.is_retryable());
@@ -1532,10 +1531,7 @@ mod tests {
 
     #[test]
     fn error_mapping_400_bad_request() {
-        let body = sample_error_response_json(
-            "INVALID_ARGUMENT",
-            "messages is a required field",
-        );
+        let body = sample_error_response_json("INVALID_ARGUMENT", "messages is a required field");
         let err = map_api_error(400, &body, None, "test-model");
         // 400 without context/content keywords
         assert!(!matches!(err, ExecutorError::ContextWindowExceeded { .. }));
@@ -1557,8 +1553,7 @@ mod tests {
 
     #[test]
     fn error_mapping_500_server_error() {
-        let body =
-            sample_error_response_json("INTERNAL", "internal server error");
+        let body = sample_error_response_json("INTERNAL", "internal server error");
         let err = map_api_error(500, &body, None, "test-model");
         assert!(matches!(
             err,
@@ -1572,8 +1567,7 @@ mod tests {
 
     #[test]
     fn error_mapping_503_server_error() {
-        let body =
-            sample_error_response_json("UNAVAILABLE", "service unavailable");
+        let body = sample_error_response_json("UNAVAILABLE", "service unavailable");
         let err = map_api_error(503, &body, None, "test-model");
         assert!(matches!(
             err,
@@ -1761,8 +1755,7 @@ mod tests {
 
     #[test]
     fn with_max_retries_overrides_default() {
-        let exec = GeminiExecutor::new_builder("key".into(), "model".into())
-            .with_max_retries(5);
+        let exec = GeminiExecutor::new_builder("key".into(), "model".into()).with_max_retries(5);
         assert_eq!(exec.max_retries, 5);
     }
 
@@ -1802,8 +1795,7 @@ mod tests {
 
     #[test]
     fn with_max_concurrent_sets_semaphore() {
-        let exec = GeminiExecutor::new_builder("key".into(), "model".into())
-            .with_max_concurrent(5);
+        let exec = GeminiExecutor::new_builder("key".into(), "model".into()).with_max_concurrent(5);
         assert!(exec.concurrency_semaphore.is_some());
     }
 
@@ -1870,7 +1862,10 @@ mod tests {
         assert_eq!(contents[0].role.as_deref(), Some("model"));
         assert_eq!(contents[0].parts.len(), 2);
         assert_eq!(contents[0].parts[0].text.as_deref(), Some("Let me check."));
-        let fc = contents[0].parts[1].function_call.as_ref().expect("function_call");
+        let fc = contents[0].parts[1]
+            .function_call
+            .as_ref()
+            .expect("function_call");
         assert_eq!(fc.name, "lookup");
     }
 
@@ -2008,8 +2003,7 @@ mod tests {
             }],
             "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15}
         });
-        let parsed: GenerateContentResponse =
-            serde_json::from_value(resp_json).expect("parse");
+        let parsed: GenerateContentResponse = serde_json::from_value(resp_json).expect("parse");
         let response = to_inference_response(&parsed);
 
         assert_eq!(response.tool_calls.len(), 2);

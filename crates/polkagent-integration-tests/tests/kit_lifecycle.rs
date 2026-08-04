@@ -17,7 +17,7 @@
 use std::fs;
 use std::path::Path;
 
-use polkagent_kit::{validate_kit, prepare_install, skills_to_unregister, KitManifest};
+use polkagent_kit::{prepare_install, skills_to_unregister, validate_kit, KitManifest};
 
 // =========================================================================
 // Helpers
@@ -99,14 +99,12 @@ fn kl_02_validate_kit_missing_capability() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_kit_toml(dir.path(), KIT_V1);
 
-    let validation = validate_kit(
-        dir.path(),
-        &["chain.query".into()],
-        &all_skills_v1(),
-    )
-    .expect("validate");
+    let validation =
+        validate_kit(dir.path(), &["chain.query".into()], &all_skills_v1()).expect("validate");
     assert!(!validation.can_install());
-    assert!(validation.denied_capabilities.contains(&"chain.submit".into()));
+    assert!(validation
+        .denied_capabilities
+        .contains(&"chain.submit".into()));
 }
 
 // =========================================================================
@@ -118,12 +116,8 @@ fn kl_03_validate_kit_missing_skill() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_kit_toml(dir.path(), KIT_V1);
 
-    let validation = validate_kit(
-        dir.path(),
-        &all_caps(),
-        &["swap-skill".into()],
-    )
-    .expect("validate");
+    let validation =
+        validate_kit(dir.path(), &all_caps(), &["swap-skill".into()]).expect("validate");
     assert!(!validation.can_install());
     assert!(validation.missing_skills.contains(&"price-feed".into()));
 }
@@ -176,7 +170,10 @@ fn kl_06_uninstall_reinstall_identical() {
     assert_eq!(first_install.name, second_install.name);
     assert_eq!(first_install.version, second_install.version);
     assert_eq!(first_install.description, second_install.description);
-    assert_eq!(first_install.skill_names.len(), second_install.skill_names.len());
+    assert_eq!(
+        first_install.skill_names.len(),
+        second_install.skill_names.len()
+    );
 }
 
 // =========================================================================
@@ -270,7 +267,8 @@ beta-skill = { version = "^1.0.0", role = "primary" }
     let a_manifest = KitManifest::from_toml(kit_a_toml).expect("parse alpha");
     let b_manifest = KitManifest::from_toml(kit_b_toml).expect("parse beta");
 
-    let a_installed = prepare_install(&a_manifest, Path::new("/kits/alpha")).expect("install alpha");
+    let a_installed =
+        prepare_install(&a_manifest, Path::new("/kits/alpha")).expect("install alpha");
     let b_installed = prepare_install(&b_manifest, Path::new("/kits/beta")).expect("install beta");
 
     assert_ne!(a_installed.name, b_installed.name);

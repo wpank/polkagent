@@ -92,7 +92,11 @@ impl MultisigState {
             total_signatories: self.signatories.len() as u16,
             current_approvals: self.approvals.len() as u16,
             approved_by: self.approvals.iter().cloned().collect(),
-            missing: self.missing_signers().into_iter().map(String::from).collect(),
+            missing: self
+                .missing_signers()
+                .into_iter()
+                .map(String::from)
+                .collect(),
             threshold_met: self.is_threshold_met(),
         }
     }

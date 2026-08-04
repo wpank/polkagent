@@ -116,7 +116,12 @@ fn render_log(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
     let selected_idx = state.audit_scroll.selected.unwrap_or(usize::MAX);
     let visible = inner.height.saturating_sub(1) as usize;
 
-    for (vis_idx, event) in filtered.iter().skip(state.audit_scroll.offset).take(visible).enumerate() {
+    for (vis_idx, event) in filtered
+        .iter()
+        .skip(state.audit_scroll.offset)
+        .take(visible)
+        .enumerate()
+    {
         let abs_idx = vis_idx + state.audit_scroll.offset;
         let is_selected = abs_idx == selected_idx;
 
@@ -159,7 +164,10 @@ fn render_log(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
             ),
             Span::styled(
                 format!("{sev_glyph} {:<6}", event.severity),
-                Style::default().fg(sev_color).add_modifier(Modifier::BOLD).patch(row_bg),
+                Style::default()
+                    .fg(sev_color)
+                    .add_modifier(Modifier::BOLD)
+                    .patch(row_bg),
             ),
             Span::styled(
                 format!("{kind:<20}"),
@@ -173,10 +181,7 @@ fn render_log(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
         ]));
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 
     render_log_footer(frame, area, theme);
 }
@@ -229,9 +234,7 @@ fn apply_filter<'a>(events: &'a [AuditEvent], filter: &AuditFilter) -> Vec<&'a A
             AuditFilter::ByAgent(agent) => {
                 e.agent_name.to_lowercase().contains(&agent.to_lowercase())
             }
-            AuditFilter::ByKind(kind) => {
-                e.kind.to_lowercase().contains(&kind.to_lowercase())
-            }
+            AuditFilter::ByKind(kind) => e.kind.to_lowercase().contains(&kind.to_lowercase()),
         })
         .collect()
 }
@@ -243,7 +246,7 @@ fn apply_filter<'a>(events: &'a [AuditEvent], filter: &AuditFilter) -> Vec<&'a A
 /// ROSEDUST color for a severity level.
 fn severity_color(severity: &str, theme: &Theme) -> ratatui::style::Color {
     match severity.to_lowercase().as_str() {
-        "info"  => theme.bone,
+        "info" => theme.bone,
         "warn" | "warning" => theme.warning,
         "error" | "err" => theme.danger,
         "debug" => theme.text_dim,
@@ -254,10 +257,10 @@ fn severity_color(severity: &str, theme: &Theme) -> ratatui::style::Color {
 /// Glyph for a severity level.
 fn severity_glyph(severity: &str) -> &'static str {
     match severity.to_lowercase().as_str() {
-        "info"             => "·",
+        "info" => "·",
         "warn" | "warning" => "▲",
-        "error" | "err"    => "✗",
-        "debug"            => "○",
-        _                  => "?",
+        "error" | "err" => "✗",
+        "debug" => "○",
+        _ => "?",
     }
 }

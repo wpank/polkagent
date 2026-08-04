@@ -108,7 +108,7 @@ mod tests {
 
         for seed in 0..20 {
             let delay = strategy.delay(2, seed); // base delay 400ms
-            // With jitter: [200, 400]
+                                                 // With jitter: [200, 400]
             assert!(
                 delay >= Duration::from_millis(200) && delay <= Duration::from_millis(400),
                 "delay {delay:?} out of expected jitter range for seed {seed}"
@@ -127,7 +127,10 @@ mod tests {
         let d2 = strategy.delay(2, 9999);
         // With a large enough base, different seeds should produce different jitter
         // (they might not if the range is very small, but 4000ms range is fine).
-        assert_ne!(d1, d2, "different seeds should generally produce different delays");
+        assert_ne!(
+            d1, d2,
+            "different seeds should generally produce different delays"
+        );
     }
 
     #[test]
@@ -162,7 +165,10 @@ mod tests {
     fn test_policy_exponential_constructor() {
         let policy = RetryPolicy::exponential(3, Duration::from_millis(100));
         assert_eq!(policy.max_retries, 3);
-        assert!(matches!(policy.backoff, BackoffStrategy::Exponential { jitter: false, .. }));
+        assert!(matches!(
+            policy.backoff,
+            BackoffStrategy::Exponential { jitter: false, .. }
+        ));
     }
 
     #[test]
@@ -209,7 +215,10 @@ mod tests {
         let json = serde_json::to_string(&policy).expect("serialize");
         let deserialized: RetryPolicy = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized.max_retries, 3);
-        assert_eq!(deserialized.per_attempt_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(
+            deserialized.per_attempt_timeout,
+            Some(Duration::from_secs(5))
+        );
     }
 
     // ────────────────────────── Classifier tests ────────────────────────────
@@ -313,15 +322,14 @@ mod tests {
         let policy = RetryPolicy::fixed(2, Duration::from_millis(1));
 
         let c = counter.clone();
-        let result: Result<&str, RetryExhausted<String>> =
-            retry_with_policy(&policy, || {
-                let c = c.clone();
-                async move {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    Err("always fails".to_string())
-                }
-            })
-            .await;
+        let result: Result<&str, RetryExhausted<String>> = retry_with_policy(&policy, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err("always fails".to_string())
+            }
+        })
+        .await;
 
         let err = result.expect_err("should fail");
         assert_eq!(err.attempts, 3); // initial + 2 retries
@@ -593,8 +601,7 @@ mod tests {
     #[tokio::test]
     async fn test_timeout_wrapper_succeeds_within_limit() {
         let tw = TimeoutWrapper::new(Duration::from_secs(1));
-        let result: Result<&str, RetryError<String>> =
-            tw.execute(|| async { Ok("fast") }).await;
+        let result: Result<&str, RetryError<String>> = tw.execute(|| async { Ok("fast") }).await;
         assert_eq!(result.expect("should succeed"), "fast");
     }
 
@@ -722,15 +729,14 @@ mod tests {
         let policy = RetryPolicy::fixed(0, Duration::from_millis(1));
 
         let c = counter.clone();
-        let result: Result<(), RetryExhausted<String>> =
-            retry_with_policy(&policy, || {
-                let c = c.clone();
-                async move {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    Err("fail".to_string())
-                }
-            })
-            .await;
+        let result: Result<(), RetryExhausted<String>> = retry_with_policy(&policy, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err("fail".to_string())
+            }
+        })
+        .await;
 
         assert!(result.is_err());
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -742,10 +748,7 @@ mod tests {
         let policy = RetryPolicy::fixed(5, Duration::from_millis(1));
 
         // Only retry errors containing "transient"
-        let classifier = classifier::PatternClassifier::new(
-            vec!["transient".to_string()],
-            vec![],
-        );
+        let classifier = classifier::PatternClassifier::new(vec!["transient".to_string()], vec![]);
 
         let c = counter.clone();
         let result: Result<&str, RetryExhausted<String>> =

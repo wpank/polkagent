@@ -83,9 +83,7 @@ impl ToolHandler for ShellTool {
                 reason: "missing or invalid 'command' field".to_string(),
             })?;
 
-        let working_dir = input
-            .get("working_directory")
-            .and_then(Value::as_str);
+        let working_dir = input.get("working_directory").and_then(Value::as_str);
 
         let timeout = input
             .get("timeout_secs")
@@ -205,10 +203,7 @@ mod tests {
         assert!(result.is_ok());
 
         let r = result.unwrap_or_else(|e| panic!("{e}"));
-        assert!(r.output["stderr"]
-            .as_str()
-            .unwrap_or("")
-            .contains("error"));
+        assert!(r.output["stderr"].as_str().unwrap_or("").contains("error"));
     }
 
     #[tokio::test]

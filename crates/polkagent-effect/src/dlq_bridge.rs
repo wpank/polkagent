@@ -187,7 +187,8 @@ impl<Q: DeadLetterQueue + Clone + 'static> DlqPipeline<Q> {
 
         let mut letter = DeadLetter::new(
             intent_id.to_string(),
-            serde_json::to_value(&entry).unwrap_or_else(|_| json!({"intent_id": intent_id.to_string()})),
+            serde_json::to_value(&entry)
+                .unwrap_or_else(|_| json!({"intent_id": intent_id.to_string()})),
             retry_count,
         );
 
@@ -308,11 +309,7 @@ mod tests {
     use std::time::Duration;
 
     /// Helper: build an `EffectPipeline` and `InMemoryDlq` wired together.
-    async fn setup() -> (
-        DlqPipeline<InMemoryDlq>,
-        Arc<dyn EffectStore>,
-        InMemoryDlq,
-    ) {
+    async fn setup() -> (DlqPipeline<InMemoryDlq>, Arc<dyn EffectStore>, InMemoryDlq) {
         let (store, _inner) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store), WorkerId::new());
         let dlq = InMemoryDlq::with_defaults();
@@ -321,10 +318,7 @@ mod tests {
     }
 
     /// Helper: propose, claim, and get the intent ID.
-    async fn propose_and_claim(
-        pipeline: &EffectPipeline,
-        kind: EffectKind,
-    ) -> EffectId {
+    async fn propose_and_claim(pipeline: &EffectPipeline, kind: EffectKind) -> EffectId {
         let run_id = RunId::new();
         let intent_id = pipeline
             .propose(make_spec(run_id, kind))
@@ -415,8 +409,7 @@ mod tests {
 
         // Dead-letter three effects.
         for _ in 0..3 {
-            let intent_id =
-                propose_and_claim(dlq_pipeline.pipeline(), EffectKind::ToolCall).await;
+            let intent_id = propose_and_claim(dlq_pipeline.pipeline(), EffectKind::ToolCall).await;
             dlq_pipeline
                 .dead_letter_failed_effect(intent_id, "service unavailable", 3)
                 .await
@@ -458,7 +451,10 @@ mod tests {
         assert_eq!(dlq.count().await.expect("count"), 1);
 
         // Reprocess it.
-        let reprocessed = dlq_pipeline.reprocess_dlq_entries(10).await.expect("reprocess");
+        let reprocessed = dlq_pipeline
+            .reprocess_dlq_entries(10)
+            .await
+            .expect("reprocess");
         assert_eq!(reprocessed, 1);
 
         // The DLQ should now be empty.
@@ -484,8 +480,7 @@ mod tests {
 
         assert!(!dlq_pipeline.has_dlq(), "DLQ should not be configured");
 
-        let intent_id =
-            propose_and_claim(dlq_pipeline.pipeline(), EffectKind::Delivery).await;
+        let intent_id = propose_and_claim(dlq_pipeline.pipeline(), EffectKind::Delivery).await;
 
         // Dead-lettering without a DLQ should mark as permanently_failed.
         dlq_pipeline
@@ -531,7 +526,10 @@ mod tests {
         assert_eq!(dlq.count().await.expect("count"), 2);
 
         // Reprocess only one (limit=1).
-        let reprocessed = dlq_pipeline.reprocess_dlq_entries(1).await.expect("reprocess");
+        let reprocessed = dlq_pipeline
+            .reprocess_dlq_entries(1)
+            .await
+            .expect("reprocess");
         assert_eq!(reprocessed, 1);
 
         // One should remain in the DLQ.
@@ -547,10 +545,7 @@ mod tests {
 
         // Verify the remaining entry has consistent data.
         assert_eq!(entry.intent_id.to_string(), letter.original_message_id);
-        assert!(
-            entry.retry_count > 0,
-            "retry count should be preserved"
-        );
+        assert!(entry.retry_count > 0, "retry count should be preserved");
         assert!(
             !entry.error_reason.is_empty(),
             "error reason should be preserved"
@@ -577,8 +572,7 @@ mod tests {
         };
 
         let json_str = serde_json::to_string(&entry).expect("serialize");
-        let back: EffectDeadLetterEntry =
-            serde_json::from_str(&json_str).expect("deserialize");
+        let back: EffectDeadLetterEntry = serde_json::from_str(&json_str).expect("deserialize");
 
         assert_eq!(back.intent_id, entry.intent_id);
         assert_eq!(back.effect_kind, "model_call");

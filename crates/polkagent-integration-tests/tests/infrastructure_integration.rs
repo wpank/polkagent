@@ -42,18 +42,12 @@ mod cache {
 
         // The very first key should have been evicted.
         let k0 = CacheKey::new("evict", "k0000");
-        assert!(
-            !cache.contains(&k0).await,
-            "k0000 should have been evicted"
-        );
+        assert!(!cache.contains(&k0).await, "k0000 should have been evicted");
 
         // The most recent key should still be present (it was the last
         // inserted so it sits at the head of the LRU list).
         let k99 = CacheKey::new("evict", "k0099");
-        assert!(
-            cache.contains(&k99).await,
-            "k0099 should still be present"
-        );
+        assert!(cache.contains(&k99).await, "k0099 should still be present");
     }
 
     /// Entries with a TTL of 0ms should expire almost immediately.
@@ -75,10 +69,7 @@ mod cache {
         // Give the TTL a moment to take effect.
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        assert!(
-            cache.get(&key).await.is_none(),
-            "entry should have expired"
-        );
+        assert!(cache.get(&key).await.is_none(), "entry should have expired");
     }
 
     /// Cache stats track hits and misses accurately across operations.
@@ -184,7 +175,9 @@ mod audit {
         assert_eq!(logger.count().await.expect("count"), 10);
 
         // Verify chain integrity.
-        store.verify_integrity().expect("integrity chain should be valid");
+        store
+            .verify_integrity()
+            .expect("integrity chain should be valid");
 
         // Verify each entry has a unique non-empty hash.
         let entries = store.snapshot();
@@ -456,11 +449,7 @@ mod combined {
         // Phase 1: All lookups are misses; log each miss then populate the cache.
         for (i, key) in keys.iter().enumerate() {
             let result = cache.get(key).await;
-            let outcome = if result.is_some() {
-                "hit"
-            } else {
-                "miss"
-            };
+            let outcome = if result.is_some() { "hit" } else { "miss" };
 
             logger
                 .log(
@@ -485,11 +474,7 @@ mod combined {
         // Phase 2: All lookups should now be hits.
         for (i, key) in keys.iter().enumerate() {
             let result = cache.get(key).await;
-            let outcome = if result.is_some() {
-                "hit"
-            } else {
-                "miss"
-            };
+            let outcome = if result.is_some() { "hit" } else { "miss" };
 
             logger
                 .log(

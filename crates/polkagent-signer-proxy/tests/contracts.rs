@@ -136,11 +136,7 @@ async fn budget_enforcement_blocks_over_ceiling() {
         chain_profiles: vec![],
     };
 
-    let proxy = ProxySigner::new(
-        Box::new(FakeSigner::new()),
-        Arc::clone(&tracker),
-        config,
-    );
+    let proxy = ProxySigner::new(Box::new(FakeSigner::new()), Arc::clone(&tracker), config);
 
     let account = AccountRef::from_bytes([0u8; 32]);
     let request = polkagent_signer_trait::contracts::valid_sign_request(account);
@@ -150,7 +146,10 @@ async fn budget_enforcement_blocks_over_ceiling() {
         .expect_err("should be denied by budget");
 
     let msg = format!("{err}");
-    assert!(msg.contains("budget"), "error should reference budget: {msg}");
+    assert!(
+        msg.contains("budget"),
+        "error should reference budget: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -168,15 +167,14 @@ async fn budget_enforcement_allows_within_ceiling() {
         chain_profiles: vec![],
     };
 
-    let proxy = ProxySigner::new(
-        Box::new(FakeSigner::new()),
-        Arc::clone(&tracker),
-        config,
-    );
+    let proxy = ProxySigner::new(Box::new(FakeSigner::new()), Arc::clone(&tracker), config);
 
     let account = AccountRef::from_bytes([0u8; 32]);
     let request = polkagent_signer_trait::contracts::valid_sign_request(account);
-    let signed = proxy.sign(request).await.expect("should succeed within budget");
+    let signed = proxy
+        .sign(request)
+        .await
+        .expect("should succeed within budget");
     assert!(!signed.signature.is_empty());
 
     let status = tracker.get_remaining(agent).await.expect("status ok");

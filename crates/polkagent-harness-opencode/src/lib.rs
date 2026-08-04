@@ -161,9 +161,7 @@ impl AcpConfigurator for OpenCodeConfigurator {
             supports_tools: true,
             supports_sessions: true,
             max_context_tokens: 200_000,
-            models: vec![
-                "claude-sonnet-4-6".into(),
-            ],
+            models: vec!["claude-sonnet-4-6".into()],
             transport: Some(TransportFlavor::JsonRpcStdio),
             model_override: None,
             session_resume: SessionResumeMode::ById,
@@ -312,8 +310,7 @@ mod tests {
     #[test]
     fn type_alias_compiles() {
         let config = HarnessConfig::new("opencode");
-        let _harness: OpenCodeHarness =
-            AcpHarness::new(OpenCodeConfigurator::default(), config);
+        let _harness: OpenCodeHarness = AcpHarness::new(OpenCodeConfigurator::default(), config);
     }
 
     #[test]

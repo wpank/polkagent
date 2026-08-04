@@ -160,8 +160,7 @@ fn field_value_to_json(value: &FieldValue) -> serde_json::Value {
         FieldValue::AccountId(id) => serde_json::json!(bytes_to_hex(id)),
         FieldValue::Compact(v) => serde_json::json!(v.to_string()),
         FieldValue::Sequence(items) => {
-            let arr: Vec<serde_json::Value> =
-                items.iter().map(field_value_to_json).collect();
+            let arr: Vec<serde_json::Value> = items.iter().map(field_value_to_json).collect();
             serde_json::Value::Array(arr)
         }
         FieldValue::Composite(fields) => fields_to_json_value(fields),
@@ -170,9 +169,7 @@ fn field_value_to_json(value: &FieldValue) -> serde_json::Value {
             name,
             fields,
         } => {
-            let variant_name = name
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
+            let variant_name = name.clone().unwrap_or_else(|| "unknown".to_string());
             if fields.is_empty() {
                 serde_json::json!(variant_name)
             } else {
@@ -283,8 +280,14 @@ mod tests {
 
     #[test]
     fn field_value_to_json_primitives() {
-        assert_eq!(field_value_to_json(&FieldValue::U8(42)), serde_json::json!(42));
-        assert_eq!(field_value_to_json(&FieldValue::Bool(true)), serde_json::json!(true));
+        assert_eq!(
+            field_value_to_json(&FieldValue::U8(42)),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            field_value_to_json(&FieldValue::Bool(true)),
+            serde_json::json!(true)
+        );
         assert_eq!(
             field_value_to_json(&FieldValue::String("hello".into())),
             serde_json::json!("hello")

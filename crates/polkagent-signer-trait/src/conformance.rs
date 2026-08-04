@@ -191,8 +191,14 @@ pub async fn test_sign_different_inputs_different_signatures(
     req_b.payload = vec![0x04, 0x05, 0x06];
     req_b.request_id = "conformance-diff-b".into();
 
-    let signed_a = signer.sign(req_a).await.expect("first sign() must not fail");
-    let signed_b = signer.sign(req_b).await.expect("second sign() must not fail");
+    let signed_a = signer
+        .sign(req_a)
+        .await
+        .expect("first sign() must not fail");
+    let signed_b = signer
+        .sign(req_b)
+        .await
+        .expect("second sign() must not fail");
 
     assert_ne!(
         signed_a.signature, signed_b.signature,
@@ -253,9 +259,7 @@ pub async fn test_verify_invalid_signature_fails(signer: &dyn Signer, account: A
             );
         }
         Ok(_) => {
-            panic!(
-                "sign() must not succeed for an expired request; got Ok(_)"
-            );
+            panic!("sign() must not succeed for an expired request; got Ok(_)");
         }
     }
 }
@@ -272,25 +276,27 @@ pub async fn test_signer_never_sees_plaintext_secret(signer: &dyn Signer, accoun
     // These sentinels stand in for real API keys or secrets that the kernel
     // must never allow into the signing boundary.
     let forbidden_sentinels = [
-        "sk-ant-",        // Anthropic API key prefix
-        "sk-",            // OpenAI API key prefix
-        "Bearer ",        // HTTP auth header
-        "password",       // Password field
-        "api_key",        // Generic API key field name
-        "secret",         // Generic secret field name
-        "private_key",    // Private key label
-        "mnemonic",       // Seed phrase label
+        "sk-ant-",     // Anthropic API key prefix
+        "sk-",         // OpenAI API key prefix
+        "Bearer ",     // HTTP auth header
+        "password",    // Password field
+        "api_key",     // Generic API key field name
+        "secret",      // Generic secret field name
+        "private_key", // Private key label
+        "mnemonic",    // Seed phrase label
     ];
 
     let request = valid_sign_request(account);
 
     // Serialise the entire request to JSON and scan for forbidden strings.
-    let request_json = serde_json::to_string(&request)
-        .expect("CanonicalSignRequest must be serialisable");
+    let request_json =
+        serde_json::to_string(&request).expect("CanonicalSignRequest must be serialisable");
 
     for sentinel in &forbidden_sentinels {
         assert!(
-            !request_json.to_lowercase().contains(&sentinel.to_lowercase()),
+            !request_json
+                .to_lowercase()
+                .contains(&sentinel.to_lowercase()),
             "signing request must not contain secret material; \
              found sentinel {sentinel:?} in serialised request"
         );
@@ -300,7 +306,9 @@ pub async fn test_signer_never_sees_plaintext_secret(signer: &dyn Signer, accoun
     let payload_str = String::from_utf8_lossy(&request.payload);
     for sentinel in &forbidden_sentinels {
         assert!(
-            !payload_str.to_lowercase().contains(&sentinel.to_lowercase()),
+            !payload_str
+                .to_lowercase()
+                .contains(&sentinel.to_lowercase()),
             "signing payload bytes must not contain plaintext secret material; \
              found sentinel {sentinel:?} in payload"
         );

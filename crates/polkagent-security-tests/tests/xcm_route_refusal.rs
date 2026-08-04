@@ -15,10 +15,9 @@
 use async_trait::async_trait;
 
 use polkagent_chain_trait::{
-    resolve_xcm_mechanism, ChainClient, ChainError, ChainProfileId, GenesisHash,
+    resolve_xcm_mechanism, BlockRef, ChainClient, ChainError, ChainProfileId, DecodedCall,
+    DryRunResult, FinalityObservation, GenesisHash, PinnedMetadata, SimulationResult, TxHash,
     XcmError, XcmMechanism,
-    BlockRef, DecodedCall, DryRunResult, FinalityObservation, PinnedMetadata,
-    SimulationResult, TxHash,
 };
 
 // =========================================================================
@@ -60,41 +59,88 @@ impl RefusalTestClient {
 #[async_trait]
 impl ChainClient for RefusalTestClient {
     async fn fetch_metadata(&self, _p: ChainProfileId) -> Result<PinnedMetadata, ChainError> {
-        Err(ChainError::Unsupported { operation: "fetch_metadata".into() })
+        Err(ChainError::Unsupported {
+            operation: "fetch_metadata".into(),
+        })
     }
-    async fn simulate(&self, _e: &[u8], _b: &BlockRef, _m: &PinnedMetadata) -> Result<SimulationResult, ChainError> {
-        Err(ChainError::Unsupported { operation: "simulate".into() })
+    async fn simulate(
+        &self,
+        _e: &[u8],
+        _b: &BlockRef,
+        _m: &PinnedMetadata,
+    ) -> Result<SimulationResult, ChainError> {
+        Err(ChainError::Unsupported {
+            operation: "simulate".into(),
+        })
     }
     async fn submit_extrinsic(&self, _e: &[u8], _p: ChainProfileId) -> Result<TxHash, ChainError> {
-        Err(ChainError::Unsupported { operation: "submit_extrinsic".into() })
+        Err(ChainError::Unsupported {
+            operation: "submit_extrinsic".into(),
+        })
     }
-    async fn watch_finality(&self, _t: TxHash, _p: ChainProfileId, _ms: u64) -> Result<FinalityObservation, ChainError> {
-        Err(ChainError::Unsupported { operation: "watch_finality".into() })
+    async fn watch_finality(
+        &self,
+        _t: TxHash,
+        _p: ChainProfileId,
+        _ms: u64,
+    ) -> Result<FinalityObservation, ChainError> {
+        Err(ChainError::Unsupported {
+            operation: "watch_finality".into(),
+        })
     }
     async fn decode_call(&self, _c: &[u8], _m: &PinnedMetadata) -> Result<DecodedCall, ChainError> {
-        Err(ChainError::Unsupported { operation: "decode_call".into() })
+        Err(ChainError::Unsupported {
+            operation: "decode_call".into(),
+        })
     }
-    async fn query_storage(&self, _k: &[u8], _b: Option<&BlockRef>, _p: ChainProfileId) -> Result<Option<Vec<u8>>, ChainError> {
+    async fn query_storage(
+        &self,
+        _k: &[u8],
+        _b: Option<&BlockRef>,
+        _p: ChainProfileId,
+    ) -> Result<Option<Vec<u8>>, ChainError> {
         Ok(None)
     }
     async fn dry_run_call(&self, _e: &[u8]) -> Result<DryRunResult, ChainError> {
-        Err(ChainError::Unsupported { operation: "dry_run_call".into() })
+        Err(ChainError::Unsupported {
+            operation: "dry_run_call".into(),
+        })
     }
     async fn xcm_query_acceptable_payment_assets(&self, _v: u8) -> Result<Vec<String>, ChainError> {
-        Err(ChainError::Unsupported { operation: "xcm_query_acceptable_payment_assets".into() })
+        Err(ChainError::Unsupported {
+            operation: "xcm_query_acceptable_payment_assets".into(),
+        })
     }
-    async fn xcm_query_delivery_fee(&self, _dest: &GenesisHash, _msg: &[u8]) -> Result<u128, ChainError> {
-        Err(ChainError::Unsupported { operation: "xcm_query_delivery_fee".into() })
+    async fn xcm_query_delivery_fee(
+        &self,
+        _dest: &GenesisHash,
+        _msg: &[u8],
+    ) -> Result<u128, ChainError> {
+        Err(ChainError::Unsupported {
+            operation: "xcm_query_delivery_fee".into(),
+        })
     }
-    async fn is_trusted_teleporter(&self, _dest: &ChainProfileId, asset: &str) -> Result<bool, ChainError> {
+    async fn is_trusted_teleporter(
+        &self,
+        _dest: &ChainProfileId,
+        asset: &str,
+    ) -> Result<bool, ChainError> {
         if self.all_unsupported {
-            return Err(ChainError::Unsupported { operation: "is_trusted_teleporter".into() });
+            return Err(ChainError::Unsupported {
+                operation: "is_trusted_teleporter".into(),
+            });
         }
         Ok(self.teleport_assets.contains(&asset.to_string()))
     }
-    async fn is_reserve_transfer_supported(&self, _dest: &ChainProfileId, asset: &str) -> Result<bool, ChainError> {
+    async fn is_reserve_transfer_supported(
+        &self,
+        _dest: &ChainProfileId,
+        asset: &str,
+    ) -> Result<bool, ChainError> {
         if self.all_unsupported {
-            return Err(ChainError::Unsupported { operation: "is_reserve_transfer_supported".into() });
+            return Err(ChainError::Unsupported {
+                operation: "is_reserve_transfer_supported".into(),
+            });
         }
         Ok(self.reserve_assets.contains(&asset.to_string()))
     }
@@ -103,8 +149,12 @@ impl ChainClient for RefusalTestClient {
     }
 }
 
-fn src() -> ChainProfileId { ChainProfileId::new("polkadot") }
-fn dst() -> ChainProfileId { ChainProfileId::new("asset-hub") }
+fn src() -> ChainProfileId {
+    ChainProfileId::new("polkadot")
+}
+fn dst() -> ChainProfileId {
+    ChainProfileId::new("asset-hub")
+}
 
 // =========================================================================
 // XR-01: Unsupported asset on both paths
@@ -130,7 +180,10 @@ async fn xr_02_client_all_unsupported() {
     let client = RefusalTestClient::all_unsupported();
     let result = resolve_xcm_mechanism(&client, &src(), &dst(), "DOT").await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), XcmError::NoSupportedMechanism { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        XcmError::NoSupportedMechanism { .. }
+    ));
 }
 
 // =========================================================================
@@ -180,7 +233,10 @@ async fn xr_05_only_dot_teleport_rejects_ksm() {
 
     let ksm_result = resolve_xcm_mechanism(&client, &src(), &dst(), "KSM").await;
     assert!(ksm_result.is_err(), "KSM should be refused");
-    assert!(matches!(ksm_result.unwrap_err(), XcmError::NoSupportedMechanism { .. }));
+    assert!(matches!(
+        ksm_result.unwrap_err(),
+        XcmError::NoSupportedMechanism { .. }
+    ));
 }
 
 // =========================================================================

@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use polkagent_core::AgentId;
 use polkagent_feed::{
-    CompOp, EventFilter, Feed, FeedId, FeedItem, FeedProcessor, FeedSource, FeedStatus,
-    FeedStore, MemoryStore, ParamType, Recipe, RecipeId, RecipeParameter, Trigger, TriggerAction,
-    TriggerCondition, TriggerResult, evaluate_trigger, instantiate_recipe,
+    evaluate_trigger, instantiate_recipe, CompOp, EventFilter, Feed, FeedId, FeedItem,
+    FeedProcessor, FeedSource, FeedStatus, FeedStore, MemoryStore, ParamType, Recipe, RecipeId,
+    RecipeParameter, Trigger, TriggerAction, TriggerCondition, TriggerResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -398,7 +398,10 @@ fn recipe_trigger_feed_ids_are_consistent() {
     params.insert("threshold".to_string(), serde_json::json!(100));
 
     let (feed, trigger) = instantiate_recipe(&recipe, &params).expect("instantiate ok");
-    assert_eq!(feed.id, trigger.feed_id, "trigger must reference the produced feed");
+    assert_eq!(
+        feed.id, trigger.feed_id,
+        "trigger must reference the produced feed"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -502,12 +505,22 @@ async fn unprocessed_items_reappear_before_cursor_advance() {
         .expect("enqueue 2");
 
     // Dequeue without marking processed or advancing cursor
-    let first_batch = store.dequeue_items(&feed_id, 10).await.expect("first dequeue");
+    let first_batch = store
+        .dequeue_items(&feed_id, 10)
+        .await
+        .expect("first dequeue");
     assert_eq!(first_batch.len(), 2);
 
     // Dequeue again — items should still appear (not yet marked processed)
-    let second_batch = store.dequeue_items(&feed_id, 10).await.expect("second dequeue");
-    assert_eq!(second_batch.len(), 2, "unprocessed items must reappear for at-least-once delivery");
+    let second_batch = store
+        .dequeue_items(&feed_id, 10)
+        .await
+        .expect("second dequeue");
+    assert_eq!(
+        second_batch.len(),
+        2,
+        "unprocessed items must reappear for at-least-once delivery"
+    );
 }
 
 #[tokio::test]

@@ -58,24 +58,44 @@ impl VitalityTracker {
             return AffectState::default();
         }
 
+        #[allow(clippy::cast_precision_loss)]
         let n = self.window.len() as f64;
 
         // -- Engagement: derived from budget utilisation momentum.
         // Higher recent budget usage → higher engagement.
-        let avg_budget: f64 = self.window.iter().map(|s| s.budget_used_fraction).sum::<f64>() / n;
+        let avg_budget: f64 = self
+            .window
+            .iter()
+            .map(|s| s.budget_used_fraction)
+            .sum::<f64>()
+            / n;
         let engagement = Engagement::clamped(avg_budget);
 
         // -- Confidence: derived from success rate.
+        #[allow(clippy::cast_precision_loss)]
         let successes = self.window.iter().filter(|s| s.succeeded).count() as f64;
         let confidence = Confidence::clamped(successes / n);
 
         // -- Fatigue: composite of error frequency, latency, and budget burn.
         // Each factor is normalised to [0, 1] and then averaged.
-        let avg_errors: f64 = self.window.iter().map(|s| f64::from(s.error_count)).sum::<f64>() / n;
+        let avg_errors: f64 = self
+            .window
+            .iter()
+            .map(|s| f64::from(s.error_count))
+            .sum::<f64>()
+            / n;
         let error_factor = (avg_errors / 5.0).min(1.0); // 5+ errors/run → saturated
 
-        let avg_latency_ms: f64 =
-            self.window.iter().map(|s| s.latency.as_millis() as f64).sum::<f64>() / n;
+        let avg_latency_ms: f64 = self
+            .window
+            .iter()
+            .map(|s| {
+                #[allow(clippy::cast_precision_loss)]
+                let ms = s.latency.as_millis() as f64;
+                ms
+            })
+            .sum::<f64>()
+            / n;
         let latency_factor = (avg_latency_ms / 10_000.0).min(1.0); // 10s+ → saturated
 
         let fatigue = Fatigue::clamped((error_factor + latency_factor + avg_budget) / 3.0);

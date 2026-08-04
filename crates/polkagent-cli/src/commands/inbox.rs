@@ -6,16 +6,16 @@ use tracing::info;
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::cli::{
-    InboxCmd, InboxApproveCmd, InboxDenyCmd, InboxHistoryCmd, InboxListCmd, InboxShowCmd,
+    InboxApproveCmd, InboxCmd, InboxDenyCmd, InboxHistoryCmd, InboxListCmd, InboxShowCmd,
 };
 
 /// Dispatch the inbox subcommand.
 pub fn run(cmd: &InboxCmd, pool: &SqlitePool) -> Result<()> {
     match cmd {
-        InboxCmd::List(c)    => list(c, pool),
-        InboxCmd::Show(c)    => show(c, pool),
+        InboxCmd::List(c) => list(c, pool),
+        InboxCmd::Show(c) => show(c, pool),
         InboxCmd::Approve(c) => approve(c, pool),
-        InboxCmd::Deny(c)    => deny(c, pool),
+        InboxCmd::Deny(c) => deny(c, pool),
         InboxCmd::History(c) => history(c, pool),
     }
 }
@@ -66,7 +66,10 @@ fn list(cmd: &InboxListCmd, pool: &SqlitePool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<36}  {:<36}  {:<18}  Created", "Effect ID", "Run ID", "Kind");
+    println!(
+        "{:<36}  {:<36}  {:<18}  Created",
+        "Effect ID", "Run ID", "Kind"
+    );
     println!("{}", "-".repeat(110));
     for (id, run_id, kind, _params, created) in &rows {
         println!("{id:<36}  {run_id:<36}  {kind:<18}  {created}");
@@ -83,27 +86,34 @@ fn list(cmd: &InboxListCmd, pool: &SqlitePool) -> Result<()> {
 
 fn show(cmd: &InboxShowCmd, pool: &SqlitePool) -> Result<()> {
     let reader = pool.reader()?;
-    let row: Option<(String, String, String, String, String, Option<String>, Option<String>)> =
-        reader
-            .query_row(
-                "SELECT id, run_id, kind, params_json, created_at, claimed_by, claimed_until
+    let row: Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    )> = reader
+        .query_row(
+            "SELECT id, run_id, kind, params_json, created_at, claimed_by, claimed_until
                  FROM effect_intents
                  WHERE id = ?1",
-                rusqlite::params![cmd.effect_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                },
-            )
-            .map(Some)
-            .unwrap_or(None);
+            rusqlite::params![cmd.effect_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .map(Some)
+        .unwrap_or(None);
 
     let Some((id, run_id, kind, params_json, created, claimed_by, claimed_until)) = row else {
         anyhow::bail!("Effect not found: {}", cmd.effect_id);
@@ -183,10 +193,7 @@ fn approve(cmd: &InboxApproveCmd, pool: &SqlitePool) -> Result<()> {
         )
         .unwrap_or(false);
     if already_resolved {
-        anyhow::bail!(
-            "Effect already resolved: {}",
-            cmd.effect_id
-        );
+        anyhow::bail!("Effect already resolved: {}", cmd.effect_id);
     }
 
     // Record the approval in effect_outcomes (matches TUI pattern).
@@ -274,10 +281,7 @@ fn deny(cmd: &InboxDenyCmd, pool: &SqlitePool) -> Result<()> {
         )
         .unwrap_or(false);
     if already_resolved {
-        anyhow::bail!(
-            "Effect already resolved: {}",
-            cmd.effect_id
-        );
+        anyhow::bail!("Effect already resolved: {}", cmd.effect_id);
     }
 
     // Record the denial in effect_outcomes (matches TUI pattern).

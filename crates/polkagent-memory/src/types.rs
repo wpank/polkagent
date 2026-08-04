@@ -355,9 +355,18 @@ mod tests {
 
     #[test]
     fn memory_type_from_str() {
-        assert_eq!("episodic".parse::<MemoryType>().unwrap(), MemoryType::Episodic);
-        assert_eq!("semantic".parse::<MemoryType>().unwrap(), MemoryType::Semantic);
-        assert_eq!("procedural".parse::<MemoryType>().unwrap(), MemoryType::Procedural);
+        assert_eq!(
+            "episodic".parse::<MemoryType>().unwrap(),
+            MemoryType::Episodic
+        );
+        assert_eq!(
+            "semantic".parse::<MemoryType>().unwrap(),
+            MemoryType::Semantic
+        );
+        assert_eq!(
+            "procedural".parse::<MemoryType>().unwrap(),
+            MemoryType::Procedural
+        );
         assert!("unknown".parse::<MemoryType>().is_err());
     }
 

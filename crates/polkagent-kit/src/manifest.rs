@@ -85,23 +85,18 @@ impl fmt::Display for KitId {
 // ---------------------------------------------------------------------------
 
 /// The role of a skill within a kit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillRole {
     /// Core skill — the kit's primary functionality.
     Primary,
     /// Must be present for the kit to function.
+    #[default]
     Required,
     /// Enhances the kit but is not mandatory.
     Optional,
     /// Provides context data (schemas, profiles, etc.).
     Context,
-}
-
-impl Default for SkillRole {
-    fn default() -> Self {
-        Self::Required
-    }
 }
 
 impl fmt::Display for SkillRole {
@@ -234,10 +229,9 @@ pub struct KitUx {
 impl KitManifest {
     /// Parse a manifest from a TOML string.
     pub fn from_toml(content: &str) -> Result<Self, KitError> {
-        let manifest: Self =
-            toml::from_str(content).map_err(|e| KitError::ManifestParse {
-                reason: e.to_string(),
-            })?;
+        let manifest: Self = toml::from_str(content).map_err(|e| KitError::ManifestParse {
+            reason: e.to_string(),
+        })?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -371,9 +365,18 @@ my-skill = { version = "^1.0.0" }
             vec!["chain.query", "memory.read"]
         );
         assert_eq!(manifest.skills.len(), 4);
-        assert_eq!(manifest.skills["governance-analysis-skill"].role, SkillRole::Primary);
-        assert_eq!(manifest.skills["document-formatter-tool"].role, SkillRole::Optional);
-        assert_eq!(manifest.defaults.target_networks, vec!["polkadot", "kusama"]);
+        assert_eq!(
+            manifest.skills["governance-analysis-skill"].role,
+            SkillRole::Primary
+        );
+        assert_eq!(
+            manifest.skills["document-formatter-tool"].role,
+            SkillRole::Optional
+        );
+        assert_eq!(
+            manifest.defaults.target_networks,
+            vec!["polkadot", "kusama"]
+        );
         assert!(manifest.defaults.auto_activate);
         assert!(!manifest.policy.chain_write);
         assert_eq!(manifest.policy.data_classification, "Public");

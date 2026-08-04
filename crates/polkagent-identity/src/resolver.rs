@@ -282,10 +282,7 @@ pub trait IdentityResolver: Send + Sync {
     /// Resolve all sub-identities for the given parent account.
     ///
     /// Returns an empty `Vec` if the account has no sub-identities.
-    async fn resolve_sub(
-        &self,
-        account: &AccountId32,
-    ) -> Result<Vec<SubIdentity>, IdentityError>;
+    async fn resolve_sub(&self, account: &AccountId32) -> Result<Vec<SubIdentity>, IdentityError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -411,10 +408,7 @@ impl<R: IdentityResolver> IdentityResolver for CachedIdentityResolver<R> {
         Ok(resolution)
     }
 
-    async fn resolve_sub(
-        &self,
-        account: &AccountId32,
-    ) -> Result<Vec<SubIdentity>, IdentityError> {
+    async fn resolve_sub(&self, account: &AccountId32) -> Result<Vec<SubIdentity>, IdentityError> {
         let key = account.to_bytes();
 
         // Check cache with a read lock first.
@@ -447,10 +441,7 @@ impl<T: IdentityResolver> IdentityResolver for Arc<T> {
         (**self).resolve(account).await
     }
 
-    async fn resolve_sub(
-        &self,
-        account: &AccountId32,
-    ) -> Result<Vec<SubIdentity>, IdentityError> {
+    async fn resolve_sub(&self, account: &AccountId32) -> Result<Vec<SubIdentity>, IdentityError> {
         (**self).resolve_sub(account).await
     }
 }
@@ -720,8 +711,7 @@ mod tests {
         ) -> Result<IdentityResolution, IdentityError> {
             self.call_count.fetch_add(1, Ordering::Relaxed);
             let name = format!("User-{}", account.to_bytes()[0]);
-            Ok(IdentityResolution::new(*account, 1000)
-                .with_field(IdentityField::Display, &name))
+            Ok(IdentityResolution::new(*account, 1000).with_field(IdentityField::Display, &name))
         }
 
         async fn resolve_sub(

@@ -240,7 +240,10 @@ impl ThompsonSelector {
     /// Return the posterior mean for each variant.
     #[must_use]
     pub fn means(&self) -> HashMap<String, f64> {
-        self.arms.iter().map(|(k, arm)| (k.clone(), arm.mean())).collect()
+        self.arms
+            .iter()
+            .map(|(k, arm)| (k.clone(), arm.mean()))
+            .collect()
     }
 
     /// Return a reference to the arm state for a variant.

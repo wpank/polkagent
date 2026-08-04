@@ -69,7 +69,7 @@ mod state;
 pub use builder::FakeChainClientBuilder;
 pub use state::CallRecord;
 
-use state::{FakeChainState, hex_encode};
+use state::{hex_encode, FakeChainState};
 
 // ---------------------------------------------------------------------------
 // FakeChainClient
@@ -88,7 +88,9 @@ pub struct FakeChainClient {
 
 impl FakeChainClient {
     pub(crate) fn from_state(state: FakeChainState) -> Self {
-        Self { state: Arc::new(state) }
+        Self {
+            state: Arc::new(state),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -159,14 +161,19 @@ impl FakeChainClient {
 
     fn current_block_ref(&self) -> BlockRef {
         let n = self.state.current_block_number();
-        BlockRef { number: n, hash: format!("0x{n:016x}") }
+        BlockRef {
+            number: n,
+            hash: format!("0x{n:016x}"),
+        }
     }
 
     fn finalized_block_ref(&self) -> BlockRef {
         let n = self.state.finalized_block_number();
-        BlockRef { number: n, hash: format!("0x{n:016x}") }
+        BlockRef {
+            number: n,
+            hash: format!("0x{n:016x}"),
+        }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +193,9 @@ impl ChainClient for FakeChainClient {
     ) -> Result<PinnedMetadata, ChainError> {
         self.maybe_sleep().await;
 
-        let record = CallRecord::FetchMetadata { chain_profile: chain_profile.0.clone() };
+        let record = CallRecord::FetchMetadata {
+            chain_profile: chain_profile.0.clone(),
+        };
         if self.state.record_and_check_fault(record) {
             return Err(self.fault_error());
         }
@@ -311,7 +320,9 @@ impl ChainClient for FakeChainClient {
     ) -> Result<DecodedCall, ChainError> {
         self.maybe_sleep().await;
 
-        let record = CallRecord::DecodeCall { call_len: call_bytes.len() };
+        let record = CallRecord::DecodeCall {
+            call_len: call_bytes.len(),
+        };
         if self.state.record_and_check_fault(record) {
             return Err(self.fault_error());
         }
@@ -357,13 +368,12 @@ impl ChainClient for FakeChainClient {
     ///
     /// The fake always returns a successful result with a single test event
     /// and a destination fee of 100_000.
-    async fn dry_run_call(
-        &self,
-        extrinsic: &[u8],
-    ) -> Result<DryRunResult, ChainError> {
+    async fn dry_run_call(&self, extrinsic: &[u8]) -> Result<DryRunResult, ChainError> {
         self.maybe_sleep().await;
 
-        let record = CallRecord::DryRunCall { extrinsic_len: extrinsic.len() };
+        let record = CallRecord::DryRunCall {
+            extrinsic_len: extrinsic.len(),
+        };
         if self.state.record_and_check_fault(record) {
             return Err(self.fault_error());
         }
@@ -479,10 +489,7 @@ impl ChainClient for FakeChainClient {
 // ---------------------------------------------------------------------------
 
 /// Attempt to decode a hex tx hash and look it up in the seeded extrinsic map.
-fn lookup_seeded_extrinsic_result(
-    state: &FakeChainState,
-    tx_hash_hex: &str,
-) -> Option<bool> {
+fn lookup_seeded_extrinsic_result(state: &FakeChainState, tx_hash_hex: &str) -> Option<bool> {
     // Strip optional "0x" prefix.
     let stripped = tx_hash_hex.strip_prefix("0x").unwrap_or(tx_hash_hex);
     let bytes = hex_decode_32(stripped)?;
@@ -526,7 +533,10 @@ mod tests {
             spec_version: 1_003_000,
             metadata_digest: MetadataDigest("0xdeadbeef".into()),
             metadata_bytes: vec![0u8; 32],
-            block_ref: BlockRef { number: 1_000_000, hash: "0xabc".into() },
+            block_ref: BlockRef {
+                number: 1_000_000,
+                hash: "0xabc".into(),
+            },
             fetched_at: now(),
         }
     }
@@ -553,7 +563,9 @@ mod tests {
     async fn query_storage_returns_seeded_value() {
         let key = vec![0xDE, 0xAD];
         let value = vec![0xBE, 0xEF];
-        let client = builder().with_storage_value(key.clone(), value.clone()).build();
+        let client = builder()
+            .with_storage_value(key.clone(), value.clone())
+            .build();
 
         let result = client
             .query_storage(&key, None, polkadot_profile())
@@ -583,7 +595,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_version_matches_configured() {
         let client = builder().with_runtime_version(9_430, 3).build();
-        let meta = client.fetch_metadata(polkadot_profile()).await.expect("metadata ok");
+        let meta = client
+            .fetch_metadata(polkadot_profile())
+            .await
+            .expect("metadata ok");
         assert_eq!(meta.spec_version, 9_430);
     }
 
@@ -645,11 +660,9 @@ mod tests {
     async fn fail_next_n_counts_across_different_methods() {
         let client = builder().fail_next_n(2).build();
 
-        let _ = client
-            .query_storage(b"key", None, polkadot_profile())
-            .await; // call 1 → fail
+        let _ = client.query_storage(b"key", None, polkadot_profile()).await; // call 1 → fail
         let _ = client.health().await; // call 2 → fail
-        // call 3 → should succeed
+                                       // call 3 → should succeed
         assert!(client.health().await.is_ok());
     }
 
@@ -886,7 +899,10 @@ mod tests {
         let client = builder().build();
         let meta = fake_metadata();
         let call_bytes = vec![0x04, 0x00, 0x01, 0x02];
-        let decoded = client.decode_call(&call_bytes, &meta).await.expect("decode ok");
+        let decoded = client
+            .decode_call(&call_bytes, &meta)
+            .await
+            .expect("decode ok");
         assert_eq!(decoded.pallet, "Balances");
         assert_eq!(decoded.call_name, "transfer_keep_alive");
     }
@@ -899,7 +915,10 @@ mod tests {
     async fn simulate_returns_successful_result() {
         let client = builder().build();
         let meta = fake_metadata();
-        let block_ref = BlockRef { number: 1_000_000, hash: "0xabc".into() };
+        let block_ref = BlockRef {
+            number: 1_000_000,
+            hash: "0xabc".into(),
+        };
         let result = client
             .simulate(&[1, 2, 3, 4], &block_ref, &meta)
             .await
@@ -916,7 +935,10 @@ mod tests {
     async fn simulate_preserves_block_ref() {
         let client = builder().build();
         let meta = fake_metadata();
-        let block_ref = BlockRef { number: 7777, hash: "0xbeef".into() };
+        let block_ref = BlockRef {
+            number: 7777,
+            hash: "0xbeef".into(),
+        };
         let result = client
             .simulate(&[0xAA], &block_ref, &meta)
             .await
@@ -1030,11 +1052,17 @@ mod tests {
     async fn submit_extrinsic_records_length() {
         let client = builder().build();
         let extrinsic = vec![0u8; 128];
-        client.submit_extrinsic(&extrinsic, polkadot_profile()).await.ok();
+        client
+            .submit_extrinsic(&extrinsic, polkadot_profile())
+            .await
+            .ok();
         let calls = client.calls();
         assert!(matches!(
             &calls[0],
-            CallRecord::SubmitExtrinsic { extrinsic_len: 128, .. }
+            CallRecord::SubmitExtrinsic {
+                extrinsic_len: 128,
+                ..
+            }
         ));
     }
 
@@ -1046,13 +1074,20 @@ mod tests {
     async fn watch_finality_records_timeout_ms() {
         let client = builder().build();
         client
-            .watch_finality(TxHash::new("0x".to_string() + &"00".repeat(32)), polkadot_profile(), 9999)
+            .watch_finality(
+                TxHash::new("0x".to_string() + &"00".repeat(32)),
+                polkadot_profile(),
+                9999,
+            )
             .await
             .ok();
         let calls = client.calls();
         assert!(matches!(
             &calls[0],
-            CallRecord::WatchFinality { timeout_ms: 9999, .. }
+            CallRecord::WatchFinality {
+                timeout_ms: 9999,
+                ..
+            }
         ));
     }
 
@@ -1151,12 +1186,18 @@ mod tests {
     async fn simulate_records_extrinsic_and_block_info() {
         let client = builder().build();
         let meta = fake_metadata();
-        let block_ref = BlockRef { number: 12_345, hash: "0xfeed".into() };
+        let block_ref = BlockRef {
+            number: 12_345,
+            hash: "0xfeed".into(),
+        };
         client.simulate(&[0u8; 77], &block_ref, &meta).await.ok();
         let calls = client.calls();
         assert!(matches!(
             &calls[0],
-            CallRecord::Simulate { extrinsic_len: 77, block_number: 12_345 }
+            CallRecord::Simulate {
+                extrinsic_len: 77,
+                block_number: 12_345
+            }
         ));
     }
 
@@ -1272,7 +1313,10 @@ mod tests {
     async fn is_trusted_teleporter_dot_returns_true() {
         let client = builder().build();
         let dest = ChainProfileId::new("asset-hub");
-        let result = client.is_trusted_teleporter(&dest, "DOT").await.expect("ok");
+        let result = client
+            .is_trusted_teleporter(&dest, "DOT")
+            .await
+            .expect("ok");
         assert!(result);
     }
 
@@ -1284,7 +1328,10 @@ mod tests {
     async fn is_trusted_teleporter_non_dot_returns_false() {
         let client = builder().build();
         let dest = ChainProfileId::new("asset-hub");
-        let result = client.is_trusted_teleporter(&dest, "KSM").await.expect("ok");
+        let result = client
+            .is_trusted_teleporter(&dest, "KSM")
+            .await
+            .expect("ok");
         assert!(!result);
     }
 
@@ -1343,7 +1390,10 @@ mod tests {
     async fn is_reserve_transfer_supported_records_call() {
         let client = builder().build();
         let dest = ChainProfileId::new("bridge-hub");
-        client.is_reserve_transfer_supported(&dest, "USDT").await.ok();
+        client
+            .is_reserve_transfer_supported(&dest, "USDT")
+            .await
+            .ok();
         let calls = client.calls();
         assert!(matches!(
             &calls[0],

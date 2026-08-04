@@ -31,7 +31,7 @@ use crate::error::PipelineError;
 use crate::idempotency::{self, IdempotencyKey};
 use crate::types::{EffectAttempt, EffectKind, EffectOutcome, EffectPriority};
 use polkagent_core::{StepId, TurnId};
-use polkagent_store_trait::{EffectStore, StoredIntent, StoredOutcome, StoreRetryClass};
+use polkagent_store_trait::{EffectStore, StoreRetryClass, StoredIntent, StoredOutcome};
 
 // ---------------------------------------------------------------------------
 // EffectIntentSpec
@@ -93,7 +93,9 @@ impl EffectPipeline {
     /// Persist a new effect intent BEFORE any I/O occurs (EFF-INV-1).
     pub async fn propose(&self, spec: EffectIntentSpec) -> Result<EffectId, PipelineError> {
         let kind = spec.kind;
-        let retry_class = spec.retry_class.unwrap_or_else(|| kind.default_retry_class());
+        let retry_class = spec
+            .retry_class
+            .unwrap_or_else(|| kind.default_retry_class());
         let priority = spec.priority.unwrap_or_default();
         let max_attempts = spec
             .max_attempts
@@ -102,7 +104,9 @@ impl EffectPipeline {
         // 1. Derive the idempotency key if not provided.
         let idempotency_key = spec.idempotency_key.unwrap_or_else(|| {
             let params_hash = IdempotencyKey::hash_params(
-                serde_json::to_vec(&spec.payload).unwrap_or_default().as_slice(),
+                serde_json::to_vec(&spec.payload)
+                    .unwrap_or_default()
+                    .as_slice(),
             );
             IdempotencyKey::generate(spec.run_id, spec.sequence, 0, kind, params_hash)
         });
@@ -276,7 +280,10 @@ impl EffectPipeline {
         let mut payload: serde_json::Value = serde_json::from_slice(&result_bytes)
             .map_err(|e| PipelineError::Internal(format!("failed to parse outcome: {e}")))?;
         if let Some(obj) = payload.as_object_mut() {
-            obj.insert("digest_hex".to_string(), serde_json::Value::String(digest_hex.clone()));
+            obj.insert(
+                "digest_hex".to_string(),
+                serde_json::Value::String(digest_hex.clone()),
+            );
         }
 
         let stored = StoredOutcome {
@@ -311,15 +318,12 @@ impl EffectPipeline {
 
     /// Fetch a single intent by ID.
     pub async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, PipelineError> {
-        self.store
-            .get_intent(intent_id)
-            .await
-            .map_err(|e| match e {
-                polkagent_store_trait::StoreError::NotFound { .. } => {
-                    PipelineError::NotFound(intent_id)
-                }
-                other => PipelineError::Store(other),
-            })
+        self.store.get_intent(intent_id).await.map_err(|e| match e {
+            polkagent_store_trait::StoreError::NotFound { .. } => {
+                PipelineError::NotFound(intent_id)
+            }
+            other => PipelineError::Store(other),
+        })
     }
 }
 
@@ -333,7 +337,7 @@ pub(crate) mod tests {
     use crate::idempotency::IdempotencyKey;
     use crate::types::{EffectKind, OutcomeResult};
     use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, Timestamp};
-    use polkagent_store_trait::{EffectStore, StoredIntent, StoredOutcome, StoreError};
+    use polkagent_store_trait::{EffectStore, StoreError, StoredIntent, StoredOutcome};
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -417,7 +421,11 @@ pub(crate) mod tests {
             }
         }
 
-        async fn release_claim(&self, intent_id: EffectId, worker_id: WorkerId) -> Result<(), StoreError> {
+        async fn release_claim(
+            &self,
+            intent_id: EffectId,
+            worker_id: WorkerId,
+        ) -> Result<(), StoreError> {
             let mut intents = self.intents.lock().expect("lock");
             if let Some(intent) = intents.get_mut(&intent_id) {
                 if intent.lease_owner == Some(worker_id) && intent.state != "resolved" {
@@ -449,15 +457,22 @@ pub(crate) mod tests {
 
         async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
             let intents = self.intents.lock().expect("lock");
-            intents.get(&intent_id).cloned().ok_or_else(|| StoreError::NotFound {
-                resource_type: "EffectIntent",
-                id: intent_id.to_string(),
-            })
+            intents
+                .get(&intent_id)
+                .cloned()
+                .ok_or_else(|| StoreError::NotFound {
+                    resource_type: "EffectIntent",
+                    id: intent_id.to_string(),
+                })
         }
 
         async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
             let intents = self.intents.lock().expect("lock");
-            Ok(intents.values().filter(|i| i.run_id == run_id).cloned().collect())
+            Ok(intents
+                .values()
+                .filter(|i| i.run_id == run_id)
+                .cloned()
+                .collect())
         }
 
         async fn expired_leases(&self, cutoff: Timestamp) -> Result<Vec<StoredIntent>, StoreError> {
@@ -501,12 +516,22 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
+        async fn unconsumed_outcomes(
+            &self,
+            run_id: RunId,
+        ) -> Result<Vec<StoredOutcome>, StoreError> {
             let outcomes = self.outcomes.lock().expect("lock");
-            Ok(outcomes.iter().filter(|o| o.run_id == run_id && !o.consumed).cloned().collect())
+            Ok(outcomes
+                .iter()
+                .filter(|o| o.run_id == run_id && !o.consumed)
+                .cloned()
+                .collect())
         }
 
-        async fn mark_outcomes_consumed(&self, outcome_ids: &[EffectOutcomeId]) -> Result<(), StoreError> {
+        async fn mark_outcomes_consumed(
+            &self,
+            outcome_ids: &[EffectOutcomeId],
+        ) -> Result<(), StoreError> {
             let mut outcomes = self.outcomes.lock().expect("lock");
             for o in outcomes.iter_mut() {
                 if outcome_ids.contains(&o.id) {
@@ -544,10 +569,10 @@ pub(crate) mod tests {
         attempt_id: EffectAttemptId,
         run_id: RunId,
     ) -> EffectOutcome {
-        let result = OutcomeResult::Success { data: serde_json::json!({"ok": true}) };
-        let digest = *blake3::hash(
-            &serde_json::to_vec(&result).unwrap_or_default(),
-        ).as_bytes();
+        let result = OutcomeResult::Success {
+            data: serde_json::json!({"ok": true}),
+        };
+        let digest = *blake3::hash(&serde_json::to_vec(&result).unwrap_or_default()).as_bytes();
         EffectOutcome {
             id: EffectOutcomeId::new(),
             attempt_id,
@@ -566,9 +591,15 @@ pub(crate) mod tests {
         let (store_dyn, store) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store_dyn), WorkerId::new());
         let run_id = RunId::new();
-        let intent_id = pipeline.propose(make_spec(run_id, EffectKind::ModelCall)).await.expect("propose");
+        let intent_id = pipeline
+            .propose(make_spec(run_id, EffectKind::ModelCall))
+            .await
+            .expect("propose");
         let intents = store.intents.lock().expect("lock");
-        assert!(intents.contains_key(&intent_id), "intent must be persisted before propose returns");
+        assert!(
+            intents.contains_key(&intent_id),
+            "intent must be persisted before propose returns"
+        );
         assert_eq!(intents[&intent_id].state, "pending");
     }
 
@@ -577,7 +608,13 @@ pub(crate) mod tests {
         let (store, _) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store), WorkerId::new());
         let run_id = RunId::new();
-        let key = IdempotencyKey::generate(run_id, 1, 0, EffectKind::ModelCall, IdempotencyKey::hash_params(b"fixed"));
+        let key = IdempotencyKey::generate(
+            run_id,
+            1,
+            0,
+            EffectKind::ModelCall,
+            IdempotencyKey::hash_params(b"fixed"),
+        );
         let make = || EffectIntentSpec {
             run_id,
             turn_id: TurnId::new(),
@@ -593,7 +630,10 @@ pub(crate) mod tests {
         };
         pipeline.propose(make()).await.expect("first");
         let err = pipeline.propose(make()).await.expect_err("second");
-        assert!(matches!(err, crate::error::PipelineError::DuplicatePending(_)));
+        assert!(matches!(
+            err,
+            crate::error::PipelineError::DuplicatePending(_)
+        ));
     }
 
     #[tokio::test]
@@ -601,8 +641,14 @@ pub(crate) mod tests {
         let (store, _) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store), WorkerId::new());
         let run_id = RunId::new();
-        pipeline.propose(make_spec(run_id, EffectKind::ChainRead)).await.expect("propose");
-        let guard = pipeline.claim_with_duration(Duration::from_secs(30)).await.expect("claim");
+        pipeline
+            .propose(make_spec(run_id, EffectKind::ChainRead))
+            .await
+            .expect("propose");
+        let guard = pipeline
+            .claim_with_duration(Duration::from_secs(30))
+            .await
+            .expect("claim");
         assert!(guard.is_some());
     }
 
@@ -610,7 +656,10 @@ pub(crate) mod tests {
     async fn claim_returns_none_for_empty_outbox() {
         let (store, _) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store), WorkerId::new());
-        let guard = pipeline.claim_with_duration(Duration::from_secs(30)).await.expect("claim");
+        let guard = pipeline
+            .claim_with_duration(Duration::from_secs(30))
+            .await
+            .expect("claim");
         assert!(guard.is_none());
     }
 
@@ -619,10 +668,20 @@ pub(crate) mod tests {
         let (store_dyn, store) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store_dyn), WorkerId::new());
         let run_id = RunId::new();
-        let intent_id = pipeline.propose(make_spec(run_id, EffectKind::ModelCall)).await.expect("propose");
-        let _guard = pipeline.claim_with_duration(Duration::from_secs(60)).await.expect("claim").expect("guard");
+        let intent_id = pipeline
+            .propose(make_spec(run_id, EffectKind::ModelCall))
+            .await
+            .expect("propose");
+        let _guard = pipeline
+            .claim_with_duration(Duration::from_secs(60))
+            .await
+            .expect("claim")
+            .expect("guard");
         let outcome = make_outcome(intent_id, EffectAttemptId::new(), run_id);
-        pipeline.record_outcome(intent_id, &outcome).await.expect("record");
+        pipeline
+            .record_outcome(intent_id, &outcome)
+            .await
+            .expect("record");
         let intents = store.intents.lock().expect("lock");
         assert_eq!(intents[&intent_id].state, "resolved");
     }
@@ -632,12 +691,28 @@ pub(crate) mod tests {
         let (store, _) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store), WorkerId::new());
         let run_id = RunId::new();
-        let intent_id = pipeline.propose(make_spec(run_id, EffectKind::ModelCall)).await.expect("propose");
-        let _guard = pipeline.claim_with_duration(Duration::from_secs(60)).await.expect("claim").expect("guard");
+        let intent_id = pipeline
+            .propose(make_spec(run_id, EffectKind::ModelCall))
+            .await
+            .expect("propose");
+        let _guard = pipeline
+            .claim_with_duration(Duration::from_secs(60))
+            .await
+            .expect("claim")
+            .expect("guard");
         let outcome = make_outcome(intent_id, EffectAttemptId::new(), run_id);
-        pipeline.record_outcome(intent_id, &outcome).await.expect("first");
-        let err = pipeline.record_outcome(intent_id, &outcome).await.expect_err("second");
-        assert!(matches!(err, crate::error::PipelineError::OutcomeAlreadyRecorded(_)));
+        pipeline
+            .record_outcome(intent_id, &outcome)
+            .await
+            .expect("first");
+        let err = pipeline
+            .record_outcome(intent_id, &outcome)
+            .await
+            .expect_err("second");
+        assert!(matches!(
+            err,
+            crate::error::PipelineError::OutcomeAlreadyRecorded(_)
+        ));
     }
 
     #[tokio::test]
@@ -645,7 +720,10 @@ pub(crate) mod tests {
         use tokio::task::JoinSet;
         let (store, _) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store), WorkerId::new());
-        pipeline.propose(make_spec(RunId::new(), EffectKind::ToolCall)).await.expect("propose");
+        pipeline
+            .propose(make_spec(RunId::new(), EffectKind::ToolCall))
+            .await
+            .expect("propose");
         const N: usize = 8;
         let mut set = JoinSet::new();
         for _ in 0..N {
@@ -659,7 +737,9 @@ pub(crate) mod tests {
         }
         let mut successes = 0usize;
         while let Some(r) = set.join_next().await {
-            if r.expect("join").is_some() { successes += 1; }
+            if r.expect("join").is_some() {
+                successes += 1;
+            }
         }
         assert_eq!(successes, 1, "exactly one concurrent claim should succeed");
     }
@@ -669,10 +749,20 @@ pub(crate) mod tests {
         let (store_dyn, store) = make_in_memory_store();
         let pipeline = EffectPipeline::new(Arc::clone(&store_dyn), WorkerId::new());
         let run_id = RunId::new();
-        let intent_id = pipeline.propose(make_spec(run_id, EffectKind::ModelCall)).await.expect("propose");
+        let intent_id = pipeline
+            .propose(make_spec(run_id, EffectKind::ModelCall))
+            .await
+            .expect("propose");
         {
-            let guard = pipeline.claim_with_duration(Duration::from_secs(30)).await.expect("claim").expect("guard");
-            { let intents = store.intents.lock().expect("lock"); assert_eq!(intents[&intent_id].state, "claimed"); }
+            let guard = pipeline
+                .claim_with_duration(Duration::from_secs(30))
+                .await
+                .expect("claim")
+                .expect("guard");
+            {
+                let intents = store.intents.lock().expect("lock");
+                assert_eq!(intents[&intent_id].state, "claimed");
+            }
             drop(guard);
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -699,7 +789,9 @@ pub(crate) mod tests {
         };
         let intent_id = pipeline.propose(spec).await.expect("propose");
         let intents = store.intents.lock().expect("lock");
-        let max = intents[&intent_id].payload["max_attempts"].as_u64().expect("max_attempts");
+        let max = intents[&intent_id].payload["max_attempts"]
+            .as_u64()
+            .expect("max_attempts");
         assert_eq!(max, 1);
     }
 }

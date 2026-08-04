@@ -62,11 +62,7 @@ impl HealthAggregator {
     }
 
     /// Register a health check with an explicit timeout.
-    pub fn register_with_timeout(
-        &self,
-        check: Arc<dyn HealthCheck>,
-        timeout: Duration,
-    ) {
+    pub fn register_with_timeout(&self, check: Arc<dyn HealthCheck>, timeout: Duration) {
         let severity = check.severity();
         self.checks.write().push(RegisteredCheck {
             check,
@@ -153,10 +149,7 @@ impl HealthAggregator {
 
 /// Run a single check with a timeout. If the check exceeds the timeout, a
 /// `Down` status with a timeout detail is returned.
-async fn run_check_with_timeout(
-    check: &dyn HealthCheck,
-    timeout: Duration,
-) -> HealthStatus {
+async fn run_check_with_timeout(check: &dyn HealthCheck, timeout: Duration) -> HealthStatus {
     let name = check.name().to_string();
     let start = Instant::now();
     #[allow(clippy::cast_possible_truncation)]
@@ -275,8 +268,16 @@ mod tests {
     #[tokio::test]
     async fn all_up_overall_up() {
         let agg = HealthAggregator::new("v1");
-        agg.register(Arc::new(FixedCheck::new("a", Status::Up, CheckSeverity::Critical)));
-        agg.register(Arc::new(FixedCheck::new("b", Status::Up, CheckSeverity::Advisory)));
+        agg.register(Arc::new(FixedCheck::new(
+            "a",
+            Status::Up,
+            CheckSeverity::Critical,
+        )));
+        agg.register(Arc::new(FixedCheck::new(
+            "b",
+            Status::Up,
+            CheckSeverity::Advisory,
+        )));
 
         let health = agg.check_all().await;
         assert_eq!(health.status, Status::Up);
@@ -286,8 +287,16 @@ mod tests {
     #[tokio::test]
     async fn critical_down_makes_overall_down() {
         let agg = HealthAggregator::new("v1");
-        agg.register(Arc::new(FixedCheck::new("db", Status::Down, CheckSeverity::Critical)));
-        agg.register(Arc::new(FixedCheck::new("cache", Status::Up, CheckSeverity::Advisory)));
+        agg.register(Arc::new(FixedCheck::new(
+            "db",
+            Status::Down,
+            CheckSeverity::Critical,
+        )));
+        agg.register(Arc::new(FixedCheck::new(
+            "cache",
+            Status::Up,
+            CheckSeverity::Advisory,
+        )));
 
         let health = agg.check_all().await;
         assert_eq!(health.status, Status::Down);
@@ -296,8 +305,16 @@ mod tests {
     #[tokio::test]
     async fn advisory_down_does_not_make_overall_down() {
         let agg = HealthAggregator::new("v1");
-        agg.register(Arc::new(FixedCheck::new("db", Status::Up, CheckSeverity::Critical)));
-        agg.register(Arc::new(FixedCheck::new("cache", Status::Down, CheckSeverity::Advisory)));
+        agg.register(Arc::new(FixedCheck::new(
+            "db",
+            Status::Up,
+            CheckSeverity::Critical,
+        )));
+        agg.register(Arc::new(FixedCheck::new(
+            "cache",
+            Status::Down,
+            CheckSeverity::Advisory,
+        )));
 
         let health = agg.check_all().await;
         assert_ne!(health.status, Status::Down);
@@ -306,8 +323,16 @@ mod tests {
     #[tokio::test]
     async fn any_degraded_makes_overall_degraded() {
         let agg = HealthAggregator::new("v1");
-        agg.register(Arc::new(FixedCheck::new("db", Status::Up, CheckSeverity::Critical)));
-        agg.register(Arc::new(FixedCheck::new("cache", Status::Degraded, CheckSeverity::Advisory)));
+        agg.register(Arc::new(FixedCheck::new(
+            "db",
+            Status::Up,
+            CheckSeverity::Critical,
+        )));
+        agg.register(Arc::new(FixedCheck::new(
+            "cache",
+            Status::Degraded,
+            CheckSeverity::Advisory,
+        )));
 
         let health = agg.check_all().await;
         assert_eq!(health.status, Status::Degraded);
@@ -316,7 +341,11 @@ mod tests {
     #[tokio::test]
     async fn critical_degraded_makes_overall_degraded() {
         let agg = HealthAggregator::new("v1");
-        agg.register(Arc::new(FixedCheck::new("db", Status::Degraded, CheckSeverity::Critical)));
+        agg.register(Arc::new(FixedCheck::new(
+            "db",
+            Status::Degraded,
+            CheckSeverity::Critical,
+        )));
 
         let health = agg.check_all().await;
         assert_eq!(health.status, Status::Degraded);
@@ -325,8 +354,16 @@ mod tests {
     #[tokio::test]
     async fn critical_down_wins_over_degraded() {
         let agg = HealthAggregator::new("v1");
-        agg.register(Arc::new(FixedCheck::new("db", Status::Down, CheckSeverity::Critical)));
-        agg.register(Arc::new(FixedCheck::new("api", Status::Degraded, CheckSeverity::Advisory)));
+        agg.register(Arc::new(FixedCheck::new(
+            "db",
+            Status::Down,
+            CheckSeverity::Critical,
+        )));
+        agg.register(Arc::new(FixedCheck::new(
+            "api",
+            Status::Degraded,
+            CheckSeverity::Advisory,
+        )));
 
         let health = agg.check_all().await;
         assert_eq!(health.status, Status::Down);
@@ -386,7 +423,11 @@ mod tests {
     #[tokio::test]
     async fn check_one_found() {
         let agg = HealthAggregator::new("v1");
-        agg.register(Arc::new(FixedCheck::new("db", Status::Up, CheckSeverity::Critical)));
+        agg.register(Arc::new(FixedCheck::new(
+            "db",
+            Status::Up,
+            CheckSeverity::Critical,
+        )));
 
         let result = agg.check_one("db").await;
         assert!(result.is_ok());
@@ -404,9 +445,17 @@ mod tests {
     async fn check_count() {
         let agg = HealthAggregator::new("v1");
         assert_eq!(agg.check_count(), 0);
-        agg.register(Arc::new(FixedCheck::new("a", Status::Up, CheckSeverity::Critical)));
+        agg.register(Arc::new(FixedCheck::new(
+            "a",
+            Status::Up,
+            CheckSeverity::Critical,
+        )));
         assert_eq!(agg.check_count(), 1);
-        agg.register(Arc::new(FixedCheck::new("b", Status::Up, CheckSeverity::Advisory)));
+        agg.register(Arc::new(FixedCheck::new(
+            "b",
+            Status::Up,
+            CheckSeverity::Advisory,
+        )));
         assert_eq!(agg.check_count(), 2);
     }
 

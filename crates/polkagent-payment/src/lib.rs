@@ -60,9 +60,11 @@ pub use action::PaymentAction;
 pub use budget::{BudgetChecker, BudgetConfig, BudgetDecision, BudgetState};
 pub use builder::{BuiltIntent, PaymentIntentBuilder};
 pub use error::PaymentError;
+pub use escrow::{EscrowAgreement, EscrowStateMachine, EscrowStatus};
 pub use estimator::{CostEstimator, PricingEntry};
 pub use finality::{FinalityWatcher, TransactionOutcome};
 pub use intent::{IntentStateMachine, IntentStatus};
+pub use ledger::{Ledger, LedgerEntry, LedgerEntryKind, X402PaymentHeader};
 pub use preflight::{
     AddressCheck, BalanceCheck, CompositePreFlight, ExistentialDepositCheck, FeeCheck,
     MetadataFreshnessCheck, NonceCheck, PreFlightBlocker, PreFlightCheck, PreFlightResult,
@@ -72,8 +74,6 @@ pub use risk::{
     BatchHidingDetector, CompositeRiskGate, HighValueDetector, HomoglyphDetector, RiskCode,
     RiskFinding, RiskGate, RiskSeverity,
 };
-pub use escrow::{EscrowAgreement, EscrowStateMachine, EscrowStatus};
-pub use ledger::{Ledger, LedgerEntry, LedgerEntryKind, X402PaymentHeader};
 pub use store::{BalanceSummary, PaymentStore};
 pub use types::{
     Amount, AssetId, CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary,

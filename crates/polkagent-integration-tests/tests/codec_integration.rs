@@ -5,11 +5,9 @@
 //! `polkagent-codec` crate boundary.
 
 use polkagent_codec::{
-    DecodedField, FieldValue,
-    ScaleDecoder, ScaleEncoder,
-    decode_batch_call, decode_extrinsic, extract_transfer_amount,
-    is_batch_call, is_proxy_call, is_transfer_call,
-    call::{pallet_index, call_index},
+    call::{call_index, pallet_index},
+    decode_batch_call, decode_extrinsic, extract_transfer_amount, is_batch_call, is_proxy_call,
+    is_transfer_call, DecodedField, FieldValue, ScaleDecoder, ScaleEncoder,
 };
 
 // ---------------------------------------------------------------------------
@@ -132,7 +130,9 @@ fn decoded_extrinsic_raw_args_bytes_returns_concatenated() {
     let raw_args = vec![0x01, 0x02, 0x03];
     let ext_bytes = make_unsigned_extrinsic(5, 0, &raw_args);
     let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
-    let raw = decoded.raw_args_bytes().expect("raw_args_bytes should return Some");
+    let raw = decoded
+        .raw_args_bytes()
+        .expect("raw_args_bytes should return Some");
     assert_eq!(raw, raw_args);
 }
 
@@ -143,11 +143,8 @@ fn is_transfer_call_identifies_transfer() {
         a.extend(compact_u64(500_000));
         a
     };
-    let ext_bytes = make_unsigned_extrinsic(
-        pallet_index::BALANCES,
-        call_index::BALANCES_TRANSFER,
-        &args,
-    );
+    let ext_bytes =
+        make_unsigned_extrinsic(pallet_index::BALANCES, call_index::BALANCES_TRANSFER, &args);
     let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
     assert!(is_transfer_call(&decoded));
     assert!(!is_batch_call(&decoded));
@@ -228,7 +225,11 @@ fn decode_batch_with_single_inner_call() {
 #[test]
 fn decode_batch_with_multiple_inner_calls() {
     let call1 = batch_inner_call(pallet_index::BALANCES, call_index::BALANCES_TRANSFER, &[]);
-    let call2 = batch_inner_call(pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE, &[]);
+    let call2 = batch_inner_call(
+        pallet_index::BALANCES,
+        call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+        &[],
+    );
     let call3 = batch_inner_call(10, 5, &[0xDE, 0xAD]);
 
     // [compact count=3][call1 bytes][call2 bytes][call3 bytes]
@@ -247,7 +248,10 @@ fn decode_batch_with_multiple_inner_calls() {
     let inner = decode_batch_call(&decoded).expect("decode batch ok");
     assert_eq!(inner.len(), 3);
     assert_eq!(inner[0].pallet_index, pallet_index::BALANCES);
-    assert_eq!(inner[1].call_index, call_index::BALANCES_TRANSFER_KEEP_ALIVE);
+    assert_eq!(
+        inner[1].call_index,
+        call_index::BALANCES_TRANSFER_KEEP_ALIVE
+    );
     assert_eq!(inner[2].pallet_index, 10);
     assert_eq!(inner[2].call_index, 5);
 }
@@ -274,11 +278,8 @@ fn decode_batch_on_non_batch_extrinsic_returns_error() {
         a.extend(compact_u64(100));
         a
     };
-    let ext_bytes = make_unsigned_extrinsic(
-        pallet_index::BALANCES,
-        call_index::BALANCES_TRANSFER,
-        &args,
-    );
+    let ext_bytes =
+        make_unsigned_extrinsic(pallet_index::BALANCES, call_index::BALANCES_TRANSFER, &args);
     let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
     let result = decode_batch_call(&decoded);
     assert!(result.is_err(), "decode_batch_call on non-batch must fail");
@@ -312,11 +313,8 @@ fn extract_transfer_amount_from_transfer_call() {
         a.extend(compact_u64(amount_planck));
         a
     };
-    let ext_bytes = make_unsigned_extrinsic(
-        pallet_index::BALANCES,
-        call_index::BALANCES_TRANSFER,
-        &args,
-    );
+    let ext_bytes =
+        make_unsigned_extrinsic(pallet_index::BALANCES, call_index::BALANCES_TRANSFER, &args);
     let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
     let amount = extract_transfer_amount(&decoded);
     assert_eq!(amount, Some(amount_planck as u128));
@@ -349,7 +347,10 @@ fn extract_transfer_amount_from_named_field() {
         call_index: call_index::BALANCES_TRANSFER,
         pallet_name: None,
         call_name: None,
-        args: vec![DecodedField::named("value", FieldValue::Compact(42_000_000_000))],
+        args: vec![DecodedField::named(
+            "value",
+            FieldValue::Compact(42_000_000_000),
+        )],
     };
     let amount = extract_transfer_amount(&ext);
     assert_eq!(amount, Some(42_000_000_000));
@@ -357,7 +358,8 @@ fn extract_transfer_amount_from_named_field() {
 
 #[test]
 fn extract_transfer_amount_returns_none_for_non_transfer_with_no_named_field() {
-    let ext_bytes = make_unsigned_extrinsic(pallet_index::UTILITY, call_index::UTILITY_BATCH, &[0x00]);
+    let ext_bytes =
+        make_unsigned_extrinsic(pallet_index::UTILITY, call_index::UTILITY_BATCH, &[0x00]);
     let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
     let amount = extract_transfer_amount(&decoded);
     // Utility.batch is not a transfer and has no named amount field
@@ -387,14 +389,15 @@ fn small_transfer_amounts_survive_round_trip() {
             a.extend(compact_u64(amount));
             a
         };
-        let ext_bytes = make_unsigned_extrinsic(
-            pallet_index::BALANCES,
-            call_index::BALANCES_TRANSFER,
-            &args,
-        );
+        let ext_bytes =
+            make_unsigned_extrinsic(pallet_index::BALANCES, call_index::BALANCES_TRANSFER, &args);
         let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
         let extracted = extract_transfer_amount(&decoded);
-        assert_eq!(extracted, Some(amount as u128), "amount {amount} failed round-trip");
+        assert_eq!(
+            extracted,
+            Some(amount as u128),
+            "amount {amount} failed round-trip"
+        );
     }
 }
 
@@ -422,7 +425,10 @@ fn decode_extrinsic_only_version_byte_no_pallet_returns_error() {
     // Compact(1) = [0x04], then version byte [0x04], then nothing
     let bytes = vec![0x04u8, 0x04];
     let result = decode_extrinsic(&bytes);
-    assert!(result.is_err(), "extrinsic with only version byte must error");
+    assert!(
+        result.is_err(),
+        "extrinsic with only version byte must error"
+    );
 }
 
 #[test]
@@ -508,7 +514,11 @@ fn scale_encoder_decoder_round_trip_compact_u32() {
         enc.encode_compact_u32(v);
         let bytes = enc.finish();
         let mut dec = ScaleDecoder::new(&bytes);
-        assert_eq!(dec.decode_compact_u32().expect("decode"), v, "compact_u32 failed for {v}");
+        assert_eq!(
+            dec.decode_compact_u32().expect("decode"),
+            v,
+            "compact_u32 failed for {v}"
+        );
     }
 }
 
@@ -519,7 +529,11 @@ fn scale_encoder_decoder_round_trip_compact_u64() {
         enc.encode_compact_u64(v);
         let bytes = enc.finish();
         let mut dec = ScaleDecoder::new(&bytes);
-        assert_eq!(dec.decode_compact_u64().expect("decode"), v, "compact_u64 failed for {v}");
+        assert_eq!(
+            dec.decode_compact_u64().expect("decode"),
+            v,
+            "compact_u64 failed for {v}"
+        );
     }
 }
 
@@ -585,8 +599,14 @@ fn extrinsic_round_trip_preserves_pallet_and_call() {
         let args = vec![0xAA, 0xBB];
         let ext_bytes = make_unsigned_extrinsic(pallet, call, &args);
         let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
-        assert_eq!(decoded.pallet_index, pallet, "pallet mismatch for {pallet}/{call}");
-        assert_eq!(decoded.call_index, call, "call mismatch for {pallet}/{call}");
+        assert_eq!(
+            decoded.pallet_index, pallet,
+            "pallet mismatch for {pallet}/{call}"
+        );
+        assert_eq!(
+            decoded.call_index, call,
+            "call mismatch for {pallet}/{call}"
+        );
     }
 }
 
@@ -595,5 +615,8 @@ fn empty_extrinsic_no_args_decodes_correctly() {
     let ext_bytes = make_unsigned_extrinsic(pallet_index::UTILITY, call_index::UTILITY_BATCH, &[]);
     let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
     assert_eq!(decoded.pallet_index, pallet_index::UTILITY);
-    assert!(decoded.args.is_empty(), "empty args extrinsic should have no args");
+    assert!(
+        decoded.args.is_empty(),
+        "empty args extrinsic should have no args"
+    );
 }

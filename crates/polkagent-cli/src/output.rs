@@ -115,8 +115,7 @@ pub fn format_output<T: Serialize>(data: &T, format: OutputFormat, command: &str
                 data,
                 _meta: meta(command),
             };
-            serde_json::to_string(&envelope)
-                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+            serde_json::to_string(&envelope).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
         }
 
         OutputFormat::JsonPretty => {
@@ -157,7 +156,10 @@ mod tests {
 
     #[test]
     fn parse_all_formats() {
-        assert_eq!("human".parse::<OutputFormat>().unwrap(), OutputFormat::Human);
+        assert_eq!(
+            "human".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Human
+        );
         assert_eq!("json".parse::<OutputFormat>().unwrap(), OutputFormat::Json);
         assert_eq!(
             "json-pretty".parse::<OutputFormat>().unwrap(),

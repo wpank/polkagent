@@ -250,7 +250,12 @@ pub struct AgentCreateCmd {
     pub name: String,
 
     /// AI model identifier (e.g. `anthropic/claude-sonnet-4-6`).
-    #[arg(long, short = 'm', value_name = "MODEL", default_value = "anthropic/claude-sonnet-4-6")]
+    #[arg(
+        long,
+        short = 'm',
+        value_name = "MODEL",
+        default_value = "anthropic/claude-sonnet-4-6"
+    )]
     pub model: String,
 
     /// Optional description.
@@ -264,7 +269,6 @@ pub struct AgentCreateCmd {
     // ------------------------------------------------------------------
     // PRD-03 flags
     // ------------------------------------------------------------------
-
     /// Declare a capability for this agent (repeatable).
     ///
     /// Example: `--capability file.read --capability chain.query`

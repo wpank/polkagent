@@ -239,10 +239,7 @@ impl std::fmt::Debug for ExternalSigner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExternalSigner")
             .field("config", &self.config)
-            .field(
-                "has_approval_callback",
-                &self.approval_callback.is_some(),
-            )
+            .field("has_approval_callback", &self.approval_callback.is_some())
             .finish()
     }
 }
@@ -363,11 +360,7 @@ impl Signer for ExternalSigner {
     /// endpoint is reachable, this method may in the future query it for
     /// available accounts.
     async fn describe(&self) -> Result<SignerCapabilities, SignerError> {
-        let accounts = self
-            .config
-            .allowed_accounts
-            .clone()
-            .unwrap_or_default();
+        let accounts = self.config.allowed_accounts.clone().unwrap_or_default();
 
         Ok(SignerCapabilities {
             accounts,
@@ -443,10 +436,7 @@ impl Signer for ExternalSigner {
             })?;
 
         let status = http_response.status();
-        let body = http_response
-            .text()
-            .await
-            .unwrap_or_default();
+        let body = http_response.text().await.unwrap_or_default();
 
         if !status.is_success() {
             error!(status = %status, body = %body, "external signer returned error");
@@ -464,11 +454,10 @@ impl Signer for ExternalSigner {
             return Err(ExternalSignerError::InvalidSignature.into());
         }
 
-        let signature = hex_decode(&signing_response.signature_hex).ok_or_else(|| {
-            SignerError::Internal {
+        let signature =
+            hex_decode(&signing_response.signature_hex).ok_or_else(|| SignerError::Internal {
                 message: "invalid hex in signature_hex".into(),
-            }
-        })?;
+            })?;
 
         let signed_extrinsic =
             hex_decode(&signing_response.signed_payload).ok_or_else(|| SignerError::Internal {
@@ -490,10 +479,7 @@ impl Signer for ExternalSigner {
 
     /// Health check: GET `{endpoint_url}/health`.
     async fn health(&self) -> Result<(), SignerError> {
-        let url = format!(
-            "{}/health",
-            self.config.endpoint_url.trim_end_matches('/')
-        );
+        let url = format!("{}/health", self.config.endpoint_url.trim_end_matches('/'));
         let response = self
             .client
             .get(&url)
@@ -505,10 +491,7 @@ impl Signer for ExternalSigner {
             Ok(())
         } else {
             Err(SignerError::Internal {
-                message: format!(
-                    "health check returned HTTP {}",
-                    response.status()
-                ),
+                message: format!("health check returned HTTP {}", response.status()),
             })
         }
     }
@@ -607,8 +590,8 @@ mod tests {
 
     #[test]
     fn config_effective_timeout_custom() {
-        let config = ExternalSignerConfig::new("http://localhost:9933")
-            .with_timeout(Duration::from_secs(5));
+        let config =
+            ExternalSignerConfig::new("http://localhost:9933").with_timeout(Duration::from_secs(5));
         assert_eq!(config.effective_timeout(), Duration::from_secs(5));
     }
 
@@ -646,8 +629,8 @@ mod tests {
     #[test]
     fn with_approval_callback_attaches_callback() {
         let config = test_config();
-        let signer = ExternalSigner::new(config)
-            .map(|s| s.with_approval_callback(Arc::new(|_| true)));
+        let signer =
+            ExternalSigner::new(config).map(|s| s.with_approval_callback(Arc::new(|_| true)));
         assert!(signer.is_ok());
     }
 
@@ -682,8 +665,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&req).unwrap_or_default();
-        let parsed: SigningRequest =
-            serde_json::from_str(&json).unwrap_or_else(|_| req.clone());
+        let parsed: SigningRequest = serde_json::from_str(&json).unwrap_or_else(|_| req.clone());
         assert_eq!(parsed, req);
     }
 
@@ -762,28 +744,19 @@ mod tests {
 
     #[test]
     fn http_status_403_maps_to_rejected() {
-        let err = ExternalSigner::map_http_status(
-            reqwest::StatusCode::FORBIDDEN,
-            "not authorized",
-        );
+        let err = ExternalSigner::map_http_status(reqwest::StatusCode::FORBIDDEN, "not authorized");
         assert!(matches!(err, ExternalSignerError::Rejected { .. }));
     }
 
     #[test]
     fn http_status_408_maps_to_timeout() {
-        let err = ExternalSigner::map_http_status(
-            reqwest::StatusCode::REQUEST_TIMEOUT,
-            "",
-        );
+        let err = ExternalSigner::map_http_status(reqwest::StatusCode::REQUEST_TIMEOUT, "");
         assert!(matches!(err, ExternalSignerError::Timeout));
     }
 
     #[test]
     fn http_status_503_maps_to_connection_refused() {
-        let err = ExternalSigner::map_http_status(
-            reqwest::StatusCode::SERVICE_UNAVAILABLE,
-            "",
-        );
+        let err = ExternalSigner::map_http_status(reqwest::StatusCode::SERVICE_UNAVAILABLE, "");
         assert!(matches!(err, ExternalSignerError::ConnectionRefused));
     }
 
@@ -1058,10 +1031,7 @@ mod tests {
 
     #[test]
     fn hex_decode_strips_0x_prefix() {
-        assert_eq!(
-            hex_decode("0xdeadbeef"),
-            Some(vec![0xDE, 0xAD, 0xBE, 0xEF])
-        );
+        assert_eq!(hex_decode("0xdeadbeef"), Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
     }
 
     #[test]

@@ -47,11 +47,7 @@ impl Bulkhead {
             "bulkhead: attempting to acquire permit"
         );
 
-        let permit = match tokio::time::timeout(
-            self.max_wait_time,
-            self.semaphore.acquire(),
-        )
-        .await
+        let permit = match tokio::time::timeout(self.max_wait_time, self.semaphore.acquire()).await
         {
             Ok(Ok(permit)) => permit,
             Ok(Err(_closed)) => {

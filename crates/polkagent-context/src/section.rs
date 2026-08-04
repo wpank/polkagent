@@ -110,7 +110,8 @@ impl ContextSection {
     /// Return this section's effective priority.
     #[must_use]
     pub fn effective_priority(&self) -> u8 {
-        self.priority.unwrap_or_else(|| self.kind.default_priority())
+        self.priority
+            .unwrap_or_else(|| self.kind.default_priority())
     }
 
     /// Estimate the token count, using the cached value if available.
@@ -131,10 +132,22 @@ mod tests {
 
     #[test]
     fn section_kind_priority_order() {
-        assert!(SectionKind::SystemPrompt.default_priority() > SectionKind::UserInput.default_priority());
-        assert!(SectionKind::UserInput.default_priority() > SectionKind::ConversationHistory.default_priority());
-        assert!(SectionKind::ConversationHistory.default_priority() > SectionKind::MemoryContext.default_priority());
-        assert!(SectionKind::MemoryContext.default_priority() > SectionKind::ToolDescriptions.default_priority());
+        assert!(
+            SectionKind::SystemPrompt.default_priority()
+                > SectionKind::UserInput.default_priority()
+        );
+        assert!(
+            SectionKind::UserInput.default_priority()
+                > SectionKind::ConversationHistory.default_priority()
+        );
+        assert!(
+            SectionKind::ConversationHistory.default_priority()
+                > SectionKind::MemoryContext.default_priority()
+        );
+        assert!(
+            SectionKind::MemoryContext.default_priority()
+                > SectionKind::ToolDescriptions.default_priority()
+        );
     }
 
     #[test]
@@ -147,8 +160,7 @@ mod tests {
 
     #[test]
     fn with_priority_overrides_default() {
-        let section = ContextSection::new(SectionKind::ToolDescriptions, "tools")
-            .with_priority(99);
+        let section = ContextSection::new(SectionKind::ToolDescriptions, "tools").with_priority(99);
         assert_eq!(section.effective_priority(), 99);
     }
 
@@ -171,7 +183,10 @@ mod tests {
     fn budget_key_maps_correctly() {
         assert_eq!(SectionKind::SystemPrompt.budget_key(), "system_prompt");
         assert_eq!(SectionKind::UserInput.budget_key(), "conversation");
-        assert_eq!(SectionKind::ConversationHistory.budget_key(), "conversation");
+        assert_eq!(
+            SectionKind::ConversationHistory.budget_key(),
+            "conversation"
+        );
         assert_eq!(SectionKind::MemoryContext.budget_key(), "memory");
         assert_eq!(SectionKind::ToolDescriptions.budget_key(), "tools");
     }

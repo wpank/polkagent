@@ -245,10 +245,10 @@ impl ToolRegistry {
         // Grant check.
         let spec = handler.spec();
         if let Some(ref required) = spec.required_grant {
-            let has_grant = context.grants.iter().any(|g| {
-                g.is_valid()
-                    && polkagent_grant::pattern_matches(&g.action, required)
-            });
+            let has_grant = context
+                .grants
+                .iter()
+                .any(|g| g.is_valid() && polkagent_grant::pattern_matches(&g.action, required));
             if !has_grant {
                 return Err(ToolError::PermissionDenied {
                     reason: format!(

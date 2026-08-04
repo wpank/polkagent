@@ -56,10 +56,12 @@ impl PinStore {
     /// `Err(MetadataError::PinNotFound)` if no such pin exists.
     pub fn unpin(&self, chain_id: &ChainId, hash: &MetadataHash) -> Result<(), MetadataError> {
         let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        let pins = inner.get_mut(chain_id).ok_or_else(|| MetadataError::PinNotFound {
-            chain_id: chain_id.clone(),
-            hash: hash.clone(),
-        })?;
+        let pins = inner
+            .get_mut(chain_id)
+            .ok_or_else(|| MetadataError::PinNotFound {
+                chain_id: chain_id.clone(),
+                hash: hash.clone(),
+            })?;
 
         let before = pins.len();
         pins.retain(|p| &p.hash != hash);

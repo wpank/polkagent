@@ -4,22 +4,20 @@ use anyhow::{Context, Result};
 
 use polkagent_chain_subxt::config::SubxtConfig;
 use polkagent_chain_subxt::decode::{
-    decode_call_bytes, hex_to_bytes, parse_block_number_hex, parse_runtime_metadata,
-    compute_metadata_digest,
+    compute_metadata_digest, decode_call_bytes, hex_to_bytes, parse_block_number_hex,
+    parse_runtime_metadata,
 };
 use polkagent_chain_subxt::rpc::RpcClient;
 
-use crate::cli::{
-    ChainCmd, ChainBalanceCmd, ChainDecodeCmd, ChainMetadataCmd, ChainStatusCmd,
-};
+use crate::cli::{ChainBalanceCmd, ChainCmd, ChainDecodeCmd, ChainMetadataCmd, ChainStatusCmd};
 
 /// Dispatch the chain subcommand.
 pub async fn run(cmd: &ChainCmd, rpc_url: Option<&str>) -> Result<()> {
     match cmd {
-        ChainCmd::Status(c)   => status(c, rpc_url).await,
+        ChainCmd::Status(c) => status(c, rpc_url).await,
         ChainCmd::Metadata(c) => metadata(c, rpc_url).await,
-        ChainCmd::Decode(c)   => decode(c, rpc_url).await,
-        ChainCmd::Balance(c)  => balance(c, rpc_url).await,
+        ChainCmd::Decode(c) => decode(c, rpc_url).await,
+        ChainCmd::Balance(c) => balance(c, rpc_url).await,
     }
 }
 
@@ -57,13 +55,19 @@ async fn status(cmd: &ChainStatusCmd, rpc_url: Option<&str>) -> Result<()> {
         .unwrap_or_else(|| cmd.chain.clone());
 
     // Fetch health.
-    let health = rpc.system_health(url).await
+    let health = rpc
+        .system_health(url)
+        .await
         .context("failed to query system_health")?;
 
     // Fetch best block.
-    let best_hash = rpc.chain_get_block_hash(url, None).await
+    let best_hash = rpc
+        .chain_get_block_hash(url, None)
+        .await
         .context("failed to query best block hash")?;
-    let best_header = rpc.chain_get_header(url, Some(&best_hash)).await
+    let best_header = rpc
+        .chain_get_header(url, Some(&best_hash))
+        .await
         .context("failed to query best block header")?;
     let best_number_hex = best_header
         .get("number")
@@ -72,9 +76,13 @@ async fn status(cmd: &ChainStatusCmd, rpc_url: Option<&str>) -> Result<()> {
     let best_number = parse_block_number_hex(best_number_hex).unwrap_or(0);
 
     // Fetch finalized block.
-    let finalized_hash = rpc.chain_get_finalized_head(url).await
+    let finalized_hash = rpc
+        .chain_get_finalized_head(url)
+        .await
         .context("failed to query finalized head")?;
-    let finalized_header = rpc.chain_get_header(url, Some(&finalized_hash)).await
+    let finalized_header = rpc
+        .chain_get_header(url, Some(&finalized_hash))
+        .await
         .context("failed to query finalized block header")?;
     let finalized_number_hex = finalized_header
         .get("number")
@@ -99,7 +107,10 @@ async fn status(cmd: &ChainStatusCmd, rpc_url: Option<&str>) -> Result<()> {
         println!("  Chain:          {chain_name}");
         println!("  Connected:      yes");
         println!("  Peers:          {}", health.peers);
-        println!("  Syncing:        {}", if health.is_syncing { "yes" } else { "no" });
+        println!(
+            "  Syncing:        {}",
+            if health.is_syncing { "yes" } else { "no" }
+        );
         println!("  Best block:     #{best_number} ({best_hash})");
         println!("  Finalized:      #{finalized_number} ({finalized_hash})");
     }
@@ -143,7 +154,11 @@ async fn metadata(cmd: &ChainMetadataCmd, rpc_url: Option<&str>) -> Result<()> {
         println!("Chain metadata");
         println!("  Chain:            {}", cmd.chain);
         println!("  Metadata version: V{}", runtime_metadata.version);
-        println!("  Pallets ({}):     {}", pallet_names.len(), pallet_names.join(", "));
+        println!(
+            "  Pallets ({}):     {}",
+            pallet_names.len(),
+            pallet_names.join(", ")
+        );
     }
     Ok(())
 }
@@ -156,8 +171,8 @@ async fn decode(cmd: &ChainDecodeCmd, rpc_url: Option<&str>) -> Result<()> {
     let url = require_rpc_url(rpc_url)?;
     let rpc = make_rpc_client()?;
 
-    let call_bytes = hex_to_bytes(&cmd.hex)
-        .map_err(|e| anyhow::anyhow!("invalid hex input: {e}"))?;
+    let call_bytes =
+        hex_to_bytes(&cmd.hex).map_err(|e| anyhow::anyhow!("invalid hex input: {e}"))?;
 
     // Fetch metadata from the node.
     let metadata_hex = rpc
@@ -205,10 +220,9 @@ async fn balance(cmd: &ChainBalanceCmd, rpc_url: Option<&str>) -> Result<()> {
     // Storage key = twox128("System") ++ twox128("Account") ++ blake2_128_concat(account_id)
     //
     // The address must be a hex-encoded 32-byte account ID (with optional 0x prefix).
-    let account_bytes = hex_to_bytes(&cmd.address)
-        .map_err(|e| anyhow::anyhow!(
-            "invalid account address (expected hex-encoded account ID): {e}"
-        ))?;
+    let account_bytes = hex_to_bytes(&cmd.address).map_err(|e| {
+        anyhow::anyhow!("invalid account address (expected hex-encoded account ID): {e}")
+    })?;
 
     if account_bytes.len() != 32 {
         anyhow::bail!(

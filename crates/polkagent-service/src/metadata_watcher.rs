@@ -221,8 +221,8 @@ pub fn check_drift_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polkagent_metadata::{MetadataService, MetadataSnapshot, MetadataVersion};
     use polkagent_core::now;
+    use polkagent_metadata::{MetadataService, MetadataSnapshot, MetadataVersion};
 
     fn make_snapshot(chain: &str, data: &[u8]) -> MetadataSnapshot {
         MetadataSnapshot::new(
@@ -297,12 +297,7 @@ mod tests {
         let bus = EventBus::new(16);
         let chains = vec![ChainId::new("polkadot")];
 
-        let mut watcher = MetadataDriftWatcher::new(
-            svc,
-            bus,
-            chains,
-            Duration::from_millis(50),
-        );
+        let mut watcher = MetadataDriftWatcher::new(svc, bus, chains, Duration::from_millis(50));
 
         assert!(!watcher.is_running());
         watcher.start();
@@ -325,12 +320,8 @@ mod tests {
         let bus = EventBus::new(64);
         let mut rx = bus.subscribe();
 
-        let mut watcher = MetadataDriftWatcher::new(
-            svc,
-            bus,
-            vec![chain],
-            Duration::from_millis(50),
-        );
+        let mut watcher =
+            MetadataDriftWatcher::new(svc, bus, vec![chain], Duration::from_millis(50));
         watcher.start();
 
         // Wait for at least one poll cycle.

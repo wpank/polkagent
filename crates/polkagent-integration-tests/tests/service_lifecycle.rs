@@ -264,10 +264,7 @@ async fn get_run_status_after_start_returns_queued_or_running() {
 async fn get_run_status_for_nonexistent_run_fails() {
     let svc = make_service();
     let result = svc.get_run_status(RunId::new()).await;
-    assert!(
-        result.is_err(),
-        "status for nonexistent run must fail"
-    );
+    assert!(result.is_err(), "status for nonexistent run must fail");
 }
 
 #[tokio::test]
@@ -279,7 +276,10 @@ async fn cancel_run_transitions_state() {
     let run_id = svc.start_run(agent_id, "Hello").await.expect("start");
     svc.cancel_run(run_id).await.expect("cancel");
 
-    let state = svc.get_run_status(run_id).await.expect("status after cancel");
+    let state = svc
+        .get_run_status(run_id)
+        .await
+        .expect("status after cancel");
     use polkagent_core::RunState;
     assert!(
         matches!(state, RunState::Cancelled { .. }),
@@ -400,8 +400,14 @@ async fn deny_effect_without_effect_store_returns_not_initialized() {
 fn app_service_debug_format_includes_key_fields() {
     let svc = make_service();
     let debug = format!("{svc:?}");
-    assert!(debug.contains("AppService"), "debug must contain AppService");
-    assert!(debug.contains("has_executor"), "debug must include has_executor field");
+    assert!(
+        debug.contains("AppService"),
+        "debug must contain AppService"
+    );
+    assert!(
+        debug.contains("has_executor"),
+        "debug must include has_executor field"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +418,11 @@ fn app_service_debug_format_includes_key_fields() {
 fn provider_registry_starts_empty() {
     let svc = make_service();
     let registry = svc.provider_registry();
-    assert_eq!(registry.len(), 0, "fresh service must have empty provider registry");
+    assert_eq!(
+        registry.len(),
+        0,
+        "fresh service must have empty provider registry"
+    );
 }
 
 // ---------------------------------------------------------------------------

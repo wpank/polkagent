@@ -50,9 +50,7 @@ const MAX_PAGE_SIZE: usize = 100;
 ///
 /// Returns `ApiError::ValidationError` when `id` is not a valid UUID.
 pub fn validate_id(id: &str) -> Result<Uuid, ApiError> {
-    Uuid::parse_str(id).map_err(|_| {
-        ApiError::ValidationError(format!("invalid UUID: '{id}'"))
-    })
+    Uuid::parse_str(id).map_err(|_| ApiError::ValidationError(format!("invalid UUID: '{id}'")))
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +67,10 @@ pub fn validate_id(id: &str) -> Result<Uuid, ApiError> {
 ///
 /// Returns `ApiError::ValidationError` when `hex` is not a valid hex string.
 pub fn validate_hex(hex: &str) -> Result<Vec<u8>, ApiError> {
-    let stripped = hex.strip_prefix("0x").or_else(|| hex.strip_prefix("0X")).unwrap_or(hex);
+    let stripped = hex
+        .strip_prefix("0x")
+        .or_else(|| hex.strip_prefix("0X"))
+        .unwrap_or(hex);
 
     if stripped.is_empty() {
         return Err(ApiError::ValidationError(
@@ -161,7 +162,10 @@ mod tests {
     fn valid_uuid_passes() {
         let id = "550e8400-e29b-41d4-a716-446655440000";
         let result = validate_id(id);
-        assert!(result.is_ok(), "expected valid UUID to pass, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected valid UUID to pass, got {result:?}"
+        );
         assert_eq!(result.unwrap().to_string(), id);
     }
 

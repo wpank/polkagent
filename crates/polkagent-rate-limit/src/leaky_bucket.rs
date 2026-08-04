@@ -123,11 +123,23 @@ impl RateLimiter for LeakyBucket {
 
         if inner.try_add(cost) {
             let remaining = (inner.capacity - inner.level).floor().max(0.0) as u32;
-            trace!(key, cost, remaining, level = inner.level, "leaky bucket: allowed");
+            trace!(
+                key,
+                cost,
+                remaining,
+                level = inner.level,
+                "leaky bucket: allowed"
+            );
             QuotaResult::allowed(remaining, None)
         } else {
             let retry_after = inner.time_until_room(cost);
-            trace!(key, cost, ?retry_after, level = inner.level, "leaky bucket: denied");
+            trace!(
+                key,
+                cost,
+                ?retry_after,
+                level = inner.level,
+                "leaky bucket: denied"
+            );
             QuotaResult::denied(0, None, Some(retry_after))
         }
     }

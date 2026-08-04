@@ -12,12 +12,7 @@
 //! | `POST` | `/v1/compat/pca/inbound/renew`| [`bridge_renew`]    |
 //! | `POST` | `/v1/compat/pca/send`         | [`bridge_send`]     |
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use tracing::{debug, info};
 
 use crate::{
@@ -39,9 +34,7 @@ use crate::{
 /// Reports identity, transport connectivity, and supported capabilities so
 /// that PCA clients can discover what the bridge instance supports before
 /// polling for deliveries.
-pub async fn bridge_health(
-    State(_state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn bridge_health(State(_state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let response = BridgeHealthResponse {
         identity: BridgeIdentityInfo {
             bot_id: "polkagent".to_owned(),
@@ -74,12 +67,8 @@ pub async fn bridge_health(
 /// In this initial implementation the bridge does not queue real PCA
 /// deliveries — it returns an empty list. Future versions will integrate
 /// with the transport layer's incoming message channel.
-pub async fn bridge_inbound(
-    State(_state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
-    let response = BridgeInboundResponse {
-        deliveries: vec![],
-    };
+pub async fn bridge_inbound(State(_state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+    let response = BridgeInboundResponse { deliveries: vec![] };
 
     debug!("bridge inbound polled (0 deliveries)");
     Ok(Json(response))
@@ -160,14 +149,10 @@ pub async fn bridge_send(
     Json(body): Json<BridgeSendRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if body.chat_id.is_empty() {
-        return Err(ApiError::ValidationError(
-            "chat_id is required".to_owned(),
-        ));
+        return Err(ApiError::ValidationError("chat_id is required".to_owned()));
     }
     if body.text.is_empty() {
-        return Err(ApiError::ValidationError(
-            "text is required".to_owned(),
-        ));
+        return Err(ApiError::ValidationError("text is required".to_owned()));
     }
 
     let message_id = uuid::Uuid::now_v7().to_string();

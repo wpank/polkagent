@@ -591,10 +591,7 @@ mod tests {
             "sonar",
         ];
         for slug in &expected {
-            assert!(
-                catalog.get(slug).is_some(),
-                "missing model: {slug}"
-            );
+            assert!(catalog.get(slug).is_some(), "missing model: {slug}");
         }
     }
 

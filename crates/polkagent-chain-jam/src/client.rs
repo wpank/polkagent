@@ -58,6 +58,7 @@ impl JamClient {
     }
 
     /// Query a block by slot number.
+    #[allow(clippy::unused_async)] // will need async when live RPC is implemented
     pub async fn get_block(&self, slot: u64) -> Result<JamBlock, JamError> {
         match &self.backend {
             Backend::Mock(mock) => {
@@ -72,6 +73,7 @@ impl JamClient {
     }
 
     /// Get the latest block.
+    #[allow(clippy::unused_async)] // will need async when live RPC is implemented
     pub async fn get_latest_block(&self) -> Result<JamBlock, JamError> {
         match &self.backend {
             Backend::Mock(mock) => {
@@ -86,6 +88,7 @@ impl JamClient {
     }
 
     /// Health check: verify the client can reach its backend.
+    #[allow(clippy::unused_async)] // will need async when live RPC is implemented
     pub async fn health(&self) -> Result<(), JamError> {
         match &self.backend {
             Backend::Mock(_) => Ok(()),

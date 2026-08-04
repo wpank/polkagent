@@ -169,7 +169,10 @@ impl GrantSpec {
 
         // Pallets: if both sides specify a list, take the intersection.
         // If either side is empty (meaning "allow all"), use the other side.
-        let allowed_pallets = match (self.allowed_pallets.is_empty(), other.allowed_pallets.is_empty()) {
+        let allowed_pallets = match (
+            self.allowed_pallets.is_empty(),
+            other.allowed_pallets.is_empty(),
+        ) {
             (true, true) => Vec::new(),
             (true, false) => other.allowed_pallets.clone(),
             (false, true) => self.allowed_pallets.clone(),
@@ -520,7 +523,10 @@ mod tests {
     fn group_id_serde_transparent() {
         let id = GroupId::new();
         let json = serde_json::to_string(&id).expect("serialize");
-        assert!(json.starts_with('"'), "should serialize as plain UUID string");
+        assert!(
+            json.starts_with('"'),
+            "should serialize as plain UUID string"
+        );
         let back: GroupId = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(id, back);
     }

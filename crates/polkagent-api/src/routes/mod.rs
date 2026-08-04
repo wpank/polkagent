@@ -163,20 +163,21 @@ pub fn register(state: AppState) -> Router {
     // -----------------------------------------------------------------------
     // Prometheus metrics (no version prefix — scrapeable by collectors)
     // -----------------------------------------------------------------------
-    let metrics_route = Router::new()
-        .route("/metrics", get(metrics::prometheus_metrics));
+    let metrics_route = Router::new().route("/metrics", get(metrics::prometheus_metrics));
 
     // -----------------------------------------------------------------------
     // OpenAPI spec route (no version prefix, no auth required)
     // -----------------------------------------------------------------------
-    let openapi_route = Router::new()
-        .route("/openapi.json", get(openapi::serve_openapi));
+    let openapi_route = Router::new().route("/openapi.json", get(openapi::serve_openapi));
 
     // -----------------------------------------------------------------------
     // Artifact content route with a larger body limit (10 MiB).
     // -----------------------------------------------------------------------
     let artifact_content_route = Router::new()
-        .route("/artifacts/{id}/content", get(artifacts::get_artifact_content))
+        .route(
+            "/artifacts/{id}/content",
+            get(artifacts::get_artifact_content),
+        )
         .layer(DefaultBodyLimit::max(BODY_LIMIT_ARTIFACT));
 
     // -----------------------------------------------------------------------
@@ -184,7 +185,10 @@ pub fn register(state: AppState) -> Router {
     // -----------------------------------------------------------------------
     let api_routes = Router::new()
         // Agents CRUD
-        .route("/agents", post(agents::create_agent).get(agents::list_agents))
+        .route(
+            "/agents",
+            post(agents::create_agent).get(agents::list_agents),
+        )
         .route(
             "/agents/{id}",
             get(agents::get_agent).delete(agents::delete_agent),
@@ -210,7 +214,10 @@ pub fn register(state: AppState) -> Router {
         .route("/effects/{id}/deny", post(effects::deny_effect))
         // Artifacts (content served from the higher-limit sub-router)
         .route("/artifacts/{id}", get(artifacts::get_artifact))
-        .route("/artifacts/{id}/provenance", get(artifacts::get_artifact_provenance))
+        .route(
+            "/artifacts/{id}/provenance",
+            get(artifacts::get_artifact_provenance),
+        )
         .merge(artifact_content_route)
         // Events (REST + WebSocket)
         .route("/events", get(events_rest::list_events))
@@ -219,7 +226,10 @@ pub fn register(state: AppState) -> Router {
         // Providers
         .route("/providers", get(providers::list_providers))
         .route("/providers/{id}", get(providers::get_provider))
-        .route("/providers/{provider_id}/models", get(models::list_provider_models))
+        .route(
+            "/providers/{provider_id}/models",
+            get(models::list_provider_models),
+        )
         // Models
         .route("/models", get(models::list_all_models))
         .route("/models/{model_id}", get(models::get_model))
@@ -227,8 +237,14 @@ pub fn register(state: AppState) -> Router {
         .route("/skills", get(skills::list_skills))
         .route("/skills/install", post(skills::install_skill))
         .route("/skills/{skill_id}", get(skills::get_skill))
-        .route("/skills/{skill_id}/uninstall", post(skills::uninstall_skill))
-        .route("/skills/{skill_id}/config", put(skills::update_skill_config))
+        .route(
+            "/skills/{skill_id}/uninstall",
+            post(skills::uninstall_skill),
+        )
+        .route(
+            "/skills/{skill_id}/config",
+            put(skills::update_skill_config),
+        )
         // Tools
         .route("/tools", get(tools::list_tools))
         .route("/tools/{tool_id}", get(tools::get_tool))
@@ -237,7 +253,10 @@ pub fn register(state: AppState) -> Router {
         .route("/payments/balance", get(payments::get_balance))
         .route("/payments/usage", get(payments::get_usage))
         .route("/payments/receipts", get(payments::list_receipts))
-        .route("/payments/receipts/{receipt_id}", get(payments::get_receipt))
+        .route(
+            "/payments/receipts/{receipt_id}",
+            get(payments::get_receipt),
+        )
         // Memory
         .route("/memory/query", post(memory::query_memory))
         .route("/memory/stats", get(memory::memory_stats))
@@ -273,8 +292,7 @@ pub fn register(state: AppState) -> Router {
     // WebSocket v1alpha1 route (no version prefix in the path segment; the
     // `v1alpha1` is part of the path literal per PRD-14 §4).
     // -----------------------------------------------------------------------
-    let ws_route = Router::new()
-        .route("/ws/v1alpha1", get(ws::ws_handler));
+    let ws_route = Router::new().route("/ws/v1alpha1", get(ws::ws_handler));
 
     // -----------------------------------------------------------------------
     // PCA C1 bridge compatibility routes (PRD-06 §12, §20.4).

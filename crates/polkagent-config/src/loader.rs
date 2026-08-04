@@ -111,7 +111,9 @@ impl ConfigLoader {
                     debug!(path = %global_path.display(), "loading global config file");
                     match read_toml_file(&global_path) {
                         Ok(overlay) => merge_toml(&mut base, overlay),
-                        Err(e) => warn!(path = %global_path.display(), error = %e, "skipping unreadable global config"),
+                        Err(e) => {
+                            warn!(path = %global_path.display(), error = %e, "skipping unreadable global config")
+                        }
                     }
                 }
             }
@@ -121,7 +123,9 @@ impl ConfigLoader {
                 debug!(path = %project_path.display(), "loading project config file");
                 match read_toml_file(&project_path) {
                     Ok(overlay) => merge_toml(&mut base, overlay),
-                    Err(e) => warn!(path = %project_path.display(), error = %e, "skipping unreadable project config"),
+                    Err(e) => {
+                        warn!(path = %project_path.display(), error = %e, "skipping unreadable project config")
+                    }
                 }
             }
         }
@@ -196,8 +200,8 @@ pub fn find_project_config() -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 
 fn read_toml_file(path: &Path) -> Result<toml::Value> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|e| ConfigError::Io(path.to_path_buf(), e))?;
+    let contents =
+        std::fs::read_to_string(path).map_err(|e| ConfigError::Io(path.to_path_buf(), e))?;
     toml::from_str(&contents)
         .map_err(|e| ConfigError::Parse(path.display().to_string(), e.to_string()))
 }
@@ -211,9 +215,7 @@ pub fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
     match (base, overlay) {
         (toml::Value::Table(base_table), toml::Value::Table(overlay_table)) => {
             for (key, overlay_val) in overlay_table {
-                let both_tables = base_table
-                    .get(&key)
-                    .is_some_and(toml::Value::is_table)
+                let both_tables = base_table.get(&key).is_some_and(toml::Value::is_table)
                     && overlay_val.is_table();
 
                 if both_tables {
@@ -240,10 +242,10 @@ pub fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
 ///
 /// Returns [`ConfigError`] if either config cannot be serialized to TOML.
 pub fn merge(base: Config, overlay: Config) -> Result<Config> {
-    let mut base_val = toml::Value::try_from(base)
-        .map_err(|e| ConfigError::Serialize(e.to_string()))?;
-    let overlay_val = toml::Value::try_from(overlay)
-        .map_err(|e| ConfigError::Serialize(e.to_string()))?;
+    let mut base_val =
+        toml::Value::try_from(base).map_err(|e| ConfigError::Serialize(e.to_string()))?;
+    let overlay_val =
+        toml::Value::try_from(overlay).map_err(|e| ConfigError::Serialize(e.to_string()))?;
     merge_toml(&mut base_val, overlay_val);
     base_val
         .try_into()
@@ -342,12 +344,15 @@ level = "warn"
     fn merge_overlays_nested_tables() {
         let mut base: toml::Value =
             toml::from_str("[log]\nlevel = \"info\"\nformat = \"pretty\"").expect("base");
-        let overlay: toml::Value =
-            toml::from_str("[log]\nlevel = \"debug\"").expect("overlay");
+        let overlay: toml::Value = toml::from_str("[log]\nlevel = \"debug\"").expect("overlay");
         merge_toml(&mut base, overlay);
 
         let table = base.as_table().expect("table");
-        let log = table.get("log").expect("log").as_table().expect("log table");
+        let log = table
+            .get("log")
+            .expect("log")
+            .as_table()
+            .expect("log table");
         assert_eq!(log.get("level").and_then(|v| v.as_str()), Some("debug"));
         // format should be preserved from base.
         assert_eq!(log.get("format").and_then(|v| v.as_str()), Some("pretty"));
@@ -404,7 +409,10 @@ level = "warn"
         let found = find_project_config_from(&nested_dir);
         assert!(found.is_some(), "should find project config");
         assert!(
-            found.as_ref().unwrap().ends_with(".polkagent/polkagent.toml"),
+            found
+                .as_ref()
+                .unwrap()
+                .ends_with(".polkagent/polkagent.toml"),
             "unexpected path: {:?}",
             found
         );
@@ -425,10 +433,17 @@ level = "warn"
         let tmp = TempDir::new().expect("tempdir");
 
         // Global config: info level.
-        let global_cfg = write_config(tmp.path(), "global/polkagent.toml", "[log]\nlevel = \"info\"");
+        let global_cfg = write_config(
+            tmp.path(),
+            "global/polkagent.toml",
+            "[log]\nlevel = \"info\"",
+        );
         // Project config: debug level.
-        let project_cfg =
-            write_config(tmp.path(), "project/.polkagent/polkagent.toml", "[log]\nlevel = \"debug\"");
+        let project_cfg = write_config(
+            tmp.path(),
+            "project/.polkagent/polkagent.toml",
+            "[log]\nlevel = \"debug\"",
+        );
 
         // Manually build the same two-layer merge the loader would perform.
         let mut base = toml::Value::try_from(Config::default()).expect("serialize");
@@ -436,7 +451,10 @@ level = "warn"
         merge_toml(&mut base, read_toml_file(&project_cfg).expect("project"));
         let cfg: Config = base.try_into().expect("deserialize");
 
-        assert_eq!(cfg.log.level, "debug", "project config should win over global");
+        assert_eq!(
+            cfg.log.level, "debug",
+            "project config should win over global"
+        );
     }
 
     #[test]
@@ -448,6 +466,9 @@ level = "warn"
             .with_extra_toml("") // empty overlay — no-op
             .load()
             .expect("load");
-        assert_eq!(cfg.meta.schema_version, crate::schema::CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            cfg.meta.schema_version,
+            crate::schema::CURRENT_SCHEMA_VERSION
+        );
     }
 }

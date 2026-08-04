@@ -53,8 +53,8 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use polkagent_harness_trait::{
-    CancelMode, Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent,
-    HarnessId, HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
+    CancelMode, Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent, HarnessId,
+    HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
     TransportFlavor,
 };
 
@@ -149,7 +149,9 @@ impl BridgeConfigBuilder {
     /// Build the [`BridgeConfig`].
     pub fn build(self) -> BridgeConfig {
         BridgeConfig {
-            endpoint: self.endpoint.unwrap_or_else(|| "http://localhost:8080".into()),
+            endpoint: self
+                .endpoint
+                .unwrap_or_else(|| "http://localhost:8080".into()),
             auth_token: self.auth_token,
             timeout: self.timeout.unwrap_or(Duration::from_secs(300)),
             transport: self.transport.unwrap_or_default(),
@@ -228,22 +230,17 @@ impl std::fmt::Debug for BridgeHarness {
 impl BridgeHarness {
     /// Create a new bridge harness with the given configuration.
     pub fn new(config: BridgeConfig, harness_config: HarnessConfig) -> Self {
-        let mut builder = reqwest::Client::builder()
-            .timeout(config.timeout);
+        let mut builder = reqwest::Client::builder().timeout(config.timeout);
 
         if let Some(ref token) = config.auth_token {
             let mut headers = reqwest::header::HeaderMap::new();
-            if let Ok(val) = reqwest::header::HeaderValue::from_str(
-                &format!("Bearer {token}"),
-            ) {
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")) {
                 headers.insert(reqwest::header::AUTHORIZATION, val);
             }
             builder = builder.default_headers(headers);
         }
 
-        let client = builder
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let client = builder.build().unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             harness_id: HarnessId::new("bridge"),
@@ -289,10 +286,7 @@ impl Harness for BridgeHarness {
             .map_or(HarnessStatus::Idle, |guard| guard.clone())
     }
 
-    async fn start_session(
-        &self,
-        config: SessionConfig,
-    ) -> Result<SessionId, HarnessError> {
+    async fn start_session(&self, config: SessionConfig) -> Result<SessionId, HarnessError> {
         let session_id = SessionId::new();
 
         let request = BridgeStartRequest {
@@ -313,10 +307,7 @@ impl Harness for BridgeHarness {
 
         if !resp.status().is_success() {
             return Err(HarnessError::SpawnFailed {
-                message: format!(
-                    "bridge returned status {}",
-                    resp.status()
-                ),
+                message: format!("bridge returned status {}", resp.status()),
             });
         }
 
@@ -339,15 +330,14 @@ impl Harness for BridgeHarness {
         Ok(session_id)
     }
 
-    async fn send_message(
-        &self,
-        session_id: SessionId,
-        message: &str,
-    ) -> Result<(), HarnessError> {
+    async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError> {
         {
-            let sessions = self.sessions.lock().map_err(|_| HarnessError::InvalidState {
-                message: "failed to lock sessions".into(),
-            })?;
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| HarnessError::InvalidState {
+                    message: "failed to lock sessions".into(),
+                })?;
             if !sessions.contains_key(&session_id) {
                 return Err(HarnessError::SessionNotFound { session_id });
             }
@@ -371,10 +361,7 @@ impl Harness for BridgeHarness {
 
         if !resp.status().is_success() {
             return Err(HarnessError::IoError {
-                message: format!(
-                    "bridge returned status {}",
-                    resp.status()
-                ),
+                message: format!("bridge returned status {}", resp.status()),
             });
         }
 
@@ -386,9 +373,12 @@ impl Harness for BridgeHarness {
         session_id: SessionId,
     ) -> Result<Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>, HarnessError> {
         {
-            let sessions = self.sessions.lock().map_err(|_| HarnessError::InvalidState {
-                message: "failed to lock sessions".into(),
-            })?;
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| HarnessError::InvalidState {
+                    message: "failed to lock sessions".into(),
+                })?;
             if !sessions.contains_key(&session_id) {
                 return Err(HarnessError::SessionNotFound { session_id });
             }
@@ -400,14 +390,14 @@ impl Harness for BridgeHarness {
         Ok(Box::pin(stream))
     }
 
-    async fn end_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError> {
+    async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         {
-            let mut sessions = self.sessions.lock().map_err(|_| HarnessError::InvalidState {
-                message: "failed to lock sessions".into(),
-            })?;
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| HarnessError::InvalidState {
+                    message: "failed to lock sessions".into(),
+                })?;
             if sessions.remove(&session_id).is_none() {
                 return Err(HarnessError::SessionNotFound { session_id });
             }
@@ -417,12 +407,7 @@ impl Harness for BridgeHarness {
 
         let url = format!("{}/sessions/end", self.config.endpoint);
         // Best-effort: we don't fail the end_session if the remote call fails.
-        let _ = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await;
+        let _ = self.client.post(&url).json(&request).send().await;
 
         if let Ok(mut status) = self.status.lock() {
             *status = HarnessStatus::Idle;

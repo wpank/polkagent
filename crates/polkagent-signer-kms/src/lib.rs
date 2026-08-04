@@ -385,42 +385,54 @@ mod tests {
     #[tokio::test]
     async fn conformance_sign_returns_signature() {
         let signer = KmsSigner::mock("conformance-key");
-        let account = conformance::first_account(&signer).await.expect("has account");
+        let account = conformance::first_account(&signer)
+            .await
+            .expect("has account");
         conformance::test_sign_returns_signature(&signer, account).await;
     }
 
     #[tokio::test]
     async fn conformance_sign_deterministic() {
         let signer = KmsSigner::mock("conformance-key");
-        let account = conformance::first_account(&signer).await.expect("has account");
+        let account = conformance::first_account(&signer)
+            .await
+            .expect("has account");
         conformance::test_sign_deterministic_for_same_input(&signer, account).await;
     }
 
     #[tokio::test]
     async fn conformance_different_inputs_different_signatures() {
         let signer = KmsSigner::mock("conformance-key");
-        let account = conformance::first_account(&signer).await.expect("has account");
+        let account = conformance::first_account(&signer)
+            .await
+            .expect("has account");
         conformance::test_sign_different_inputs_different_signatures(&signer, account).await;
     }
 
     #[tokio::test]
     async fn conformance_verify_valid_signature() {
         let signer = KmsSigner::mock("conformance-key");
-        let account = conformance::first_account(&signer).await.expect("has account");
+        let account = conformance::first_account(&signer)
+            .await
+            .expect("has account");
         conformance::test_verify_valid_signature(&signer, account).await;
     }
 
     #[tokio::test]
     async fn conformance_expired_request_rejected() {
         let signer = KmsSigner::mock("conformance-key");
-        let account = conformance::first_account(&signer).await.expect("has account");
+        let account = conformance::first_account(&signer)
+            .await
+            .expect("has account");
         conformance::test_verify_invalid_signature_fails(&signer, account).await;
     }
 
     #[tokio::test]
     async fn conformance_no_plaintext_secrets() {
         let signer = KmsSigner::mock("conformance-key");
-        let account = conformance::first_account(&signer).await.expect("has account");
+        let account = conformance::first_account(&signer)
+            .await
+            .expect("has account");
         conformance::test_signer_never_sees_plaintext_secret(&signer, account).await;
     }
 

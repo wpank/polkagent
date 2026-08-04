@@ -283,7 +283,10 @@ impl AuditedPipeline {
             "detail": context,
         });
 
-        if let Err(e) = logger.log(actor, action, resource, outcome, full_context).await {
+        if let Err(e) = logger
+            .log(actor, action, resource, outcome, full_context)
+            .await
+        {
             warn!(
                 error = %e,
                 effect_id = %effect_id,
@@ -546,9 +549,7 @@ mod tests {
         let q_completed = AuditQuery::new()
             .action(AuditAction::EffectCompleted)
             .build();
-        let q_failed = AuditQuery::new()
-            .action(AuditAction::EffectFailed)
-            .build();
+        let q_failed = AuditQuery::new().action(AuditAction::EffectFailed).build();
 
         let attempted = audit_logger.query(&q_attempted).await.expect("query");
         let completed = audit_logger.query(&q_completed).await.expect("query");
@@ -577,9 +578,8 @@ mod tests {
         let audit_logger = AuditLogger::new(audit_store.clone());
         let run_id = RunId::new();
         let agent_id = "agent-ctx-test";
-        let audited =
-            AuditedPipeline::new(pipeline, Some(audit_logger.clone()), agent_id)
-                .with_run_id(run_id);
+        let audited = AuditedPipeline::new(pipeline, Some(audit_logger.clone()), agent_id)
+            .with_run_id(run_id);
 
         let intent_id = audited
             .propose(make_spec(run_id, EffectKind::Broadcast))
@@ -611,26 +611,17 @@ mod tests {
         for entry in &entries {
             // Actor should be the agent.
             assert_eq!(entry.actor.id, agent_id);
-            assert_eq!(
-                entry.actor.actor_type,
-                polkagent_audit::ActorType::Agent,
-            );
+            assert_eq!(entry.actor.actor_type, polkagent_audit::ActorType::Agent,);
 
             // Resource should reference the effect.
             assert_eq!(entry.resource.resource_type, "effect");
             assert_eq!(entry.resource.resource_id, intent_id.to_string());
-            assert_eq!(
-                entry.resource.description.as_deref(),
-                Some("broadcast"),
-            );
+            assert_eq!(entry.resource.description.as_deref(), Some("broadcast"),);
 
             // Context should contain agent_id, run_id, effect_id, effect_kind.
             let ctx = &entry.context;
             assert_eq!(ctx["agent_id"].as_str(), Some(agent_id));
-            assert_eq!(
-                ctx["run_id"].as_str(),
-                Some(run_id.to_string().as_str()),
-            );
+            assert_eq!(ctx["run_id"].as_str(), Some(run_id.to_string().as_str()),);
             assert_eq!(
                 ctx["effect_id"].as_str(),
                 Some(intent_id.to_string().as_str()),
@@ -698,8 +689,8 @@ mod tests {
         let audit_store = Arc::new(InMemoryAuditStore::new());
         let audit_logger = AuditLogger::new(audit_store.clone());
         let run_id = RunId::new();
-        let audited = AuditedPipeline::new(pipeline, Some(audit_logger), "agent-timeout")
-            .with_run_id(run_id);
+        let audited =
+            AuditedPipeline::new(pipeline, Some(audit_logger), "agent-timeout").with_run_id(run_id);
 
         let intent_id = audited
             .propose(make_spec(run_id, EffectKind::FinalityWatch))

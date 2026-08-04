@@ -89,10 +89,7 @@ impl<Req> RateLimitLayer<Req> {
     ///
     /// * `limiter` -- the rate limiter to apply.
     /// * `extractor` -- extracts the rate-limit key from each request.
-    pub fn new(
-        limiter: Arc<dyn RateLimiter>,
-        extractor: impl KeyExtractor<Req> + 'static,
-    ) -> Self {
+    pub fn new(limiter: Arc<dyn RateLimiter>, extractor: impl KeyExtractor<Req> + 'static) -> Self {
         Self {
             limiter,
             extractor: Arc::new(extractor),
@@ -188,7 +185,9 @@ where
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx).map_err(RateLimitServiceError::Inner)
+        self.inner
+            .poll_ready(cx)
+            .map_err(RateLimitServiceError::Inner)
     }
 
     fn call(&mut self, req: Req) -> Self::Future {

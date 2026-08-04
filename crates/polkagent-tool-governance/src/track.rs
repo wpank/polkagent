@@ -131,21 +131,23 @@ impl ToolHandler for TrackInfoTool {
                 reason: format!("track_id {track_id} exceeds u16 range"),
             })?;
 
-            let track = self.get_track(track_id).await.map_err(|e| {
-                ToolError::ExecutionFailed {
+            let track = self
+                .get_track(track_id)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
 
             serde_json::to_value(&track).map_err(|e| ToolError::ExecutionFailed {
                 reason: format!("failed to serialize track: {e}"),
             })?
         } else {
-            let tracks = self.list_tracks().await.map_err(|e| {
-                ToolError::ExecutionFailed {
+            let tracks = self
+                .list_tracks()
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
 
             serde_json::json!({
                 "count": tracks.len(),
@@ -208,10 +210,7 @@ mod tests {
     fn spec_requires_chain_query_grant() {
         let client = Arc::new(MockChainClient::new());
         let tool = TrackInfoTool::new(client);
-        assert_eq!(
-            tool.spec().required_grant,
-            Some("chain.query".to_string())
-        );
+        assert_eq!(tool.spec().required_grant, Some("chain.query".to_string()));
     }
 
     #[test]

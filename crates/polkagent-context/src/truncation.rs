@@ -81,8 +81,12 @@ pub fn truncate_section(
     );
 
     match strategy {
-        TruncationStrategy::DropOldest => truncate_drop_oldest(&section.content, max_tokens, estimator),
-        TruncationStrategy::Summarize => truncate_summarize(&section.content, max_tokens, estimator),
+        TruncationStrategy::DropOldest => {
+            truncate_drop_oldest(&section.content, max_tokens, estimator)
+        }
+        TruncationStrategy::Summarize => {
+            truncate_summarize(&section.content, max_tokens, estimator)
+        }
         TruncationStrategy::Priority => truncate_priority(&section.content, max_tokens, estimator),
     }
 }
@@ -243,9 +247,18 @@ mod tests {
 
     #[test]
     fn strategy_for_kind_defaults() {
-        assert_eq!(TruncationStrategy::for_kind(SectionKind::ConversationHistory), TruncationStrategy::DropOldest);
-        assert_eq!(TruncationStrategy::for_kind(SectionKind::MemoryContext), TruncationStrategy::Summarize);
-        assert_eq!(TruncationStrategy::for_kind(SectionKind::ToolDescriptions), TruncationStrategy::Priority);
+        assert_eq!(
+            TruncationStrategy::for_kind(SectionKind::ConversationHistory),
+            TruncationStrategy::DropOldest
+        );
+        assert_eq!(
+            TruncationStrategy::for_kind(SectionKind::MemoryContext),
+            TruncationStrategy::Summarize
+        );
+        assert_eq!(
+            TruncationStrategy::for_kind(SectionKind::ToolDescriptions),
+            TruncationStrategy::Priority
+        );
     }
 
     #[test]

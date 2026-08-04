@@ -182,10 +182,7 @@ fn field_value_display_variant_unnamed() {
 fn field_value_display_account_id() {
     let id = [0u8; 32];
     let v = FieldValue::AccountId(id);
-    assert_eq!(
-        format!("{v}"),
-        format!("0x{}", "00".repeat(32))
-    );
+    assert_eq!(format!("{v}"), format!("0x{}", "00".repeat(32)));
 }
 
 // ---------------------------------------------------------------------------

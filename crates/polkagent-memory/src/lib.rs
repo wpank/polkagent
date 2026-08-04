@@ -82,9 +82,7 @@ pub use episode::{
 };
 pub use error::{MemoryError, MemoryResult};
 pub use export::ImportResult;
-pub use metadata_rag::{
-    CitedResult, MetadataCitation, MetadataDocument, MetadataRagService,
-};
+pub use metadata_rag::{CitedResult, MetadataCitation, MetadataDocument, MetadataRagService};
 pub use retention::{RetentionPolicy, RetentionSweeper, SweepResult};
 pub use retrieval::{
     ContextBudget, HybridRetriever, InMemoryVectorIndex, RankedResult, RetrievalConfig,

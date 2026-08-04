@@ -225,9 +225,7 @@ impl Default for PackageVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{
-        CapabilitiesSection, PluginSection, ProvenanceSection,
-    };
+    use crate::manifest::{CapabilitiesSection, PluginSection, ProvenanceSection};
     use std::collections::HashMap;
 
     fn unsigned_manifest(name: &str) -> PluginManifest {

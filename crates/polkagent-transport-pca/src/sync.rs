@@ -117,9 +117,7 @@ impl DeviceSyncState {
             if ack.sequence > self.acked_through {
                 self.acked_through = ack.sequence;
                 // Remove any selective ACKs that are now covered.
-                self.selective_acks = self
-                    .selective_acks
-                    .split_off(&(ack.sequence + 1));
+                self.selective_acks = self.selective_acks.split_off(&(ack.sequence + 1));
             }
         } else if ack.sequence > self.acked_through {
             self.selective_acks.insert(ack.sequence);
@@ -204,22 +202,24 @@ impl SyncClock {
         sequence: u64,
         now_ms: u64,
     ) -> Result<(), PcaError> {
-        let state = self.devices.get_mut(device_id).ok_or_else(|| {
-            PcaError::SyncError {
+        let state = self
+            .devices
+            .get_mut(device_id)
+            .ok_or_else(|| PcaError::SyncError {
                 reason: format!("unknown device: {device_id}"),
-            }
-        })?;
+            })?;
         state.record_received(sequence, now_ms);
         Ok(())
     }
 
     /// Apply an ACK from a device.
     pub fn apply_ack(&mut self, ack: &AppAck) -> Result<(), PcaError> {
-        let state = self.devices.get_mut(&ack.device_id).ok_or_else(|| {
-            PcaError::SyncError {
+        let state = self
+            .devices
+            .get_mut(&ack.device_id)
+            .ok_or_else(|| PcaError::SyncError {
                 reason: format!("unknown device: {}", ack.device_id),
-            }
-        })?;
+            })?;
         state.apply_ack(ack);
         debug!(
             device = %ack.device_id,
@@ -297,11 +297,7 @@ impl SyncClock {
     }
 
     /// Build a cumulative ACK for a device up to its high-water mark.
-    pub fn build_cumulative_ack(
-        &self,
-        device_id: &str,
-        now_ms: u64,
-    ) -> Option<AppAck> {
+    pub fn build_cumulative_ack(&self, device_id: &str, now_ms: u64) -> Option<AppAck> {
         let state = self.devices.get(device_id)?;
         if state.sequence_high_water == 0 {
             return None;
@@ -568,7 +564,10 @@ mod tests {
 
         assert_eq!(restored.device_count(), 2);
         assert_eq!(
-            restored.device_state("dev-a").expect("a").sequence_high_water,
+            restored
+                .device_state("dev-a")
+                .expect("a")
+                .sequence_high_water,
             5
         );
     }

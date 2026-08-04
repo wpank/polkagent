@@ -1307,7 +1307,11 @@ mod tests {
 
     #[test]
     fn rate_limit_config_serde_round_trip() {
-        let original = RateLimitConfig { enabled: true, requests_per_second: 50, burst: 100 };
+        let original = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 50,
+            burst: 100,
+        };
         let json = serde_json::to_string(&original).expect("serialize");
         let back: RateLimitConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, original);
@@ -1323,7 +1327,11 @@ mod tests {
                 ca_path: None,
             }),
             cors_origins: vec!["https://example.com".to_owned()],
-            rate_limit: RateLimitConfig { enabled: true, requests_per_second: 200, burst: 400 },
+            rate_limit: RateLimitConfig {
+                enabled: true,
+                requests_per_second: 200,
+                burst: 400,
+            },
         };
         let toml = toml::to_string_pretty(&original).expect("serialize");
         let back: ServerConfig = toml::from_str(&toml).expect("deserialize");
@@ -1366,7 +1374,10 @@ mod tests {
         assert!(!cfg.sandbox_enabled);
         assert_eq!(cfg.max_file_size_bytes, 10 * 1024 * 1024);
         assert!(cfg.allowed_paths.is_empty());
-        assert!(!cfg.denied_paths.is_empty(), "should have default denied paths");
+        assert!(
+            !cfg.denied_paths.is_empty(),
+            "should have default denied paths"
+        );
         assert_eq!(cfg.max_memory_mb, 512);
         assert_eq!(cfg.max_cpu_seconds, 300);
     }
@@ -1824,7 +1835,9 @@ max_concurrent = 1
         let w = WatcherConfig {
             name: "hourly-check".to_owned(),
             agent_id: "agent-hourly".to_owned(),
-            schedule: WatcherSchedule::Cron { expr: "0 * * * *".to_owned() },
+            schedule: WatcherSchedule::Cron {
+                expr: "0 * * * *".to_owned(),
+            },
             cedar_policy: "watcher-cron-policy".to_owned(),
             enabled: false,
             read_only: true,

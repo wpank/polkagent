@@ -190,11 +190,7 @@ pub fn euclidean_distance(a: &[f32], b: &[f32]) -> MemoryResult<f32> {
             b.len()
         )));
     }
-    let sum: f32 = a
-        .iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y) * (x - y))
-        .sum();
+    let sum: f32 = a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum();
     Ok(sum.sqrt())
 }
 
@@ -411,10 +407,18 @@ impl VectorIndex {
         // Sort: descending for similarity metrics, ascending for distance.
         match metric {
             SimilarityMetric::Cosine | SimilarityMetric::DotProduct => {
-                scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+                scored.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
             }
             SimilarityMetric::Euclidean => {
-                scored.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+                scored.sort_by(|a, b| {
+                    a.score
+                        .partial_cmp(&b.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
             }
         }
 
@@ -763,12 +767,8 @@ mod tests {
 
         // v2 is at 45 degrees
         let id2 = MemoryId::new();
-        idx.add(
-            id2,
-            EmbeddingVector::new(vec![1.0, 1.0]).unwrap(),
-            None,
-        )
-        .unwrap();
+        idx.add(id2, EmbeddingVector::new(vec![1.0, 1.0]).unwrap(), None)
+            .unwrap();
 
         // v3 is orthogonal
         let id3 = MemoryId::new();
@@ -791,12 +791,8 @@ mod tests {
         let mut idx = VectorIndex::new(2);
 
         let id_near = MemoryId::new();
-        idx.add(
-            id_near,
-            EmbeddingVector::new(vec![1.0, 0.0]).unwrap(),
-            None,
-        )
-        .unwrap();
+        idx.add(id_near, EmbeddingVector::new(vec![1.0, 0.0]).unwrap(), None)
+            .unwrap();
 
         let id_far = MemoryId::new();
         idx.add(
@@ -820,12 +816,8 @@ mod tests {
         let mut idx = VectorIndex::new(2);
 
         let id_big = MemoryId::new();
-        idx.add(
-            id_big,
-            EmbeddingVector::new(vec![10.0, 0.0]).unwrap(),
-            None,
-        )
-        .unwrap();
+        idx.add(id_big, EmbeddingVector::new(vec![10.0, 0.0]).unwrap(), None)
+            .unwrap();
 
         let id_small = MemoryId::new();
         idx.add(

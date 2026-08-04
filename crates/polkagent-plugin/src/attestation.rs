@@ -189,9 +189,7 @@ impl AttestationChecker {
             return Ok(AttestationResult {
                 build_level: actual_level,
                 accepted: true,
-                summary: format!(
-                    "attestation not required; package '{name}' at {actual_level}"
-                ),
+                summary: format!("attestation not required; package '{name}' at {actual_level}"),
                 warnings,
             });
         }
@@ -232,9 +230,7 @@ impl AttestationChecker {
         Ok(AttestationResult {
             build_level: actual_level,
             accepted: true,
-            summary: format!(
-                "package '{name}' passes SLSA attestation at {actual_level}"
-            ),
+            summary: format!("package '{name}' passes SLSA attestation at {actual_level}"),
             warnings,
         })
     }
@@ -253,9 +249,7 @@ impl Default for AttestationChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{
-        CapabilitiesSection, PluginSection, ProvenanceSection,
-    };
+    use crate::manifest::{CapabilitiesSection, PluginSection, ProvenanceSection};
     use std::collections::HashMap;
 
     fn bare_manifest(name: &str) -> PluginManifest {

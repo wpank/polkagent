@@ -13,14 +13,9 @@
 //! [0x00 MultiAddress::Id] [32-byte dest (Alice)] [compact(10_000_000_000)]
 //! ```
 
-use polkagent_codec::{
-    decode_extrinsic, decode_call_with_metadata,
-    ScaleDecoder, ScaleEncoder,
-};
+use polkagent_codec::call::{call_index, extract_transfer_amount, is_transfer_call, pallet_index};
 use polkagent_codec::metadata::build_minimal_metadata_v14;
-use polkagent_codec::call::{
-    extract_transfer_amount, is_transfer_call, pallet_index, call_index,
-};
+use polkagent_codec::{decode_call_with_metadata, decode_extrinsic, ScaleDecoder, ScaleEncoder};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -34,10 +29,8 @@ const FIXTURE_PATH: &str = concat!(
 
 /// Alice's public key (well-known Substrate dev account).
 const ALICE_PUBKEY: [u8; 32] = [
-    0xd4, 0x35, 0x93, 0xc7, 0x15, 0xfd, 0xd3, 0x1c,
-    0x61, 0x14, 0x1a, 0xbd, 0x04, 0xa9, 0x9f, 0xd6,
-    0x82, 0x2c, 0x85, 0x58, 0x85, 0x4c, 0xcd, 0xe3,
-    0x9a, 0x56, 0x84, 0xe7, 0xa5, 0x6d, 0xa2, 0x7d,
+    0xd4, 0x35, 0x93, 0xc7, 0x15, 0xfd, 0xd3, 0x1c, 0x61, 0x14, 0x1a, 0xbd, 0x04, 0xa9, 0x9f, 0xd6,
+    0x82, 0x2c, 0x85, 0x58, 0x85, 0x4c, 0xcd, 0xe3, 0x9a, 0x56, 0x84, 0xe7, 0xa5, 0x6d, 0xa2, 0x7d,
 ];
 
 /// 1 DOT = 10^10 planck on Polkadot.
@@ -97,8 +90,7 @@ fn strip_unsigned_framing(bytes: &[u8]) -> Vec<u8> {
 #[test]
 fn fixture_decode_produces_correct_pallet_and_call() {
     let bytes = load_fixture();
-    let decoded = decode_extrinsic(&bytes)
-        .expect("fixture bytes must decode successfully");
+    let decoded = decode_extrinsic(&bytes).expect("fixture bytes must decode successfully");
 
     assert_eq!(
         decoded.pallet_index,
@@ -125,12 +117,10 @@ fn fixture_decode_with_metadata_resolves_pallet_name() {
     let bytes = load_fixture();
 
     // Build minimal metadata that knows about the Balances pallet.
-    let meta_bytes = build_minimal_metadata_v14(&[
-        ("System", 0),
-        ("Balances", pallet_index::BALANCES),
-    ]);
-    let metadata = polkagent_codec::parse_metadata(&meta_bytes)
-        .expect("minimal metadata must parse");
+    let meta_bytes =
+        build_minimal_metadata_v14(&[("System", 0), ("Balances", pallet_index::BALANCES)]);
+    let metadata =
+        polkagent_codec::parse_metadata(&meta_bytes).expect("minimal metadata must parse");
 
     // Strip framing to get bare call bytes for decode_call_with_metadata.
     let call_bytes = strip_unsigned_framing(&bytes);
@@ -153,8 +143,7 @@ fn fixture_decode_with_metadata_resolves_pallet_name() {
 #[test]
 fn fixture_decode_extracts_transfer_amount() {
     let bytes = load_fixture();
-    let decoded = decode_extrinsic(&bytes)
-        .expect("fixture decode must succeed");
+    let decoded = decode_extrinsic(&bytes).expect("fixture decode must succeed");
 
     let amount = extract_transfer_amount(&decoded)
         .expect("transfer amount should be extractable from raw args");
@@ -175,10 +164,7 @@ fn decode_with_wrong_metadata_version_returns_error() {
     let v14_bytes = build_minimal_metadata_v14(&[("Balances", 5)]);
     let result = polkagent_codec::parse_metadata_v15(&v14_bytes);
 
-    assert!(
-        result.is_err(),
-        "parsing v14 metadata as v15 should fail"
-    );
+    assert!(result.is_err(), "parsing v14 metadata as v15 should fail");
     let err = result.expect_err("should be an error");
     let msg = format!("{err}");
     assert!(
@@ -220,10 +206,7 @@ fn decode_truncated_bytes_returns_error() {
 #[test]
 fn decode_empty_bytes_returns_error() {
     let result = decode_extrinsic(&[]);
-    assert!(
-        result.is_err(),
-        "decoding empty bytes must return an error"
-    );
+    assert!(result.is_err(), "decoding empty bytes must return an error");
     let err = result.expect_err("should be error");
     let msg = format!("{err}");
     assert!(
@@ -252,15 +235,13 @@ fn round_trip_encode_then_decode_produces_same_call_data() {
     let ext_bytes = build_unsigned_extrinsic(pallet, call, &args);
 
     // Decode and verify the round-trip.
-    let decoded = decode_extrinsic(&ext_bytes)
-        .expect("round-trip decode must succeed");
+    let decoded = decode_extrinsic(&ext_bytes).expect("round-trip decode must succeed");
 
     assert_eq!(decoded.pallet_index, pallet);
     assert_eq!(decoded.call_index, call);
 
     // The raw args should match the original args.
-    let raw_args = decoded.raw_args_bytes()
-        .expect("args should be raw bytes");
+    let raw_args = decoded.raw_args_bytes().expect("args should be raw bytes");
     assert_eq!(
         raw_args, args,
         "round-trip raw args must match original args"
@@ -303,19 +284,14 @@ fn decode_bare_call_bytes_matches_framed_decode() {
     let bytes = load_fixture();
 
     // Full structural decode (with framing).
-    let framed = decode_extrinsic(&bytes)
-        .expect("framed decode");
+    let framed = decode_extrinsic(&bytes).expect("framed decode");
 
     // Bare call decode (no framing).
     let call_bytes = strip_unsigned_framing(&bytes);
-    let meta_bytes = build_minimal_metadata_v14(&[
-        ("System", 0),
-        ("Balances", pallet_index::BALANCES),
-    ]);
-    let metadata = polkagent_codec::parse_metadata(&meta_bytes)
-        .expect("parse metadata");
-    let bare = decode_call_with_metadata(&call_bytes, &metadata)
-        .expect("bare call decode");
+    let meta_bytes =
+        build_minimal_metadata_v14(&[("System", 0), ("Balances", pallet_index::BALANCES)]);
+    let metadata = polkagent_codec::parse_metadata(&meta_bytes).expect("parse metadata");
+    let bare = decode_call_with_metadata(&call_bytes, &metadata).expect("bare call decode");
 
     // Both should agree on pallet and call indices.
     assert_eq!(framed.pallet_index, bare.pallet_index);
@@ -349,8 +325,8 @@ fn unknown_pallet_decodes_structurally_without_metadata() {
     // Pallet 255 with call 127 -- not a real pallet, but should still
     // decode structurally.
     let ext_bytes = build_unsigned_extrinsic(255, 127, &[0xCA, 0xFE]);
-    let decoded = decode_extrinsic(&ext_bytes)
-        .expect("structural decode of unknown pallet should succeed");
+    let decoded =
+        decode_extrinsic(&ext_bytes).expect("structural decode of unknown pallet should succeed");
 
     assert_eq!(decoded.pallet_index, 255);
     assert_eq!(decoded.call_index, 127);

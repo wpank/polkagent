@@ -54,10 +54,7 @@ impl MetadataService {
     /// The snapshot is inserted into the cache and checked against any
     /// existing pins. If drift is detected, it is logged as a warning
     /// and returned.
-    pub fn register_snapshot(
-        &self,
-        snapshot: MetadataSnapshot,
-    ) -> Option<MetadataDrift> {
+    pub fn register_snapshot(&self, snapshot: MetadataSnapshot) -> Option<MetadataDrift> {
         let chain_id = snapshot.chain_id.clone();
 
         info!(
@@ -69,9 +66,7 @@ impl MetadataService {
 
         // Check for drift before caching.
         let pins = self.pins.get_pinned(&chain_id);
-        let drift = self
-            .drift_detector
-            .check(&chain_id, &snapshot, &pins);
+        let drift = self.drift_detector.check(&chain_id, &snapshot, &pins);
 
         if let Some(ref d) = drift {
             warn!(
@@ -95,12 +90,12 @@ impl MetadataService {
         chain_id: &ChainId,
         label: impl Into<String>,
     ) -> Result<(), MetadataError> {
-        let snapshot = self
-            .cache
-            .get_latest(chain_id)
-            .ok_or_else(|| MetadataError::NothingToPin {
-                chain_id: chain_id.clone(),
-            })?;
+        let snapshot =
+            self.cache
+                .get_latest(chain_id)
+                .ok_or_else(|| MetadataError::NothingToPin {
+                    chain_id: chain_id.clone(),
+                })?;
 
         let label = label.into();
         info!(

@@ -42,20 +42,22 @@ impl ToolHandler for ReadFileTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput {
-                reason: "missing or invalid 'path' field".to_string(),
-            })?;
+        let path =
+            input
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::InvalidInput {
+                    reason: "missing or invalid 'path' field".to_string(),
+                })?;
 
         debug!(path, "reading file");
 
-        let contents = tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("failed to read file '{}': {}", path, e),
-            })?;
+        let contents =
+            tokio::fs::read_to_string(path)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
+                    reason: format!("failed to read file '{}': {}", path, e),
+                })?;
 
         Ok(ToolResult {
             output: serde_json::json!({
@@ -85,7 +87,9 @@ impl ToolHandler for WriteFileTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "polkagent.file.write".to_string(),
-            description: "Write content to a file at the given path. Creates parent directories as needed.".to_string(),
+            description:
+                "Write content to a file at the given path. Creates parent directories as needed."
+                    .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -106,12 +110,13 @@ impl ToolHandler for WriteFileTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput {
-                reason: "missing or invalid 'path' field".to_string(),
-            })?;
+        let path =
+            input
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::InvalidInput {
+                    reason: "missing or invalid 'path' field".to_string(),
+                })?;
 
         let content = input
             .get("content")
@@ -125,11 +130,14 @@ impl ToolHandler for WriteFileTool {
         // Ensure parent directory exists.
         if let Some(parent) = std::path::Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| ToolError::ExecutionFailed {
-                        reason: format!("failed to create parent directories for '{}': {}", path, e),
-                    })?;
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    ToolError::ExecutionFailed {
+                        reason: format!(
+                            "failed to create parent directories for '{}': {}",
+                            path, e
+                        ),
+                    }
+                })?;
             }
         }
 
@@ -183,12 +191,13 @@ impl ToolHandler for ListDirTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput {
-                reason: "missing or invalid 'path' field".to_string(),
-            })?;
+        let path =
+            input
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::InvalidInput {
+                    reason: "missing or invalid 'path' field".to_string(),
+                })?;
 
         debug!(path, "listing directory");
 
@@ -341,7 +350,9 @@ mod tests {
         assert!(result.is_ok(), "list failed: {result:?}");
 
         let r = result.unwrap_or_else(|e| panic!("{e}"));
-        let entries = r.output["entries"].as_array().unwrap_or_else(|| panic!("not array"));
+        let entries = r.output["entries"]
+            .as_array()
+            .unwrap_or_else(|| panic!("not array"));
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["name"], "foo.txt");
         assert_eq!(entries[0]["is_directory"], false);

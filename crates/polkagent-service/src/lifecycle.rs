@@ -75,10 +75,7 @@ pub struct StartupContext {
 ///
 /// Returns [`ServiceError`] if configuration is invalid or a required
 /// component fails to initialize.
-pub fn startup(
-    config: Config,
-    context: StartupContext,
-) -> Result<AppService, ServiceError> {
+pub fn startup(config: Config, context: StartupContext) -> Result<AppService, ServiceError> {
     info!(
         schema_version = config.meta.schema_version,
         "starting polkagent service"
@@ -88,10 +85,7 @@ pub fn startup(
     polkagent_config::validate::validate(&config).map_err(|errors| {
         let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
         ServiceError::Config {
-            message: format!(
-                "configuration validation failed: {}",
-                messages.join("; ")
-            ),
+            message: format!("configuration validation failed: {}", messages.join("; ")),
         }
     })?;
     info!("configuration validated");
@@ -157,9 +151,7 @@ const STUCK_STATES: &[&str] = &[
 /// Returns [`ServiceError`] if a store query or update fails. Partial
 /// recovery is possible: runs that were already transitioned before the
 /// error occurred remain in their new state.
-pub async fn recover_stuck_runs(
-    run_store: &dyn RunStore,
-) -> Result<usize, ServiceError> {
+pub async fn recover_stuck_runs(run_store: &dyn RunStore) -> Result<usize, ServiceError> {
     let mut recovered = 0usize;
 
     for &state_str in STUCK_STATES {
@@ -175,10 +167,7 @@ pub async fn recover_stuck_runs(
 
         for run in &stuck {
             let failed_status = RunStatus::new("failed");
-            if let Err(e) = run_store
-                .update_state(run.id, failed_status)
-                .await
-            {
+            if let Err(e) = run_store.update_state(run.id, failed_status).await {
                 warn!(
                     run_id = %run.id,
                     previous_state = state_str,
@@ -341,8 +330,12 @@ mod tests {
         }
     }
 
-    const TERMINAL_TYPES: &[&str] =
-        &["run_completed", "run_failed", "run_cancelled", "run_timed_out"];
+    const TERMINAL_TYPES: &[&str] = &[
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_timed_out",
+    ];
 
     #[derive(Debug, Default)]
     struct FakeEventStore {
@@ -406,25 +399,16 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn query(
-            &self,
-            _filter: EventFilter,
-        ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        async fn query(&self, _filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
             Ok(vec![])
         }
 
-        async fn max_sequence(
-            &self,
-            run_id: RunId,
-        ) -> Result<u64, EventStoreError> {
+        async fn max_sequence(&self, run_id: RunId) -> Result<u64, EventStoreError> {
             let seqs = self.sequences.lock().expect("lock");
             Ok(seqs.get(&run_id.to_string()).copied().unwrap_or(0))
         }
 
-        async fn has_terminal_event(
-            &self,
-            run_id: RunId,
-        ) -> Result<bool, EventStoreError> {
+        async fn has_terminal_event(&self, run_id: RunId) -> Result<bool, EventStoreError> {
             let term = self.terminal.lock().expect("lock");
             Ok(term.contains(&run_id.to_string()))
         }

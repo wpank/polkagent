@@ -19,11 +19,11 @@
 //! [`EventBus`]: polkagent_event::EventBus
 //! [`RunEvent`]: polkagent_core::event::RunEvent
 
+use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
     response::IntoResponse,
 };
-use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use polkagent_core::RunId;
 use polkagent_event::types::EventType;
@@ -268,8 +268,10 @@ mod tests {
     #[test]
     fn filter_by_kinds_matches_listed_kinds() {
         let run_id = RunId::new();
-        let kinds: HashSet<String> =
-            ["run_created", "run_started"].iter().map(|s| s.to_string()).collect();
+        let kinds: HashSet<String> = ["run_created", "run_started"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let filter = StreamFilter {
             run_id: None,
             kinds: Some(kinds),
@@ -286,8 +288,7 @@ mod tests {
     fn filter_combined_run_id_and_kinds() {
         let target = RunId::new();
         let other = RunId::new();
-        let kinds: HashSet<String> =
-            ["run_created"].iter().map(|s| s.to_string()).collect();
+        let kinds: HashSet<String> = ["run_created"].iter().map(|s| s.to_string()).collect();
         let filter = StreamFilter {
             run_id: Some(target),
             kinds: Some(kinds),

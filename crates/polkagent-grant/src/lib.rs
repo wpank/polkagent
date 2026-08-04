@@ -84,16 +84,16 @@ pub use grant::{
     ActiveGrant, ApprovalRequirement, DeferReason, EffectSet, GrantDecision, GrantLimits,
     GrantResolver, PolicyDenial, ResolvedGrant, ResolverConfig, ResolverError,
 };
+#[cfg(feature = "identity")]
+pub use identity::{context_from_identity, IdentityPrincipal, SS58EncodedAccount};
 pub use loader::{load_policy_dir, load_policy_file, merge_policy_sets, LoadError, PolicyFileRule};
+#[cfg(feature = "personhood")]
+pub use personhood::{
+    check_personhood, PersonhoodDecision, PersonhoodPolicy, PersonhoodRequirement,
+};
 pub use policy::{
     builtin_templates, evaluate, evaluate_condition, instantiate_template, pattern_matches,
     resolve_policy_chain, Condition, ContextAttribute, Effect, EvaluationContext, Policy,
     PolicyDecision, PolicyRule, PolicyRuleTemplate, PolicySet, PolicyTemplate, ResolvedPolicy,
     TemplateError, TemplateParam,
-};
-#[cfg(feature = "identity")]
-pub use identity::{context_from_identity, IdentityPrincipal, SS58EncodedAccount};
-#[cfg(feature = "personhood")]
-pub use personhood::{
-    check_personhood, PersonhoodDecision, PersonhoodPolicy, PersonhoodRequirement,
 };

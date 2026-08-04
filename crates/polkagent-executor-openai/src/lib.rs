@@ -421,11 +421,7 @@ fn to_inference_response(resp: &ChatCompletionResponse) -> InferenceResponse {
     // Map OpenAI finish_reason to our normalized stop_reason values.
     let stop_reason = map_finish_reason(&finish_reason);
 
-    let usage = resp
-        .usage
-        .as_ref()
-        .map(to_token_usage)
-        .unwrap_or_default();
+    let usage = resp.usage.as_ref().map(to_token_usage).unwrap_or_default();
 
     InferenceResponse {
         text,
@@ -459,7 +455,12 @@ fn parse_retry_after(response: &reqwest::Response) -> Option<u64> {
 
 /// Map an HTTP status code, error body, and optional `Retry-After` header
 /// to an [`ExecutorError`] via [`ProviderError`] classification.
-fn map_api_error(status: u16, body: &str, retry_after_secs: Option<u64>, model_id: &str) -> ExecutorError {
+fn map_api_error(
+    status: u16,
+    body: &str,
+    retry_after_secs: Option<u64>,
+    model_id: &str,
+) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
         .map(|e| e.error.message)
         .unwrap_or_else(|_| body.to_string());
@@ -779,11 +780,13 @@ impl OpenAiExecutor {
 
             let status = response.status().as_u16();
             if status == 200 {
-                let response_body = response.text().await.map_err(|e| {
-                    ExecutorError::InvalidResponse {
-                        message: format!("failed to read response body: {e}"),
-                    }
-                })?;
+                let response_body =
+                    response
+                        .text()
+                        .await
+                        .map_err(|e| ExecutorError::InvalidResponse {
+                            message: format!("failed to read response body: {e}"),
+                        })?;
 
                 let parsed: ChatCompletionResponse =
                     serde_json::from_str(&response_body).map_err(|e| {
@@ -848,11 +851,12 @@ impl OpenAiExecutor {
             return Err(map_api_error(status, &error_body, retry_after, &self.model));
         }
 
-        let full_body = response.text().await.map_err(|e| {
-            ExecutorError::InvalidResponse {
+        let full_body = response
+            .text()
+            .await
+            .map_err(|e| ExecutorError::InvalidResponse {
                 message: format!("failed to read SSE stream body: {e}"),
-            }
-        })?;
+            })?;
 
         let sse_chunks = parse_sse_chunks(&full_body);
         Ok(process_sse_chunks(sse_chunks))
@@ -1341,9 +1345,7 @@ mod tests {
         // Messages: [0] user "read the file", [1] assistant with tool_calls, [2] tool result
         let assistant_msg = &messages[1];
         assert_eq!(assistant_msg["role"], "assistant");
-        let tool_calls = assistant_msg["tool_calls"]
-            .as_array()
-            .expect("tool_calls");
+        let tool_calls = assistant_msg["tool_calls"].as_array().expect("tool_calls");
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0]["id"], "call_abc123");
         assert_eq!(tool_calls[0]["type"], "function");
@@ -1375,8 +1377,7 @@ mod tests {
     #[test]
     fn deserialize_text_response() {
         let json = sample_text_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse response");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse response");
 
         assert_eq!(parsed.id, "chatcmpl-abc123");
         assert_eq!(parsed.choices.len(), 1);
@@ -1384,10 +1385,7 @@ mod tests {
             parsed.choices[0].message.content.as_deref(),
             Some("Hello! How can I help you today?")
         );
-        assert_eq!(
-            parsed.choices[0].finish_reason.as_deref(),
-            Some("stop")
-        );
+        assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
         let usage = parsed.usage.as_ref().expect("usage");
         assert_eq!(usage.prompt_tokens, 25);
         assert_eq!(usage.completion_tokens, 12);
@@ -1397,8 +1395,7 @@ mod tests {
     #[test]
     fn deserialize_tool_use_response() {
         let json = sample_tool_use_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse response");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse response");
 
         assert_eq!(parsed.choices.len(), 1);
         assert!(parsed.choices[0].message.content.is_none());
@@ -1506,8 +1503,7 @@ mod tests {
         let response = to_inference_response(&parsed);
 
         let args: serde_json::Value =
-            serde_json::from_str(&response.tool_calls[0].arguments_json)
-                .expect("valid JSON");
+            serde_json::from_str(&response.tool_calls[0].arguments_json).expect("valid JSON");
         assert_eq!(args["path"], "/tmp/test.txt");
     }
 
@@ -1546,10 +1542,7 @@ mod tests {
 
     #[test]
     fn error_mapping_401_authentication() {
-        let body = sample_error_response_json(
-            "invalid_api_key",
-            "Incorrect API key provided.",
-        );
+        let body = sample_error_response_json("invalid_api_key", "Incorrect API key provided.");
         let err = map_api_error(401, &body, None, "test-model");
         assert!(matches!(err, ExecutorError::Authentication { .. }));
         assert!(!err.is_retryable());
@@ -1557,10 +1550,8 @@ mod tests {
 
     #[test]
     fn error_mapping_429_rate_limit() {
-        let body = sample_error_response_json(
-            "rate_limit_exceeded",
-            "Rate limit reached for model",
-        );
+        let body =
+            sample_error_response_json("rate_limit_exceeded", "Rate limit reached for model");
         let err = map_api_error(429, &body, None, "test-model");
         assert!(matches!(err, ExecutorError::RateLimit { .. }));
         assert!(err.is_retryable());
@@ -1568,10 +1559,8 @@ mod tests {
 
     #[test]
     fn error_mapping_400_bad_request() {
-        let body = sample_error_response_json(
-            "invalid_request_error",
-            "messages is a required field",
-        );
+        let body =
+            sample_error_response_json("invalid_request_error", "messages is a required field");
         let err = map_api_error(400, &body, None, "test-model");
         // 400 without context/content keywords falls through to ServerError
         assert!(!matches!(err, ExecutorError::ContextWindowExceeded { .. }));
@@ -1609,8 +1598,7 @@ mod tests {
 
     #[test]
     fn error_mapping_500_server_error() {
-        let body =
-            sample_error_response_json("server_error", "internal server error");
+        let body = sample_error_response_json("server_error", "internal server error");
         let err = map_api_error(500, &body, None, "test-model");
         assert!(matches!(
             err,
@@ -1637,8 +1625,7 @@ mod tests {
 
     #[test]
     fn error_mapping_503_server_error() {
-        let body =
-            sample_error_response_json("server_error", "service unavailable");
+        let body = sample_error_response_json("server_error", "service unavailable");
         let err = map_api_error(503, &body, None, "test-model");
         assert!(matches!(
             err,
@@ -1757,20 +1744,13 @@ mod tests {
                     name,
                     input_delta,
                 } => {
-                    tool_deltas.push((
-                        tool_call_id.clone(),
-                        name.clone(),
-                        input_delta.clone(),
-                    ));
+                    tool_deltas.push((tool_call_id.clone(), name.clone(), input_delta.clone()));
                 }
                 StreamEvent::ToolCallComplete { call } => {
                     has_tool_complete = true;
                     assert_eq!(call.tool_call_id, "call_abc123");
                     assert_eq!(call.tool_name, "file_read");
-                    assert_eq!(
-                        call.arguments_json,
-                        r#"{"path":"/tmp/test"}"#
-                    );
+                    assert_eq!(call.arguments_json, r#"{"path":"/tmp/test"}"#);
                 }
                 StreamEvent::Completed { result } => {
                     has_completed = true;
@@ -1813,8 +1793,8 @@ mod tests {
 
     #[test]
     fn with_max_retries_overrides_default() {
-        let exec = OpenAiExecutor::new_builder("sk-test".into(), "gpt-4o".into())
-            .with_max_retries(5);
+        let exec =
+            OpenAiExecutor::new_builder("sk-test".into(), "gpt-4o".into()).with_max_retries(5);
         assert_eq!(exec.max_retries, 5);
     }
 
@@ -1847,8 +1827,7 @@ mod tests {
 
     #[test]
     fn build_returns_arc() {
-        let exec =
-            OpenAiExecutor::new_builder("key".into(), "model".into()).build();
+        let exec = OpenAiExecutor::new_builder("key".into(), "model".into()).build();
         // Verify it's an Arc by cloning (Arc implements Clone).
         let _clone = Arc::clone(&exec);
         assert_eq!(exec.model, "model");
@@ -1983,8 +1962,7 @@ mod tests {
 
     #[test]
     fn builder_with_max_concurrent_creates_semaphore() {
-        let exec = OpenAiExecutor::new_builder("key".into(), "model".into())
-            .with_max_concurrent(5);
+        let exec = OpenAiExecutor::new_builder("key".into(), "model".into()).with_max_concurrent(5);
         assert!(exec.concurrency_semaphore.is_some());
     }
 

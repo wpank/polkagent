@@ -70,8 +70,7 @@ impl DeviceChannelSet {
     /// Returns the number of channels the device was subscribed to.
     pub fn remove_device(&self, device_id: &str) -> usize {
         let mut map = self.inner.write();
-        map.remove(device_id)
-            .map_or(0, |channels| channels.len())
+        map.remove(device_id).map_or(0, |channels| channels.len())
     }
 
     /// Check whether a device is subscribed to a specific channel.
@@ -301,8 +300,7 @@ mod tests {
 
         let snap = set.snapshot();
         let json = serde_json::to_string(&snap).expect("serialize");
-        let back: DeviceChannelSnapshot =
-            serde_json::from_str(&json).expect("deserialize");
+        let back: DeviceChannelSnapshot = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, snap);
     }
 

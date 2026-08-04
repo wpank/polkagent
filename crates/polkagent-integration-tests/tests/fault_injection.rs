@@ -18,16 +18,16 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use polkagent_core::{
-    EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, WorkerId,
-};
+use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, WorkerId};
 use polkagent_effect::pipeline::EffectIntentSpec;
-use polkagent_effect::types::{AttemptState, EffectAttempt, EffectKind, EffectOutcome, OutcomeResult};
+use polkagent_effect::types::{
+    AttemptState, EffectAttempt, EffectKind, EffectOutcome, OutcomeResult,
+};
 use polkagent_effect::{EffectPipeline, IdempotencyKey};
-use polkagent_fault::{Fault, FaultInjector, FaultSchedule};
 use polkagent_fault::store::FaultStore;
+use polkagent_fault::{Fault, FaultInjector, FaultSchedule};
 use polkagent_store_trait::{
-    EffectStore, StoredIntent, StoredOutcome, StoreError, StoreRetryClass,
+    EffectStore, StoreError, StoreRetryClass, StoredIntent, StoredOutcome,
 };
 
 // ---------------------------------------------------------------------------
@@ -209,10 +209,7 @@ impl EffectStore for MemEffectStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         Ok(self
             .outcomes
             .lock()
@@ -288,7 +285,9 @@ fn make_outcome(attempt: &EffectAttempt) -> EffectOutcome {
         attempt_id: attempt.id,
         intent_id: attempt.intent_id,
         run_id: attempt.run_id,
-        result: OutcomeResult::Success { data: serde_json::json!({"ok": true}) },
+        result: OutcomeResult::Success {
+            data: serde_json::json!({"ok": true}),
+        },
         observed_at: Utc::now(),
         digest: [0u8; 32],
     }
@@ -336,10 +335,8 @@ async fn fi_01_intent_survives_crash_at_persist_boundary() {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rt = tokio::runtime::Runtime::new().expect("rt");
             rt.block_on(async {
-                let pipeline = EffectPipeline::new(
-                    fault_store_clone as Arc<dyn EffectStore>,
-                    WorkerId::new(),
-                );
+                let pipeline =
+                    EffectPipeline::new(fault_store_clone as Arc<dyn EffectStore>, WorkerId::new());
                 pipeline.propose(spec).await
             })
         }))
@@ -354,7 +351,10 @@ async fn fi_01_intent_survives_crash_at_persist_boundary() {
     let intents = backing.intents.lock().expect("lock");
     assert_eq!(intents.len(), 1, "intent must survive the crash");
     let intent = intents.values().next().expect("one intent");
-    assert_eq!(intent.state, "pending", "intent state must be pending after crash");
+    assert_eq!(
+        intent.state, "pending",
+        "intent state must be pending after crash"
+    );
     assert_eq!(intent.run_id, run_id, "intent belongs to the correct run");
 }
 
@@ -388,19 +388,15 @@ async fn fi_02_attempt_survives_crash_before_outcome() {
 
     // 1. Propose intent (no fault yet).
     let intent_id = {
-        let pipeline = EffectPipeline::new(
-            Arc::clone(&fault_store) as Arc<dyn EffectStore>,
-            worker_id,
-        );
+        let pipeline =
+            EffectPipeline::new(Arc::clone(&fault_store) as Arc<dyn EffectStore>, worker_id);
         pipeline.propose(make_spec(run_id)).await.expect("propose")
     };
 
     // 2. Claim intent.
     {
-        let pipeline = EffectPipeline::new(
-            Arc::clone(&fault_store) as Arc<dyn EffectStore>,
-            worker_id,
-        );
+        let pipeline =
+            EffectPipeline::new(Arc::clone(&fault_store) as Arc<dyn EffectStore>, worker_id);
         let guard = pipeline
             .claim_with_duration(Duration::from_secs(60))
             .await
@@ -412,11 +408,12 @@ async fn fi_02_attempt_survives_crash_before_outcome() {
     // 3. Record attempt start.
     let attempt = make_attempt(intent_id, run_id);
     {
-        let pipeline = EffectPipeline::new(
-            Arc::clone(&fault_store) as Arc<dyn EffectStore>,
-            worker_id,
-        );
-        pipeline.record_attempt(intent_id, &attempt).await.expect("record_attempt");
+        let pipeline =
+            EffectPipeline::new(Arc::clone(&fault_store) as Arc<dyn EffectStore>, worker_id);
+        pipeline
+            .record_attempt(intent_id, &attempt)
+            .await
+            .expect("record_attempt");
     }
 
     // 4. Inject crash for the NEXT write (outcome recording).
@@ -428,17 +425,18 @@ async fn fi_02_attempt_survives_crash_before_outcome() {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rt = tokio::runtime::Runtime::new().expect("rt");
             rt.block_on(async {
-                let pipeline = EffectPipeline::new(
-                    fault_store_clone as Arc<dyn EffectStore>,
-                    worker_id,
-                );
+                let pipeline =
+                    EffectPipeline::new(fault_store_clone as Arc<dyn EffectStore>, worker_id);
                 pipeline.record_outcome(intent_id, &outcome).await
             })
         }))
     })
     .join()
     .expect("thread join");
-    assert!(record_result.is_err(), "crash fault at before_write should panic");
+    assert!(
+        record_result.is_err(),
+        "crash fault at before_write should panic"
+    );
 
     // 5. Verify: intent is still claimed (not resolved), attempt is present.
     {
@@ -455,7 +453,10 @@ async fn fi_02_attempt_survives_crash_before_outcome() {
     }
     {
         let outcomes = backing.outcomes.lock().expect("lock");
-        assert!(outcomes.is_empty(), "outcome must NOT be present after crash");
+        assert!(
+            outcomes.is_empty(),
+            "outcome must NOT be present after crash"
+        );
     }
 }
 
@@ -516,7 +517,10 @@ async fn fi_03_no_duplicate_delivery_on_restart_after_crash_during_drain() {
                 payload: serde_json::json!({"ok": true}),
                 observed_at: Utc::now(),
             };
-            backing.record_outcome(outcome.clone()).await.expect("record outcome");
+            backing
+                .record_outcome(outcome.clone())
+                .await
+                .expect("record outcome");
             outcome.id
         }
     };
@@ -525,8 +529,15 @@ async fn fi_03_no_duplicate_delivery_on_restart_after_crash_during_drain() {
     let _outcome_id_2 = propose_and_outcome(EffectId::new()).await;
 
     // Both outcomes are unconsumed.
-    let unconsumed = fault_store.unconsumed_outcomes(run_id).await.expect("unconsumed");
-    assert_eq!(unconsumed.len(), 2, "both outcomes should be unconsumed initially");
+    let unconsumed = fault_store
+        .unconsumed_outcomes(run_id)
+        .await
+        .expect("unconsumed");
+    assert_eq!(
+        unconsumed.len(),
+        2,
+        "both outcomes should be unconsumed initially"
+    );
 
     // Mark first outcome consumed — no fault yet.
     fault_store
@@ -535,7 +546,10 @@ async fn fi_03_no_duplicate_delivery_on_restart_after_crash_during_drain() {
         .expect("mark first consumed");
 
     // Confirm only one remains.
-    let unconsumed = fault_store.unconsumed_outcomes(run_id).await.expect("unconsumed");
+    let unconsumed = fault_store
+        .unconsumed_outcomes(run_id)
+        .await
+        .expect("unconsumed");
     assert_eq!(unconsumed.len(), 1, "one outcome should remain unconsumed");
     let remaining_id = unconsumed[0].id;
 
@@ -559,8 +573,10 @@ async fn fi_03_no_duplicate_delivery_on_restart_after_crash_during_drain() {
 
     // Simulate restart: the first outcome is permanently consumed,
     // the second is still in the outbox (not consumed).
-    let post_crash_unconsumed =
-        backing.unconsumed_outcomes(run_id).await.expect("unconsumed after crash");
+    let post_crash_unconsumed = backing
+        .unconsumed_outcomes(run_id)
+        .await
+        .expect("unconsumed after crash");
     assert_eq!(
         post_crash_unconsumed.len(),
         1,

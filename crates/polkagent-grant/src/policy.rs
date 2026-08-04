@@ -361,7 +361,11 @@ impl EvaluationContext {
     ///     .with_attribute("environment.budget", ContextAttribute::Number(500.0));
     /// ```
     #[must_use]
-    pub fn with_attribute(mut self, key: impl Into<String>, value: impl Into<ContextAttribute>) -> Self {
+    pub fn with_attribute(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<ContextAttribute>,
+    ) -> Self {
         self.typed_attributes.insert(key.into(), value.into());
         self
     }
@@ -587,8 +591,16 @@ pub fn instantiate_template(
             PolicyRule {
                 id: substitute(&rule_tpl.id),
                 effect: rule_tpl.effect.clone(),
-                action_patterns: rule_tpl.action_patterns.iter().map(|p| substitute(p)).collect(),
-                resource_patterns: rule_tpl.resource_patterns.iter().map(|p| substitute(p)).collect(),
+                action_patterns: rule_tpl
+                    .action_patterns
+                    .iter()
+                    .map(|p| substitute(p))
+                    .collect(),
+                resource_patterns: rule_tpl
+                    .resource_patterns
+                    .iter()
+                    .map(|p| substitute(p))
+                    .collect(),
                 conditions: rule_tpl
                     .conditions
                     .iter()
@@ -981,19 +993,40 @@ mod tests {
 
     fn typed_ctx() -> EvaluationContext {
         EvaluationContext::default()
-            .with_attribute("principal.id", ContextAttribute::String("alice".to_string()))
-            .with_attribute("principal.role", ContextAttribute::String("developer".to_string()))
-            .with_attribute("action.kind", ContextAttribute::String("chain.query".to_string()))
-            .with_attribute("resource.pallet", ContextAttribute::String("balances".to_string()))
-            .with_attribute("resource.call", ContextAttribute::String("transfer".to_string()))
-            .with_attribute("environment.time", ContextAttribute::Timestamp("2026-07-31T10:00:00Z".to_string()))
-            .with_attribute("environment.network", ContextAttribute::String("westend".to_string()))
+            .with_attribute(
+                "principal.id",
+                ContextAttribute::String("alice".to_string()),
+            )
+            .with_attribute(
+                "principal.role",
+                ContextAttribute::String("developer".to_string()),
+            )
+            .with_attribute(
+                "action.kind",
+                ContextAttribute::String("chain.query".to_string()),
+            )
+            .with_attribute(
+                "resource.pallet",
+                ContextAttribute::String("balances".to_string()),
+            )
+            .with_attribute(
+                "resource.call",
+                ContextAttribute::String("transfer".to_string()),
+            )
+            .with_attribute(
+                "environment.time",
+                ContextAttribute::Timestamp("2026-07-31T10:00:00Z".to_string()),
+            )
+            .with_attribute(
+                "environment.network",
+                ContextAttribute::String("westend".to_string()),
+            )
             .with_attribute("budget.remaining", ContextAttribute::Number(500.0))
             .with_attribute("budget.limit", ContextAttribute::Number(1000.0))
-            .with_attribute("allowed.pallets", ContextAttribute::List(vec![
-                "balances".to_string(),
-                "staking".to_string(),
-            ]))
+            .with_attribute(
+                "allowed.pallets",
+                ContextAttribute::List(vec!["balances".to_string(), "staking".to_string()]),
+            )
     }
 
     // -------------------------------------------------------------------------
@@ -1179,7 +1212,10 @@ mod tests {
     #[test]
     fn context_attribute_as_list() {
         let a = ContextAttribute::List(vec!["x".to_string(), "y".to_string()]);
-        assert_eq!(a.as_list(), Some(["x".to_string(), "y".to_string()].as_slice()));
+        assert_eq!(
+            a.as_list(),
+            Some(["x".to_string(), "y".to_string()].as_slice())
+        );
         let b = ContextAttribute::String("x".to_string());
         assert_eq!(b.as_list(), None);
     }
@@ -1187,7 +1223,10 @@ mod tests {
     #[test]
     fn evaluation_context_builder() {
         let ctx = EvaluationContext::default()
-            .with_attribute("principal.role", ContextAttribute::String("admin".to_string()))
+            .with_attribute(
+                "principal.role",
+                ContextAttribute::String("admin".to_string()),
+            )
             .with_attribute("budget.remaining", ContextAttribute::Number(250.0));
 
         assert_eq!(
@@ -1357,14 +1396,24 @@ mod tests {
             value: "developer".to_string(),
         };
         // developer == developer → true; NOT(true) → false
-        assert!(!evaluate_condition(&Condition::Not { inner: Box::new(inner.clone()) }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Not {
+                inner: Box::new(inner.clone())
+            },
+            &ctx
+        ));
 
         let wrong = Condition::Equals {
             attr: "principal.role".to_string(),
             value: "operator".to_string(),
         };
         // operator != developer → false; NOT(false) → true
-        assert!(evaluate_condition(&Condition::Not { inner: Box::new(wrong) }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Not {
+                inner: Box::new(wrong)
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -1442,13 +1491,19 @@ mod tests {
     #[test]
     fn condition_and_empty_is_true() {
         let ctx = EvaluationContext::default();
-        assert!(evaluate_condition(&Condition::And { conditions: vec![] }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::And { conditions: vec![] },
+            &ctx
+        ));
     }
 
     #[test]
     fn condition_or_empty_is_false() {
         let ctx = EvaluationContext::default();
-        assert!(!evaluate_condition(&Condition::Or { conditions: vec![] }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Or { conditions: vec![] },
+            &ctx
+        ));
     }
 
     #[test]
@@ -1516,19 +1571,31 @@ mod tests {
     #[test]
     fn template_read_only_agent_instantiates() {
         let templates = builtin_templates();
-        let tpl = templates.iter().find(|t| t.name == "read-only-agent").unwrap();
+        let tpl = templates
+            .iter()
+            .find(|t| t.name == "read-only-agent")
+            .unwrap();
         let set = instantiate_template(tpl, &HashMap::new()).unwrap();
         assert_eq!(set.rules.len(), 3);
 
         let ctx = EvaluationContext::default();
-        assert_eq!(evaluate(&set, "chain.query", "any", &ctx), PolicyDecision::Allow);
-        assert!(matches!(evaluate(&set, "chain.submit", "any", &ctx), PolicyDecision::Deny { .. }));
+        assert_eq!(
+            evaluate(&set, "chain.query", "any", &ctx),
+            PolicyDecision::Allow
+        );
+        assert!(matches!(
+            evaluate(&set, "chain.submit", "any", &ctx),
+            PolicyDecision::Deny { .. }
+        ));
     }
 
     #[test]
     fn template_pallet_scoped_agent_instantiates() {
         let templates = builtin_templates();
-        let tpl = templates.iter().find(|t| t.name == "pallet-scoped-agent").unwrap();
+        let tpl = templates
+            .iter()
+            .find(|t| t.name == "pallet-scoped-agent")
+            .unwrap();
 
         let mut params = HashMap::new();
         params.insert("pallet".to_string(), "balances".to_string());
@@ -1536,39 +1603,68 @@ mod tests {
         let set = instantiate_template(tpl, &params).unwrap();
 
         // Check that placeholder was substituted in rule id and resource pattern.
-        let allow_rule = set.rules.iter().find(|r| r.effect == Effect::Allow).unwrap();
-        assert!(allow_rule.id.contains("balances"), "rule id should contain 'balances'");
-        assert!(allow_rule.resource_patterns.iter().any(|p| p.contains("balances")));
+        let allow_rule = set
+            .rules
+            .iter()
+            .find(|r| r.effect == Effect::Allow)
+            .unwrap();
+        assert!(
+            allow_rule.id.contains("balances"),
+            "rule id should contain 'balances'"
+        );
+        assert!(allow_rule
+            .resource_patterns
+            .iter()
+            .any(|p| p.contains("balances")));
     }
 
     #[test]
     fn template_budget_capped_agent_instantiates() {
         let templates = builtin_templates();
-        let tpl = templates.iter().find(|t| t.name == "budget-capped-agent").unwrap();
+        let tpl = templates
+            .iter()
+            .find(|t| t.name == "budget-capped-agent")
+            .unwrap();
 
         let mut params = HashMap::new();
         params.insert("max_amount".to_string(), "500000".to_string());
 
         let set = instantiate_template(tpl, &params).unwrap();
-        let chain_rule = set.rules.iter().find(|r| r.id == "budget-allow-chain").unwrap();
-        assert_eq!(chain_rule.conditions.get("max_amount").map(String::as_str), Some("500000"));
+        let chain_rule = set
+            .rules
+            .iter()
+            .find(|r| r.id == "budget-allow-chain")
+            .unwrap();
+        assert_eq!(
+            chain_rule.conditions.get("max_amount").map(String::as_str),
+            Some("500000")
+        );
     }
 
     #[test]
     fn template_missing_required_param_is_error() {
         let templates = builtin_templates();
-        let tpl = templates.iter().find(|t| t.name == "pallet-scoped-agent").unwrap();
+        let tpl = templates
+            .iter()
+            .find(|t| t.name == "pallet-scoped-agent")
+            .unwrap();
 
         // No params provided — 'pallet' is required.
         let result = instantiate_template(tpl, &HashMap::new());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TemplateError::MissingParam { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            TemplateError::MissingParam { .. }
+        ));
     }
 
     #[test]
     fn template_optional_param_uses_default() {
         let templates = builtin_templates();
-        let tpl = templates.iter().find(|t| t.name == "time-limited-agent").unwrap();
+        let tpl = templates
+            .iter()
+            .find(|t| t.name == "time-limited-agent")
+            .unwrap();
 
         // No params → defaults should be used.
         let set = instantiate_template(tpl, &HashMap::new()).unwrap();
@@ -1578,14 +1674,21 @@ mod tests {
     #[test]
     fn template_param_override_replaces_default() {
         let templates = builtin_templates();
-        let tpl = templates.iter().find(|t| t.name == "time-limited-agent").unwrap();
+        let tpl = templates
+            .iter()
+            .find(|t| t.name == "time-limited-agent")
+            .unwrap();
 
         let mut params = HashMap::new();
         params.insert("window_value".to_string(), "off_hours".to_string());
 
         let set = instantiate_template(tpl, &params).unwrap();
         // The allow rule's condition value should be "off_hours" not "business_hours".
-        let allow_rule = set.rules.iter().find(|r| r.effect == Effect::Allow).unwrap();
+        let allow_rule = set
+            .rules
+            .iter()
+            .find(|r| r.effect == Effect::Allow)
+            .unwrap();
         let has_off_hours = allow_rule.conditions.values().any(|v| v == "off_hours");
         assert!(has_off_hours, "override should replace default");
     }
@@ -1679,9 +1782,6 @@ mod tests {
             .collect();
 
         let resolved = resolve_policy_chain(&policies);
-        assert_eq!(
-            resolved.resolution_order,
-            vec!["base", "middle", "derived"]
-        );
+        assert_eq!(resolved.resolution_order, vec!["base", "middle", "derived"]);
     }
 }

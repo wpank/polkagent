@@ -12,9 +12,7 @@ use polkagent_feed::FeedError;
 /// variants become [`FeedError::ProcessingError`].
 pub(crate) fn map_sqlite(e: rusqlite::Error) -> FeedError {
     match e {
-        rusqlite::Error::QueryReturnedNoRows => {
-            FeedError::NotFound("record not found".to_string())
-        }
+        rusqlite::Error::QueryReturnedNoRows => FeedError::NotFound("record not found".to_string()),
         other => FeedError::ProcessingError(format!("sqlite error: {other}")),
     }
 }

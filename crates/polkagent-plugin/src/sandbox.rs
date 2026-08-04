@@ -65,7 +65,11 @@ impl PluginSandbox {
     /// Returns [`PluginError::CapabilityDenied`] if the plugin does not
     /// have the required capability, or if the plugin is not known to the
     /// sandbox.
-    pub fn check(&self, plugin_name: &str, capability: PluginCapability) -> Result<(), PluginError> {
+    pub fn check(
+        &self,
+        plugin_name: &str,
+        capability: PluginCapability,
+    ) -> Result<(), PluginError> {
         let grants = self.grants.read();
         match grants.get(plugin_name) {
             Some(set) if set.contains(capability) => {
@@ -165,7 +169,7 @@ impl Default for SandboxResourceLimits {
             max_memory_bytes: 256 * 1024 * 1024, // 256 MB
             timeout: Duration::from_secs(30),
             max_network_requests: 100,
-            max_network_bytes: 10 * 1024 * 1024, // 10 MB
+            max_network_bytes: 10 * 1024 * 1024,  // 10 MB
             max_fs_read_bytes: 100 * 1024 * 1024, // 100 MB
             max_fs_write_bytes: 10 * 1024 * 1024, // 10 MB
         }
@@ -301,11 +305,7 @@ impl WasmtimeSandbox {
     ///
     /// In addition to checking the `NetworkAccess` capability, this
     /// validates the target host against the plugin's allowed host list.
-    pub fn check_http_host(
-        &self,
-        plugin_name: &str,
-        target_host: &str,
-    ) -> Result<(), PluginError> {
+    pub fn check_http_host(&self, plugin_name: &str, target_host: &str) -> Result<(), PluginError> {
         self.check_host_call(plugin_name, PluginCapability::NetworkAccess)?;
 
         let configs = self.configs.read();
@@ -566,10 +566,7 @@ mod tests {
             SandboxTier::Wasm,
             CapabilitySet::from_iter([PluginCapability::NetworkAccess]),
         );
-        config.allowed_hosts = vec![
-            "api.polkadot.io".to_string(),
-            "*.parity.io".to_string(),
-        ];
+        config.allowed_hosts = vec!["api.polkadot.io".to_string(), "*.parity.io".to_string()];
         sandbox.register("net-plugin", config);
 
         // Allowed: exact match.
@@ -617,10 +614,7 @@ mod tests {
         let sandbox = WasmtimeSandbox::new();
         assert!(sandbox.resource_limits("nope").is_none());
 
-        let mut config = SandboxConfig::new(
-            SandboxTier::Wasm,
-            CapabilitySet::empty(),
-        );
+        let mut config = SandboxConfig::new(SandboxTier::Wasm, CapabilitySet::empty());
         config.resource_limits.fuel_budget = 500;
         sandbox.register("limited", config);
 

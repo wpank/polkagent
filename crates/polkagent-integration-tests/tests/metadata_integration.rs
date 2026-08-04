@@ -27,8 +27,8 @@ fn make_snapshot(chain: &str, data: &[u8]) -> MetadataSnapshot {
 }
 
 fn make_old_snapshot(chain: &str, data: &[u8], age: Duration) -> MetadataSnapshot {
-    let ts = chrono::Utc::now()
-        - chrono::Duration::from_std(age).unwrap_or(chrono::Duration::zero());
+    let ts =
+        chrono::Utc::now() - chrono::Duration::from_std(age).unwrap_or(chrono::Duration::zero());
     MetadataSnapshot::new(
         ChainId::new(chain),
         MetadataVersion::V14,
@@ -62,7 +62,10 @@ fn cache_stores_and_retrieves_snapshot() {
     cache.insert(snap);
 
     let retrieved = cache.get(&chain_id, &hash);
-    assert!(retrieved.is_some(), "snapshot should be retrievable by chain_id and hash");
+    assert!(
+        retrieved.is_some(),
+        "snapshot should be retrievable by chain_id and hash"
+    );
 
     let got = retrieved.expect("already checked Some");
     assert_eq!(got.hash, hash);
@@ -91,11 +94,9 @@ fn cache_get_latest_returns_most_recent_for_chain() {
 fn cache_returns_none_for_unknown_chain() {
     let cache = MetadataCache::new();
     assert!(cache.get_latest(&ChainId::new("unknown")).is_none());
-    assert!(
-        cache
-            .get(&ChainId::new("unknown"), &MetadataHash::from_hex("abc"))
-            .is_none()
-    );
+    assert!(cache
+        .get(&ChainId::new("unknown"), &MetadataHash::from_hex("abc"))
+        .is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -129,7 +130,11 @@ fn pin_store_pin_is_idempotent() {
     pins.pin(chain.clone(), hash.clone(), "first");
     pins.pin(chain.clone(), hash.clone(), "second");
 
-    assert_eq!(pins.total_pins(), 1, "duplicate pin should not add a second entry");
+    assert_eq!(
+        pins.total_pins(),
+        1,
+        "duplicate pin should not add a second entry"
+    );
 }
 
 #[test]
@@ -211,10 +216,7 @@ fn drift_detector_no_drift_when_no_pins_exist() {
     let snap = make_snapshot("polkadot", b"any_data");
 
     let drift = detector.check(&ChainId::new("polkadot"), &snap, &[]);
-    assert!(
-        drift.is_none(),
-        "no pins means nothing to drift against"
-    );
+    assert!(drift.is_none(), "no pins means nothing to drift against");
 }
 
 #[test]
@@ -227,10 +229,7 @@ fn drift_detector_matches_any_of_multiple_pins() {
     ];
 
     let drift = detector.check(&ChainId::new("polkadot"), &snap, &pins);
-    assert!(
-        drift.is_none(),
-        "matching any pin should suppress drift"
-    );
+    assert!(drift.is_none(), "matching any pin should suppress drift");
 }
 
 // ---------------------------------------------------------------------------
@@ -366,14 +365,8 @@ fn cache_explicit_evict_removes_entry() {
 #[test]
 fn cache_evict_returns_false_for_missing_entry() {
     let cache = MetadataCache::new();
-    let removed = cache.evict(
-        &ChainId::new("nonexistent"),
-        &MetadataHash::from_hex("abc"),
-    );
-    assert!(
-        !removed,
-        "evict should return false for non-existent entry"
-    );
+    let removed = cache.evict(&ChainId::new("nonexistent"), &MetadataHash::from_hex("abc"));
+    assert!(!removed, "evict should return false for non-existent entry");
 }
 
 // ---------------------------------------------------------------------------

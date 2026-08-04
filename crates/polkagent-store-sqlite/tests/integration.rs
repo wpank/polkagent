@@ -12,9 +12,8 @@ use chrono::Utc;
 use tempfile::TempDir;
 
 use polkagent_store_sqlite::{
-    SqlitePool,
-    migrations,
-    SqliteRunStore, SqliteEffectStore, SqliteArtifactStore, SqliteEventStore,
+    migrations, SqliteArtifactStore, SqliteEffectStore, SqliteEventStore, SqlitePool,
+    SqliteRunStore,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,11 +74,7 @@ fn schema_creation_succeeds() {
     ];
     for table in &domain_tables {
         let count: i64 = writer
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {table}"),
-                [],
-                |r| r.get(0),
-            )
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
             .unwrap_or_else(|e| panic!("table '{table}' not queryable: {e}"));
         assert_eq!(count, 0, "table '{table}' should be empty initially");
     }
@@ -153,7 +148,9 @@ fn agent_state_update() {
     let pool = open_mem_db();
     let store = SqliteRunStore::new(pool);
     let agent = store.create_agent("a", None, "{}").expect("create");
-    store.update_agent_state(&agent.id, "disabled").expect("update");
+    store
+        .update_agent_state(&agent.id, "disabled")
+        .expect("update");
     let fetched = store.get_agent(&agent.id).expect("get");
     assert_eq!(fetched.state, "disabled");
 }
@@ -229,9 +226,7 @@ fn turn_create_and_complete() {
 
     let agent = store.create_agent("ag", None, "{}").expect("agent");
     let run = store.create_run(&agent.id, None, "{}").expect("run");
-    let turn = store
-        .create_turn(&run.id, 1, "user")
-        .expect("create turn");
+    let turn = store.create_turn(&run.id, 1, "user").expect("create turn");
 
     assert_eq!(turn.sequence, 1);
     assert_eq!(turn.role, "user");
@@ -326,7 +321,10 @@ fn effect_intent_duplicate_idempotency_key_rejected() {
 
     let result = effect.create_intent(&run.id, None, None, "model", "{}", "same-key");
     assert!(
-        matches!(result, Err(polkagent_store_sqlite::StoreError::Duplicate(_))),
+        matches!(
+            result,
+            Err(polkagent_store_sqlite::StoreError::Duplicate(_))
+        ),
         "expected Duplicate, got {result:?}"
     );
 }
@@ -365,7 +363,9 @@ fn effect_claim_already_claimed_fails() {
         .expect("create");
 
     let lease_until = Utc::now() + chrono::Duration::seconds(60);
-    effect.claim_intent(&intent.id, "worker-1", lease_until).expect("first claim");
+    effect
+        .claim_intent(&intent.id, "worker-1", lease_until)
+        .expect("first claim");
 
     // Second claim by a different worker while lease is active must fail.
     let result = effect.claim_intent(&intent.id, "worker-2", lease_until);
@@ -392,7 +392,9 @@ fn expired_lease_can_be_reclaimed() {
     // Directly set with an expired lease by claiming with past time.
     // We use a future time for the API then verify expired_leases returns it.
     let nearly_past = Utc::now() + chrono::Duration::milliseconds(1);
-    effect.claim_intent(&intent.id, "worker-1", nearly_past).expect("first claim");
+    effect
+        .claim_intent(&intent.id, "worker-1", nearly_past)
+        .expect("first claim");
 
     // Wait a tiny bit so the lease is expired.
     thread::sleep(Duration::from_millis(10));
@@ -407,7 +409,9 @@ fn expired_lease_can_be_reclaimed() {
 
     // Reclaim with a fresh lease.
     let new_lease = Utc::now() + chrono::Duration::seconds(30);
-    let reclaimed = effect.claim_intent(&intent.id, "worker-2", new_lease).expect("reclaim");
+    let reclaimed = effect
+        .claim_intent(&intent.id, "worker-2", new_lease)
+        .expect("reclaim");
     assert_eq!(reclaimed.claimed_by.as_deref(), Some("worker-2"));
     let _ = expired_at; // suppress unused warning
 }
@@ -425,8 +429,12 @@ fn effect_release_claim() {
         .expect("create");
 
     let lease = Utc::now() + chrono::Duration::seconds(30);
-    effect.claim_intent(&intent.id, "worker-1", lease).expect("claim");
-    effect.release_intent(&intent.id, "worker-1").expect("release");
+    effect
+        .claim_intent(&intent.id, "worker-1", lease)
+        .expect("claim");
+    effect
+        .release_intent(&intent.id, "worker-1")
+        .expect("release");
 
     let fetched = effect.get_intent(&intent.id).expect("get");
     assert!(fetched.claimed_by.is_none());
@@ -628,14 +636,8 @@ fn artifacts_for_run_lists_all() {
     let run = store.create_run(&agent.id, None, "{}").expect("run");
 
     for i in 0..4 {
-        art.create_artifact(
-            Some(&run.id),
-            "File",
-            &format!("digest-{i}"),
-            i * 100,
-            "{}",
-        )
-        .expect("artifact");
+        art.create_artifact(Some(&run.id), "File", &format!("digest-{i}"), i * 100, "{}")
+            .expect("artifact");
     }
 
     let list = art.artifacts_for_run(&run.id).expect("list");
@@ -687,7 +689,10 @@ fn event_sequence_uniqueness_duplicate_rejected() {
     // Same (run_id, sequence=1) — must be rejected.
     let result = events.append_event(&run.id, 1, "RunCreated", "{}", None, 1);
     assert!(
-        matches!(result, Err(polkagent_store_sqlite::StoreError::Duplicate(_))),
+        matches!(
+            result,
+            Err(polkagent_store_sqlite::StoreError::Duplicate(_))
+        ),
         "expected Duplicate, got {result:?}"
     );
 }
@@ -803,7 +808,9 @@ fn full_lifecycle_smoke_test() {
     let event_store = SqliteEventStore::new(pool.clone());
 
     // Agent + run.
-    let agent = run_store.create_agent("lifecycle-agent", None, "{}").expect("agent");
+    let agent = run_store
+        .create_agent("lifecycle-agent", None, "{}")
+        .expect("agent");
     let run = run_store
         .create_run(&agent.id, Some("conv-abc"), "{}")
         .expect("run");
@@ -820,7 +827,9 @@ fn full_lifecycle_smoke_test() {
         .expect("event 2");
 
     // Step 1 within turn.
-    let step = run_store.create_step(&turn.id, 1, "model_call").expect("step");
+    let step = run_store
+        .create_step(&turn.id, 1, "model_call")
+        .expect("step");
 
     // Effect intent.
     let intent = effect_store
@@ -850,17 +859,13 @@ fn full_lifecycle_smoke_test() {
     assert_eq!(outcome.status, "success");
 
     // Complete attempt.
-    effect_store.complete_attempt(&attempt.id).expect("complete attempt");
+    effect_store
+        .complete_attempt(&attempt.id)
+        .expect("complete attempt");
 
     // Store an artifact.
     let artifact = artifact_store
-        .create_artifact(
-            Some(&run.id),
-            "ModelResponse",
-            "sha256abcdef",
-            512,
-            "{}",
-        )
+        .create_artifact(Some(&run.id), "ModelResponse", "sha256abcdef", 512, "{}")
         .expect("artifact");
 
     // Store its body.
@@ -869,7 +874,9 @@ fn full_lifecycle_smoke_test() {
         .expect("body");
 
     // Complete the turn.
-    run_store.complete_turn(&turn.id, 50, 120).expect("complete turn");
+    run_store
+        .complete_turn(&turn.id, 50, 120)
+        .expect("complete turn");
     run_store.complete_step(&step.id).expect("complete step");
 
     // Transition run to completed.
@@ -890,8 +897,6 @@ fn full_lifecycle_smoke_test() {
     let all_events = event_store.events_for_run(&run.id).expect("all events");
     assert_eq!(all_events.len(), 3);
 
-    let body = artifact_store
-        .get_body(&artifact.digest_hex)
-        .expect("body");
+    let body = artifact_store.get_body(&artifact.digest_hex).expect("body");
     assert_eq!(body, b"I can help!");
 }

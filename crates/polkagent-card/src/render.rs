@@ -71,7 +71,11 @@ pub fn render_text(card: &ActionCard) -> String {
 
     // Canonical sections
     if !card.canonical_sections.is_empty() {
-        out.push_str(&format!("║ {:<width$}║\n", "[CANONICAL DATA]", width = width - 1));
+        out.push_str(&format!(
+            "║ {:<width$}║\n",
+            "[CANONICAL DATA]",
+            width = width - 1
+        ));
         for section in &card.canonical_sections {
             let verified_mark = if section.verified { "✓" } else { "?" };
             let source_tag = format!("[{}]", section.source);
@@ -307,10 +311,7 @@ pub fn render_tui(card: &ActionCard) -> Vec<Line<'static>> {
                 lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled("At block: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format!("#{}", block),
-                        Style::default().fg(Color::White),
-                    ),
+                    Span::styled(format!("#{}", block), Style::default().fg(Color::White)),
                 ]));
             }
         }
@@ -329,9 +330,7 @@ pub fn render_tui(card: &ActionCard) -> Vec<Line<'static>> {
         Span::raw("  "),
         Span::styled(
             format!("RISK: {}", card.risk_level),
-            Style::default()
-                .fg(risk_color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
         ),
     ]));
 
@@ -381,9 +380,7 @@ pub fn render_tui(card: &ActionCard) -> Vec<Line<'static>> {
                     Span::raw("      "),
                     Span::styled(
                         content_line,
-                        Style::default()
-                            .fg(Color::Gray)
-                            .add_modifier(Modifier::DIM),
+                        Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
                     ),
                 ]));
             }
@@ -453,7 +450,10 @@ fn truncate_to(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
     } else {
-        s.chars().take(max_chars.saturating_sub(1)).collect::<String>() + "…"
+        s.chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>()
+            + "…"
     }
 }
 
@@ -513,7 +513,10 @@ mod tests {
     fn render_text_contains_title() {
         let card = sample_card();
         let text = render_text(&card);
-        assert!(text.contains("Transfer 10 DOT"), "title must appear in output");
+        assert!(
+            text.contains("Transfer 10 DOT"),
+            "title must appear in output"
+        );
     }
 
     #[test]
@@ -591,7 +594,10 @@ mod tests {
     fn render_tui_returns_non_empty_lines() {
         let card = sample_card();
         let lines = render_tui(&card);
-        assert!(!lines.is_empty(), "TUI renderer must return at least one line");
+        assert!(
+            !lines.is_empty(),
+            "TUI renderer must return at least one line"
+        );
     }
 
     #[test]
@@ -643,13 +649,14 @@ mod tests {
         let lines = render_tui(&card);
 
         // Find any span with Red foreground.
-        let has_red = lines.iter().any(|l| {
-            l.spans
-                .iter()
-                .any(|s| s.style.fg == Some(Color::Red))
-        });
+        let has_red = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.style.fg == Some(Color::Red)));
 
-        assert!(has_red, "High severity risk must produce a Red-colored span");
+        assert!(
+            has_red,
+            "High severity risk must produce a Red-colored span"
+        );
     }
 
     #[test]
@@ -663,10 +670,7 @@ mod tests {
         let result = word_wrap("one two three four five", 10);
         // Each line must be at most 10 chars.
         for line in &result {
-            assert!(
-                line.len() <= 10,
-                "line '{line}' exceeds max_width=10"
-            );
+            assert!(line.len() <= 10, "line '{line}' exceeds max_width=10");
         }
     }
 

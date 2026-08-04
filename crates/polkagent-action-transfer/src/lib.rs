@@ -8,8 +8,8 @@
 
 use async_trait::async_trait;
 use polkagent_chain_trait::{
-    ChainClient, ChainError, ChainProfileId, GenesisHash, XcmHop, XcmMechanism, XcmPlan,
-    XcmRoute, XcmVersionCompat, estimate_xcm_fees, resolve_xcm_mechanism,
+    estimate_xcm_fees, resolve_xcm_mechanism, ChainClient, ChainError, ChainProfileId, GenesisHash,
+    XcmHop, XcmMechanism, XcmPlan, XcmRoute, XcmVersionCompat,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -26,7 +26,9 @@ pub enum TransferError {
     #[error("XCM error: {0}")]
     Xcm(#[from] polkagent_chain_trait::XcmError),
 
-    #[error("route unsupported: no valid XCM path from '{origin}' to '{dest}' for asset '{asset}'")]
+    #[error(
+        "route unsupported: no valid XCM path from '{origin}' to '{dest}' for asset '{asset}'"
+    )]
     RouteUnsupported {
         origin: String,
         dest: String,
@@ -140,8 +142,7 @@ impl<C: ChainClient> RoutePlanner for ChainRoutePlanner<C> {
         };
 
         // 4. Estimate fees (use a zero-length message placeholder for planning).
-        let fee_estimate =
-            estimate_xcm_fees(&self.client, &self.dest_genesis, &[], 0).await?;
+        let fee_estimate = estimate_xcm_fees(&self.client, &self.dest_genesis, &[], 0).await?;
 
         // 5. Identify risks.
         let mut risks = Vec::new();
@@ -371,7 +372,10 @@ mod tests {
             .expect("plan ok");
 
         let fee = &plan.xcm_plan.fee_estimate;
-        assert_eq!(fee.total, fee.source_fee + fee.dest_weight_fee + fee.delivery_fee);
+        assert_eq!(
+            fee.total,
+            fee.source_fee + fee.dest_weight_fee + fee.delivery_fee
+        );
     }
 
     // -----------------------------------------------------------------------

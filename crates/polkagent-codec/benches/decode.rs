@@ -9,10 +9,10 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use polkagent_codec::{
+    decode_extrinsic,
     metadata::build_minimal_metadata_v14,
     parse_metadata,
     scale::{ScaleDecoder, ScaleEncoder},
-    decode_extrinsic,
 };
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ fn make_transfer_keep_alive_extrinsic() -> Vec<u8> {
     // dest: MultiAddress::Id(0x00 prefix + 32-byte AccountId)
     body.encode_u8(0x00); // MultiAddress variant = Id
     body.encode_bytes(&[0xdeu8; 32]); // 32-byte account (placeholder)
-    // value: compact-encoded u128 (e.g. 1_000_000_000 planck)
+                                      // value: compact-encoded u128 (e.g. 1_000_000_000 planck)
     body.encode_compact_u64(1_000_000_000u64);
 
     let body_bytes = body.finish();
@@ -51,10 +51,7 @@ fn make_transfer_keep_alive_extrinsic() -> Vec<u8> {
 
 /// Build a minimal v14 metadata fixture with two pallets.
 fn make_minimal_metadata() -> Vec<u8> {
-    build_minimal_metadata_v14(&[
-        ("System", 0),
-        ("Balances", 5),
-    ])
+    build_minimal_metadata_v14(&[("System", 0), ("Balances", 5)])
 }
 
 // ---------------------------------------------------------------------------

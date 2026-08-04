@@ -9,15 +9,12 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use polkagent_core::{
-    EffectAttemptId, EffectId, EffectOutcomeId, RunId, TurnId, WorkerId,
-};
+use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, TurnId, WorkerId};
 use polkagent_event::{EventBus, EventRecorder};
 use polkagent_run::RunManager;
 use polkagent_store_trait::{
     event::{EventFilter, EventStore, EventStoreError, StoredEvent},
-    EffectStore, RunStatus, RunStore, RunSummary, StoredIntent, StoredOutcome,
-    StoreError,
+    EffectStore, RunStatus, RunStore, RunSummary, StoreError, StoredIntent, StoredOutcome,
 };
 
 // ---------------------------------------------------------------------------
@@ -71,11 +68,7 @@ impl RunStore for MemRunStore {
             })
     }
 
-    async fn update_state(
-        &self,
-        run_id: RunId,
-        new_status: RunStatus,
-    ) -> Result<(), StoreError> {
+    async fn update_state(&self, run_id: RunId, new_status: RunStatus) -> Result<(), StoreError> {
         let mut guard = self.runs.lock().expect("lock");
         guard
             .get_mut(&run_id.to_string())
@@ -157,10 +150,7 @@ pub struct MemEventStore {
 
 #[async_trait::async_trait]
 impl EventStore for MemEventStore {
-    async fn append_durable(
-        &self,
-        mut event: StoredEvent,
-    ) -> Result<StoredEvent, EventStoreError> {
+    async fn append_durable(&self, mut event: StoredEvent) -> Result<StoredEvent, EventStoreError> {
         let mut seqs = self.sequences.lock().expect("lock");
         let current = seqs.get(&event.run_id).copied().unwrap_or(0);
         if event.sequence <= current {
@@ -209,10 +199,7 @@ impl EventStore for MemEventStore {
             .collect())
     }
 
-    async fn read_run_events(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+    async fn read_run_events(&self, run_id: RunId) -> Result<Vec<StoredEvent>, EventStoreError> {
         let durable = self.durable.lock().expect("lock");
         Ok(durable
             .iter()
@@ -221,10 +208,7 @@ impl EventStore for MemEventStore {
             .collect())
     }
 
-    async fn query(
-        &self,
-        filter: EventFilter,
-    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+    async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
         let durable = self.durable.lock().expect("lock");
         Ok(durable
             .iter()
@@ -424,10 +408,7 @@ impl EffectStore for MemEffectStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         let outcomes = self.outcomes.lock().expect("lock");
         Ok(outcomes
             .iter()

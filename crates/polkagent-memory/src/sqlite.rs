@@ -191,11 +191,10 @@ impl MemoryStore for SqliteMemoryStore {
     async fn store_memory(&self, entry: &MemoryEntry) -> MemoryResult<MemoryId> {
         let conn = self.inner.conn.lock();
 
-        let embedding_bytes: Option<Vec<u8>> = entry.embedding.as_ref().map(|v| {
-            v.iter()
-                .flat_map(|f| f.to_le_bytes())
-                .collect()
-        });
+        let embedding_bytes: Option<Vec<u8>> = entry
+            .embedding
+            .as_ref()
+            .map(|v| v.iter().flat_map(|f| f.to_le_bytes()).collect());
 
         let provenance_json: Option<String> = entry
             .provenance
@@ -495,15 +494,9 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryResult<Memor
 
     Ok((|| -> MemoryResult<MemoryEntry> {
         let id = id_str.parse::<MemoryId>()?;
-        let agent_id: AgentId = agent_str
-            .parse()
-            .map_err(MemoryError::InvalidId)?;
-        let episode_id = episode_str
-            .map(|s| s.parse::<EpisodeId>())
-            .transpose()?;
-        let memory_type: MemoryType = type_str
-            .parse()
-            .map_err(MemoryError::InvalidOperation)?;
+        let agent_id: AgentId = agent_str.parse().map_err(MemoryError::InvalidId)?;
+        let episode_id = episode_str.map(|s| s.parse::<EpisodeId>()).transpose()?;
+        let memory_type: MemoryType = type_str.parse().map_err(MemoryError::InvalidOperation)?;
 
         let embedding = embedding_bytes.map(|bytes| {
             bytes
@@ -556,13 +549,9 @@ fn row_to_episode(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryResult<Epis
 
     Ok((|| -> MemoryResult<Episode> {
         let id = id_str.parse::<EpisodeId>()?;
-        let agent_id: AgentId = agent_str
-            .parse()
-            .map_err(MemoryError::InvalidId)?;
+        let agent_id: AgentId = agent_str.parse().map_err(MemoryError::InvalidId)?;
         let started_at = parse_timestamp(&started_str)?;
-        let ended_at = ended_str
-            .map(|s| parse_timestamp(&s))
-            .transpose()?;
+        let ended_at = ended_str.map(|s| parse_timestamp(&s)).transpose()?;
         let metadata: serde_json::Value = serde_json::from_str(&metadata_str)?;
 
         Ok(Episode {
@@ -677,7 +666,11 @@ fn search_fts(
                     p
                 })
                 .collect();
-            let _ = write!(sql, " AND m.classification IN ({})", placeholders.join(", "));
+            let _ = write!(
+                sql,
+                " AND m.classification IN ({})",
+                placeholders.join(", ")
+            );
         }
     }
 
@@ -914,9 +907,17 @@ mod tests {
         let store = SqliteMemoryStore::open_in_memory().unwrap();
         let agent = make_agent_id();
 
-        let e1 = make_entry(agent, "Rust is a systems programming language", MemoryType::Semantic);
+        let e1 = make_entry(
+            agent,
+            "Rust is a systems programming language",
+            MemoryType::Semantic,
+        );
         let e2 = make_entry(agent, "Python is great for scripting", MemoryType::Semantic);
-        let e3 = make_entry(agent, "Rust has zero-cost abstractions", MemoryType::Procedural);
+        let e3 = make_entry(
+            agent,
+            "Rust has zero-cost abstractions",
+            MemoryType::Procedural,
+        );
 
         store.store_memory(&e1).await.unwrap();
         store.store_memory(&e2).await.unwrap();
@@ -1119,9 +1120,18 @@ mod tests {
 
         assert_eq!(store.count_entries(&agent).await.unwrap(), 0);
 
-        store.store_memory(&make_entry(agent, "one", MemoryType::Semantic)).await.unwrap();
-        store.store_memory(&make_entry(agent, "two", MemoryType::Semantic)).await.unwrap();
-        store.store_memory(&make_entry(agent, "three", MemoryType::Semantic)).await.unwrap();
+        store
+            .store_memory(&make_entry(agent, "one", MemoryType::Semantic))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent, "two", MemoryType::Semantic))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent, "three", MemoryType::Semantic))
+            .await
+            .unwrap();
 
         assert_eq!(store.count_entries(&agent).await.unwrap(), 3);
 
@@ -1175,7 +1185,11 @@ mod tests {
 
         for i in 0..5 {
             store
-                .store_memory(&make_entry(agent, &format!("entry {i}"), MemoryType::Semantic))
+                .store_memory(&make_entry(
+                    agent,
+                    &format!("entry {i}"),
+                    MemoryType::Semantic,
+                ))
                 .await
                 .unwrap();
         }
@@ -1191,7 +1205,11 @@ mod tests {
 
         for i in 0..10 {
             store
-                .store_memory(&make_entry(agent, &format!("entry {i}"), MemoryType::Semantic))
+                .store_memory(&make_entry(
+                    agent,
+                    &format!("entry {i}"),
+                    MemoryType::Semantic,
+                ))
                 .await
                 .unwrap();
         }
@@ -1213,7 +1231,11 @@ mod tests {
 
         for i in 0..6 {
             store
-                .store_memory(&make_entry(agent, &format!("entry {i}"), MemoryType::Semantic))
+                .store_memory(&make_entry(
+                    agent,
+                    &format!("entry {i}"),
+                    MemoryType::Semantic,
+                ))
                 .await
                 .unwrap();
         }
@@ -1454,7 +1476,10 @@ mod tests {
 
         // Must not be searchable after forget.
         let after = store.search(&query).await.unwrap();
-        assert!(after.is_empty(), "FTS5 index should be cleaned up after forget");
+        assert!(
+            after.is_empty(),
+            "FTS5 index should be cleaned up after forget"
+        );
     }
 
     #[tokio::test]
@@ -1474,7 +1499,11 @@ mod tests {
                 source_agent_id: Some("agent-007".into()),
                 ingested_at: Some(now),
             }),
-            ..make_entry(agent, "check provenance table directly", MemoryType::Procedural)
+            ..make_entry(
+                agent,
+                "check provenance table directly",
+                MemoryType::Procedural,
+            )
         };
         let id = entry.id;
 
@@ -1508,15 +1537,22 @@ mod tests {
             ..make_entry(agent, "", MemoryType::Semantic)
         };
         // Fix the created_at so the entry is valid.
-        let public_entry = MemoryEntry { created_at: now, accessed_at: now, ..public_entry };
+        let public_entry = MemoryEntry {
+            created_at: now,
+            accessed_at: now,
+            ..public_entry
+        };
 
         let restricted_entry = MemoryEntry {
             classification: Classification::Restricted,
             content: "restricted information about Rust".to_string(),
             ..make_entry(agent, "", MemoryType::Semantic)
         };
-        let restricted_entry =
-            MemoryEntry { created_at: now, accessed_at: now, ..restricted_entry };
+        let restricted_entry = MemoryEntry {
+            created_at: now,
+            accessed_at: now,
+            ..restricted_entry
+        };
 
         store.store_memory(&public_entry).await.unwrap();
         store.store_memory(&restricted_entry).await.unwrap();

@@ -24,20 +24,16 @@ use polkagent_core::{
     config::DataClassification,
     ids::{AgentId, GrantId, RunId, StepId},
 };
-use polkagent_executor_trait::{
-    ContentBlock, InferenceMessage, InferenceRequest, MessageRole,
-};
+use polkagent_executor_trait::{ContentBlock, InferenceMessage, InferenceRequest, MessageRole};
 use polkagent_grant::{
     budget::BudgetTracker,
     grant::{
-        ActiveGrant, EffectSet, GrantDecision, GrantLimits, GrantResolver,
-        ResolvedGrant, ResolverConfig,
+        ActiveGrant, EffectSet, GrantDecision, GrantLimits, GrantResolver, ResolvedGrant,
+        ResolverConfig,
     },
     policy::{Effect, EvaluationContext, PolicyRule, PolicySet},
 };
-use polkagent_tool::{
-    ToolContext, ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSpec,
-};
+use polkagent_tool::{ToolContext, ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSpec};
 
 // ===========================================================================
 // Helpers
@@ -102,10 +98,7 @@ fn e5_03_child_grant_intersection_enforced() {
 
     // The set of capabilities the child requested but the parent does NOT have.
     // These must be DENIED to the child.
-    let illegal: HashSet<&str> = child_requested
-        .difference(&parent_caps)
-        .copied()
-        .collect();
+    let illegal: HashSet<&str> = child_requested.difference(&parent_caps).copied().collect();
 
     assert!(
         illegal.contains("shell:exec"),
@@ -120,10 +113,7 @@ fn e5_03_child_grant_intersection_enforced() {
         .collect();
 
     // The effective set must NOT include anything from the illegal set.
-    let overlap: HashSet<&str> = effective
-        .intersection(&illegal)
-        .copied()
-        .collect();
+    let overlap: HashSet<&str> = effective.intersection(&illegal).copied().collect();
     assert!(
         overlap.is_empty(),
         "effective child grant must contain no illegal capabilities; overlap: {overlap:?}"
@@ -185,8 +175,7 @@ fn e5_03_child_subset_of_parent_gets_full_request() {
         .collect();
 
     assert_eq!(
-        effective,
-        child_requested,
+        effective, child_requested,
         "child requesting strict subset of parent must get exactly what it requested"
     );
 }
@@ -220,7 +209,14 @@ async fn e5_04_grant_revocation_is_immediate() {
 
     // First use: should succeed.
     let d1 = resolver
-        .resolve("alice", "file/read", "path/to/file", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "file/read",
+            "path/to/file",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .expect("resolve");
     assert!(
@@ -405,8 +401,15 @@ fn e5_06_inference_request_has_no_api_key_field() {
     let v: Value = serde_json::from_str(&json).expect("parse");
 
     let suspicious_fields = [
-        "api_key", "apikey", "secret", "token", "password", "credential",
-        "private_key", "seed", "mnemonic",
+        "api_key",
+        "apikey",
+        "secret",
+        "token",
+        "password",
+        "credential",
+        "private_key",
+        "seed",
+        "mnemonic",
     ];
 
     if let Value::Object(map) = &v {
@@ -481,7 +484,14 @@ async fn e5_07_grant_widening_by_model_text_rejected() {
     // call matters. Trying to use the escalation text as an action is denied.
     for attempted_action in ["all_capabilities", "shell:exec", "network:*", "GRANT: all"] {
         let d = resolver
-            .resolve("alice", attempted_action, "resource/x", &empty_ctx(), None, None)
+            .resolve(
+                "alice",
+                attempted_action,
+                "resource/x",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .expect("resolve");
 
@@ -495,13 +505,19 @@ async fn e5_07_grant_widening_by_model_text_rejected() {
     // Even the original text as a JSON string injected into EvaluationContext
     // attributes does not widen the grant.
     let mut ctx_with_injection = empty_ctx();
-    ctx_with_injection.attributes.insert(
-        "model_output".to_string(),
-        model_output_text.to_string(),
-    );
+    ctx_with_injection
+        .attributes
+        .insert("model_output".to_string(), model_output_text.to_string());
 
     let d_with_injection = resolver
-        .resolve("alice", "shell:exec", "resource/x", &ctx_with_injection, None, None)
+        .resolve(
+            "alice",
+            "shell:exec",
+            "resource/x",
+            &ctx_with_injection,
+            None,
+            None,
+        )
         .await
         .expect("resolve with injection");
 
@@ -512,7 +528,14 @@ async fn e5_07_grant_widening_by_model_text_rejected() {
 
     // The allowed action ("file:read") still works normally.
     let d_allowed = resolver
-        .resolve("alice", "file:read", "path/doc.txt", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "file:read",
+            "path/doc.txt",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .expect("resolve allowed");
     assert!(
@@ -556,7 +579,11 @@ async fn e5_08_restricted_operation_without_isolation_emits_error() {
             }
         }
 
-        async fn execute(&self, _input: Value, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            _input: Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult {
                 output: serde_json::json!({ "stdout": "" }),
                 classification: DataClassification::Sensitive,
@@ -571,7 +598,11 @@ async fn e5_08_restricted_operation_without_isolation_emits_error() {
     let ctx_no_isolation = tool_ctx(vec![]); // zero grants
 
     let result = registry
-        .execute("test.shell_exec", serde_json::json!({"cmd": "ls"}), &ctx_no_isolation)
+        .execute(
+            "test.shell_exec",
+            serde_json::json!({"cmd": "ls"}),
+            &ctx_no_isolation,
+        )
         .await;
 
     // Must be an explicit, observable error — not Ok or silent.
@@ -582,9 +613,9 @@ async fn e5_08_restricted_operation_without_isolation_emits_error() {
                 "PermissionDenied error must carry a non-empty reason"
             );
         }
-        other => panic!(
-            "restricted op without isolation must produce PermissionDenied, got: {other:?}"
-        ),
+        other => {
+            panic!("restricted op without isolation must produce PermissionDenied, got: {other:?}")
+        }
     }
 }
 
@@ -608,7 +639,11 @@ async fn e5_08_open_access_tool_is_explicit_not_silent() {
             }
         }
 
-        async fn execute(&self, _input: Value, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            _input: Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult {
                 output: serde_json::json!({ "info": "public" }),
                 classification: DataClassification::Public,
@@ -630,7 +665,10 @@ async fn e5_08_open_access_tool_is_explicit_not_silent() {
     let result = registry
         .execute("test.public_info", serde_json::json!({}), &ctx_no_grants)
         .await;
-    assert!(result.is_ok(), "explicitly open tool must succeed without grants: {result:?}");
+    assert!(
+        result.is_ok(),
+        "explicitly open tool must succeed without grants: {result:?}"
+    );
 }
 
 // ===========================================================================
@@ -651,32 +689,49 @@ async fn e5_09_budget_enforcement_across_multiple_attempts() {
     let cost_per_effect: u64 = 40; // 40% of 100
 
     // Attempt 1: 40 of 100 — must pass.
-    let within_1 = tracker.check_budget(agent_id, cost_per_effect).await.expect("check 1");
+    let within_1 = tracker
+        .check_budget(agent_id, cost_per_effect)
+        .await
+        .expect("check 1");
     assert!(within_1, "first attempt (40/100) must be within budget");
-    tracker.record_spend(agent_id, run_id, cost_per_effect).await.expect("spend 1");
+    tracker
+        .record_spend(agent_id, run_id, cost_per_effect)
+        .await
+        .expect("spend 1");
 
     let status_1 = tracker.get_remaining(agent_id).await.expect("status 1");
     assert_eq!(status_1.spent, 40, "40 spent after first attempt");
     assert_eq!(status_1.remaining, 60, "60 remaining after first attempt");
 
     // Attempt 2: 40 more (total 80) — must pass.
-    let within_2 = tracker.check_budget(agent_id, cost_per_effect).await.expect("check 2");
+    let within_2 = tracker
+        .check_budget(agent_id, cost_per_effect)
+        .await
+        .expect("check 2");
     assert!(within_2, "second attempt (80/100) must be within budget");
-    tracker.record_spend(agent_id, run_id, cost_per_effect).await.expect("spend 2");
+    tracker
+        .record_spend(agent_id, run_id, cost_per_effect)
+        .await
+        .expect("spend 2");
 
     let status_2 = tracker.get_remaining(agent_id).await.expect("status 2");
     assert_eq!(status_2.spent, 80, "80 spent after second attempt");
     assert_eq!(status_2.remaining, 20, "20 remaining after second attempt");
 
     // Attempt 3: 40 more (80 + 40 = 120 > 100) — must be rejected.
-    let within_3 = tracker.check_budget(agent_id, cost_per_effect).await.expect("check 3");
+    let within_3 = tracker
+        .check_budget(agent_id, cost_per_effect)
+        .await
+        .expect("check 3");
     assert!(
         !within_3,
         "third attempt (cumulative 120/100) must exceed budget and be rejected"
     );
 
     // record_spend for attempt 3 must also fail.
-    let spend_result = tracker.record_spend(agent_id, run_id, cost_per_effect).await;
+    let spend_result = tracker
+        .record_spend(agent_id, run_id, cost_per_effect)
+        .await;
     assert!(
         spend_result.is_err(),
         "recording over-budget spend must return an error: {spend_result:?}"
@@ -713,21 +768,48 @@ async fn e5_09_budget_enforcement_via_grant_resolver() {
 
     // Effect 1: cost 40 → allowed (40/100).
     let d1 = resolver
-        .resolve(&principal, "chain/transfer", "account/a", &empty_ctx(), Some(40), Some(run_id))
+        .resolve(
+            &principal,
+            "chain/transfer",
+            "account/a",
+            &empty_ctx(),
+            Some(40),
+            Some(run_id),
+        )
         .await
         .expect("resolve 1");
-    assert!(matches!(d1, GrantDecision::Permit(_)), "first 40/100 must be permitted: {d1:?}");
+    assert!(
+        matches!(d1, GrantDecision::Permit(_)),
+        "first 40/100 must be permitted: {d1:?}"
+    );
 
     // Effect 2: cost 40 → allowed (80/100).
     let d2 = resolver
-        .resolve(&principal, "chain/transfer", "account/b", &empty_ctx(), Some(40), Some(run_id))
+        .resolve(
+            &principal,
+            "chain/transfer",
+            "account/b",
+            &empty_ctx(),
+            Some(40),
+            Some(run_id),
+        )
         .await
         .expect("resolve 2");
-    assert!(matches!(d2, GrantDecision::Permit(_)), "second 40 (80/100) must be permitted: {d2:?}");
+    assert!(
+        matches!(d2, GrantDecision::Permit(_)),
+        "second 40 (80/100) must be permitted: {d2:?}"
+    );
 
     // Effect 3: cost 40 → denied (120/100 > budget).
     let d3 = resolver
-        .resolve(&principal, "chain/transfer", "account/c", &empty_ctx(), Some(40), Some(run_id))
+        .resolve(
+            &principal,
+            "chain/transfer",
+            "account/c",
+            &empty_ctx(),
+            Some(40),
+            Some(run_id),
+        )
         .await
         .expect("resolve 3");
     assert!(
@@ -786,7 +868,14 @@ async fn e5_10_grant_provenance_recorded_for_every_decision() {
         policy_matched: &str,
     ) {
         let decision = resolver
-            .resolve(principal, action, resource, &EvaluationContext::default(), None, None)
+            .resolve(
+                principal,
+                action,
+                resource,
+                &EvaluationContext::default(),
+                None,
+                None,
+            )
             .await
             .expect("resolve");
 
@@ -810,24 +899,36 @@ async fn e5_10_grant_provenance_recorded_for_every_decision() {
 
     // Decision 1: Alice requests chain/transfer → allowed by "allow-chain".
     resolve_and_audit(
-        &resolver, &audit,
-        "alice", "chain/transfer", "account/bob",
+        &resolver,
+        &audit,
+        "alice",
+        "chain/transfer",
+        "account/bob",
         "allow-chain",
-    ).await;
+    )
+    .await;
 
     // Decision 2: Bob requests governance/vote → denied (no matching rule).
     resolve_and_audit(
-        &resolver, &audit,
-        "bob", "governance/vote", "referendum/1",
+        &resolver,
+        &audit,
+        "bob",
+        "governance/vote",
+        "referendum/1",
         "default_deny",
-    ).await;
+    )
+    .await;
 
     // Decision 3: Charlie requests chain/query → allowed by "allow-chain".
     resolve_and_audit(
-        &resolver, &audit,
-        "charlie", "chain/query", "account/charlie",
+        &resolver,
+        &audit,
+        "charlie",
+        "chain/query",
+        "account/charlie",
         "allow-chain",
-    ).await;
+    )
+    .await;
 
     // Verify: every decision has complete provenance.
     let records = audit.all().await;
@@ -875,7 +976,14 @@ async fn e5_10_grant_provenance_recorded_for_budget_denial() {
 
     // Attempt exceeds budget — must be denied and recorded.
     let decision = resolver
-        .resolve(&principal, "chain/transfer", "account/x", &empty_ctx(), Some(100), Some(run_id))
+        .resolve(
+            &principal,
+            "chain/transfer",
+            "account/x",
+            &empty_ctx(),
+            Some(100),
+            Some(run_id),
+        )
         .await
         .expect("resolve");
 
@@ -904,7 +1012,11 @@ async fn e5_10_grant_provenance_recorded_for_budget_denial() {
         .await;
 
     let records = audit.all().await;
-    assert_eq!(records.len(), 1, "budget denial must produce an audit record");
+    assert_eq!(
+        records.len(),
+        1,
+        "budget denial must produce an audit record"
+    );
     assert_eq!(records[0].decision, "deny");
     assert_eq!(records[0].policy_matched, "budget_check");
 }
@@ -920,7 +1032,14 @@ async fn e5_10_provenance_captures_requester_identity() {
     let principal = agent_id.to_string();
 
     let decision = resolver
-        .resolve(&principal, "chain/transfer", "account/y", &empty_ctx(), None, None)
+        .resolve(
+            &principal,
+            "chain/transfer",
+            "account/y",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .expect("resolve");
 

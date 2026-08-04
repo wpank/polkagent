@@ -37,10 +37,7 @@ impl DelegationInfoTool {
     }
 
     /// Query outgoing delegations for an account.
-    async fn lookup_outgoing(
-        &self,
-        account: &str,
-    ) -> Result<Vec<Delegation>, GovernanceError> {
+    async fn lookup_outgoing(&self, account: &str) -> Result<Vec<Delegation>, GovernanceError> {
         let mut key = b"ConvictionVoting:DelegationsOutgoing:".to_vec();
         key.extend_from_slice(account.as_bytes());
 
@@ -63,10 +60,7 @@ impl DelegationInfoTool {
     }
 
     /// Query incoming delegations for an account.
-    async fn lookup_incoming(
-        &self,
-        account: &str,
-    ) -> Result<Vec<Delegation>, GovernanceError> {
+    async fn lookup_incoming(&self, account: &str) -> Result<Vec<Delegation>, GovernanceError> {
         let mut key = b"ConvictionVoting:DelegationsIncoming:".to_vec();
         key.extend_from_slice(account.as_bytes());
 
@@ -232,20 +226,14 @@ mod tests {
     fn spec_has_correct_name() {
         let client = Arc::new(MockChainClient::new());
         let tool = DelegationInfoTool::new(client);
-        assert_eq!(
-            tool.spec().name,
-            "polkagent.governance.delegation_info"
-        );
+        assert_eq!(tool.spec().name, "polkagent.governance.delegation_info");
     }
 
     #[test]
     fn spec_requires_chain_query_grant() {
         let client = Arc::new(MockChainClient::new());
         let tool = DelegationInfoTool::new(client);
-        assert_eq!(
-            tool.spec().required_grant,
-            Some("chain.query".to_string())
-        );
+        assert_eq!(tool.spec().required_grant, Some("chain.query".to_string()));
     }
 
     #[tokio::test]

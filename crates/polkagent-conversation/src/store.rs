@@ -79,9 +79,5 @@ pub trait ConversationStore: Send + Sync {
     ///
     /// Returns [`ConversationError::NotFound`](crate::error::ConversationError::NotFound)
     /// if no conversation exists with the given ID.
-    async fn update_title(
-        &self,
-        id: ConversationId,
-        title: String,
-    ) -> ConversationResult<()>;
+    async fn update_title(&self, id: ConversationId, title: String) -> ConversationResult<()>;
 }

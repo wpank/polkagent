@@ -12,7 +12,7 @@ use polkagent_executor_trait::{
 use polkagent_core::{RunId, StepId};
 
 use crate::report::{CaseResult, EvalReport, ToolCallRecord};
-use crate::scorer::{Score, score_case};
+use crate::scorer::{score_case, Score};
 use crate::types::{EvalCase, EvalSuite};
 
 // ---------------------------------------------------------------------------
@@ -155,8 +155,7 @@ async fn run_single_case(
 
     let timeout_duration = std::time::Duration::from_secs(case.timeout_secs);
 
-    let exec_result =
-        tokio::time::timeout(timeout_duration, executor.complete(request)).await;
+    let exec_result = tokio::time::timeout(timeout_duration, executor.complete(request)).await;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -169,10 +168,7 @@ async fn run_single_case(
                 model_output: String::new(),
                 tool_calls_made: Vec::new(),
                 duration_ms,
-                error: Some(format!(
-                    "Timed out after {}s",
-                    case.timeout_secs
-                )),
+                error: Some(format!("Timed out after {}s", case.timeout_secs)),
                 category: case.category,
             };
             result.score = score_case(&result, &case.expected);
@@ -230,8 +226,8 @@ mod tests {
     use futures::Stream;
 
     use polkagent_executor_trait::{
-        ExecutorError, InferenceRequest, InferenceResponse, ModelExecutor, StreamEvent,
-        TokenUsage, ToolCall,
+        ExecutorError, InferenceRequest, InferenceResponse, ModelExecutor, StreamEvent, TokenUsage,
+        ToolCall,
     };
 
     use super::*;

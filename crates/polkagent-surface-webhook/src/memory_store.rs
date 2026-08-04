@@ -90,8 +90,7 @@ impl DeliveryStore for InMemoryDeliveryStore {
         let mut records: Vec<DeliveryRecord> = map
             .values()
             .filter(|r| {
-                r.status == DeliveryStatus::Failed
-                    && r.next_retry_at.is_some_and(|t| t <= now)
+                r.status == DeliveryStatus::Failed && r.next_retry_at.is_some_and(|t| t <= now)
             })
             .cloned()
             .collect();
@@ -100,11 +99,7 @@ impl DeliveryStore for InMemoryDeliveryStore {
         Ok(records)
     }
 
-    async fn count_by_status(
-        &self,
-        webhook_id: Uuid,
-        status: DeliveryStatus,
-    ) -> Result<usize> {
+    async fn count_by_status(&self, webhook_id: Uuid, status: DeliveryStatus) -> Result<usize> {
         let map = self.records.read();
         let count = map
             .values()
@@ -182,9 +177,18 @@ mod tests {
         let wid_a = Uuid::now_v7();
         let wid_b = Uuid::now_v7();
 
-        store.create(make_record(wid_a, "run.started")).await.expect("a1");
-        store.create(make_record(wid_a, "run.completed")).await.expect("a2");
-        store.create(make_record(wid_b, "run.started")).await.expect("b1");
+        store
+            .create(make_record(wid_a, "run.started"))
+            .await
+            .expect("a1");
+        store
+            .create(make_record(wid_a, "run.completed"))
+            .await
+            .expect("a2");
+        store
+            .create(make_record(wid_b, "run.started"))
+            .await
+            .expect("b1");
 
         let list = store.list_by_webhook(wid_a, 100).await.expect("list");
         assert_eq!(list.len(), 2);
@@ -197,7 +201,10 @@ mod tests {
         let wid = Uuid::now_v7();
 
         for _ in 0..5 {
-            store.create(make_record(wid, "run.started")).await.expect("create");
+            store
+                .create(make_record(wid, "run.started"))
+                .await
+                .expect("create");
         }
 
         let list = store.list_by_webhook(wid, 2).await.expect("list");
@@ -209,14 +216,23 @@ mod tests {
         let store = InMemoryDeliveryStore::new();
         let wid = Uuid::now_v7();
 
-        store.create(make_record(wid, "run.started")).await.expect("c1");
+        store
+            .create(make_record(wid, "run.started"))
+            .await
+            .expect("c1");
         let mut r2 = make_record(wid, "run.completed");
         store.create(r2.clone()).await.expect("c2");
         r2.mark_delivered(200);
         store.update(r2).await.expect("update");
 
-        let pending = store.count_by_status(wid, DeliveryStatus::Pending).await.expect("count pending");
-        let delivered = store.count_by_status(wid, DeliveryStatus::Delivered).await.expect("count delivered");
+        let pending = store
+            .count_by_status(wid, DeliveryStatus::Pending)
+            .await
+            .expect("count pending");
+        let delivered = store
+            .count_by_status(wid, DeliveryStatus::Delivered)
+            .await
+            .expect("count delivered");
         // The first record stays pending but the test creates a new record ID each time.
         // We just verify both statuses are tracked.
         assert_eq!(pending, 1);
@@ -229,7 +245,10 @@ mod tests {
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
 
-        store.create(make_record(Uuid::nil(), "run.started")).await.expect("create");
+        store
+            .create(make_record(Uuid::nil(), "run.started"))
+            .await
+            .expect("create");
         assert!(!store.is_empty());
         assert_eq!(store.len(), 1);
     }

@@ -156,11 +156,7 @@ impl<'a> MetadataRagService<'a> {
     /// Searches the FTS5 index for entries matching `query_text` that were
     /// ingested from runtime metadata, then reconstructs a [`MetadataCitation`]
     /// for each result.
-    pub async fn query(
-        &self,
-        query_text: &str,
-        limit: usize,
-    ) -> MemoryResult<Vec<CitedResult>> {
+    pub async fn query(&self, query_text: &str, limit: usize) -> MemoryResult<Vec<CitedResult>> {
         let mem_query = MemoryQuery {
             agent_id: Some(self.agent_id),
             query_text: query_text.to_string(),
@@ -225,12 +221,9 @@ impl<'a> MetadataRagService<'a> {
 ///
 /// `args` is a list of `(name, type_name)` pairs describing the call parameters.
 #[must_use]
-pub fn format_call_doc(
-    pallet_name: &str,
-    call_name: &str,
-    args: &[(String, String)],
-) -> String {
-    let mut s = format!("Pallet: {pallet_name}\nCall: {call_name}\nSignature: {pallet_name}.{call_name}(");
+pub fn format_call_doc(pallet_name: &str, call_name: &str, args: &[(String, String)]) -> String {
+    let mut s =
+        format!("Pallet: {pallet_name}\nCall: {call_name}\nSignature: {pallet_name}.{call_name}(");
     for (i, (name, ty)) in args.iter().enumerate() {
         if i > 0 {
             s.push_str(", ");
@@ -249,14 +242,8 @@ pub fn format_storage_doc(pallet_name: &str, storage_prefix: &str) -> String {
 
 /// Build a human-readable content string for a pallet constant.
 #[must_use]
-pub fn format_constant_doc(
-    pallet_name: &str,
-    constant_name: &str,
-    type_id: u32,
-) -> String {
-    format!(
-        "Pallet: {pallet_name}\nConstant: {constant_name}\nType ID: {type_id}"
-    )
+pub fn format_constant_doc(pallet_name: &str, constant_name: &str, type_id: u32) -> String {
+    format!("Pallet: {pallet_name}\nConstant: {constant_name}\nType ID: {type_id}")
 }
 
 /// Build a human-readable content string for a pallet event type.
@@ -302,11 +289,7 @@ mod tests {
                 pallet_name: "Staking".into(),
                 section: "call".into(),
                 item_name: "bond".into(),
-                content: format_call_doc(
-                    "Staking",
-                    "bond",
-                    &[("value".into(), "Balance".into())],
-                ),
+                content: format_call_doc("Staking", "bond", &[("value".into(), "Balance".into())]),
                 metadata_hash: "abc123".into(),
                 block_number: 42,
             },

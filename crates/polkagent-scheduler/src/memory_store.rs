@@ -89,11 +89,7 @@ impl TaskStore for InMemoryTaskStore {
 
     async fn due_tasks(&self, now: DateTime<Utc>) -> Result<Vec<ScheduledTask>, SchedulerError> {
         let tasks = self.tasks.read();
-        let due: Vec<ScheduledTask> = tasks
-            .values()
-            .filter(|t| t.is_due(now))
-            .cloned()
-            .collect();
+        let due: Vec<ScheduledTask> = tasks.values().filter(|t| t.is_due(now)).cloned().collect();
         Ok(due)
     }
 
@@ -119,11 +115,7 @@ impl TaskStore for InMemoryTaskStore {
         Ok(())
     }
 
-    async fn mark_failed(
-        &self,
-        task_id: TaskId,
-        _error: String,
-    ) -> Result<(), SchedulerError> {
+    async fn mark_failed(&self, task_id: TaskId, _error: String) -> Result<(), SchedulerError> {
         let mut tasks = self.tasks.write();
         let task = tasks
             .get_mut(&task_id)
@@ -263,8 +255,14 @@ mod tests {
         let future = Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap();
         let now = Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap();
 
-        store.create_task(make_task("past-due", past)).await.expect("create");
-        store.create_task(make_task("not-due", future)).await.expect("create");
+        store
+            .create_task(make_task("past-due", past))
+            .await
+            .expect("create");
+        store
+            .create_task(make_task("not-due", future))
+            .await
+            .expect("create");
 
         let due = store.due_tasks(now).await.expect("due_tasks");
         assert_eq!(due.len(), 1);
@@ -326,7 +324,10 @@ mod tests {
             completed_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 5, 0).unwrap(),
             duration_ms: 100,
         };
-        store.mark_completed(id, result).await.expect("mark_completed");
+        store
+            .mark_completed(id, result)
+            .await
+            .expect("mark_completed");
 
         let fetched = store.get_task(id).await.expect("get");
         assert_eq!(fetched.status, TaskStatus::Active);

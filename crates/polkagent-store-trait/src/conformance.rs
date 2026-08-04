@@ -220,10 +220,7 @@ pub async fn test_run_store_get_not_found(store: &dyn RunStore) {
 ///
 /// When a run transitions to `"completed"`, `"failed"`, `"cancelled"`, or
 /// `"timed_out"`, the `completed_at` field must be populated.
-pub async fn test_run_store_terminal_state_sets_completed_at(
-    store: &dyn RunStore,
-    agent_id: &str,
-) {
+pub async fn test_run_store_terminal_state_sets_completed_at(store: &dyn RunStore, agent_id: &str) {
     let run_id = RunId::new();
     store
         .create(run_id, agent_id, RunStatus::new("created"))
@@ -259,11 +256,7 @@ pub async fn test_run_store_terminal_state_sets_completed_at(
 ///
 /// **Precondition:** `run_id` and `step_id` must already exist in the backing
 /// store (satisfy any FK constraints).
-pub async fn test_effect_store_crud(
-    store: &dyn EffectStore,
-    run_id: RunId,
-    step_id: StepId,
-) {
+pub async fn test_effect_store_crud(store: &dyn EffectStore, run_id: RunId, step_id: StepId) {
     // 1. Propose.
     let intent = make_intent(run_id, step_id, "conformance-crud-1");
     let intent_id = intent.id;
@@ -290,7 +283,10 @@ pub async fn test_effect_store_crud(
         .expect("claim_intent() must not fail")
         .expect("claim_intent() must return Some when a pending intent exists");
 
-    assert_eq!(claimed.id, intent_id, "claimed intent must be the proposed one");
+    assert_eq!(
+        claimed.id, intent_id,
+        "claimed intent must be the proposed one"
+    );
     assert_eq!(claimed.state, "claimed");
     assert_eq!(claimed.lease_owner, Some(worker));
     assert!(claimed.lease_expires.is_some());
@@ -460,7 +456,11 @@ pub async fn test_event_store_append_and_query(store: &dyn EventStore) {
         .await
         .expect("read_run_events()");
 
-    assert_eq!(events.len(), 3, "read_run_events() must return all 3 appended events");
+    assert_eq!(
+        events.len(),
+        3,
+        "read_run_events() must return all 3 appended events"
+    );
     assert_eq!(events[0].sequence, 1);
     assert_eq!(events[1].sequence, 2);
     assert_eq!(events[2].sequence, 3);
@@ -558,7 +558,10 @@ pub async fn test_event_store_max_sequence(store: &dyn EventStore) {
         .max_sequence(run_uuid)
         .await
         .expect("max_sequence() on empty run");
-    assert_eq!(initial, 0, "max_sequence() must return 0 for a run with no events");
+    assert_eq!(
+        initial, 0,
+        "max_sequence() must return 0 for a run with no events"
+    );
 
     store
         .append_durable(make_event(&run_id, 1, "run_started"))
@@ -574,7 +577,10 @@ pub async fn test_event_store_max_sequence(store: &dyn EventStore) {
         .max_sequence(run_uuid)
         .await
         .expect("max_sequence() after appending");
-    assert_eq!(after, 2, "max_sequence() must return 2 after appending seq 1 and 2");
+    assert_eq!(
+        after, 2,
+        "max_sequence() must return 2 after appending seq 1 and 2"
+    );
 }
 
 /// Conformance: `has_terminal_event()` is `false` before and `true` after a
@@ -587,7 +593,10 @@ pub async fn test_event_store_has_terminal_event(store: &dyn EventStore) {
         .has_terminal_event(run_uuid)
         .await
         .expect("has_terminal_event() before terminal");
-    assert!(!before, "has_terminal_event() must be false before any terminal event");
+    assert!(
+        !before,
+        "has_terminal_event() must be false before any terminal event"
+    );
 
     store
         .append_durable(make_event(&run_id, 1, "run_started"))
@@ -602,7 +611,10 @@ pub async fn test_event_store_has_terminal_event(store: &dyn EventStore) {
         .has_terminal_event(run_uuid)
         .await
         .expect("has_terminal_event() after terminal");
-    assert!(after, "has_terminal_event() must be true after a terminal event is appended");
+    assert!(
+        after,
+        "has_terminal_event() must be true after a terminal event is appended"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -638,9 +650,18 @@ pub async fn test_artifact_store_crud(store: &dyn ArtifactStore) {
         .await
         .expect("get() must succeed after store()");
 
-    assert_eq!(summary.id, artifact_id, "get() must return the stored artifact_id");
-    assert_eq!(summary.kind, "conformance_test", "get() must return the stored kind");
-    assert_eq!(summary.algorithm, "blake3", "get() must return the stored algorithm");
+    assert_eq!(
+        summary.id, artifact_id,
+        "get() must return the stored artifact_id"
+    );
+    assert_eq!(
+        summary.kind, "conformance_test",
+        "get() must return the stored kind"
+    );
+    assert_eq!(
+        summary.algorithm, "blake3",
+        "get() must return the stored algorithm"
+    );
     assert_eq!(
         summary.digest_hex, digest_hex,
         "get() must return the stored digest_hex"
@@ -703,15 +724,39 @@ pub async fn test_artifact_store_list_for_run(store: &dyn ArtifactStore) {
     let digest_b1 = format!("{:064x}", 0xcccc_u64);
 
     store
-        .store(id_a1, Some(run_a), "test", "blake3", &digest_a1, "public", b"body-a1")
+        .store(
+            id_a1,
+            Some(run_a),
+            "test",
+            "blake3",
+            &digest_a1,
+            "public",
+            b"body-a1",
+        )
         .await
         .expect("store a1");
     store
-        .store(id_a2, Some(run_a), "test", "blake3", &digest_a2, "public", b"body-a2")
+        .store(
+            id_a2,
+            Some(run_a),
+            "test",
+            "blake3",
+            &digest_a2,
+            "public",
+            b"body-a2",
+        )
         .await
         .expect("store a2");
     store
-        .store(id_b1, Some(run_b), "test", "blake3", &digest_b1, "public", b"body-b1")
+        .store(
+            id_b1,
+            Some(run_b),
+            "test",
+            "blake3",
+            &digest_b1,
+            "public",
+            b"body-b1",
+        )
         .await
         .expect("store b1");
 

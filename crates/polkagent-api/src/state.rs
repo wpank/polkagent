@@ -19,13 +19,13 @@ use chrono::{DateTime, Utc};
 use polkagent_audit::AuditStore;
 use polkagent_config::Config;
 use polkagent_conversation::ConversationStore;
-use polkagent_core::{AgentId, agent::AgentSpec};
+use polkagent_core::{agent::AgentSpec, AgentId};
 use polkagent_event::EventBus;
 use polkagent_marketplace::ServiceRegistryStore;
 use polkagent_payment::PaymentStore;
 use polkagent_skill::manifest::SkillManifest;
-use polkagent_store_trait::{ArtifactStore, EffectStore};
 use polkagent_store_trait::event::EventStore;
+use polkagent_store_trait::{ArtifactStore, EffectStore};
 use polkagent_telemetry::{MetricRecorder, PrometheusRegistry};
 
 use crate::routes::health::HealthState;
@@ -91,11 +91,7 @@ pub trait AgentStore: Send + Sync {
     /// Paginate agent specs sorted by `created_at` ascending.
     ///
     /// Returns `(page, has_more)`.
-    async fn list_page(
-        &self,
-        after: Option<AgentId>,
-        limit: usize,
-    ) -> (Vec<AgentSpec>, bool);
+    async fn list_page(&self, after: Option<AgentId>, limit: usize) -> (Vec<AgentSpec>, bool);
 
     /// Return the number of stored agents.
     async fn count(&self) -> usize;
@@ -151,11 +147,7 @@ impl AgentStore for InMemoryAgentStore {
         guard.remove(&id).is_some()
     }
 
-    async fn list_page(
-        &self,
-        after: Option<AgentId>,
-        limit: usize,
-    ) -> (Vec<AgentSpec>, bool) {
+    async fn list_page(&self, after: Option<AgentId>, limit: usize) -> (Vec<AgentSpec>, bool) {
         let sorted = self.list_sorted().await;
 
         let start = match after {
@@ -167,12 +159,7 @@ impl AgentStore for InMemoryAgentStore {
             None => 0,
         };
 
-        let page: Vec<AgentSpec> = sorted
-            .iter()
-            .skip(start)
-            .take(limit + 1)
-            .cloned()
-            .collect();
+        let page: Vec<AgentSpec> = sorted.iter().skip(start).take(limit + 1).cloned().collect();
 
         let has_more = page.len() > limit;
         let page = page.into_iter().take(limit).collect();
@@ -219,7 +206,6 @@ pub struct AppState {
     // ------------------------------------------------------------------
     // Optional stores — return 501 Not Implemented when None
     // ------------------------------------------------------------------
-
     /// Durable event store (optional — returns 501 when not configured).
     pub event_store: Option<Arc<dyn EventStore>>,
     /// Content-addressed artifact store (optional — returns 501 when not configured).
@@ -317,10 +303,7 @@ impl AppState {
 
     /// Set the memory store.
     #[must_use]
-    pub fn with_memory_store(
-        mut self,
-        store: Arc<dyn crate::routes::memory::MemoryStore>,
-    ) -> Self {
+    pub fn with_memory_store(mut self, store: Arc<dyn crate::routes::memory::MemoryStore>) -> Self {
         self.memory_store = Some(store);
         self
     }

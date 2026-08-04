@@ -216,10 +216,19 @@ mod tests {
         let agent = AgentId::new();
 
         for content in &["fact A", "fact B", "fact C"] {
-            store.store_memory(&make_entry(agent, content)).await.unwrap();
+            store
+                .store_memory(&make_entry(agent, content))
+                .await
+                .unwrap();
         }
-        store.create_episode(&make_episode(agent, "chat 1")).await.unwrap();
-        store.create_episode(&make_episode(agent, "chat 2")).await.unwrap();
+        store
+            .create_episode(&make_episode(agent, "chat 1"))
+            .await
+            .unwrap();
+        store
+            .create_episode(&make_episode(agent, "chat 2"))
+            .await
+            .unwrap();
 
         let archive = export_archive(store.as_ref(), &agent).await.unwrap();
 
@@ -264,7 +273,10 @@ mod tests {
         let store = make_store();
         let agent = AgentId::new();
 
-        store.store_memory(&make_entry(agent, "existing fact")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent, "existing fact"))
+            .await
+            .unwrap();
         let archive = export_archive(store.as_ref(), &agent).await.unwrap();
 
         // Import into the same store — the entry already exists.
@@ -281,9 +293,15 @@ mod tests {
 
         // Populate source.
         for content in &["alpha", "beta", "gamma"] {
-            store.store_memory(&make_entry(agent, content)).await.unwrap();
+            store
+                .store_memory(&make_entry(agent, content))
+                .await
+                .unwrap();
         }
-        store.create_episode(&make_episode(agent, "session")).await.unwrap();
+        store
+            .create_episode(&make_episode(agent, "session"))
+            .await
+            .unwrap();
 
         // Export.
         let archive = export_archive(store.as_ref(), &agent).await.unwrap();
@@ -310,7 +328,10 @@ mod tests {
         let store = make_store();
         let agent = AgentId::new();
 
-        store.store_memory(&make_entry(agent, "serialisable fact")).await.unwrap();
+        store
+            .store_memory(&make_entry(agent, "serialisable fact"))
+            .await
+            .unwrap();
         let archive = export_archive(store.as_ref(), &agent).await.unwrap();
 
         let json = serde_json::to_string(&archive).unwrap();

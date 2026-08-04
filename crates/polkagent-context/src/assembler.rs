@@ -66,7 +66,9 @@ impl AssembledContext {
     /// exhausted.
     #[must_use]
     pub fn remaining_tokens(&self) -> u32 {
-        self.budget.content_tokens().saturating_sub(self.total_tokens)
+        self.budget
+            .content_tokens()
+            .saturating_sub(self.total_tokens)
     }
 
     /// Return the number of sections in the assembled context.
@@ -265,7 +267,9 @@ mod tests {
     fn assemble_empty_context() {
         let budget = TokenBudget::with_defaults(4096).expect("budget");
         let assembler = ContextAssembler::new(budget);
-        let ctx = assembler.assemble(None, &[], &[], &[], None).expect("assemble");
+        let ctx = assembler
+            .assemble(None, &[], &[], &[], None)
+            .expect("assemble");
         assert_eq!(ctx.section_count(), 0);
         assert_eq!(ctx.total_tokens, 0);
     }
@@ -296,13 +300,7 @@ mod tests {
         let budget = TokenBudget::with_defaults(8192).expect("budget");
         let assembler = ContextAssembler::new(budget);
         let ctx = assembler
-            .assemble(
-                Some("System prompt."),
-                &[],
-                &[],
-                &[],
-                Some("User input."),
-            )
+            .assemble(Some("System prompt."), &[], &[], &[], Some("User input."))
             .expect("assemble");
         let rendered = ctx.render();
         assert!(rendered.contains("System prompt."));
@@ -337,8 +335,7 @@ mod tests {
     #[test]
     fn with_estimator_changes_estimation() {
         let budget = TokenBudget::with_defaults(8192).expect("budget");
-        let assembler = ContextAssembler::new(budget)
-            .with_estimator(TokenEstimator::new(2.0));
+        let assembler = ContextAssembler::new(budget).with_estimator(TokenEstimator::new(2.0));
         let ctx = assembler
             .assemble(Some("abcdefgh"), &[], &[], &[], None)
             .expect("assemble");

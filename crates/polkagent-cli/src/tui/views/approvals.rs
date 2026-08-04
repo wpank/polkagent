@@ -26,8 +26,8 @@ use ratatui::{
 
 use crate::tui::state::{ApprovalItem, ConfirmDialog, ScrollState, TuiState};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::action_card::{ActionCardData, RiskLevel};
 use crate::tui::widgets::action_card;
+use crate::tui::widgets::action_card::{ActionCardData, RiskLevel};
 
 // ---------------------------------------------------------------------------
 // Public render entry point
@@ -41,36 +41,36 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
-        render_list(frame, cols[0], &state.pending_approvals, &state.approvals_scroll, theme);
+        render_list(
+            frame,
+            cols[0],
+            &state.pending_approvals,
+            &state.approvals_scroll,
+            theme,
+        );
         if let Some(sel) = state.approvals_scroll.selected {
             if let Some(item) = state.pending_approvals.get(sel) {
                 render_detail(frame, cols[1], item, theme);
             }
         }
     } else {
-        render_list(frame, area, &state.pending_approvals, &state.approvals_scroll, theme);
+        render_list(
+            frame,
+            area,
+            &state.pending_approvals,
+            &state.approvals_scroll,
+            theme,
+        );
     }
 
     // Render confirmation dialog overlay if active.
     match &state.confirm_dialog {
         ConfirmDialog::None => {}
         ConfirmDialog::ConfirmApprove(effect_id) => {
-            render_confirm_dialog(
-                frame,
-                area,
-                effect_id,
-                true,
-                theme,
-            );
+            render_confirm_dialog(frame, area, effect_id, true, theme);
         }
         ConfirmDialog::ConfirmDeny(effect_id) => {
-            render_confirm_dialog(
-                frame,
-                area,
-                effect_id,
-                false,
-                theme,
-            );
+            render_confirm_dialog(frame, area, effect_id, false, theme);
         }
     }
 }
@@ -87,14 +87,15 @@ fn render_list(
     theme: &Theme,
 ) {
     let pending_count = items.iter().filter(|i| i.state == "pending").count();
-    let title = format!(" APPROVAL QUEUE ({pending_count} pending, {} total) ", items.len());
+    let title = format!(
+        " APPROVAL QUEUE ({pending_count} pending, {} total) ",
+        items.len()
+    );
 
     let block = Block::default()
         .title(Span::styled(
             title,
-            Style::default()
-                .fg(theme.rose)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.rose).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -176,10 +177,7 @@ fn render_list(
                     item.state.clone(),
                     Style::default().fg(state_color),
                 )),
-                Cell::from(Span::styled(
-                    created,
-                    Style::default().fg(theme.text_dim),
-                )),
+                Cell::from(Span::styled(created, Style::default().fg(theme.text_dim))),
             ])
             .height(1)
             .style(row_style)
@@ -274,11 +272,11 @@ fn parse_kind_to_pallet_call(kind: &str) -> (String, String) {
     } else {
         // Map well-known kinds to pallet::call.
         let (pallet, call) = match kind {
-            "sign"      => ("Crypto",    "sign"),
-            "broadcast" => ("Chain",     "broadcast"),
-            "tool"      => ("Tool",      "execute"),
-            "model"     => ("Model",     "infer"),
-            _           => ("Effect",    kind),
+            "sign" => ("Crypto", "sign"),
+            "broadcast" => ("Chain", "broadcast"),
+            "tool" => ("Tool", "execute"),
+            "model" => ("Model", "infer"),
+            _ => ("Effect", kind),
         };
         (pallet.to_owned(), call.to_owned())
     }
@@ -288,8 +286,8 @@ fn parse_kind_to_pallet_call(kind: &str) -> (String, String) {
 fn effect_risk_level(kind: &str) -> RiskLevel {
     match kind {
         "sign" | "broadcast" => RiskLevel::High,
-        "tool"               => RiskLevel::Medium,
-        _                    => RiskLevel::Low,
+        "tool" => RiskLevel::Medium,
+        _ => RiskLevel::Low,
     }
 }
 
@@ -310,10 +308,19 @@ fn render_confirm_dialog(
     let dialog_h: u16 = 8;
     let x = area.x + area.width.saturating_sub(dialog_w) / 2;
     let y = area.y + area.height.saturating_sub(dialog_h) / 2;
-    let dialog_area = Rect { x, y, width: dialog_w, height: dialog_h };
+    let dialog_area = Rect {
+        x,
+        y,
+        width: dialog_w,
+        height: dialog_h,
+    };
 
     let (action, action_color, key_hint) = if is_approve {
-        ("APPROVE", theme.success, "'a' again to confirm  Esc to cancel")
+        (
+            "APPROVE",
+            theme.success,
+            "'a' again to confirm  Esc to cancel",
+        )
     } else {
         ("DENY", theme.danger, "'d' again to confirm  Esc to cancel")
     };
@@ -347,7 +354,9 @@ fn render_confirm_dialog(
         Line::from(""),
         Line::from(Span::styled(
             format!("  Press the key again to {action}."),
-            Style::default().fg(action_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(action_color)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -377,12 +386,12 @@ fn approval_state_color(state: &str, theme: &Theme) -> ratatui::style::Color {
 /// Glyph for an approval state.
 fn approval_glyph(state: &str) -> &'static str {
     match state {
-        "pending"              => "◦",
-        "claimed"              => "▶",
+        "pending" => "◦",
+        "claimed" => "▶",
         "success" | "approved" => "✓",
-        "failure" | "denied"   => "✗",
-        "timeout"              => "⏱",
-        _                      => "?",
+        "failure" | "denied" => "✗",
+        "timeout" => "⏱",
+        _ => "?",
     }
 }
 
@@ -390,9 +399,8 @@ fn approval_glyph(state: &str) -> &'static str {
 fn kind_color(kind: &str, theme: &Theme) -> ratatui::style::Color {
     match kind {
         "sign" | "broadcast" => theme.warning,
-        "tool"               => theme.dream,
-        "model"              => theme.rose,
-        _                    => theme.text_primary,
+        "tool" => theme.dream,
+        "model" => theme.rose,
+        _ => theme.text_primary,
     }
 }
-

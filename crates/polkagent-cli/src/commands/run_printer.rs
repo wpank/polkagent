@@ -9,9 +9,7 @@ use std::io::{IsTerminal, Write};
 use std::ops::ControlFlow;
 use std::time::Instant;
 
-use crossterm::style::{
-    Attribute, Color as CtColor, ResetColor, SetAttribute, SetForegroundColor,
-};
+use crossterm::style::{Attribute, Color as CtColor, ResetColor, SetAttribute, SetForegroundColor};
 use ratatui::style::Color as RatColor;
 
 use polkagent_core::event::{EventKind, LogLevel, RunEvent};
@@ -156,11 +154,7 @@ impl RunPrinter {
     ///
     /// Returns `ControlFlow::Break(())` for terminal events (completed,
     /// failed, cancelled, timed out) so the caller can exit the event loop.
-    pub fn handle_event(
-        &mut self,
-        w: &mut impl Write,
-        event: &RunEvent,
-    ) -> ControlFlow<()> {
+    pub fn handle_event(&mut self, w: &mut impl Write, event: &RunEvent) -> ControlFlow<()> {
         match &event.kind {
             // -- Suppressed / silent ----------------------------------------
             EventKind::RunCreated
@@ -321,12 +315,7 @@ impl RunPrinter {
                     LogLevel::Debug => "DEBUG",
                     LogLevel::Trace => "TRACE",
                 };
-                let _ = self.styled_line(
-                    w,
-                    &format!("  [{label}] {message}"),
-                    color,
-                    false,
-                );
+                let _ = self.styled_line(w, &format!("  [{label}] {message}"), color, false);
             }
 
             // -- Budget -----------------------------------------------------
@@ -382,7 +371,11 @@ impl RunPrinter {
             EventKind::RunRetryQueued => {
                 let _ = self.styled_line(w, "  ↻ Retry queued", self.theme.warning, false);
             }
-            EventKind::MetadataDriftDetected { chain_id, pinned_hash, current_hash } => {
+            EventKind::MetadataDriftDetected {
+                chain_id,
+                pinned_hash,
+                current_hash,
+            } => {
                 let msg = format!(
                     "  ⚠ Metadata drift on {chain_id}: pinned={pinned_hash} current={current_hash}"
                 );
@@ -527,7 +520,12 @@ impl RunPrinter {
         writeln!(w, "{mid}")?;
 
         // What happened.
-        self.print_box_line(w, explanation.what_happened, inner_w, self.theme.text_primary)?;
+        self.print_box_line(
+            w,
+            explanation.what_happened,
+            inner_w,
+            self.theme.text_primary,
+        )?;
 
         // Next step.
         let next = format!("→ {}", explanation.next_step_summary());
@@ -649,7 +647,14 @@ mod tests {
     #[test]
     fn rat_to_ct_rgb() {
         let ct = rat_to_ct(RatColor::Rgb(170, 112, 136));
-        assert_eq!(ct, CtColor::Rgb { r: 170, g: 112, b: 136 });
+        assert_eq!(
+            ct,
+            CtColor::Rgb {
+                r: 170,
+                g: 112,
+                b: 136
+            }
+        );
     }
 
     #[test]
@@ -697,7 +702,12 @@ mod tests {
 
         let mut buf = Vec::new();
         printer
-            .print_header(&mut buf, &"abcd1234-5678-9abc-def0-123456789abc", "dev-helper", "claude-opus-4-6")
+            .print_header(
+                &mut buf,
+                &"abcd1234-5678-9abc-def0-123456789abc",
+                "dev-helper",
+                "claude-opus-4-6",
+            )
             .unwrap();
 
         let output = String::from_utf8(buf).unwrap();

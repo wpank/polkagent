@@ -174,7 +174,10 @@ pub enum TriggerCondition {
 // ---------------------------------------------------------------------------
 
 impl Serialize for TriggerCondition {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         // Build a serde_json::Value and then serialize *that*.
         let value = tc_to_value(self).map_err(serde::ser::Error::custom)?;
         value.serialize(serializer)
@@ -182,7 +185,9 @@ impl Serialize for TriggerCondition {
 }
 
 impl<'de> Deserialize<'de> for TriggerCondition {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
         tc_from_value(&value).map_err(serde::de::Error::custom)
     }
@@ -200,16 +205,12 @@ impl<'de> Deserialize<'de> for TriggerCondition {
 /// - `{"type":"not","condition":{...}}`
 fn tc_to_value(tc: &TriggerCondition) -> std::result::Result<serde_json::Value, serde_json::Error> {
     match tc {
-        TriggerCondition::Always => {
-            Ok(serde_json::json!({ "type": "always" }))
-        }
-        TriggerCondition::JsonPath { path, expected } => {
-            Ok(serde_json::json!({
-                "type": "json_path",
-                "path": path,
-                "expected": expected,
-            }))
-        }
+        TriggerCondition::Always => Ok(serde_json::json!({ "type": "always" })),
+        TriggerCondition::JsonPath { path, expected } => Ok(serde_json::json!({
+            "type": "json_path",
+            "path": path,
+            "expected": expected,
+        })),
         TriggerCondition::Threshold { field, op, value } => {
             let op_value = serde_json::to_value(op)?;
             Ok(serde_json::json!({
@@ -251,7 +252,9 @@ fn tc_to_value(tc: &TriggerCondition) -> std::result::Result<serde_json::Value, 
 
 /// Reconstruct a `TriggerCondition` from a `serde_json::Value`.
 fn tc_from_value(value: &serde_json::Value) -> std::result::Result<TriggerCondition, String> {
-    let obj = value.as_object().ok_or("expected JSON object for TriggerCondition")?;
+    let obj = value
+        .as_object()
+        .ok_or("expected JSON object for TriggerCondition")?;
     let type_str = obj
         .get("type")
         .and_then(|v| v.as_str())
@@ -288,7 +291,11 @@ fn tc_from_value(value: &serde_json::Value) -> std::result::Result<TriggerCondit
                 .get("value")
                 .and_then(|v| v.as_f64())
                 .ok_or_else(|| "threshold: missing or non-numeric \"value\"".to_string())?;
-            Ok(TriggerCondition::Threshold { field, op, value: val })
+            Ok(TriggerCondition::Threshold {
+                field,
+                op,
+                value: val,
+            })
         }
 
         "and" => {
@@ -316,9 +323,7 @@ fn tc_from_value(value: &serde_json::Value) -> std::result::Result<TriggerCondit
         }
 
         "not" => {
-            let inner_value = obj
-                .get("condition")
-                .ok_or("not: missing \"condition\"")?;
+            let inner_value = obj.get("condition").ok_or("not: missing \"condition\"")?;
             let inner = tc_from_value(inner_value)?;
             Ok(TriggerCondition::Not(Box::new(inner)))
         }
@@ -335,18 +340,14 @@ impl TriggerCondition {
         match self {
             Self::Always => true,
 
-            Self::JsonPath { path, expected } => {
-                resolve_json_pointer(payload, path)
-                    .map(|v| v == expected)
-                    .unwrap_or(false)
-            }
+            Self::JsonPath { path, expected } => resolve_json_pointer(payload, path)
+                .map(|v| v == expected)
+                .unwrap_or(false),
 
-            Self::Threshold { field, op, value } => {
-                resolve_json_pointer(payload, field)
-                    .and_then(|v| v.as_f64())
-                    .map(|f| op.evaluate(f, *value))
-                    .unwrap_or(false)
-            }
+            Self::Threshold { field, op, value } => resolve_json_pointer(payload, field)
+                .and_then(|v| v.as_f64())
+                .map(|f| op.evaluate(f, *value))
+                .unwrap_or(false),
 
             Self::And(conditions) => conditions.iter().all(|c| c.evaluate(payload)),
 

@@ -111,10 +111,7 @@ impl MeterEmitter {
 
     #[must_use]
     pub fn pending_count(&self) -> usize {
-        self.events
-            .lock()
-            .map(|e| e.len())
-            .unwrap_or(0)
+        self.events.lock().map(|e| e.len()).unwrap_or(0)
     }
 }
 
@@ -193,7 +190,10 @@ mod tests {
     #[test]
     fn metered_event_kind_display() {
         assert_eq!(MeteredEventKind::RunCompleted.to_string(), "run_completed");
-        assert_eq!(MeteredEventKind::TurnCompleted.to_string(), "turn_completed");
+        assert_eq!(
+            MeteredEventKind::TurnCompleted.to_string(),
+            "turn_completed"
+        );
     }
 
     #[test]

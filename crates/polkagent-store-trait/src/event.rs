@@ -194,10 +194,7 @@ pub trait EventStore: Send + Sync {
     /// Read all durable events for a specific run, ordered by `sequence`.
     ///
     /// Used for run-scoped replay and projection rebuild.
-    async fn read_run_events(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredEvent>, EventStoreError>;
+    async fn read_run_events(&self, run_id: RunId) -> Result<Vec<StoredEvent>, EventStoreError>;
 
     /// Query durable events matching the given filter.
     ///

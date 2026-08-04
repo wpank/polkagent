@@ -27,10 +27,7 @@ pub enum SubxtError {
 
     /// Failed to parse a JSON-RPC response.
     #[error("invalid RPC response: {message}")]
-    InvalidResponse {
-        endpoint: String,
-        message: String,
-    },
+    InvalidResponse { endpoint: String, message: String },
 
     /// The chain profile was not found in the client configuration.
     #[error("chain profile not found: {profile_id}")]
@@ -144,7 +141,13 @@ mod tests {
             retryable: true,
         };
         let ce: ChainError = e.into();
-        assert!(matches!(ce, ChainError::Rpc { retryable: true, .. }));
+        assert!(matches!(
+            ce,
+            ChainError::Rpc {
+                retryable: true,
+                ..
+            }
+        ));
         assert!(ce.is_retryable());
     }
 
@@ -156,7 +159,13 @@ mod tests {
             message: "invalid request".into(),
         };
         let ce: ChainError = e.into();
-        assert!(matches!(ce, ChainError::Rpc { retryable: false, .. }));
+        assert!(matches!(
+            ce,
+            ChainError::Rpc {
+                retryable: false,
+                ..
+            }
+        ));
         assert!(!ce.is_retryable());
     }
 
@@ -228,7 +237,10 @@ mod tests {
     fn finality_timeout_converts() {
         let e = SubxtError::FinalityTimeout { elapsed_ms: 5000 };
         let ce: ChainError = e.into();
-        assert!(matches!(ce, ChainError::FinalityTimeout { elapsed_ms: 5000 }));
+        assert!(matches!(
+            ce,
+            ChainError::FinalityTimeout { elapsed_ms: 5000 }
+        ));
     }
 
     #[test]
@@ -247,6 +259,12 @@ mod tests {
             message: "malformed JSON".into(),
         };
         let ce: ChainError = e.into();
-        assert!(matches!(ce, ChainError::Rpc { retryable: false, .. }));
+        assert!(matches!(
+            ce,
+            ChainError::Rpc {
+                retryable: false,
+                ..
+            }
+        ));
     }
 }

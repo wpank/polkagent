@@ -20,10 +20,10 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use polkagent_feed::store::FeedStore;
-use polkagent_feed::types::{Cursor, Feed, FeedId, FeedItem, FeedSource, FeedStatus};
-use polkagent_feed::trigger::{Trigger, TriggerAction, TriggerCondition, TriggerId};
 use polkagent_feed::recipe::{Recipe, RecipeId, RecipeParameter};
+use polkagent_feed::store::FeedStore;
+use polkagent_feed::trigger::{Trigger, TriggerAction, TriggerCondition, TriggerId};
+use polkagent_feed::types::{Cursor, Feed, FeedId, FeedItem, FeedSource, FeedStatus};
 use polkagent_feed::{FeedError, Result};
 use polkagent_store_sqlite::SqlitePool;
 
@@ -236,12 +236,7 @@ impl FeedStore for SqliteFeedStore {
                          cursor_last_processed_at = ?2,
                          cursor_items_processed = ?3
                      WHERE id = ?4",
-                    rusqlite::params![
-                        cursor.position,
-                        last_processed_at,
-                        items_processed,
-                        id_str,
-                    ],
+                    rusqlite::params![cursor.position, last_processed_at, items_processed, id_str,],
                 )
                 .map_err(map_sqlite)?;
             if n == 0 {
@@ -542,13 +537,7 @@ impl FeedStore for SqliteFeedStore {
                     "INSERT INTO feed_items
                          (id, feed_id, payload_json, received_at, processed)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![
-                        id_str,
-                        feed_id_str,
-                        payload_json,
-                        received_at,
-                        processed,
-                    ],
+                    rusqlite::params![id_str, feed_id_str, payload_json, received_at, processed,],
                 )
                 .map_err(map_sqlite)?;
             Ok(item)
@@ -574,18 +563,15 @@ impl FeedStore for SqliteFeedStore {
                 .map_err(map_sqlite)?;
 
             let rows = stmt
-                .query_map(
-                    rusqlite::params![feed_id_str, limit as i64],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                            row.get::<_, i32>(4)?,
-                        ))
-                    },
-                )
+                .query_map(rusqlite::params![feed_id_str, limit as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i32>(4)?,
+                    ))
+                })
                 .map_err(map_sqlite)?
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(map_sqlite)?;
@@ -621,10 +607,30 @@ impl FeedStore for SqliteFeedStore {
 // Row decoders
 // ---------------------------------------------------------------------------
 
-type FeedRow = (String, String, String, String, String, i64, String, String, String);
+type FeedRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+);
 
 fn decode_feed_row(row: FeedRow) -> Result<Feed> {
-    let (id_s, name, source_json_s, cursor_pos, cursor_ts_s, cursor_items, status_s, agent_id_s, created_at_s) = row;
+    let (
+        id_s,
+        name,
+        source_json_s,
+        cursor_pos,
+        cursor_ts_s,
+        cursor_items,
+        status_s,
+        agent_id_s,
+        created_at_s,
+    ) = row;
 
     let id = id_s.parse::<Uuid>().map_err(map_uuid)?;
     let source: FeedSource = serde_json::from_str(&source_json_s).map_err(map_json)?;
@@ -647,19 +653,26 @@ fn decode_feed_row(row: FeedRow) -> Result<Feed> {
     })
 }
 
-type TriggerRow = (String, String, String, String, String, Option<i64>, Option<String>, i32);
+type TriggerRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<String>,
+    i32,
+);
 
 fn decode_trigger_row(row: TriggerRow) -> Result<Trigger> {
-    let (id_s, name, feed_id_s, cond_json_s, action_json_s, cooldown, last_fired_s, enabled_i) = row;
+    let (id_s, name, feed_id_s, cond_json_s, action_json_s, cooldown, last_fired_s, enabled_i) =
+        row;
 
     let id = id_s.parse::<Uuid>().map_err(map_uuid)?;
     let feed_id = feed_id_s.parse::<Uuid>().map_err(map_uuid)?;
     let condition: TriggerCondition = serde_json::from_str(&cond_json_s).map_err(map_json)?;
     let action: TriggerAction = serde_json::from_str(&action_json_s).map_err(map_json)?;
-    let last_fired_at = last_fired_s
-        .as_deref()
-        .map(parse_ts)
-        .transpose()?;
+    let last_fired_at = last_fired_s.as_deref().map(parse_ts).transpose()?;
 
     Ok(Trigger {
         id: TriggerId::from_uuid(id),
@@ -673,16 +686,35 @@ fn decode_trigger_row(row: TriggerRow) -> Result<Trigger> {
     })
 }
 
-type RecipeRow = (String, String, String, String, String, String, String, String);
+type RecipeRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
 
 fn decode_recipe_row(row: RecipeRow) -> Result<Recipe> {
-    let (id_s, name, description, version, source_json_s, trigger_json_s, action_json_s, params_json_s) = row;
+    let (
+        id_s,
+        name,
+        description,
+        version,
+        source_json_s,
+        trigger_json_s,
+        action_json_s,
+        params_json_s,
+    ) = row;
 
     let id = id_s.parse::<Uuid>().map_err(map_uuid)?;
     let source: FeedSource = serde_json::from_str(&source_json_s).map_err(map_json)?;
     let trigger: TriggerCondition = serde_json::from_str(&trigger_json_s).map_err(map_json)?;
     let action: TriggerAction = serde_json::from_str(&action_json_s).map_err(map_json)?;
-    let parameters: Vec<RecipeParameter> = serde_json::from_str(&params_json_s).map_err(map_json)?;
+    let parameters: Vec<RecipeParameter> =
+        serde_json::from_str(&params_json_s).map_err(map_json)?;
 
     Ok(Recipe {
         id: RecipeId::from_uuid(id),
@@ -875,7 +907,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("trigger-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let trigger = make_trigger(feed_id);
         let trigger_id = trigger.id;
@@ -907,7 +941,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("empty-triggers-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let triggers = FeedStore::list_triggers(&pool, &feed_id)
             .await
@@ -951,7 +987,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("update-trigger-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let mut trigger = make_trigger(feed_id);
         let trigger_id = trigger.id;
@@ -984,7 +1022,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("dummy-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let trigger = make_trigger(feed_id);
         let err = FeedStore::update_trigger(&pool, trigger)
@@ -1060,13 +1100,13 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("queue-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let item = FeedItem::new(feed_id, serde_json::json!({"key": "value"}));
         let item_id = item.id;
-        let enqueued = FeedStore::enqueue_item(&pool, item)
-            .await
-            .expect("enqueue");
+        let enqueued = FeedStore::enqueue_item(&pool, item).await.expect("enqueue");
         assert_eq!(enqueued.id, item_id);
         assert!(!enqueued.processed);
     }
@@ -1076,7 +1116,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("fifo-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         // Enqueue items with spaced timestamps.
         let base = Utc::now();
@@ -1103,18 +1145,24 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("skip-processed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let base = Utc::now();
         let mut item1 = FeedItem::new(feed_id, serde_json::json!(1));
         item1.received_at = base;
         let item1_id = item1.id;
-        FeedStore::enqueue_item(&pool, item1).await.expect("enqueue 1");
+        FeedStore::enqueue_item(&pool, item1)
+            .await
+            .expect("enqueue 1");
 
         let mut item2 = FeedItem::new(feed_id, serde_json::json!(2));
         item2.received_at = base + Duration::seconds(1);
         let item2_id = item2.id;
-        FeedStore::enqueue_item(&pool, item2).await.expect("enqueue 2");
+        FeedStore::enqueue_item(&pool, item2)
+            .await
+            .expect("enqueue 2");
 
         // Mark item1 as processed.
         FeedStore::mark_processed(&pool, item1_id)
@@ -1134,7 +1182,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("empty-queue");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let dequeued = FeedStore::dequeue_items(&pool, &feed_id, 10)
             .await
@@ -1147,7 +1197,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("mark-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let item = FeedItem::new(feed_id, serde_json::json!("data"));
         let item_id = item.id;
@@ -1169,7 +1221,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("idempotent-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let item = FeedItem::new(feed_id, serde_json::json!("data"));
         let item_id = item.id;
@@ -1254,7 +1308,10 @@ mod tests {
 
         let fetched = FeedStore::get_feed(&pool, &feed_id).await.expect("get");
         match &fetched.source {
-            FeedSource::ChainState { query, interval_secs } => {
+            FeedSource::ChainState {
+                query,
+                interval_secs,
+            } => {
                 assert_eq!(query, "storage.balances");
                 assert_eq!(*interval_secs, 60);
             }
@@ -1302,7 +1359,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("threshold-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let mut trigger = make_trigger(feed_id);
         trigger.condition = TriggerCondition::Threshold {
@@ -1335,7 +1394,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("composite-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         let mut trigger = make_trigger(feed_id);
         trigger.condition = TriggerCondition::And(vec![
@@ -1383,11 +1444,11 @@ mod tests {
             },
         ];
         let recipe_id = recipe.id;
-        FeedStore::create_recipe(&pool, recipe).await.expect("create");
-
-        let fetched = FeedStore::get_recipe(&pool, &recipe_id)
+        FeedStore::create_recipe(&pool, recipe)
             .await
-            .expect("get");
+            .expect("create");
+
+        let fetched = FeedStore::get_recipe(&pool, &recipe_id).await.expect("get");
         assert_eq!(fetched.parameters.len(), 2);
         assert_eq!(fetched.parameters[0].name, "threshold");
         assert_eq!(fetched.parameters[0].param_type, ParamType::Number);
@@ -1441,7 +1502,9 @@ mod tests {
         let pool = test_pool();
         let feed = make_feed("limit-feed");
         let feed_id = feed.id;
-        FeedStore::create_feed(&pool, feed).await.expect("create feed");
+        FeedStore::create_feed(&pool, feed)
+            .await
+            .expect("create feed");
 
         FeedStore::enqueue_item(&pool, FeedItem::new(feed_id, serde_json::json!(1)))
             .await

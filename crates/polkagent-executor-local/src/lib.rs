@@ -428,8 +428,7 @@ fn to_inference_response(resp: &ChatCompletionResponse) -> InferenceResponse {
         })
         .unwrap_or_default();
 
-    let stop_reason =
-        normalize_stop_reason(choice.and_then(|c| c.finish_reason.as_deref()));
+    let stop_reason = normalize_stop_reason(choice.and_then(|c| c.finish_reason.as_deref()));
 
     InferenceResponse {
         text,
@@ -732,9 +731,12 @@ impl LocalExecutor {
         let status = response.status().as_u16();
         if status == 200 {
             let response_body =
-                response.text().await.map_err(|e| ExecutorError::InvalidResponse {
-                    message: format!("failed to read response body: {e}"),
-                })?;
+                response
+                    .text()
+                    .await
+                    .map_err(|e| ExecutorError::InvalidResponse {
+                        message: format!("failed to read response body: {e}"),
+                    })?;
 
             let parsed: ChatCompletionResponse =
                 serde_json::from_str(&response_body).map_err(|e| {
@@ -791,9 +793,12 @@ impl LocalExecutor {
             return Err(map_api_error(status, &error_body, &self.model));
         }
 
-        let full_body = response.text().await.map_err(|e| ExecutorError::InvalidResponse {
-            message: format!("failed to read SSE stream body: {e}"),
-        })?;
+        let full_body = response
+            .text()
+            .await
+            .map_err(|e| ExecutorError::InvalidResponse {
+                message: format!("failed to read SSE stream body: {e}"),
+            })?;
 
         let chunks = parse_sse_chunks(&full_body);
         Ok(process_sse_chunks(chunks))
@@ -1292,8 +1297,7 @@ mod tests {
     #[test]
     fn deserialize_text_response() {
         let json = sample_text_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse response");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse response");
 
         assert_eq!(parsed.id, "chatcmpl-local-001");
         assert_eq!(parsed.choices.len(), 1);
@@ -1301,17 +1305,13 @@ mod tests {
             parsed.choices[0].message.content.as_deref(),
             Some("Hello! How can I help you today?")
         );
-        assert_eq!(
-            parsed.choices[0].finish_reason.as_deref(),
-            Some("stop")
-        );
+        assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
     }
 
     #[test]
     fn deserialize_tool_use_response() {
         let json = sample_tool_use_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse response");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse response");
 
         assert_eq!(parsed.choices.len(), 1);
         let tool_calls = parsed.choices[0]
@@ -1327,8 +1327,7 @@ mod tests {
     #[test]
     fn deserialize_response_with_usage() {
         let json = sample_text_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse");
 
         let usage = parsed.usage.expect("usage present");
         assert_eq!(usage.prompt_tokens, 25);
@@ -1338,8 +1337,7 @@ mod tests {
     #[test]
     fn deserialize_response_without_usage() {
         let json = sample_response_no_usage_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse");
 
         assert!(parsed.usage.is_none());
     }
@@ -1347,8 +1345,7 @@ mod tests {
     #[test]
     fn to_inference_response_maps_text_correctly() {
         let json = sample_text_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse");
         let response = to_inference_response(&parsed);
 
         assert_eq!(response.text, "Hello! How can I help you today?");
@@ -1363,8 +1360,7 @@ mod tests {
     #[test]
     fn to_inference_response_maps_tool_calls() {
         let json = sample_tool_use_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse");
         let response = to_inference_response(&parsed);
 
         assert_eq!(response.tool_calls.len(), 1);
@@ -1376,8 +1372,7 @@ mod tests {
     #[test]
     fn to_inference_response_handles_missing_usage() {
         let json = sample_response_no_usage_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse");
         let response = to_inference_response(&parsed);
 
         assert_eq!(response.usage.input_tokens, 0);
@@ -1389,8 +1384,7 @@ mod tests {
     #[test]
     fn to_inference_response_maps_usage_when_present() {
         let json = sample_text_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse");
         let response = to_inference_response(&parsed);
 
         assert_eq!(response.usage.input_tokens, 25);
@@ -1400,13 +1394,11 @@ mod tests {
     #[test]
     fn tool_call_arguments_json_is_valid() {
         let json = sample_tool_use_response_json();
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&json).expect("parse");
+        let parsed: ChatCompletionResponse = serde_json::from_str(&json).expect("parse");
         let response = to_inference_response(&parsed);
 
         let args: serde_json::Value =
-            serde_json::from_str(&response.tool_calls[0].arguments_json)
-                .expect("valid JSON");
+            serde_json::from_str(&response.tool_calls[0].arguments_json).expect("valid JSON");
         assert_eq!(args["path"], "/tmp/test.txt");
     }
 
@@ -1429,9 +1421,16 @@ mod tests {
 
     #[test]
     fn map_api_error_400_bad_request() {
-        let error = map_api_error(400, r#"{"error":{"message":"invalid model"}}"#, "test-model");
+        let error = map_api_error(
+            400,
+            r#"{"error":{"message":"invalid model"}}"#,
+            "test-model",
+        );
         // 400 without context/content keywords -> ServerError -> Transport { retryable: true }
-        assert!(!matches!(error, ExecutorError::ContextWindowExceeded { .. }));
+        assert!(!matches!(
+            error,
+            ExecutorError::ContextWindowExceeded { .. }
+        ));
     }
 
     #[test]
@@ -1458,9 +1457,19 @@ mod tests {
 
     #[test]
     fn map_api_error_500_server_error() {
-        let error = map_api_error(500, r#"{"error":{"message":"internal error"}}"#, "test-model");
+        let error = map_api_error(
+            500,
+            r#"{"error":{"message":"internal error"}}"#,
+            "test-model",
+        );
         assert!(
-            matches!(error, ExecutorError::Transport { retryable: true, .. }),
+            matches!(
+                error,
+                ExecutorError::Transport {
+                    retryable: true,
+                    ..
+                }
+            ),
             "500 should be retryable"
         );
     }
@@ -1470,7 +1479,10 @@ mod tests {
         let error = map_api_error(503, "Service Unavailable", "test-model");
         assert!(matches!(
             error,
-            ExecutorError::Transport { retryable: true, .. }
+            ExecutorError::Transport {
+                retryable: true,
+                ..
+            }
         ));
     }
 
@@ -1649,8 +1661,7 @@ mod tests {
 
     #[test]
     fn with_max_concurrent_creates_semaphore() {
-        let executor = LocalExecutor::ollama_builder("llama3.2".to_string())
-            .with_max_concurrent(3);
+        let executor = LocalExecutor::ollama_builder("llama3.2".to_string()).with_max_concurrent(3);
         assert!(executor.concurrency_semaphore.is_some());
         let sem = executor.concurrency_semaphore.as_ref().unwrap();
         assert_eq!(sem.available_permits(), 3);
@@ -1677,7 +1688,11 @@ mod tests {
         assert_eq!(executor.timeout, Duration::from_secs(60));
         assert!(executor.concurrency_semaphore.is_some());
         assert_eq!(
-            executor.concurrency_semaphore.as_ref().unwrap().available_permits(),
+            executor
+                .concurrency_semaphore
+                .as_ref()
+                .unwrap()
+                .available_permits(),
             8
         );
     }

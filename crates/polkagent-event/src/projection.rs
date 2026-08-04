@@ -19,7 +19,6 @@
 
 use std::collections::HashMap;
 
-
 use polkagent_core::{
     event::{EventKind, RunEvent},
     run::RunState,
@@ -90,7 +89,10 @@ impl ProjectionEngine {
 
     /// Register a new projection.
     pub fn register(&mut self, projection: Box<dyn Projection>) {
-        info!(name = projection.name(), "ProjectionEngine: registered projection");
+        info!(
+            name = projection.name(),
+            "ProjectionEngine: registered projection"
+        );
         self.projections.push(projection);
     }
 
@@ -102,10 +104,11 @@ impl ProjectionEngine {
     /// projections before the failing one will have already been updated.
     pub fn apply(&mut self, event: &RunEvent) -> Result<(), EventError> {
         for proj in &mut self.projections {
-            proj.apply(event).map_err(|source| EventError::ProjectionApply {
-                name: proj.name().to_owned(),
-                source,
-            })?;
+            proj.apply(event)
+                .map_err(|source| EventError::ProjectionApply {
+                    name: proj.name().to_owned(),
+                    source,
+                })?;
         }
         Ok(())
     }
@@ -124,7 +127,11 @@ impl ProjectionEngine {
     /// [`EventError::ProjectionApply`] if a projection fails to apply an
     /// event.
     #[instrument(skip(self, store))]
-    pub async fn rebuild(&mut self, store: &dyn EventStore, batch_size: usize) -> Result<(), EventError> {
+    pub async fn rebuild(
+        &mut self,
+        store: &dyn EventStore,
+        batch_size: usize,
+    ) -> Result<(), EventError> {
         info!("ProjectionEngine: resetting all projections for rebuild");
         for proj in &mut self.projections {
             proj.reset();
@@ -165,15 +172,11 @@ impl ProjectionEngine {
                     ))
                 })?;
 
-                let event_id: polkagent_core::EventId =
-                    stored.id.parse().map_err(|_| {
-                        EventError::Store(
-                            polkagent_store_trait::event::EventStoreError::NotFound(format!(
-                                "invalid event_id: {}",
-                                stored.id
-                            )),
-                        )
-                    })?;
+                let event_id: polkagent_core::EventId = stored.id.parse().map_err(|_| {
+                    EventError::Store(polkagent_store_trait::event::EventStoreError::NotFound(
+                        format!("invalid event_id: {}", stored.id),
+                    ))
+                })?;
 
                 use polkagent_core::event::{Durability, EventCorrelation};
                 let event = RunEvent {
@@ -279,10 +282,7 @@ impl Projection for RunStatusProjection {
         "run_status"
     }
 
-    fn apply(
-        &mut self,
-        event: &RunEvent,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn apply(&mut self, event: &RunEvent) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let run_id = event.run_id.to_string();
 
         let new_state = match &event.kind {
@@ -410,10 +410,7 @@ mod tests {
             },
         ))
         .unwrap();
-        assert!(matches!(
-            proj.state(&run_id),
-            Some(RunState::Failed { .. })
-        ));
+        assert!(matches!(proj.state(&run_id), Some(RunState::Failed { .. })));
     }
 
     #[test]
@@ -494,9 +491,7 @@ mod tests {
         let event = make_event(run_id.clone(), EventKind::RunCreated);
         engine.apply(&event).expect("apply");
 
-        let proj = engine
-            .get("run_status")
-            .expect("projection registered");
+        let proj = engine.get("run_status").expect("projection registered");
         // We can only call trait methods; downcast is not needed for this check.
         let _ = proj.name();
     }

@@ -67,7 +67,9 @@ pub fn request_with_tool() -> InferenceRequest {
     req.tools = vec![ToolDefinition {
         name: "conformance.echo".into(),
         description: "Echoes the input back to the caller.".into(),
-        input_schema_json: r#"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}"#.into(),
+        input_schema_json:
+            r#"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}"#
+                .into(),
     }];
     req
 }
@@ -88,7 +90,9 @@ pub fn request_empty_prompt() -> InferenceRequest {
         step_id: StepId::new(),
         messages: vec![InferenceMessage {
             role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: String::new() }],
+            content: vec![ContentBlock::Text {
+                text: String::new(),
+            }],
         }],
         system: None,
         tools: vec![],
@@ -117,8 +121,7 @@ pub async fn test_execute_returns_response(exec: &dyn ModelExecutor) {
         has_content,
         "complete() must return a response with non-empty text or at least one tool_call; \
          got text={:?} tool_calls={:?}",
-        resp.text,
-        resp.tool_calls,
+        resp.text, resp.tool_calls,
     );
 
     assert!(
@@ -164,9 +167,7 @@ pub async fn test_execute_respects_max_tokens(exec: &dyn ModelExecutor) {
             );
         }
         Err(e) => {
-            panic!(
-                "complete() must not fail for a low max_tokens request; got error: {e}"
-            );
+            panic!("complete() must not fail for a low max_tokens request; got error: {e}");
         }
     }
 }
@@ -190,10 +191,7 @@ pub async fn test_stream_yields_events(exec: &dyn ModelExecutor) {
         .collect::<Result<Vec<_>, _>>()
         .expect("stream must not yield error events for a valid minimal request");
 
-    assert!(
-        !events.is_empty(),
-        "stream() must emit at least one event"
-    );
+    assert!(!events.is_empty(), "stream() must emit at least one event");
 
     let last = events.last().expect("events is non-empty");
     assert!(

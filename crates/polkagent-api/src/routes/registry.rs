@@ -34,9 +34,7 @@ use crate::{
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn listing_to_response(
-    listing: &polkagent_marketplace::ServiceListing,
-) -> ServiceListingResponse {
+fn listing_to_response(listing: &polkagent_marketplace::ServiceListing) -> ServiceListingResponse {
     ServiceListingResponse {
         version: API_VERSION.to_owned(),
         id: listing.id.to_string(),
@@ -77,9 +75,7 @@ pub async fn create_listing(
     let registry = state
         .service_registry_store
         .as_ref()
-        .ok_or_else(|| {
-            ApiError::NotImplemented("service registry not configured".to_owned())
-        })?;
+        .ok_or_else(|| ApiError::NotImplemented("service registry not configured".to_owned()))?;
 
     let request = polkagent_marketplace::CreateListingRequest {
         name: body.name,
@@ -112,9 +108,7 @@ pub async fn get_listing(
     let registry = state
         .service_registry_store
         .as_ref()
-        .ok_or_else(|| {
-            ApiError::NotImplemented("service registry not configured".to_owned())
-        })?;
+        .ok_or_else(|| ApiError::NotImplemented("service registry not configured".to_owned()))?;
 
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ApiError::ValidationError(format!("invalid listing id: {id}")))?;
@@ -139,9 +133,7 @@ pub async fn search_listings(
     let registry = state
         .service_registry_store
         .as_ref()
-        .ok_or_else(|| {
-            ApiError::NotImplemented("service registry not configured".to_owned())
-        })?;
+        .ok_or_else(|| ApiError::NotImplemented("service registry not configured".to_owned()))?;
 
     let filter = polkagent_marketplace::SearchFilter {
         query: query.q,
@@ -160,8 +152,7 @@ pub async fn search_listings(
     };
 
     let listings = registry.search(filter).await?;
-    let data: Vec<ServiceListingResponse> =
-        listings.iter().map(listing_to_response).collect();
+    let data: Vec<ServiceListingResponse> = listings.iter().map(listing_to_response).collect();
 
     Ok(Json(ListServiceListingsResponse {
         version: API_VERSION.to_owned(),

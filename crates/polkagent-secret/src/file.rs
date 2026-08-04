@@ -122,12 +122,7 @@ impl SecretStore for FileSecretStore {
         Ok(SecretValue::new(stored.value))
     }
 
-    async fn set(
-        &self,
-        id: SecretId,
-        value: SecretValue,
-        metadata: SecretMetadata,
-    ) -> Result<()> {
+    async fn set(&self, id: SecretId, value: SecretValue, metadata: SecretMetadata) -> Result<()> {
         let path = self.secret_path(&id);
         let stored = StoredSecret {
             value: value.inner().to_string(),
@@ -188,8 +183,7 @@ mod tests {
 
     fn temp_store() -> (tempfile::TempDir, FileSecretStore) {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store =
-            FileSecretStore::with_dir(dir.path().to_path_buf()).expect("create store");
+        let store = FileSecretStore::with_dir(dir.path().to_path_buf()).expect("create store");
         (dir, store)
     }
 
@@ -198,8 +192,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = SecretId::new("my-key");
         let val = SecretValue::new("super-secret");
-        let meta =
-            SecretMetadata::new(id.clone(), "My Key", SecretSource::Manual);
+        let meta = SecretMetadata::new(id.clone(), "My Key", SecretSource::Manual);
 
         store
             .set(id.clone(), val, meta)

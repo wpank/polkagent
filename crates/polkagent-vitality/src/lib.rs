@@ -33,7 +33,7 @@ pub mod tracker;
 // Convenience re-exports
 // ---------------------------------------------------------------------------
 
-pub use affect::{AffectState, Engagement, Confidence, Fatigue};
+pub use affect::{AffectState, Confidence, Engagement, Fatigue};
 pub use error::VitalityError;
 pub use tracker::{RunSnapshot, VitalityTracker};
 

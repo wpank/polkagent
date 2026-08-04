@@ -44,9 +44,10 @@ pub fn run(cmd: &KitCmd, pool: &SqlitePool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn install(cmd: &KitInstallCmd, pool: &SqlitePool) -> Result<()> {
-    let path = cmd.path.canonicalize().map_err(|e| {
-        anyhow::anyhow!("Cannot access kit path '{}': {e}", cmd.path.display())
-    })?;
+    let path = cmd
+        .path
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("Cannot access kit path '{}': {e}", cmd.path.display()))?;
 
     // Validate the kit manifest. For now, grant all capabilities (the
     // grant check is advisory) and do not require pre-installed skills.
@@ -180,8 +181,7 @@ fn uninstall(cmd: &KitUninstallCmd, pool: &SqlitePool) -> Result<()> {
     }
 
     // Parse the skill names that were registered with this kit.
-    let skill_names: Vec<String> =
-        serde_json::from_str(&skill_names_json).unwrap_or_default();
+    let skill_names: Vec<String> = serde_json::from_str(&skill_names_json).unwrap_or_default();
 
     // Remove from the kits table.
     let writer = pool.writer();
@@ -266,8 +266,7 @@ fn list(cmd: &KitListCmd, pool: &SqlitePool) -> Result<()> {
         let items: Vec<serde_json::Value> = rows
             .iter()
             .map(|(name, version, desc, skills_json, installed)| {
-                let skills: Vec<String> =
-                    serde_json::from_str(skills_json).unwrap_or_default();
+                let skills: Vec<String> = serde_json::from_str(skills_json).unwrap_or_default();
                 serde_json::json!({
                     "name": name,
                     "version": version,
@@ -290,12 +289,8 @@ fn list(cmd: &KitListCmd, pool: &SqlitePool) -> Result<()> {
     println!("{:<28}  {:<12}  Skills  Description", "Name", "Version");
     println!("{}", "-".repeat(90));
     for (name, version, desc, skills_json, _installed) in &rows {
-        let skills: Vec<String> =
-            serde_json::from_str(skills_json).unwrap_or_default();
-        println!(
-            "{name:<28}  {version:<12}  {:<6}  {desc}",
-            skills.len()
-        );
+        let skills: Vec<String> = serde_json::from_str(skills_json).unwrap_or_default();
+        println!("{name:<28}  {version:<12}  {:<6}  {desc}", skills.len());
     }
     println!();
     println!("{} kit(s) installed", rows.len());

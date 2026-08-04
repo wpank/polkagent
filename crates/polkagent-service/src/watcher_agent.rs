@@ -91,11 +91,7 @@ impl std::fmt::Debug for WatcherAgentManager {
             .field("timeout_enforcer_active", &self.timeout_enforcer_active)
             .field(
                 "history_len",
-                &self
-                    .history
-                    .lock()
-                    .map(|h| h.len())
-                    .unwrap_or(0),
+                &self.history.lock().map(|h| h.len()).unwrap_or(0),
             )
             .finish()
     }
@@ -205,10 +201,7 @@ impl WatcherAgentManager {
     /// # Errors
     ///
     /// Returns an error if the `TimeoutEnforcer` is not active.
-    pub async fn register_all(
-        &mut self,
-        configs: &[WatcherConfig],
-    ) -> Result<usize, ServiceError> {
+    pub async fn register_all(&mut self, configs: &[WatcherConfig]) -> Result<usize, ServiceError> {
         let mut count = 0;
         for config in configs {
             if !config.enabled {
@@ -228,9 +221,12 @@ impl WatcherAgentManager {
     /// Returns [`ServiceError::Internal`] if the watcher is not registered or
     /// the scheduler rejects the cancellation.
     pub async fn unregister_watcher(&mut self, name: &str) -> Result<(), ServiceError> {
-        let task_id = self.task_ids.remove(name).ok_or_else(|| ServiceError::Internal {
-            message: format!("watcher '{name}' is not registered"),
-        })?;
+        let task_id = self
+            .task_ids
+            .remove(name)
+            .ok_or_else(|| ServiceError::Internal {
+                message: format!("watcher '{name}' is not registered"),
+            })?;
 
         self.scheduler
             .remove_task(task_id)
@@ -253,10 +249,7 @@ impl WatcherAgentManager {
 
     /// Return a snapshot of the execution history.
     pub fn history(&self) -> Vec<WatcherHistoryEntry> {
-        self.history
-            .lock()
-            .map(|h| h.clone())
-            .unwrap_or_default()
+        self.history.lock().map(|h| h.clone()).unwrap_or_default()
     }
 
     /// Run a single poll cycle.
@@ -487,12 +480,11 @@ mod tests {
     async fn register_watcher_succeeds() {
         let mut manager = WatcherAgentManager::new(Duration::from_secs(1), true);
         let config = make_watcher_config("balance-monitor");
-        let task_id = manager
-            .register_watcher(&config)
-            .await
-            .expect("register");
+        let task_id = manager.register_watcher(&config).await.expect("register");
 
-        assert!(manager.registered_watchers().contains(&"balance-monitor".to_owned()));
+        assert!(manager
+            .registered_watchers()
+            .contains(&"balance-monitor".to_owned()));
         assert!(manager.watcher_policy("balance-monitor").is_some());
         assert!(manager.task_ids.contains_key("balance-monitor"));
         let _ = task_id; // just verify it's returned
@@ -569,7 +561,10 @@ mod tests {
         manager.register_watcher(&config).await.expect("register");
         assert_eq!(manager.registered_watchers().len(), 1);
 
-        manager.unregister_watcher("remove-me").await.expect("unregister");
+        manager
+            .unregister_watcher("remove-me")
+            .await
+            .expect("unregister");
         assert!(manager.registered_watchers().is_empty());
         assert!(manager.watcher_policy("remove-me").is_none());
     }
@@ -589,10 +584,7 @@ mod tests {
     async fn watcher_fires_and_records_history() {
         let mut manager = WatcherAgentManager::new(Duration::from_secs(1), true);
         let config = make_watcher_config("fire-test");
-        let task_id = manager
-            .register_watcher(&config)
-            .await
-            .expect("register");
+        let task_id = manager.register_watcher(&config).await.expect("register");
 
         // Make the task due.
         let store = manager.store();

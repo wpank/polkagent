@@ -9,16 +9,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum_test::TestServer;
-use polkagent_core::{ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, WorkerId};
-use polkagent_store_trait::{
-    ArtifactStore, ArtifactSummary, EffectStore, StoredIntent, StoredOutcome, StoreError,
-    StoreRetryClass,
+use polkagent_core::{
+    ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, WorkerId,
 };
 use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
+use polkagent_store_trait::{
+    ArtifactStore, ArtifactSummary, EffectStore, StoreError, StoreRetryClass, StoredIntent,
+    StoredOutcome,
+};
 use serde_json::json;
 use tokio::sync::RwLock;
 
-use polkagent_api::{InMemoryRunManager, InMemoryAgentStore, server::ApiServer};
+use polkagent_api::{server::ApiServer, InMemoryAgentStore, InMemoryRunManager};
 use polkagent_config::{Config, ProviderConfig};
 use polkagent_event::EventBus;
 
@@ -76,10 +78,7 @@ impl EffectStore for NoopEffectStore {
         Ok(vec![])
     }
 
-    async fn expired_leases(
-        &self,
-        _cutoff: Timestamp,
-    ) -> Result<Vec<StoredIntent>, StoreError> {
+    async fn expired_leases(&self, _cutoff: Timestamp) -> Result<Vec<StoredIntent>, StoreError> {
         Ok(vec![])
     }
 
@@ -97,10 +96,7 @@ impl EffectStore for NoopEffectStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        _run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, _run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         Ok(vec![])
     }
 
@@ -209,10 +205,7 @@ impl EffectStore for InMemoryEffectStore {
             .collect())
     }
 
-    async fn expired_leases(
-        &self,
-        _cutoff: Timestamp,
-    ) -> Result<Vec<StoredIntent>, StoreError> {
+    async fn expired_leases(&self, _cutoff: Timestamp) -> Result<Vec<StoredIntent>, StoreError> {
         Ok(vec![])
     }
 
@@ -230,10 +223,7 @@ impl EffectStore for InMemoryEffectStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        _run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, _run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         Ok(vec![])
     }
 
@@ -259,10 +249,7 @@ impl EffectStore for InMemoryEffectStore {
         let valid_source = ["awaiting_approval"];
         if !valid_source.contains(&intent.state.as_str()) {
             return Err(StoreError::InvalidTransition {
-                message: format!(
-                    "cannot transition from '{}' to '{new_state}'",
-                    intent.state
-                ),
+                message: format!("cannot transition from '{}' to '{new_state}'", intent.state),
             });
         }
 
@@ -315,13 +302,8 @@ fn test_server() -> TestServer {
     let run_manager = Arc::new(InMemoryRunManager::new());
     let store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
     let event_bus = EventBus::with_default_capacity();
-    let state = polkagent_api::AppState::new(
-        Config::default(),
-        agents,
-        run_manager,
-        store,
-        event_bus,
-    );
+    let state =
+        polkagent_api::AppState::new(Config::default(), agents, run_manager, store, event_bus);
     let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
 }
@@ -332,13 +314,7 @@ fn test_server_with_config(config: Config) -> TestServer {
     let run_manager = Arc::new(InMemoryRunManager::new());
     let store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
     let event_bus = EventBus::with_default_capacity();
-    let state = polkagent_api::AppState::new(
-        config,
-        agents,
-        run_manager,
-        store,
-        event_bus,
-    );
+    let state = polkagent_api::AppState::new(config, agents, run_manager, store, event_bus);
     let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
 }
@@ -373,16 +349,20 @@ async fn create_test_run(server: &TestServer, agent_id: &str) -> String {
 async fn error_404_includes_all_required_fields() {
     let server = test_server();
     let fake_id = polkagent_core::AgentId::new().to_string();
-    let resp = server
-        .get(&format!("/api/v1alpha1/agents/{fake_id}"))
-        .await;
+    let resp = server.get(&format!("/api/v1alpha1/agents/{fake_id}")).await;
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     let err = &body["error"];
     assert!(err["code"].is_string(), "error.code must be a string");
     assert!(err["message"].is_string(), "error.message must be a string");
-    assert!(err["request_id"].is_string(), "error.request_id must be a string");
-    assert!(err["timestamp"].is_string(), "error.timestamp must be a string");
+    assert!(
+        err["request_id"].is_string(),
+        "error.request_id must be a string"
+    );
+    assert!(
+        err["timestamp"].is_string(),
+        "error.timestamp must be a string"
+    );
 }
 
 #[tokio::test]
@@ -435,9 +415,7 @@ async fn error_409_includes_all_required_fields() {
 async fn error_timestamp_is_valid_iso8601() {
     let server = test_server();
     let fake_id = polkagent_core::AgentId::new().to_string();
-    let resp = server
-        .get(&format!("/api/v1alpha1/agents/{fake_id}"))
-        .await;
+    let resp = server.get(&format!("/api/v1alpha1/agents/{fake_id}")).await;
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     let timestamp = body["error"]["timestamp"]
@@ -457,9 +435,7 @@ async fn error_timestamp_is_valid_iso8601() {
 async fn error_request_id_is_valid_uuid() {
     let server = test_server();
     let fake_id = polkagent_core::RunId::new().to_string();
-    let resp = server
-        .get(&format!("/api/v1alpha1/runs/{fake_id}"))
-        .await;
+    let resp = server.get(&format!("/api/v1alpha1/runs/{fake_id}")).await;
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     let request_id = body["error"]["request_id"]
@@ -523,9 +499,7 @@ async fn pagination_cursor_with_after_and_limit() {
     // Third page should have exactly 1 item and has_more = false.
     let next_cursor2 = page2_body["cursor"]["next"].as_str().expect("next cursor");
     let page3 = server
-        .get(&format!(
-            "/api/v1alpha1/runs?limit=2&after={next_cursor2}"
-        ))
+        .get(&format!("/api/v1alpha1/runs?limit=2&after={next_cursor2}"))
         .await;
     page3.assert_status_ok();
     let page3_body: serde_json::Value = page3.json();
@@ -787,7 +761,10 @@ async fn show_agent_returns_full_details() {
     assert_eq!(body["spec"]["model"], "anthropic/claude-opus-4-6");
     assert_eq!(body["spec"]["description"], "Testing full detail view");
     assert_eq!(body["spec"]["system_prompt"], "Be precise.");
-    assert!(body["spec"]["tools"].as_array().expect("tools").contains(&json!("shell_exec")));
+    assert!(body["spec"]["tools"]
+        .as_array()
+        .expect("tools")
+        .contains(&json!("shell_exec")));
     assert!(body["created_at"].is_string());
     assert!(body["updated_at"].is_string());
 }
@@ -874,9 +851,7 @@ async fn list_agents_after_delete_does_not_include_deleted() {
 async fn get_agent_not_found_returns_404() {
     let server = test_server();
     let fake_id = polkagent_core::AgentId::new().to_string();
-    let resp = server
-        .get(&format!("/api/v1alpha1/agents/{fake_id}"))
-        .await;
+    let resp = server.get(&format!("/api/v1alpha1/agents/{fake_id}")).await;
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["error"]["code"], "AGENT_NOT_FOUND");
@@ -974,9 +949,7 @@ async fn list_runs_with_state_filter_returns_400_for_tagged_enum() {
     let agent_id = create_test_agent(&server).await;
     create_test_run(&server, &agent_id).await;
 
-    let resp = server
-        .get("/api/v1alpha1/runs?state=running")
-        .await;
+    let resp = server.get("/api/v1alpha1/runs?state=running").await;
     resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
 }
 
@@ -1005,11 +978,11 @@ async fn list_runs_without_state_filter_returns_all() {
 
     // Verify the cancelled run appears in the list with the correct state.
     let cancelled_run = all_runs.iter().find(|r| r["id"] == run_1.as_str());
-    assert!(cancelled_run.is_some(), "cancelled run should appear in unfiltered list");
-    assert_eq!(
-        cancelled_run.unwrap()["status"]["state"],
-        "cancelled"
+    assert!(
+        cancelled_run.is_some(),
+        "cancelled run should appear in unfiltered list"
     );
+    assert_eq!(cancelled_run.unwrap()["status"]["state"], "cancelled");
 }
 
 #[tokio::test]
@@ -1074,9 +1047,7 @@ async fn get_run_detail_includes_all_fields() {
     let run: serde_json::Value = create_resp.json();
     let run_id = run["id"].as_str().expect("run_id").to_owned();
 
-    let get_resp = server
-        .get(&format!("/api/v1alpha1/runs/{run_id}"))
-        .await;
+    let get_resp = server.get(&format!("/api/v1alpha1/runs/{run_id}")).await;
     get_resp.assert_status_ok();
     let body: serde_json::Value = get_resp.json();
 
@@ -1086,18 +1057,25 @@ async fn get_run_detail_includes_all_fields() {
     assert_eq!(body["agent_id"], agent_id.as_str());
     assert!(body["status"].is_object(), "status must be an object");
     assert!(body["input"].is_object(), "input must be present");
-    assert!(body["turns_completed"].is_number(), "turns_completed must be a number");
-    assert!(body["created_at"].is_string(), "created_at must be a string");
-    assert!(body["started_at"].is_string(), "started_at must be present for running run");
+    assert!(
+        body["turns_completed"].is_number(),
+        "turns_completed must be a number"
+    );
+    assert!(
+        body["created_at"].is_string(),
+        "created_at must be a string"
+    );
+    assert!(
+        body["started_at"].is_string(),
+        "started_at must be present for running run"
+    );
 }
 
 #[tokio::test]
 async fn get_run_not_found_returns_404() {
     let server = test_server();
     let fake_id = polkagent_core::RunId::new().to_string();
-    let resp = server
-        .get(&format!("/api/v1alpha1/runs/{fake_id}"))
-        .await;
+    let resp = server.get(&format!("/api/v1alpha1/runs/{fake_id}")).await;
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["error"]["code"], "RUN_NOT_FOUND");
@@ -1305,10 +1283,7 @@ async fn system_info_response_includes_version() {
         "platform_version must be present"
     );
     let pv = body["platform_version"].as_str().unwrap();
-    assert!(
-        !pv.is_empty(),
-        "platform_version must not be empty"
-    );
+    assert!(!pv.is_empty(), "platform_version must not be empty");
 }
 
 #[tokio::test]
@@ -1317,9 +1292,14 @@ async fn system_info_uptime_secs_is_non_negative() {
     let resp = server.get("/api/v1alpha1/system/info").await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
-    let uptime = body["uptime_secs"].as_u64().expect("uptime_secs must be a number");
+    let uptime = body["uptime_secs"]
+        .as_u64()
+        .expect("uptime_secs must be a number");
     // Uptime should be >= 0 (realistically >= 0 since we just started).
-    assert!(uptime < 300, "uptime should be reasonable (< 5 min for a test)");
+    assert!(
+        uptime < 300,
+        "uptime should be reasonable (< 5 min for a test)"
+    );
 }
 
 #[tokio::test]
@@ -1458,9 +1438,7 @@ async fn get_provider_by_id() {
     }];
 
     let server = test_server_with_config(config);
-    let resp = server
-        .get("/api/v1alpha1/providers/test-provider")
-        .await;
+    let resp = server.get("/api/v1alpha1/providers/test-provider").await;
     resp.assert_status_ok();
     let body: serde_json::Value = resp.json();
     assert_eq!(body["version"], "v1alpha1");
@@ -1475,9 +1453,7 @@ async fn get_provider_by_id() {
 #[tokio::test]
 async fn get_provider_not_found_returns_404() {
     let server = test_server();
-    let resp = server
-        .get("/api/v1alpha1/providers/nonexistent")
-        .await;
+    let resp = server.get("/api/v1alpha1/providers/nonexistent").await;
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["error"]["code"], "NOT_FOUND");
@@ -1862,9 +1838,7 @@ async fn install_skill_returns_501() {
 #[tokio::test]
 async fn uninstall_skill_returns_501() {
     let server = test_server();
-    let resp = server
-        .post("/api/v1alpha1/skills/my-skill/uninstall")
-        .await;
+    let resp = server.post("/api/v1alpha1/skills/my-skill/uninstall").await;
     resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
@@ -2151,13 +2125,14 @@ impl EventStore for InMemoryEventStore {
         Ok(results)
     }
 
-    async fn read_run_events(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+    async fn read_run_events(&self, run_id: RunId) -> Result<Vec<StoredEvent>, EventStoreError> {
         let guard = self.events.read().await;
         let run_id_str = run_id.to_string();
-        Ok(guard.iter().filter(|e| e.run_id == run_id_str).cloned().collect())
+        Ok(guard
+            .iter()
+            .filter(|e| e.run_id == run_id_str)
+            .cloned()
+            .collect())
     }
 
     async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
@@ -2245,7 +2220,10 @@ impl ArtifactStore for InMemoryArtifactStore {
             run_id,
             created_at: chrono::Utc::now(),
         };
-        self.artifacts.write().await.insert(artifact_id, (summary, body.to_vec()));
+        self.artifacts
+            .write()
+            .await
+            .insert(artifact_id, (summary, body.to_vec()));
         Ok(())
     }
 
@@ -2255,7 +2233,10 @@ impl ArtifactStore for InMemoryArtifactStore {
             .await
             .get(&id)
             .map(|(s, _)| s.clone())
-            .ok_or_else(|| StoreError::NotFound { resource_type: "Artifact", id: id.to_string() })
+            .ok_or_else(|| StoreError::NotFound {
+                resource_type: "Artifact",
+                id: id.to_string(),
+            })
     }
 
     async fn get_body(&self, id: ArtifactId) -> Result<Vec<u8>, StoreError> {
@@ -2264,7 +2245,10 @@ impl ArtifactStore for InMemoryArtifactStore {
             .await
             .get(&id)
             .map(|(_, b)| b.clone())
-            .ok_or_else(|| StoreError::NotFound { resource_type: "Artifact", id: id.to_string() })
+            .ok_or_else(|| StoreError::NotFound {
+                resource_type: "Artifact",
+                id: id.to_string(),
+            })
     }
 
     async fn verify(&self, id: ArtifactId) -> Result<bool, StoreError> {
@@ -2287,9 +2271,7 @@ impl ArtifactStore for InMemoryArtifactStore {
 // ===========================================================================
 
 /// Build a `TestServer` with an in-memory EventStore attached.
-fn test_server_with_event_store(
-    store: Arc<InMemoryEventStore>,
-) -> TestServer {
+fn test_server_with_event_store(store: Arc<InMemoryEventStore>) -> TestServer {
     let agents = Arc::new(InMemoryAgentStore::new());
     let run_manager = Arc::new(InMemoryRunManager::new());
     let effect_store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
@@ -2307,9 +2289,7 @@ fn test_server_with_event_store(
 }
 
 /// Build a `TestServer` with an in-memory ArtifactStore attached.
-fn test_server_with_artifact_store(
-    store: Arc<InMemoryArtifactStore>,
-) -> TestServer {
+fn test_server_with_artifact_store(store: Arc<InMemoryArtifactStore>) -> TestServer {
     let agents = Arc::new(InMemoryAgentStore::new());
     let run_manager = Arc::new(InMemoryRunManager::new());
     let effect_store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
@@ -2357,8 +2337,12 @@ async fn list_events_with_store_returns_events() {
     let run_id = RunId::new();
 
     // Insert two events directly into the store.
-    store.insert(make_stored_event("evt-1", run_id, "run_created", 1)).await;
-    store.insert(make_stored_event("evt-2", run_id, "run_started", 2)).await;
+    store
+        .insert(make_stored_event("evt-1", run_id, "run_created", 1))
+        .await;
+    store
+        .insert(make_stored_event("evt-2", run_id, "run_started", 2))
+        .await;
 
     let server = test_server_with_event_store(store);
     let resp = server.get("/api/v1alpha1/events").await;
@@ -2386,9 +2370,15 @@ async fn list_events_filters_by_run_id() {
     let run_a = RunId::new();
     let run_b = RunId::new();
 
-    store.insert(make_stored_event("evt-a1", run_a, "run_created", 1)).await;
-    store.insert(make_stored_event("evt-a2", run_a, "run_started", 2)).await;
-    store.insert(make_stored_event("evt-b1", run_b, "run_created", 3)).await;
+    store
+        .insert(make_stored_event("evt-a1", run_a, "run_created", 1))
+        .await;
+    store
+        .insert(make_stored_event("evt-a2", run_a, "run_started", 2))
+        .await;
+    store
+        .insert(make_stored_event("evt-b1", run_b, "run_created", 3))
+        .await;
 
     let server = test_server_with_event_store(store);
     let resp = server
@@ -2409,9 +2399,15 @@ async fn list_events_filters_by_since() {
     let store = Arc::new(InMemoryEventStore::new());
     let run_id = RunId::new();
 
-    store.insert(make_stored_event("evt-1", run_id, "run_created", 1)).await;
-    store.insert(make_stored_event("evt-2", run_id, "run_started", 2)).await;
-    store.insert(make_stored_event("evt-3", run_id, "run_completed", 3)).await;
+    store
+        .insert(make_stored_event("evt-1", run_id, "run_created", 1))
+        .await;
+    store
+        .insert(make_stored_event("evt-2", run_id, "run_started", 2))
+        .await;
+    store
+        .insert(make_stored_event("evt-3", run_id, "run_completed", 3))
+        .await;
 
     let server = test_server_with_event_store(store);
     // Request events with global_sequence >= 2.
@@ -2427,7 +2423,14 @@ async fn list_events_filters_by_since() {
 async fn get_event_by_id_returns_single_event() {
     let store = Arc::new(InMemoryEventStore::new());
     let run_id = RunId::new();
-    store.insert(make_stored_event("target-event-id", run_id, "run_created", 1)).await;
+    store
+        .insert(make_stored_event(
+            "target-event-id",
+            run_id,
+            "run_created",
+            1,
+        ))
+        .await;
 
     let server = test_server_with_event_store(store);
     let resp = server.get("/api/v1alpha1/events/target-event-id").await;
@@ -2463,7 +2466,14 @@ async fn list_events_respects_limit() {
     let run_id = RunId::new();
 
     for i in 1..=5u64 {
-        store.insert(make_stored_event(&format!("evt-{i}"), run_id, "run_created", i)).await;
+        store
+            .insert(make_stored_event(
+                &format!("evt-{i}"),
+                run_id,
+                "run_created",
+                i,
+            ))
+            .await;
     }
 
     let server = test_server_with_event_store(store);
@@ -2648,7 +2658,11 @@ async fn event_bus_subscribe_before_publish_receives_event() {
         EventId::new(),
         run_id,
         1,
-        EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 },
+        EventKind::RunCompleted {
+            output_artifact_id: None,
+            input_tokens: 0,
+            output_tokens: 0,
+        },
         EventCorrelation {
             run_id,
             ..Default::default()
@@ -2675,7 +2689,10 @@ async fn event_bus_no_events_before_subscribe_are_replayed() {
         run_id,
         1,
         EventKind::RunCreated,
-        EventCorrelation { run_id, ..Default::default() },
+        EventCorrelation {
+            run_id,
+            ..Default::default()
+        },
     );
     bus.publish(old_event);
 
@@ -2688,13 +2705,19 @@ async fn event_bus_no_events_before_subscribe_are_replayed() {
         run_id,
         2,
         EventKind::RunStarted,
-        EventCorrelation { run_id, ..Default::default() },
+        EventCorrelation {
+            run_id,
+            ..Default::default()
+        },
     );
     let new_event_id = new_event.id;
     bus.publish(new_event);
 
     let received = receiver.recv().await.expect("should receive new event");
-    assert_eq!(received.id, new_event_id, "should only receive the post-subscribe event");
+    assert_eq!(
+        received.id, new_event_id,
+        "should only receive the post-subscribe event"
+    );
 }
 
 // ===========================================================================
@@ -2720,7 +2743,10 @@ async fn approve_effect_pending_returns_200_with_approved_state() {
     assert_eq!(body["version"], "v1alpha1");
     assert_eq!(body["effect_id"], effect_id.as_str());
     assert_eq!(body["new_state"], "approved");
-    assert!(body["approved_at"].is_string(), "approved_at must be a timestamp string");
+    assert!(
+        body["approved_at"].is_string(),
+        "approved_at must be a timestamp string"
+    );
     // PRD-14 §4: response must include an approval record.
     assert!(body["approval"]["id"].is_string());
     assert_eq!(body["approval"]["decision"], "approved");
@@ -2797,7 +2823,10 @@ async fn deny_effect_pending_returns_200_with_denied_state() {
     assert_eq!(body["version"], "v1alpha1");
     assert_eq!(body["effect_id"], effect_id.as_str());
     assert_eq!(body["new_state"], "denied");
-    assert!(body["denied_at"].is_string(), "denied_at must be a timestamp string");
+    assert!(
+        body["denied_at"].is_string(),
+        "denied_at must be a timestamp string"
+    );
     // The denial reason is recorded.
     assert_eq!(body["reason"], "budget exceeded");
     // PRD-14 §4: response must include a denial record.
@@ -2823,8 +2852,10 @@ async fn deny_effect_without_reason_omits_reason_field() {
     let body: serde_json::Value = resp.json();
     assert_eq!(body["new_state"], "denied");
     // reason is absent when not provided (skip_serializing_if = None).
-    assert!(body["reason"].is_null() || body.get("reason").is_none(),
-        "reason should be absent when not supplied");
+    assert!(
+        body["reason"].is_null() || body.get("reason").is_none(),
+        "reason should be absent when not supplied"
+    );
 }
 
 /// POST /effects/:id/deny on a non-existent effect returns 404.
@@ -2909,8 +2940,7 @@ async fn resume_run_awaiting_approval_returns_200_with_running_state() {
     let run_manager = Arc::new(InMemoryRunManager::new());
 
     // Create an agent first.
-    let agents: Arc<dyn polkagent_api::state::AgentStore> =
-        Arc::new(InMemoryAgentStore::new());
+    let agents: Arc<dyn polkagent_api::state::AgentStore> = Arc::new(InMemoryAgentStore::new());
     let store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
     let event_bus = EventBus::with_default_capacity();
     let state = polkagent_api::AppState::new(

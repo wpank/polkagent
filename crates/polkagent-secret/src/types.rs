@@ -36,10 +36,7 @@ impl SecretId {
     /// `"anthropic-api-key"` becomes `"POLKAGENT_ANTHROPIC_API_KEY"`.
     #[must_use]
     pub fn to_env_var(&self) -> String {
-        format!(
-            "POLKAGENT_{}",
-            self.0.to_uppercase().replace('-', "_")
-        )
+        format!("POLKAGENT_{}", self.0.to_uppercase().replace('-', "_"))
     }
 
     /// Convert this secret ID to a safe filename (replacing non-alphanumeric
@@ -263,10 +260,7 @@ mod tests {
 
     #[test]
     fn secret_source_display() {
-        assert_eq!(
-            format!("{}", SecretSource::EnvVar("FOO".into())),
-            "env:FOO"
-        );
+        assert_eq!(format!("{}", SecretSource::EnvVar("FOO".into())), "env:FOO");
         assert_eq!(
             format!("{}", SecretSource::File("/tmp/key".into())),
             "file:/tmp/key"
@@ -285,11 +279,7 @@ mod tests {
 
     #[test]
     fn secret_metadata_new_defaults() {
-        let meta = SecretMetadata::new(
-            SecretId::new("test"),
-            "Test Key",
-            SecretSource::Manual,
-        );
+        let meta = SecretMetadata::new(SecretId::new("test"), "Test Key", SecretSource::Manual);
         assert_eq!(meta.id.as_str(), "test");
         assert_eq!(meta.label, "Test Key");
         assert!(meta.last_accessed.is_none());
@@ -298,11 +288,7 @@ mod tests {
 
     #[test]
     fn secret_metadata_record_access() {
-        let mut meta = SecretMetadata::new(
-            SecretId::new("test"),
-            "Test",
-            SecretSource::Manual,
-        );
+        let mut meta = SecretMetadata::new(SecretId::new("test"), "Test", SecretSource::Manual);
         meta.record_access();
         assert_eq!(meta.access_count, 1);
         assert!(meta.last_accessed.is_some());

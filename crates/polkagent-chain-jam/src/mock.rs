@@ -31,8 +31,8 @@ impl MockJamBackend {
     #[must_use]
     pub fn with_blocks(n: u64) -> Self {
         let backend = Self::new();
-        let mut parent_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string();
+        let mut parent_hash =
+            "0x0000000000000000000000000000000000000000000000000000000000000000".to_string();
 
         for slot in 0..=n {
             let hash = format!("0x{slot:064x}");
@@ -59,10 +59,16 @@ impl MockJamBackend {
     /// Insert a block into the mock backend.
     pub fn insert_block(&self, block: JamBlock) {
         let slot = block.header.slot;
-        let mut blocks = self.blocks.lock().expect("lock poisoned");
+        let mut blocks = self
+            .blocks
+            .lock()
+            .unwrap_or_else(|e| panic!("lock poisoned: {e}"));
         blocks.insert(slot, block);
 
-        let mut latest = self.latest_slot.lock().expect("lock poisoned");
+        let mut latest = self
+            .latest_slot
+            .lock()
+            .unwrap_or_else(|e| panic!("lock poisoned: {e}"));
         if slot > *latest {
             *latest = slot;
         }
@@ -70,7 +76,10 @@ impl MockJamBackend {
 
     /// Query a block by slot number.
     pub fn get_block(&self, slot: u64) -> Result<JamBlock, JamError> {
-        let blocks = self.blocks.lock().expect("lock poisoned");
+        let blocks = self
+            .blocks
+            .lock()
+            .unwrap_or_else(|e| panic!("lock poisoned: {e}"));
         blocks
             .get(&slot)
             .cloned()
@@ -79,20 +88,29 @@ impl MockJamBackend {
 
     /// Get the latest block.
     pub fn get_latest_block(&self) -> Result<JamBlock, JamError> {
-        let latest = *self.latest_slot.lock().expect("lock poisoned");
+        let latest = *self
+            .latest_slot
+            .lock()
+            .unwrap_or_else(|e| panic!("lock poisoned: {e}"));
         self.get_block(latest)
     }
 
     /// Get the latest slot number.
     #[must_use]
     pub fn latest_slot(&self) -> u64 {
-        *self.latest_slot.lock().expect("lock poisoned")
+        *self
+            .latest_slot
+            .lock()
+            .unwrap_or_else(|e| panic!("lock poisoned: {e}"))
     }
 
     /// Return the total number of stored blocks.
     #[must_use]
     pub fn block_count(&self) -> usize {
-        self.blocks.lock().expect("lock poisoned").len()
+        self.blocks
+            .lock()
+            .unwrap_or_else(|e| panic!("lock poisoned: {e}"))
+            .len()
     }
 }
 

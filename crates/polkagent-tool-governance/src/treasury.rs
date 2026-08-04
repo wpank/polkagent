@@ -87,11 +87,12 @@ impl ToolHandler for TreasuryOverviewTool {
     async fn execute(&self, _input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         debug!(agent = %context.agent_id, "querying treasury overview");
 
-        let info = self.query_treasury().await.map_err(|e| {
-            ToolError::ExecutionFailed {
+        let info = self
+            .query_treasury()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
 
         let output = serde_json::to_value(&info).map_err(|e| ToolError::ExecutionFailed {
             reason: format!("failed to serialize treasury info: {e}"),
@@ -129,20 +130,14 @@ mod tests {
     fn spec_has_correct_name() {
         let client = Arc::new(MockChainClient::new());
         let tool = TreasuryOverviewTool::new(client);
-        assert_eq!(
-            tool.spec().name,
-            "polkagent.governance.treasury_overview"
-        );
+        assert_eq!(tool.spec().name, "polkagent.governance.treasury_overview");
     }
 
     #[test]
     fn spec_requires_chain_query_grant() {
         let client = Arc::new(MockChainClient::new());
         let tool = TreasuryOverviewTool::new(client);
-        assert_eq!(
-            tool.spec().required_grant,
-            Some("chain.query".to_string())
-        );
+        assert_eq!(tool.spec().required_grant, Some("chain.query".to_string()));
     }
 
     #[test]
@@ -169,9 +164,7 @@ mod tests {
     async fn execute_treasury_unavailable() {
         let client = Arc::new(MockChainClient::new());
         let tool = TreasuryOverviewTool::new(client);
-        let result = tool
-            .execute(serde_json::json!({}), &test_context())
-            .await;
+        let result = tool.execute(serde_json::json!({}), &test_context()).await;
         assert!(matches!(result, Err(ToolError::ExecutionFailed { .. })));
     }
 
@@ -202,9 +195,7 @@ mod tests {
         assert_eq!(result.output["approved_count"], 3);
         assert_eq!(result.output["next_spend_period"], 1_234_567);
         assert_eq!(
-            result.output["pending_proposals"]
-                .as_array()
-                .map(Vec::len),
+            result.output["pending_proposals"].as_array().map(Vec::len),
             Some(1)
         );
     }

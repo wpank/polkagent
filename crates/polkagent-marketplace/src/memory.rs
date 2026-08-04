@@ -62,10 +62,7 @@ impl ServiceRegistryStore for InMemoryServiceRegistry {
         Ok(guard.iter().find(|l| l.id == id).cloned())
     }
 
-    async fn search(
-        &self,
-        filter: SearchFilter,
-    ) -> Result<Vec<ServiceListing>, RegistryError> {
+    async fn search(&self, filter: SearchFilter) -> Result<Vec<ServiceListing>, RegistryError> {
         let guard = self.listings.read().await;
         let limit = filter.limit.unwrap_or(50).min(100) as usize;
         let offset = filter.offset.unwrap_or(0) as usize;
@@ -94,9 +91,7 @@ impl ServiceRegistryStore for InMemoryServiceRegistry {
                 }
 
                 // Tag filter: listing must have at least one matching tag.
-                if !filter.tag.is_empty()
-                    && !filter.tag.iter().any(|t| listing.tags.contains(t))
-                {
+                if !filter.tag.is_empty() && !filter.tag.iter().any(|t| listing.tags.contains(t)) {
                     return false;
                 }
 

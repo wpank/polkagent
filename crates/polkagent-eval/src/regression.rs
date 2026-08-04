@@ -88,11 +88,7 @@ impl RegressionDetector {
 
     /// Compare a baseline report against a current report and return the result.
     #[must_use]
-    pub fn compare_reports(
-        &self,
-        baseline: &EvalReport,
-        current: &EvalReport,
-    ) -> RegressionResult {
+    pub fn compare_reports(&self, baseline: &EvalReport, current: &EvalReport) -> RegressionResult {
         compare_reports_with_threshold(baseline, current, self.min_delta)
     }
 }

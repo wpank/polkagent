@@ -128,9 +128,10 @@ impl EffectStore for PgPool {
             .get("params")
             .cloned()
             .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-        let params_json = serde_json::to_string(&params).map_err(|e| StoreError::Serialisation {
-            message: format!("params: {e}"),
-        })?;
+        let params_json =
+            serde_json::to_string(&params).map_err(|e| StoreError::Serialisation {
+                message: format!("params: {e}"),
+            })?;
 
         let priority: i32 = intent
             .payload
@@ -148,12 +149,18 @@ impl EffectStore for PgPool {
             })
             .unwrap_or(1);
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         sqlx::query(
             "INSERT INTO effect_intents
@@ -199,12 +206,18 @@ impl EffectStore for PgPool {
                 message: format!("duration conversion: {e}"),
             })?;
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let maybe_row = sqlx::query(&format!(
             "UPDATE effect_intents
@@ -249,12 +262,18 @@ impl EffectStore for PgPool {
                 message: format!("duration conversion: {e}"),
             })?;
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let maybe_row = sqlx::query(&format!(
             "UPDATE effect_intents
@@ -275,13 +294,12 @@ impl EffectStore for PgPool {
         let result = match maybe_row {
             Some(row) => row_to_intent(&row)?,
             None => {
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM effect_intents WHERE id = $1)",
-                )
-                .bind(&id_str)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(map_pg_err)?;
+                let exists: bool =
+                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM effect_intents WHERE id = $1)")
+                        .bind(&id_str)
+                        .fetch_one(&mut *tx)
+                        .await
+                        .map_err(map_pg_err)?;
 
                 if !exists {
                     return Err(StoreError::NotFound {
@@ -311,12 +329,18 @@ impl EffectStore for PgPool {
         let id_str = intent_id.to_string();
         let worker_str = worker_id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         sqlx::query(
             "UPDATE effect_intents
@@ -338,12 +362,18 @@ impl EffectStore for PgPool {
     async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
         let id_str = intent_id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let row = sqlx::query(&format!(
             "SELECT {INTENT_COLS} FROM effect_intents WHERE id = $1"
@@ -363,12 +393,18 @@ impl EffectStore for PgPool {
     async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
         let run_str = run_id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let rows = sqlx::query(&format!(
             "SELECT {INTENT_COLS} FROM effect_intents WHERE run_id = $1 ORDER BY created_at ASC"
@@ -388,12 +424,18 @@ impl EffectStore for PgPool {
     ) -> Result<Option<StoredIntent>, StoreError> {
         let run_str = run_id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let maybe_row = sqlx::query(&format!(
             "SELECT {INTENT_COLS} FROM effect_intents WHERE run_id = $1 AND idempotency_key = $2"
@@ -410,18 +452,21 @@ impl EffectStore for PgPool {
         }
     }
 
-    async fn expired_leases(
-        &self,
-        cutoff: Timestamp,
-    ) -> Result<Vec<StoredIntent>, StoreError> {
+    async fn expired_leases(&self, cutoff: Timestamp) -> Result<Vec<StoredIntent>, StoreError> {
         let cutoff_dt = cutoff;
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let rows = sqlx::query(&format!(
             "SELECT {INTENT_COLS} FROM effect_intents
@@ -451,12 +496,18 @@ impl EffectStore for PgPool {
             other => Some(other.to_string()),
         };
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let result = sqlx::query(
             "UPDATE effect_intents SET claimed_by = $1, claimed_until = NULL WHERE id = $2",
@@ -499,12 +550,18 @@ impl EffectStore for PgPool {
     ) -> Result<(), StoreError> {
         let tenant = self.tenant_id().to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         sqlx::query(
             "INSERT INTO effect_attempts (id, tenant_id, intent_id, worker_id, payload)
@@ -532,12 +589,18 @@ impl EffectStore for PgPool {
         let attempt_id_str = outcome.attempt_id.to_string();
         let run_id_str = outcome.run_id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         sqlx::query(
             "INSERT INTO effect_outcomes (id, tenant_id, intent_id, attempt_id, run_id, consumed, payload, observed_at)
@@ -579,18 +642,21 @@ impl EffectStore for PgPool {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         let run_str = run_id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let rows = sqlx::query(
             "SELECT id, intent_id, attempt_id, run_id, consumed, payload, observed_at
@@ -632,21 +698,25 @@ impl EffectStore for PgPool {
             return Ok(());
         }
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let ids: Vec<String> = outcome_ids.iter().map(|id| id.to_string()).collect();
-        sqlx::query(
-            "UPDATE effect_outcomes SET consumed = TRUE WHERE id = ANY($1)",
-        )
-        .bind(&ids)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_pg_err)?;
+        sqlx::query("UPDATE effect_outcomes SET consumed = TRUE WHERE id = ANY($1)")
+            .bind(&ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_pg_err)?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),

@@ -187,8 +187,7 @@ impl<S: DeliveryStore> WebhookDelivery<S> {
                         body = %truncated,
                         "webhook delivery received non-success response"
                     );
-                    let next_retry =
-                        compute_next_retry(config, record.attempt_count);
+                    let next_retry = compute_next_retry(config, record.attempt_count);
                     record.mark_failed(
                         Some(status),
                         format!("HTTP {status}: {truncated}"),
@@ -204,8 +203,7 @@ impl<S: DeliveryStore> WebhookDelivery<S> {
                     "webhook delivery HTTP error"
                 );
                 let is_timeout = e.is_timeout();
-                let next_retry =
-                    compute_next_retry(config, record.attempt_count);
+                let next_retry = compute_next_retry(config, record.attempt_count);
                 if is_timeout {
                     record.mark_failed(None, format!("timeout: {msg}"), next_retry);
                 } else {
@@ -224,19 +222,12 @@ fn compute_next_retry(
     config: &WebhookConfig,
     current_attempt_count: u32,
 ) -> Option<chrono::DateTime<Utc>> {
-    if config
-        .retry_policy
-        .is_exhausted(current_attempt_count + 1)
-    {
+    if config.retry_policy.is_exhausted(current_attempt_count + 1) {
         None
     } else {
-        let delay = config
-            .retry_policy
-            .delay_for_attempt(current_attempt_count);
+        let delay = config.retry_policy.delay_for_attempt(current_attempt_count);
         Some(
-            Utc::now()
-                + chrono::Duration::from_std(delay)
-                    .unwrap_or(chrono::Duration::seconds(30)),
+            Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::seconds(30)),
         )
     }
 }

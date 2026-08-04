@@ -7,8 +7,8 @@ use chrono::Utc;
 
 use polkagent_core::ids::AgentId;
 use polkagent_group::{
-    GroupError, GroupStore,
     types::{GrantSpec, Group, GroupBudget, GroupId, GroupMember, MemberRole, QuorumPolicy},
+    GroupError, GroupStore,
 };
 use polkagent_store_sqlite::SqlitePool;
 use polkagent_store_sqlite_group::SqliteGroupStore;
@@ -55,7 +55,10 @@ async fn create_and_get_group() {
     let group = make_group("alpha");
     let gid = group.id;
 
-    store.create_group(group.clone()).await.expect("create group");
+    store
+        .create_group(group.clone())
+        .await
+        .expect("create group");
 
     let fetched = store.get_group(&gid).await.expect("get group");
 
@@ -84,10 +87,7 @@ async fn get_group_not_found() {
     let store = test_store();
     let gid = GroupId::new();
 
-    let err = store
-        .get_group(&gid)
-        .await
-        .expect_err("should be NotFound");
+    let err = store.get_group(&gid).await.expect_err("should be NotFound");
     assert!(matches!(err, GroupError::NotFound(_)));
 }
 
@@ -117,10 +117,7 @@ async fn update_group() {
     let mut group = make_group("delta");
     let gid = group.id;
 
-    store
-        .create_group(group.clone())
-        .await
-        .expect("create");
+    store.create_group(group.clone()).await.expect("create");
 
     group.name = "delta-updated".to_string();
     group.description = "now has a description".to_string();
@@ -155,10 +152,7 @@ async fn delete_group() {
     store.create_group(group).await.expect("create");
     store.delete_group(&gid).await.expect("delete");
 
-    let err = store
-        .get_group(&gid)
-        .await
-        .expect_err("should be gone");
+    let err = store.get_group(&gid).await.expect_err("should be gone");
     assert!(matches!(err, GroupError::NotFound(_)));
 }
 
@@ -186,10 +180,7 @@ async fn list_groups_returns_all() {
     let store = test_store();
 
     for name in ["g1", "g2", "g3"] {
-        store
-            .create_group(make_group(name))
-            .await
-            .expect("create");
+        store.create_group(make_group(name)).await.expect("create");
     }
 
     let groups = store.list_groups().await.expect("list");
@@ -409,7 +400,10 @@ async fn budget_round_trip_full() {
     let store = test_store();
     let mut group = make_group("pi");
     group.budget = GroupBudget::new(50_000, Some(1_000), Some(500));
-    group.budget.member_spent.insert("some-agent".to_string(), 200);
+    group
+        .budget
+        .member_spent
+        .insert("some-agent".to_string(), 200);
     let gid = group.id;
 
     store.create_group(group).await.expect("create");
@@ -544,10 +538,7 @@ async fn update_group_replaces_members() {
         .members
         .push(GroupMember::new(old_agent, MemberRole::Worker));
 
-    store
-        .create_group(group.clone())
-        .await
-        .expect("create");
+    store.create_group(group.clone()).await.expect("create");
 
     // Update with a completely different member set.
     let new_agent = AgentId::new();
@@ -602,7 +593,10 @@ async fn concurrent_group_creation() {
         let store_clone = store.clone();
         let handle = tokio::spawn(async move {
             let group = make_group(&format!("concurrent-{i}"));
-            store_clone.create_group(group).await.expect("concurrent create");
+            store_clone
+                .create_group(group)
+                .await
+                .expect("concurrent create");
         });
         handles.push(handle);
     }

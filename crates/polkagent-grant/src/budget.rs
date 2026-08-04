@@ -279,7 +279,10 @@ mod tests {
 
         // Totals must NOT have been updated.
         let status = tracker.get_remaining(agent).await.unwrap();
-        assert_eq!(status.spent, 0, "totals must not update on over-budget spend");
+        assert_eq!(
+            status.spent, 0,
+            "totals must not update on over-budget spend"
+        );
     }
 
     #[tokio::test]

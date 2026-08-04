@@ -261,11 +261,9 @@ mod tests {
             batch.push(i);
         }
 
-        let result = BatchProcessor::process(&mut batch, |n| async move {
-            Ok(json!(n * 2))
-        })
-        .await
-        .expect("processing should succeed");
+        let result = BatchProcessor::process(&mut batch, |n| async move { Ok(json!(n * 2)) })
+            .await
+            .expect("processing should succeed");
 
         assert_eq!(result.total, 5);
         assert_eq!(result.succeeded, 5);
@@ -387,11 +385,9 @@ mod tests {
         let config = BatchConfig::sequential();
         let mut batch: Batch<i32> = Batch::new(config);
 
-        let result = BatchProcessor::process(&mut batch, |n| async move {
-            Ok(json!(n))
-        })
-        .await
-        .expect("processing should succeed");
+        let result = BatchProcessor::process(&mut batch, |n| async move { Ok(json!(n)) })
+            .await
+            .expect("processing should succeed");
 
         assert_eq!(result.total, 0);
         assert_eq!(result.succeeded, 0);
@@ -410,11 +406,9 @@ mod tests {
             batch.push(i);
         }
 
-        let result = BatchProcessor::process(&mut batch, |n| async move {
-            Ok(json!(n * 2))
-        })
-        .await
-        .expect("processing should succeed");
+        let result = BatchProcessor::process(&mut batch, |n| async move { Ok(json!(n * 2)) })
+            .await
+            .expect("processing should succeed");
 
         assert_eq!(result.total, 10);
         assert_eq!(result.succeeded, 10);
@@ -750,10 +744,7 @@ mod tests {
         };
 
         store.save_batch(batch).await.expect("save");
-        store
-            .update_status(id, "completed")
-            .await
-            .expect("update");
+        store.update_status(id, "completed").await.expect("update");
 
         let got = store.get_batch(id).await.expect("get");
         assert_eq!(got.status, "completed");
@@ -827,22 +818,13 @@ mod tests {
             store.save_batch(batch).await.expect("save");
         }
 
-        let page1 = store
-            .list_by_status("completed", 2, 0)
-            .await
-            .expect("list");
+        let page1 = store.list_by_status("completed", 2, 0).await.expect("list");
         assert_eq!(page1.len(), 2);
 
-        let page2 = store
-            .list_by_status("completed", 2, 2)
-            .await
-            .expect("list");
+        let page2 = store.list_by_status("completed", 2, 2).await.expect("list");
         assert_eq!(page2.len(), 2);
 
-        let page3 = store
-            .list_by_status("completed", 2, 4)
-            .await
-            .expect("list");
+        let page3 = store.list_by_status("completed", 2, 4).await.expect("list");
         assert_eq!(page3.len(), 1);
     }
 

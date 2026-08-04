@@ -180,9 +180,7 @@ pub struct ConfigDiff {
 impl ConfigDiff {
     /// Returns `true` if the two configs are identical (no diff).
     pub fn is_empty(&self) -> bool {
-        self.added_keys.is_empty()
-            && self.removed_keys.is_empty()
-            && self.modified_keys.is_empty()
+        self.added_keys.is_empty() && self.removed_keys.is_empty() && self.modified_keys.is_empty()
     }
 
     /// Total number of changed keys.
@@ -438,9 +436,7 @@ impl ConfigWatcher {
             None
         };
         let mtime = if exists {
-            fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .ok()
+            fs::metadata(&path).and_then(|m| m.modified()).ok()
         } else {
             None
         };
@@ -851,7 +847,10 @@ mod tests {
         fs::write(&path, b"version = 1").expect("write");
 
         let event = watcher.check_for_changes();
-        assert!(event.is_none(), "same content should not trigger a change event");
+        assert!(
+            event.is_none(),
+            "same content should not trigger a change event"
+        );
     }
 
     #[test]
@@ -895,7 +894,10 @@ mod tests {
         // Rapid modification — should be debounced.
         fs::write(&path, b"v = 2").expect("write");
         let immediate = watcher.check_for_changes();
-        assert!(immediate.is_none(), "debounced policy should suppress immediate event");
+        assert!(
+            immediate.is_none(),
+            "debounced policy should suppress immediate event"
+        );
     }
 
     #[test]
@@ -921,7 +923,10 @@ mod tests {
 
         // Now the debounced event should be drained.
         let event = watcher.check_for_changes();
-        assert!(event.is_some(), "event should surface after debounce window");
+        assert!(
+            event.is_some(),
+            "event should surface after debounce window"
+        );
         assert_eq!(event.expect("event").kind, WatchEventKind::Modified);
     }
 
@@ -1105,7 +1110,10 @@ mod tests {
             enabled: true,
         };
         let d = diff(&a, &b).expect("diff");
-        assert!(d.modified_keys.contains("value"), "should detect value change");
+        assert!(
+            d.modified_keys.contains("value"),
+            "should detect value change"
+        );
         assert!(d.added_keys.is_empty());
         assert!(d.removed_keys.is_empty());
     }
@@ -1116,7 +1124,10 @@ mod tests {
         let old = serde_json::json!({"a": 1, "b": 2});
         let new = serde_json::json!({"b": 2, "c": 3});
         let d = diff(&old, &new).expect("diff");
-        assert!(d.removed_keys.contains("a"), "should detect removed key 'a'");
+        assert!(
+            d.removed_keys.contains("a"),
+            "should detect removed key 'a'"
+        );
         assert!(d.added_keys.contains("c"), "should detect added key 'c'");
         assert!(d.modified_keys.is_empty());
     }
@@ -1216,12 +1227,8 @@ mod tests {
     #[test]
     fn validation_gate_multiple_validators_all_fail() {
         let mut gate = ValidationGate::new();
-        gate.add_validator(|_: &String| {
-            Err(vec![ValidationError::new("field_a", "bad a")])
-        });
-        gate.add_validator(|_: &String| {
-            Err(vec![ValidationError::new("field_b", "bad b")])
-        });
+        gate.add_validator(|_: &String| Err(vec![ValidationError::new("field_a", "bad a")]));
+        gate.add_validator(|_: &String| Err(vec![ValidationError::new("field_b", "bad b")]));
         let result = gate.validate(&String::from("test"));
         assert!(result.is_err());
         let errs = result.unwrap_err();
@@ -1254,7 +1261,10 @@ mod tests {
             source_path: PathBuf::from("/a.toml"),
             checksum: "abc".to_owned(),
         };
-        assert_eq!(s1, s2, "snapshots with same config/path/checksum should be equal");
+        assert_eq!(
+            s1, s2,
+            "snapshots with same config/path/checksum should be equal"
+        );
     }
 
     #[test]
@@ -1305,7 +1315,10 @@ mod tests {
         );
         let msg = err.to_string();
         assert!(msg.contains("/tmp/test.toml"), "should contain path: {msg}");
-        assert!(msg.contains("file not found"), "should contain cause: {msg}");
+        assert!(
+            msg.contains("file not found"),
+            "should contain cause: {msg}"
+        );
     }
 
     #[test]
@@ -1316,7 +1329,10 @@ mod tests {
         ]);
         let msg = err.to_string();
         assert!(msg.contains("a: bad"), "should contain first error: {msg}");
-        assert!(msg.contains("b: worse"), "should contain second error: {msg}");
+        assert!(
+            msg.contains("b: worse"),
+            "should contain second error: {msg}"
+        );
     }
 
     #[test]
@@ -1394,7 +1410,11 @@ mod tests {
     fn flatten_json_deeply_nested() {
         let val = serde_json::json!({"a": {"b": {"c": 42}}});
         let flat = flatten_json("", &val);
-        assert!(flat.contains_key("a.b.c"), "keys: {:?}", flat.keys().collect::<Vec<_>>());
+        assert!(
+            flat.contains_key("a.b.c"),
+            "keys: {:?}",
+            flat.keys().collect::<Vec<_>>()
+        );
         assert_eq!(flat["a.b.c"], serde_json::json!(42));
     }
 }

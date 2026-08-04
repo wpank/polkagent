@@ -14,9 +14,9 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use polkagent_core::{AgentId, RunId};
 use polkagent_core::agent::{AgentSpec, AgentState, ModelPreference, ResourceLimits};
 use polkagent_core::run::RunState;
+use polkagent_core::{AgentId, RunId};
 use polkagent_marketplace::types::{ServiceAvailability, ServicePricing};
 use serde::{Deserialize, Serialize};
 
@@ -53,7 +53,6 @@ pub struct CreateAgentRequest {
     // ------------------------------------------------------------------
     // PRD-03 optional fields
     // ------------------------------------------------------------------
-
     /// Capabilities this agent declares (e.g. `"file.read"`, `"chain.query"`).
     ///
     /// Absent means the agent declares no capabilities and inherits none from

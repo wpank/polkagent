@@ -18,23 +18,18 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use polkagent_card::{ActionCard, EffectKindTag, IntentCardSpec};
-use polkagent_core::{
-    agent::AgentSpec,
-    turn::TokenUsage,
-    ArtifactId, RunId, RunState, StepId,
-};
+use polkagent_core::{agent::AgentSpec, turn::TokenUsage, ArtifactId, RunId, RunState, StepId};
 use polkagent_effect::{EffectIntent, EffectKind, EffectPipeline};
 use polkagent_event::EventRecorder;
 use polkagent_executor_trait::{
-    ContentBlock, InferenceMessage, InferenceRequest,
-    MessageRole, ModelExecutor,
+    ContentBlock, InferenceMessage, InferenceRequest, MessageRole, ModelExecutor,
 };
 use polkagent_grant::grant::GrantResolver;
 use polkagent_harness_trait::{
-    Harness, HarnessEvent, HarnessTaskRequirements, SessionConfig, validate_for_task,
+    validate_for_task, Harness, HarnessEvent, HarnessTaskRequirements, SessionConfig,
 };
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
@@ -247,10 +242,7 @@ impl RunOrchestrator {
     /// Only available when the `payment` feature is enabled.
     #[cfg(feature = "payment")]
     #[must_use]
-    pub fn with_payment_store(
-        mut self,
-        store: Arc<dyn polkagent_payment::PaymentStore>,
-    ) -> Self {
+    pub fn with_payment_store(mut self, store: Arc<dyn polkagent_payment::PaymentStore>) -> Self {
         self.payment_store = Some(store);
         self
     }
@@ -306,9 +298,7 @@ impl RunOrchestrator {
         let session_id = harness
             .start_session(session_config)
             .await
-            .map_err(|e| RunError::Store(
-                format!("harness session start failed: {e}"),
-            ))?;
+            .map_err(|e| RunError::Store(format!("harness session start failed: {e}")))?;
 
         info!(%run_id, %session_id, harness_id = %harness.id(), "harness session started");
 
@@ -316,17 +306,13 @@ impl RunOrchestrator {
         harness
             .send_message(session_id, initial_prompt)
             .await
-            .map_err(|e| RunError::Store(
-                format!("harness send_message failed: {e}"),
-            ))?;
+            .map_err(|e| RunError::Store(format!("harness send_message failed: {e}")))?;
 
         // Consume events from the harness.
         let mut event_stream = harness
             .receive_events(session_id)
             .await
-            .map_err(|e| RunError::Store(
-                format!("harness receive_events failed: {e}"),
-            ))?;
+            .map_err(|e| RunError::Store(format!("harness receive_events failed: {e}")))?;
 
         let mut response_text = String::new();
         let mut tool_call_count: u32 = 0;
@@ -346,7 +332,11 @@ impl RunOrchestrator {
                     tool_call_count += 1;
                     debug!(%run_id, %tool_name, "harness tool call (handled by harness)");
                 }
-                HarnessEvent::ToolResultProvided { tool_name, is_error, .. } => {
+                HarnessEvent::ToolResultProvided {
+                    tool_name,
+                    is_error,
+                    ..
+                } => {
                     if is_error {
                         debug!(%run_id, %tool_name, "harness tool call returned error");
                     }
@@ -374,9 +364,7 @@ impl RunOrchestrator {
         // Transition to terminal state.
         if had_error && response_text.is_empty() {
             let reason = format!("harness error: {error_message}");
-            self.run_manager
-                .fail_run(run_id.clone(), &reason)
-                .await?;
+            self.run_manager.fail_run(run_id.clone(), &reason).await?;
             Ok(RunOutcome {
                 run_id,
                 final_state: RunState::Failed { reason },
@@ -544,16 +532,13 @@ impl RunOrchestrator {
         let mut cost_tracker = {
             #[cfg(feature = "payment")]
             {
-                let max_usd = agent_spec
-                    .resource_limits
-                    .as_ref()
-                    .and_then(|rl| {
-                        // Resource limits don't have a USD field yet; use the
-                        // payment feature if attached but no hard USD cap from
-                        // spec. Callers can extend this mapping as needed.
-                        let _ = rl;
-                        None::<f64>
-                    });
+                let max_usd = agent_spec.resource_limits.as_ref().and_then(|rl| {
+                    // Resource limits don't have a USD field yet; use the
+                    // payment feature if attached but no hard USD cap from
+                    // spec. Callers can extend this mapping as needed.
+                    let _ = rl;
+                    None::<f64>
+                });
 
                 let tracker = match max_usd {
                     Some(limit) => CostTracker::with_budget(run_id.clone(), limit),
@@ -611,19 +596,15 @@ impl RunOrchestrator {
                 // Parse provider from the model_id (e.g. "anthropic/claude…" →
                 // provider="anthropic", model="claude…").
                 let (provider, model) = split_model_id(&effective_model_id);
-                if let Some(exceeded) = cost_tracker.check_budget(
-                    provider,
-                    model,
-                    effective_max_tokens,
-                ) {
+                if let Some(exceeded) =
+                    cost_tracker.check_budget(provider, model, effective_max_tokens)
+                {
                     let reason = format!("BudgetExceeded: {}", exceeded.reason);
                     warn!(%run_id, %reason, "budget exceeded before turn");
                     self.run_manager.fail_run(run_id.clone(), &reason).await?;
                     break RunOutcome {
                         run_id: run_id.clone(),
-                        final_state: RunState::Failed {
-                            reason,
-                        },
+                        final_state: RunState::Failed { reason },
                         total_tokens: total_usage,
                         turn_count,
                         artifacts: artifacts.clone(),
@@ -639,10 +620,8 @@ impl RunOrchestrator {
             // lower-priority sections (oldest conversation messages first)
             // so the request fits within the model's context limit.
             #[cfg(feature = "context")]
-            let assembled_messages = self.apply_context_assembly(
-                &messages,
-                effective_system.as_deref(),
-            );
+            let assembled_messages =
+                self.apply_context_assembly(&messages, effective_system.as_deref());
             #[cfg(not(feature = "context"))]
             let assembled_messages = messages.clone();
 
@@ -713,12 +692,12 @@ impl RunOrchestrator {
             let turn = self
                 .turn_manager
                 .create_turn(run_id.clone(), turn_count - 1, &turn_input);
-            let turn_output = if response.stop_reason == "end_turn" && response.tool_calls.is_empty()
-            {
-                TurnOutput::terminal(&response.text).with_usage(turn_usage)
-            } else {
-                TurnOutput::continuing().with_usage(turn_usage)
-            };
+            let turn_output =
+                if response.stop_reason == "end_turn" && response.tool_calls.is_empty() {
+                    TurnOutput::terminal(&response.text).with_usage(turn_usage)
+                } else {
+                    TurnOutput::continuing().with_usage(turn_usage)
+                };
             let completed_turn = self.turn_manager.complete_turn(turn, &turn_output);
             if let Err(e) = self.run_manager.record_turn(&completed_turn).await {
                 warn!(
@@ -815,10 +794,7 @@ impl RunOrchestrator {
                     if self.config.auto_approve_effects {
                         tool_result_content.push(ContentBlock::ToolResult {
                             tool_call_id: tc.tool_call_id.clone(),
-                            content: format!(
-                                "{{\"status\":\"ok\",\"tool\":\"{}\"}}",
-                                tc.tool_name
-                            ),
+                            content: format!("{{\"status\":\"ok\",\"tool\":\"{}\"}}", tc.tool_name),
                             is_error: false,
                         });
                     } else {
@@ -965,15 +941,16 @@ impl RunOrchestrator {
             })
             .collect();
 
-        let conversation_refs: Vec<&str> = conversation_strings.iter().map(|s| s.as_str()).collect();
+        let conversation_refs: Vec<&str> =
+            conversation_strings.iter().map(|s| s.as_str()).collect();
 
         // Assemble context with the system prompt and conversation history.
         let assembled = match assembler.assemble(
             system_prompt,
-            &[],   // tool descriptions are handled separately in InferenceRequest
-            &[],   // memory entries (not used in orchestrator yet)
+            &[], // tool descriptions are handled separately in InferenceRequest
+            &[], // memory entries (not used in orchestrator yet)
             &conversation_refs,
-            None,   // user input is part of conversation messages
+            None, // user input is part of conversation messages
         ) {
             Ok(ctx) => ctx,
             Err(err) => {
@@ -1174,7 +1151,7 @@ mod tests {
     };
     use polkagent_store_trait::{
         event::{EventFilter, EventStore, EventStoreError, StoredEvent},
-        EffectStore, RunStatus, RunStore, RunSummary, StoredIntent, StoredOutcome, StoreError,
+        EffectStore, RunStatus, RunStore, RunSummary, StoreError, StoredIntent, StoredOutcome,
     };
 
     use async_trait::async_trait;
@@ -1302,8 +1279,12 @@ mod tests {
         terminal: Mutex<std::collections::HashSet<String>>,
     }
 
-    const TERMINAL_TYPES: &[&str] =
-        &["run_completed", "run_failed", "run_cancelled", "run_timed_out"];
+    const TERMINAL_TYPES: &[&str] = &[
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_timed_out",
+    ];
 
     #[async_trait]
     impl EventStore for MemEventStore {
@@ -1371,10 +1352,7 @@ mod tests {
                 .collect())
         }
 
-        async fn query(
-            &self,
-            filter: EventFilter,
-        ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
             let durable = self.durable.lock().expect("lock");
             Ok(durable
                 .iter()
@@ -1448,10 +1426,7 @@ mod tests {
             })
         }
 
-        async fn get_by_run(
-            &self,
-            _run_id: RunId,
-        ) -> Result<Vec<StoredIntent>, StoreError> {
+        async fn get_by_run(&self, _run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
             Ok(vec![])
         }
 
@@ -1625,8 +1600,7 @@ mod tests {
         let run_manager = Arc::new(RunManager::new(Arc::clone(&run_store), recorder.clone()));
 
         let effect_store: Arc<dyn EffectStore> = Arc::new(MemEffectStore);
-        let effect_pipeline =
-            EffectPipeline::new(effect_store, polkagent_core::WorkerId::new());
+        let effect_pipeline = EffectPipeline::new(effect_store, polkagent_core::WorkerId::new());
 
         let grant_resolver = GrantResolver::new(PolicySet::default(), ResolverConfig::default());
 
@@ -1649,11 +1623,7 @@ mod tests {
     }
 
     fn default_agent_spec() -> AgentSpec {
-        AgentSpec::new(
-            AgentId::new(),
-            "Test Agent",
-            "test-model",
-        )
+        AgentSpec::new(AgentId::new(), "Test Agent", "test-model")
     }
 
     // ── Tests ───────────────────────────────────────────────────────────
@@ -2048,13 +2018,19 @@ mod tests {
         let pairs = [
             (EffectKind::ModelCall, EffectKindTag::ModelCall),
             (EffectKind::ToolCall, EffectKindTag::ToolCall),
-            (EffectKind::SignatureRequest, EffectKindTag::SignatureRequest),
+            (
+                EffectKind::SignatureRequest,
+                EffectKindTag::SignatureRequest,
+            ),
             (EffectKind::Broadcast, EffectKindTag::Broadcast),
             (EffectKind::FinalityWatch, EffectKindTag::FinalityWatch),
             (EffectKind::Delivery, EffectKindTag::Delivery),
             (EffectKind::ChainRead, EffectKindTag::ChainRead),
             (EffectKind::Simulation, EffectKindTag::Simulation),
-            (EffectKind::HarnessOperation, EffectKindTag::HarnessOperation),
+            (
+                EffectKind::HarnessOperation,
+                EffectKindTag::HarnessOperation,
+            ),
         ];
         for (kind, expected_tag) in pairs {
             assert_eq!(effect_kind_to_tag(kind), expected_tag, "{kind:?}");
@@ -2067,7 +2043,10 @@ mod tests {
         let card = build_card_for_effect(&intent, Some("Signing a transfer."));
         assert!(card.is_some(), "SignatureRequest must produce a card");
         let card = card.unwrap();
-        assert!(!card.payload_hash.is_empty(), "card must have a payload hash");
+        assert!(
+            !card.payload_hash.is_empty(),
+            "card must have a payload hash"
+        );
     }
 
     #[test]
@@ -2104,10 +2083,7 @@ mod tests {
         let card = build_card_for_effect(&intent, Some("Signing test.")).unwrap();
 
         // Must have canonical section for pallet.
-        let pallet_section = card
-            .canonical_sections
-            .iter()
-            .find(|s| s.label == "Pallet");
+        let pallet_section = card.canonical_sections.iter().find(|s| s.label == "Pallet");
         assert!(pallet_section.is_some(), "missing Pallet canonical section");
         assert_eq!(pallet_section.unwrap().value, "Balances");
 
@@ -2128,7 +2104,9 @@ mod tests {
             "model explanation must produce a narrative section"
         );
         assert!(
-            card.narrative_sections[0].content.contains("staking controller"),
+            card.narrative_sections[0]
+                .content
+                .contains("staking controller"),
             "narrative must include the model's explanation"
         );
     }
@@ -2142,7 +2120,10 @@ mod tests {
             intent.attach_card(card);
         }
 
-        assert!(intent.action_card.is_some(), "card must be attached to intent");
+        assert!(
+            intent.action_card.is_some(),
+            "card must be attached to intent"
+        );
     }
 
     // ── split_model_id helper tests ──────────────────────────────────────────
@@ -2338,8 +2319,7 @@ mod tests {
         let run_manager = Arc::new(RunManager::new(Arc::clone(&run_store), recorder.clone()));
 
         let effect_store: Arc<dyn EffectStore> = Arc::new(MemEffectStore);
-        let effect_pipeline =
-            EffectPipeline::new(effect_store, polkagent_core::WorkerId::new());
+        let effect_pipeline = EffectPipeline::new(effect_store, polkagent_core::WorkerId::new());
 
         let grant_resolver = GrantResolver::new(PolicySet::default(), ResolverConfig::default());
 
@@ -2444,8 +2424,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (harness, capturing) =
-            build_capturing_harness(responses, config, Some(assembler));
+        let (harness, capturing) = build_capturing_harness(responses, config, Some(assembler));
 
         let agent_spec = default_agent_spec();
         let run_id = harness
@@ -2536,10 +2515,12 @@ mod tests {
         // The user message should be present in the messages.
         let has_user_msg = requests[0].messages.iter().any(|m| {
             m.role == MessageRole::User
-                && m.content.iter().any(|block| matches!(
-                    block,
-                    ContentBlock::Text { text } if text.contains("Hello agent")
-                ))
+                && m.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::Text { text } if text.contains("Hello agent")
+                    )
+                })
         });
         assert!(
             has_user_msg,
@@ -2587,8 +2568,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (harness, capturing) =
-            build_capturing_harness(responses, config, Some(assembler));
+        let (harness, capturing) = build_capturing_harness(responses, config, Some(assembler));
 
         let agent_spec = default_agent_spec();
         let run_id = harness

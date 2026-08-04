@@ -123,10 +123,7 @@ fn render_wide(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
     // Rows: panels | widget strip (4)
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(8),
-            Constraint::Length(4),
-        ])
+        .constraints([Constraint::Min(8), Constraint::Length(4)])
         .split(area);
 
     // Three columns: agents | runs | sidebar (health + activity)
@@ -145,10 +142,7 @@ fn render_wide(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
     // Split the right sidebar: health (top) + recent activity (bottom)
     let sidebar = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(8),
-            Constraint::Min(4),
-        ])
+        .constraints([Constraint::Length(8), Constraint::Min(4)])
         .split(cols[2]);
 
     render_health_sidebar(frame, sidebar[0], &state.health, theme);
@@ -160,12 +154,7 @@ fn render_wide(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
 // Agents panel
 // ---------------------------------------------------------------------------
 
-fn render_agents_panel(
-    frame: &mut Frame,
-    area: Rect,
-    agents: &[AgentSummary],
-    theme: &Theme,
-) {
+fn render_agents_panel(frame: &mut Frame, area: Rect, agents: &[AgentSummary], theme: &Theme) {
     let block = styled_block(" AGENTS ", theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -185,10 +174,7 @@ fn render_agents_panel(
         .take(inner.height as usize)
         .collect::<Vec<_>>();
 
-    let lines: Vec<Line> = visible
-        .iter()
-        .map(|a| agent_line(a, theme))
-        .collect();
+    let lines: Vec<Line> = visible.iter().map(|a| agent_line(a, theme)).collect();
 
     let para = Paragraph::new(lines);
     frame.render_widget(para, inner);
@@ -196,8 +182,8 @@ fn render_agents_panel(
 
 fn agent_line<'a>(a: &'a AgentSummary, theme: &'a Theme) -> Line<'a> {
     let glyph_color = match a.state.as_str() {
-        "active"    => theme.rose,
-        "paused"    => theme.warning,
+        "active" => theme.rose,
+        "paused" => theme.warning,
         "configured" | "created" => theme.text_dim,
         _ => theme.danger,
     };
@@ -211,15 +197,27 @@ fn agent_line<'a>(a: &'a AgentSummary, theme: &'a Theme) -> Line<'a> {
     };
 
     let subtitle = if a.active_runs > 0 {
-        format!(" {runs} run{s}", runs = a.active_runs, s = if a.active_runs == 1 { "" } else { "s" })
+        format!(
+            " {runs} run{s}",
+            runs = a.active_runs,
+            s = if a.active_runs == 1 { "" } else { "s" }
+        )
     } else {
         format!(" {}", a.status_label())
     };
 
     Line::from(vec![
-        Span::styled(format!("  {glyph}", glyph = a.glyph()), Style::default().fg(glyph_color)),
+        Span::styled(
+            format!("  {glyph}", glyph = a.glyph()),
+            Style::default().fg(glyph_color),
+        ),
         Span::raw(" "),
-        Span::styled(name, Style::default().fg(theme.text_primary).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            name,
+            Style::default()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(subtitle, Style::default().fg(theme.text_dim)),
     ])
 }
@@ -228,12 +226,7 @@ fn agent_line<'a>(a: &'a AgentSummary, theme: &'a Theme) -> Line<'a> {
 // Runs panel
 // ---------------------------------------------------------------------------
 
-fn render_runs_panel(
-    frame: &mut Frame,
-    area: Rect,
-    runs: &[RunSummary],
-    theme: &Theme,
-) {
+fn render_runs_panel(frame: &mut Frame, area: Rect, runs: &[RunSummary], theme: &Theme) {
     let block = styled_block(" ACTIVE RUNS ", theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -250,7 +243,12 @@ fn render_runs_panel(
     let now = Utc::now();
     let active: Vec<&RunSummary> = runs
         .iter()
-        .filter(|r| !matches!(r.state.as_str(), "completed" | "failed" | "cancelled" | "timed_out"))
+        .filter(|r| {
+            !matches!(
+                r.state.as_str(),
+                "completed" | "failed" | "cancelled" | "timed_out"
+            )
+        })
         .collect();
 
     let to_show: Vec<&RunSummary> = if active.is_empty() {
@@ -276,7 +274,10 @@ fn run_line<'a>(r: &'a RunSummary, now: chrono::DateTime<Utc>, theme: &'a Theme)
     };
 
     Line::from(vec![
-        Span::styled(format!("  {glyph}", glyph = r.state_glyph()), Style::default().fg(state_color)),
+        Span::styled(
+            format!("  {glyph}", glyph = r.state_glyph()),
+            Style::default().fg(state_color),
+        ),
         Span::raw(" "),
         Span::styled(r.short_id.clone(), Style::default().fg(theme.text_dim)),
         Span::raw("  "),
@@ -292,23 +293,25 @@ fn run_line<'a>(r: &'a RunSummary, now: chrono::DateTime<Utc>, theme: &'a Theme)
 // Health panel (bottom bar, horizontal)
 // ---------------------------------------------------------------------------
 
-fn render_health_panel(
-    frame: &mut Frame,
-    area: Rect,
-    health: &SystemHealth,
-    theme: &Theme,
-) {
+fn render_health_panel(frame: &mut Frame, area: Rect, health: &SystemHealth, theme: &Theme) {
     let block = styled_block(" SYSTEM HEALTH ", theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let db_color = if health.db_ok { theme.success } else { theme.danger };
+    let db_color = if health.db_ok {
+        theme.success
+    } else {
+        theme.danger
+    };
     let db_label = if health.db_ok { "OK" } else { "ERROR" };
 
     let lines = vec![
         Line::from(vec![
             Span::styled("  Database: ", Style::default().fg(theme.text_dim)),
-            Span::styled(db_label, Style::default().fg(db_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                db_label,
+                Style::default().fg(db_color).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 format!("  {}", health.db_path),
                 Style::default().fg(theme.text_dim),
@@ -318,7 +321,9 @@ fn render_health_panel(
             Span::styled("  Agents:   ", Style::default().fg(theme.text_dim)),
             Span::styled(
                 health.agent_count.to_string(),
-                Style::default().fg(theme.text_primary).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" total  ", Style::default().fg(theme.text_dim)),
             Span::styled(
@@ -331,7 +336,9 @@ fn render_health_panel(
             Span::styled("  Runs:     ", Style::default().fg(theme.text_dim)),
             Span::styled(
                 health.total_run_count.to_string(),
-                Style::default().fg(theme.text_primary).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" total  ", Style::default().fg(theme.text_dim)),
             Span::styled(
@@ -349,17 +356,16 @@ fn render_health_panel(
 // Health sidebar (wide layout only)
 // ---------------------------------------------------------------------------
 
-fn render_health_sidebar(
-    frame: &mut Frame,
-    area: Rect,
-    health: &SystemHealth,
-    theme: &Theme,
-) {
+fn render_health_sidebar(frame: &mut Frame, area: Rect, health: &SystemHealth, theme: &Theme) {
     let block = styled_block(" HEALTH ", theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let db_color = if health.db_ok { theme.success } else { theme.danger };
+    let db_color = if health.db_ok {
+        theme.success
+    } else {
+        theme.danger
+    };
 
     let agent_count = health.agent_count.to_string();
     let active_agent_count = health.active_agent_count.to_string();
@@ -367,7 +373,12 @@ fn render_health_sidebar(
     let active_run_count = health.active_run_count.to_string();
 
     let lines = vec![
-        stat_line("DB", if health.db_ok { "OK" } else { "ERR" }, db_color, theme),
+        stat_line(
+            "DB",
+            if health.db_ok { "OK" } else { "ERR" },
+            db_color,
+            theme,
+        ),
         stat_line("Agents", &agent_count, theme.text_primary, theme),
         stat_line("Active", &active_agent_count, theme.rose, theme),
         stat_line("Runs", &total_run_count, theme.text_primary, theme),
@@ -384,13 +395,12 @@ fn stat_line(
     theme: &Theme,
 ) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("  {label:<8}"),
-            Style::default().fg(theme.text_dim),
-        ),
+        Span::styled(format!("  {label:<8}"), Style::default().fg(theme.text_dim)),
         Span::styled(
             value.to_owned(),
-            Style::default().fg(value_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(value_color)
+                .add_modifier(Modifier::BOLD),
         ),
     ])
 }
@@ -403,12 +413,7 @@ fn stat_line(
 /// layout.  Shows chain connection status, budget remaining, and recent
 /// run events so the right column provides useful information beyond
 /// health metrics alone.
-fn render_activity_panel(
-    frame: &mut Frame,
-    area: Rect,
-    state: &TuiState,
-    theme: &Theme,
-) {
+fn render_activity_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
     let block = styled_block(" ACTIVITY ", theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -430,7 +435,9 @@ fn render_activity_panel(
         Span::styled("  Chain   ", Style::default().fg(theme.text_dim)),
         Span::styled(
             chain_display,
-            Style::default().fg(chain_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(chain_color)
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
 
@@ -447,7 +454,9 @@ fn render_activity_panel(
         Span::styled("  Budget  ", Style::default().fg(theme.text_dim)),
         Span::styled(
             format!("{budget_pct}%"),
-            Style::default().fg(budget_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(budget_color)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" remaining", Style::default().fg(theme.text_dim)),
     ]));
@@ -516,7 +525,13 @@ fn render_widget_strip(frame: &mut Frame, area: Rect, state: &TuiState, theme: &
         let inner = block.inner(cols[0]);
         frame.render_widget(block, cols[0]);
 
-        let limit = state.token_history.iter().copied().max().unwrap_or(1).max(1);
+        let limit = state
+            .token_history
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(1)
+            .max(1);
 
         if inner.height >= 2 {
             let parts = Layout::default()
@@ -593,7 +608,13 @@ fn render_widget_strip(frame: &mut Frame, area: Rect, state: &TuiState, theme: &
                 )),
                 parts[0],
             );
-            context_gauge::render(frame, parts[1], state.context_used, state.context_total, theme);
+            context_gauge::render(
+                frame,
+                parts[1],
+                state.context_used,
+                state.context_total,
+                theme,
+            );
         } else {
             context_gauge::render(frame, inner, state.context_used, state.context_total, theme);
         }
@@ -646,7 +667,10 @@ fn active_run_progress(state: &TuiState) -> (u32, u32) {
     }
 
     let active = state.runs.iter().filter(|r| {
-        matches!(r.state.as_str(), "working" | "started" | "created" | "queued")
+        matches!(
+            r.state.as_str(),
+            "working" | "started" | "created" | "queued"
+        )
     });
     if let Some(run) = active.max_by_key(|r| r.turn_count) {
         let done = run.turn_count;
@@ -665,9 +689,7 @@ fn styled_block<'a>(title: &'a str, theme: &'a Theme) -> Block<'a> {
     Block::default()
         .title(Span::styled(
             title,
-            Style::default()
-                .fg(theme.rose)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.rose).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

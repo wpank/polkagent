@@ -9,9 +9,11 @@
 //! - [`KitError`] — error types for the kit subsystem.
 
 pub mod error;
-pub mod manifest;
 pub mod manager;
+pub mod manifest;
 
 pub use error::KitError;
+pub use manager::{
+    prepare_install, skills_to_unregister, validate_kit, InstalledKit, KitValidation,
+};
 pub use manifest::{KitId, KitManifest, SkillEntry, SkillRole};
-pub use manager::{InstalledKit, KitValidation, prepare_install, skills_to_unregister, validate_kit};

@@ -63,10 +63,11 @@ pub enum TreasuryToolError {
 impl From<TreasuryToolError> for ToolError {
     fn from(err: TreasuryToolError) -> Self {
         match err {
-            TreasuryToolError::InvalidAddress { .. }
-            | TreasuryToolError::InvalidInput { .. } => ToolError::InvalidInput {
-                reason: err.to_string(),
-            },
+            TreasuryToolError::InvalidAddress { .. } | TreasuryToolError::InvalidInput { .. } => {
+                ToolError::InvalidInput {
+                    reason: err.to_string(),
+                }
+            }
             TreasuryToolError::UnsupportedChain { .. }
             | TreasuryToolError::AccountNotFound { .. }
             | TreasuryToolError::ChainQueryFailed { .. }

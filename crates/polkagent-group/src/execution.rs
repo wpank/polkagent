@@ -347,11 +347,7 @@ impl ExecutionEvidence {
         use polkagent_core::ids::{ArtifactId, RunId};
         PropagationEvidence {
             group_id: self.group_id,
-            contributing_runs: self
-                .child_agents
-                .iter()
-                .map(|_| RunId::new())
-                .collect(),
+            contributing_runs: self.child_agents.iter().map(|_| RunId::new()).collect(),
             aggregated_artifacts: Vec::<ArtifactId>::new(),
             quorum_met: self.execution_result.all_succeeded(),
             successful_runs: self.execution_result.success_count(),
@@ -712,7 +708,12 @@ mod tests {
 
     /// A runner that always fails.
     fn failing_runner(task: &GroupTask, _previous: &serde_json::Value) -> TaskResult {
-        TaskResult::failure(task.id, task.agent_id, "intentional failure", Duration::ZERO)
+        TaskResult::failure(
+            task.id,
+            task.agent_id,
+            "intentional failure",
+            Duration::ZERO,
+        )
     }
 
     fn sequential_plan(tasks: Vec<GroupTask>) -> ExecutionPlan {
@@ -808,10 +809,7 @@ mod tests {
         plan = plan.with_task(task(1));
         plan = plan.with_task(task(2));
         plan.add_dependency(TaskId::new(2), TaskId::new(1));
-        let blocked = plan
-            .dependencies
-            .get(&TaskId::new(1))
-            .expect("dep entry");
+        let blocked = plan.dependencies.get(&TaskId::new(1)).expect("dep entry");
         assert!(blocked.contains(&TaskId::new(2)));
     }
 
@@ -960,10 +958,7 @@ mod tests {
             .expect("execute ok");
         assert_eq!(result.task_results.len(), 3);
         // Task 3's output should be "output-1" (from task 1, since task 2 failed).
-        assert_eq!(
-            result.task_results[2].output,
-            serde_json::json!("output-1")
-        );
+        assert_eq!(result.task_results[2].output, serde_json::json!("output-1"));
     }
 
     #[test]
@@ -971,12 +966,8 @@ mod tests {
         let plan = sequential_plan(vec![task(1), task(2), task(3)]);
         let result = SequentialExecutor::new()
             .execute(&plan, |t, _prev| {
-                let mut r = TaskResult::success(
-                    t.id,
-                    t.agent_id,
-                    serde_json::Value::Null,
-                    Duration::ZERO,
-                );
+                let mut r =
+                    TaskResult::success(t.id, t.agent_id, serde_json::Value::Null, Duration::ZERO);
                 r.budget_spent = 10.0;
                 r
             })
@@ -1089,10 +1080,7 @@ mod tests {
 
     #[test]
     fn pipeline_uses_first_task_input_as_seed() {
-        let plan = pipeline_plan(vec![task_with_input(
-            1,
-            serde_json::json!("seed"),
-        )]);
+        let plan = pipeline_plan(vec![task_with_input(1, serde_json::json!("seed"))]);
         let result = PipelineExecutor::new()
             .execute(&plan, |t, prev| {
                 // The first (and only) task receives its own input as the

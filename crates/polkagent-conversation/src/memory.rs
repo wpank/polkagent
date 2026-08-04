@@ -116,9 +116,7 @@ impl ConversationStore for InMemoryConversationStore {
         conv.message_count += 1;
         conv.updated_at = Utc::now();
 
-        msgs.entry(conversation_id)
-            .or_default()
-            .push(message);
+        msgs.entry(conversation_id).or_default().push(message);
 
         Ok(msg_id)
     }
@@ -165,11 +163,7 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(result)
     }
 
-    async fn update_title(
-        &self,
-        id: ConversationId,
-        title: String,
-    ) -> ConversationResult<()> {
+    async fn update_title(&self, id: ConversationId, title: String) -> ConversationResult<()> {
         let mut convs = self.conversations.write().await;
         let conv = convs
             .get_mut(&id)
@@ -242,10 +236,19 @@ mod tests {
 
         let m1 = make_message(conv_id, MessageRole::User, "Hello");
         let m2 = make_message(conv_id, MessageRole::Assistant, "Hi there!");
-        store.add_message(conv_id, m1.clone()).await.expect("add m1");
-        store.add_message(conv_id, m2.clone()).await.expect("add m2");
+        store
+            .add_message(conv_id, m1.clone())
+            .await
+            .expect("add m1");
+        store
+            .add_message(conv_id, m2.clone())
+            .await
+            .expect("add m2");
 
-        let messages = store.get_messages(conv_id, 10, 0).await.expect("get messages");
+        let messages = store
+            .get_messages(conv_id, 10, 0)
+            .await
+            .expect("get messages");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].id, m1.id);
         assert_eq!(messages[1].id, m2.id);
@@ -275,7 +278,10 @@ mod tests {
             store.add_message(conv_id, msg).await.expect("add");
         }
 
-        let page = store.get_messages(conv_id, 2, 1).await.expect("get messages");
+        let page = store
+            .get_messages(conv_id, 2, 1)
+            .await
+            .expect("get messages");
         assert_eq!(page.len(), 2);
     }
 
@@ -325,7 +331,9 @@ mod tests {
     #[tokio::test]
     async fn update_title_nonexistent() {
         let store = InMemoryConversationStore::new();
-        let result = store.update_title(ConversationId::new(), "title".into()).await;
+        let result = store
+            .update_title(ConversationId::new(), "title".into())
+            .await;
         assert!(matches!(result, Err(ConversationError::NotFound(_))));
     }
 

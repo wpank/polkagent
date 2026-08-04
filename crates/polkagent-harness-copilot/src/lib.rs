@@ -62,10 +62,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use polkagent_harness_trait::{
-    CancelMode, CliOutputFormat, Harness, HarnessCapabilities, HarnessConfig, HarnessError,
-    HarnessEvent, HarnessId, HarnessStatus, McpMode, SessionConfig, SessionId,
-    SessionResumeMode, ToolInjection, TransportFlavor,
-    process::ChildProcessRunner,
+    process::ChildProcessRunner, CancelMode, CliOutputFormat, Harness, HarnessCapabilities,
+    HarnessConfig, HarnessError, HarnessEvent, HarnessId, HarnessStatus, McpMode, SessionConfig,
+    SessionId, SessionResumeMode, ToolInjection, TransportFlavor,
 };
 
 // ---------------------------------------------------------------------------
@@ -455,10 +454,7 @@ impl Harness for CopilotHarness {
         status.clone()
     }
 
-    async fn start_session(
-        &self,
-        config: SessionConfig,
-    ) -> Result<SessionId, HarnessError> {
+    async fn start_session(&self, config: SessionConfig) -> Result<SessionId, HarnessError> {
         let session_id = SessionId::new();
         let working_dir = self.resolve_working_dir(&config);
 
@@ -496,15 +492,13 @@ impl Harness for CopilotHarness {
         Ok(session_id)
     }
 
-    async fn send_message(
-        &self,
-        session_id: SessionId,
-        message: &str,
-    ) -> Result<(), HarnessError> {
+    async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError> {
         // Validate session is active and record the message.
         let working_dir = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 return Err(HarnessError::InvalidState {
@@ -567,7 +561,9 @@ impl Harness for CopilotHarness {
         // For a one-shot harness, we return the collected responses as events.
         let responses = {
             let sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+            let session = sessions
+                .get(&session_id)
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
             session.responses.clone()
         };
 
@@ -593,13 +589,12 @@ impl Harness for CopilotHarness {
         Ok(Box::pin(stream))
     }
 
-    async fn end_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError> {
+    async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 warn!(
@@ -674,19 +669,29 @@ impl Harness for CopilotHarness {
         session_id: SessionId,
     ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
         let sessions = self.sessions.lock().expect("sessions mutex poisoned");
-        let session = sessions.get(&session_id).ok_or(HarnessError::SessionNotFound { session_id })?;
+        let session = sessions
+            .get(&session_id)
+            .ok_or(HarnessError::SessionNotFound { session_id })?;
 
         let mut backend_state = std::collections::HashMap::new();
         backend_state.insert(
             "messages".into(),
             serde_json::Value::Array(
-                session.messages.iter().map(|m| serde_json::Value::String(m.clone())).collect(),
+                session
+                    .messages
+                    .iter()
+                    .map(|m| serde_json::Value::String(m.clone()))
+                    .collect(),
             ),
         );
         backend_state.insert(
             "responses".into(),
             serde_json::Value::Array(
-                session.responses.iter().map(|r| serde_json::Value::String(r.clone())).collect(),
+                session
+                    .responses
+                    .iter()
+                    .map(|r| serde_json::Value::String(r.clone()))
+                    .collect(),
             ),
         );
 
@@ -705,10 +710,7 @@ impl Harness for CopilotHarness {
         Ok(snapshot)
     }
 
-    async fn resume_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<SessionId, HarnessError> {
+    async fn resume_session(&self, session_id: SessionId) -> Result<SessionId, HarnessError> {
         let snapshot = polkagent_harness_trait::load_session_state(session_id)?;
 
         // Copilot is one-shot: re-launch a new session with saved context.
@@ -728,10 +730,7 @@ impl Harness for CopilotHarness {
         Ok(new_id)
     }
 
-    async fn cancel_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError> {
+    async fn cancel_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         polkagent_harness_trait::remove_session_state(session_id).ok();
         self.end_session(session_id).await
     }
@@ -957,21 +956,15 @@ mod tests {
 
     #[test]
     fn new_accepts_copilot_id() {
-        let harness = CopilotHarness::new(
-            test_config(),
-            CopilotHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = CopilotHarness::new(test_config(), CopilotHarnessConfig::default())
+            .expect("should succeed");
         assert_eq!(harness.id().as_str(), "copilot");
     }
 
     #[test]
     fn capabilities_returns_expected_values() {
-        let harness = CopilotHarness::new(
-            test_config(),
-            CopilotHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = CopilotHarness::new(test_config(), CopilotHarnessConfig::default())
+            .expect("should succeed");
         let caps = harness.capabilities();
         assert!(!caps.supports_streaming);
         assert!(!caps.supports_tools);
@@ -994,21 +987,15 @@ mod tests {
 
     #[test]
     fn initial_status_is_idle() {
-        let harness = CopilotHarness::new(
-            test_config(),
-            CopilotHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = CopilotHarness::new(test_config(), CopilotHarnessConfig::default())
+            .expect("should succeed");
         assert!(matches!(harness.status(), HarnessStatus::Idle));
     }
 
     #[test]
     fn executable_path_default() {
-        let harness = CopilotHarness::new(
-            test_config(),
-            CopilotHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = CopilotHarness::new(test_config(), CopilotHarnessConfig::default())
+            .expect("should succeed");
         assert_eq!(harness.executable_path(), PathBuf::from("gh"));
     }
 
@@ -1024,31 +1011,22 @@ mod tests {
 
     #[test]
     fn initial_active_session_count_is_zero() {
-        let harness = CopilotHarness::new(
-            test_config(),
-            CopilotHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = CopilotHarness::new(test_config(), CopilotHarnessConfig::default())
+            .expect("should succeed");
         assert_eq!(harness.active_session_count(), 0);
     }
 
     #[test]
     fn copilot_config_accessor() {
-        let harness = CopilotHarness::new(
-            test_config(),
-            CopilotHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = CopilotHarness::new(test_config(), CopilotHarnessConfig::default())
+            .expect("should succeed");
         assert_eq!(harness.copilot_config().binary_path, "gh");
     }
 
     #[test]
     fn debug_impl_does_not_panic() {
-        let harness = CopilotHarness::new(
-            test_config(),
-            CopilotHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = CopilotHarness::new(test_config(), CopilotHarnessConfig::default())
+            .expect("should succeed");
         let debug = format!("{harness:?}");
         assert!(debug.contains("CopilotHarness"));
     }
@@ -1242,7 +1220,10 @@ mod tests {
             .expect("start");
 
         harness.send_message(session_id, "first").await.expect("ok");
-        harness.send_message(session_id, "second").await.expect("ok");
+        harness
+            .send_message(session_id, "second")
+            .await
+            .expect("ok");
 
         let messages = harness
             .session_messages(session_id)
@@ -1251,9 +1232,7 @@ mod tests {
         assert_eq!(messages[0], "first");
         assert_eq!(messages[1], "second");
 
-        let meta = harness
-            .session_metadata(session_id)
-            .expect("metadata");
+        let meta = harness.session_metadata(session_id).expect("metadata");
         assert_eq!(meta.message_count, 2);
 
         harness.end_session(session_id).await.expect("end");
@@ -1278,12 +1257,10 @@ mod tests {
             .await
             .expect("receive_events should succeed");
 
-        let events: Vec<HarnessEvent> = tokio::time::timeout(
-            Duration::from_secs(5),
-            event_stream.collect(),
-        )
-        .await
-        .expect("event collection should not time out");
+        let events: Vec<HarnessEvent> =
+            tokio::time::timeout(Duration::from_secs(5), event_stream.collect())
+                .await
+                .expect("event collection should not time out");
 
         // Should have SessionStarted, MessageReceived, SessionEnded.
         assert_eq!(events.len(), 3, "expected 3 events, got {}", events.len());
@@ -1318,12 +1295,10 @@ mod tests {
             .await
             .expect("receive_events");
 
-        let events: Vec<HarnessEvent> = tokio::time::timeout(
-            Duration::from_secs(5),
-            event_stream.collect(),
-        )
-        .await
-        .expect("should not time out");
+        let events: Vec<HarnessEvent> =
+            tokio::time::timeout(Duration::from_secs(5), event_stream.collect())
+                .await
+                .expect("should not time out");
 
         // Should just have SessionStarted and SessionEnded.
         assert_eq!(events.len(), 2);
@@ -1353,14 +1328,9 @@ mod tests {
             ..SessionConfig::default()
         };
 
-        let session_id = harness
-            .start_session(session_config)
-            .await
-            .expect("start");
+        let session_id = harness.start_session(session_config).await.expect("start");
 
-        let meta = harness
-            .session_metadata(session_id)
-            .expect("metadata");
+        let meta = harness.session_metadata(session_id).expect("metadata");
         assert_eq!(meta.working_dir, Some(PathBuf::from("/tmp")));
 
         harness.end_session(session_id).await.expect("end");
@@ -1394,8 +1364,7 @@ mod tests {
     #[tokio::test]
     async fn health_check_with_explicit_existing_path() {
         let config = test_config_with_path("/bin/echo");
-        let harness = CopilotHarness::new(config, CopilotHarnessConfig::default())
-            .expect("create");
+        let harness = CopilotHarness::new(config, CopilotHarnessConfig::default()).expect("create");
         let healthy = harness.health().await.expect("health check");
         assert!(healthy, "/bin/echo should exist");
     }
@@ -1403,8 +1372,7 @@ mod tests {
     #[tokio::test]
     async fn health_check_with_explicit_missing_path() {
         let config = test_config_with_path("/nonexistent/path/to/gh");
-        let harness = CopilotHarness::new(config, CopilotHarnessConfig::default())
-            .expect("create");
+        let harness = CopilotHarness::new(config, CopilotHarnessConfig::default()).expect("create");
         let healthy = harness.health().await.expect("health check");
         assert!(!healthy, "nonexistent path should not exist");
     }

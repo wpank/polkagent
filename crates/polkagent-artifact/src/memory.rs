@@ -67,10 +67,7 @@ impl ArtifactStore for MemoryStore {
     async fn get_body(&self, id: ArtifactId) -> Result<Vec<u8>, StoreError> {
         let guard = self.inner.read().await;
 
-        let artifact = guard
-            .artifacts
-            .get(&id)
-            .ok_or(StoreError::NotFound(id))?;
+        let artifact = guard.artifacts.get(&id).ok_or(StoreError::NotFound(id))?;
 
         let body = guard
             .bodies
@@ -300,7 +297,10 @@ mod tests {
         let grandchild = ArtifactId::new();
 
         store.add_lineage(child, root).await.expect("add_lineage");
-        store.add_lineage(grandchild, child).await.expect("add_lineage");
+        store
+            .add_lineage(grandchild, child)
+            .await
+            .expect("add_lineage");
 
         let ancestors = store.get_lineage(grandchild).await.expect("get_lineage");
         assert!(ancestors.contains(&child));

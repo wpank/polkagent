@@ -164,7 +164,8 @@ impl RunManager {
             .await
             .map_err(|e| RunError::Store(e.to_string()))?;
 
-        self.emit_event(run_id.clone(), EventKind::RunCreated).await?;
+        self.emit_event(run_id.clone(), EventKind::RunCreated)
+            .await?;
 
         info!(%run_id, "run created");
         Ok(run_id)
@@ -197,7 +198,9 @@ impl RunManager {
     #[instrument(skip(self), fields(run_id = %run_id))]
     pub async fn start_run(&self, run_id: RunId) -> Result<(), RunError> {
         let current = self.current_state(run_id.clone()).await?;
-        let next = self.machine.transition(&current, RunTransition::WorkerClaimed)?;
+        let next = self
+            .machine
+            .transition(&current, RunTransition::WorkerClaimed)?;
 
         self.apply_transition(run_id.clone(), next, EventKind::RunStarted)
             .await?;
@@ -243,7 +246,11 @@ impl RunManager {
         self.apply_transition(
             run_id.clone(),
             next,
-            EventKind::RunCompleted { output_artifact_id, input_tokens, output_tokens },
+            EventKind::RunCompleted {
+                output_artifact_id,
+                input_tokens,
+                output_tokens,
+            },
         )
         .await?;
 
@@ -467,16 +474,12 @@ impl RunManager {
     /// Fetch the current state string from the store and parse it into
     /// [`RunState`].
     async fn current_state(&self, run_id: RunId) -> Result<RunState, RunError> {
-        let summary = self
-            .store
-            .get(run_id.clone())
-            .await
-            .map_err(|e| match e {
-                polkagent_store_trait::StoreError::NotFound { .. } => {
-                    RunError::NotFound(run_id.clone())
-                }
-                other => RunError::Store(other.to_string()),
-            })?;
+        let summary = self.store.get(run_id.clone()).await.map_err(|e| match e {
+            polkagent_store_trait::StoreError::NotFound { .. } => {
+                RunError::NotFound(run_id.clone())
+            }
+            other => RunError::Store(other.to_string()),
+        })?;
 
         // Parse the RunStatus string back into a RunState.
         parse_run_state(summary.status.as_str()).map_err(|e| RunError::Store(e))
@@ -557,7 +560,10 @@ fn parse_run_state(s: &str) -> Result<RunState, String> {
         "completed" => Ok(RunState::Completed),
         "timed_out" => Ok(RunState::TimedOut),
         s if s.starts_with("awaiting_approval:") => {
-            let request_id = s.strip_prefix("awaiting_approval:").unwrap_or_default().to_owned();
+            let request_id = s
+                .strip_prefix("awaiting_approval:")
+                .unwrap_or_default()
+                .to_owned();
             Ok(RunState::AwaitingApproval { request_id })
         }
         s if s.starts_with("waiting_effect:") => {
@@ -716,8 +722,12 @@ mod tests {
         terminal: Mutex<std::collections::HashSet<String>>,
     }
 
-    const TERMINAL_TYPES: &[&str] =
-        &["run_completed", "run_failed", "run_cancelled", "run_timed_out"];
+    const TERMINAL_TYPES: &[&str] = &[
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_timed_out",
+    ];
 
     #[async_trait::async_trait]
     impl EventStore for MemEventStore {
@@ -785,10 +795,7 @@ mod tests {
                 .collect())
         }
 
-        async fn query(
-            &self,
-            filter: EventFilter,
-        ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
             let durable = self.durable.lock().expect("lock");
             Ok(durable
                 .iter()
@@ -842,7 +849,10 @@ mod tests {
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create_run");
 
-        let stored = events.read_run_events(run_id).await.expect("read_run_events");
+        let stored = events
+            .read_run_events(run_id)
+            .await
+            .expect("read_run_events");
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].event_type, "run_created");
     }
@@ -855,8 +865,12 @@ mod tests {
         let run_id = mgr.create_run(agent_id).await.expect("create");
         mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
         mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.completing_run(run_id.clone()).await.expect("completing");
-        mgr.complete_run(run_id.clone(), None, 0, 0).await.expect("complete");
+        mgr.completing_run(run_id.clone())
+            .await
+            .expect("completing");
+        mgr.complete_run(run_id.clone(), None, 0, 0)
+            .await
+            .expect("complete");
 
         let state = mgr.get_state(run_id.clone()).await.expect("get_state");
         assert_eq!(state, RunState::Completed);
@@ -865,7 +879,13 @@ mod tests {
         let event_types: Vec<&str> = stored.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(
             event_types,
-            &["run_created", "run_queued", "run_started", "run_completing", "run_completed"]
+            &[
+                "run_created",
+                "run_queued",
+                "run_started",
+                "run_completing",
+                "run_completed"
+            ]
         );
     }
 
@@ -930,14 +950,15 @@ mod tests {
         let run_id = mgr.create_run(agent_id).await.expect("create");
         mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
         mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.completing_run(run_id.clone()).await.expect("completing");
-        mgr.complete_run(run_id.clone(), None, 0, 0).await.expect("complete");
+        mgr.completing_run(run_id.clone())
+            .await
+            .expect("completing");
+        mgr.complete_run(run_id.clone(), None, 0, 0)
+            .await
+            .expect("complete");
 
         // Now try to cancel the already-completed run.
-        let err = mgr
-            .cancel_run(run_id, "too late")
-            .await
-            .unwrap_err();
+        let err = mgr.cancel_run(run_id, "too late").await.unwrap_err();
         assert!(matches!(err, RunError::Transition(_)));
     }
 
@@ -962,7 +983,9 @@ mod tests {
             .await
             .expect("request_approval");
         let state = mgr.get_state(run_id.clone()).await.expect("state");
-        assert!(matches!(state, RunState::AwaitingApproval { request_id } if request_id == "req-1"));
+        assert!(
+            matches!(state, RunState::AwaitingApproval { request_id } if request_id == "req-1")
+        );
 
         // Grant approval.
         mgr.grant_approval(run_id.clone(), "approval-1")
@@ -1009,7 +1032,9 @@ mod tests {
         assert_eq!(recovered, 1);
 
         let state = mgr.get_state(run_id).await.expect("state");
-        assert!(matches!(state, RunState::Failed { reason } if reason == "recovered after restart"));
+        assert!(
+            matches!(state, RunState::Failed { reason } if reason == "recovered after restart")
+        );
     }
 
     #[tokio::test]
@@ -1023,7 +1048,9 @@ mod tests {
         assert_eq!(recovered, 1);
 
         let state = mgr.get_state(run_id).await.expect("state");
-        assert!(matches!(state, RunState::Failed { reason } if reason == "recovered after restart"));
+        assert!(
+            matches!(state, RunState::Failed { reason } if reason == "recovered after restart")
+        );
     }
 
     #[tokio::test]
@@ -1033,13 +1060,17 @@ mod tests {
         let run_id = mgr.create_run(agent_id).await.expect("create");
         mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
         mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.completing_run(run_id.clone()).await.expect("completing");
+        mgr.completing_run(run_id.clone())
+            .await
+            .expect("completing");
 
         let recovered = mgr.recover_stuck_runs().await.expect("recover");
         assert_eq!(recovered, 1);
 
         let state = mgr.get_state(run_id).await.expect("state");
-        assert!(matches!(state, RunState::Failed { reason } if reason == "recovered after restart"));
+        assert!(
+            matches!(state, RunState::Failed { reason } if reason == "recovered after restart")
+        );
     }
 
     #[tokio::test]
@@ -1051,8 +1082,12 @@ mod tests {
         let run_id = mgr.create_run(agent_id.clone()).await.expect("create");
         mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
         mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.completing_run(run_id.clone()).await.expect("completing");
-        mgr.complete_run(run_id.clone(), None, 0, 0).await.expect("complete");
+        mgr.completing_run(run_id.clone())
+            .await
+            .expect("completing");
+        mgr.complete_run(run_id.clone(), None, 0, 0)
+            .await
+            .expect("complete");
 
         let recovered = mgr.recover_stuck_runs().await.expect("recover");
         assert_eq!(recovered, 0);

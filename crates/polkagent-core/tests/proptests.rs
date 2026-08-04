@@ -30,10 +30,11 @@ fn arb_run_state() -> impl Strategy<Value = RunState> {
         Just(RunState::Queued),
         Just(RunState::Running),
         ".*".prop_map(|s: String| RunState::AwaitingApproval { request_id: s }),
-        prop::collection::vec(Just(()).prop_map(|()| EffectId::new()), 0..5)
-            .prop_map(|ids| RunState::WaitingEffect {
+        prop::collection::vec(Just(()).prop_map(|()| EffectId::new()), 0..5).prop_map(|ids| {
+            RunState::WaitingEffect {
                 pending_intent_ids: ids,
-            }),
+            }
+        }),
         Just(RunState::Completing),
         Just(RunState::Completed),
         ".*".prop_map(|s: String| RunState::Failed { reason: s }),
@@ -450,7 +451,10 @@ fn arb_core_effect_kind() -> impl Strategy<Value = polkagent_core::EffectKind> {
 
 /// Strategy for an arbitrary `EventKind`.
 fn arb_event_kind() -> impl Strategy<Value = polkagent_core::EventKind> {
-    use polkagent_core::{EventKind, TurnId, StepId, EffectId, EffectAttemptId, EffectOutcomeId, ArtifactId, event::LogLevel};
+    use polkagent_core::{
+        event::LogLevel, ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, EventKind, StepId,
+        TurnId,
+    };
     prop_oneof![
         Just(EventKind::RunCreated),
         Just(EventKind::RunQueued),
@@ -459,35 +463,73 @@ fn arb_event_kind() -> impl Strategy<Value = polkagent_core::EventKind> {
         ".*".prop_map(|s: String| EventKind::ApprovalGranted { approval_id: s }),
         ".*".prop_map(|s: String| EventKind::ApprovalDenied { reason: s }),
         Just(EventKind::RunCompleting),
-        Just(()).prop_map(|()| EventKind::RunCompleted { output_artifact_id: None, input_tokens: 0, output_tokens: 0 }),
+        Just(()).prop_map(|()| EventKind::RunCompleted {
+            output_artifact_id: None,
+            input_tokens: 0,
+            output_tokens: 0
+        }),
         ".*".prop_map(|s: String| EventKind::RunFailed { reason: s }),
         ".*".prop_map(|s: String| EventKind::RunCancelled { reason: s }),
         Just(EventKind::RunTimedOut),
         Just(EventKind::RunRetryQueued),
-        (any::<u32>()).prop_map(|n| EventKind::TurnStarted { turn_number: n, turn_id: TurnId::new() }),
-        (any::<u32>()).prop_map(|n| EventKind::TurnCompleted { turn_number: n, turn_id: TurnId::new() }),
-        Just(()).prop_map(|()| EventKind::StepStarted { step_id: StepId::new() }),
-        Just(()).prop_map(|()| EventKind::StepCompleted { step_id: StepId::new() }),
-        Just(()).prop_map(|()| EventKind::EffectIntentCreated { intent_id: EffectId::new() }),
-        Just(()).prop_map(|()| EventKind::EffectAttemptStarted { attempt_id: EffectAttemptId::new() }),
-        Just(()).prop_map(|()| EventKind::EffectOutcomeRecorded { outcome_id: EffectOutcomeId::new() }),
+        (any::<u32>()).prop_map(|n| EventKind::TurnStarted {
+            turn_number: n,
+            turn_id: TurnId::new()
+        }),
+        (any::<u32>()).prop_map(|n| EventKind::TurnCompleted {
+            turn_number: n,
+            turn_id: TurnId::new()
+        }),
+        Just(()).prop_map(|()| EventKind::StepStarted {
+            step_id: StepId::new()
+        }),
+        Just(()).prop_map(|()| EventKind::StepCompleted {
+            step_id: StepId::new()
+        }),
+        Just(()).prop_map(|()| EventKind::EffectIntentCreated {
+            intent_id: EffectId::new()
+        }),
+        Just(()).prop_map(|()| EventKind::EffectAttemptStarted {
+            attempt_id: EffectAttemptId::new()
+        }),
+        Just(()).prop_map(|()| EventKind::EffectOutcomeRecorded {
+            outcome_id: EffectOutcomeId::new()
+        }),
         Just(EventKind::EffectsResolved),
-        Just(()).prop_map(|()| EventKind::ArtifactCreated { artifact_id: ArtifactId::new() }),
+        Just(()).prop_map(|()| EventKind::ArtifactCreated {
+            artifact_id: ArtifactId::new()
+        }),
         ".*".prop_map(|s: String| EventKind::StreamingToken { text: s }),
-        (".*", prop::option::of(0.0f32..100.0)).prop_map(|(msg, pct)| EventKind::ProgressUpdate { message: msg, percentage: pct }),
+        (".*", prop::option::of(0.0f32..100.0)).prop_map(|(msg, pct)| EventKind::ProgressUpdate {
+            message: msg,
+            percentage: pct
+        }),
         ".*".prop_map(|s: String| EventKind::ToolCallStarted { tool_name: s }),
         ".*".prop_map(|s: String| EventKind::ToolCallCompleted { tool_name: s }),
         Just(EventKind::DeliveryStarted),
         Just(EventKind::DeliveryCompleted),
-        (".*", prop_oneof![
-            Just(LogLevel::Trace),
-            Just(LogLevel::Debug),
-            Just(LogLevel::Info),
-            Just(LogLevel::Warn),
-            Just(LogLevel::Error),
-        ]).prop_map(|(msg, lvl)| EventKind::DiagnosticLog { level: lvl, message: msg }),
-        (".*", ".*").prop_map(|(r, a)| EventKind::BudgetConsumed { resource: r, amount_str: a }),
-        (".*", ".*").prop_map(|(r, rem)| EventKind::BudgetWarning { resource: r, remaining_str: rem }),
+        (
+            ".*",
+            prop_oneof![
+                Just(LogLevel::Trace),
+                Just(LogLevel::Debug),
+                Just(LogLevel::Info),
+                Just(LogLevel::Warn),
+                Just(LogLevel::Error),
+            ]
+        )
+            .prop_map(|(msg, lvl)| EventKind::DiagnosticLog {
+                level: lvl,
+                message: msg
+            }),
+        (".*", ".*").prop_map(|(r, a)| EventKind::BudgetConsumed {
+            resource: r,
+            amount_str: a
+        }),
+        (".*", ".*").prop_map(|(r, rem)| EventKind::BudgetWarning {
+            resource: r,
+            remaining_str: rem
+        }),
     ]
 }
 

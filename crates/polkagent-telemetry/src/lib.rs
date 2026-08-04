@@ -40,7 +40,5 @@ pub use init::{init_from_env, init_telemetry, LogFormat, TelemetryConfig, Teleme
 pub use jsonl::JsonlWriter;
 pub use metrics::MetricRecorder;
 pub use prometheus::PrometheusRegistry;
-pub use redact::{Redacted, redact_string};
-pub use spans::{
-    effect_span, model_request_span, run_span, tool_call_span, turn_span,
-};
+pub use redact::{redact_string, Redacted};
+pub use spans::{effect_span, model_request_span, run_span, tool_call_span, turn_span};

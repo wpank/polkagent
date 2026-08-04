@@ -7,8 +7,8 @@
 //!
 //! PRD-15 performance benchmarks.
 
-use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -17,10 +17,7 @@ use polkagent_core::{
     event::{EventCorrelation, EventKind, RunEvent},
     ids::{EventId, RunId},
 };
-use polkagent_event::{
-    bus::EventBus,
-    recorder::EventRecorder,
-};
+use polkagent_event::{bus::EventBus, recorder::EventRecorder};
 use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
 
 // ---------------------------------------------------------------------------
@@ -42,10 +39,7 @@ impl InMemoryEventStore {
 
 #[async_trait]
 impl EventStore for InMemoryEventStore {
-    async fn append_durable(
-        &self,
-        mut event: StoredEvent,
-    ) -> Result<StoredEvent, EventStoreError> {
+    async fn append_durable(&self, mut event: StoredEvent) -> Result<StoredEvent, EventStoreError> {
         let mut seqs = self.sequences.lock().expect("lock");
         let current = seqs.get(&event.run_id).copied().unwrap_or(0);
         if event.sequence <= current {
@@ -88,10 +82,7 @@ impl EventStore for InMemoryEventStore {
             .collect())
     }
 
-    async fn read_run_events(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+    async fn read_run_events(&self, run_id: RunId) -> Result<Vec<StoredEvent>, EventStoreError> {
         let durable = self.durable.lock().expect("lock");
         Ok(durable
             .iter()
@@ -100,10 +91,7 @@ impl EventStore for InMemoryEventStore {
             .collect())
     }
 
-    async fn query(
-        &self,
-        filter: EventFilter,
-    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+    async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
         let durable = self.durable.lock().expect("lock");
         Ok(durable
             .iter()
@@ -227,9 +215,5 @@ fn bench_event_recording(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    bench_bus_publish,
-    bench_event_recording,
-);
+criterion_group!(benches, bench_bus_publish, bench_event_recording,);
 criterion_main!(benches);

@@ -215,9 +215,7 @@ fn descriptor_has_capability(desc: &ModelDescriptor, cap: &Capability) -> bool {
         Capability::StructuredOutput => desc.supports_structured_output,
         Capability::WebSearch => desc.supports_web_search,
         Capability::MinContextWindow(min) => desc.context_window >= *min,
-        Capability::MinMaxOutput(min) => {
-            desc.max_output.map_or(true, |max| max >= *min)
-        }
+        Capability::MinMaxOutput(min) => desc.max_output.map_or(true, |max| max >= *min),
     }
 }
 
@@ -300,8 +298,8 @@ pub fn negotiate(
 
     for req in requirements {
         // Check if the capability is denied by provider restrictions.
-        let denied = restrictions
-            .map_or(false, |r| r.denied_capabilities.contains(&req.capability));
+        let denied =
+            restrictions.map_or(false, |r| r.denied_capabilities.contains(&req.capability));
 
         if denied || !descriptor_has_capability(desc, &req.capability) {
             let m = MissingCapability {
@@ -374,12 +372,7 @@ impl ProbeCache {
     }
 
     /// Insert or update a cached result.
-    pub fn put(
-        &self,
-        provider_id: &str,
-        model_slug: &str,
-        result: NegotiatedCapabilities,
-    ) {
+    pub fn put(&self, provider_id: &str, model_slug: &str, result: NegotiatedCapabilities) {
         let key = (provider_id.to_string(), model_slug.to_string());
         let mut entries = self.entries.write();
         entries.insert(
@@ -829,7 +822,10 @@ mod tests {
         assert_eq!(format!("{}", Capability::Vision), "vision");
         assert_eq!(format!("{}", Capability::Streaming), "streaming");
         assert_eq!(format!("{}", Capability::Caching), "caching");
-        assert_eq!(format!("{}", Capability::StructuredOutput), "structured_output");
+        assert_eq!(
+            format!("{}", Capability::StructuredOutput),
+            "structured_output"
+        );
         assert_eq!(format!("{}", Capability::WebSearch), "web_search");
         assert_eq!(
             format!("{}", Capability::MinContextWindow(100_000)),

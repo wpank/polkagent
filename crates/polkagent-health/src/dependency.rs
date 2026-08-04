@@ -55,8 +55,7 @@ impl HealthCheck for TcpCheck {
         let start = Instant::now();
 
         let result =
-            tokio::time::timeout(self.connect_timeout, tokio::net::TcpStream::connect(&addr))
-                .await;
+            tokio::time::timeout(self.connect_timeout, tokio::net::TcpStream::connect(&addr)).await;
 
         #[allow(clippy::cast_possible_truncation)]
         let latency_ms = start.elapsed().as_millis() as u64;
@@ -123,11 +122,7 @@ pub struct HttpCheck {
 
 impl HttpCheck {
     /// Create a new HTTP check.
-    pub fn new(
-        name: impl Into<String>,
-        url: impl Into<String>,
-        severity: CheckSeverity,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, url: impl Into<String>, severity: CheckSeverity) -> Self {
         Self {
             name: name.into(),
             url: url.into(),
@@ -183,8 +178,7 @@ impl HealthCheck for HttpCheck {
 
         let addr = format!("{host}:{port}");
         let result =
-            tokio::time::timeout(self.connect_timeout, tokio::net::TcpStream::connect(&addr))
-                .await;
+            tokio::time::timeout(self.connect_timeout, tokio::net::TcpStream::connect(&addr)).await;
 
         #[allow(clippy::cast_possible_truncation)]
         let latency_ms = start.elapsed().as_millis() as u64;
@@ -245,11 +239,7 @@ pub struct SqliteCheck {
 
 impl SqliteCheck {
     /// Create a new `SQLite` health check.
-    pub fn new(
-        name: impl Into<String>,
-        path: impl Into<PathBuf>,
-        severity: CheckSeverity,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, path: impl Into<PathBuf>, severity: CheckSeverity) -> Self {
         Self {
             name: name.into(),
             path: path.into(),
@@ -317,8 +307,11 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_check_missing_file() {
-        let check =
-            SqliteCheck::new("missing-db", "/tmp/nonexistent_db_12345.sqlite", CheckSeverity::Critical);
+        let check = SqliteCheck::new(
+            "missing-db",
+            "/tmp/nonexistent_db_12345.sqlite",
+            CheckSeverity::Critical,
+        );
         let status = check.check().await;
         assert_eq!(status.status, Status::Down);
     }
@@ -347,7 +340,11 @@ mod tests {
 
     #[tokio::test]
     async fn http_check_parse_url_with_port() {
-        let check = HttpCheck::new("api", "http://localhost:8080/health", CheckSeverity::Advisory);
+        let check = HttpCheck::new(
+            "api",
+            "http://localhost:8080/health",
+            CheckSeverity::Advisory,
+        );
         let (host, port) = check.parse_host_port().expect("should parse");
         assert_eq!(host, "localhost");
         assert_eq!(port, 8080);

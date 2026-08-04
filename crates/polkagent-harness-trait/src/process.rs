@@ -398,8 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_shot_echo() {
-        let runner =
-            ChildProcessRunner::new("/bin/echo").with_timeout(Duration::from_secs(5));
+        let runner = ChildProcessRunner::new("/bin/echo").with_timeout(Duration::from_secs(5));
         let output = runner
             .run_one_shot(&["hello"])
             .await
@@ -409,8 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_shot_failure() {
-        let runner =
-            ChildProcessRunner::new("/bin/false").with_timeout(Duration::from_secs(5));
+        let runner = ChildProcessRunner::new("/bin/false").with_timeout(Duration::from_secs(5));
         let empty: &[&str] = &[];
         let err = runner.run_one_shot(empty).await.unwrap_err();
         assert!(matches!(err, HarnessError::SpawnFailed { .. }));
@@ -418,8 +416,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_shot_not_found() {
-        let runner = ChildProcessRunner::new("/nonexistent/binary")
-            .with_timeout(Duration::from_secs(5));
+        let runner =
+            ChildProcessRunner::new("/nonexistent/binary").with_timeout(Duration::from_secs(5));
         let empty: &[&str] = &[];
         let err = runner.run_one_shot(empty).await.unwrap_err();
         assert!(matches!(err, HarnessError::SpawnFailed { .. }));
@@ -427,8 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_persistent_and_read() {
-        let runner =
-            ChildProcessRunner::new("/bin/echo").with_timeout(Duration::from_secs(5));
+        let runner = ChildProcessRunner::new("/bin/echo").with_timeout(Duration::from_secs(5));
         let mut spawned = runner
             .spawn_persistent(&["persistent-test"])
             .expect("spawn should work");
@@ -449,10 +446,7 @@ mod tests {
 
     #[test]
     fn scrubbed_prefixes_are_correct() {
-        assert_eq!(
-            SCRUBBED_PREFIXES,
-            &["CLAUDE_CODE_", "CODEX_", "POLKAGENT_"]
-        );
+        assert_eq!(SCRUBBED_PREFIXES, &["CLAUDE_CODE_", "CODEX_", "POLKAGENT_"]);
     }
 
     #[test]
@@ -498,10 +492,7 @@ mod tests {
         );
 
         // Verify normal vars pass through.
-        assert!(
-            output.contains("PATH="),
-            "PATH should be inherited"
-        );
+        assert!(output.contains("PATH="), "PATH should be inherited");
     }
 
     #[tokio::test]

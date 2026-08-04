@@ -62,12 +62,18 @@ impl RunStore for PgPool {
         let now = Utc::now();
         let tenant = self.tenant_id().to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         sqlx::query(
             "INSERT INTO runs (id, tenant_id, agent_id, state, params_json, created_at, updated_at)
@@ -92,12 +98,18 @@ impl RunStore for PgPool {
     async fn get(&self, run_id: RunId) -> Result<RunSummary, StoreError> {
         let id_str = run_id.to_string();
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let row = sqlx::query(
             "SELECT id, agent_id, state, created_at, started_at, completed_at
@@ -122,16 +134,16 @@ impl RunStore for PgPool {
             agent_id: row.get("agent_id"),
             status: RunStatus::new(row.get::<String, _>("state")),
             created_at: parse_ts(row.get("created_at")),
-            started_at: row.get::<Option<chrono::DateTime<Utc>>, _>("started_at").map(parse_ts),
-            completed_at: row.get::<Option<chrono::DateTime<Utc>>, _>("completed_at").map(parse_ts),
+            started_at: row
+                .get::<Option<chrono::DateTime<Utc>>, _>("started_at")
+                .map(parse_ts),
+            completed_at: row
+                .get::<Option<chrono::DateTime<Utc>>, _>("completed_at")
+                .map(parse_ts),
         })
     }
 
-    async fn update_state(
-        &self,
-        run_id: RunId,
-        new_status: RunStatus,
-    ) -> Result<(), StoreError> {
+    async fn update_state(&self, run_id: RunId, new_status: RunStatus) -> Result<(), StoreError> {
         let id_str = run_id.to_string();
         let status_str = new_status.as_str().to_string();
         let now = Utc::now();
@@ -140,15 +152,26 @@ impl RunStore for PgPool {
             status_str.as_str(),
             "completed" | "failed" | "cancelled" | "timed_out"
         );
-        let completed_at: Option<chrono::DateTime<Utc>> = if is_terminal { Some(now) } else { None };
-        let started_at: Option<chrono::DateTime<Utc>> = if status_str == "running" { Some(now) } else { None };
+        let completed_at: Option<chrono::DateTime<Utc>> =
+            if is_terminal { Some(now) } else { None };
+        let started_at: Option<chrono::DateTime<Utc>> = if status_str == "running" {
+            Some(now)
+        } else {
+            None
+        };
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let result = sqlx::query(
             "UPDATE runs SET state = $1, updated_at = $2,
@@ -184,12 +207,18 @@ impl RunStore for PgPool {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<RunSummary>, StoreError> {
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let rows = sqlx::query(
             "SELECT id, agent_id, state, created_at, started_at, completed_at
@@ -216,8 +245,12 @@ impl RunStore for PgPool {
                     agent_id: row.get("agent_id"),
                     status: RunStatus::new(row.get::<String, _>("state")),
                     created_at: parse_ts(row.get("created_at")),
-                    started_at: row.get::<Option<chrono::DateTime<Utc>>, _>("started_at").map(parse_ts),
-                    completed_at: row.get::<Option<chrono::DateTime<Utc>>, _>("completed_at").map(parse_ts),
+                    started_at: row
+                        .get::<Option<chrono::DateTime<Utc>>, _>("started_at")
+                        .map(parse_ts),
+                    completed_at: row
+                        .get::<Option<chrono::DateTime<Utc>>, _>("completed_at")
+                        .map(parse_ts),
                 })
             })
             .collect()
@@ -229,12 +262,18 @@ impl RunStore for PgPool {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<RunSummary>, StoreError> {
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         let rows = sqlx::query(
             "SELECT id, agent_id, state, created_at, started_at, completed_at
@@ -261,8 +300,12 @@ impl RunStore for PgPool {
                     agent_id: row.get("agent_id"),
                     status: RunStatus::new(row.get::<String, _>("state")),
                     created_at: parse_ts(row.get("created_at")),
-                    started_at: row.get::<Option<chrono::DateTime<Utc>>, _>("started_at").map(parse_ts),
-                    completed_at: row.get::<Option<chrono::DateTime<Utc>>, _>("completed_at").map(parse_ts),
+                    started_at: row
+                        .get::<Option<chrono::DateTime<Utc>>, _>("started_at")
+                        .map(parse_ts),
+                    completed_at: row
+                        .get::<Option<chrono::DateTime<Utc>>, _>("completed_at")
+                        .map(parse_ts),
                 })
             })
             .collect()
@@ -298,12 +341,18 @@ impl RunStore for PgPool {
             })
             .transpose()?;
 
-        let mut tx = self.pool().begin().await.map_err(|e| StoreError::ConnectionError {
-            message: format!("begin transaction: {e}"),
-        })?;
-        self.set_tenant(&mut *tx).await.map_err(|e| StoreError::Internal {
-            message: format!("set tenant: {e}"),
-        })?;
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| StoreError::ConnectionError {
+                message: format!("begin transaction: {e}"),
+            })?;
+        self.set_tenant(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Internal {
+                message: format!("set tenant: {e}"),
+            })?;
 
         sqlx::query(
             "INSERT INTO turns (id, tenant_id, run_id, sequence, role, started_at, completed_at, input_tokens, output_tokens)

@@ -235,7 +235,11 @@ pub enum CodexNotification {
 
 impl CodexNotification {
     /// Parse a notification from a `RawIncoming` message that has a `method`.
-    pub fn from_raw(method: &str, params: Option<&serde_json::Value>, id: Option<&serde_json::Value>) -> Self {
+    pub fn from_raw(
+        method: &str,
+        params: Option<&serde_json::Value>,
+        id: Option<&serde_json::Value>,
+    ) -> Self {
         match method {
             "turn/started" => {
                 let turn_id = params
@@ -491,11 +495,8 @@ mod tests {
     fn codex_notification_file_change_approval() {
         let params = serde_json::json!({"filePath": "/tmp/foo.rs"});
         let id = serde_json::json!(43);
-        let notif = CodexNotification::from_raw(
-            "fileChange/requestApproval",
-            Some(&params),
-            Some(&id),
-        );
+        let notif =
+            CodexNotification::from_raw("fileChange/requestApproval", Some(&params), Some(&id));
         match notif {
             CodexNotification::FileChangeApprovalRequested {
                 request_id,

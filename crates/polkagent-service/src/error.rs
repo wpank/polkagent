@@ -112,31 +112,21 @@ pub enum ServiceError {
 impl From<polkagent_run::RunError> for ServiceError {
     fn from(err: polkagent_run::RunError) -> Self {
         match err {
-            polkagent_run::RunError::NotFound(run_id) => {
-                Self::RunNotFound { run_id }
-            }
-            polkagent_run::RunError::Transition(msg) => {
-                Self::InvalidTransition {
-                    message: msg.to_string(),
-                }
-            }
+            polkagent_run::RunError::NotFound(run_id) => Self::RunNotFound { run_id },
+            polkagent_run::RunError::Transition(msg) => Self::InvalidTransition {
+                message: msg.to_string(),
+            },
             polkagent_run::RunError::Store(msg) => Self::Store { message: msg },
             polkagent_run::RunError::Event(msg) => Self::Event { message: msg },
             polkagent_run::RunError::TurnNotFound => Self::Store {
                 message: "turn not found".into(),
             },
-            polkagent_run::RunError::AlreadyTerminal(run_id, state) => {
-                Self::InvalidTransition {
-                    message: format!(
-                        "run {run_id} is already in terminal state ({state})"
-                    ),
-                }
-            }
-            polkagent_run::RunError::DeadlineExceeded(run_id) => {
-                Self::InvalidTransition {
-                    message: format!("run {run_id} exceeded its deadline"),
-                }
-            }
+            polkagent_run::RunError::AlreadyTerminal(run_id, state) => Self::InvalidTransition {
+                message: format!("run {run_id} is already in terminal state ({state})"),
+            },
+            polkagent_run::RunError::DeadlineExceeded(run_id) => Self::InvalidTransition {
+                message: format!("run {run_id} exceeded its deadline"),
+            },
             polkagent_run::RunError::Serialization(err) => Self::Internal {
                 message: format!("serialization error: {err}"),
             },

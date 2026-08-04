@@ -336,8 +336,7 @@ mod tests {
         let (bus, _registry, store, service, mut dispatcher) = setup();
 
         // Register a webhook that accepts run_created events.
-        let mut cfg =
-            WebhookConfig::new("http://127.0.0.1:1/hook", "secret");
+        let mut cfg = WebhookConfig::new("http://127.0.0.1:1/hook", "secret");
         cfg.events = vec!["run_created".into()];
         service.register(cfg);
 
@@ -370,8 +369,7 @@ mod tests {
         let (bus, _registry, store, service, mut dispatcher) = setup();
 
         // Register a webhook that ONLY accepts run_completed events.
-        let mut cfg =
-            WebhookConfig::new("http://127.0.0.1:1/hook", "secret");
+        let mut cfg = WebhookConfig::new("http://127.0.0.1:1/hook", "secret");
         cfg.events = vec!["run_completed".into()];
         service.register(cfg);
 
@@ -426,10 +424,7 @@ mod tests {
             let subs = service.registry().list();
             let mut all = Vec::new();
             for sub in &subs {
-                let mut recs = store
-                    .list_by_webhook(sub.id, 100)
-                    .await
-                    .unwrap_or_default();
+                let mut recs = store.list_by_webhook(sub.id, 100).await.unwrap_or_default();
                 all.append(&mut recs);
             }
             all
@@ -442,7 +437,10 @@ mod tests {
             polkagent_surface_webhook::DeliveryStatus::Failed,
             "delivery to non-routable address should fail"
         );
-        assert!(record.last_error.is_some(), "failed delivery should have an error message");
+        assert!(
+            record.last_error.is_some(),
+            "failed delivery should have an error message"
+        );
 
         dispatcher.shutdown().await;
     }

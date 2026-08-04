@@ -19,9 +19,7 @@
 //! - [`TERMINAL_EVENT_TYPES`] — the four terminal event type names.
 
 // Re-export core event types as the primary types in this crate.
-pub use polkagent_core::event::{
-    Durability, EventCorrelation, EventKind, LogLevel, RunEvent,
-};
+pub use polkagent_core::event::{Durability, EventCorrelation, EventKind, LogLevel, RunEvent};
 // Re-export core RunState for projection use.
 pub use polkagent_core::run::RunState;
 

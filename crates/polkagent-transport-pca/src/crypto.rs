@@ -65,10 +65,7 @@ pub fn ephemeral_keypair() -> (EphemeralSecret, PublicKey) {
 }
 
 /// Perform a Diffie-Hellman exchange with an ephemeral secret.
-pub fn ephemeral_diffie_hellman(
-    secret: EphemeralSecret,
-    peer_public: &PublicKey,
-) -> SharedSecret {
+pub fn ephemeral_diffie_hellman(secret: EphemeralSecret, peer_public: &PublicKey) -> SharedSecret {
     let shared = secret.diffie_hellman(peer_public);
     SharedSecret {
         bytes: *shared.as_bytes(),

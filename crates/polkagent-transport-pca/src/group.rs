@@ -325,10 +325,7 @@ impl GroupSession {
     ///
     /// The epoch advances and a new group key is derived that excludes the
     /// departed member, providing forward secrecy. Returns events.
-    pub fn remove_member(
-        &mut self,
-        ss58_address: &str,
-    ) -> Result<Vec<GroupEvent>, PcaError> {
+    pub fn remove_member(&mut self, ss58_address: &str) -> Result<Vec<GroupEvent>, PcaError> {
         if !self.members.contains_key(ss58_address) {
             return Err(PcaError::GroupError {
                 reason: format!("member {ss58_address} not in group"),
@@ -369,17 +366,19 @@ impl GroupSession {
     /// Uses the current epoch key. All members who hold the same epoch key
     /// can decrypt.
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<GroupEnvelope, PcaError> {
-        let group_key = self.key_state.group_key.ok_or_else(|| {
-            PcaError::GroupKeyAgreementFailed {
-                reason: "no group key derived (add at least one member first)".into(),
-            }
-        })?;
+        let group_key =
+            self.key_state
+                .group_key
+                .ok_or_else(|| PcaError::GroupKeyAgreementFailed {
+                    reason: "no group key derived (add at least one member first)".into(),
+                })?;
 
-        let nonce = self.encrypt_nonce.next_nonce().ok_or_else(|| {
-            PcaError::NonceExhausted {
+        let nonce = self
+            .encrypt_nonce
+            .next_nonce()
+            .ok_or_else(|| PcaError::NonceExhausted {
                 session_id: self.group_id.clone(),
-            }
-        })?;
+            })?;
 
         let sequence = self.encrypt_nonce.current() - 1;
 
@@ -449,11 +448,12 @@ impl GroupSession {
                 .insert(envelope.sender_address.clone(), expected + 1);
         }
 
-        let group_key = self.key_state.group_key.ok_or_else(|| {
-            PcaError::GroupKeyAgreementFailed {
-                reason: "no group key available".into(),
-            }
-        })?;
+        let group_key =
+            self.key_state
+                .group_key
+                .ok_or_else(|| PcaError::GroupKeyAgreementFailed {
+                    reason: "no group key available".into(),
+                })?;
 
         crypto::decrypt_with_aad(
             &group_key,
@@ -527,7 +527,10 @@ mod tests {
         assert!(alice.has_group_key());
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], GroupEvent::MemberJoined { .. }));
-        assert!(matches!(events[1], GroupEvent::EpochAdvanced { new_epoch: 1 }));
+        assert!(matches!(
+            events[1],
+            GroupEvent::EpochAdvanced { new_epoch: 1 }
+        ));
     }
 
     #[test]
@@ -652,7 +655,9 @@ mod tests {
         let (mut alice, mut bob) = make_group();
 
         for i in 0u64..5 {
-            let env = alice.encrypt(format!("msg-{i}").as_bytes()).expect("encrypt");
+            let env = alice
+                .encrypt(format!("msg-{i}").as_bytes())
+                .expect("encrypt");
             assert_eq!(env.sequence, i);
             let pt = bob.decrypt(&env).expect("decrypt");
             assert_eq!(pt, format!("msg-{i}").as_bytes());
@@ -671,12 +676,16 @@ mod tests {
 
         // Each participant adds the other two.
         alice.add_member("5Bob...", &bob_pub, None).expect("add");
-        alice.add_member("5Carol...", &carol_pub, None).expect("add");
+        alice
+            .add_member("5Carol...", &carol_pub, None)
+            .expect("add");
 
         bob.add_member("5Alice...", &alice_pub, None).expect("add");
         bob.add_member("5Carol...", &carol_pub, None).expect("add");
 
-        carol.add_member("5Alice...", &alice_pub, None).expect("add");
+        carol
+            .add_member("5Alice...", &alice_pub, None)
+            .expect("add");
         carol.add_member("5Bob...", &bob_pub, None).expect("add");
 
         assert_eq!(alice.member_count(), 2);

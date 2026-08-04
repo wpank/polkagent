@@ -104,10 +104,7 @@ impl EventStore for EventStoreWithRunSetup {
         self.pool.query(filter).await
     }
 
-    async fn max_sequence(
-        &self,
-        run_id: polkagent_core::RunId,
-    ) -> Result<u64, EventStoreError> {
+    async fn max_sequence(&self, run_id: polkagent_core::RunId) -> Result<u64, EventStoreError> {
         self.pool.max_sequence(run_id).await
     }
 
@@ -169,25 +166,33 @@ async fn insert_run_with_step(pool: &PgPool, run_id: RunId) -> StepId {
 
 #[tokio::test]
 async fn run_store_crud() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_run_store_crud(&pool, TEST_AGENT).await;
 }
 
 #[tokio::test]
 async fn run_store_duplicate_conflict() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_run_store_duplicate_conflict(&pool, TEST_AGENT).await;
 }
 
 #[tokio::test]
 async fn run_store_get_not_found() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_run_store_get_not_found(&pool).await;
 }
 
 #[tokio::test]
 async fn run_store_terminal_state_sets_completed_at() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_run_store_terminal_state_sets_completed_at(&pool, TEST_AGENT).await;
 }
 
@@ -197,7 +202,9 @@ async fn run_store_terminal_state_sets_completed_at() {
 
 #[tokio::test]
 async fn effect_store_crud() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let run_id = RunId::new();
     let step_id = insert_run_with_step(&pool, run_id).await;
     conformance::test_effect_store_crud(&pool, run_id, step_id).await;
@@ -205,7 +212,9 @@ async fn effect_store_crud() {
 
 #[tokio::test]
 async fn effect_store_propose_duplicate_conflict() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let run_id = RunId::new();
     let step_id = insert_run_with_step(&pool, run_id).await;
     conformance::test_effect_store_propose_duplicate_conflict(&pool, run_id, step_id).await;
@@ -213,13 +222,17 @@ async fn effect_store_propose_duplicate_conflict() {
 
 #[tokio::test]
 async fn effect_store_claim_empty_returns_none() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_effect_store_claim_empty_returns_none(&pool).await;
 }
 
 #[tokio::test]
 async fn effect_store_release_restores_pending() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let run_id = RunId::new();
     let step_id = insert_run_with_step(&pool, run_id).await;
     conformance::test_effect_store_release_restores_pending(&pool, run_id, step_id).await;
@@ -231,42 +244,54 @@ async fn effect_store_release_restores_pending() {
 
 #[tokio::test]
 async fn event_store_append_and_query() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let store = EventStoreWithRunSetup::new(pool);
     conformance::test_event_store_append_and_query(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_non_monotonic_sequence_rejected() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let store = EventStoreWithRunSetup::new(pool);
     conformance::test_event_store_non_monotonic_sequence_rejected(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_duplicate_terminal_rejected() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let store = EventStoreWithRunSetup::new(pool);
     conformance::test_event_store_duplicate_terminal_rejected(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_cursor_pagination() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let store = EventStoreWithRunSetup::new(pool);
     conformance::test_event_store_cursor_pagination(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_max_sequence() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let store = EventStoreWithRunSetup::new(pool);
     conformance::test_event_store_max_sequence(&store).await;
 }
 
 #[tokio::test]
 async fn event_store_has_terminal_event() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     let store = EventStoreWithRunSetup::new(pool);
     conformance::test_event_store_has_terminal_event(&store).await;
 }
@@ -277,24 +302,32 @@ async fn event_store_has_terminal_event() {
 
 #[tokio::test]
 async fn artifact_store_crud() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_artifact_store_crud(&pool).await;
 }
 
 #[tokio::test]
 async fn artifact_store_get_not_found() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_artifact_store_get_not_found(&pool).await;
 }
 
 #[tokio::test]
 async fn artifact_store_verify_missing_returns_false() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_artifact_store_verify_missing_returns_false(&pool).await;
 }
 
 #[tokio::test]
 async fn artifact_store_list_for_run() {
-    let Some(pool) = maybe_pool().await else { return };
+    let Some(pool) = maybe_pool().await else {
+        return;
+    };
     conformance::test_artifact_store_list_for_run(&pool).await;
 }

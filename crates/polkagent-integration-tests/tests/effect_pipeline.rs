@@ -8,13 +8,17 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RetryClass, RunId, StepId, WorkerId};
+use polkagent_core::{
+    EffectAttemptId, EffectId, EffectOutcomeId, RetryClass, RunId, StepId, WorkerId,
+};
 use polkagent_effect::pipeline::EffectIntentSpec;
 use polkagent_effect::recovery::{CrashRecovery, RecoveryAction};
-use polkagent_effect::types::{AttemptState, EffectAttempt, EffectKind, EffectOutcome, OutcomeResult};
+use polkagent_effect::types::{
+    AttemptState, EffectAttempt, EffectKind, EffectOutcome, OutcomeResult,
+};
 use polkagent_effect::IdempotencyKey;
 use polkagent_integration_tests::{make_effect_pipeline, MemEffectStore};
-use polkagent_store_trait::{EffectStore, StoredIntent, StoreRetryClass};
+use polkagent_store_trait::{EffectStore, StoreRetryClass, StoredIntent};
 
 // ---------------------------------------------------------------------------
 // Helper: build a spec for a given run_id and kind
@@ -169,7 +173,10 @@ async fn duplicate_idempotency_key_is_rejected() {
     };
 
     // First propose should succeed.
-    pipeline.propose(spec1.clone()).await.expect("first propose");
+    pipeline
+        .propose(spec1.clone())
+        .await
+        .expect("first propose");
 
     // Second propose with the same key must be rejected.
     let err = pipeline

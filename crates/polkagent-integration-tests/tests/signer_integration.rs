@@ -52,8 +52,14 @@ async fn sign_produces_non_empty_signature() {
         .expect("sign ok");
 
     assert!(!signed.signature.is_empty(), "signature must not be empty");
-    assert!(!signed.public_key.is_empty(), "public key must not be empty");
-    assert!(!signed.signed_extrinsic.is_empty(), "signed_extrinsic must not be empty");
+    assert!(
+        !signed.public_key.is_empty(),
+        "public key must not be empty"
+    );
+    assert!(
+        !signed.signed_extrinsic.is_empty(),
+        "signed_extrinsic must not be empty"
+    );
 }
 
 #[tokio::test]
@@ -64,7 +70,11 @@ async fn sign_returns_64_byte_signature() {
         .await
         .expect("sign ok");
 
-    assert_eq!(signed.signature.len(), 64, "fake signature must be 64 bytes");
+    assert_eq!(
+        signed.signature.len(),
+        64,
+        "fake signature must be 64 bytes"
+    );
 }
 
 #[tokio::test]
@@ -193,7 +203,10 @@ async fn sign_and_verify_signed_extrinsic_contains_payload() {
 
     // Verification: the signed_extrinsic contains the original payload.
     assert!(
-        signed.signed_extrinsic.windows(payload.len()).any(|w| w == payload.as_slice()),
+        signed
+            .signed_extrinsic
+            .windows(payload.len())
+            .any(|w| w == payload.as_slice()),
         "signed_extrinsic must contain the original payload"
     );
 
@@ -270,7 +283,11 @@ async fn rejecting_signer_increments_call_count() {
 async fn default_signer_reports_one_account() {
     let signer = FakeSigner::new();
     let caps = signer.describe().await.expect("describe");
-    assert_eq!(caps.accounts.len(), 1, "default signer must report one account");
+    assert_eq!(
+        caps.accounts.len(),
+        1,
+        "default signer must report one account"
+    );
     assert_eq!(caps.accounts[0].account_id, [0u8; 32]);
 }
 
@@ -341,7 +358,9 @@ async fn last_request_is_recorded_after_sign() {
     req.request_id = "it-08-unique-id".into();
     signer.sign(req).await.ok();
 
-    let captured = signer.last_request().expect("last request must be recorded");
+    let captured = signer
+        .last_request()
+        .expect("last request must be recorded");
     assert_eq!(captured.request_id, "it-08-unique-id");
 }
 

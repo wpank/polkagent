@@ -65,8 +65,8 @@ pub use error::WorkbenchError;
 pub use metadata_comparison::MetadataComparisonTool;
 pub use migration_rehearsal::MigrationRehearsalTool;
 pub use types::{
-    ComparisonSummary, MetadataComparisonReport, MigrationRehearsalReport,
-    PalletComparisonDetail, StorageDiff, StorageKeyChange,
+    ComparisonSummary, MetadataComparisonReport, MigrationRehearsalReport, PalletComparisonDetail,
+    StorageDiff, StorageKeyChange,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,10 +79,7 @@ pub use types::{
 /// provided so the tools can query chain state.
 ///
 /// Call this once when setting up a new run or agent context.
-pub fn register_workbench_tools(
-    registry: &mut ToolRegistry,
-    chain_client: Arc<dyn ChainClient>,
-) {
+pub fn register_workbench_tools(registry: &mut ToolRegistry, chain_client: Arc<dyn ChainClient>) {
     registry.register(Box::new(MigrationRehearsalTool::new(chain_client.clone())));
     registry.register(Box::new(MetadataComparisonTool::new(chain_client)));
 }
@@ -191,19 +188,13 @@ pub(crate) mod tests {
             _block_ref: Option<&BlockRef>,
             _chain_profile: ChainProfileId,
         ) -> Result<Option<Vec<u8>>, ChainError> {
-            let map = self
-                .storage
-                .lock()
-                .map_err(|e| ChainError::Internal {
-                    message: format!("lock poisoned: {e}"),
-                })?;
+            let map = self.storage.lock().map_err(|e| ChainError::Internal {
+                message: format!("lock poisoned: {e}"),
+            })?;
             Ok(map.get(storage_key).cloned())
         }
 
-        async fn dry_run_call(
-            &self,
-            _extrinsic: &[u8],
-        ) -> Result<DryRunResult, ChainError> {
+        async fn dry_run_call(&self, _extrinsic: &[u8]) -> Result<DryRunResult, ChainError> {
             Err(ChainError::Unsupported {
                 operation: "dry_run_call".into(),
             })

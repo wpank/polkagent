@@ -289,9 +289,7 @@ impl Theme {
 
     /// Title style (bone, bold) used for section headers.
     pub fn title_style(&self) -> Style {
-        Style::default()
-            .fg(self.bone)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(self.bone).add_modifier(Modifier::BOLD)
     }
 
     /// Dimmed text style for timestamps and secondary labels.

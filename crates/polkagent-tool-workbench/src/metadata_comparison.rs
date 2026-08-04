@@ -21,9 +21,7 @@ use polkagent_metadata::diff::{diff_metadata, generate_impact_brief, is_breaking
 use polkagent_tool::registry::{ToolContext, ToolError, ToolHandler, ToolResult, ToolSpec};
 
 use crate::error::WorkbenchError;
-use crate::types::{
-    ComparisonSummary, MetadataComparisonReport, PalletComparisonDetail,
-};
+use crate::types::{ComparisonSummary, MetadataComparisonReport, PalletComparisonDetail};
 
 // ---------------------------------------------------------------------------
 // MetadataComparisonTool
@@ -46,15 +44,14 @@ impl MetadataComparisonTool {
         Self { chain_client }
     }
 
-    async fn load_metadata(
-        &self,
-        source: &MetadataSource,
-    ) -> Result<Vec<u8>, WorkbenchError> {
+    async fn load_metadata(&self, source: &MetadataSource) -> Result<Vec<u8>, WorkbenchError> {
         match source {
             MetadataSource::FilePath(path) => {
-                tokio::fs::read(path).await.map_err(|e| WorkbenchError::Decode {
-                    message: format!("failed to read metadata file '{path}': {e}"),
-                })
+                tokio::fs::read(path)
+                    .await
+                    .map_err(|e| WorkbenchError::Decode {
+                        message: format!("failed to read metadata file '{path}': {e}"),
+                    })
             }
             MetadataSource::BlockNumber(block) => {
                 let key = build_metadata_key(*block);
@@ -191,17 +188,15 @@ impl ToolHandler for MetadataComparisonTool {
             "comparing metadata snapshots"
         );
 
-        let report = self
-            .compare(&old_source, &new_source)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed {
+        let report = self.compare(&old_source, &new_source).await.map_err(|e| {
+            ToolError::ExecutionFailed {
                 reason: e.to_string(),
-            })?;
+            }
+        })?;
 
-        let output =
-            serde_json::to_value(&report).map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("failed to serialize comparison report: {e}"),
-            })?;
+        let output = serde_json::to_value(&report).map_err(|e| ToolError::ExecutionFailed {
+            reason: format!("failed to serialize comparison report: {e}"),
+        })?;
 
         Ok(ToolResult {
             output,
@@ -349,7 +344,10 @@ mod tests {
         let input = serde_json::json!({ "old_block_number": 42 });
         let src = parse_source(&input, "old_block_number", "old_file_path", "old");
         assert!(src.is_ok());
-        assert_eq!(src.unwrap_or_else(|e| panic!("{e}")).to_string(), "block:42");
+        assert_eq!(
+            src.unwrap_or_else(|e| panic!("{e}")).to_string(),
+            "block:42"
+        );
     }
 
     #[test]

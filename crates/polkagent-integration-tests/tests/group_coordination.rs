@@ -6,9 +6,9 @@
 
 use polkagent_core::AgentId;
 use polkagent_group::{
-    Decision, GrantSpec, GroupBudget, GroupCoordinator, GroupError,
-    GroupMember, MemberRole, QuorumPolicy, QuorumResult, Vote, VoteDecision, check_quorum,
-    count_approvals, count_denials,
+    check_quorum, count_approvals, count_denials, Decision, GrantSpec, GroupBudget,
+    GroupCoordinator, GroupError, GroupMember, MemberRole, QuorumPolicy, QuorumResult, Vote,
+    VoteDecision,
 };
 
 // ---------------------------------------------------------------------------
@@ -158,8 +158,12 @@ fn record_spend_tracks_group_and_member_totals() {
         .set_budget(&group_id, GroupBudget::new(10_000, Some(1000), None))
         .expect("set budget");
 
-    coord.record_spend(&group_id, &owner, 300.0).expect("spend owner");
-    coord.record_spend(&group_id, &worker, 200.0).expect("spend worker");
+    coord
+        .record_spend(&group_id, &owner, 300.0)
+        .expect("spend owner");
+    coord
+        .record_spend(&group_id, &worker, 200.0)
+        .expect("spend worker");
 
     let group = coord.get_group(&group_id).expect("exists");
     assert_eq!(group.budget.total_spent(), 500);
@@ -194,7 +198,12 @@ fn quorum_unanimous_all_approve() {
     ];
     let result = check_quorum(&QuorumPolicy::Unanimous, &votes, 3);
     assert!(
-        matches!(result, QuorumResult::Reached { decision: Decision::Approved }),
+        matches!(
+            result,
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
+        ),
         "unanimous all-approve should reach quorum"
     );
 }
@@ -235,7 +244,12 @@ fn quorum_majority_more_than_half_approve() {
     ];
     let result = check_quorum(&QuorumPolicy::Majority, &votes, 3);
     assert!(
-        matches!(result, QuorumResult::Reached { decision: Decision::Approved }),
+        matches!(
+            result,
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
+        ),
         "majority 2/3 should reach quorum"
     );
 }
@@ -275,14 +289,15 @@ fn quorum_threshold_75_percent_three_of_four() {
         approve_vote(MemberRole::Worker),
         deny_vote(MemberRole::Worker),
     ];
-    let result = check_quorum(
-        &QuorumPolicy::Threshold { fraction: 0.75 },
-        &votes,
-        4,
-    );
+    let result = check_quorum(&QuorumPolicy::Threshold { fraction: 0.75 }, &votes, 4);
     // ceil(4 * 0.75) = 3 approvals required; 3 cast → reached
     assert!(
-        matches!(result, QuorumResult::Reached { decision: Decision::Approved }),
+        matches!(
+            result,
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
+        ),
         "3/4 = 75% should meet threshold"
     );
 }
@@ -294,11 +309,7 @@ fn quorum_threshold_fails_when_impossible_to_reach() {
         deny_vote(MemberRole::Worker),
         deny_vote(MemberRole::Worker),
     ];
-    let result = check_quorum(
-        &QuorumPolicy::Threshold { fraction: 0.75 },
-        &votes,
-        3,
-    );
+    let result = check_quorum(&QuorumPolicy::Threshold { fraction: 0.75 }, &votes, 3);
     // ceil(3 * 0.75) = 3, 0 approvals, 0 uncast → cannot reach
     assert!(
         matches!(result, QuorumResult::Failed(_)),
@@ -314,7 +325,12 @@ fn quorum_leader_only_leader_approve() {
     ];
     let result = check_quorum(&QuorumPolicy::LeaderOnly, &votes, 2);
     assert!(
-        matches!(result, QuorumResult::Reached { decision: Decision::Approved }),
+        matches!(
+            result,
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
+        ),
         "leader approval satisfies LeaderOnly"
     );
 }
@@ -342,7 +358,12 @@ fn quorum_observer_votes_ignored() {
     ];
     let result = check_quorum(&QuorumPolicy::Unanimous, &votes, 2);
     assert!(
-        matches!(result, QuorumResult::Reached { decision: Decision::Approved }),
+        matches!(
+            result,
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
+        ),
         "observer vote should not affect quorum"
     );
 }
@@ -480,7 +501,9 @@ fn per_member_budget_enforced_independently() {
         .expect("set budget");
 
     // Owner can spend up to 500
-    coord.record_spend(&group_id, &owner, 300.0).expect("owner spend");
+    coord
+        .record_spend(&group_id, &owner, 300.0)
+        .expect("owner spend");
     // Owner now has 200 headroom
     assert!(coord
         .check_member_budget(&group_id, &owner, 200.0)
@@ -503,7 +526,9 @@ fn record_spend_over_total_rejected_atomically() {
         .expect("set budget");
 
     // First spend succeeds
-    coord.record_spend(&group_id, &owner, 80.0).expect("first spend");
+    coord
+        .record_spend(&group_id, &owner, 80.0)
+        .expect("first spend");
 
     // Second spend would exceed total
     let result = coord.record_spend(&group_id, &owner, 25.0);
@@ -542,16 +567,28 @@ fn multiple_members_track_spend_separately() {
         .expect("set budget");
 
     coord.record_spend(&group_id, &owner, 100.0).expect("owner");
-    coord.record_spend(&group_id, &worker, 200.0).expect("worker");
+    coord
+        .record_spend(&group_id, &worker, 200.0)
+        .expect("worker");
 
     let group = coord.get_group(&group_id).expect("exists");
     assert_eq!(group.budget.total_spent(), 300);
     assert_eq!(
-        group.budget.member_spent.get(&owner.to_string()).copied().unwrap_or(0),
+        group
+            .budget
+            .member_spent
+            .get(&owner.to_string())
+            .copied()
+            .unwrap_or(0),
         100
     );
     assert_eq!(
-        group.budget.member_spent.get(&worker.to_string()).copied().unwrap_or(0),
+        group
+            .budget
+            .member_spent
+            .get(&worker.to_string())
+            .copied()
+            .unwrap_or(0),
         200
     );
 }

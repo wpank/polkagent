@@ -120,11 +120,12 @@ impl ToolHandler for VoterHistoryTool {
             "looking up voter history"
         );
 
-        let mut votes = self.lookup_votes(account).await.map_err(|e| {
-            ToolError::ExecutionFailed {
-                reason: e.to_string(),
-            }
-        })?;
+        let mut votes =
+            self.lookup_votes(account)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
+                    reason: e.to_string(),
+                })?;
 
         if let Some(max) = limit {
             votes.truncate(max);
@@ -168,20 +169,14 @@ mod tests {
     fn spec_has_correct_name() {
         let client = Arc::new(MockChainClient::new());
         let tool = VoterHistoryTool::new(client);
-        assert_eq!(
-            tool.spec().name,
-            "polkagent.governance.voter_history"
-        );
+        assert_eq!(tool.spec().name, "polkagent.governance.voter_history");
     }
 
     #[test]
     fn spec_requires_chain_query_grant() {
         let client = Arc::new(MockChainClient::new());
         let tool = VoterHistoryTool::new(client);
-        assert_eq!(
-            tool.spec().required_grant,
-            Some("chain.query".to_string())
-        );
+        assert_eq!(tool.spec().required_grant, Some("chain.query".to_string()));
     }
 
     #[test]

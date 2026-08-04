@@ -372,9 +372,7 @@ mod tests {
         };
         assert_eq!(manifest.sandbox_tier(), SandboxTier::Wasm);
 
-        manager
-            .load_plugins(vec![manifest])
-            .expect("should load");
+        manager.load_plugins(vec![manifest]).expect("should load");
 
         // The wasm sandbox should have the plugin registered.
         assert_eq!(manager.wasm_sandbox().plugin_count(), 1);

@@ -102,10 +102,7 @@ impl Session {
     ) -> Result<(), PcaError> {
         if self.state != SessionState::Handshaking {
             return Err(PcaError::KeyExchangeFailed {
-                reason: format!(
-                    "cannot complete handshake in state {:?}",
-                    self.state
-                ),
+                reason: format!("cannot complete handshake in state {:?}", self.state),
             });
         }
 
@@ -274,8 +271,7 @@ impl Session {
 
     /// Check if the session has expired based on the configured timeout.
     pub fn is_expired(&self) -> bool {
-        self.state == SessionState::Expired
-            || self.last_active.elapsed() > self.timeout
+        self.state == SessionState::Expired || self.last_active.elapsed() > self.timeout
     }
 
     /// Mark the session as expired.
@@ -378,9 +374,13 @@ mod tests {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
 
         // Bob accepts
-        let (mut bob, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("bob accept");
+        let (mut bob, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("bob accept");
 
         // Alice completes
         alice
@@ -413,10 +413,16 @@ mod tests {
     #[test]
     fn decrypt_fails_with_out_of_order_sequence() {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
-        let (mut bob, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("accept");
-        alice.complete_handshake(&bob_pub, "5Bob...".into()).expect("complete");
+        let (mut bob, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("accept");
+        alice
+            .complete_handshake(&bob_pub, "5Bob...".into())
+            .expect("complete");
 
         // Encrypt two messages
         let _env0 = alice.encrypt(b"first").expect("encrypt");
@@ -437,10 +443,16 @@ mod tests {
     #[test]
     fn key_rotation_works() {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
-        let (mut bob, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("accept");
-        alice.complete_handshake(&bob_pub, "5Bob...".into()).expect("complete");
+        let (mut bob, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("accept");
+        alice
+            .complete_handshake(&bob_pub, "5Bob...".into())
+            .expect("complete");
 
         // Send a message before rotation
         let env_pre = alice.encrypt(b"before rotation").expect("encrypt");
@@ -458,7 +470,9 @@ mod tests {
         // this would be bidirectional. For our test, Alice applies her own
         // rotation to complete it.
         let peer_pub_bytes = bob.local_keypair.public_key_bytes();
-        alice.apply_rotation(&peer_pub_bytes).expect("apply rotation");
+        alice
+            .apply_rotation(&peer_pub_bytes)
+            .expect("apply rotation");
 
         assert_eq!(alice.state(), SessionState::Active);
         assert_eq!(bob.state(), SessionState::Active);
@@ -474,10 +488,16 @@ mod tests {
     #[test]
     fn expired_session_rejects_operations() {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
-        let (_, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("accept");
-        alice.complete_handshake(&bob_pub, "5Bob...".into()).expect("complete");
+        let (_, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("accept");
+        alice
+            .complete_handshake(&bob_pub, "5Bob...".into())
+            .expect("complete");
 
         alice.expire();
         assert_eq!(alice.state(), SessionState::Expired);
@@ -489,10 +509,16 @@ mod tests {
     #[test]
     fn session_reports_peer_info() {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
-        let (_, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("accept");
-        alice.complete_handshake(&bob_pub, "5Bob...".into()).expect("complete");
+        let (_, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("accept");
+        alice
+            .complete_handshake(&bob_pub, "5Bob...".into())
+            .expect("complete");
 
         assert_eq!(alice.local_address(), "5Alice...");
         assert_eq!(alice.peer_address(), Some("5Bob..."));
@@ -507,10 +533,16 @@ mod tests {
     #[test]
     fn multiple_messages_maintain_sequence() {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
-        let (mut bob, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("accept");
-        alice.complete_handshake(&bob_pub, "5Bob...".into()).expect("complete");
+        let (mut bob, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("accept");
+        alice
+            .complete_handshake(&bob_pub, "5Bob...".into())
+            .expect("complete");
 
         for i in 0..10u32 {
             let msg = format!("message-{i}");
@@ -524,10 +556,16 @@ mod tests {
     #[test]
     fn rotation_resets_nonce_counters() {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
-        let (mut bob, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("accept");
-        alice.complete_handshake(&bob_pub, "5Bob...".into()).expect("complete");
+        let (mut bob, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("accept");
+        alice
+            .complete_handshake(&bob_pub, "5Bob...".into())
+            .expect("complete");
 
         // Send some messages to advance nonce counters.
         for _ in 0..5 {
@@ -551,11 +589,17 @@ mod tests {
     #[test]
     fn cannot_complete_handshake_twice() {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
-        let (_, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("accept");
+        let (_, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("accept");
 
-        alice.complete_handshake(&bob_pub, "5Bob...".into()).expect("complete");
+        alice
+            .complete_handshake(&bob_pub, "5Bob...".into())
+            .expect("complete");
 
         // Second complete should fail because state is Active, not Handshaking.
         let result = alice.complete_handshake(&bob_pub, "5Bob...".into());
@@ -565,10 +609,16 @@ mod tests {
     #[test]
     fn envelope_serializes_to_json() {
         let (mut alice, alice_pub) = Session::initiate("5Alice...".into(), test_timeout());
-        let (_, bob_pub) =
-            Session::accept("5Bob...".into(), &alice_pub, "5Alice...".into(), test_timeout())
-                .expect("accept");
-        alice.complete_handshake(&bob_pub, "5Bob...".into()).expect("complete");
+        let (_, bob_pub) = Session::accept(
+            "5Bob...".into(),
+            &alice_pub,
+            "5Alice...".into(),
+            test_timeout(),
+        )
+        .expect("accept");
+        alice
+            .complete_handshake(&bob_pub, "5Bob...".into())
+            .expect("complete");
 
         let envelope = alice.encrypt(b"test message").expect("encrypt");
         let json = serde_json::to_string(&envelope).expect("serialize");

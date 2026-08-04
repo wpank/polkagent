@@ -9,7 +9,9 @@
 
 use polkagent_core::now;
 use polkagent_metadata::error::MetadataError;
-use polkagent_metadata::types::{ChainId, MetadataDrift, MetadataHash, MetadataSnapshot, MetadataVersion};
+use polkagent_metadata::types::{
+    ChainId, MetadataDrift, MetadataHash, MetadataSnapshot, MetadataVersion,
+};
 use polkagent_metadata::{DriftDetector, MetadataService, PinStore};
 use std::time::Duration;
 
@@ -179,13 +181,17 @@ fn md03_drift_struct_has_structured_fields() {
     };
 
     // All fields are strongly typed — not a string blob.
-    assert_eq!(drift.chain_id, chain, "MD-03: chain_id must be ChainId type");
+    assert_eq!(
+        drift.chain_id, chain,
+        "MD-03: chain_id must be ChainId type"
+    );
     assert_ne!(
         drift.pinned_hash, drift.current_hash,
         "MD-03: pinned and current hashes must differ"
     );
     assert_eq!(
-        drift.affected_pallets.len(), 2,
+        drift.affected_pallets.len(),
+        2,
         "MD-03: affected_pallets must enumerate specific pallets"
     );
 }
@@ -203,8 +209,8 @@ fn md03_drift_serde_produces_structured_json() {
     };
 
     let json = serde_json::to_string(&drift).expect("MD-03: drift must serialize to JSON");
-    let parsed: serde_json::Value = serde_json::from_str(&json)
-        .expect("MD-03: serialized drift must parse as valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json).expect("MD-03: serialized drift must parse as valid JSON");
 
     // Must be a JSON object, not a string or array.
     assert!(
@@ -213,10 +219,22 @@ fn md03_drift_serde_produces_structured_json() {
     );
 
     // Key fields must be present.
-    assert!(parsed["chain_id"].is_string(), "MD-03: chain_id must be a string field");
-    assert!(parsed["pinned_hash"].is_string(), "MD-03: pinned_hash must be a string field");
-    assert!(parsed["current_hash"].is_string(), "MD-03: current_hash must be a string field");
-    assert!(parsed["affected_pallets"].is_array(), "MD-03: affected_pallets must be an array");
+    assert!(
+        parsed["chain_id"].is_string(),
+        "MD-03: chain_id must be a string field"
+    );
+    assert!(
+        parsed["pinned_hash"].is_string(),
+        "MD-03: pinned_hash must be a string field"
+    );
+    assert!(
+        parsed["current_hash"].is_string(),
+        "MD-03: current_hash must be a string field"
+    );
+    assert!(
+        parsed["affected_pallets"].is_array(),
+        "MD-03: affected_pallets must be an array"
+    );
 }
 
 #[test]
@@ -232,9 +250,18 @@ fn md03_drift_serde_round_trip_preserves_all_fields() {
     let json = serde_json::to_string(&original).expect("serialize");
     let back: MetadataDrift = serde_json::from_str(&json).expect("deserialize");
 
-    assert_eq!(back.chain_id, original.chain_id, "MD-03: chain_id round-trips");
-    assert_eq!(back.pinned_hash, original.pinned_hash, "MD-03: pinned_hash round-trips");
-    assert_eq!(back.current_hash, original.current_hash, "MD-03: current_hash round-trips");
+    assert_eq!(
+        back.chain_id, original.chain_id,
+        "MD-03: chain_id round-trips"
+    );
+    assert_eq!(
+        back.pinned_hash, original.pinned_hash,
+        "MD-03: pinned_hash round-trips"
+    );
+    assert_eq!(
+        back.current_hash, original.current_hash,
+        "MD-03: current_hash round-trips"
+    );
     assert_eq!(
         back.affected_pallets, original.affected_pallets,
         "MD-03: affected_pallets round-trips"
@@ -275,11 +302,20 @@ fn md03_two_snapshots_produce_drift_with_correct_hashes() {
     );
     let drift = svc.register_snapshot(snap_v2);
 
-    assert!(drift.is_some(), "MD-03: v2 registration after pinning v1 must produce drift");
+    assert!(
+        drift.is_some(),
+        "MD-03: v2 registration after pinning v1 must produce drift"
+    );
     let d = drift.unwrap();
 
-    assert_eq!(d.pinned_hash, expected_v1_hash, "MD-03: pinned_hash must be the v1 hash");
-    assert_eq!(d.current_hash, expected_v2_hash, "MD-03: current_hash must be the v2 hash");
+    assert_eq!(
+        d.pinned_hash, expected_v1_hash,
+        "MD-03: pinned_hash must be the v1 hash"
+    );
+    assert_eq!(
+        d.current_hash, expected_v2_hash,
+        "MD-03: current_hash must be the v2 hash"
+    );
     assert_ne!(d.pinned_hash, d.current_hash, "MD-03: hashes must differ");
 }
 
@@ -340,9 +376,15 @@ fn md03_drift_detector_check_matches_pin_store() {
     let pinned_records = pins.get_pinned(&chain);
     let drift = detector.check(&chain, &current_snap, &pinned_records);
 
-    assert!(drift.is_some(), "MD-03: drift detector must find drift between pinned and current");
+    assert!(
+        drift.is_some(),
+        "MD-03: drift detector must find drift between pinned and current"
+    );
     let d = drift.unwrap();
-    assert_eq!(d.pinned_hash, pinned_hash, "MD-03: pinned_hash in drift must match pin store");
+    assert_eq!(
+        d.pinned_hash, pinned_hash,
+        "MD-03: pinned_hash in drift must match pin store"
+    );
     assert_eq!(
         d.current_hash, current_snap.hash,
         "MD-03: current_hash in drift must match current snapshot"
@@ -434,7 +476,8 @@ fn md05_semantic_drift_detected_via_service() {
     let old_hash = MetadataHash::from_bytes(old_meta);
 
     svc.register_snapshot(snap_old);
-    svc.pin_current(&chain, "v1000-u64-balance").expect("pin old");
+    svc.pin_current(&chain, "v1000-u64-balance")
+        .expect("pin old");
 
     // "New" metadata: Balance is u128 (type change — semantic drift).
     let new_meta = b"Balances::Balance: u128; version=1001";
@@ -455,9 +498,18 @@ fn md05_semantic_drift_detected_via_service() {
     );
 
     let d = drift.unwrap();
-    assert_eq!(d.chain_id, chain, "MD-05: drift must reference correct chain");
-    assert_eq!(d.pinned_hash, old_hash, "MD-05: pinned hash must be the old u64 hash");
-    assert_eq!(d.current_hash, new_hash, "MD-05: current hash must be the new u128 hash");
+    assert_eq!(
+        d.chain_id, chain,
+        "MD-05: drift must reference correct chain"
+    );
+    assert_eq!(
+        d.pinned_hash, old_hash,
+        "MD-05: pinned hash must be the old u64 hash"
+    );
+    assert_eq!(
+        d.current_hash, new_hash,
+        "MD-05: current hash must be the new u128 hash"
+    );
     assert_ne!(
         d.pinned_hash, d.current_hash,
         "MD-05: type change must produce hash mismatch (semantic drift detected)"
@@ -479,7 +531,8 @@ fn md05_hash_length_is_always_64_chars() {
     for input in inputs {
         let hash = MetadataHash::from_bytes(input);
         assert_eq!(
-            hash.0.len(), 64,
+            hash.0.len(),
+            64,
             "MD-05: BLAKE3 hash must always be 64 hex chars, got {} for input of len {}",
             hash.0.len(),
             input.len()
@@ -568,24 +621,42 @@ fn cross_multiple_chains_drift_isolated_per_chain() {
 
     // Pin v1 for both chains.
     svc.register_snapshot(MetadataSnapshot::new(
-        polkadot.clone(), MetadataVersion::V14, b"pdot_v1".to_vec(), now(), 1000,
+        polkadot.clone(),
+        MetadataVersion::V14,
+        b"pdot_v1".to_vec(),
+        now(),
+        1000,
     ));
     svc.pin_current(&polkadot, "pdot-v1").expect("pin pdot");
 
     svc.register_snapshot(MetadataSnapshot::new(
-        kusama.clone(), MetadataVersion::V14, b"ksm_v1".to_vec(), now(), 1000,
+        kusama.clone(),
+        MetadataVersion::V14,
+        b"ksm_v1".to_vec(),
+        now(),
+        1000,
     ));
     svc.pin_current(&kusama, "ksm-v1").expect("pin ksm");
 
     // Upgrade only Polkadot.
     let pdot_drift = svc.register_snapshot(MetadataSnapshot::new(
-        polkadot.clone(), MetadataVersion::V14, b"pdot_v2".to_vec(), now(), 1001,
+        polkadot.clone(),
+        MetadataVersion::V14,
+        b"pdot_v2".to_vec(),
+        now(),
+        1001,
     ));
 
     // Polkadot: drift detected.
-    assert!(pdot_drift.is_some(), "Drift must be detected for upgraded Polkadot");
+    assert!(
+        pdot_drift.is_some(),
+        "Drift must be detected for upgraded Polkadot"
+    );
 
     // Kusama: no drift.
     let ksm_drift = svc.check_drift(&kusama);
-    assert!(ksm_drift.is_none(), "Kusama must not show drift — it was not upgraded");
+    assert!(
+        ksm_drift.is_none(),
+        "Kusama must not show drift — it was not upgraded"
+    );
 }

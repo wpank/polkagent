@@ -72,9 +72,9 @@ pub use execution::{
     TaskResult,
 };
 pub use memory_store::MemoryGroupStore;
-pub use propagation::{GroupEvidence, aggregate_evidence, propagate_cancellation};
+pub use propagation::{aggregate_evidence, propagate_cancellation, GroupEvidence};
 pub use quorum::{
-    Decision, QuorumResult, Vote, VoteDecision, check_quorum, count_approvals, count_denials,
+    check_quorum, count_approvals, count_denials, Decision, QuorumResult, Vote, VoteDecision,
 };
 pub use store::GroupStore;
 pub use types::{

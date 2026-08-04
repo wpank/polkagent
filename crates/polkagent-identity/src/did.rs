@@ -154,9 +154,7 @@ impl MockDidVerifier {
         }
 
         // Trust-all mode: empty trusted_issuers means accept any issuer.
-        if !self.trusted_issuers.is_empty()
-            && !self.trusted_issuers.contains(&credential.issuer)
-        {
+        if !self.trusted_issuers.is_empty() && !self.trusted_issuers.contains(&credential.issuer) {
             return DidVerificationResult::UntrustedIssuer(credential.issuer.0.clone());
         }
 
@@ -217,16 +215,12 @@ mod tests {
     fn mock_verifier_rejects_untrusted_issuer() {
         let verifier = MockDidVerifier::new(vec![Did("did:web:trusted.com".to_string())]);
         let result = verifier.verify(&sample_credential());
-        assert!(matches!(
-            result,
-            DidVerificationResult::UntrustedIssuer(_)
-        ));
+        assert!(matches!(result, DidVerificationResult::UntrustedIssuer(_)));
     }
 
     #[test]
     fn mock_verifier_accepts_trusted_issuer() {
-        let verifier =
-            MockDidVerifier::new(vec![Did("did:web:issuer.example.com".to_string())]);
+        let verifier = MockDidVerifier::new(vec![Did("did:web:issuer.example.com".to_string())]);
         let result = verifier.verify(&sample_credential());
         assert!(result.is_valid());
     }

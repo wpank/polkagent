@@ -109,12 +109,8 @@ pub fn validate_escrow_transition(
     to: EscrowStatus,
 ) -> Result<(), PaymentError> {
     let valid = match from {
-        EscrowStatus::Proposed => {
-            to == EscrowStatus::Funded || to == EscrowStatus::Cancelled
-        }
-        EscrowStatus::Funded => {
-            to == EscrowStatus::Active || to == EscrowStatus::Cancelled
-        }
+        EscrowStatus::Proposed => to == EscrowStatus::Funded || to == EscrowStatus::Cancelled,
+        EscrowStatus::Funded => to == EscrowStatus::Active || to == EscrowStatus::Cancelled,
         EscrowStatus::Active => {
             to == EscrowStatus::AwaitingRelease
                 || to == EscrowStatus::Expired
@@ -123,9 +119,7 @@ pub fn validate_escrow_transition(
         EscrowStatus::AwaitingRelease => {
             to == EscrowStatus::Released || to == EscrowStatus::Disputed
         }
-        EscrowStatus::Disputed => {
-            to == EscrowStatus::Resolved || to == EscrowStatus::Refunded
-        }
+        EscrowStatus::Disputed => to == EscrowStatus::Resolved || to == EscrowStatus::Refunded,
         // Terminal states accept no further transitions.
         EscrowStatus::Released
         | EscrowStatus::Expired
@@ -292,7 +286,10 @@ mod tests {
         assert_eq!(EscrowStatus::Proposed.to_string(), "proposed");
         assert_eq!(EscrowStatus::Funded.to_string(), "funded");
         assert_eq!(EscrowStatus::Active.to_string(), "active");
-        assert_eq!(EscrowStatus::AwaitingRelease.to_string(), "awaiting_release");
+        assert_eq!(
+            EscrowStatus::AwaitingRelease.to_string(),
+            "awaiting_release"
+        );
         assert_eq!(EscrowStatus::Released.to_string(), "released");
         assert_eq!(EscrowStatus::Expired.to_string(), "expired");
         assert_eq!(EscrowStatus::Disputed.to_string(), "disputed");
@@ -360,19 +357,13 @@ mod tests {
 
     #[test]
     fn valid_dispute_path() {
-        assert!(
-            validate_escrow_transition(EscrowStatus::Active, EscrowStatus::Disputed).is_ok()
-        );
+        assert!(validate_escrow_transition(EscrowStatus::Active, EscrowStatus::Disputed).is_ok());
         assert!(
             validate_escrow_transition(EscrowStatus::AwaitingRelease, EscrowStatus::Disputed)
                 .is_ok()
         );
-        assert!(
-            validate_escrow_transition(EscrowStatus::Disputed, EscrowStatus::Resolved).is_ok()
-        );
-        assert!(
-            validate_escrow_transition(EscrowStatus::Disputed, EscrowStatus::Refunded).is_ok()
-        );
+        assert!(validate_escrow_transition(EscrowStatus::Disputed, EscrowStatus::Resolved).is_ok());
+        assert!(validate_escrow_transition(EscrowStatus::Disputed, EscrowStatus::Refunded).is_ok());
     }
 
     #[test]
@@ -380,9 +371,7 @@ mod tests {
         assert!(
             validate_escrow_transition(EscrowStatus::Proposed, EscrowStatus::Cancelled).is_ok()
         );
-        assert!(
-            validate_escrow_transition(EscrowStatus::Funded, EscrowStatus::Cancelled).is_ok()
-        );
+        assert!(validate_escrow_transition(EscrowStatus::Funded, EscrowStatus::Cancelled).is_ok());
     }
 
     #[test]
@@ -410,23 +399,17 @@ mod tests {
 
     #[test]
     fn invalid_skip_transition() {
-        assert!(
-            validate_escrow_transition(EscrowStatus::Proposed, EscrowStatus::Active).is_err()
-        );
+        assert!(validate_escrow_transition(EscrowStatus::Proposed, EscrowStatus::Active).is_err());
     }
 
     #[test]
     fn invalid_backward_transition() {
-        assert!(
-            validate_escrow_transition(EscrowStatus::Active, EscrowStatus::Proposed).is_err()
-        );
+        assert!(validate_escrow_transition(EscrowStatus::Active, EscrowStatus::Proposed).is_err());
     }
 
     #[test]
     fn cannot_cancel_during_active_work() {
-        assert!(
-            validate_escrow_transition(EscrowStatus::Active, EscrowStatus::Cancelled).is_err()
-        );
+        assert!(validate_escrow_transition(EscrowStatus::Active, EscrowStatus::Cancelled).is_err());
     }
 
     // --- EscrowStateMachine ---
@@ -442,7 +425,8 @@ mod tests {
     #[test]
     fn transition_records_history() {
         let mut sm = EscrowStateMachine::new(test_agreement());
-        sm.transition(EscrowStatus::Funded).expect("valid transition");
+        sm.transition(EscrowStatus::Funded)
+            .expect("valid transition");
         assert_eq!(sm.current_status(), EscrowStatus::Funded);
         assert_eq!(sm.history().len(), 2);
         assert_eq!(sm.history()[1].0, EscrowStatus::Funded);

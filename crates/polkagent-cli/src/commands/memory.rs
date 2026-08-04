@@ -3,13 +3,13 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::info;
 use polkagent_core::ids::AgentId;
 use polkagent_memory::retention::{RetentionPolicy, RetentionSweeper};
 use polkagent_memory::sqlite::SqliteMemoryStore;
 use polkagent_memory::store::MemoryStore;
 use polkagent_memory::types::{MemoryId, MemoryType};
 use polkagent_memory::MemoryService;
+use tracing::info;
 
 use crate::cli::{
     MemoryCmd, MemoryExportCmd, MemoryForgetCmd, MemoryImportCmd, MemoryListCmd, MemorySearchCmd,
@@ -167,10 +167,7 @@ fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
             } else if entries.is_empty() {
                 println!("No memories found.");
             } else {
-                println!(
-                    "{:<36}  {:<12}  {:<8}  Content",
-                    "ID", "Type", "Score"
-                );
+                println!("{:<36}  {:<12}  {:<8}  Content", "ID", "Type", "Score");
                 println!("{}", "-".repeat(100));
                 for entry in &entries {
                     println!(
@@ -328,9 +325,7 @@ fn export(cmd: &MemoryExportCmd, svc: &MemoryService) -> Result<()> {
 
     match result {
         Ok(count) => {
-            let file_size = std::fs::metadata(path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
             if cmd.json {
                 let out = serde_json::json!({
@@ -449,8 +444,7 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
         // without actually deleting anything.
         let result = rt.block_on(async {
             // Count entries that would be deleted by age.
-            let cutoff = chrono::Utc::now()
-                - chrono::Duration::days(policy.max_age_days as i64);
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(policy.max_age_days as i64);
             let all_query = polkagent_memory::types::MemoryQuery {
                 agent_id: Some(agent_id),
                 query_text: String::new(),
@@ -462,10 +456,7 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
             };
             let all_entries = store.search(&all_query).await?;
 
-            let by_age = all_entries
-                .iter()
-                .filter(|e| e.created_at < cutoff)
-                .count();
+            let by_age = all_entries.iter().filter(|e| e.created_at < cutoff).count();
 
             let remaining_after_age: Vec<_> = all_entries
                 .iter()
@@ -517,8 +508,7 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
             }
         }
     } else {
-        let sweeper =
-            RetentionSweeper::new(Arc::new(store.clone()), policy, agent_id);
+        let sweeper = RetentionSweeper::new(Arc::new(store.clone()), policy, agent_id);
 
         let result = rt.block_on(async { sweeper.sweep().await });
 

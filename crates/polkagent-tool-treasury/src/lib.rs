@@ -144,9 +144,7 @@ mod tests {
         register_treasury_tools(&mut registry);
 
         for spec in registry.list() {
-            let has_account_id = spec.input_schema["properties"]
-                .get("account_id")
-                .is_some();
+            let has_account_id = spec.input_schema["properties"].get("account_id").is_some();
             assert!(
                 has_account_id,
                 "tool '{}' should have account_id in input schema",
@@ -180,9 +178,15 @@ mod tests {
 
         assert!(registry.get("polkagent.treasury.balance_query").is_some());
         assert!(registry.get("polkagent.treasury.staking_info").is_some());
-        assert!(registry.get("polkagent.treasury.portfolio_summary").is_some());
-        assert!(registry.get("polkagent.treasury.transfer_history").is_some());
-        assert!(registry.get("polkagent.treasury.vesting_schedule").is_some());
+        assert!(registry
+            .get("polkagent.treasury.portfolio_summary")
+            .is_some());
+        assert!(registry
+            .get("polkagent.treasury.transfer_history")
+            .is_some());
+        assert!(registry
+            .get("polkagent.treasury.vesting_schedule")
+            .is_some());
     }
 
     #[test]

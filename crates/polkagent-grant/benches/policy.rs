@@ -15,7 +15,7 @@ use polkagent_core::ids::{AgentId, GrantId, RunId};
 use polkagent_grant::{
     budget::BudgetTracker,
     grant::{ActiveGrant, EffectSet, GrantLimits, GrantResolver, ResolverConfig},
-    policy::{Effect, EvaluationContext, PolicyRule, PolicySet, evaluate},
+    policy::{evaluate, Effect, EvaluationContext, PolicyRule, PolicySet},
 };
 
 // ---------------------------------------------------------------------------
@@ -46,9 +46,11 @@ fn make_deny_rule(id: &str, action: &str, resource: &str) -> PolicyRule {
 
 /// One allow rule, action "chain/transfer", resource "account/**".
 fn simple_allow_set() -> PolicySet {
-    PolicySet::new(vec![
-        make_allow_rule("allow-transfer", "chain/transfer", "account/**"),
-    ])
+    PolicySet::new(vec![make_allow_rule(
+        "allow-transfer",
+        "chain/transfer",
+        "account/**",
+    )])
 }
 
 /// 10 rules: first 9 are allow for unrelated actions, rule 10 is a deny.
@@ -124,10 +126,13 @@ fn bench_grant_intersection(c: &mut Criterion) {
 
     // With a pre-issued active grant — exercises the active-grant lookup path.
     let resolver_with_grant = rt.block_on(async {
-        let r = GrantResolver::new(PolicySet::default(), ResolverConfig {
-            max_context_age: None,
-            default_grant_ttl: Duration::hours(1),
-        });
+        let r = GrantResolver::new(
+            PolicySet::default(),
+            ResolverConfig {
+                max_context_age: None,
+                default_grant_ttl: Duration::hours(1),
+            },
+        );
         r.add_active_grant(ActiveGrant {
             grant_id: GrantId::new(),
             principal: "alice".to_string(),

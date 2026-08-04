@@ -110,11 +110,7 @@ impl DecodeService {
     /// | Cached metadata is older than `max_age` | [`MetadataError::StaleMetadata`] (AC-P2-004) |
     /// | Raw metadata bytes cannot be parsed | [`MetadataError::Codec`] |
     /// | SCALE decoding of extrinsic fails | [`MetadataError::Codec`] |
-    pub fn decode_extrinsic(
-        &self,
-        chain: &str,
-        raw_bytes: &[u8],
-    ) -> Result<DecodedExtrinsic> {
+    pub fn decode_extrinsic(&self, chain: &str, raw_bytes: &[u8]) -> Result<DecodedExtrinsic> {
         let metadata = self.require_fresh_metadata(chain)?;
 
         // The codec's `decode_call_with_metadata` expects bare call bytes
@@ -185,11 +181,12 @@ impl DecodeService {
         let chain_id = ChainId::new(chain);
 
         // Retrieve the latest cached snapshot.
-        let snapshot = self.service.get_snapshot(&chain_id).ok_or_else(|| {
-            MetadataError::NotFound {
-                chain_id: chain_id.clone(),
-            }
-        })?;
+        let snapshot =
+            self.service
+                .get_snapshot(&chain_id)
+                .ok_or_else(|| MetadataError::NotFound {
+                    chain_id: chain_id.clone(),
+                })?;
 
         // Reject stale metadata (AC-P2-004).
         if self.service.is_stale(&chain_id, self.max_age) {
@@ -376,13 +373,7 @@ mod tests {
 
     /// Register a snapshot in the service's cache.
     fn register(svc: &MetadataService, chain: &str, raw: Vec<u8>) {
-        let snap = MetadataSnapshot::new(
-            ChainId::new(chain),
-            MetadataVersion::V14,
-            raw,
-            now(),
-            1,
-        );
+        let snap = MetadataSnapshot::new(ChainId::new(chain), MetadataVersion::V14, raw, now(), 1);
         svc.register_snapshot(snap);
     }
 
@@ -472,7 +463,10 @@ mod tests {
             "expected NotFound, got: {err:?}"
         );
         let msg = format!("{err}");
-        assert!(msg.contains("polkadot"), "error message should contain chain name: {msg}");
+        assert!(
+            msg.contains("polkadot"),
+            "error message should contain chain name: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -485,8 +479,7 @@ mod tests {
         let meta_bytes = minimal_meta_bytes(&[("System", 0)]);
 
         // Register a snapshot that was fetched 2 hours ago.
-        let old_ts =
-            chrono::Utc::now() - chrono::Duration::seconds(7200);
+        let old_ts = chrono::Utc::now() - chrono::Duration::seconds(7200);
         let snap = MetadataSnapshot::new(
             ChainId::new("polkadot"),
             MetadataVersion::V14,
@@ -509,7 +502,10 @@ mod tests {
             "expected StaleMetadata (AC-P2-004), got: {err:?}"
         );
         let msg = format!("{err}");
-        assert!(msg.contains("polkadot"), "stale error should contain chain name: {msg}");
+        assert!(
+            msg.contains("polkadot"),
+            "stale error should contain chain name: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -564,7 +560,10 @@ mod tests {
 
         let ext_bytes = signed_extrinsic_with_genesis(sender, genesis, 0, 0);
         let result = decode_svc.decode_with_validation("polkadot", &ext_bytes, &genesis);
-        assert!(result.is_ok(), "should succeed with matching genesis: {result:?}");
+        assert!(
+            result.is_ok(),
+            "should succeed with matching genesis: {result:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -584,7 +583,10 @@ mod tests {
 
         // Unsigned extrinsics have no embedded genesis — validation should pass.
         let result = decode_svc.decode_with_validation("polkadot", &ext_bytes, &genesis);
-        assert!(result.is_ok(), "unsigned extrinsic should pass validation: {result:?}");
+        assert!(
+            result.is_ok(),
+            "unsigned extrinsic should pass validation: {result:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -601,7 +603,9 @@ mod tests {
 
         // First call should parse and cache.
         let ext1 = unsigned_extrinsic(0, 0, &[]);
-        let _ = decode_svc.decode_extrinsic("polkadot", &ext1).expect("first decode");
+        let _ = decode_svc
+            .decode_extrinsic("polkadot", &ext1)
+            .expect("first decode");
 
         // The parsed cache should now have an entry for "polkadot".
         {
@@ -614,7 +618,9 @@ mod tests {
 
         // Second call should hit the cache (no re-parse).
         let ext2 = unsigned_extrinsic(5, 0, &[]);
-        let result = decode_svc.decode_extrinsic("polkadot", &ext2).expect("second decode");
+        let result = decode_svc
+            .decode_extrinsic("polkadot", &ext2)
+            .expect("second decode");
         assert_eq!(result.pallet_index, 5);
     }
 
@@ -633,7 +639,9 @@ mod tests {
         let decode_svc = DecodeService::new(svc.clone(), Duration::from_secs(3600));
 
         let ext = unsigned_extrinsic(0, 0, &[]);
-        let r1 = decode_svc.decode_extrinsic("polkadot", &ext).expect("decode v1");
+        let r1 = decode_svc
+            .decode_extrinsic("polkadot", &ext)
+            .expect("decode v1");
         assert_eq!(r1.pallet_name.as_deref(), Some("System"));
 
         // Now register v2 metadata that adds a Balances pallet.
@@ -642,7 +650,9 @@ mod tests {
 
         // Decoding pallet 5 should work after the cache is refreshed.
         let ext2 = unsigned_extrinsic(5, 0, &[]);
-        let r2 = decode_svc.decode_extrinsic("polkadot", &ext2).expect("decode v2");
+        let r2 = decode_svc
+            .decode_extrinsic("polkadot", &ext2)
+            .expect("decode v2");
         assert_eq!(r2.pallet_index, 5);
         assert_eq!(r2.pallet_name.as_deref(), Some("Balances"));
     }
@@ -662,7 +672,9 @@ mod tests {
 
         // Extrinsic targeting Balances (5), call index 3 (transferKeepAlive).
         let ext_bytes = unsigned_extrinsic(5, 3, &[0xDE, 0xAD]);
-        let decoded = decode_svc.decode_extrinsic("polkadot", &ext_bytes).expect("decode");
+        let decoded = decode_svc
+            .decode_extrinsic("polkadot", &ext_bytes)
+            .expect("decode");
 
         assert_eq!(decoded.pallet_index, 5);
         assert_eq!(decoded.call_index, 3);
@@ -684,7 +696,9 @@ mod tests {
         let decode_svc = DecodeService::new(svc, Duration::from_secs(3600));
 
         let ext_bytes = unsigned_extrinsic(0, 1, &[]);
-        let decoded = decode_svc.decode_extrinsic("polkadot", &ext_bytes).expect("decode");
+        let decoded = decode_svc
+            .decode_extrinsic("polkadot", &ext_bytes)
+            .expect("decode");
         assert_eq!(decoded.pallet_index, 0);
         assert_eq!(decoded.pallet_name.as_deref(), Some("System"));
     }
@@ -706,16 +720,22 @@ mod tests {
         let decode_svc = DecodeService::new(svc, Duration::from_secs(3600));
 
         let pdot_ext = unsigned_extrinsic(5, 0, &[]);
-        let pdot = decode_svc.decode_extrinsic("polkadot", &pdot_ext).expect("polkadot decode");
+        let pdot = decode_svc
+            .decode_extrinsic("polkadot", &pdot_ext)
+            .expect("polkadot decode");
         assert_eq!(pdot.pallet_name.as_deref(), Some("Balances"));
 
         let ksm_ext = unsigned_extrinsic(7, 0, &[]);
-        let ksm = decode_svc.decode_extrinsic("kusama", &ksm_ext).expect("kusama decode");
+        let ksm = decode_svc
+            .decode_extrinsic("kusama", &ksm_ext)
+            .expect("kusama decode");
         assert_eq!(ksm.pallet_name.as_deref(), Some("Staking"));
 
         // polkadot does not know about Staking (7) — pallet_name is None.
         let ksm_ext2 = unsigned_extrinsic(7, 0, &[]);
-        let pdot2 = decode_svc.decode_extrinsic("polkadot", &ksm_ext2).expect("decode");
+        let pdot2 = decode_svc
+            .decode_extrinsic("polkadot", &ksm_ext2)
+            .expect("decode");
         assert!(pdot2.pallet_name.is_none());
     }
 
@@ -800,7 +820,9 @@ mod tests {
 
         let decode_svc = DecodeService::new(svc, Duration::from_secs(3600));
         let ext_bytes = unsigned_extrinsic(0, 0, &[]);
-        let err = decode_svc.decode_extrinsic("kusama", &ext_bytes).expect_err("should fail");
+        let err = decode_svc
+            .decode_extrinsic("kusama", &ext_bytes)
+            .expect_err("should fail");
 
         assert!(
             matches!(err, MetadataError::StaleMetadata { .. }),
@@ -848,7 +870,10 @@ mod tests {
         let decode_svc = DecodeService::new(svc, Duration::MAX);
         let ext_bytes = unsigned_extrinsic(0, 0, &[]);
         let result = decode_svc.decode_extrinsic("polkadot", &ext_bytes);
-        assert!(result.is_ok(), "should not be stale with Duration::MAX: {result:?}");
+        assert!(
+            result.is_ok(),
+            "should not be stale with Duration::MAX: {result:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -861,7 +886,9 @@ mod tests {
 
         // No metadata registered — should return NotFound.
         let ext_bytes = unsigned_extrinsic(0, 0, &[]);
-        let err = decode_svc.decode_extrinsic("polkadot", &ext_bytes).expect_err("should fail");
+        let err = decode_svc
+            .decode_extrinsic("polkadot", &ext_bytes)
+            .expect_err("should fail");
         assert!(matches!(err, MetadataError::NotFound { .. }));
     }
 
@@ -880,12 +907,17 @@ mod tests {
 
         // Populate the cache through svc1.
         let ext = unsigned_extrinsic(0, 0, &[]);
-        let _ = decode_svc1.decode_extrinsic("polkadot", &ext).expect("decode via svc1");
+        let _ = decode_svc1
+            .decode_extrinsic("polkadot", &ext)
+            .expect("decode via svc1");
 
         // svc2 should share the same cache (Arc).
         {
             let cache = decode_svc2.parsed_cache.read().expect("lock");
-            assert!(cache.contains_key("polkadot"), "shared cache should have polkadot entry");
+            assert!(
+                cache.contains_key("polkadot"),
+                "shared cache should have polkadot entry"
+            );
         }
     }
 }

@@ -242,8 +242,8 @@ fn classify_batch(ext: &DecodedExtrinsic, findings: &mut Vec<RiskFinding>) {
         Err(_) => return,
     };
 
-    let has_proxy_dispatch = inner_calls.iter().any(|c| is_proxy_call(c));
-    let has_proxy_mutation = inner_calls.iter().any(|c| is_proxy_mutation(c));
+    let has_proxy_dispatch = inner_calls.iter().any(is_proxy_call);
+    let has_proxy_mutation = inner_calls.iter().any(is_proxy_mutation);
     let is_batch_all = ext.call_index == call_index::UTILITY_BATCH_ALL;
 
     if has_proxy_mutation {
@@ -364,9 +364,9 @@ fn is_known_call(ext: &DecodedExtrinsic) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polkagent_codec::{DecodedExtrinsic, DecodedField, FieldValue};
     use polkagent_codec::call::{call_index, pallet_index};
     use polkagent_codec::scale::ScaleEncoder;
+    use polkagent_codec::{DecodedExtrinsic, DecodedField, FieldValue};
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -427,7 +427,10 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_simple_transfer_is_low_risk() {
-        let ext = make_ext(pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE);
+        let ext = make_ext(
+            pallet_index::BALANCES,
+            call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+        );
         let assessment = classify_risk(&ext);
         assert_eq!(assessment.overall_level, RiskLevel::Low);
         assert_eq!(assessment.findings.len(), 1);
@@ -453,8 +456,14 @@ mod tests {
     #[test]
     fn test_batch_of_transfers_is_low() {
         let args = encode_batch_args(&[
-            (pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE),
-            (pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE),
+            (
+                pallet_index::BALANCES,
+                call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+            ),
+            (
+                pallet_index::BALANCES,
+                call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+            ),
         ]);
         let ext = make_ext_with_raw(pallet_index::UTILITY, call_index::UTILITY_BATCH, args);
         let assessment = classify_risk(&ext);
@@ -466,13 +475,17 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_batch_all_is_medium() {
-        let args = encode_batch_args(&[
-            (pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE),
-        ]);
+        let args = encode_batch_args(&[(
+            pallet_index::BALANCES,
+            call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+        )]);
         let ext = make_ext_with_raw(pallet_index::UTILITY, call_index::UTILITY_BATCH_ALL, args);
         let assessment = classify_risk(&ext);
         assert_eq!(assessment.overall_level, RiskLevel::Medium);
-        assert!(assessment.findings.iter().any(|f| f.pattern == CallPattern::BatchAll));
+        assert!(assessment
+            .findings
+            .iter()
+            .any(|f| f.pattern == CallPattern::BatchAll));
     }
 
     // -----------------------------------------------------------------------
@@ -487,7 +500,10 @@ mod tests {
         let ext = make_ext_with_raw(pallet_index::PROXY, call_index::PROXY_PROXY, args);
         let assessment = classify_risk(&ext);
         assert_eq!(assessment.overall_level, RiskLevel::Medium);
-        assert!(assessment.findings.iter().any(|f| f.pattern == CallPattern::Proxy));
+        assert!(assessment
+            .findings
+            .iter()
+            .any(|f| f.pattern == CallPattern::Proxy));
     }
 
     // -----------------------------------------------------------------------
@@ -498,7 +514,10 @@ mod tests {
         let ext = make_ext(pallet_index::PROXY, known::PROXY_ADD_PROXY);
         let assessment = classify_risk(&ext);
         assert_eq!(assessment.overall_level, RiskLevel::High);
-        assert!(assessment.findings.iter().any(|f| f.pattern == CallPattern::ProxyAddition));
+        assert!(assessment
+            .findings
+            .iter()
+            .any(|f| f.pattern == CallPattern::ProxyAddition));
     }
 
     // -----------------------------------------------------------------------
@@ -509,7 +528,10 @@ mod tests {
         let ext = make_ext(known::MULTISIG_PALLET, known::MULTISIG_AS_MULTI);
         let assessment = classify_risk(&ext);
         assert_eq!(assessment.overall_level, RiskLevel::Medium);
-        assert!(assessment.findings.iter().any(|f| f.pattern == CallPattern::Multisig));
+        assert!(assessment
+            .findings
+            .iter()
+            .any(|f| f.pattern == CallPattern::Multisig));
     }
 
     // -----------------------------------------------------------------------
@@ -518,7 +540,10 @@ mod tests {
     #[test]
     fn test_batch_all_with_proxy_add_is_critical() {
         let args = encode_batch_args(&[
-            (pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE),
+            (
+                pallet_index::BALANCES,
+                call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+            ),
             (pallet_index::PROXY, known::PROXY_ADD_PROXY),
         ]);
         let ext = make_ext_with_raw(pallet_index::UTILITY, call_index::UTILITY_BATCH_ALL, args);
@@ -571,7 +596,10 @@ mod tests {
         let ext = make_ext(200, 99);
         let assessment = classify_risk(&ext);
         assert_eq!(assessment.overall_level, RiskLevel::High);
-        assert!(assessment.findings.iter().any(|f| f.pattern == CallPattern::UnknownCall));
+        assert!(assessment
+            .findings
+            .iter()
+            .any(|f| f.pattern == CallPattern::UnknownCall));
     }
 
     // -----------------------------------------------------------------------
@@ -580,7 +608,10 @@ mod tests {
     #[test]
     fn test_batch_with_unknown_inner_is_high() {
         let args = encode_batch_args(&[
-            (pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE),
+            (
+                pallet_index::BALANCES,
+                call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+            ),
             (200, 99),
         ]);
         let ext = make_ext_with_raw(pallet_index::UTILITY, call_index::UTILITY_BATCH, args);
@@ -600,7 +631,10 @@ mod tests {
         let ext = make_ext(pallet_index::PROXY, known::PROXY_REMOVE_PROXY);
         let assessment = classify_risk(&ext);
         assert_eq!(assessment.overall_level, RiskLevel::High);
-        assert!(assessment.findings.iter().any(|f| f.pattern == CallPattern::ProxyRemoval));
+        assert!(assessment
+            .findings
+            .iter()
+            .any(|f| f.pattern == CallPattern::ProxyRemoval));
     }
 
     // -----------------------------------------------------------------------
@@ -653,7 +687,10 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_assessment_serde_roundtrip() {
-        let ext = make_ext(pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE);
+        let ext = make_ext(
+            pallet_index::BALANCES,
+            call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+        );
         let assessment = classify_risk(&ext);
         let json = serde_json::to_string(&assessment).expect("serialize");
         let deser: RiskAssessment = serde_json::from_str(&json).expect("deserialize");
@@ -665,16 +702,13 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_force_batch_is_medium() {
-        let args = encode_batch_args(&[
-            (pallet_index::BALANCES, call_index::BALANCES_TRANSFER),
-        ]);
-        let ext = make_ext_with_raw(
-            pallet_index::UTILITY,
-            call_index::UTILITY_FORCE_BATCH,
-            args,
-        );
+        let args = encode_batch_args(&[(pallet_index::BALANCES, call_index::BALANCES_TRANSFER)]);
+        let ext = make_ext_with_raw(pallet_index::UTILITY, call_index::UTILITY_FORCE_BATCH, args);
         let assessment = classify_risk(&ext);
         assert_eq!(assessment.overall_level, RiskLevel::Medium);
-        assert!(assessment.findings.iter().any(|f| f.pattern == CallPattern::ForceBatch));
+        assert!(assessment
+            .findings
+            .iter()
+            .any(|f| f.pattern == CallPattern::ForceBatch));
     }
 }

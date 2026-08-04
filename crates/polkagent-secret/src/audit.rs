@@ -93,10 +93,7 @@ impl SecretAuditLog {
         let home = dirs::home_dir().ok_or_else(|| SecretError::Internal {
             message: "could not determine home directory".into(),
         })?;
-        let log_path = home
-            .join(".polkagent")
-            .join("audit")
-            .join("secrets.jsonl");
+        let log_path = home.join(".polkagent").join("audit").join("secrets.jsonl");
         Self::with_path(log_path)
     }
 
@@ -112,12 +109,7 @@ impl SecretAuditLog {
     }
 
     /// Record a successful operation.
-    pub fn record_ok(
-        &self,
-        operation: AuditOperation,
-        secret_id: &SecretId,
-        source: &str,
-    ) {
+    pub fn record_ok(&self, operation: AuditOperation, secret_id: &SecretId, source: &str) {
         let entry = AuditEntry {
             timestamp: Utc::now(),
             operation,

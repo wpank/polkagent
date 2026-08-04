@@ -16,22 +16,22 @@ use polkagent_chain_trait::ChainClient;
 use polkagent_config::watch::{AtomicConfig, ConfigWatcher, ReloadPolicy, WatchEventKind};
 use polkagent_config::{Config, ConfigLoader};
 use polkagent_core::{
-    AgentId, AgentSpec, EffectAttemptId, EffectId, EffectOutcomeId, RunId, RunState,
-    Timestamp, WorkerId,
+    AgentId, AgentSpec, EffectAttemptId, EffectId, EffectOutcomeId, RunId, RunState, Timestamp,
+    WorkerId,
 };
 use polkagent_event::{EventBus, EventReceiver, EventRecorder};
 use polkagent_executor_trait::ModelExecutor;
-use polkagent_harness_trait::Harness;
 use polkagent_grant::{
     grant::{GrantResolver, ResolverConfig},
     policy::PolicySet,
 };
+use polkagent_harness_trait::Harness;
 use polkagent_memory::{MemoryEntry, MemoryId, MemoryQuery, MemoryStore};
 use polkagent_payment::{Amount, CostRecord, PaymentStore, UsageSummary};
 use polkagent_run::{RunManager, RunOrchestrator};
 use polkagent_signer_trait::Signer;
 use polkagent_store_trait::{
-    EffectStore, RunStore, RunSummary, StoredIntent, StoredOutcome, StoreError,
+    EffectStore, RunStore, RunSummary, StoreError, StoredIntent, StoredOutcome,
 };
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, instrument, warn};
@@ -95,10 +95,7 @@ impl EffectStore for NoopEffectStore {
         Ok(vec![])
     }
 
-    async fn expired_leases(
-        &self,
-        _cutoff: Timestamp,
-    ) -> Result<Vec<StoredIntent>, StoreError> {
+    async fn expired_leases(&self, _cutoff: Timestamp) -> Result<Vec<StoredIntent>, StoreError> {
         Ok(vec![])
     }
 
@@ -116,10 +113,7 @@ impl EffectStore for NoopEffectStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        _run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, _run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         Ok(vec![])
     }
 
@@ -241,30 +235,21 @@ impl AppServiceBuilder {
 
     /// Set the memory store.
     #[must_use]
-    pub fn with_memory_store(
-        mut self,
-        store: Arc<dyn MemoryStore + Send + Sync>,
-    ) -> Self {
+    pub fn with_memory_store(mut self, store: Arc<dyn MemoryStore + Send + Sync>) -> Self {
         self.memory_store = Some(store);
         self
     }
 
     /// Set the skill runner.
     #[must_use]
-    pub fn with_skill_runner(
-        mut self,
-        runner: Arc<polkagent_skill::SkillRunner>,
-    ) -> Self {
+    pub fn with_skill_runner(mut self, runner: Arc<polkagent_skill::SkillRunner>) -> Self {
         self.skill_runner = Some(runner);
         self
     }
 
     /// Set the tool registry.
     #[must_use]
-    pub fn with_tool_registry(
-        mut self,
-        registry: Arc<polkagent_tool::ToolRegistry>,
-    ) -> Self {
+    pub fn with_tool_registry(mut self, registry: Arc<polkagent_tool::ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
         self
     }
@@ -281,10 +266,7 @@ impl AppServiceBuilder {
 
     /// Set the payment store.
     #[must_use]
-    pub fn with_payment_store(
-        mut self,
-        store: Arc<dyn PaymentStore + Send + Sync>,
-    ) -> Self {
+    pub fn with_payment_store(mut self, store: Arc<dyn PaymentStore + Send + Sync>) -> Self {
         self.payment_store = Some(store);
         self
     }
@@ -328,10 +310,7 @@ impl AppServiceBuilder {
     /// When configured, enables registering recurring or one-shot agent runs
     /// that fire automatically according to their schedule.
     #[must_use]
-    pub fn with_scheduler(
-        mut self,
-        scheduler: crate::scheduled::ScheduledTaskManager,
-    ) -> Self {
+    pub fn with_scheduler(mut self, scheduler: crate::scheduled::ScheduledTaskManager) -> Self {
         self.scheduler = Some(scheduler);
         self
     }
@@ -372,28 +351,25 @@ impl AppServiceBuilder {
         let config = self.config.ok_or_else(|| ServiceError::NotInitialized {
             component: "config".into(),
         })?;
-        let run_store = self
-            .run_store
-            .ok_or_else(|| ServiceError::NotInitialized {
-                component: "run_store".into(),
-            })?;
-        let event_bus = self.event_bus.unwrap_or_default();
-        let event_recorder = self.event_recorder.ok_or_else(|| {
-            ServiceError::NotInitialized {
-                component: "event_recorder".into(),
-            }
+        let run_store = self.run_store.ok_or_else(|| ServiceError::NotInitialized {
+            component: "run_store".into(),
         })?;
+        let event_bus = self.event_bus.unwrap_or_default();
+        let event_recorder = self
+            .event_recorder
+            .ok_or_else(|| ServiceError::NotInitialized {
+                component: "event_recorder".into(),
+            })?;
 
         let run_manager = RunManager::new(Arc::clone(&run_store), event_recorder.clone());
 
         // Build orchestrator when executor OR harness is present.
         let orchestrator = if self.executor.is_some() || self.harness.is_some() {
-            let exec: Arc<dyn ModelExecutor> = self.executor.clone()
-                .unwrap_or_else(|| {
-                    // When only a harness is provided, create a minimal fake executor
-                    // as a placeholder -- the harness will handle all actual execution.
-                    polkagent_executor_fake::FakeExecutor::new()
-                });
+            let exec: Arc<dyn ModelExecutor> = self.executor.clone().unwrap_or_else(|| {
+                // When only a harness is provided, create a minimal fake executor
+                // as a placeholder -- the harness will handle all actual execution.
+                polkagent_executor_fake::FakeExecutor::new()
+            });
 
             // Use the configured effect store or fall back to the noop stub.
             let effect_store: Arc<dyn EffectStore> = self
@@ -401,15 +377,10 @@ impl AppServiceBuilder {
                 .clone()
                 .unwrap_or_else(|| Arc::new(NoopEffectStore));
 
-            let pipeline = polkagent_effect::EffectPipeline::new(
-                effect_store,
-                WorkerId::new(),
-            );
+            let pipeline = polkagent_effect::EffectPipeline::new(effect_store, WorkerId::new());
 
-            let grant_resolver = GrantResolver::new(
-                PolicySet::default(),
-                ResolverConfig::default(),
-            );
+            let grant_resolver =
+                GrantResolver::new(PolicySet::default(), ResolverConfig::default());
 
             let mut orch = RunOrchestrator::new(
                 Arc::new(run_manager.clone()),
@@ -550,9 +521,23 @@ impl std::fmt::Debug for AppService {
             .field("has_signer", &self.signer.is_some())
             .field("has_chain_client", &self.chain_client.is_some())
             .field("provider_count", &self.provider_registry.len())
-            .field("has_webhook_dispatcher", &self.webhook_dispatcher.lock().map(|g| g.is_some()).unwrap_or(false))
+            .field(
+                "has_webhook_dispatcher",
+                &self
+                    .webhook_dispatcher
+                    .lock()
+                    .map(|g| g.is_some())
+                    .unwrap_or(false),
+            )
             .field("has_scheduler", &self.scheduler.is_some())
-            .field("has_metadata_watcher", &self.metadata_watcher.lock().map(|g| g.is_some()).unwrap_or(false))
+            .field(
+                "has_metadata_watcher",
+                &self
+                    .metadata_watcher
+                    .lock()
+                    .map(|g| g.is_some())
+                    .unwrap_or(false),
+            )
             .finish()
     }
 }
@@ -609,11 +594,12 @@ impl AppService {
 
         // Prevent starting multiple watchers.
         {
-            let guard = self.watcher_shutdown.lock().map_err(|e| {
-                ServiceError::Internal {
+            let guard = self
+                .watcher_shutdown
+                .lock()
+                .map_err(|e| ServiceError::Internal {
                     message: format!("watcher lock poisoned: {e}"),
-                }
-            })?;
+                })?;
             if guard.is_some() {
                 return Err(ServiceError::ConfigReload {
                     message: "config watcher is already running".into(),
@@ -625,11 +611,12 @@ impl AppService {
 
         // Store the shutdown sender so we can stop the watcher later.
         {
-            let mut guard = self.watcher_shutdown.lock().map_err(|e| {
-                ServiceError::Internal {
+            let mut guard = self
+                .watcher_shutdown
+                .lock()
+                .map_err(|e| ServiceError::Internal {
                     message: format!("watcher lock poisoned: {e}"),
-                }
-            })?;
+                })?;
             *guard = Some(shutdown_tx);
         }
 
@@ -670,10 +657,7 @@ impl AppService {
                         );
 
                         // Load and parse the new config.
-                        let new_config = match ConfigLoader::new()
-                            .with_path(&config_path)
-                            .load()
-                        {
+                        let new_config = match ConfigLoader::new().with_path(&config_path).load() {
                             Ok(cfg) => cfg,
                             Err(err) => {
                                 error!(
@@ -829,11 +813,7 @@ impl AppService {
     /// Returns [`ServiceError::AgentNotFound`] if the agent is not registered,
     /// or propagates run manager errors.
     #[instrument(skip(self, prompt), fields(%agent_id))]
-    pub async fn start_run(
-        &self,
-        agent_id: AgentId,
-        prompt: &str,
-    ) -> Result<RunId, ServiceError> {
+    pub async fn start_run(&self, agent_id: AgentId, prompt: &str) -> Result<RunId, ServiceError> {
         // Verify agent exists and clone its spec for the background task.
         let agent_spec = {
             let agents = self.agents.lock().map_err(|e| ServiceError::Internal {
@@ -899,9 +879,8 @@ impl AppService {
                             .map(|s| s.is_terminal())
                             .unwrap_or(false);
                         if !already_terminal {
-                            if let Err(fail_err) = run_manager
-                                .fail_run(run_id.clone(), &err.to_string())
-                                .await
+                            if let Err(fail_err) =
+                                run_manager.fail_run(run_id.clone(), &err.to_string()).await
                             {
                                 error!(
                                     %run_id,
@@ -973,22 +952,21 @@ impl AppService {
         &self,
         effect_id: EffectId,
     ) -> Result<Option<ActionCard>, ServiceError> {
-        let store = self.effect_store.as_ref().ok_or_else(|| {
-            ServiceError::NotInitialized {
+        let store = self
+            .effect_store
+            .as_ref()
+            .ok_or_else(|| ServiceError::NotInitialized {
                 component: "effect_store".into(),
-            }
-        })?;
+            })?;
 
         // Fetch the intent; also extract the action card if present.
-        let intent = store.get_intent(effect_id).await.map_err(|e| {
-            match e {
-                polkagent_store_trait::StoreError::NotFound { .. } => {
-                    ServiceError::EffectNotFound { effect_id }
-                }
-                other => ServiceError::Store {
-                    message: other.to_string(),
-                },
+        let intent = store.get_intent(effect_id).await.map_err(|e| match e {
+            polkagent_store_trait::StoreError::NotFound { .. } => {
+                ServiceError::EffectNotFound { effect_id }
             }
+            other => ServiceError::Store {
+                message: other.to_string(),
+            },
         })?;
 
         // Extract the action card from the stored payload JSON, if present.
@@ -1016,27 +994,22 @@ impl AppService {
     /// configured, or [`ServiceError::EffectNotFound`] if the effect does
     /// not exist.
     #[instrument(skip(self, reason), fields(%effect_id))]
-    pub async fn deny_effect(
-        &self,
-        effect_id: EffectId,
-        reason: &str,
-    ) -> Result<(), ServiceError> {
-        let store = self.effect_store.as_ref().ok_or_else(|| {
-            ServiceError::NotInitialized {
+    pub async fn deny_effect(&self, effect_id: EffectId, reason: &str) -> Result<(), ServiceError> {
+        let store = self
+            .effect_store
+            .as_ref()
+            .ok_or_else(|| ServiceError::NotInitialized {
                 component: "effect_store".into(),
-            }
-        })?;
+            })?;
 
         // Verify the intent exists.
-        let _intent = store.get_intent(effect_id).await.map_err(|e| {
-            match e {
-                polkagent_store_trait::StoreError::NotFound { .. } => {
-                    ServiceError::EffectNotFound { effect_id }
-                }
-                other => ServiceError::Store {
-                    message: other.to_string(),
-                },
+        let _intent = store.get_intent(effect_id).await.map_err(|e| match e {
+            polkagent_store_trait::StoreError::NotFound { .. } => {
+                ServiceError::EffectNotFound { effect_id }
             }
+            other => ServiceError::Store {
+                message: other.to_string(),
+            },
         })?;
 
         // Notify the orchestrator and any other subscribers.
@@ -1051,10 +1024,7 @@ impl AppService {
     /// # Errors
     ///
     /// Returns [`ServiceError::RunNotFound`] if the run does not exist.
-    pub async fn get_run_status(
-        &self,
-        run_id: RunId,
-    ) -> Result<RunState, ServiceError> {
+    pub async fn get_run_status(&self, run_id: RunId) -> Result<RunState, ServiceError> {
         let state = self.run_manager.get_state(run_id).await?;
         Ok(state)
     }
@@ -1064,10 +1034,7 @@ impl AppService {
     /// # Errors
     ///
     /// Returns [`ServiceError::Store`] on store failures.
-    pub async fn list_runs(
-        &self,
-        agent_id: AgentId,
-    ) -> Result<Vec<RunSummary>, ServiceError> {
+    pub async fn list_runs(&self, agent_id: AgentId) -> Result<Vec<RunSummary>, ServiceError> {
         let summaries = self
             .run_store
             .list_by_agent(&agent_id.to_string(), 100, 0)
@@ -1124,11 +1091,12 @@ impl AppService {
         _agent_id: &AgentId,
         entry: MemoryEntry,
     ) -> Result<MemoryId, ServiceError> {
-        let store = self.memory_store.as_ref().ok_or_else(|| {
-            ServiceError::NotInitialized {
+        let store = self
+            .memory_store
+            .as_ref()
+            .ok_or_else(|| ServiceError::NotInitialized {
                 component: "memory_store".into(),
-            }
-        })?;
+            })?;
         store
             .store_memory(&entry)
             .await
@@ -1149,11 +1117,12 @@ impl AppService {
         query: &str,
         limit: usize,
     ) -> Result<Vec<MemoryEntry>, ServiceError> {
-        let store = self.memory_store.as_ref().ok_or_else(|| {
-            ServiceError::NotInitialized {
+        let store = self
+            .memory_store
+            .as_ref()
+            .ok_or_else(|| ServiceError::NotInitialized {
                 component: "memory_store".into(),
-            }
-        })?;
+            })?;
         let memory_query = MemoryQuery {
             agent_id: Some(*agent_id),
             query_text: query.to_owned(),
@@ -1181,16 +1150,13 @@ impl AppService {
     ///
     /// Returns [`ServiceError::NotInitialized`] if no payment store is
     /// configured, or [`ServiceError::Store`] on persistence failure.
-    pub async fn record_cost(
-        &self,
-        run_id: &RunId,
-        amount: &Amount,
-    ) -> Result<(), ServiceError> {
-        let store = self.payment_store.as_ref().ok_or_else(|| {
-            ServiceError::NotInitialized {
+    pub async fn record_cost(&self, run_id: &RunId, amount: &Amount) -> Result<(), ServiceError> {
+        let store = self
+            .payment_store
+            .as_ref()
+            .ok_or_else(|| ServiceError::NotInitialized {
                 component: "payment_store".into(),
-            }
-        })?;
+            })?;
         let record = CostRecord {
             run_id: run_id.to_string(),
             provider: "unknown".to_owned(),
@@ -1216,15 +1182,13 @@ impl AppService {
     ///
     /// Returns [`ServiceError::NotInitialized`] if no payment store is
     /// configured, or [`ServiceError::Store`] on retrieval failure.
-    pub async fn get_usage(
-        &self,
-        agent_id: &AgentId,
-    ) -> Result<UsageSummary, ServiceError> {
-        let store = self.payment_store.as_ref().ok_or_else(|| {
-            ServiceError::NotInitialized {
+    pub async fn get_usage(&self, agent_id: &AgentId) -> Result<UsageSummary, ServiceError> {
+        let store = self
+            .payment_store
+            .as_ref()
+            .ok_or_else(|| ServiceError::NotInitialized {
                 component: "payment_store".into(),
-            }
-        })?;
+            })?;
         let now = chrono::Utc::now();
         let since = now - chrono::Duration::days(30);
         store
@@ -1262,23 +1226,21 @@ impl AppService {
         &self,
         request: ExplainRequest,
     ) -> Result<SignAndSubmitResult, ServiceError> {
-        let signer = self.signer.as_ref().ok_or_else(|| {
-            ServiceError::NotInitialized {
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| ServiceError::NotInitialized {
                 component: "signer".into(),
-            }
-        })?;
-        let chain_client = self.chain_client.as_ref().ok_or_else(|| {
-            ServiceError::NotInitialized {
-                component: "chain_client".into(),
-            }
-        })?;
+            })?;
+        let chain_client =
+            self.chain_client
+                .as_ref()
+                .ok_or_else(|| ServiceError::NotInitialized {
+                    component: "chain_client".into(),
+                })?;
 
-        let result = crate::explain::full_pipeline(
-            chain_client.as_ref(),
-            signer.as_ref(),
-            request,
-        )
-        .await?;
+        let result =
+            crate::explain::full_pipeline(chain_client.as_ref(), signer.as_ref(), request).await?;
 
         Ok(result)
     }
@@ -1315,8 +1277,7 @@ impl AppService {
     #[must_use]
     pub fn conversation_store(
         &self,
-    ) -> Option<&Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>>
-    {
+    ) -> Option<&Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>> {
         self.conversation_store.as_ref()
     }
 
@@ -1411,11 +1372,7 @@ impl AppService {
                 let active_states = ["running", "queued", "awaiting_approval", "waiting_effect"];
                 for state_str in &active_states {
                     let summaries = match run_store
-                        .list_by_state(
-                            polkagent_store_trait::RunStatus::new(*state_str),
-                            500,
-                            0,
-                        )
+                        .list_by_state(polkagent_store_trait::RunStatus::new(*state_str), 500, 0)
                         .await
                     {
                         Ok(s) => s,
@@ -1464,7 +1421,12 @@ impl AppService {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use polkagent_conversation::{
+        types::{Conversation, ConversationSummary, Message},
+        ConversationError, ConversationResult, ConversationStore,
+    };
     use polkagent_core::event::EventKind;
+    use polkagent_core::ids::ConversationId;
     use polkagent_executor_trait::{
         ExecutorError, InferenceRequest, InferenceResponse, StreamEvent,
     };
@@ -1475,11 +1437,6 @@ mod tests {
     use polkagent_payment::{
         CostRecord, PaymentError, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary,
     };
-    use polkagent_conversation::{
-        types::{Conversation, ConversationSummary, Message},
-        ConversationError, ConversationResult, ConversationStore,
-    };
-    use polkagent_core::ids::ConversationId;
     use polkagent_store_trait::{
         event::{EventFilter, EventStore, EventStoreError, StoredEvent},
         RunStatus, StoreError,
@@ -1511,11 +1468,7 @@ mod tests {
             &self,
             _request: InferenceRequest,
         ) -> Result<
-            Box<
-                dyn futures::Stream<Item = Result<StreamEvent, ExecutorError>>
-                    + Send
-                    + Unpin,
-            >,
+            Box<dyn futures::Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
             ExecutorError,
         > {
             Err(ExecutorError::Internal {
@@ -1643,8 +1596,12 @@ mod tests {
 
     // ── Fake EventStore ─────────────────────────────────────────────────
 
-    const TERMINAL_TYPES: &[&str] =
-        &["run_completed", "run_failed", "run_cancelled", "run_timed_out"];
+    const TERMINAL_TYPES: &[&str] = &[
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_timed_out",
+    ];
 
     #[derive(Debug, Default)]
     struct FakeEventStore {
@@ -1719,10 +1676,7 @@ mod tests {
                 .collect())
         }
 
-        async fn query(
-            &self,
-            filter: EventFilter,
-        ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
             let durable = self.durable.lock().expect("lock");
             Ok(durable
                 .iter()
@@ -1736,18 +1690,12 @@ mod tests {
                 .collect())
         }
 
-        async fn max_sequence(
-            &self,
-            run_id: RunId,
-        ) -> Result<u64, EventStoreError> {
+        async fn max_sequence(&self, run_id: RunId) -> Result<u64, EventStoreError> {
             let seqs = self.sequences.lock().expect("lock");
             Ok(seqs.get(&run_id.to_string()).copied().unwrap_or(0))
         }
 
-        async fn has_terminal_event(
-            &self,
-            run_id: RunId,
-        ) -> Result<bool, EventStoreError> {
+        async fn has_terminal_event(&self, run_id: RunId) -> Result<bool, EventStoreError> {
             let term = self.terminal.lock().expect("lock");
             Ok(term.contains(&run_id.to_string()))
         }
@@ -1822,11 +1770,7 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn update_relevance(
-            &self,
-            id: MemoryId,
-            score: f64,
-        ) -> MemoryResult<()> {
+        async fn update_relevance(&self, id: MemoryId, score: f64) -> MemoryResult<()> {
             let mut guard = self.entries.lock().expect("lock");
             guard
                 .get_mut(&id.to_string())
@@ -1917,10 +1861,7 @@ mod tests {
             })
         }
 
-        async fn create_intent(
-            &self,
-            _intent: PaymentIntent,
-        ) -> Result<(), PaymentError> {
+        async fn create_intent(&self, _intent: PaymentIntent) -> Result<(), PaymentError> {
             Ok(())
         }
 
@@ -1936,10 +1877,7 @@ mod tests {
             Ok(())
         }
 
-        async fn create_receipt(
-            &self,
-            _receipt: PaymentReceipt,
-        ) -> Result<(), PaymentError> {
+        async fn create_receipt(&self, _receipt: PaymentReceipt) -> Result<(), PaymentError> {
             Ok(())
         }
     }
@@ -1951,17 +1889,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ConversationStore for FakeConversationStore {
-        async fn create(
-            &self,
-            _conversation: Conversation,
-        ) -> ConversationResult<ConversationId> {
+        async fn create(&self, _conversation: Conversation) -> ConversationResult<ConversationId> {
             Ok(ConversationId::new())
         }
 
-        async fn get(
-            &self,
-            id: ConversationId,
-        ) -> ConversationResult<Conversation> {
+        async fn get(&self, id: ConversationId) -> ConversationResult<Conversation> {
             Err(ConversationError::NotFound(id.to_string()))
         }
 
@@ -1974,10 +1906,7 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn delete(
-            &self,
-            _id: ConversationId,
-        ) -> ConversationResult<()> {
+        async fn delete(&self, _id: ConversationId) -> ConversationResult<()> {
             Ok(())
         }
 
@@ -2038,12 +1967,10 @@ mod tests {
         let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
         let bus = EventBus::new(64);
         let recorder = EventRecorder::new(event_store, bus.clone());
-        let memory_store: Arc<dyn MemoryStore + Send + Sync> =
-            Arc::new(FakeMemoryStore::default());
+        let memory_store: Arc<dyn MemoryStore + Send + Sync> = Arc::new(FakeMemoryStore::default());
         let payment_store: Arc<dyn PaymentStore + Send + Sync> =
             Arc::new(FakePaymentStore::default());
-        let conv_store: Arc<dyn ConversationStore + Send + Sync> =
-            Arc::new(FakeConversationStore);
+        let conv_store: Arc<dyn ConversationStore + Send + Sync> = Arc::new(FakeConversationStore);
 
         AppService::builder()
             .with_config(Config::default())
@@ -2086,10 +2013,7 @@ mod tests {
     #[test]
     fn builder_fails_without_config() {
         let result = AppService::builder().build();
-        assert!(matches!(
-            result,
-            Err(ServiceError::NotInitialized { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
     }
 
     #[test]
@@ -2098,10 +2022,7 @@ mod tests {
             .with_config(Config::default())
             .with_run_store(Arc::new(FakeRunStore::default()))
             .build();
-        assert!(matches!(
-            result,
-            Err(ServiceError::NotInitialized { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
     }
 
     #[test]
@@ -2143,10 +2064,7 @@ mod tests {
         let service = build_service();
         let unknown_id = AgentId::new();
         let result = service.start_run(unknown_id, "test").await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::AgentNotFound { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::AgentNotFound { .. })));
     }
 
     #[tokio::test]
@@ -2213,20 +2131,14 @@ mod tests {
     async fn approve_effect_without_store_fails() {
         let service = build_service();
         let result = service.approve_effect(EffectId::new()).await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::NotInitialized { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
     }
 
     #[tokio::test]
     async fn deny_effect_without_store_fails() {
         let service = build_service();
         let result = service.deny_effect(EffectId::new(), "test reason").await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::NotInitialized { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
     }
 
     #[test]
@@ -2333,7 +2245,10 @@ mod tests {
 
         let spec = make_spec("correlation-test");
         let agent_id = service.create_agent(spec).expect("create_agent");
-        let run_id = service.start_run(agent_id, "test").await.expect("start_run");
+        let run_id = service
+            .start_run(agent_id, "test")
+            .await
+            .expect("start_run");
 
         let ev1 = rx.recv().await.expect("ev1");
         let ev2 = rx.recv().await.expect("ev2");
@@ -2358,10 +2273,7 @@ mod tests {
         let entry = make_memory_entry(agent_id, "test content");
 
         let result = service.store_memory(&agent_id, entry).await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::NotInitialized { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
     }
 
     #[tokio::test]
@@ -2369,10 +2281,7 @@ mod tests {
         let service = build_service();
         let agent_id = AgentId::new();
         let result = service.search_memory(&agent_id, "query", 10).await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::NotInitialized { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
     }
 
     #[tokio::test]
@@ -2399,16 +2308,9 @@ mod tests {
     async fn record_cost_absent_returns_not_initialized() {
         let service = build_service();
         let run_id = RunId::new();
-        let amount = polkagent_payment::Amount::new(
-            100,
-            polkagent_payment::AssetId::Native,
-            10,
-        );
+        let amount = polkagent_payment::Amount::new(100, polkagent_payment::AssetId::Native, 10);
         let result = service.record_cost(&run_id, &amount).await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::NotInitialized { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
     }
 
     #[tokio::test]
@@ -2416,21 +2318,14 @@ mod tests {
         let service = build_service();
         let agent_id = AgentId::new();
         let result = service.get_usage(&agent_id).await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::NotInitialized { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
     }
 
     #[tokio::test]
     async fn record_cost_delegates_to_payment_store() {
         let service = build_service_with_all();
         let run_id = RunId::new();
-        let amount = polkagent_payment::Amount::new(
-            500,
-            polkagent_payment::AssetId::Native,
-            10,
-        );
+        let amount = polkagent_payment::Amount::new(500, polkagent_payment::AssetId::Native, 10);
         let result = service.record_cost(&run_id, &amount).await;
         assert!(result.is_ok());
     }
@@ -2549,7 +2444,10 @@ mod tests {
 
         let spec = make_spec("no-exec-agent");
         let agent_id = service.create_agent(spec).expect("create_agent");
-        let run_id = service.start_run(agent_id, "test").await.expect("start_run");
+        let run_id = service
+            .start_run(agent_id, "test")
+            .await
+            .expect("start_run");
 
         let state = service.get_run_status(run_id).await.expect("state");
         assert_eq!(state, RunState::Queued);
@@ -2558,8 +2456,8 @@ mod tests {
     // ── Fake Signer and ChainClient for explain pipeline tests ─────────
 
     use polkagent_chain_trait::{
-        BlockRef, ChainError, DecodedCall, FinalityObservation, MetadataDigest as ChainMetadataDigest,
-        PinnedMetadata, SimulationResult, TxHash,
+        BlockRef, ChainError, DecodedCall, FinalityObservation,
+        MetadataDigest as ChainMetadataDigest, PinnedMetadata, SimulationResult, TxHash,
     };
     use polkagent_signer_trait::{
         AccountRef, CanonicalSignRequest, SignedPayload, SignerCapabilities, SignerError,
@@ -2596,10 +2494,7 @@ mod tests {
             })
         }
 
-        async fn sign(
-            &self,
-            request: CanonicalSignRequest,
-        ) -> Result<SignedPayload, SignerError> {
+        async fn sign(&self, request: CanonicalSignRequest) -> Result<SignedPayload, SignerError> {
             if let Some(_msg) = &self.sign_error {
                 return Err(SignerError::UserRejected);
             }
@@ -2907,10 +2802,7 @@ mod tests {
         };
 
         let result = service.explain_and_sign(request).await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::ExplainPipeline { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::ExplainPipeline { .. })));
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("rejected"));
     }
@@ -2951,8 +2843,7 @@ mod tests {
         write_valid_config(&config_path, "info");
 
         let service = build_service();
-        let result =
-            service.start_config_watcher(&config_path, Duration::from_millis(50));
+        let result = service.start_config_watcher(&config_path, Duration::from_millis(50));
         assert!(result.is_ok(), "watcher should start without error");
 
         service.stop_config_watcher();
@@ -3030,7 +2921,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         let guard = service.watcher_shutdown.lock().expect("lock");
-        assert!(guard.is_none(), "shutdown sender should be consumed after stop");
+        assert!(
+            guard.is_none(),
+            "shutdown sender should be consumed after stop"
+        );
     }
 
     /// Test 13: Starting a second watcher while one is running returns an error.
@@ -3045,8 +2939,7 @@ mod tests {
             .start_config_watcher(&config_path, Duration::from_millis(50))
             .expect("first start");
 
-        let result =
-            service.start_config_watcher(&config_path, Duration::from_millis(50));
+        let result = service.start_config_watcher(&config_path, Duration::from_millis(50));
         assert!(
             matches!(result, Err(ServiceError::ConfigReload { .. })),
             "double start should return ConfigReload error, got: {result:?}"
@@ -3075,7 +2968,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
 
         let cfg = service.config();
-        assert_eq!(cfg.log.level, "debug", "watcher should apply the new config");
+        assert_eq!(
+            cfg.log.level, "debug",
+            "watcher should apply the new config"
+        );
 
         service.stop_config_watcher();
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -3140,5 +3036,4 @@ mod tests {
         let cfg3 = handle2.get();
         assert_eq!(cfg3.log.level, "trace");
     }
-
 }

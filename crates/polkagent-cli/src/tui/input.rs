@@ -123,12 +123,10 @@ pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
             KeyCode::Char(c) => Some(TuiAction::SearchInput(c)),
             _ => None,
         },
-        InputMode::Command => {
-            match key.code {
-                KeyCode::Esc => Some(TuiAction::Back),
-                _ => None,
-            }
-        }
+        InputMode::Command => match key.code {
+            KeyCode::Esc => Some(TuiAction::Back),
+            _ => None,
+        },
     }
 }
 

@@ -72,7 +72,9 @@ pub mod registry;
 // Convenience re-exports
 // ---------------------------------------------------------------------------
 
-pub use batch::{BatchExecutionMode, BatchToolExecutor, BatchToolResult, ToolInvocation, ToolInvocationResult};
+pub use batch::{
+    BatchExecutionMode, BatchToolExecutor, BatchToolResult, ToolInvocation, ToolInvocationResult,
+};
 pub use builtin::register_builtins;
 pub use normalizer::{Backend, ToolNameNormalizer};
 pub use registry::{ToolContext, ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSpec};

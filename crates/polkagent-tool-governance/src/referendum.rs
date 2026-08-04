@@ -96,18 +96,18 @@ impl ToolHandler for ReferendumLookupTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let index = input
-            .get("index")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| ToolError::InvalidInput {
-                reason: "missing or invalid 'index' field — must be a non-negative integer"
-                    .to_string(),
-            })?;
-
         let index =
-            u32::try_from(index).map_err(|_| ToolError::InvalidInput {
-                reason: format!("referendum index {index} exceeds u32 range"),
-            })?;
+            input
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| ToolError::InvalidInput {
+                    reason: "missing or invalid 'index' field — must be a non-negative integer"
+                        .to_string(),
+                })?;
+
+        let index = u32::try_from(index).map_err(|_| ToolError::InvalidInput {
+            reason: format!("referendum index {index} exceeds u32 range"),
+        })?;
 
         debug!(
             referendum_index = index,
@@ -115,16 +115,16 @@ impl ToolHandler for ReferendumLookupTool {
             "looking up referendum"
         );
 
-        let referendum = self.lookup_referendum(index).await.map_err(|e| {
-            ToolError::ExecutionFailed {
-                reason: e.to_string(),
-            }
-        })?;
+        let referendum =
+            self.lookup_referendum(index)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
+                    reason: e.to_string(),
+                })?;
 
-        let output =
-            serde_json::to_value(&referendum).map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("failed to serialize referendum: {e}"),
-            })?;
+        let output = serde_json::to_value(&referendum).map_err(|e| ToolError::ExecutionFailed {
+            reason: format!("failed to serialize referendum: {e}"),
+        })?;
 
         Ok(ToolResult {
             output,
@@ -261,8 +261,7 @@ mod tests {
                 timestamp: None,
             }],
         };
-        let bytes =
-            serde_json::to_vec(&ref_data).unwrap_or_else(|e| panic!("serialize ref: {e}"));
+        let bytes = serde_json::to_vec(&ref_data).unwrap_or_else(|e| panic!("serialize ref: {e}"));
         let key = build_referendum_storage_key(42);
         client.insert_storage(key, bytes);
 

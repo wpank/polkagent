@@ -19,17 +19,47 @@ use crate::builder::FakeChainClientBuilder;
 /// Collected by [`FakeChainClient::calls`] for assertion in tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallRecord {
-    FetchMetadata { chain_profile: String },
-    Simulate { extrinsic_len: usize, block_number: u64 },
-    SubmitExtrinsic { extrinsic_len: usize, chain_profile: String },
-    WatchFinality { tx_hash: String, chain_profile: String, timeout_ms: u64 },
-    DecodeCall { call_len: usize },
-    QueryStorage { key: Vec<u8>, chain_profile: String },
-    DryRunCall { extrinsic_len: usize },
-    XcmQueryAcceptablePaymentAssets { version: u8 },
-    XcmQueryDeliveryFee { dest: String, message_len: usize },
-    IsTrustedTeleporter { dest: String, asset: String },
-    IsReserveTransferSupported { dest: String, asset: String },
+    FetchMetadata {
+        chain_profile: String,
+    },
+    Simulate {
+        extrinsic_len: usize,
+        block_number: u64,
+    },
+    SubmitExtrinsic {
+        extrinsic_len: usize,
+        chain_profile: String,
+    },
+    WatchFinality {
+        tx_hash: String,
+        chain_profile: String,
+        timeout_ms: u64,
+    },
+    DecodeCall {
+        call_len: usize,
+    },
+    QueryStorage {
+        key: Vec<u8>,
+        chain_profile: String,
+    },
+    DryRunCall {
+        extrinsic_len: usize,
+    },
+    XcmQueryAcceptablePaymentAssets {
+        version: u8,
+    },
+    XcmQueryDeliveryFee {
+        dest: String,
+        message_len: usize,
+    },
+    IsTrustedTeleporter {
+        dest: String,
+        asset: String,
+    },
+    IsReserveTransferSupported {
+        dest: String,
+        asset: String,
+    },
     Health,
 }
 
@@ -91,11 +121,15 @@ impl FakeChainState {
             return true;
         }
         // Atomically decrement and fault if remaining > 0.
-        let prev = self.fail_remaining.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |n| if n > 0 { Some(n - 1) } else { None },
-        );
+        let prev = self
+            .fail_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                if n > 0 {
+                    Some(n - 1)
+                } else {
+                    None
+                }
+            });
         prev.is_ok()
     }
 

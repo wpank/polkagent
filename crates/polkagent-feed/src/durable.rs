@@ -266,11 +266,7 @@ pub trait DurableFeedStore: FeedStore {
     /// missing ranges.
     ///
     /// Returns a list of [`Gap`]s describing the missing ranges.
-    async fn detect_gaps(
-        &self,
-        feed_id: &FeedId,
-        expected_sequence: u64,
-    ) -> Result<Vec<Gap>>;
+    async fn detect_gaps(&self, feed_id: &FeedId, expected_sequence: u64) -> Result<Vec<Gap>>;
 
     /// Record a sequence number as observed for the given feed.
     ///
@@ -448,10 +444,7 @@ impl DurableFeedStore for InMemoryDurableFeedStore {
         let actions: Vec<PendingAction> = guard
             .pending_actions
             .iter()
-            .filter(|a| {
-                &a.feed_id == feed_id
-                    && !guard.dispatched_action_ids.contains(&a.id)
-            })
+            .filter(|a| &a.feed_id == feed_id && !guard.dispatched_action_ids.contains(&a.id))
             .cloned()
             .collect();
         Ok(actions)
@@ -486,11 +479,7 @@ impl DurableFeedStore for InMemoryDurableFeedStore {
     // Gap detection
     // ------------------------------------------------------------------
 
-    async fn detect_gaps(
-        &self,
-        feed_id: &FeedId,
-        expected_sequence: u64,
-    ) -> Result<Vec<Gap>> {
+    async fn detect_gaps(&self, feed_id: &FeedId, expected_sequence: u64) -> Result<Vec<Gap>> {
         let guard = self.durable.lock().await;
         let sequences = match guard.sequences.get(feed_id) {
             Some(s) => s.clone(),
@@ -532,11 +521,7 @@ impl DurableFeedStore for InMemoryDurableFeedStore {
 
     async fn record_sequence(&self, feed_id: &FeedId, sequence: u64) -> Result<()> {
         let mut guard = self.durable.lock().await;
-        guard
-            .sequences
-            .entry(*feed_id)
-            .or_default()
-            .push(sequence);
+        guard.sequences.entry(*feed_id).or_default().push(sequence);
         Ok(())
     }
 }

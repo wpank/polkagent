@@ -232,8 +232,7 @@ mod tests {
 
     #[test]
     fn config_serializes_to_json() {
-        let config = PcaConfig::new("5GrwvaEF...")
-            .with_peer("5FHneW46...", Some("Bob".into()));
+        let config = PcaConfig::new("5GrwvaEF...").with_peer("5FHneW46...", Some("Bob".into()));
         let json = serde_json::to_string(&config).expect("serialize");
         assert!(json.contains("5GrwvaEF..."));
         assert!(json.contains("5FHneW46..."));

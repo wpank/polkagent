@@ -228,8 +228,7 @@ impl<T: Send + 'static> BatchCollector<T> {
     /// Returns `true` if the collector has been shut down.
     #[must_use]
     pub fn is_shut_down(&self) -> bool {
-        self.shut_down
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.shut_down.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns the current number of buffered items.

@@ -20,9 +20,9 @@ use std::path::PathBuf;
 use chrono::Utc;
 
 use polkagent_harness_trait::{
-    HarnessCapabilities, HarnessConfig, HarnessId, SessionId, SessionSnapshot,
-    load_session_state, persist_session_state, remove_session_state,
-    SessionResumeMode, McpMode, ToolInjection, CancelMode,
+    load_session_state, persist_session_state, remove_session_state, CancelMode,
+    HarnessCapabilities, HarnessConfig, HarnessId, McpMode, SessionId, SessionResumeMode,
+    SessionSnapshot, ToolInjection,
 };
 
 // =========================================================================
@@ -159,7 +159,10 @@ fn sr_05_persist_load_lifecycle() {
     assert_eq!(loaded.session_id, snapshot.session_id);
     assert_eq!(loaded.harness_id.as_str(), "test-harness");
     assert_eq!(loaded.turn_count, 3);
-    assert_eq!(loaded.backend_state.get("key"), Some(&serde_json::json!("value")));
+    assert_eq!(
+        loaded.backend_state.get("key"),
+        Some(&serde_json::json!("value"))
+    );
 
     remove_session_state(snapshot.session_id).expect("cleanup");
 }

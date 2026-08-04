@@ -35,11 +35,11 @@ fn ensure_skills_table(pool: &SqlitePool) -> Result<()> {
 pub fn run(cmd: &SkillCmd, pool: &SqlitePool) -> Result<()> {
     ensure_skills_table(pool)?;
     match cmd {
-        SkillCmd::List(c)    => list(c, pool),
+        SkillCmd::List(c) => list(c, pool),
         SkillCmd::Install(c) => install(c, pool),
-        SkillCmd::Update(c)  => update(c, pool),
-        SkillCmd::Remove(c)  => remove(c, pool),
-        SkillCmd::Show(c)    => show(c, pool),
+        SkillCmd::Update(c) => update(c, pool),
+        SkillCmd::Remove(c) => remove(c, pool),
+        SkillCmd::Show(c) => show(c, pool),
     }
 }
 
@@ -120,9 +120,10 @@ fn list(cmd: &SkillListCmd, pool: &SqlitePool) -> Result<()> {
 
 fn install(cmd: &SkillInstallCmd, pool: &SqlitePool) -> Result<()> {
     // Resolve and validate the path.
-    let path = cmd.path.canonicalize().map_err(|e| {
-        anyhow::anyhow!("Cannot access skill path '{}': {e}", cmd.path.display())
-    })?;
+    let path = cmd
+        .path
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("Cannot access skill path '{}': {e}", cmd.path.display()))?;
 
     // Look for a manifest file.
     let manifest_path = if path.is_dir() {
@@ -281,7 +282,10 @@ fn update(cmd: &SkillUpdateCmd, pool: &SqlitePool) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("Skill '{}' updated: {} -> {}", cmd.name, old_version, new_version);
+        println!(
+            "Skill '{}' updated: {} -> {}",
+            cmd.name, old_version, new_version
+        );
     }
 
     info!(skill = %cmd.name, from = %old_version, to = %new_version, "skill updated");

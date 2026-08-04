@@ -65,7 +65,8 @@ impl Schedule {
                     return None;
                 }
                 let intervals_passed = elapsed.num_milliseconds() / interval_millis;
-                let next = *start + Duration::milliseconds(interval_millis * (intervals_passed + 1));
+                let next =
+                    *start + Duration::milliseconds(interval_millis * (intervals_passed + 1));
                 Some(next)
             }
             Self::Cron(expr) => expr.next_occurrence(after),

@@ -101,7 +101,12 @@ impl RateLimiter for CompositeRateLimiter {
             // All allowed: remaining is the minimum across all limiters.
             let min_remaining = results.iter().map(|r| r.remaining).min().unwrap_or(0);
             let earliest_reset = results.iter().filter_map(|r| r.reset_at).min();
-            trace!(key, cost, min_remaining, "composite: allowed by all limiters");
+            trace!(
+                key,
+                cost,
+                min_remaining,
+                "composite: allowed by all limiters"
+            );
             QuotaResult::allowed(min_remaining, earliest_reset)
         }
     }
@@ -115,10 +120,7 @@ impl RateLimiter for CompositeRateLimiter {
     }
 
     fn reset_at(&self, key: &str) -> Option<DateTime<Utc>> {
-        self.limiters
-            .iter()
-            .filter_map(|l| l.reset_at(key))
-            .min()
+        self.limiters.iter().filter_map(|l| l.reset_at(key)).min()
     }
 }
 

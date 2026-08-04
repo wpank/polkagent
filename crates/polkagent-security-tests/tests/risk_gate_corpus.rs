@@ -269,7 +269,10 @@ fn rg_10_batch_only_transfers_is_clean() {
     );
     let g = gate();
     let findings = g.assess(&intent);
-    assert!(findings.is_empty(), "only safe transfer calls — no findings");
+    assert!(
+        findings.is_empty(),
+        "only safe transfer calls — no findings"
+    );
 }
 
 // =========================================================================

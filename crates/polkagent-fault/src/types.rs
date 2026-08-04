@@ -158,7 +158,11 @@ impl std::fmt::Debug for FaultPoint {
 impl FaultPoint {
     /// Construct a new [`FaultPoint`] with counter initialised to zero.
     pub fn new(fault: Fault, schedule: FaultSchedule) -> Self {
-        Self { fault, schedule, counter: AtomicUsize::new(0) }
+        Self {
+            fault,
+            schedule,
+            counter: AtomicUsize::new(0),
+        }
     }
 
     /// Evaluate whether the fault should fire on this call.
@@ -288,7 +292,7 @@ mod tests {
         assert!(!fp.should_fire()); // index 0
         assert!(!fp.should_fire()); // index 1
         assert!(!fp.should_fire()); // index 2
-        // Fourth call (index 3) onwards SHOULD fire.
+                                    // Fourth call (index 3) onwards SHOULD fire.
         assert!(fp.should_fire()); // index 3
         assert!(fp.should_fire()); // index 4
     }
@@ -296,21 +300,23 @@ mod tests {
     #[test]
     fn schedule_once_fires_exactly_once() {
         let fp = FaultPoint::new(Fault::Crash, FaultSchedule::Once);
-        assert!(fp.should_fire());  // first call fires
+        assert!(fp.should_fire()); // first call fires
         assert!(!fp.should_fire()); // second call does not
         assert!(!fp.should_fire()); // third call does not
     }
 
     #[test]
     fn schedule_pattern_fires_according_to_pattern() {
-        let fp =
-            FaultPoint::new(Fault::Crash, FaultSchedule::Pattern(vec![true, false, true, false]));
-        assert!(fp.should_fire());  // index 0 → true
+        let fp = FaultPoint::new(
+            Fault::Crash,
+            FaultSchedule::Pattern(vec![true, false, true, false]),
+        );
+        assert!(fp.should_fire()); // index 0 → true
         assert!(!fp.should_fire()); // index 1 → false
-        assert!(fp.should_fire());  // index 2 → true
+        assert!(fp.should_fire()); // index 2 → true
         assert!(!fp.should_fire()); // index 3 → false
-        // Pattern repeats.
-        assert!(fp.should_fire());  // index 4 → true
+                                    // Pattern repeats.
+        assert!(fp.should_fire()); // index 4 → true
         assert!(!fp.should_fire()); // index 5 → false
     }
 
@@ -324,8 +330,7 @@ mod tests {
 
     #[test]
     fn schedule_probability_fires_roughly_at_expected_rate() {
-        let fp =
-            FaultPoint::new(Fault::Crash, FaultSchedule::Probability(0.5));
+        let fp = FaultPoint::new(Fault::Crash, FaultSchedule::Probability(0.5));
         let trials = 10_000;
         let fired: usize = (0..trials).filter(|_| fp.should_fire()).count();
         // Allow ±15% tolerance around 50%.
@@ -356,9 +361,9 @@ mod tests {
     #[test]
     fn counter_reset_restarts_schedule() {
         let fp = FaultPoint::new(Fault::Crash, FaultSchedule::Once);
-        assert!(fp.should_fire());  // fires first time
+        assert!(fp.should_fire()); // fires first time
         assert!(!fp.should_fire()); // silenced
         fp.reset();
-        assert!(fp.should_fire());  // fires again after reset
+        assert!(fp.should_fire()); // fires again after reset
     }
 }

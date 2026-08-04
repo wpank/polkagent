@@ -140,7 +140,10 @@ impl<S: ArtifactStore> ArtifactService<S> {
     #[instrument(skip(self))]
     pub async fn get(&self, artifact_id: ArtifactId) -> Result<Artifact, ArtifactError> {
         debug!(artifact_id = %artifact_id, "fetching artifact metadata");
-        self.store.get(artifact_id).await.map_err(ArtifactError::from)
+        self.store
+            .get(artifact_id)
+            .await
+            .map_err(ArtifactError::from)
     }
 
     /// Retrieve the raw body for an artifact, verifying the digest before
@@ -153,13 +156,21 @@ impl<S: ArtifactStore> ArtifactService<S> {
         debug!(artifact_id = %artifact_id, "fetching artifact body");
 
         // Fetch metadata to learn the expected digest.
-        let artifact = self.store.get(artifact_id).await.map_err(ArtifactError::from)?;
+        let artifact = self
+            .store
+            .get(artifact_id)
+            .await
+            .map_err(ArtifactError::from)?;
 
         // Fetch the body (store may also verify, but we re-verify defensively).
-        let body = self.store.get_body(artifact_id).await.map_err(|e| match e {
-            StoreError::DigestMismatch(id) => ArtifactError::DigestMismatch(id),
-            other => ArtifactError::from(other),
-        })?;
+        let body = self
+            .store
+            .get_body(artifact_id)
+            .await
+            .map_err(|e| match e {
+                StoreError::DigestMismatch(id) => ArtifactError::DigestMismatch(id),
+                other => ArtifactError::from(other),
+            })?;
 
         // Service-layer integrity check: re-verify regardless of what the store
         // did, so that a misbehaving or untrusted backend cannot bypass the

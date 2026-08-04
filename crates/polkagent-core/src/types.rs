@@ -144,13 +144,22 @@ mod tests {
     #[test]
     fn run_state_terminal_detection() {
         assert!(RunState::Completed.is_terminal());
-        assert!(RunState::Failed { reason: String::new() }.is_terminal());
-        assert!(RunState::Cancelled { reason: String::new() }.is_terminal());
+        assert!(RunState::Failed {
+            reason: String::new()
+        }
+        .is_terminal());
+        assert!(RunState::Cancelled {
+            reason: String::new()
+        }
+        .is_terminal());
         assert!(RunState::TimedOut.is_terminal());
         assert!(!RunState::Created.is_terminal());
         assert!(!RunState::Queued.is_terminal());
         assert!(!RunState::Running.is_terminal());
-        assert!(!RunState::AwaitingApproval { request_id: String::new() }.is_terminal());
+        assert!(!RunState::AwaitingApproval {
+            request_id: String::new()
+        }
+        .is_terminal());
         assert!(!RunState::Completing.is_terminal());
     }
 }

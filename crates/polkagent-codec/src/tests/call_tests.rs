@@ -79,7 +79,10 @@ fn is_transfer_call_transfer() {
 
 #[test]
 fn is_transfer_call_keep_alive() {
-    let ext = empty_ext(pallet_index::BALANCES, call_index::BALANCES_TRANSFER_KEEP_ALIVE);
+    let ext = empty_ext(
+        pallet_index::BALANCES,
+        call_index::BALANCES_TRANSFER_KEEP_ALIVE,
+    );
     assert!(is_transfer_call(&ext));
 }
 
@@ -106,11 +109,7 @@ fn encode_batch_args(inner_calls: &[Vec<u8>]) -> Vec<u8> {
 #[test]
 fn decode_batch_call_empty() {
     let args = encode_batch_args(&[]);
-    let ext = raw_ext(
-        pallet_index::UTILITY,
-        call_index::UTILITY_BATCH,
-        args,
-    );
+    let ext = raw_ext(pallet_index::UTILITY, call_index::UTILITY_BATCH, args);
     let calls = decode_batch_call(&ext).expect("decode batch");
     assert!(calls.is_empty());
 }
@@ -119,11 +118,7 @@ fn decode_batch_call_empty() {
 fn decode_batch_call_single_inner() {
     let inner_call = vec![5u8, 3]; // pallet 5, call 3
     let args = encode_batch_args(&[inner_call]);
-    let ext = raw_ext(
-        pallet_index::UTILITY,
-        call_index::UTILITY_BATCH,
-        args,
-    );
+    let ext = raw_ext(pallet_index::UTILITY, call_index::UTILITY_BATCH, args);
     let calls = decode_batch_call(&ext).expect("decode batch single");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].pallet_index, 5);
@@ -138,11 +133,7 @@ fn decode_batch_call_multiple_inner() {
         vec![24u8, 0], // Utility.batch
     ];
     let args = encode_batch_args(&inner_calls);
-    let ext = raw_ext(
-        pallet_index::UTILITY,
-        call_index::UTILITY_BATCH_ALL,
-        args,
-    );
+    let ext = raw_ext(pallet_index::UTILITY, call_index::UTILITY_BATCH_ALL, args);
     let calls = decode_batch_call(&ext).expect("decode batch multi");
     assert_eq!(calls.len(), 3);
     assert_eq!(calls[0].pallet_index, 5);
@@ -170,8 +161,8 @@ fn build_proxy_args(inner_pallet: u8, inner_call: u8) -> Vec<u8> {
     // real: MultiAddress::Id
     enc.encode_u8(0x00);
     enc.encode_bytes(&[0u8; 32]); // 32 zero bytes + compact length prefix = wrong!
-    // Actually MultiAddress::Id is a fixed 32-byte AccountId, not length-prefixed.
-    // Re-do manually.
+                                  // Actually MultiAddress::Id is a fixed 32-byte AccountId, not length-prefixed.
+                                  // Re-do manually.
     let _ = enc; // discard
 
     let mut buf = Vec::new();

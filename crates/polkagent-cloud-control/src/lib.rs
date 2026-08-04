@@ -29,8 +29,8 @@ use tokio::sync::Mutex;
 use polkagent_config::schema::DataRegion;
 use polkagent_core::{RunId, WorkerId};
 use polkagent_grant::policy::{
-    Condition, ContextAttribute, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
-    evaluate,
+    evaluate, Condition, ContextAttribute, Effect, EvaluationContext, PolicyDecision, PolicyRule,
+    PolicySet,
 };
 
 // ---------------------------------------------------------------------------
@@ -316,8 +316,10 @@ pub fn data_residency_policy(worker_region: DataRegion) -> PolicySet {
 /// denies it.
 fn check_residency_policy(job_region: DataRegion, worker_region: DataRegion) -> bool {
     let policy = data_residency_policy(worker_region);
-    let ctx = EvaluationContext::default()
-        .with_attribute("job.region", ContextAttribute::String(job_region.to_string()));
+    let ctx = EvaluationContext::default().with_attribute(
+        "job.region",
+        ContextAttribute::String(job_region.to_string()),
+    );
 
     let decision = evaluate(&policy, "cloud.assign_job", "job", &ctx);
     matches!(decision, PolicyDecision::Allow)
@@ -585,9 +587,11 @@ impl ControlPlane {
                     inner.pending_jobs.push_back(remaining);
                 }
 
-                let assigned = inner.all_jobs.get(&job_id).cloned().ok_or_else(|| {
-                    ControlError::JobNotFound(job_id)
-                })?;
+                let assigned = inner
+                    .all_jobs
+                    .get(&job_id)
+                    .cloned()
+                    .ok_or_else(|| ControlError::JobNotFound(job_id))?;
 
                 return Ok((assigned, worker_id));
             }
@@ -602,7 +606,8 @@ impl ControlPlane {
         if let Some(first_job) = inner.pending_jobs.front() {
             if let Some(job_region) = first_job.region {
                 if !allow_cross {
-                    let any_in_region = inner.workers.values().any(|w| w.region == Some(job_region));
+                    let any_in_region =
+                        inner.workers.values().any(|w| w.region == Some(job_region));
                     if !any_in_region {
                         return Err(ControlError::RegionViolation { job_region });
                     }
@@ -924,7 +929,10 @@ mod tests {
 
         let (assigned, worker_id) = cp.assign_next().await.ok().unwrap();
         assert_eq!(assigned.id, "eu-job-3");
-        assert_eq!(worker_id, us_wid, "cross-region override should allow assignment");
+        assert_eq!(
+            worker_id, us_wid,
+            "cross-region override should allow assignment"
+        );
     }
 
     #[tokio::test]

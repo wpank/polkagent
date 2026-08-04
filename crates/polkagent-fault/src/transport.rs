@@ -88,7 +88,10 @@ impl<T: Transport> Transport for FaultTransport<T> {
                 Fault::CorruptData { .. } | Fault::PartialWrite => {
                     // Drop the message without delivering it (simulates loss).
                     let fake_id = DeliveryId::new(format!("lost-{}", now().timestamp_millis()));
-                    return Ok(DeliveryReceipt { delivery_id: fake_id, delivered_at: now() });
+                    return Ok(DeliveryReceipt {
+                        delivery_id: fake_id,
+                        delivered_at: now(),
+                    });
                 }
             }
         }
@@ -132,17 +135,19 @@ impl<T: Transport> Transport for FaultTransport<T> {
 mod tests {
     use super::*;
     use crate::types::FaultSchedule;
-    use polkagent_core::{ConversationId, now};
+    use polkagent_core::{now, ConversationId};
+    use polkagent_transport_fake::FakeTransport;
     use polkagent_transport_trait::{
         AuthenticatedSender, Classification, MessageBody, OutgoingBody, SenderTrustTier, UserId,
     };
-    use polkagent_transport_fake::FakeTransport;
 
     fn make_outgoing() -> OutgoingMessage {
         OutgoingMessage {
             conversation_id: ConversationId::new(),
             run_id: None,
-            body: OutgoingBody::Text { content: "hello".into() },
+            body: OutgoingBody::Text {
+                content: "hello".into(),
+            },
             classification: Classification::Public,
         }
     }
@@ -156,7 +161,9 @@ mod tests {
                 display_name: None,
                 trust_tier: SenderTrustTier::Authenticated,
             },
-            body: MessageBody::Text { content: "test".into() },
+            body: MessageBody::Text {
+                content: "test".into(),
+            },
             received_at: now(),
         }
     }
@@ -176,7 +183,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "before_send",
-            Fault::Error { message: "network partition".into() },
+            Fault::Error {
+                message: "network partition".into(),
+            },
             FaultSchedule::Always,
         );
         let transport = FaultTransport::new(inner, injector);
@@ -204,7 +213,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "before_receive",
-            Fault::Error { message: "connection lost".into() },
+            Fault::Error {
+                message: "connection lost".into(),
+            },
             FaultSchedule::Always,
         );
         let transport = FaultTransport::new(inner, injector);
@@ -234,7 +245,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "after_send",
-            Fault::Error { message: "post-send failure".into() },
+            Fault::Error {
+                message: "post-send failure".into(),
+            },
             FaultSchedule::Always,
         );
         let transport = FaultTransport::new(inner, injector);

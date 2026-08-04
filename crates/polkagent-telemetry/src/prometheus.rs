@@ -306,9 +306,7 @@ impl Histogram {
     pub fn get(&self, labels: &[Label]) -> (u64, f64) {
         let key = sorted_labels(labels);
         let map = self.series.read();
-        map.get(&key)
-            .map(|s| (s.count, s.sum))
-            .unwrap_or((0, 0.0))
+        map.get(&key).map(|s| (s.count, s.sum)).unwrap_or((0, 0.0))
     }
 
     /// Return the bucket boundaries configured for this histogram.
@@ -466,10 +464,7 @@ impl PrometheusRegistry {
         let reg = Self::new();
 
         // Counters
-        reg.register_counter(
-            "polkagent_runs_total",
-            "Total number of agent runs",
-        );
+        reg.register_counter("polkagent_runs_total", "Total number of agent runs");
         reg.register_counter(
             "polkagent_effects_total",
             "Total number of effects executed",
@@ -478,10 +473,7 @@ impl PrometheusRegistry {
             "polkagent_model_tokens_total",
             "Total tokens consumed by model calls",
         );
-        reg.register_counter(
-            "polkagent_store_operations_total",
-            "Total store operations",
-        );
+        reg.register_counter("polkagent_store_operations_total", "Total store operations");
 
         // Histograms
         reg.register_histogram(
@@ -869,7 +861,10 @@ mod tests {
         h.observe(&[], 15.0); // fits in none
 
         let series = h.all_series();
-        let (_, _, buckets) = series.get(&Vec::<Label>::new()).cloned().unwrap_or_default();
+        let (_, _, buckets) = series
+            .get(&Vec::<Label>::new())
+            .cloned()
+            .unwrap_or_default();
         // Raw (non-cumulative) counts stored per bucket:
         // le=1.0 -> 1, le=5.0 -> 1, le=10.0 -> 1
         assert_eq!(buckets[0], (1.0, 1));
@@ -921,7 +916,10 @@ mod tests {
         };
         if let MetricInner::Counter(ref c) = family.inner {
             c.increment(
-                &[Label::new("agent", "alpha"), Label::new("status", "completed")],
+                &[
+                    Label::new("agent", "alpha"),
+                    Label::new("status", "completed"),
+                ],
                 42.0,
             );
             c.increment(
@@ -932,12 +930,8 @@ mod tests {
         let text = family.render();
         assert!(text.contains("# HELP polkagent_runs_total Total number of agent runs\n"));
         assert!(text.contains("# TYPE polkagent_runs_total counter\n"));
-        assert!(text.contains(
-            "polkagent_runs_total{agent=\"alpha\",status=\"completed\"} 42\n"
-        ));
-        assert!(text.contains(
-            "polkagent_runs_total{agent=\"alpha\",status=\"failed\"} 3\n"
-        ));
+        assert!(text.contains("polkagent_runs_total{agent=\"alpha\",status=\"completed\"} 42\n"));
+        assert!(text.contains("polkagent_runs_total{agent=\"alpha\",status=\"failed\"} 3\n"));
     }
 
     #[test]
@@ -1090,7 +1084,10 @@ mod tests {
         let reg = PrometheusRegistry::with_default_metrics();
         reg.increment(
             "polkagent_runs_total",
-            &[Label::new("agent", "alpha"), Label::new("status", "completed")],
+            &[
+                Label::new("agent", "alpha"),
+                Label::new("status", "completed"),
+            ],
             1.0,
         );
         let text = reg.render();

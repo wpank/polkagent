@@ -210,11 +210,13 @@ impl ProxySigner {
             None => return Ok(()),
         };
 
-        let result = client.dry_run_call(payload).await.map_err(|e| {
-            ProxySignerError::DryRunFailed {
-                message: format!("chain client dry-run error: {e}"),
-            }
-        })?;
+        let result =
+            client
+                .dry_run_call(payload)
+                .await
+                .map_err(|e| ProxySignerError::DryRunFailed {
+                    message: format!("chain client dry-run error: {e}"),
+                })?;
 
         if !result.execution_ok {
             return Err(ProxySignerError::DryRunFailed {
@@ -248,9 +250,11 @@ impl Signer for ProxySigner {
         }
 
         // 2. Budget ceiling check.
-        self.check_budget().await.map_err(|e| SignerError::Internal {
-            message: format!("budget gate: {e}"),
-        })?;
+        self.check_budget()
+            .await
+            .map_err(|e| SignerError::Internal {
+                message: format!("budget gate: {e}"),
+            })?;
 
         // 3. DryRunApi pre-flight validation.
         self.preflight_dry_run(&request.payload)

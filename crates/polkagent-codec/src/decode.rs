@@ -90,7 +90,11 @@ impl fmt::Display for FieldValue {
                 }
                 write!(f, "}}")
             }
-            Self::Variant { index, name, fields } => {
+            Self::Variant {
+                index,
+                name,
+                fields,
+            } => {
                 if let Some(n) = name {
                     write!(f, "{n}")?;
                 } else {
@@ -114,10 +118,12 @@ impl fmt::Display for FieldValue {
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -320,9 +326,10 @@ pub fn decode_value(
     type_id: u32,
     metadata: &RuntimeMetadata,
 ) -> Result<FieldValue> {
-    let type_def = metadata.types.get(type_id).ok_or_else(|| {
-        CodecError::decode(format!("unknown type id: {type_id}"))
-    })?;
+    let type_def = metadata
+        .types
+        .get(type_id)
+        .ok_or_else(|| CodecError::decode(format!("unknown type id: {type_id}")))?;
 
     match type_def.clone() {
         TypeDef::Primitive(prim) => decode_primitive_value(dec, &prim),
@@ -347,7 +354,10 @@ pub fn decode_value(
                 Ok(FieldValue::Sequence(items))
             }
         }
-        TypeDef::Array { len, type_id: elem_id } => {
+        TypeDef::Array {
+            len,
+            type_id: elem_id,
+        } => {
             let count = len as usize;
             // Special-case: [u8; 32] is AccountId.
             if len == 32 && is_u8_type(elem_id, metadata) {
@@ -372,7 +382,9 @@ pub fn decode_value(
             }
             Ok(FieldValue::Composite(fields))
         }
-        TypeDef::Composite { fields: field_metas } => {
+        TypeDef::Composite {
+            fields: field_metas,
+        } => {
             // Check if this is a Vec<u8> / BoundedVec<u8> composite.
             // Heuristic: single unnamed field of Sequence(u8).
             if field_metas.len() == 1 && field_metas[0].name.is_none() {
@@ -398,9 +410,7 @@ pub fn decode_value(
             let index = dec.decode_u8()?;
             let variant_def = variants.iter().find(|v| v.index == index);
             let name = variant_def.map(|v| v.name.clone());
-            let field_metas = variant_def
-                .map(|v| v.fields.clone())
-                .unwrap_or_default();
+            let field_metas = variant_def.map(|v| v.fields.clone()).unwrap_or_default();
             let mut fields = Vec::with_capacity(field_metas.len());
             for fm in &field_metas {
                 let val = decode_value(dec, fm.type_id, metadata)?;
@@ -436,9 +446,9 @@ fn decode_primitive_value(dec: &mut ScaleDecoder<'_>, prim: &PrimitiveType) -> R
         PrimitiveType::Bytes => Ok(FieldValue::Bytes(dec.decode_bytes()?)),
         PrimitiveType::Char => {
             let code = dec.decode_u32()?;
-            char::from_u32(code).map(|c| FieldValue::String(c.to_string())).ok_or_else(|| {
-                CodecError::invalid_type(format!("invalid unicode scalar: {code}"))
-            })
+            char::from_u32(code)
+                .map(|c| FieldValue::String(c.to_string()))
+                .ok_or_else(|| CodecError::invalid_type(format!("invalid unicode scalar: {code}")))
         }
         PrimitiveType::U256 => {
             let bytes = read_n_bytes(dec, 32)?;

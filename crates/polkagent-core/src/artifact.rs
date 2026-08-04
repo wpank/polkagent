@@ -33,7 +33,7 @@ use crate::ids::{ArtifactId, RunId, StepId};
 /// The `digest` is a BLAKE3 hash of the raw byte content. The blob store
 /// uses this hash as the storage key, deduplicated across all runs.
 ///
-/// Where interoperability requires SHA-256 (Sigstore, IPFS CIDv0, on-chain
+/// Where interoperability requires SHA-256 (Sigstore, IPFS `CIDv0`, on-chain
 /// hash references), the optional `sha256_hex` field carries the parallel
 /// digest.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -204,11 +204,7 @@ impl Artifact {
     ///
     /// Computes the BLAKE3 digest and sets default classification to `Public`.
     #[must_use]
-    pub fn from_bytes(
-        id: ArtifactId,
-        kind: ArtifactKind,
-        bytes: &[u8],
-    ) -> Self {
+    pub fn from_bytes(id: ArtifactId, kind: ArtifactKind, bytes: &[u8]) -> Self {
         Self {
             id,
             run_id: None,
@@ -233,10 +229,7 @@ impl Artifact {
     /// projections.
     #[must_use]
     pub fn is_context_safe(&self) -> bool {
-        !matches!(
-            self.classification,
-            DataClassification::SecretForbidden
-        )
+        !matches!(self.classification, DataClassification::SecretForbidden)
     }
 }
 
