@@ -62,6 +62,8 @@ polkagent-rate-limit = { path = "../polkagent-rate-limit" }
 polkagent-audit = { path = "../polkagent-audit" }
 polkagent-scheduler = { path = "../polkagent-scheduler" }
 polkagent-batch = { path = "../polkagent-batch" }
+polkagent-kit = { path = "../polkagent-kit" }
+polkagent-harness-trait = { path = "../polkagent-harness-trait" }
 
 # Async
 tokio = { workspace = true, features = ["full", "test-util"] }

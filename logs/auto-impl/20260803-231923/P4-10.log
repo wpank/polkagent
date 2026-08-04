@@ -1,0 +1,33 @@
+All done. Here's a summary of everything created:
+
+## Phase 4 Acceptance Tests — Summary
+
+### 6 new test files, 72 tests total, all passing ✅
+
+#### polkagent-security-tests (3 new files)
+
+| File | Tests | Description |
+|------|-------|-------------|
+| `tests/risk_gate_corpus.rs` | **12** | RG-01..RG-12: Dangerous-call patterns — batch hiding System.set_code, Proxy.add_proxy, Multisig.as_multi, Sudo.sudo, nested batch_all, Staking.nominate, Democracy.vote; homoglyph+batch combined; triple-trigger (high-value+batch+homoglyph); clean batch of only transfers |
+| `tests/multisig_edge_cases.rs` | **10** | MS-01..MS-10: as_multi/approve_as_multi/cancel_as_multi hidden in batch; Proxy.remove_proxies revocation; Proxy.kill_pure destruction; threshold change via nested multisig; pure-proxy creation; multiple proxy ops; ActionCard risk flag tagging; multisig-only batch flagging |
+| `tests/xcm_route_refusal.rs` | **8** | XR-01..XR-08: Unsupported asset on both paths; all-unsupported client; no mechanisms; unknown destination chain; asset-specific teleport refusal; VersionIncompatible/FeeEstimationFailed/AssetNotAccepted error construction |
+
+#### polkagent-security-tests (1 new file in this crate)
+
+| File | Tests | Description |
+|------|-------|-------------|
+| `tests/memory_isolation.rs` | **22** | MI-01..MI-22: Cross-tenant isolation across Semantic/Episodic/Procedural types; episode-scoped isolation; classification-level isolation (Public/Confidential/Restricted/Internal); temporal filter isolation; content search isolation; identical-content-different-agents; substring/wildcard/empty-query isolation; mixed type+classification; 5-agent full isolation |
+
+#### polkagent-integration-tests (2 new files)
+
+| File | Tests | Description |
+|------|-------|-------------|
+| `tests/kit_lifecycle.rs` | **10** | KL-01..KL-10: validate_kit success/missing capability/missing skill; prepare_install record; skills_to_unregister excludes optional; uninstall→reinstall idempotent; rollback to old version; invalid TOML rejected; missing [kit] rejected; multiple kits independent |
+| `tests/harness_session_resume.rs` | **10** | SR-01..SR-10: SessionSnapshot JSON round-trip; SessionId preservation; backend state map preservation; turn count/workdir preservation; persist→load filesystem lifecycle; non-existent session load failure; empty backend state; multiple independent sessions; HarnessConfig serde; HarnessCapabilities serde |
+
+### Cargo.toml changes
+- **polkagent-integration-tests**: added `polkagent-kit`, `polkagent-harness-trait`
+- **polkagent-security-tests**: added `polkagent-payment`, `polkagent-chain-trait`, `polkagent-chain-fake`, `polkagent-memory`; consolidated duplicate `async-trait` entries
+
+### Pre-existing failures
+The `cargo test --workspace` has 3 pre-existing compilation errors in `polkagent-tool` and `polkagent-service` (missing `forget` method on `FakeMemoryStore` impls) — completely unrelated to these changes. All 224 test suites pass when those crates are excluded.
