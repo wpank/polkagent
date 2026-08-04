@@ -15,6 +15,7 @@
 //! | [`resolver`] | Dependency resolution with topological sort and semver checking. |
 //! | [`runner`] | [`SkillRunner`] and [`PreparedSkill`] for execution preparation. |
 //! | [`reward`] | **EXPERIMENTAL** — [`SkillReward`], [`RewardPolicy`] (PRD-08 §5.2 prototype). |
+//! | [`evolutionary`] | **EXPERIMENTAL** (`evolutionary` feature) — [`EvolutionarySelector`], [`SkillVariant`] (PRD-09 §6.5). |
 //! | [`error`] | [`SkillError`] enum covering all failure modes. |
 //!
 //! # Quick start
@@ -51,6 +52,8 @@
 )]
 
 pub mod error;
+#[cfg(feature = "evolutionary")]
+pub mod evolutionary;
 pub mod loader;
 pub mod manifest;
 pub mod resolver;
@@ -62,6 +65,8 @@ pub mod runner;
 // ---------------------------------------------------------------------------
 
 pub use error::SkillError;
+#[cfg(feature = "evolutionary")]
+pub use evolutionary::{EvolutionarySelector, SkillVariant};
 pub use loader::SkillLoader;
 pub use manifest::{SkillId, SkillManifest};
 pub use resolver::resolve;
