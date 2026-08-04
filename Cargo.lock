@@ -2520,6 +2520,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-chain-jam"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-chain-subxt"
 version = "0.1.0"
 dependencies = [
