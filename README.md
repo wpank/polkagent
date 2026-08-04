@@ -1,128 +1,35 @@
-![CI](https://github.com/nicovince/polkagent/actions/workflows/ci.yml/badge.svg)
-![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![MSRV](https://img.shields.io/badge/rustc-1.80+-orange.svg)
-![Crates](https://img.shields.io/badge/crates-74-brightgreen)
-![Tests](https://img.shields.io/badge/tests-1200%2B-brightgreen)
-![Providers](https://img.shields.io/badge/providers-9-blue)
+<div align="center">
 
 # Polkagent
 
 **Build AI agents. Act on Polkadot. Reach across chains.**
 
-Polkagent is a Rust-first, Polkadot-native platform for building, running, and publishing AI agents. It connects large language models to on-chain governance, treasury, and staking operations through evidence-bearing safety, configurable autonomy, and crash-safe execution. Whether you need a governance researcher that tracks referenda or a staking advisor that monitors validator performance, Polkagent gives your agents the tools to act on real chain data.
+[![CI](https://github.com/nicovince/polkagent/actions/workflows/ci.yml/badge.svg)](https://github.com/nicovince/polkagent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.80+-orange.svg)](https://www.rust-lang.org)
+[![Crates](https://img.shields.io/badge/crates-91-brightgreen)](Cargo.toml)
+[![Tests](https://img.shields.io/badge/tests-7%2C400%2B-brightgreen)](#testing)
+[![Fuzz Targets](https://img.shields.io/badge/fuzz_targets-10-blue)](#testing)
 
-The platform is organized around three pillars. **Build** -- a 74-crate hexagonal architecture with a skill system, TOML manifests, and a built-in eval framework. **Act** -- crash-safe effect pipelines with four safety invariants, grant-based policy control, and budget enforcement. **Reach** -- multi-harness support for Claude Code, Codex, Cursor, Copilot, Goose, and Kiro via ACP, plus a REST and WebSocket API for programmatic access.
+A Rust-first, Polkadot-native platform for building, running, and operating AI agents that understand on-chain governance, treasury, and staking &mdash; with evidence-bearing safety, configurable autonomy, and crash-safe execution.
 
-## Features
+[Quick Start](#quick-start) &bull; [Features](#features) &bull; [Documentation](#documentation) &bull; [Architecture](#architecture) &bull; [Contributing](#contributing)
 
-**Multi-Provider AI** -- Connect to 9 providers (Anthropic, OpenAI, Google Gemini, OpenRouter, Perplexity, Cerebras, AWS Bedrock, Azure, and local via Ollama) with zero-config auto-detection from environment variables and a built-in 13-model catalog.
+</div>
 
-**Polkadot-Native Tooling** -- Governance tools for referendum lookup, track info, voter history, delegation info, and treasury overview. Treasury tools for balance queries, staking info, portfolio summaries, transfer history, and vesting schedules.
+---
 
-**Safety & Crash Recovery** -- Four invariants enforced at every boundary: signer isolation, intent-before-I/O, no silent duplicates, and unknown stays unknown. The crash-safe effect pipeline guarantees that interrupted runs resume without data loss or duplicate side effects.
+## Why Polkagent?
 
-**Agent Orchestration** -- Multi-harness support (Claude Code, Codex, Cursor, Copilot, Goose, Kiro via ACP), extensible skills with TOML manifests, episodic memory backed by SQLite FTS5, and budget enforcement with per-run and per-day USD limits.
+Most AI agent frameworks treat blockchains as just another API. Polkagent is different: **Polkadot is a first-class citizen.** Chain profiles, runtime metadata, XCM routes, governance tracks, and finality semantics are native domain types &mdash; not afterthoughts.
 
-**Developer Experience** -- ROSEDUST interactive terminal UI built on ratatui, REST + WebSocket API (`/api/v1alpha1`), eval framework for regression testing agent behavior, and a 74-crate hexagonal architecture with strict dependency rules.
+**Evidence over assertions.** Every on-chain action carries decoded calldata, policy evaluation results, simulation output, signing records, finality observation, and receipts. Your agents don't just say they did something &mdash; they prove it.
 
-## Use Cases
+**Configurable autonomy.** Go from read-only shadow mode to fully autonomous policy-bounded execution, with four graduated autonomy levels and grant-based access control at every boundary.
 
-### Governance Researcher
+**Crash-safe by design.** The effect pipeline persists intent before I/O, uses lease-based claiming to prevent duplicates, and classifies indeterminate outcomes for safe recovery. Interrupted runs resume exactly where they left off.
 
-Track referenda, analyze voting patterns, and summarize proposals.
-
-```bash
-polkagent agent create researcher --model anthropic/claude-opus-4-6 -d "Governance researcher"
-polkagent run -a researcher -p "Summarize referendum 1234 and list the top 10 voters"
-polkagent run -a researcher -p "Show voter history for address 5GrwvaEF..."
-```
-
-### Treasury Watcher
-
-Monitor treasury balances, track transfers, and generate portfolio reports.
-
-```bash
-polkagent agent create treasury-bot --model anthropic/claude-sonnet-4-6 -d "Treasury monitor"
-polkagent run -a treasury-bot -p "What is the current treasury balance?"
-polkagent run -a treasury-bot -p "Show portfolio summary and recent transfer history"
-```
-
-### Staking Advisor
-
-Provide staking info, check vesting schedules, and review delegations.
-
-```bash
-polkagent agent create staking-advisor --model anthropic/claude-sonnet-4-6 -d "Staking advisor"
-polkagent run -a staking-advisor -p "Show staking info for validator 5FHneW46..."
-polkagent run -a staking-advisor -p "Check vesting schedule and delegation status for 5GrwvaEF..."
-```
-
-### Developer Agent
-
-Integrate with coding harnesses for development workflows.
-
-```bash
-# Use with Claude Code harness
-polkagent agent create dev-agent --model anthropic/claude-opus-4-6 -d "Dev assistant" \
-  --capability code-review --capability refactor
-polkagent run -a dev-agent -p "Review the latest PR for security issues" --harness claude-code
-```
-
-## Example Workflows
-
-### Research a governance proposal
-
-```bash
-# 1. Initialize and create an agent
-polkagent init
-export ANTHROPIC_API_KEY="sk-ant-..."
-polkagent agent create gov-researcher --model anthropic/claude-opus-4-6 -d "Governance analyst"
-
-# 2. Run a research query
-polkagent run -a gov-researcher -p "Summarize referendum 1234: what does it propose and who voted?"
-
-# 3. Follow up with a deeper question
-polkagent run -a gov-researcher -p "What track is referendum 1234 on? Show the track thresholds."
-
-# 4. Launch the TUI for interactive exploration
-polkagent tui
-```
-
-### Multi-provider setup
-
-```bash
-# Configure three providers via environment variables
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
-export GEMINI_API_KEY="AI..."
-
-# Create agents on different providers
-polkagent agent create fast-agent --model openai/gpt-4o -d "Fast responses"
-polkagent agent create deep-agent --model anthropic/claude-opus-4-6 -d "Deep analysis"
-
-# Override provider at runtime
-polkagent run -a fast-agent -p "Quick balance check for 5GrwvaEF..." --model gemini/gemini-2.5-pro
-```
-
-### API-first deployment
-
-```bash
-# 1. Start the API server
-polkagent serve --port 9090 --host 127.0.0.1
-
-# 2. Create an agent via the API
-curl -X POST http://127.0.0.1:9090/api/v1alpha1/agents \
-  -H "Content-Type: application/json" \
-  -d '{"name": "api-agent", "model": "anthropic/claude-sonnet-4-6"}'
-
-# 3. Start a run
-curl -X POST http://127.0.0.1:9090/api/v1alpha1/runs \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id": "api-agent", "prompt": "Summarize referendum 42"}'
-
-# 4. Stream results via WebSocket
-websocat ws://127.0.0.1:9090/api/v1alpha1/runs/<RUN_ID>/stream
-```
+---
 
 ## Quick Start
 
@@ -130,69 +37,371 @@ websocat ws://127.0.0.1:9090/api/v1alpha1/runs/<RUN_ID>/stream
 # Install from source
 cargo install --path crates/polkagent-cli
 
-# Initialize project directory
+# Initialize a project directory
 polkagent init
 
-# Set your provider API key
+# Set a provider API key (auto-detected)
 export ANTHROPIC_API_KEY="sk-ant-..."
 
-# Create an agent
-polkagent agent create my-agent --model anthropic/claude-sonnet-4-6
+# Create your first agent
+polkagent agent create my-agent \
+  --model anthropic/claude-sonnet-4-6 \
+  -d "Governance researcher"
 
-# Run it
-polkagent run --agent-id my-agent --prompt "Summarize referendum 1234"
+# Run a query
+polkagent run -a my-agent -p "Summarize referendum 1234 and list the top 10 voters"
 
-# Or launch the TUI
+# Or launch the interactive TUI
 polkagent tui
 ```
 
-## CLI Overview
+### Docker
+
+```bash
+# Production
+docker compose up -d
+
+# Development (with hot-reload and cargo caching)
+docker compose -f docker-compose.dev.yml up
+```
+
+### Multi-Provider Setup
+
+Polkagent auto-detects providers from environment variables &mdash; no configuration files needed:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # -> claude-sonnet-4-6
+export OPENAI_API_KEY="sk-..."          # -> gpt-4o
+export GEMINI_API_KEY="AI..."           # -> gemini-2.5-flash
+export OPENROUTER_API_KEY="sk-or-..."   # -> claude-sonnet-4-6 via OpenRouter
+export PERPLEXITY_API_KEY="pplx-..."    # -> sonar
+export CEREBRAS_API_KEY="csk-..."       # -> llama-4-scout
+
+# Agents can use different providers
+polkagent agent create fast --model openai/gpt-4o -d "Quick lookups"
+polkagent agent create deep --model anthropic/claude-opus-4-6 -d "Deep analysis"
+
+# Override at runtime
+polkagent run -a fast -p "Treasury balance?" --model gemini/gemini-2.5-pro
+```
+
+---
+
+## Features
+
+### On-Chain Intelligence
+
+Polkagent ships with 10 purpose-built governance and treasury tools that query live chain state:
+
+| Category | Tool | What It Does |
+|----------|------|-------------|
+| **Governance** | `referendum_lookup` | Look up OpenGov referenda with tally and timeline |
+| | `track_info` | List governance tracks, decision periods, approval curves |
+| | `voter_history` | Query voting history with conviction and balance info |
+| | `delegation_info` | Inspect incoming/outgoing delegations |
+| | `treasury_overview` | Treasury balance, pending proposals, spend periods |
+| **Treasury** | `balance_query` | Account balance breakdown (free, reserved, frozen) |
+| | `staking_info` | Staking status, active stake, unbonding, nominations |
+| | `portfolio_summary` | Aggregated view of all asset positions |
+| | `transfer_history` | Recent transfers with block numbers and timestamps |
+| | `vesting_schedule` | Vesting schedules with lock/unlock info |
+| **Workbench** | `migration_rehearsal` | Simulate storage migrations with structured diff |
+| | `metadata_comparison` | Compare runtime metadata versions for breaking changes |
+
+### Multi-Provider AI
+
+Connect to any major LLM provider through a unified interface with automatic fallback:
+
+| Provider | Models | Environment Variable |
+|----------|--------|---------------------|
+| **Anthropic** | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5 | `ANTHROPIC_API_KEY` |
+| **OpenAI** | GPT-5.5, GPT-5.4 Mini, o3, o4-mini, GPT-4o, Codex Mini | `OPENAI_API_KEY` |
+| **Google Gemini** | Gemini 2.5 Pro, Gemini 2.5 Flash | `GEMINI_API_KEY` |
+| **OpenRouter** | 100+ models via routing | `OPENROUTER_API_KEY` |
+| **Perplexity** | Sonar models | `PERPLEXITY_API_KEY` |
+| **Cerebras** | Llama 4 Scout | `CEREBRAS_API_KEY` |
+| **Ollama** | Any local model | No key needed |
+| **AWS Bedrock** | Bedrock-hosted models | AWS credentials |
+| **Azure** | Azure-hosted OpenAI models | Azure credentials |
+
+Automatic fallback chains: if one provider fails, the next one picks up transparently.
+
+### Safety & Crash Recovery
+
+Four invariants enforced at every boundary:
+
+| Invariant | Guarantee |
+|-----------|-----------|
+| **Signer Isolation** | Keys never enter model context; only isolated signers receive canonical payloads |
+| **Intent-Before-I/O** | Every effect intent is persisted to durable storage *before* any external I/O |
+| **No Silent Duplicates** | BLAKE3 idempotency keys prevent duplicate execution across crashes |
+| **Unknown Stays Unknown** | Indeterminate outcomes are preserved as-is, never silently promoted to success |
+
+**Four autonomy levels** give you graduated control:
+
+```
+Fully Supervised ──> Supervised (default) ──> Assisted Autonomous ──> Fully Autonomous
+  every effect         reads: auto              routine: auto           all: auto
+  needs approval       writes: approval         high-risk: approval     (grants + budget)
+```
+
+Grant policies use deny-by-default, deny-overrides-allow ABAC with budget enforcement. The model cannot influence authorization decisions &mdash; only typed Rust values participate in policy evaluation.
+
+### ROSEDUST Terminal UI
+
+An interactive dashboard with 8 tabs for real-time monitoring and control:
+
+| Key | Tab | Description |
+|-----|-----|-------------|
+| `F1` | **Dashboard** | Agent/run overview with system health (responsive 3-breakpoint layout) |
+| `F2` | **Agents** | Agent list with detail panel |
+| `F3` | **Runs** | Run list with state, duration, token usage, and detail panel |
+| `F4` | **System** | Health checks, stats, config, chain status, balance display |
+| `F5` | **Timeline** | Chronological events for a selected run |
+| `F6` | **Approvals** | Effect queue with approve/deny actions and action cards |
+| `F7` | **Memory** | Full-text memory browser with search and delete |
+| `F8` | **Audit** | System audit log with severity filtering |
+
+Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, `q` to quit.
+
+### Coding Harness Integrations
+
+Use Polkagent as a backend for your favorite coding agent:
+
+| Harness | Protocol | Status |
+|---------|----------|--------|
+| **Claude Code** | JSON Lines over stdio | Tier-1 |
+| **Codex CLI** | JSON-RPC 2.0 with approval flows | Tier-1 |
+| **Cursor** | ACP (JSON-RPC 2.0 over stdio) | Tier-1 |
+| **Goose** | ACP | Tier-1 |
+| **Kiro** | ACP | Tier-1 |
+| **OpenCode** | ACP | Tier-1 |
+| **GitHub Copilot** | One-shot CLI | Tier-2 |
+| **Bridge** | HTTP/WebSocket (any remote agent) | Tier-1 |
+
+All harnesses share 11 canonical tools (read, write, edit, glob, grep, bash, web_fetch, web_search, task, notebook_edit, apply_patch) mapped to each backend's native format.
+
+### Agent Memory
+
+Three-tier memory system backed by SQLite with FTS5 full-text search:
+
+- **Episodic** &mdash; Conversation transcripts and interaction history
+- **Semantic** &mdash; Extracted facts, knowledge, and learned relationships
+- **Procedural** &mdash; Discovered skills, workflows, and action patterns
+
+Quality control through admission gates (novelty, relevance, confidence filtering) and a three-phase retention sweeper that prevents unbounded growth. Optional vector search via hybrid retrieval with Reciprocal Rank Fusion.
+
+```bash
+polkagent memory search "governance delegation patterns"
+polkagent memory stats
+polkagent memory export --format json > backup.json
+polkagent memory sweep --dry-run
+```
+
+### REST API & WebSocket Streaming
+
+Full HTTP API at `/api/v1alpha1` with 49 endpoints covering agents, runs, effects, artifacts, events, providers, skills, tools, payments, memory, audit, conversations, and registry.
+
+```bash
+# Start the API server
+polkagent serve --port 9090
+
+# Create an agent
+curl -X POST http://localhost:9090/api/v1alpha1/agents \
+  -H "Content-Type: application/json" \
+  -d '{"name": "api-agent", "model": "anthropic/claude-sonnet-4-6"}'
+
+# Start a run
+curl -X POST http://localhost:9090/api/v1alpha1/runs \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "api-agent", "prompt": "Summarize referendum 42"}'
+
+# Stream events via WebSocket
+websocat ws://localhost:9090/api/v1alpha1/events/stream?run_id=<RUN_ID>
+```
+
+Rate limiting (100 req/s default, token bucket), health checks (`/health/{live,ready,startup}`), and cursor-based pagination included.
+
+### Skills & Marketplace
+
+Extend agents with reusable skills defined in TOML manifests:
+
+```toml
+[skill]
+name = "governance-analyst"
+version = "1.0.0"
+description = "Deep governance analysis with delegation tracking"
+
+[capabilities]
+required_grants = ["chain.query"]
+tools = ["referendum_lookup", "voter_history", "delegation_info"]
+
+[prompts]
+system = "You are a governance analyst specializing in OpenGov..."
+
+[dependencies]
+chain-basics = ">=0.2.0"
+```
+
+```bash
+polkagent skill install ./skills/governance-analyst/
+polkagent skill list
+polkagent skill show governance-analyst
+```
+
+The self-hostable **marketplace** provides a service registry for discovering and publishing agent services with pricing models, SLA tiers, and capability-based search.
+
+### Multi-Agent Groups
+
+Coordinate multiple agents with group execution modes:
+
+| Mode | Behavior |
+|------|----------|
+| **Sequential** | Agents run one after another, each seeing prior results |
+| **Parallel** | All agents run simultaneously |
+| **Pipeline** | Output of one agent feeds into the next |
+| **Consensus** | Agents vote on outcomes using quorum policies |
+
+Quorum policies: Unanimous, Majority, Threshold, Leader-Only. Three-level budget control (total, per-member, per-run) with atomic spend tracking.
+
+### Evaluation Framework
+
+Regression-test agent behavior with structured eval suites:
+
+```bash
+# Run the built-in safety suite
+polkagent eval run --suite safety
+
+# Compare against a baseline
+polkagent eval compare --baseline results-v1.json --current results-v2.json
+```
+
+25 built-in test cases across 6 categories (Safety, Tool Use, Chain Explanation, Governance, Treasury, General). Includes model-as-judge evaluation with configurable criteria and regression detection with delta thresholds.
+
+### Production Operations
+
+| Capability | Crate | What It Does |
+|------------|-------|-------------|
+| **Circuit Breaker** | `polkagent-retry` | Three-state pattern (Closed/Open/Half-Open) for external calls |
+| **Rate Limiting** | `polkagent-rate-limit` | Token bucket, sliding window, leaky bucket with keyed/composite modes |
+| **Caching** | `polkagent-cache` | LRU with per-entry TTL, cache-aside pattern, BLAKE3 key hashing |
+| **Scheduling** | `polkagent-scheduler` | Cron expressions, intervals, one-shot deferred tasks |
+| **Batch Processing** | `polkagent-batch` | Configurable error policies with parallel dispatch |
+| **Audit Logging** | `polkagent-audit` | Tamper-evident BLAKE3 integrity chain with rich queries |
+| **Health Checks** | `polkagent-health` | Liveness, readiness, and dependency probes |
+| **Fault Injection** | `polkagent-fault` | Controlled crashes, timeouts, corruption for testing |
+| **Telemetry** | `polkagent-telemetry` | OpenTelemetry tracing, Prometheus metrics, JSONL event logging |
+
+### Cloud Deployment
+
+- **Control Plane** &mdash; Priority-based job queue with capability-aware worker assignment and Cedar-style data residency policies
+- **Worker Nodes** &mdash; Register, heartbeat, poll-and-execute, graceful drain lifecycle
+- **PostgreSQL** &mdash; Multi-tenant store with row-level security, replacing SQLite for production
+- **Billing** &mdash; Per-run cost tracking with provider pricing tables and CSV export
+- **Docker** &mdash; Multi-stage builds (~130 MB images) with health checks
+
+---
+
+## Example Workflows
+
+### Research a governance proposal
+
+```bash
+polkagent init
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+polkagent agent create researcher \
+  --model anthropic/claude-opus-4-6 \
+  -d "Governance analyst"
+
+# Research a referendum
+polkagent run -a researcher \
+  -p "Summarize referendum 1234: what does it propose, who voted, and what track is it on?"
+
+# Follow up
+polkagent run -a researcher \
+  -p "Show the delegation network for the top 5 voters on referendum 1234"
+
+# Explore interactively
+polkagent tui
+```
+
+### Monitor treasury health
+
+```bash
+polkagent agent create treasurer \
+  --model anthropic/claude-sonnet-4-6 \
+  -d "Treasury monitor"
+
+polkagent run -a treasurer \
+  -p "Give me a full portfolio summary: balances, staking positions, vesting schedules, and recent transfers"
+```
+
+### Deploy as an API service
+
+```bash
+# Start the server
+polkagent serve --port 9090
+
+# Health check
+curl http://localhost:9090/health/ready
+
+# Create agent + run via API
+AGENT=$(curl -s -X POST http://localhost:9090/api/v1alpha1/agents \
+  -H "Content-Type: application/json" \
+  -d '{"name": "api-agent", "model": "anthropic/claude-sonnet-4-6"}' \
+  | jq -r '.id')
+
+curl -X POST http://localhost:9090/api/v1alpha1/runs \
+  -H "Content-Type: application/json" \
+  -d "{\"agent_id\": \"$AGENT\", \"prompt\": \"What is the current treasury balance?\"}"
+```
+
+---
+
+## CLI Reference
 
 | Command | Description |
 |---------|-------------|
 | `init` | Initialize `.polkagent/` project directory |
-| `run` | Execute a run against an agent |
-| `agent` | Agent CRUD and lifecycle management |
-| `skill` | Skill management (install, list, remove) |
-| `tui` | Launch interactive ROSEDUST terminal UI |
-| `serve` | Start the HTTP API + WebSocket server |
+| `run` | Execute a prompt against an agent |
+| `agent` | Create, list, show, delete, start, stop, pause, resume agents |
+| `skill` | Install, update, remove, list, show skills |
+| `kit` | Manage skill bundles |
+| `tui` | Launch the ROSEDUST interactive terminal |
+| `serve` | Start the REST + WebSocket API server |
+| `inbox` | List, approve, deny pending effects |
+| `inspect` | Inspect runs, effects, artifacts, agents, policies, database |
+| `export` | Export runs, effects, artifacts, events, config (JSON/CSV/JSONL) |
+| `memory` | Search, list, forget, stats, export, import, sweep |
+| `eval` | Run evaluation suites, list, report, compare baselines |
+| `chain` | Chain status, metadata, decode, balance queries |
+| `explain` | Decode and preview a hex extrinsic |
+| `auth` | Login, logout, whoami, status |
+| `network` | Network endpoint status and metadata |
 | `config` | Show or validate configuration |
 | `doctor` | Run system health checks |
-| `status` | Show agent count, active runs, effect queue depth |
+| `status` | Agent count, active runs, effect queue depth |
 | `logs` | Tail the event log |
-| `inbox` | Manage pending effects awaiting approval |
-| `explain` | Decode and preview a hex extrinsic |
-| `chain` | Chain interaction and inspection |
-| `memory` | Agent memory management |
-| `eval` | Run evaluation suites |
-| `auth` | API key and credential management |
-| `network` | Network endpoint status |
-| `completions` | Generate shell completion scripts |
+| `completions` | Shell completions (bash/zsh/fish/powershell/elvish) |
 | `version` | Print version |
 
 See [docs/cli.md](docs/cli.md) for the full reference with all flags and subcommands.
 
-## Configuration
+---
 
-Configuration is loaded from two locations:
+## Architecture
 
-- `~/.config/polkagent/polkagent.toml` -- global defaults
-- `.polkagent/polkagent.toml` -- project-local overrides (takes precedence)
-
-Environment variables prefixed with `POLKAGENT_*` override both. See [docs/configuration.md](docs/configuration.md) for the full reference.
-
-## Architecture at a Glance
-
-Polkagent is organized as a Cargo workspace following a hexagonal (ports and adapters) architecture. Domain logic lives in pure crates with no I/O dependencies. External systems are accessed through narrow trait-based ports, with concrete adapters provided separately.
+Polkagent is a 91-crate Cargo workspace following hexagonal (ports and adapters) architecture. Domain logic lives in pure crates with no I/O. External systems are accessed through trait-based ports with swappable adapters.
 
 ```mermaid
 graph TB
-    User([User])
+    User([User / Operator])
 
     subgraph Surfaces["Surfaces"]
-        CLI["CLI + TUI<br/>(ROSEDUST)"]
-        API["REST + WebSocket<br/>API"]
-        Webhook["Webhook<br/>Surface"]
+        CLI["CLI + TUI"]
+        API["REST + WebSocket API"]
+        WH["Webhook Surface"]
     end
 
     subgraph Core["Application Core"]
@@ -202,9 +411,11 @@ graph TB
         EB["Event Bus"]
         AS["Artifact Store"]
         OB["Outbox"]
+        MM["Memory"]
+        SK["Skills"]
     end
 
-    subgraph Ports["Ports (Trait Interfaces)"]
+    subgraph Ports["Ports"]
         ET["Executor"]
         ST["Signer"]
         SR["Store"]
@@ -215,125 +426,120 @@ graph TB
 
     subgraph Adapters["Adapters"]
         direction LR
-        A1["Anthropic"]
-        A2["OpenAI"]
-        A3["Gemini"]
-        A4["SQLite"]
-        A5["Subxt"]
-        A6["Fake"]
-    end
-
-    subgraph External["External Systems"]
-        direction LR
-        LLM["LLM APIs"]
-        DOT["Polkadot"]
-        FS["Filesystem"]
+        A1["Anthropic / OpenAI / Gemini"]
+        A4["SQLite / Postgres"]
+        A5["Subxt / JAM"]
+        A6["Claude / Codex / Cursor / ..."]
     end
 
     User --> Surfaces
     Surfaces --> Core
     Core --> Ports
     Ports --> Adapters
-    Adapters --> External
 ```
 
-### How It Works
+### Run Lifecycle
 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant S as Surface (CLI/API)
+    participant S as Surface (CLI / API)
     participant R as Run Manager
     participant G as Grant Resolver
     participant E as Executor (LLM)
     participant P as Effect Pipeline
 
     U->>S: polkagent run -p "Summarize referendum 42"
-    S->>R: Create Run (state: Created)
-    R->>R: Transition to Running
+    S->>R: Create Run
     R->>G: Check grants & budget
     G-->>R: Approved
-    R->>E: Send prompt to model
+    R->>E: Send prompt + tools
     E-->>R: Response with tool calls
-    R->>P: Create EffectIntent (persisted before I/O)
-    P->>P: Claim → Execute → Record Outcome
-    P-->>R: EffectOutcome (Success)
-    R->>R: Transition to Completed
+    R->>P: Persist EffectIntent (before I/O)
+    P->>P: Claim -> Execute -> Record Outcome
+    P-->>R: EffectOutcome
     R-->>S: Final response
     S-->>U: Display results
 ```
 
-### Run Lifecycle
+### Effect Pipeline State Machine
 
-```mermaid
-stateDiagram-v2
-    [*] --> Created
-    Created --> Queued
-    Queued --> Running
-    Running --> AwaitingApproval
-    AwaitingApproval --> Running
-    Running --> WaitingEffect
-    WaitingEffect --> Running
-    Running --> Completing
-    Completing --> Completed
-    Running --> Failed
-    Running --> Cancelled
-    Running --> TimedOut
-    Completed --> [*]
-    Failed --> [*]
-    Cancelled --> [*]
-    TimedOut --> [*]
+```
+Created ─> Pending ─> Claimed ─> Executing ─> Resolved
+                          │                       │
+                          └─── lease expired ──> Retrying
+                                                  │
+                                              Superseded
 ```
 
-### Provider Ecosystem
+Lease-based claiming with configurable durations (30s reads, 60s standard, 120s signing). Expired leases are classified by retry policy: idempotent (safe), check-before-retry, or no-auto-retry.
 
-```mermaid
-pie title Provider Ecosystem
-    "Anthropic" : 3
-    "OpenAI" : 5
-    "Google Gemini" : 2
-    "Perplexity" : 2
-    "OpenRouter" : 1
+---
+
+## Configuration
+
+Configuration loads from two locations with environment variable overrides:
+
+```
+~/.config/polkagent/polkagent.toml     # Global defaults
+.polkagent/polkagent.toml              # Project-local (takes precedence)
+POLKAGENT_*                            # Environment overrides (highest priority)
 ```
 
-See [docs/architecture.md](docs/architecture.md) for a full description of the layered design, crate dependency diagram, and key invariants.
+See [docs/configuration.md](docs/configuration.md) for the full schema.
+
+---
+
+## Testing
+
+```bash
+make test       # cargo test --workspace (7,400+ tests)
+make lint       # cargo clippy --workspace
+make fmt-check  # Format validation
+```
+
+- **7,400+ unit and integration tests** across 91 crates
+- **205 security tests** covering injection resistance, replay safety, red team exploits, supply chain attacks
+- **623 integration tests** for cross-crate E2E flows
+- **10 fuzz targets** (API requests, config parsing, policy eval, skill manifests, and more)
+- **Nightly CI** runs cargo-audit, cargo-deny, and all fuzz targets
+
+---
 
 ## Documentation
 
-### Core Guides
-- [Getting Started](docs/getting-started.md) — installation, first agent, and initial configuration
-- [Configuration](docs/configuration.md) — TOML schema, environment variables, and precedence rules
-- [CLI Reference](docs/cli.md) — every command, flag, and subcommand
-- [Architecture](docs/architecture.md) — hexagonal design, crate map, and dependency rules
+### Getting Started
+- [Getting Started](docs/getting-started.md) &mdash; Installation, first agent, initial configuration
+- [Configuration](docs/configuration.md) &mdash; TOML schema, environment variables, precedence rules
+- [CLI Reference](docs/cli.md) &mdash; Every command, flag, and subcommand
+- [Architecture](docs/architecture.md) &mdash; Hexagonal design, crate map, dependency rules
 
-### Platform Features
-- [Run Lifecycle](docs/run-lifecycle.md) — execution model, state machine, and budget enforcement
-- [Safety](docs/safety.md) — the four invariants, grant policies, and crash recovery
-- [Tools & Skills](docs/tools-and-skills.md) — built-in tools, TOML skill manifests, and custom skills
-- [Providers](docs/providers.md) — supported LLM providers and auto-detection
-- [Harnesses](docs/harnesses.md) — integrating with Claude Code, Codex, Cursor, and others
+### Platform
+- [Run Lifecycle](docs/run-lifecycle.md) &mdash; Execution model, state machine, budget enforcement
+- [Safety](docs/safety.md) &mdash; Four invariants, grant policies, crash recovery
+- [Tools & Skills](docs/tools-and-skills.md) &mdash; Built-in tools, TOML manifests, custom skills
+- [Providers](docs/providers.md) &mdash; LLM providers, model catalog, auto-detection
+- [Harnesses](docs/harnesses.md) &mdash; Claude Code, Codex, Cursor, Copilot, and others
+- [Memory](docs/memory.md) &mdash; Episodic, semantic, and procedural memory
 
-### Polkadot Integration
-- [Chain Integration](docs/chain.md) — blockchain interaction, metadata management, identity types
-- [Identity & Security](docs/identity-security.md) — signing stack, signer isolation, policy evaluation
-- [Payments & Autonomy](docs/payments.md) — payment intents, signer isolation, autonomy levels
-
-### Data & Observability
-- [Storage](docs/storage.md) — store architecture, migrations, content-addressed artifacts
-- [Memory](docs/memory.md) — episodic, semantic, and working memory
-- [Outbox & Events](docs/outbox-events.md) — event system, outbox delivery, artifact lineage
-- [Telemetry](docs/telemetry.md) — observability pipeline, metrics, distributed tracing
+### Polkadot
+- [Chain Integration](docs/chain.md) &mdash; Blockchain interaction, metadata, identity types
+- [Identity & Security](docs/identity-security.md) &mdash; Signing stack, signer isolation, policy evaluation
+- [Payments & Autonomy](docs/payments.md) &mdash; Payment intents, budget enforcement, autonomy levels
 
 ### Operations
-- [API Reference](docs/api.md) — REST endpoints, WebSocket streaming, and authentication
-- [Deployment](docs/deployment.md) — production setup, Docker, and reverse proxy configuration
-- [Resilience](docs/resilience.md) — circuit breakers, cache-aside, rate limiting
-- [Groups](docs/groups.md) — multi-agent groups, parent/child coordination
+- [API Reference](docs/api.md) &mdash; REST endpoints, WebSocket streaming, authentication
+- [Deployment](docs/deployment.md) &mdash; Production setup, Docker, reverse proxy
+- [Resilience](docs/resilience.md) &mdash; Circuit breakers, cache-aside, rate limiting
+- [Groups](docs/groups.md) &mdash; Multi-agent groups, quorum policies, execution modes
+- [Telemetry](docs/telemetry.md) &mdash; OpenTelemetry, Prometheus metrics, tracing
 
 ### Ecosystem
-- [Plugins](docs/plugins.md) — plugin architecture, skill vs plugin, load lifecycle
-- [Evals](docs/evals.md) — evaluation framework, suites, and category coverage
-- [Examples](docs/examples.md) — practical workflows, policy templates, and API cookbook
+- [Plugins](docs/plugins.md) &mdash; Plugin architecture, load lifecycle
+- [Evals](docs/evals.md) &mdash; Evaluation framework, suites, regression detection
+- [Examples](docs/examples.md) &mdash; Practical workflows, policy templates, API cookbook
+
+---
 
 ## Contributing
 
@@ -345,4 +551,4 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## License
 
-Licensed under Apache-2.0.
+Licensed under [Apache-2.0](LICENSE).
