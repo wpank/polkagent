@@ -22,6 +22,7 @@
 //! | [`preflight`] | Pre-flight checks: [`PreFlightCheck`] trait, [`CompositePreFlight`], balance/fee/ED/address/nonce/metadata checks. |
 //! | [`error`] | [`PaymentError`] enum. |
 //! | [`ledger`] | **EXPERIMENTAL** — Agent earn/spend [`Ledger`], [`X402PaymentHeader`] (PRD-08 §5.2 prototype). |
+//! | [`escrow`] | **EXPERIMENTAL** — Agent-to-agent [`EscrowStateMachine`], [`EscrowAgreement`] (PRD-08 §5.3 prototype). |
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -41,6 +42,7 @@ pub mod action;
 pub mod budget;
 pub mod builder;
 pub mod error;
+pub mod escrow;
 pub mod estimator;
 pub mod finality;
 pub mod intent;
@@ -70,6 +72,7 @@ pub use risk::{
     BatchHidingDetector, CompositeRiskGate, HighValueDetector, HomoglyphDetector, RiskCode,
     RiskFinding, RiskGate, RiskSeverity,
 };
+pub use escrow::{EscrowAgreement, EscrowStateMachine, EscrowStatus};
 pub use ledger::{Ledger, LedgerEntry, LedgerEntryKind, X402PaymentHeader};
 pub use store::{BalanceSummary, PaymentStore};
 pub use types::{
