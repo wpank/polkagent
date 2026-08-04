@@ -73,6 +73,7 @@ members = [
     "crates/polkagent-harness-goose",
     "crates/polkagent-harness-kiro",
     "crates/polkagent-executor-openrouter",
+    "crates/polkagent-action-sign",
 ]
 
 [workspace.package]

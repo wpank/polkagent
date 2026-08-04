@@ -2133,6 +2133,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-action-sign"
+version = "0.1.0"
+dependencies = [
+ "polkagent-codec",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "polkagent-api"
 version = "0.1.0"
 dependencies = [

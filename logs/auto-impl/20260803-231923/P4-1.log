@@ -1,0 +1,40 @@
+All done. Here's a summary of what was created:
+
+## `polkagent-action-sign` crate — created and passing
+
+### Files created
+- **`crates/polkagent-action-sign/Cargo.toml`** — depends on `polkagent-codec`, `serde`, `thiserror`
+- **`crates/polkagent-action-sign/src/lib.rs`** — full risk analysis implementation
+- **`Cargo.toml`** (workspace) — added member entry
+
+### Public API
+
+| Type | Description |
+|------|-------------|
+| `RiskLevel` | Enum: `Low`, `Medium`, `High`, `Critical` (derives `Ord`, `Serialize`) |
+| `CallPattern` | Enum: 14 variants covering transfers, batch, proxy, multisig, and unknown calls |
+| `RiskFinding` | Struct: `{ level, pattern, description }` — a single finding |
+| `RiskAssessment` | Struct: `{ overall_level, findings }` with `should_block()` / `should_warn()` methods |
+| `classify_risk(&DecodedExtrinsic)` | Main entry point — accepts decoded calldata, returns full assessment |
+
+### Risk classification logic
+
+| Call pattern | Risk level |
+|---|---|
+| Simple transfer (`transferKeepAlive`, `transfer`, `transferAll`) | **Low** |
+| `Utility.batch` (transfers only) | **Low** |
+| `Utility.batchAll`, `forceBatch` | **Medium** |
+| `Proxy.proxy` dispatch | **Medium** |
+| `Multisig.asMulti`, `approveAsMulti` | **Medium** |
+| `Proxy.addProxy` / `removeProxy` (direct) | **High** |
+| Unknown pallet/call | **High** |
+| Batch containing unknown inner call | **High** |
+| `batchAll` + proxy dispatch | **High** |
+| `batch` + proxy mutation (addProxy/removeProxy hidden) | **High** |
+| `batchAll` + proxy mutation (batch hiding attack) | **Critical** |
+| Nested proxy (proxy wrapping proxy) | **Critical** |
+| Proxy wrapping `addProxy` | **Critical** |
+
+### Tests — 18 passing
+
+All 18 test cases pass, covering: simple transfers, `transfer_all`, batch-of-transfers, `batchAll`, proxy dispatch, `addProxy`, `removeProxy`, multisig, `approveAsMulti`, batch-hiding (`batchAll` + `addProxy`), nested proxy, unknown calls, batch with unknown inner calls, proxy wrapping `addProxy`, `forceBatch`, risk level ordering, display formatting, and serde round-trip.
