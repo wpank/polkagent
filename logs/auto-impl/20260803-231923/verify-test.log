@@ -1,21 +1,213 @@
+   Compiling serde_core v1.0.229
+   Compiling futures-io v0.3.33
+   Compiling serde v1.0.229
+   Compiling getrandom v0.2.17
+   Compiling crypto-common v0.1.7
+   Compiling rustls-pki-types v1.15.1
+   Compiling num-traits v0.2.19
+   Compiling zerocopy v0.8.55
+   Compiling tinyvec_macros v0.1.1
+   Compiling parking v2.2.1
+   Compiling crc-catalog v2.5.0
+   Compiling hashlink v0.10.0
+   Compiling socket2 v0.6.5
+   Compiling form_urlencoded v1.2.2
+   Compiling futures-util v0.3.33
+   Compiling tinyvec v1.12.0
+   Compiling crc v3.4.0
+   Compiling digest v0.10.7
+   Compiling event-listener v5.4.2
+   Compiling ring v0.17.14
+   Compiling rand_core v0.6.4
+   Compiling webpki-roots v1.0.9
+   Compiling either v1.17.0
+   Compiling smallvec v1.15.2
+   Compiling tokio v1.53.1
+   Compiling tracing-core v0.1.36
+   Compiling serde_json v1.0.151
+   Compiling uuid v1.24.0
+   Compiling semver v1.0.28
+   Compiling serde_path_to_error v0.1.20
+   Compiling unicode-normalization v0.1.25
+   Compiling cpufeatures v0.2.17
+   Compiling itertools v0.13.0
+   Compiling icu_normalizer v2.2.0
+   Compiling parking_lot_core v0.9.12
+   Compiling chrono v0.4.45
+   Compiling futures-executor v0.3.33
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling rusqlite v0.32.1
+   Compiling futures v0.3.33
+   Compiling serde_urlencoded v0.7.1
+   Compiling polkagent-codec v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-codec)
+   Compiling tinytemplate v1.2.1
+   Compiling ciborium v0.2.2
+   Compiling polkagent-core v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-core)
+   Compiling parking_lot v0.12.5
+   Compiling dashmap v6.2.1
+   Compiling prost-derive v0.13.5
+   Compiling toml_edit v0.22.27
+   Compiling axum-core v0.4.5
+   Compiling opentelemetry_sdk v0.27.1
+   Compiling itertools v0.10.5
+   Compiling idna_adapter v1.2.2
+   Compiling rayon v1.12.0
+   Compiling tracing-serde v0.2.0
+   Compiling crossterm v0.28.1
+   Compiling idna v1.1.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling polkagent-identity v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-identity)
+   Compiling criterion-plot v0.5.0
+   Compiling unicode-truncate v1.1.0
+   Compiling prost v0.13.5
+   Compiling toml v0.8.23
+   Compiling url v2.5.8
+   Compiling ppv-lite86 v0.2.21
+   Compiling rustls-webpki v0.103.13
+   Compiling ratatui v0.29.0
+   Compiling criterion v0.5.1
+   Compiling unicode-bidi v0.3.18
+   Compiling unicode-properties v0.1.4
    Compiling polkagent-config v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-config)
+   Compiling polkagent-kit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-kit)
+   Compiling tracing-opentelemetry v0.28.0
+   Compiling rustls v0.23.43
+   Compiling stringprep v0.1.5
+   Compiling rand_chacha v0.3.1
+   Compiling tracing v0.1.44
+   Compiling polkagent-executor-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-trait)
+   Compiling polkagent-store-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-trait)
+   Compiling polkagent-grant v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-grant)
+   Compiling polkagent-card v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-card)
+   Compiling tokio-util v0.7.19
+   Compiling tower v0.5.3
+   Compiling polkagent-chain-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-chain-trait)
+   Compiling polkagent-payment v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-payment)
+   Compiling polkagent-signer-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-trait)
+   Compiling polkagent-memory v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-memory)
+   Compiling polkagent-effect v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-effect)
+   Compiling h2 v0.4.15
+   Compiling tower-http v0.6.11
+   Compiling polkagent-harness-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-trait)
+   Compiling polkagent-event v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-event)
+   Compiling tokio-rustls v0.26.4
+   Compiling polkagent-conversation v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-conversation)
+   Compiling polkagent-metadata v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-metadata)
+   Compiling polkagent-chain-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-chain-fake)
+   Compiling polkagent-batch v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-batch)
+   Compiling polkagent-artifact v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-artifact)
+   Compiling polkagent-outbox v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-outbox)
+   Compiling polkagent-skill v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-skill)
+   Compiling polkagent-audit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-audit)
+   Compiling polkagent-transport-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-transport-trait)
    Compiling polkagent-tool v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool)
+   Compiling polkagent-executor-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-fake)
+   Compiling polkagent-rate-limit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-rate-limit)
+   Compiling polkagent-run v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-run)
+   Compiling polkagent-retry v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-retry)
+   Compiling polkagent-scheduler v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-scheduler)
+   Compiling hyper v1.11.0
+   Compiling polkagent-plugin v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-plugin)
+   Compiling polkagent-eval v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-eval)
+   Compiling polkagent-signer-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-fake)
+   Compiling polkagent-group v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-group)
+   Compiling polkagent-transport-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-transport-fake)
+   Compiling polkagent-feed v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-feed)
+   Compiling polkagent-cache v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cache)
+   Compiling polkagent-transport-pca v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-transport-pca)
+   Compiling hyper-util v0.1.20
+   Compiling polkagent-fault v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-fault)
+   Compiling polkagent-test-fixtures v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-test-fixtures)
+   Compiling tokio-stream v0.1.19
+   Compiling polkagent-store-sqlite v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-sqlite)
+   Compiling polkagent-harness-acp v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-acp)
+   Compiling polkagent-security-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-security-tests)
+   Compiling axum v0.7.9
+   Compiling tower v0.4.13
+   Compiling tokio-tungstenite v0.29.0
+   Compiling polkagent-marketplace v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-marketplace)
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling hyper-rustls v0.27.9
+   Compiling hyper-timeout v0.5.2
+   Compiling futures-intrusive v0.5.0
+   Compiling sha2 v0.10.9
+   Compiling webpki-roots v0.26.11
+   Compiling axum v0.8.9
+   Compiling reqwest v0.12.28
+   Compiling hmac v0.12.1
+   Compiling crossbeam-queue v0.3.13
+   Compiling dotenvy v0.15.7
+   Compiling home v0.5.12
+   Compiling whoami v1.6.1
+   Compiling byteorder v1.5.0
+   Compiling rand v0.8.7
+   Compiling md-5 v0.10.6
+   Compiling hkdf v0.12.4
+   Compiling atoi v2.0.0
+   Compiling tonic v0.12.3
+   Compiling futures-channel v0.3.33
+   Compiling sqlx-core v0.8.6
+   Compiling polkagent-harness-cursor v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-cursor)
+   Compiling polkagent-tool-treasury v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-treasury)
+   Compiling polkagent-tool-governance v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-governance)
+   Compiling polkagent-surface-webhook v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-surface-webhook)
+   Compiling polkagent-executor-gemini v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-gemini)
+   Compiling polkagent-chain-subxt v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-chain-subxt)
+   Compiling polkagent-executor-openai v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-openai)
+   Compiling polkagent-executor-anthropic v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-anthropic)
+   Compiling opentelemetry-proto v0.27.0
+   Compiling polkagent-service v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-service)
+   Compiling polkagent-executor-local v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-local)
+   Compiling opentelemetry-otlp v0.27.0
+   Compiling sqlx-postgres v0.8.6
+   Compiling polkagent-executor-openrouter v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-openrouter)
+   Compiling polkagent-harness-claude v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-claude)
+   Compiling polkagent-harness-codex v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-codex)
+   Compiling polkagent-telemetry v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-telemetry)
+   Compiling erased-serde v0.4.10
+   Compiling ureq v2.12.1
+   Compiling polkagent-integration-tests v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-integration-tests)
+   Compiling tokio-test v0.4.5
+   Compiling email_address v0.2.9
+   Compiling polkagent-api v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-api)
+   Compiling typetag v0.2.23
+   Compiling rust-multipart-rfc7578_2 v0.9.0
+   Compiling polkagent-cloud-control v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cloud-control)
+   Compiling polkagent-context v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-context)
+   Compiling polkagent-store-sqlite-group v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-sqlite-group)
+   Compiling expect-json v1.11.0
+   Compiling polkagent-signer-proxy v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-proxy)
+   Compiling polkagent-harness-bridge v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-bridge)
+   Compiling polkagent-signer-external v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-external)
+   Compiling sqlx-macros-core v0.8.6
+   Compiling polkagent-cloud-worker v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cloud-worker)
+   Compiling polkagent-store-sqlite-feed v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-sqlite-feed)
+   Compiling polkagent-migration v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-migration)
+   Compiling polkagent-harness-opencode v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-opencode)
+   Compiling polkagent-harness-goose v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-goose)
+   Compiling polkagent-harness-kiro v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-kiro)
+   Compiling axum-test v21.0.0
+   Compiling polkagent-tool-workbench v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool-workbench)
+   Compiling polkagent-harness-copilot v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-copilot)
+   Compiling polkagent-action-governance v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-action-governance)
+   Compiling sqlx-macros v0.8.6
+   Compiling polkagent-action-transfer v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-action-transfer)
+   Compiling polkagent-signer-watchonly v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-watchonly)
+   Compiling polkagent-secret v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-secret)
+   Compiling polkagent-health v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-health)
+   Compiling polkagent-action-sign v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-action-sign)
+   Compiling sqlx v0.8.6
+   Compiling polkagent-cli v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-cli)
+   Compiling polkagent-store-postgres v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-store-postgres)
 error[E0046]: not all trait items implemented, missing: `forget`
-   --> crates/polkagent-tool/src/builtin/chain_knowledge.rs:226:5
-    |
-226 |     impl MemoryStore for FakeMemoryStore {
-    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `forget` in implementation
-    |
-    = help: implement the missing item: `fn forget<'life0: 'async_trait, 'life1: 'async_trait, 'async_trait>(&'life0 self, _: &'life1 str) -> Pin<Box<(dyn Future<Output = Result<usize, MemoryError>> + Send + 'async_trait)>> { todo!() }`
-
-error[E0046]: not all trait items implemented, missing: `forget`
-   --> crates/polkagent-tool/src/builtin/search.rs:202:5
-    |
-202 |     impl MemoryStore for FakeMemoryStore {
-    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `forget` in implementation
-    |
-    = help: implement the missing item: `fn forget<'life0: 'async_trait, 'life1: 'async_trait, 'async_trait>(&'life0 self, _: &'life1 str) -> Pin<Box<(dyn Future<Output = Result<usize, MemoryError>> + Send + 'async_trait)>> { todo!() }`
+    --> crates/polkagent-service/src/app.rs:1764:5
+     |
+1764 |     impl MemoryStore for FakeMemoryStore {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `forget` in implementation
+     |
+     = help: implement the missing item: `fn forget<'life0: 'async_trait, 'life1: 'async_trait, 'async_trait>(&'life0 self, _: &'life1 str) -> Pin<Box<(dyn futures::Future<Output = Result<usize, MemoryError>> + std::marker::Send + 'async_trait)>> { todo!() }`
 
 For more information about this error, try `rustc --explain E0046`.
-error: could not compile `polkagent-tool` (lib test) due to 2 previous errors
+error: could not compile `polkagent-service` (lib test) due to 1 previous error
 warning: build failed, waiting for other jobs to finish...
