@@ -1,0 +1,11 @@
+Everything compiles cleanly. Here's the summary:
+
+**No changes needed.** The premise that `export.rs` and `inspect.rs` are dead code was incorrect — both modules are already fully wired:
+
+1. **`commands/mod.rs`** declares `pub mod export;` and `pub mod inspect;`
+2. **`cli.rs`** has `Commands::Export(crate::commands::export::ExportArgs)` and `Commands::Inspect(crate::commands::inspect::InspectCmd)` variants in the `Commands` enum
+3. **`main.rs`** dispatches both:
+   - `Commands::Export(cmd)` → `commands::export::run(cmd, &pool)?` (line 148, requires DB pool)
+   - `Commands::Inspect(cmd)` → `commands::inspect::run(cmd).await` (line 95, no DB required)
+
+`cargo check -p polkagent-cli` passes with no errors or warnings.

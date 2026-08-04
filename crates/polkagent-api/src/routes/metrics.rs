@@ -32,9 +32,7 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 /// Returns a `200 OK` response with `Content-Type: text/plain; version=0.0.4;
 /// charset=utf-8`. The body is the full rendering of every metric family
 /// registered in the [`PrometheusRegistry`] attached to `AppState`.
-pub async fn prometheus_metrics(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn prometheus_metrics(State(state): State<AppState>) -> impl IntoResponse {
     let body = state.prometheus.render();
 
     (
@@ -63,8 +61,8 @@ mod tests {
 
     use polkagent_config::Config;
     use polkagent_event::EventBus;
-    use polkagent_telemetry::PrometheusRegistry;
     use polkagent_telemetry::prometheus::Label;
+    use polkagent_telemetry::PrometheusRegistry;
 
     use crate::run::InMemoryRunManager;
     use crate::state::InMemoryAgentStore;
@@ -72,7 +70,7 @@ mod tests {
     // -- Minimal EffectStore for tests --------------------------------------
 
     use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, Timestamp, WorkerId};
-    use polkagent_store_trait::{EffectStore, StoredIntent, StoredOutcome, StoreError};
+    use polkagent_store_trait::{EffectStore, StoreError, StoredIntent, StoredOutcome};
 
     struct NoopEffectStore;
 
@@ -192,10 +190,7 @@ mod tests {
             .with_state(state)
     }
 
-    async fn get_response(
-        router: &Router,
-        uri: &str,
-    ) -> (StatusCode, String, Option<String>) {
+    async fn get_response(router: &Router, uri: &str) -> (StatusCode, String, Option<String>) {
         let req = Request::builder()
             .uri(uri)
             .body(Body::empty())
@@ -301,7 +296,10 @@ mod tests {
             Some("text/plain; version=0.0.4; charset=utf-8"),
         );
         // An empty registry produces an empty body, which is valid Prometheus text.
-        assert!(body.is_empty(), "empty registry should produce empty body, got: {body}");
+        assert!(
+            body.is_empty(),
+            "empty registry should produce empty body, got: {body}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -315,8 +313,12 @@ mod tests {
             Label::new("agent", "alpha"),
             Label::new("status", "completed"),
         ];
-        state.prometheus.increment("polkagent_runs_total", &labels, 5.0);
-        state.prometheus.increment("polkagent_runs_total", &labels, 3.0);
+        state
+            .prometheus
+            .increment("polkagent_runs_total", &labels, 5.0);
+        state
+            .prometheus
+            .increment("polkagent_runs_total", &labels, 3.0);
 
         let router = metrics_router(state);
         let (_status, body, _ct) = get_response(&router, "/metrics").await;
@@ -334,7 +336,9 @@ mod tests {
     #[tokio::test]
     async fn metrics_gauge_values_reflected() {
         let state = test_state();
-        state.prometheus.set_gauge("polkagent_active_runs", &[], 42.0);
+        state
+            .prometheus
+            .set_gauge("polkagent_active_runs", &[], 42.0);
 
         let router = metrics_router(state);
         let (_status, body, _ct) = get_response(&router, "/metrics").await;
@@ -352,8 +356,12 @@ mod tests {
     #[tokio::test]
     async fn metrics_histogram_observations_reflected() {
         let state = test_state();
-        state.prometheus.observe("polkagent_run_duration_seconds", &[], 0.3);
-        state.prometheus.observe("polkagent_run_duration_seconds", &[], 1.5);
+        state
+            .prometheus
+            .observe("polkagent_run_duration_seconds", &[], 0.3);
+        state
+            .prometheus
+            .observe("polkagent_run_duration_seconds", &[], 1.5);
 
         let router = metrics_router(state);
         let (_status, body, _ct) = get_response(&router, "/metrics").await;

@@ -102,7 +102,11 @@ pub struct JudgeScore {
 
 impl JudgeScore {
     /// Create a new `JudgeScore`, returning an error if `score` is outside 1–5.
-    pub fn new(criterion: impl Into<String>, score: u8, reasoning: impl Into<String>) -> Result<Self> {
+    pub fn new(
+        criterion: impl Into<String>,
+        score: u8,
+        reasoning: impl Into<String>,
+    ) -> Result<Self> {
         if score < 1 || score > 5 {
             return Err(JudgeError::ScoreOutOfRange(score));
         }
@@ -218,14 +222,7 @@ impl ModelAsJudgeScorer {
             .criteria
             .iter()
             .enumerate()
-            .map(|(i, c)| {
-                format!(
-                    "{}. **{}**: {}",
-                    i + 1,
-                    c.name,
-                    c.description
-                )
-            })
+            .map(|(i, c)| format!("{}. **{}**: {}", i + 1, c.name, c.description))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -307,12 +304,9 @@ Respond with ONLY the JSON array. Do not include any other text."#,
             reasoning: String,
         }
 
-        let raw_scores: Vec<RawScore> =
-            serde_json::from_str(&json_str).map_err(|e| {
-                JudgeError::ParseResponse(format!(
-                    "Failed to deserialise judge scores: {e}"
-                ))
-            })?;
+        let raw_scores: Vec<RawScore> = serde_json::from_str(&json_str).map_err(|e| {
+            JudgeError::ParseResponse(format!("Failed to deserialise judge scores: {e}"))
+        })?;
 
         let mut scores = Vec::with_capacity(raw_scores.len());
         for rs in raw_scores {
@@ -543,7 +537,7 @@ Here is my evaluation:
     fn parse_judge_response_aggregate_weighted() {
         let scorer = make_scorer();
         let criteria = default_config().criteria; // accuracy weight=1, safety weight=2
-        // accuracy score=5 → normalised=1.0; safety score=1 → normalised=0.0
+                                                  // accuracy score=5 → normalised=1.0; safety score=1 → normalised=0.0
         let raw = r#"[{"criterion":"accuracy","score":5,"reasoning":"r"},{"criterion":"safety","score":1,"reasoning":"r"}]"#;
         let resp = scorer.parse_judge_response(raw, &criteria).expect("parse");
         // weighted_mean = (1.0*1 + 0.0*2) / 3 = 1/3
@@ -598,9 +592,7 @@ Here is my evaluation:
     #[test]
     fn compute_aggregate_unknown_criteria_ignored() {
         let criteria = default_config().criteria;
-        let scores = vec![
-            JudgeScore::new("unknown-criterion", 5, "r").expect("valid"),
-        ];
+        let scores = vec![JudgeScore::new("unknown-criterion", 5, "r").expect("valid")];
         let result = JudgeResponse::compute_aggregate(&scores, &criteria);
         assert!((result - 0.0).abs() < f64::EPSILON);
     }

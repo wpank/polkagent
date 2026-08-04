@@ -1,0 +1,34 @@
+All 25 tests pass. Here's a summary of what was created:
+
+## Created: `crates/polkagent-signer-proxy/`
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `Cargo.toml` | Dependencies on `polkagent-signer-trait`, `polkagent-grant`, `polkagent-chain-trait`, `polkagent-core`; dev-deps include `polkagent-signer-fake` and `polkagent-signer-trait` with `test-contracts` feature |
+| `src/lib.rs` | `ProxySigner` struct implementing `Signer` trait with budget enforcement and DryRunApi pre-flight |
+| `tests/contracts.rs` | Contract tests (legacy + PRD-15 conformance) + budget enforcement integration tests |
+
+### Architecture
+
+**`ProxySigner`** wraps a delegate `Box<dyn Signer>` and interposes two gates before delegating:
+
+1. **Budget ceiling check** — uses `BudgetTracker` to verify the transfer amount is within the agent's configured ceiling. Spend is recorded only after successful signing.
+2. **DryRunApi pre-flight** — when a `ChainClient` is attached and `dry_run_enabled` is true, calls `dry_run_call()` to validate the extrinsic would succeed on-chain before signing.
+
+The `sign()` flow: check expiry → check budget → dry-run preflight → delegate to inner signer → record spend.
+
+### Key types
+
+- **`ProxySignerConfig`** — agent ID, run ID, transfer amount, dry-run toggle, chain profiles (supports Asset Hub + relay chain)
+- **`ProxySignerError`** — `BudgetExceeded`, `BudgetCheck`, `DryRunFailed`, `Delegate`
+
+### Test results (25/25 passing)
+
+- **11 unit tests**: budget enforcement (exceeded, cumulative, exact ceiling, one-over), expiry, health delegation, config mutation, chain profile override
+- **14 integration tests**: 4 legacy contract tests + 8 PRD-15 conformance tests + 2 budget enforcement integration tests
+
+### Workspace change
+
+Added `"crates/polkagent-signer-proxy"` to the `members` array in the root `Cargo.toml`.

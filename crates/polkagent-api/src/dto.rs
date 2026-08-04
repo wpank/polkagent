@@ -14,9 +14,10 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use polkagent_core::{AgentId, RunId};
 use polkagent_core::agent::{AgentSpec, AgentState, ModelPreference, ResourceLimits};
 use polkagent_core::run::RunState;
+use polkagent_core::{AgentId, RunId};
+use polkagent_marketplace::types::{ServiceAvailability, ServicePricing};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -52,7 +53,6 @@ pub struct CreateAgentRequest {
     // ------------------------------------------------------------------
     // PRD-03 optional fields
     // ------------------------------------------------------------------
-
     /// Capabilities this agent declares (e.g. `"file.read"`, `"chain.query"`).
     ///
     /// Absent means the agent declares no capabilities and inherits none from
@@ -906,6 +906,123 @@ pub struct CreateConversationRequest {
     pub metadata: Option<HashMap<String, String>>,
 }
 
+// ---------------------------------------------------------------------------
+// Bridge C1 — wire types (PRD-06 §20.4)
+// ---------------------------------------------------------------------------
+
+/// C1 bridge inbound delivery (JSON wire format).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeDelivery {
+    pub delivery_id: String,
+    pub lease_id: String,
+    pub lease_ms: u64,
+    pub chat_id: String,
+    pub message_id: String,
+    pub kind: String,
+    pub text: String,
+    #[serde(default)]
+    pub attachments: Vec<BridgeAttachment>,
+}
+
+/// Attachment metadata inside a [`BridgeDelivery`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeAttachment {
+    pub id: String,
+    pub mime: String,
+    pub size: u64,
+    pub media_id: String,
+    pub url: String,
+}
+
+/// C1 bridge ACK request body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeAckRequest {
+    pub delivery_id: String,
+    pub lease_id: String,
+}
+
+/// C1 bridge lease renewal request body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeRenewRequest {
+    pub delivery_id: String,
+    pub lease_id: String,
+}
+
+/// C1 bridge send request body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeSendRequest {
+    pub chat_id: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<String>,
+}
+
+/// Identity section of [`BridgeHealthResponse`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeIdentityInfo {
+    pub bot_id: String,
+    pub display_name: String,
+}
+
+/// Transport section of [`BridgeHealthResponse`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeTransportInfo {
+    pub connected: bool,
+    pub protocol: String,
+}
+
+/// Capabilities section of [`BridgeHealthResponse`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeCapabilities {
+    pub send: bool,
+    pub edit: bool,
+    pub react: bool,
+    pub typing: bool,
+    pub media: bool,
+}
+
+/// C1 bridge health response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeHealthResponse {
+    pub identity: BridgeIdentityInfo,
+    pub transport: BridgeTransportInfo,
+    pub capabilities: BridgeCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<Vec<String>>,
+}
+
+/// Response returned when polling inbound deliveries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeInboundResponse {
+    pub deliveries: Vec<BridgeDelivery>,
+}
+
+/// Response returned after a successful ACK.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeAckResponse {
+    pub ok: bool,
+}
+
+/// Response returned after a successful lease renewal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeRenewResponse {
+    pub ok: bool,
+    pub new_lease_ms: u64,
+}
+
+/// Response returned after a successful send.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeSendResponse {
+    pub ok: bool,
+    pub message_id: String,
+}
+
 /// Request body for `POST /conversations/:id/messages`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMessageRequest {
@@ -1056,4 +1173,74 @@ pub struct CreateMessageResponse {
     pub content: String,
     /// When the message was created.
     pub created_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Registry — service listing requests and responses (PRD-12 §5.5)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /registry/listings`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateServiceListingRequest {
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub pricing: ServicePricing,
+    #[serde(default = "default_service_availability")]
+    pub availability: ServiceAvailability,
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sla_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_schema: Option<serde_json::Value>,
+}
+
+fn default_service_availability() -> ServiceAvailability {
+    ServiceAvailability::Available
+}
+
+/// Response body for a single service listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceListingResponse {
+    pub version: String,
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub service_version: String,
+    pub capabilities: Vec<String>,
+    pub tags: Vec<String>,
+    pub pricing: ServicePricing,
+    pub availability: String,
+    pub protocols: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sla_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_schema: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Response body for `GET /registry/search`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListServiceListingsResponse {
+    pub version: String,
+    pub data: Vec<ServiceListingResponse>,
+}
+
+/// Query parameters for `GET /registry/search`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchListingsQuery {
+    pub q: Option<String>,
+    pub capability: Option<String>,
+    pub tag: Option<String>,
+    pub author: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }

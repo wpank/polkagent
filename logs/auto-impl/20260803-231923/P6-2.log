@@ -1,0 +1,32 @@
+All done. Here's a summary of what was implemented:
+
+---
+
+## Summary: Experimental Personhood Gating (PRD-07 §6.2)
+
+### Files created (2 new):
+
+1. **`crates/polkagent-identity/src/did.rs`** — W3C DID credential types and mock verifier:
+   - `Did` — a W3C DID string with well-formedness validation
+   - `DidCredential` — simplified verifiable credential carrying a personhood claim (subject, issuer, type, timestamps)
+   - `DidVerificationResult` — verification outcome enum (Valid/Malformed/Expired/UntrustedIssuer)
+   - `MockDidVerifier` — mock verifier that checks DID syntax, expiry, and issuer trust (no real crypto yet)
+   - 10 unit tests
+
+2. **`crates/polkagent-grant/src/personhood.rs`** — Cedar-style personhood gating, feature-gated behind `personhood`:
+   - `PersonhoodRequirement` — Cedar-style policy annotation declaring a rule requires a DID credential (credential type + optional trusted issuers)
+   - `PersonhoodPolicy` — wraps a `PolicyRule` with an optional personhood requirement
+   - `PersonhoodDecision` — check outcome enum (NotRequired/Satisfied/MissingCredential/VerificationFailed/WrongCredentialType)
+   - `check_personhood(requirement, credential, ctx)` — the main function called during grant resolution when a policy requires personhood
+   - 14 unit tests
+
+### Files modified (3):
+
+3. **`crates/polkagent-identity/src/lib.rs`** — registered `did` module + re-exports
+4. **`crates/polkagent-grant/src/lib.rs`** — registered `personhood` module (gated on `feature = "personhood"` or `test`) + re-exports
+5. **`crates/polkagent-grant/Cargo.toml`** — added `personhood = ["identity"]` feature flag (implies `identity`)
+
+### Design invariants upheld:
+- **REQ-IDENT-07**: Non-personhood flows are completely unaffected — the module is behind a feature flag and `check_personhood()` returns `NotRequired` when no requirement is present
+- **REQ-IDENT-08**: Personhood is an *additive* check, never the sole authorization input — it runs after normal policy evaluation
+- **No breaking changes**: `cargo check --workspace` passes clean; all 246 tests pass (77 identity + 169 grant)

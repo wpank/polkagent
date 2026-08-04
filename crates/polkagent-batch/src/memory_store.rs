@@ -101,10 +101,8 @@ impl BatchStore for InMemoryBatchStore {
         offset: usize,
     ) -> Result<Vec<StoredBatch>, BatchError> {
         let batches = self.batches.read();
-        let mut matching: Vec<&StoredBatch> = batches
-            .values()
-            .filter(|b| b.status == status)
-            .collect();
+        let mut matching: Vec<&StoredBatch> =
+            batches.values().filter(|b| b.status == status).collect();
 
         // Sort by created_at descending.
         matching.sort_by_key(|b| std::cmp::Reverse(b.created_at));

@@ -638,22 +638,16 @@ pub async fn execute_inspect_db(json_output: bool) -> Result<()> {
 
 /// Gather database statistics from the SQLite file at `path`.
 fn gather_db_stats(path: &str) -> Result<DbStats> {
-    let conn = rusqlite::Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .with_context(|| format!("opening database at {path}"))?;
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening database at {path}"))?;
 
     // Database file size.
-    let db_size_bytes = std::fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let db_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
     // WAL file size.
     let wal_path = format!("{path}-wal");
-    let wal_size_bytes = std::fs::metadata(&wal_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let wal_size_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
 
     // Migration version (user_version pragma).
     let migration_version: u64 = conn
@@ -702,8 +696,16 @@ fn render_db_stats(stats: &DbStats, json_output: bool) -> Result<()> {
 
     println!("Database Statistics");
     println!("{}", "-".repeat(60));
-    println!("  DB size:           {} bytes ({})", stats.db_size_bytes, format_bytes(stats.db_size_bytes));
-    println!("  WAL size:          {} bytes ({})", stats.wal_size_bytes, format_bytes(stats.wal_size_bytes));
+    println!(
+        "  DB size:           {} bytes ({})",
+        stats.db_size_bytes,
+        format_bytes(stats.db_size_bytes)
+    );
+    println!(
+        "  WAL size:          {} bytes ({})",
+        stats.wal_size_bytes,
+        format_bytes(stats.wal_size_bytes)
+    );
     println!("  Migration version: {}", stats.migration_version);
     println!();
 
@@ -743,7 +745,10 @@ fn validate_uuid(s: &str) -> Result<()> {
     let expected_lens = [8, 4, 4, 4, 12];
     for (part, &expected) in parts.iter().zip(&expected_lens) {
         if part.len() != expected {
-            anyhow::bail!("UUID segment has wrong length: expected {expected}, got {}", part.len());
+            anyhow::bail!(
+                "UUID segment has wrong length: expected {expected}, got {}",
+                part.len()
+            );
         }
         if !part.chars().all(|c| c.is_ascii_hexdigit()) {
             anyhow::bail!("UUID contains non-hex character");
@@ -818,11 +823,7 @@ mod tests {
 
     #[test]
     fn parse_inspect_run() {
-        let cmd = parse(&[
-            "test",
-            "run",
-            "01234567-89ab-cdef-0123-456789abcdef",
-        ]);
+        let cmd = parse(&["test", "run", "01234567-89ab-cdef-0123-456789abcdef"]);
         match cmd {
             InspectCmd::Run(args) => {
                 assert_eq!(args.run_id, "01234567-89ab-cdef-0123-456789abcdef");
@@ -850,11 +851,7 @@ mod tests {
 
     #[test]
     fn parse_inspect_effect() {
-        let cmd = parse(&[
-            "test",
-            "effect",
-            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        ]);
+        let cmd = parse(&["test", "effect", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]);
         match cmd {
             InspectCmd::Effect(args) => {
                 assert_eq!(args.effect_id, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
@@ -1197,11 +1194,7 @@ version = "0.1.0"
 
     #[tokio::test]
     async fn inspect_run_not_found() {
-        let result = execute_inspect_run(
-            "01234567-89ab-cdef-0123-456789abcdef",
-            false,
-        )
-        .await;
+        let result = execute_inspect_run("01234567-89ab-cdef-0123-456789abcdef", false).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("not found"), "error was: {err_msg}");
@@ -1209,11 +1202,7 @@ version = "0.1.0"
 
     #[tokio::test]
     async fn inspect_effect_not_found() {
-        let result = execute_inspect_effect(
-            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-            false,
-        )
-        .await;
+        let result = execute_inspect_effect("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", false).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("not found"), "error was: {err_msg}");
@@ -1259,7 +1248,10 @@ version = "0.1.0"
         let result = execute_inspect_agent("", false).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("must not be empty"), "error was: {err_msg}");
+        assert!(
+            err_msg.contains("must not be empty"),
+            "error was: {err_msg}"
+        );
     }
 
     #[tokio::test]
@@ -1267,16 +1259,16 @@ version = "0.1.0"
         let result = execute_inspect_artifact("", false).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("must not be empty"), "error was: {err_msg}");
+        assert!(
+            err_msg.contains("must not be empty"),
+            "error was: {err_msg}"
+        );
     }
 
     #[tokio::test]
     async fn inspect_policy_missing_file() {
-        let result = execute_inspect_policy(
-            &PathBuf::from("/nonexistent/policy.toml"),
-            false,
-        )
-        .await;
+        let result =
+            execute_inspect_policy(&PathBuf::from("/nonexistent/policy.toml"), false).await;
         assert!(result.is_err());
     }
 

@@ -7,8 +7,8 @@
 use std::sync::Mutex;
 
 use polkagent_config::{
-    validate, BudgetConfig, Config, ConfigLoader, DatabaseBackend, LogFormat,
-    ProviderConfig, TuiTheme, CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
+    validate, BudgetConfig, Config, ConfigLoader, DatabaseBackend, LogFormat, ProviderConfig,
+    TuiTheme, CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
 };
 
 /// Global mutex for tests that modify process-level environment variables.
@@ -201,10 +201,7 @@ fn env_var_overrides_log_level() {
             .with_extra_toml("[log]\nlevel = \"info\"")
             .load()
             .expect("load");
-        assert_eq!(
-            cfg.log.level, "trace",
-            "env var should override TOML value"
-        );
+        assert_eq!(cfg.log.level, "trace", "env var should override TOML value");
     });
 }
 
@@ -441,8 +438,7 @@ fn config_merge_overlay_wins_on_conflict() {
     overlay.database.backend = DatabaseBackend::Postgres;
     overlay.execution.max_concurrent_runs = 99;
 
-    let merged =
-        polkagent_config::merge(base, overlay).expect("merge");
+    let merged = polkagent_config::merge(base, overlay).expect("merge");
     assert_eq!(merged.log.level, "error");
     assert_eq!(merged.database.backend, DatabaseBackend::Postgres);
     assert_eq!(merged.execution.max_concurrent_runs, 99);

@@ -513,7 +513,14 @@ mod tests {
     async fn default_deny_no_rules() {
         let resolver = GrantResolver::new(PolicySet::default(), ResolverConfig::default());
         let decision = resolver
-            .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+            .resolve(
+                "alice",
+                "chain/transfer",
+                "account/bob",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert!(
@@ -531,7 +538,14 @@ mod tests {
 
         let resolver = GrantResolver::new(set, ResolverConfig::default());
         let decision = resolver
-            .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+            .resolve(
+                "alice",
+                "chain/transfer",
+                "account/bob",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert!(
@@ -548,7 +562,14 @@ mod tests {
 
         let resolver = GrantResolver::new(set, ResolverConfig::default());
         let decision = resolver
-            .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+            .resolve(
+                "alice",
+                "chain/transfer",
+                "account/bob",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert!(
@@ -580,7 +601,14 @@ mod tests {
             .await;
 
         let decision = resolver
-            .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+            .resolve(
+                "alice",
+                "chain/transfer",
+                "account/bob",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -615,7 +643,14 @@ mod tests {
             .await;
 
         let decision = resolver
-            .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+            .resolve(
+                "alice",
+                "chain/transfer",
+                "account/bob",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -648,9 +683,7 @@ mod tests {
         let agent_id = AgentId::new();
         tracker.configure(agent_id, 100).await;
 
-        let resolver = resolver
-            .with_budget_tracker(Arc::clone(&tracker))
-            .await;
+        let resolver = resolver.with_budget_tracker(Arc::clone(&tracker)).await;
 
         // Resolve using the agent_id string as the principal so
         // principal_to_agent_id round-trips correctly.
@@ -691,9 +724,7 @@ mod tests {
         let agent_id = AgentId::new();
         tracker.configure(agent_id, 1000).await;
 
-        let resolver = resolver
-            .with_budget_tracker(Arc::clone(&tracker))
-            .await;
+        let resolver = resolver.with_budget_tracker(Arc::clone(&tracker)).await;
 
         let principal = agent_id.to_string();
         let run_id = RunId::new();
@@ -730,8 +761,8 @@ mod tests {
         let resolver = GrantResolver::new(set, config);
 
         // Set evaluated_at to 10 minutes ago.
-        let stale_ts = (Utc::now() - Duration::minutes(10))
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let stale_ts =
+            (Utc::now() - Duration::minutes(10)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
         let ctx = EvaluationContext {
             attributes: Default::default(),
@@ -768,9 +799,7 @@ mod tests {
         let agent_id = AgentId::new();
         tracker.configure(agent_id, 1_000_000).await;
 
-        let resolver = resolver
-            .with_budget_tracker(Arc::clone(&tracker))
-            .await;
+        let resolver = resolver.with_budget_tracker(Arc::clone(&tracker)).await;
 
         let principal = agent_id.to_string();
         let run_id = RunId::new();

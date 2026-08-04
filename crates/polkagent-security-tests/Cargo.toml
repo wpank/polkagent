@@ -22,6 +22,10 @@ polkagent-identity = { path = "../polkagent-identity" }
 polkagent-outbox = { path = "../polkagent-outbox" }
 polkagent-tool = { path = "../polkagent-tool" }
 polkagent-event = { path = "../polkagent-event" }
+polkagent-payment = { path = "../polkagent-payment" }
+polkagent-chain-trait = { path = "../polkagent-chain-trait" }
+polkagent-chain-fake = { path = "../polkagent-chain-fake" }
+polkagent-memory = { path = "../polkagent-memory" }
 
 # Serialization
 serde = { workspace = true }

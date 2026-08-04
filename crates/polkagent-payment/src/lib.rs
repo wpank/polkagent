@@ -21,6 +21,8 @@
 //! | [`finality`] | [`TransactionOutcome`] and [`FinalityWatcher`] trait. |
 //! | [`preflight`] | Pre-flight checks: [`PreFlightCheck`] trait, [`CompositePreFlight`], balance/fee/ED/address/nonce/metadata checks. |
 //! | [`error`] | [`PaymentError`] enum. |
+//! | [`ledger`] | **EXPERIMENTAL** — Agent earn/spend [`Ledger`], [`X402PaymentHeader`] (PRD-08 §5.2 prototype). |
+//! | [`escrow`] | **EXPERIMENTAL** — Agent-to-agent [`EscrowStateMachine`], [`EscrowAgreement`] (PRD-08 §5.3 prototype). |
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -40,9 +42,11 @@ pub mod action;
 pub mod budget;
 pub mod builder;
 pub mod error;
+pub mod escrow;
 pub mod estimator;
 pub mod finality;
 pub mod intent;
+pub mod ledger;
 pub mod preflight;
 pub mod risk;
 pub mod store;
@@ -56,9 +60,11 @@ pub use action::PaymentAction;
 pub use budget::{BudgetChecker, BudgetConfig, BudgetDecision, BudgetState};
 pub use builder::{BuiltIntent, PaymentIntentBuilder};
 pub use error::PaymentError;
+pub use escrow::{EscrowAgreement, EscrowStateMachine, EscrowStatus};
 pub use estimator::{CostEstimator, PricingEntry};
 pub use finality::{FinalityWatcher, TransactionOutcome};
 pub use intent::{IntentStateMachine, IntentStatus};
+pub use ledger::{Ledger, LedgerEntry, LedgerEntryKind, X402PaymentHeader};
 pub use preflight::{
     AddressCheck, BalanceCheck, CompositePreFlight, ExistentialDepositCheck, FeeCheck,
     MetadataFreshnessCheck, NonceCheck, PreFlightBlocker, PreFlightCheck, PreFlightResult,

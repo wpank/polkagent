@@ -94,8 +94,10 @@ impl Drop for TelemetryGuard {
 fn build_otel_provider(
     endpoint: &str,
     service_name: &str,
-) -> Result<(TracerProvider, opentelemetry_sdk::trace::Tracer), Box<dyn std::error::Error + Send + Sync>>
-{
+) -> Result<
+    (TracerProvider, opentelemetry_sdk::trace::Tracer),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
@@ -120,8 +122,8 @@ fn build_otel_provider(
 pub fn init_telemetry(
     config: TelemetryConfig,
 ) -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>> {
-    let env_filter = EnvFilter::try_new(&config.log_level)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter =
+        EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Build each combination of (format x otlp) separately so that the
     // tracing-subscriber type-level layering is fully resolved at compile time.
@@ -177,8 +179,7 @@ pub fn init_telemetry(
 ///
 /// Returns an error if OTLP exporter setup fails.
 pub fn init_from_env() -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>> {
-    let log_level = std::env::var("POLKAGENT_LOG_LEVEL")
-        .unwrap_or_else(|_| "info".to_owned());
+    let log_level = std::env::var("POLKAGENT_LOG_LEVEL").unwrap_or_else(|_| "info".to_owned());
 
     let log_format = match std::env::var("POLKAGENT_LOG_FORMAT")
         .unwrap_or_default()

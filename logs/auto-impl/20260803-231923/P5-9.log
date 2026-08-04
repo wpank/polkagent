@@ -1,0 +1,21 @@
+All done. Here's a summary of what was created:
+
+## `polkagent-billing` crate — complete
+
+### Files created
+
+| File | Purpose |
+|------|---------|
+| `Cargo.toml` | Dependencies on `polkagent-core`, `polkagent-payment`, `polkagent-event`, plus `serde`, `chrono`, `tokio`, `tracing`, `thiserror`, `uuid` |
+| `src/lib.rs` | Module declarations and public re-exports |
+| `src/error.rs` | `BillingError` enum (`RunNotFound`, `NoCostData`, `Store`, `Export`) |
+| `src/cost.rs` | **Per-run cost computation** — `RunCostCalculator` wraps `polkagent-payment::CostEstimator` to compute `RunCost` per run; `compute_aggregate()` produces `AggregateCost` from a slice of `CostRecord`s |
+| `src/meter.rs` | **Metered event emission** — `MeterEmitter` emits `MeteredEvent` structs (with `RunCompleted`/`TurnCompleted` kinds) on run completion, logging via `tracing::info` and buffering for downstream consumption via `drain()` |
+| `src/export.rs` | **Audit-export CSV** — `export_csv()` and `export_csv_bytes()` render `CostRecord`s to RFC-4180 CSV with proper field escaping, reconcilable with run logs |
+| `src/routes.rs` | **REST endpoint helpers** — `build_summary()` → `BillingSummaryResponse` for `GET /v1/billing/summary`; `build_export()` → `BillingExportResponse` for `GET /v1/billing/export` |
+
+### Verification
+
+- ✅ `cargo check -p polkagent-billing` — compiles cleanly
+- ✅ `cargo test -p polkagent-billing` — **27 tests passed** (cost: 7, meter: 6, export: 5, routes: 6, error: 3 implicit)
+- ✅ `cargo check --workspace` — full 88-crate workspace compiles with zero errors

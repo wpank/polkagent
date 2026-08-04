@@ -228,11 +228,10 @@ mod trigger_condition {
 
     #[test]
     fn not_inverts_condition() {
-        let cond =
-            TriggerCondition::Not(Box::new(TriggerCondition::JsonPath {
-                path: "/status".to_string(),
-                expected: json!("ok"),
-            }));
+        let cond = TriggerCondition::Not(Box::new(TriggerCondition::JsonPath {
+            path: "/status".to_string(),
+            expected: json!("ok"),
+        }));
         assert!(eval(&cond, json!({ "status": "error" })));
         assert!(!eval(&cond, json!({ "status": "ok" })));
     }
@@ -288,7 +287,7 @@ mod cooldown {
     use serde_json::json;
 
     use crate::trigger::{
-        Trigger, TriggerAction, TriggerCondition, TriggerResult, evaluate_trigger,
+        evaluate_trigger, Trigger, TriggerAction, TriggerCondition, TriggerResult,
     };
     use crate::types::{FeedId, FeedItem};
 
@@ -296,7 +295,10 @@ mod cooldown {
         FeedItem::new(FeedId::new(), json!({ "x": 1 }))
     }
 
-    fn make_trigger(cooldown_secs: Option<u64>, last_fired_at: Option<chrono::DateTime<Utc>>) -> Trigger {
+    fn make_trigger(
+        cooldown_secs: Option<u64>,
+        last_fired_at: Option<chrono::DateTime<Utc>>,
+    ) -> Trigger {
         let mut t = Trigger::new(
             "t",
             FeedId::new(),
@@ -315,7 +317,10 @@ mod cooldown {
     fn no_cooldown_always_fires() {
         let trigger = make_trigger(None, None);
         let item = make_item();
-        assert!(matches!(evaluate_trigger(&trigger, &item), TriggerResult::Fire(_)));
+        assert!(matches!(
+            evaluate_trigger(&trigger, &item),
+            TriggerResult::Fire(_)
+        ));
     }
 
     #[test]
@@ -336,7 +341,10 @@ mod cooldown {
         let last = Utc::now() - Duration::seconds(120);
         let trigger = make_trigger(Some(60), Some(last));
         let item = make_item();
-        assert!(matches!(evaluate_trigger(&trigger, &item), TriggerResult::Fire(_)));
+        assert!(matches!(
+            evaluate_trigger(&trigger, &item),
+            TriggerResult::Fire(_)
+        ));
     }
 
     #[test]
@@ -344,7 +352,10 @@ mod cooldown {
         // Cooldown set but never fired before.
         let trigger = make_trigger(Some(60), None);
         let item = make_item();
-        assert!(matches!(evaluate_trigger(&trigger, &item), TriggerResult::Fire(_)));
+        assert!(matches!(
+            evaluate_trigger(&trigger, &item),
+            TriggerResult::Fire(_)
+        ));
     }
 
     #[test]
@@ -352,7 +363,10 @@ mod cooldown {
         let mut trigger = make_trigger(None, None);
         trigger.enabled = false;
         let item = make_item();
-        assert!(matches!(evaluate_trigger(&trigger, &item), TriggerResult::Skip(_)));
+        assert!(matches!(
+            evaluate_trigger(&trigger, &item),
+            TriggerResult::Skip(_)
+        ));
     }
 }
 
@@ -367,9 +381,7 @@ mod recipe {
     use serde_json::json;
 
     use crate::error::FeedError;
-    use crate::recipe::{
-        ParamType, Recipe, RecipeId, RecipeParameter, instantiate_recipe,
-    };
+    use crate::recipe::{instantiate_recipe, ParamType, Recipe, RecipeId, RecipeParameter};
     use crate::trigger::{TriggerAction, TriggerCondition};
     use crate::types::FeedSource;
 
@@ -426,14 +438,14 @@ mod recipe {
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
 
         let (feed, trigger) = result.expect("ok");
-        assert!(matches!(feed.source, crate::types::FeedSource::Schedule { .. }));
+        assert!(matches!(
+            feed.source,
+            crate::types::FeedSource::Schedule { .. }
+        ));
         if let crate::types::FeedSource::Schedule { cron } = &feed.source {
             assert_eq!(cron, "0 * * * *");
         }
-        assert!(matches!(
-            trigger.action,
-            TriggerAction::Notify { .. }
-        ));
+        assert!(matches!(trigger.action, TriggerAction::Notify { .. }));
         if let TriggerAction::Notify { channel, message } = &trigger.action {
             assert_eq!(channel, "slack:#ops");
             assert_eq!(message, "hourly ping");
@@ -701,8 +713,14 @@ mod processor {
         let results = processor.process_item(&feed, &item).await.expect("process");
 
         assert_eq!(results.len(), 2);
-        let fires: Vec<_> = results.iter().filter(|r| matches!(r, TriggerResult::Fire(_))).collect();
-        let skips: Vec<_> = results.iter().filter(|r| matches!(r, TriggerResult::Skip(_))).collect();
+        let fires: Vec<_> = results
+            .iter()
+            .filter(|r| matches!(r, TriggerResult::Fire(_)))
+            .collect();
+        let skips: Vec<_> = results
+            .iter()
+            .filter(|r| matches!(r, TriggerResult::Skip(_)))
+            .collect();
         assert_eq!(fires.len(), 1);
         assert_eq!(skips.len(), 1);
     }
@@ -874,7 +892,10 @@ mod store_crud {
     async fn get_trigger_not_found() {
         let store = MemoryStore::new();
         let id = crate::trigger::TriggerId::new();
-        assert!(matches!(store.get_trigger(&id).await, Err(FeedError::NotFound(_))));
+        assert!(matches!(
+            store.get_trigger(&id).await,
+            Err(FeedError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -960,7 +981,10 @@ mod store_crud {
     async fn get_recipe_not_found() {
         let store = MemoryStore::new();
         let id = RecipeId::new();
-        assert!(matches!(store.get_recipe(&id).await, Err(FeedError::NotFound(_))));
+        assert!(matches!(
+            store.get_recipe(&id).await,
+            Err(FeedError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -1262,7 +1286,10 @@ mod durable {
         let feed = store.create_feed(make_feed()).await.expect("create feed");
         let cursor = make_cursor(feed.id, "pos-100");
 
-        store.save_cursor(&feed.id, cursor.clone()).await.expect("save");
+        store
+            .save_cursor(&feed.id, cursor.clone())
+            .await
+            .expect("save");
 
         let loaded = store.load_cursor(&feed.id).await.expect("load");
         let loaded = loaded.expect("cursor should exist");
@@ -1283,10 +1310,20 @@ mod durable {
         let store = make_store();
         let feed = store.create_feed(make_feed()).await.expect("create");
 
-        store.save_cursor(&feed.id, make_cursor(feed.id, "v1")).await.expect("save v1");
-        store.save_cursor(&feed.id, make_cursor(feed.id, "v2")).await.expect("save v2");
+        store
+            .save_cursor(&feed.id, make_cursor(feed.id, "v1"))
+            .await
+            .expect("save v1");
+        store
+            .save_cursor(&feed.id, make_cursor(feed.id, "v2"))
+            .await
+            .expect("save v2");
 
-        let loaded = store.load_cursor(&feed.id).await.expect("load").expect("some");
+        let loaded = store
+            .load_cursor(&feed.id)
+            .await
+            .expect("load")
+            .expect("some");
         assert_eq!(loaded.position, "v2");
     }
 
@@ -1319,7 +1356,11 @@ mod durable {
             .expect("advance");
 
         // Cursor should be saved.
-        let saved = store.load_cursor(&feed.id).await.expect("load").expect("some");
+        let saved = store
+            .load_cursor(&feed.id)
+            .await
+            .expect("load")
+            .expect("some");
         assert_eq!(saved.position, "block-200");
 
         // Pending action should be created.
@@ -1335,11 +1376,21 @@ mod durable {
         let trigger_id = TriggerId::new();
 
         let p1 = store
-            .atomic_advance(&feed.id, make_cursor(feed.id, "p1"), trigger_id, notify_action())
+            .atomic_advance(
+                &feed.id,
+                make_cursor(feed.id, "p1"),
+                trigger_id,
+                notify_action(),
+            )
             .await
             .expect("advance 1");
         let _p2 = store
-            .atomic_advance(&feed.id, make_cursor(feed.id, "p2"), trigger_id, notify_action())
+            .atomic_advance(
+                &feed.id,
+                make_cursor(feed.id, "p2"),
+                trigger_id,
+                notify_action(),
+            )
             .await
             .expect("advance 2");
 
@@ -1349,7 +1400,10 @@ mod durable {
         // Dispatch p1.
         store.mark_action_dispatched(p1.id).await.expect("dispatch");
 
-        let pending = store.list_pending_actions(&feed.id).await.expect("list after");
+        let pending = store
+            .list_pending_actions(&feed.id)
+            .await
+            .expect("list after");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].cursor_position, "p2");
     }
@@ -1359,7 +1413,12 @@ mod durable {
         let store = make_store();
         let feed = store.create_feed(make_feed()).await.expect("create");
         let p = store
-            .atomic_advance(&feed.id, make_cursor(feed.id, "x"), TriggerId::new(), notify_action())
+            .atomic_advance(
+                &feed.id,
+                make_cursor(feed.id, "x"),
+                TriggerId::new(),
+                notify_action(),
+            )
             .await
             .expect("advance");
 
@@ -1428,7 +1487,10 @@ mod durable {
         let feed_id = FeedId::new();
         let trigger_id = TriggerId::new();
 
-        store.record_dedup(TriggerDedup::new("key-1", feed_id, trigger_id)).await.expect("k1");
+        store
+            .record_dedup(TriggerDedup::new("key-1", feed_id, trigger_id))
+            .await
+            .expect("k1");
 
         assert!(store.check_dedup("key-1").await.expect("check k1"));
         assert!(!store.check_dedup("key-2").await.expect("check k2"));
@@ -1556,12 +1618,7 @@ mod durable {
     async fn durable_store_delegates_trigger_crud() {
         let store = make_store();
         let feed = store.create_feed(make_feed()).await.expect("feed");
-        let t = Trigger::new(
-            "dt",
-            feed.id,
-            TriggerCondition::Always,
-            notify_action(),
-        );
+        let t = Trigger::new("dt", feed.id, TriggerCondition::Always, notify_action());
         let tid = t.id;
         store.create_trigger(t).await.expect("create");
         let got = store.get_trigger(&tid).await.expect("get");

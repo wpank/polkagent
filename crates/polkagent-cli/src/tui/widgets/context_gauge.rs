@@ -59,11 +59,11 @@ pub fn render(frame: &mut Frame, area: Rect, used: u64, total: u64, theme: &Them
 
     // Choose colour by threshold.
     let fill_color = if ratio > 0.80 {
-        theme.danger   // crimson
+        theme.danger // crimson
     } else if ratio >= 0.50 {
-        theme.warning  // amber
+        theme.warning // amber
     } else {
-        theme.success  // jade
+        theme.success // jade
     };
 
     // Build the label.

@@ -56,7 +56,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ChainStatusData<'_>, theme: 
     let (conn_glyph, conn_color) = if data.connected {
         ("\u{25C9}", theme.success) // ◉ jade
     } else {
-        ("\u{25CB}", theme.danger)  // ○ crimson
+        ("\u{25CB}", theme.danger) // ○ crimson
     };
 
     let conn_label = if data.connected {
@@ -71,9 +71,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ChainStatusData<'_>, theme: 
         .border_style(Style::default().fg(theme.border))
         .title(Span::styled(
             format!(" {} ", data.chain_name),
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(theme.bg_raised));
 
@@ -89,15 +87,10 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ChainStatusData<'_>, theme: 
     // ── Left column: connection + blocks ─────────────────────────────────
     let left_lines = vec![
         Line::from(vec![
-            Span::styled(
-                format!("{conn_glyph} "),
-                Style::default().fg(conn_color),
-            ),
+            Span::styled(format!("{conn_glyph} "), Style::default().fg(conn_color)),
             Span::styled(
                 conn_label,
-                Style::default()
-                    .fg(conn_color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(conn_color).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
@@ -128,10 +121,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ChainStatusData<'_>, theme: 
         ]),
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(
-                data.metadata_freshness,
-                Style::default().fg(theme.text_dim),
-            ),
+            Span::styled(data.metadata_freshness, Style::default().fg(theme.text_dim)),
         ]),
     ];
 
@@ -139,10 +129,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ChainStatusData<'_>, theme: 
     if let Some(version) = data.node_version {
         right_lines.push(Line::from(vec![
             Span::styled("Node: ", Style::default().fg(theme.text_dim)),
-            Span::styled(
-                version.to_owned(),
-                Style::default().fg(theme.bone),
-            ),
+            Span::styled(version.to_owned(), Style::default().fg(theme.bone)),
         ]));
     }
 
@@ -169,7 +156,7 @@ fn format_block_number(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{backend::TestBackend, Terminal};
 
     fn test_theme() -> Theme {
         Theme::dark()

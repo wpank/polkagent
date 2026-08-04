@@ -93,6 +93,12 @@ pub enum EventKind {
     RunCompleted {
         /// The ID of the terminal output artifact.
         output_artifact_id: Option<ArtifactId>,
+        /// Total input tokens consumed across all turns.
+        #[serde(default)]
+        input_tokens: u64,
+        /// Total output tokens consumed across all turns.
+        #[serde(default)]
+        output_tokens: u64,
     },
     /// The run reached the `Failed` terminal state.
     RunFailed {
@@ -221,6 +227,17 @@ pub enum EventKind {
         /// Remaining amount (units depend on the resource kind).
         remaining_str: String,
     },
+
+    // --- Metadata (Durable) ---
+    /// Metadata drift was detected on a chain.
+    MetadataDriftDetected {
+        /// The chain where drift was detected.
+        chain_id: String,
+        /// The pinned (trusted) metadata hash.
+        pinned_hash: String,
+        /// The current on-chain metadata hash.
+        current_hash: String,
+    },
 }
 
 /// Severity level for diagnostic log events.
@@ -316,15 +333,10 @@ impl RunEvent {
 
     /// Create a minimal ephemeral streaming event.
     #[must_use]
-    pub fn new_ephemeral(
-        id: EventId,
-        run_id: RunId,
-        sequence: u64,
-        kind: EventKind,
-    ) -> Self {
+    pub fn new_ephemeral(id: EventId, run_id: RunId, sequence: u64, kind: EventKind) -> Self {
         Self {
             id,
-            run_id: run_id.clone(),
+            run_id,
             sequence,
             kind,
             durability: Durability::Ephemeral,
@@ -455,9 +467,7 @@ mod tests {
             EventId::new(),
             run_id,
             5,
-            EventKind::StreamingToken {
-                text: "hi".into(),
-            },
+            EventKind::StreamingToken { text: "hi".into() },
         );
         assert_eq!(evt.durability, Durability::Ephemeral);
         assert_eq!(evt.sequence, 5);
@@ -472,6 +482,8 @@ mod tests {
             42,
             EventKind::RunCompleted {
                 output_artifact_id: Some(ArtifactId::new()),
+                input_tokens: 0,
+                output_tokens: 0,
             },
             make_correlation(run_id),
         );
@@ -495,13 +507,8 @@ mod tests {
             EventKind::RunCreated,
             correlation.clone(),
         );
-        let evt2 = RunEvent::new_durable(
-            EventId::new(),
-            run_id,
-            2,
-            EventKind::RunQueued,
-            correlation,
-        );
+        let evt2 =
+            RunEvent::new_durable(EventId::new(), run_id, 2, EventKind::RunQueued, correlation);
         assert!(evt1.sequence < evt2.sequence);
     }
 

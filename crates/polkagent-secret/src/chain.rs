@@ -77,12 +77,7 @@ impl SecretStore for ChainSecretStore {
         }
     }
 
-    async fn set(
-        &self,
-        id: SecretId,
-        value: SecretValue,
-        metadata: SecretMetadata,
-    ) -> Result<()> {
+    async fn set(&self, id: SecretId, value: SecretValue, metadata: SecretMetadata) -> Result<()> {
         self.file_store.set(id, value, metadata).await
     }
 
@@ -95,8 +90,7 @@ impl SecretStore for ChainSecretStore {
         let file_metas = self.file_store.list().await?;
 
         // Deduplicate: env wins if the same ID exists in both.
-        let env_ids: std::collections::HashSet<_> =
-            all.iter().map(|m| m.id.clone()).collect();
+        let env_ids: std::collections::HashSet<_> = all.iter().map(|m| m.id.clone()).collect();
 
         for meta in file_metas {
             if !env_ids.contains(&meta.id) {
@@ -126,8 +120,7 @@ mod tests {
 
     fn temp_chain() -> (tempfile::TempDir, ChainSecretStore) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let file_store =
-            FileSecretStore::with_dir(dir.path().to_path_buf()).expect("file store");
+        let file_store = FileSecretStore::with_dir(dir.path().to_path_buf()).expect("file store");
         let env_store = EnvSecretStore::new();
         let chain = ChainSecretStore::with_stores(env_store, file_store);
         (dir, chain)
@@ -163,11 +156,7 @@ mod tests {
         let (_dir, chain) = temp_chain();
         let id = SecretId::new("file-only");
 
-        let meta = SecretMetadata::new(
-            id.clone(),
-            "File Only",
-            crate::types::SecretSource::Manual,
-        );
+        let meta = SecretMetadata::new(id.clone(), "File Only", crate::types::SecretSource::Manual);
         chain
             .set(id.clone(), SecretValue::new("from-file"), meta)
             .await
@@ -190,11 +179,8 @@ mod tests {
     async fn set_writes_to_file_store() {
         let (_dir, chain) = temp_chain();
         let id = SecretId::new("chain-write");
-        let meta = SecretMetadata::new(
-            id.clone(),
-            "Write Test",
-            crate::types::SecretSource::Manual,
-        );
+        let meta =
+            SecretMetadata::new(id.clone(), "Write Test", crate::types::SecretSource::Manual);
 
         chain
             .set(id.clone(), SecretValue::new("written"), meta)
@@ -239,11 +225,7 @@ mod tests {
 
         // Set in file only.
         let id = SecretId::new("file-only-chain");
-        let meta = SecretMetadata::new(
-            id.clone(),
-            "File",
-            crate::types::SecretSource::Manual,
-        );
+        let meta = SecretMetadata::new(id.clone(), "File", crate::types::SecretSource::Manual);
         chain
             .set(id.clone(), SecretValue::new("v"), meta)
             .await
@@ -257,11 +239,7 @@ mod tests {
 
         // Add a file-only secret.
         let id = SecretId::new("list-file");
-        let meta = SecretMetadata::new(
-            id.clone(),
-            "From File",
-            crate::types::SecretSource::Manual,
-        );
+        let meta = SecretMetadata::new(id.clone(), "From File", crate::types::SecretSource::Manual);
         chain
             .set(id, SecretValue::new("v"), meta)
             .await

@@ -105,21 +105,21 @@ impl PaymentIntentBuilder {
     ///
     /// Returns a validation error if any required field is missing.
     pub fn build(self) -> Result<BuiltIntent, PaymentError> {
-        let agent_id = self.agent_id.ok_or_else(|| {
-            PaymentError::validation("agent_id", "agent_id is required")
-        })?;
-        let run_id = self.run_id.ok_or_else(|| {
-            PaymentError::validation("run_id", "run_id is required")
-        })?;
-        let action = self.action.ok_or_else(|| {
-            PaymentError::validation("action", "action is required")
-        })?;
-        let amount = self.amount.ok_or_else(|| {
-            PaymentError::validation("amount", "amount is required")
-        })?;
-        let recipient = self.recipient.ok_or_else(|| {
-            PaymentError::validation("recipient", "recipient is required")
-        })?;
+        let agent_id = self
+            .agent_id
+            .ok_or_else(|| PaymentError::validation("agent_id", "agent_id is required"))?;
+        let run_id = self
+            .run_id
+            .ok_or_else(|| PaymentError::validation("run_id", "run_id is required"))?;
+        let action = self
+            .action
+            .ok_or_else(|| PaymentError::validation("action", "action is required"))?;
+        let amount = self
+            .amount
+            .ok_or_else(|| PaymentError::validation("amount", "amount is required"))?;
+        let recipient = self
+            .recipient
+            .ok_or_else(|| PaymentError::validation("recipient", "recipient is required"))?;
         let idempotency_key = self.idempotency_key.ok_or_else(|| {
             PaymentError::validation("idempotency_key", "idempotency_key is required")
         })?;
@@ -189,10 +189,7 @@ mod tests {
         assert_eq!(built.intent.run_id, "run-42");
         assert_eq!(built.action, PaymentAction::NativeTransfer);
         assert_eq!(built.intent.status, PaymentStatus::Pending);
-        assert_eq!(
-            built.state_machine.current_status(),
-            IntentStatus::Drafting
-        );
+        assert_eq!(built.state_machine.current_status(), IntentStatus::Drafting);
     }
 
     #[test]
@@ -315,10 +312,7 @@ mod tests {
     #[test]
     fn state_machine_starts_drafting() {
         let built = valid_builder().build().expect("build");
-        assert_eq!(
-            built.state_machine.current_status(),
-            IntentStatus::Drafting
-        );
+        assert_eq!(built.state_machine.current_status(), IntentStatus::Drafting);
         assert!(!built.state_machine.is_terminal());
     }
 

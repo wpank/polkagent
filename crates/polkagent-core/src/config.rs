@@ -19,13 +19,16 @@ use serde::{Deserialize, Serialize};
 ///
 /// **Security note:** Autonomy level is an *input* to grant resolution — it
 /// cannot override explicit policy denials or approval requirements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomyLevel {
     /// Every effect requires explicit human approval before execution.
     FullySupervised,
     /// Most read/query effects are autonomous; write and chain effects require
     /// approval.
+    #[default]
     Supervised,
     /// Routine effects execute autonomously; high-risk effects (chain
     /// transactions, signing) still require approval.
@@ -33,12 +36,6 @@ pub enum AutonomyLevel {
     /// All declared effects execute without per-call approval, subject to the
     /// agent's configured grant limits and budgets.
     FullyAutonomous,
-}
-
-impl Default for AutonomyLevel {
-    fn default() -> Self {
-        Self::Supervised
-    }
 }
 
 impl std::fmt::Display for AutonomyLevel {

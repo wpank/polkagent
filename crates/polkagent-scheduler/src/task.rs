@@ -236,8 +236,7 @@ impl ScheduledTask {
     /// Returns `true` if this task is due at the given time.
     #[must_use]
     pub fn is_due(&self, now: DateTime<Utc>) -> bool {
-        self.status == TaskStatus::Active
-            && self.next_run_at.is_some_and(|next| next <= now)
+        self.status == TaskStatus::Active && self.next_run_at.is_some_and(|next| next <= now)
     }
 
     /// Advance the task after a successful execution: update `last_run_at`,

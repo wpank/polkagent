@@ -262,9 +262,7 @@ impl BudgetEnforcer {
                     resource: "total_tokens".into(),
                     limit: limit as f64,
                     actual: projected as f64,
-                    message: format!(
-                        "projected tokens {projected} would exceed budget {limit}"
-                    ),
+                    message: format!("projected tokens {projected} would exceed budget {limit}"),
                 });
             }
         }

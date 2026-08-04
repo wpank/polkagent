@@ -10,8 +10,10 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use polkagent_payment::{
+    types::{
+        Amount, AssetId, CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary,
+    },
     BalanceSummary, PaymentError, PaymentStore,
-    types::{Amount, AssetId, CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary},
 };
 
 use crate::pool::SqlitePool;
@@ -34,7 +36,9 @@ fn map_err_unique(e: rusqlite::Error, key: &str) -> PaymentError {
                 ..
             },
             _,
-        ) => PaymentError::IdempotencyConflict { key: key.to_string() },
+        ) => PaymentError::IdempotencyConflict {
+            key: key.to_string(),
+        },
         _ => map_err(e),
     }
 }
@@ -59,7 +63,8 @@ fn decode_u128(s: &str) -> Result<u128, PaymentError> {
 
 /// Encode an `AssetId` as a JSON string for storage.
 fn encode_asset(asset: &AssetId) -> Result<String, PaymentError> {
-    serde_json::to_string(asset).map_err(|e| PaymentError::store(format!("asset serialization: {e}")))
+    serde_json::to_string(asset)
+        .map_err(|e| PaymentError::store(format!("asset serialization: {e}")))
 }
 
 /// Decode an `AssetId` from a JSON string.
@@ -81,7 +86,9 @@ fn decode_status(s: &str) -> Result<PaymentStatus, PaymentError> {
         "confirmed" => Ok(PaymentStatus::Confirmed),
         "failed" => Ok(PaymentStatus::Failed),
         "cancelled" => Ok(PaymentStatus::Cancelled),
-        other => Err(PaymentError::store(format!("unknown payment status: '{other}'"))),
+        other => Err(PaymentError::store(format!(
+            "unknown payment status: '{other}'"
+        ))),
     }
 }
 
@@ -140,13 +147,13 @@ impl PaymentStore for SqlitePool {
             let rows = stmt
                 .query_map([&run_id], |row| {
                     Ok((
-                        row.get::<_, String>(0)?,   // run_id
-                        row.get::<_, String>(1)?,   // provider
-                        row.get::<_, String>(2)?,   // model
-                        row.get::<_, i64>(3)?,      // input_tokens
-                        row.get::<_, i64>(4)?,      // output_tokens
-                        row.get::<_, f64>(5)?,      // estimated_usd
-                        row.get::<_, String>(6)?,   // recorded_at
+                        row.get::<_, String>(0)?, // run_id
+                        row.get::<_, String>(1)?, // provider
+                        row.get::<_, String>(2)?, // model
+                        row.get::<_, i64>(3)?,    // input_tokens
+                        row.get::<_, i64>(4)?,    // output_tokens
+                        row.get::<_, f64>(5)?,    // estimated_usd
+                        row.get::<_, String>(6)?, // recorded_at
                     ))
                 })
                 .map_err(map_err)?
@@ -154,18 +161,28 @@ impl PaymentStore for SqlitePool {
                 .map_err(map_err)?;
 
             rows.into_iter()
-                .map(|(run_id, provider, model, input_tokens, output_tokens, estimated_usd, recorded_at_str)| {
-                    let recorded_at = parse_ts(&recorded_at_str)?;
-                    Ok(CostRecord {
+                .map(
+                    |(
                         run_id,
                         provider,
                         model,
-                        input_tokens: input_tokens as u64,
-                        output_tokens: output_tokens as u64,
+                        input_tokens,
+                        output_tokens,
                         estimated_usd,
-                        recorded_at,
-                    })
-                })
+                        recorded_at_str,
+                    )| {
+                        let recorded_at = parse_ts(&recorded_at_str)?;
+                        Ok(CostRecord {
+                            run_id,
+                            provider,
+                            model,
+                            input_tokens: input_tokens as u64,
+                            output_tokens: output_tokens as u64,
+                            estimated_usd,
+                            recorded_at,
+                        })
+                    },
+                )
                 .collect()
         })
         .await
@@ -200,11 +217,13 @@ impl PaymentStore for SqlitePool {
                        AND cr.recorded_at >= ?2
                        AND cr.recorded_at < ?3",
                     rusqlite::params![agent_id, since_str, until_str],
-                    |row| Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, f64>(2)?,
-                    )),
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, f64>(2)?,
+                        ))
+                    },
                 )
                 .map_err(map_err)?;
 
@@ -293,8 +312,21 @@ impl PaymentStore for SqlitePool {
                     other => map_err(other),
                 })?;
 
-            let (id_s, agent_id, run_id, amt_val, amt_asset_s, amt_dec, recipient, idempotency_key, status_s, created_at_s) = row;
-            let intent_id = id_s.parse::<Uuid>().map_err(|e| PaymentError::store(format!("invalid uuid: {e}")))?;
+            let (
+                id_s,
+                agent_id,
+                run_id,
+                amt_val,
+                amt_asset_s,
+                amt_dec,
+                recipient,
+                idempotency_key,
+                status_s,
+                created_at_s,
+            ) = row;
+            let intent_id = id_s
+                .parse::<Uuid>()
+                .map_err(|e| PaymentError::store(format!("invalid uuid: {e}")))?;
             let asset = decode_asset(&amt_asset_s)?;
             let value = decode_u128(&amt_val)?;
             let created_at = parse_ts(&created_at_s)?;
@@ -412,13 +444,13 @@ impl PaymentStore for SqlitePool {
             let rows = stmt
                 .query_map([], |row| {
                     Ok((
-                        row.get::<_, String>(0)?,   // intent_id
-                        row.get::<_, String>(1)?,   // tx_hash
-                        row.get::<_, i64>(2)?,      // block_number
-                        row.get::<_, String>(3)?,   // fee_value
-                        row.get::<_, String>(4)?,   // fee_asset
-                        row.get::<_, i64>(5)?,      // fee_decimals
-                        row.get::<_, String>(6)?,   // confirmed_at
+                        row.get::<_, String>(0)?, // intent_id
+                        row.get::<_, String>(1)?, // tx_hash
+                        row.get::<_, i64>(2)?,    // block_number
+                        row.get::<_, String>(3)?, // fee_value
+                        row.get::<_, String>(4)?, // fee_asset
+                        row.get::<_, i64>(5)?,    // fee_decimals
+                        row.get::<_, String>(6)?, // confirmed_at
                     ))
                 })
                 .map_err(map_err)?
@@ -426,21 +458,32 @@ impl PaymentStore for SqlitePool {
                 .map_err(map_err)?;
 
             rows.into_iter()
-                .map(|(intent_id_s, tx_hash, block_number, fee_val, fee_asset_s, fee_dec, confirmed_at_s)| {
-                    let intent_id = intent_id_s.parse::<Uuid>()
-                        .map_err(|e| PaymentError::store(format!("invalid uuid: {e}")))?;
-                    let asset = decode_asset(&fee_asset_s)?;
-                    let value = decode_u128(&fee_val)?;
-                    let confirmed_at = parse_ts(&confirmed_at_s)?;
-
-                    Ok(PaymentReceipt {
-                        intent_id,
+                .map(
+                    |(
+                        intent_id_s,
                         tx_hash,
-                        block_number: block_number as u64,
-                        fee_paid: Amount::new(value, asset, fee_dec as u8),
-                        confirmed_at,
-                    })
-                })
+                        block_number,
+                        fee_val,
+                        fee_asset_s,
+                        fee_dec,
+                        confirmed_at_s,
+                    )| {
+                        let intent_id = intent_id_s
+                            .parse::<Uuid>()
+                            .map_err(|e| PaymentError::store(format!("invalid uuid: {e}")))?;
+                        let asset = decode_asset(&fee_asset_s)?;
+                        let value = decode_u128(&fee_val)?;
+                        let confirmed_at = parse_ts(&confirmed_at_s)?;
+
+                        Ok(PaymentReceipt {
+                            intent_id,
+                            tx_hash,
+                            block_number: block_number as u64,
+                            fee_paid: Amount::new(value, asset, fee_dec as u8),
+                            confirmed_at,
+                        })
+                    },
+                )
                 .collect()
         })
         .await
@@ -641,18 +684,17 @@ mod tests {
             .await
             .expect("update");
 
-        let fetched = PaymentStore::get_intent(&pool, id)
-            .await
-            .expect("get");
+        let fetched = PaymentStore::get_intent(&pool, id).await.expect("get");
         assert_eq!(fetched.status, PaymentStatus::Approved);
     }
 
     #[tokio::test]
     async fn update_intent_status_not_found() {
         let pool = test_pool();
-        let err = PaymentStore::update_intent_status(&pool, Uuid::now_v7(), PaymentStatus::Confirmed)
-            .await
-            .expect_err("should fail for non-existent intent");
+        let err =
+            PaymentStore::update_intent_status(&pool, Uuid::now_v7(), PaymentStatus::Confirmed)
+                .await
+                .expect_err("should fail for non-existent intent");
         assert!(matches!(err, PaymentError::IntentNotFound { .. }));
     }
 
@@ -661,7 +703,9 @@ mod tests {
         let pool = test_pool();
         let intent = make_intent("agent-1", "run-1");
         let id = intent.id;
-        PaymentStore::create_intent(&pool, intent).await.expect("create");
+        PaymentStore::create_intent(&pool, intent)
+            .await
+            .expect("create");
 
         for status in [
             PaymentStatus::Approved,
@@ -688,7 +732,9 @@ mod tests {
         intent.amount = Amount::new(1_500_000, asset.clone(), 6);
         let id = intent.id;
 
-        PaymentStore::create_intent(&pool, intent).await.expect("create");
+        PaymentStore::create_intent(&pool, intent)
+            .await
+            .expect("create");
 
         let fetched = PaymentStore::get_intent(&pool, id).await.expect("get");
         assert_eq!(fetched.amount.value, 1_500_000);
@@ -703,7 +749,9 @@ mod tests {
         intent.amount = Amount::new(u128::MAX, AssetId::Native, 10);
         let id = intent.id;
 
-        PaymentStore::create_intent(&pool, intent).await.expect("create");
+        PaymentStore::create_intent(&pool, intent)
+            .await
+            .expect("create");
 
         let fetched = PaymentStore::get_intent(&pool, id).await.expect("get");
         assert_eq!(fetched.amount.value, u128::MAX);
@@ -716,15 +764,21 @@ mod tests {
         let mut intent_fail = make_intent("agent-1", "run-1");
         intent_fail.status = PaymentStatus::Failed;
         let fail_id = intent_fail.id;
-        PaymentStore::create_intent(&pool, intent_fail).await.expect("create failed intent");
+        PaymentStore::create_intent(&pool, intent_fail)
+            .await
+            .expect("create failed intent");
         let fetched = PaymentStore::get_intent(&pool, fail_id).await.expect("get");
         assert_eq!(fetched.status, PaymentStatus::Failed);
 
         let mut intent_cancel = make_intent("agent-1", "run-2");
         intent_cancel.status = PaymentStatus::Cancelled;
         let cancel_id = intent_cancel.id;
-        PaymentStore::create_intent(&pool, intent_cancel).await.expect("create cancelled intent");
-        let fetched = PaymentStore::get_intent(&pool, cancel_id).await.expect("get");
+        PaymentStore::create_intent(&pool, intent_cancel)
+            .await
+            .expect("create cancelled intent");
+        let fetched = PaymentStore::get_intent(&pool, cancel_id)
+            .await
+            .expect("get");
         assert_eq!(fetched.status, PaymentStatus::Cancelled);
     }
 
@@ -735,7 +789,9 @@ mod tests {
         let pool = test_pool();
         let intent = make_intent("agent-1", "run-1");
         let intent_id = intent.id;
-        PaymentStore::create_intent(&pool, intent).await.expect("create intent");
+        PaymentStore::create_intent(&pool, intent)
+            .await
+            .expect("create intent");
 
         let receipt = PaymentReceipt {
             intent_id,
@@ -754,7 +810,9 @@ mod tests {
         let pool = test_pool();
         let intent = make_intent("agent-1", "run-1");
         let intent_id = intent.id;
-        PaymentStore::create_intent(&pool, intent).await.expect("create intent");
+        PaymentStore::create_intent(&pool, intent)
+            .await
+            .expect("create intent");
 
         let receipt = PaymentReceipt {
             intent_id,
@@ -787,7 +845,10 @@ mod tests {
             .await
             .expect_err("should fail: no matching intent");
         // Could be a constraint violation or generic store error.
-        assert!(matches!(err, PaymentError::Store(_) | PaymentError::IdempotencyConflict { .. }));
+        assert!(matches!(
+            err,
+            PaymentError::Store(_) | PaymentError::IdempotencyConflict { .. }
+        ));
     }
 
     #[tokio::test]
@@ -795,7 +856,9 @@ mod tests {
         let pool = test_pool();
         let intent = make_intent("agent-1", "run-1");
         let intent_id = intent.id;
-        PaymentStore::create_intent(&pool, intent).await.expect("create intent");
+        PaymentStore::create_intent(&pool, intent)
+            .await
+            .expect("create intent");
 
         let fee_asset = AssetId::Token {
             chain: "polkadot-asset-hub".to_string(),
@@ -835,9 +898,13 @@ mod tests {
         }
 
         let record = make_cost_record("run-1");
-        PaymentStore::record_cost(&pool, record).await.expect("record cost");
+        PaymentStore::record_cost(&pool, record)
+            .await
+            .expect("record cost");
 
-        let costs = PaymentStore::get_costs(&pool, "run-1").await.expect("get costs");
+        let costs = PaymentStore::get_costs(&pool, "run-1")
+            .await
+            .expect("get costs");
         assert_eq!(costs.len(), 1);
         assert_eq!(costs[0].provider, "anthropic");
         assert_eq!(costs[0].model, "claude-sonnet-4");
@@ -881,10 +948,14 @@ mod tests {
                 estimated_usd: 0.001 * i as f64,
                 recorded_at: Utc::now(),
             };
-            PaymentStore::record_cost(&pool, record).await.expect("record");
+            PaymentStore::record_cost(&pool, record)
+                .await
+                .expect("record");
         }
 
-        let costs = PaymentStore::get_costs(&pool, "run-1").await.expect("get costs");
+        let costs = PaymentStore::get_costs(&pool, "run-1")
+            .await
+            .expect("get costs");
         assert_eq!(costs.len(), 5);
     }
 
@@ -916,7 +987,9 @@ mod tests {
                 estimated_usd: 0.01,
                 recorded_at: Utc::now(),
             };
-            PaymentStore::record_cost(&pool, record).await.expect("record");
+            PaymentStore::record_cost(&pool, record)
+                .await
+                .expect("record");
         }
 
         let since = DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
@@ -1055,14 +1128,19 @@ mod tests {
             metadata: None,
         };
 
-        PaymentStore::create_intent(&pool, intent).await.expect("create");
+        PaymentStore::create_intent(&pool, intent)
+            .await
+            .expect("create");
         let fetched = PaymentStore::get_intent(&pool, id).await.expect("get");
 
         assert_eq!(fetched.id, id);
         assert_eq!(fetched.agent_id, "my-agent");
         assert_eq!(fetched.run_id, "my-run");
         assert_eq!(fetched.amount.value, 42_000_000_000);
-        assert_eq!(fetched.recipient, "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty");
+        assert_eq!(
+            fetched.recipient,
+            "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+        );
         assert_eq!(fetched.idempotency_key, "unique-key-abc");
         assert_eq!(fetched.status, PaymentStatus::Submitted);
     }

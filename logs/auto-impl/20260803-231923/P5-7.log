@@ -1,0 +1,46 @@
+All done. Here's a summary of all changes made:
+
+---
+
+## Changes Summary
+
+### 1. `polkagent-config` — Region configuration (PRD-11 §5.7)
+
+**`crates/polkagent-config/src/schema.rs`**:
+- Added `DataRegion` enum with variants: `Eu`, `Us`, `Ap`, `Au`, `Ca` — serialized as lowercase strings
+- Added `CloudConfig` struct with:
+  - `region: Option<DataRegion>` — the deployment's data region (None = no enforcement)
+  - `allow_cross_region: bool` — explicit operator override (default: `false`)
+- Added `cloud: CloudConfig` field to the top-level `Config` struct
+- Added `[cloud]` section to `DEFAULT_CONFIG_TEMPLATE`
+
+**`crates/polkagent-config/src/lib.rs`**:
+- Added `CloudConfig` and `DataRegion` to the public re-exports
+
+### 2. `polkagent-cloud-control` — Region-aware job routing via Cedar policy
+
+**`crates/polkagent-cloud-control/Cargo.toml`**:
+- Added `polkagent-grant` dependency for Cedar-style policy evaluation
+
+**`crates/polkagent-cloud-control/src/lib.rs`**:
+- Added `region: Option<DataRegion>` field to both `Job` and `WorkerRecord`
+- Added `allow_cross_region: bool` to `ControlPlaneConfig`
+- Added `RegionViolation` error variant to `ControlError`
+- Added `data_residency_policy()` — builds a Cedar-style `PolicySet` with:
+  - **Deny rule** (`deny-cross-region-routing`): fires when `job.region ≠ worker.region`
+  - **Allow rule** (`allow-same-region-routing`): baseline permit when deny doesn't fire
+- Added `check_residency_policy()` — evaluates the policy for a specific job→worker pair
+- Updated `assign_next()` — when a job has a region and `allow_cross_region` is false, workers are filtered through the Cedar policy; returns `RegionViolation` error when no in-region workers exist
+
+### 3. Tests (6 new tests, all passing)
+
+| Test | Verifies |
+|------|----------|
+| `eu_job_cannot_route_to_us_worker` | EU job denied routing to US worker |
+| `eu_job_routes_to_eu_worker` | EU job correctly routes to EU worker |
+| `cross_region_override_allows_routing` | `allow_cross_region=true` permits EU→US |
+| `regionless_job_can_route_to_any_worker` | Jobs without region are unrestricted |
+| `residency_policy_denies_mismatched_regions` | Direct Cedar policy evaluation tests |
+| `multiple_regions_picks_correct_worker` | EU/US jobs route to correct regional workers |
+
+**Final result**: `cargo check --workspace` ✅ clean, 24/24 control-plane tests pass, 225/225 config tests pass.

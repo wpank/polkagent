@@ -1,0 +1,18 @@
+All 224 tests pass, including all 6 new `recover_stuck_runs` tests. Here's a summary of what was done:
+
+**Added `recover_stuck_runs` method to `RunManager`** in `crates/polkagent-run/src/manager.rs`:
+
+- **Queries** `list_by_state` for runs in `"running"`, `"queued"`, and `"completing"` states (up to 500 per state)
+- **Transitions** each to `Failed` with reason `"recovered after restart"` by directly updating the store status to `"failed:recovered after restart"`
+- **Emits** a `RunFailed` event for each recovered run
+- **Best-effort**: if a single run fails to update, it logs a warning and skips to the next
+- **Returns** the count of successfully recovered runs
+- Bypasses the state machine intentionally — `Queued → Failed` isn't a normal transition, but crash recovery is a special case where we need to force runs into a terminal state
+
+**6 new tests** covering:
+1. Running → Failed recovery
+2. Queued → Failed recovery
+3. Completing → Failed recovery
+4. Terminal states (Completed) are skipped
+5. Multiple stuck runs recovered in one sweep
+6. Returns 0 when nothing is stuck

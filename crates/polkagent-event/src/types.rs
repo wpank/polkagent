@@ -19,9 +19,7 @@
 //! - [`TERMINAL_EVENT_TYPES`] — the four terminal event type names.
 
 // Re-export core event types as the primary types in this crate.
-pub use polkagent_core::event::{
-    Durability, EventCorrelation, EventKind, LogLevel, RunEvent,
-};
+pub use polkagent_core::event::{Durability, EventCorrelation, EventKind, LogLevel, RunEvent};
 // Re-export core RunState for projection use.
 pub use polkagent_core::run::RunState;
 
@@ -108,6 +106,9 @@ pub enum EventType {
     RetentionEnforced,
     SchemasMigrated,
     ConfigurationChanged,
+
+    // ── Metadata ────────────────────────────────────────────────────────
+    MetadataDriftDetected,
 }
 
 impl EventType {
@@ -156,6 +157,7 @@ impl EventType {
             Self::RetentionEnforced => "retention_enforced",
             Self::SchemasMigrated => "schemas_migrated",
             Self::ConfigurationChanged => "configuration_changed",
+            Self::MetadataDriftDetected => "metadata_drift_detected",
         }
     }
 
@@ -215,6 +217,7 @@ impl EventType {
             EventKind::ProgressUpdate { .. } => Self::ProgressUpdate,
             EventKind::ToolCallStarted { .. } => Self::ToolCallStarted,
             EventKind::ToolCallCompleted { .. } => Self::ToolCallCompleted,
+            EventKind::MetadataDriftDetected { .. } => Self::MetadataDriftDetected,
             _ => return None,
         };
         Some(t)

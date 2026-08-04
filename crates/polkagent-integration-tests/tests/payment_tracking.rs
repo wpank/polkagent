@@ -8,8 +8,8 @@
 use chrono::{Duration, Utc};
 
 use polkagent_payment::{
-    Amount, AssetId, BudgetChecker, BudgetConfig, BudgetDecision, CostEstimator,
-    CostRecord, PricingEntry, UsageSummary,
+    Amount, AssetId, BudgetChecker, BudgetConfig, BudgetDecision, CostEstimator, CostRecord,
+    PricingEntry, UsageSummary,
 };
 
 // ---------------------------------------------------------------------------
@@ -24,7 +24,14 @@ fn micro_usd(value: u128) -> Amount {
     Amount::new(value, native_asset(), 6)
 }
 
-fn make_cost_record(run_id: &str, provider: &str, model: &str, input: u64, output: u64, usd: f64) -> CostRecord {
+fn make_cost_record(
+    run_id: &str,
+    provider: &str,
+    model: &str,
+    input: u64,
+    output: u64,
+    usd: f64,
+) -> CostRecord {
     CostRecord {
         run_id: run_id.into(),
         provider: provider.into(),
@@ -85,7 +92,9 @@ fn record_multiple_runs_aggregate_cost() {
     ];
 
     for cost in &costs {
-        checker.record_spend("agent-multi", cost).expect("record cost");
+        checker
+            .record_spend("agent-multi", cost)
+            .expect("record cost");
     }
 
     let now = Utc::now();
@@ -134,7 +143,11 @@ fn record_spend_zero_cost_does_not_error() {
 fn budget_check_allows_within_daily_limit() {
     let mut checker = make_checker_daily("agent-ok", 10_000_000); // $10 daily
     let decision = checker.check("agent-ok", &micro_usd(5_000_000)); // $5
-    assert_eq!(decision, BudgetDecision::Allow, "amount within daily limit must be allowed");
+    assert_eq!(
+        decision,
+        BudgetDecision::Allow,
+        "amount within daily limit must be allowed"
+    );
 }
 
 #[test]
@@ -167,7 +180,10 @@ fn budget_check_warns_near_limit() {
     // Now checking $2 brings total to $10 = 100% → at 90% threshold, should warn
     let decision = checker.check("agent-warn", &micro_usd(2_000_000)); // $2
     assert!(
-        matches!(decision, BudgetDecision::Allow | BudgetDecision::Warn { .. }),
+        matches!(
+            decision,
+            BudgetDecision::Allow | BudgetDecision::Warn { .. }
+        ),
         "spend near limit should trigger warning or allow at boundary"
     );
 }
@@ -226,10 +242,13 @@ fn budget_decision_deny_has_reason_string() {
 #[test]
 fn budget_check_exact_limit_uses_allow() {
     let mut checker = make_checker_daily("agent-exact", 10_000_000); // $10 daily
-    // Exactly $10 should be allowed (not exceeding)
+                                                                     // Exactly $10 should be allowed (not exceeding)
     let decision = checker.check("agent-exact", &micro_usd(10_000_000));
     assert!(
-        matches!(decision, BudgetDecision::Allow | BudgetDecision::Warn { .. }),
+        matches!(
+            decision,
+            BudgetDecision::Allow | BudgetDecision::Warn { .. }
+        ),
         "exact limit should be allowed or warned, not denied"
     );
 }
@@ -243,8 +262,17 @@ fn record_spend_updates_daily_usage() {
     let mut checker = BudgetChecker::new();
     checker.set_config("agent-daily", BudgetConfig::default());
 
-    let cost = make_cost_record("run-daily", "anthropic", "claude-sonnet-4", 1000, 500, 0.0105);
-    checker.record_spend("agent-daily", &cost).expect("record cost");
+    let cost = make_cost_record(
+        "run-daily",
+        "anthropic",
+        "claude-sonnet-4",
+        1000,
+        500,
+        0.0105,
+    );
+    checker
+        .record_spend("agent-daily", &cost)
+        .expect("record cost");
 
     let now = Utc::now();
     let summary = checker.get_usage("agent-daily", now - Duration::hours(1), now);
@@ -267,7 +295,9 @@ fn multiple_records_accumulate_in_usage() {
     ];
 
     for rec in &records {
-        checker.record_spend("agent-multi-day", rec).expect("record");
+        checker
+            .record_spend("agent-multi-day", rec)
+            .expect("record");
     }
 
     let now = Utc::now();
@@ -316,7 +346,10 @@ fn spend_is_not_shared_across_agents() {
 
     // Only agent-x spends
     checker
-        .record_spend("agent-x", &make_cost_record("r1", "anthropic", "claude-sonnet-4", 1000, 500, 0.02))
+        .record_spend(
+            "agent-x",
+            &make_cost_record("r1", "anthropic", "claude-sonnet-4", 1000, 500, 0.02),
+        )
         .expect("record");
 
     let now = Utc::now();
@@ -337,7 +370,10 @@ fn cost_estimator_produces_expected_sonnet_amounts() {
     // Claude Sonnet 4: $3/M input + $15/M output
     // 1000 input + 500 output = $0.003 + $0.0075 = $0.0105
     let cost = estimator.estimate("anthropic", "claude-sonnet-4", 1000, 500);
-    assert!((cost - 0.0105).abs() < 0.0001, "Sonnet 4 estimate: expected 0.0105, got {cost}");
+    assert!(
+        (cost - 0.0105).abs() < 0.0001,
+        "Sonnet 4 estimate: expected 0.0105, got {cost}"
+    );
 }
 
 #[test]
@@ -346,30 +382,47 @@ fn cost_estimator_with_gpt4o_produces_expected_amounts() {
     // GPT-4o: $2.50/M input + $10/M output
     // 1M each = $12.50
     let cost = estimator.estimate("openai", "gpt-4o", 1_000_000, 1_000_000);
-    assert!((cost - 12.50).abs() < 0.01, "GPT-4o cost: expected 12.50, got {cost}");
+    assert!(
+        (cost - 12.50).abs() < 0.01,
+        "GPT-4o cost: expected 12.50, got {cost}"
+    );
 }
 
 #[test]
 fn cost_estimator_local_model_is_free() {
     let estimator = CostEstimator::new();
     let cost = estimator.estimate("local", "local", 10_000_000, 5_000_000);
-    assert!((cost - 0.0).abs() < f64::EPSILON, "local model must be free");
+    assert!(
+        (cost - 0.0).abs() < f64::EPSILON,
+        "local model must be free"
+    );
 }
 
 #[test]
 fn cost_estimator_unknown_model_returns_zero() {
     let estimator = CostEstimator::new();
     let cost = estimator.estimate("unknown-provider", "unknown-model", 1000, 500);
-    assert!((cost - 0.0).abs() < f64::EPSILON, "unknown model must return 0.0");
+    assert!(
+        (cost - 0.0).abs() < f64::EPSILON,
+        "unknown model must return 0.0"
+    );
 }
 
 #[test]
 fn cost_estimator_prefix_matching_works() {
     let estimator = CostEstimator::new();
     // Versioned model name should match via prefix
-    let cost = estimator.estimate("anthropic", "claude-sonnet-4-20250514", 1_000_000, 1_000_000);
+    let cost = estimator.estimate(
+        "anthropic",
+        "claude-sonnet-4-20250514",
+        1_000_000,
+        1_000_000,
+    );
     // $3 input + $15 output = $18
-    assert!((cost - 18.0).abs() < 0.01, "prefix-matched cost: expected 18.0, got {cost}");
+    assert!(
+        (cost - 18.0).abs() < 0.01,
+        "prefix-matched cost: expected 18.0, got {cost}"
+    );
 }
 
 #[test]
@@ -459,11 +512,15 @@ fn amount_checked_mul_scalar() {
 #[test]
 fn amount_asset_mismatch_checked_add_fails() {
     let a = Amount::new(100, AssetId::Native, 6);
-    let b = Amount::new(200, AssetId::Token {
-        chain: "polkadot".into(),
-        symbol: "USDT".into(),
-        decimals: 6,
-    }, 6);
+    let b = Amount::new(
+        200,
+        AssetId::Token {
+            chain: "polkadot".into(),
+            symbol: "USDT".into(),
+            decimals: 6,
+        },
+        6,
+    );
     let result = a.checked_add(&b);
     assert!(result.is_err(), "cross-asset add must fail");
 }
@@ -542,7 +599,14 @@ fn record_and_budget_integration_deny_over_limit() {
         checker
             .record_spend(
                 "budget-agent",
-                &make_cost_record(&format!("run-{i}"), "anthropic", "claude-sonnet-4", 500, 200, 0.005),
+                &make_cost_record(
+                    &format!("run-{i}"),
+                    "anthropic",
+                    "claude-sonnet-4",
+                    500,
+                    200,
+                    0.005,
+                ),
             )
             .expect("record");
     }
@@ -578,7 +642,10 @@ fn record_and_budget_integration_allow_within_limit() {
     // $0.05 spend stays within $0.10 limit
     let decision = checker.check("budget-ok-agent", &micro_usd(50_000));
     assert!(
-        matches!(decision, BudgetDecision::Allow | BudgetDecision::Warn { .. }),
+        matches!(
+            decision,
+            BudgetDecision::Allow | BudgetDecision::Warn { .. }
+        ),
         "should allow spend within daily limit"
     );
 }

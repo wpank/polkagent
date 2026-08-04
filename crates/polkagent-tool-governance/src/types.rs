@@ -332,8 +332,7 @@ mod tests {
         let status = ReferendumStatus::Confirming;
         let json = serde_json::to_string(&status).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(json, r#""confirming""#);
-        let back: ReferendumStatus =
-            serde_json::from_str(&json).unwrap_or_else(|e| panic!("{e}"));
+        let back: ReferendumStatus = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(back, status);
     }
 

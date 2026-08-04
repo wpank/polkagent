@@ -10,8 +10,8 @@ use chrono::DateTime;
 use uuid::Uuid;
 
 use polkagent_conversation::{
-    ConversationError, ConversationResult, ConversationStore,
     types::{Conversation, ConversationSummary, Message, MessageContent, MessageRole},
+    ConversationError, ConversationResult, ConversationStore,
 };
 use polkagent_core::ids::{AgentId, ConversationId};
 
@@ -66,8 +66,8 @@ impl ConversationStore for SqlitePool {
         let pool = self.clone();
         let id_str = conversation.id.to_string();
         let agent_id_str = conversation.agent_id.to_string();
-        let metadata_json = serde_json::to_string(&conversation.metadata)
-            .map_err(ConversationError::Json)?;
+        let metadata_json =
+            serde_json::to_string(&conversation.metadata).map_err(ConversationError::Json)?;
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
@@ -138,14 +138,18 @@ impl ConversationStore for SqlitePool {
                     other => map_err(other),
                 })?;
 
-            let (id_s, agent_id_s, title, message_count, metadata_json_s, created_at_s, updated_at_s) = row;
+            let (
+                id_s,
+                agent_id_s,
+                title,
+                message_count,
+                metadata_json_s,
+                created_at_s,
+                updated_at_s,
+            ) = row;
 
-            let conv_id: ConversationId = id_s
-                .parse()
-                .map_err(ConversationError::InvalidId)?;
-            let agent_id: AgentId = agent_id_s
-                .parse()
-                .map_err(ConversationError::InvalidId)?;
+            let conv_id: ConversationId = id_s.parse().map_err(ConversationError::InvalidId)?;
+            let agent_id: AgentId = agent_id_s.parse().map_err(ConversationError::InvalidId)?;
             let metadata: std::collections::HashMap<String, String> =
                 serde_json::from_str(&metadata_json_s).map_err(ConversationError::Json)?;
             let created_at = parse_ts(&created_at_s)?;
@@ -205,21 +209,29 @@ impl ConversationStore for SqlitePool {
                 .map_err(map_err)?;
 
             rows.into_iter()
-                .map(|(id_s, agent_s, title, message_count, updated_at_s, created_at_s)| {
-                    let conv_id: ConversationId = id_s.parse().map_err(ConversationError::InvalidId)?;
-                    let ag_id: AgentId = agent_s.parse().map_err(ConversationError::InvalidId)?;
-                    let updated_at = parse_ts(&updated_at_s)?;
-                    let created_at = parse_ts(&created_at_s)?;
-                    let last_message_at = if message_count > 0 { Some(updated_at) } else { None };
-                    Ok(ConversationSummary {
-                        id: conv_id,
-                        agent_id: ag_id,
-                        title,
-                        message_count: message_count as u32,
-                        last_message_at,
-                        created_at,
-                    })
-                })
+                .map(
+                    |(id_s, agent_s, title, message_count, updated_at_s, created_at_s)| {
+                        let conv_id: ConversationId =
+                            id_s.parse().map_err(ConversationError::InvalidId)?;
+                        let ag_id: AgentId =
+                            agent_s.parse().map_err(ConversationError::InvalidId)?;
+                        let updated_at = parse_ts(&updated_at_s)?;
+                        let created_at = parse_ts(&created_at_s)?;
+                        let last_message_at = if message_count > 0 {
+                            Some(updated_at)
+                        } else {
+                            None
+                        };
+                        Ok(ConversationSummary {
+                            id: conv_id,
+                            agent_id: ag_id,
+                            title,
+                            message_count: message_count as u32,
+                            last_message_at,
+                            created_at,
+                        })
+                    },
+                )
                 .collect()
         })
         .await
@@ -255,7 +267,8 @@ impl ConversationStore for SqlitePool {
         let msg_id = message.id;
         let msg_id_str = msg_id.to_string();
         let role_str = encode_role(message.role).to_string();
-        let content_json = serde_json::to_string(&message.content).map_err(ConversationError::Json)?;
+        let content_json =
+            serde_json::to_string(&message.content).map_err(ConversationError::Json)?;
 
         tokio::task::spawn_blocking(move || {
             let now = chrono::Utc::now().to_rfc3339();
@@ -348,23 +361,25 @@ impl ConversationStore for SqlitePool {
                 .map_err(map_err)?;
 
             rows.into_iter()
-                .map(|(id_s, conv_s, role_s, content_s, token_count, created_at_s)| {
-                    let msg_id = id_s.parse::<Uuid>().map_err(ConversationError::InvalidId)?;
-                    let conv_id_parsed: ConversationId =
-                        conv_s.parse().map_err(ConversationError::InvalidId)?;
-                    let role = decode_role(&role_s)?;
-                    let content: MessageContent =
-                        serde_json::from_str(&content_s).map_err(ConversationError::Json)?;
-                    let created_at = parse_ts(&created_at_s)?;
-                    Ok(Message {
-                        id: msg_id,
-                        conversation_id: conv_id_parsed,
-                        role,
-                        content,
-                        created_at,
-                        token_count: token_count.map(|n| n as u32),
-                    })
-                })
+                .map(
+                    |(id_s, conv_s, role_s, content_s, token_count, created_at_s)| {
+                        let msg_id = id_s.parse::<Uuid>().map_err(ConversationError::InvalidId)?;
+                        let conv_id_parsed: ConversationId =
+                            conv_s.parse().map_err(ConversationError::InvalidId)?;
+                        let role = decode_role(&role_s)?;
+                        let content: MessageContent =
+                            serde_json::from_str(&content_s).map_err(ConversationError::Json)?;
+                        let created_at = parse_ts(&created_at_s)?;
+                        Ok(Message {
+                            id: msg_id,
+                            conversation_id: conv_id_parsed,
+                            role,
+                            content,
+                            created_at,
+                            token_count: token_count.map(|n| n as u32),
+                        })
+                    },
+                )
                 .collect()
         })
         .await
@@ -397,52 +412,47 @@ impl ConversationStore for SqlitePool {
                 .map_err(map_err)?;
 
             let rows = stmt
-                .query_map(
-                    rusqlite::params![conv_id_str, limit as i64],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                            row.get::<_, Option<i64>>(4)?,
-                            row.get::<_, String>(5)?,
-                        ))
-                    },
-                )
+                .query_map(rusqlite::params![conv_id_str, limit as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
                 .map_err(map_err)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(map_err)?;
 
             rows.into_iter()
-                .map(|(id_s, conv_s, role_s, content_s, token_count, created_at_s)| {
-                    let msg_id = id_s.parse::<Uuid>().map_err(ConversationError::InvalidId)?;
-                    let conv_id_parsed: ConversationId =
-                        conv_s.parse().map_err(ConversationError::InvalidId)?;
-                    let role = decode_role(&role_s)?;
-                    let content: MessageContent =
-                        serde_json::from_str(&content_s).map_err(ConversationError::Json)?;
-                    let created_at = parse_ts(&created_at_s)?;
-                    Ok(Message {
-                        id: msg_id,
-                        conversation_id: conv_id_parsed,
-                        role,
-                        content,
-                        created_at,
-                        token_count: token_count.map(|n| n as u32),
-                    })
-                })
+                .map(
+                    |(id_s, conv_s, role_s, content_s, token_count, created_at_s)| {
+                        let msg_id = id_s.parse::<Uuid>().map_err(ConversationError::InvalidId)?;
+                        let conv_id_parsed: ConversationId =
+                            conv_s.parse().map_err(ConversationError::InvalidId)?;
+                        let role = decode_role(&role_s)?;
+                        let content: MessageContent =
+                            serde_json::from_str(&content_s).map_err(ConversationError::Json)?;
+                        let created_at = parse_ts(&created_at_s)?;
+                        Ok(Message {
+                            id: msg_id,
+                            conversation_id: conv_id_parsed,
+                            role,
+                            content,
+                            created_at,
+                            token_count: token_count.map(|n| n as u32),
+                        })
+                    },
+                )
                 .collect()
         })
         .await
         .map_err(|e| ConversationError::Internal(format!("blocking task panicked: {e}")))?
     }
 
-    async fn update_title(
-        &self,
-        id: ConversationId,
-        title: String,
-    ) -> ConversationResult<()> {
+    async fn update_title(&self, id: ConversationId, title: String) -> ConversationResult<()> {
         let pool = self.clone();
         let id_str = id.to_string();
 
@@ -495,18 +505,27 @@ mod tests {
             id: Uuid::now_v7(),
             conversation_id: conv_id,
             role,
-            content: MessageContent::Text { text: text.to_string() },
+            content: MessageContent::Text {
+                text: text.to_string(),
+            },
             created_at: Utc::now(),
             token_count: None,
         }
     }
 
-    fn make_message_with_tokens(conv_id: ConversationId, role: MessageRole, text: &str, tokens: u32) -> Message {
+    fn make_message_with_tokens(
+        conv_id: ConversationId,
+        role: MessageRole,
+        text: &str,
+        tokens: u32,
+    ) -> Message {
         Message {
             id: Uuid::now_v7(),
             conversation_id: conv_id,
             role,
-            content: MessageContent::Text { text: text.to_string() },
+            content: MessageContent::Text {
+                text: text.to_string(),
+            },
             created_at: Utc::now(),
             token_count: Some(tokens),
         }
@@ -553,11 +572,11 @@ mod tests {
         conv.title = Some("My Conversation".to_string());
         let conv_id = conv.id;
 
-        ConversationStore::create(&pool, conv).await.expect("create");
-
-        let fetched = ConversationStore::get(&pool, conv_id)
+        ConversationStore::create(&pool, conv)
             .await
-            .expect("get");
+            .expect("create");
+
+        let fetched = ConversationStore::get(&pool, conv_id).await.expect("get");
         assert_eq!(fetched.title, Some("My Conversation".to_string()));
     }
 
@@ -566,17 +585,24 @@ mod tests {
         let pool = test_pool();
         let agent_id = AgentId::new();
         let mut conv = make_conversation(agent_id);
-        conv.metadata.insert("source".to_string(), "api".to_string());
+        conv.metadata
+            .insert("source".to_string(), "api".to_string());
         conv.metadata.insert("version".to_string(), "2".to_string());
         let conv_id = conv.id;
 
-        ConversationStore::create(&pool, conv).await.expect("create");
-
-        let fetched = ConversationStore::get(&pool, conv_id)
+        ConversationStore::create(&pool, conv)
             .await
-            .expect("get");
-        assert_eq!(fetched.metadata.get("source").map(String::as_str), Some("api"));
-        assert_eq!(fetched.metadata.get("version").map(String::as_str), Some("2"));
+            .expect("create");
+
+        let fetched = ConversationStore::get(&pool, conv_id).await.expect("get");
+        assert_eq!(
+            fetched.metadata.get("source").map(String::as_str),
+            Some("api")
+        );
+        assert_eq!(
+            fetched.metadata.get("version").map(String::as_str),
+            Some("2")
+        );
     }
 
     // --- List conversations ---
@@ -646,7 +672,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         ConversationStore::delete(&pool, conv_id)
             .await
@@ -673,7 +701,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let msg = make_message(conv_id, MessageRole::User, "hello");
         ConversationStore::add_message(&pool, conv_id, msg)
@@ -706,7 +736,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let msg = make_message(conv_id, MessageRole::User, "hello world");
         let msg_id = msg.id;
@@ -744,7 +776,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         for i in 0..3 {
             let msg = make_message(conv_id, MessageRole::User, &format!("message {i}"));
@@ -753,9 +787,7 @@ mod tests {
                 .expect("add");
         }
 
-        let fetched = ConversationStore::get(&pool, conv_id)
-            .await
-            .expect("get");
+        let fetched = ConversationStore::get(&pool, conv_id).await.expect("get");
         assert_eq!(fetched.message_count, 3);
     }
 
@@ -765,7 +797,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         // Insert messages in order; using manually spaced timestamps to avoid
         // sub-millisecond collisions in in-memory tests.
@@ -775,7 +809,9 @@ mod tests {
                 id: Uuid::now_v7(),
                 conversation_id: conv_id,
                 role: MessageRole::User,
-                content: MessageContent::Text { text: format!("msg {i}") },
+                content: MessageContent::Text {
+                    text: format!("msg {i}"),
+                },
                 created_at: base + chrono::Duration::seconds(i),
                 token_count: None,
             };
@@ -802,7 +838,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let base = Utc::now();
         for i in 0..10i64 {
@@ -810,11 +848,15 @@ mod tests {
                 id: Uuid::now_v7(),
                 conversation_id: conv_id,
                 role: MessageRole::User,
-                content: MessageContent::Text { text: format!("msg {i}") },
+                content: MessageContent::Text {
+                    text: format!("msg {i}"),
+                },
                 created_at: base + chrono::Duration::seconds(i),
                 token_count: None,
             };
-            ConversationStore::add_message(&pool, conv_id, msg).await.expect("add");
+            ConversationStore::add_message(&pool, conv_id, msg)
+                .await
+                .expect("add");
         }
 
         let page1 = ConversationStore::get_messages(&pool, conv_id, 4, 0)
@@ -848,7 +890,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let base = Utc::now();
         for i in 0..10i64 {
@@ -856,11 +900,15 @@ mod tests {
                 id: Uuid::now_v7(),
                 conversation_id: conv_id,
                 role: MessageRole::User,
-                content: MessageContent::Text { text: format!("msg {i}") },
+                content: MessageContent::Text {
+                    text: format!("msg {i}"),
+                },
                 created_at: base + chrono::Duration::seconds(i),
                 token_count: None,
             };
-            ConversationStore::add_message(&pool, conv_id, msg).await.expect("add");
+            ConversationStore::add_message(&pool, conv_id, msg)
+                .await
+                .expect("add");
         }
 
         let recent = ConversationStore::get_recent_messages(&pool, conv_id, 3)
@@ -884,18 +932,24 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         for i in 0..3i64 {
             let msg = Message {
                 id: Uuid::now_v7(),
                 conversation_id: conv_id,
                 role: MessageRole::User,
-                content: MessageContent::Text { text: format!("msg {i}") },
+                content: MessageContent::Text {
+                    text: format!("msg {i}"),
+                },
                 created_at: Utc::now() + chrono::Duration::seconds(i),
                 token_count: None,
             };
-            ConversationStore::add_message(&pool, conv_id, msg).await.expect("add");
+            ConversationStore::add_message(&pool, conv_id, msg)
+                .await
+                .expect("add");
         }
 
         let recent = ConversationStore::get_recent_messages(&pool, conv_id, 10)
@@ -912,24 +966,25 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         ConversationStore::update_title(&pool, conv_id, "New Title".to_string())
             .await
             .expect("update title");
 
-        let fetched = ConversationStore::get(&pool, conv_id)
-            .await
-            .expect("get");
+        let fetched = ConversationStore::get(&pool, conv_id).await.expect("get");
         assert_eq!(fetched.title, Some("New Title".to_string()));
     }
 
     #[tokio::test]
     async fn update_title_not_found() {
         let pool = test_pool();
-        let err = ConversationStore::update_title(&pool, ConversationId::new(), "Title".to_string())
-            .await
-            .expect_err("should fail for missing conversation");
+        let err =
+            ConversationStore::update_title(&pool, ConversationId::new(), "Title".to_string())
+                .await
+                .expect_err("should fail for missing conversation");
         assert!(matches!(err, ConversationError::NotFound(_)));
     }
 
@@ -941,7 +996,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let msg = make_message_with_tokens(conv_id, MessageRole::Assistant, "Hello!", 42);
         ConversationStore::add_message(&pool, conv_id, msg)
@@ -960,7 +1017,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let msg = make_message(conv_id, MessageRole::User, "hello");
         ConversationStore::add_message(&pool, conv_id, msg)
@@ -981,16 +1040,24 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let base = Utc::now();
         for i in 0..100i64 {
-            let role = if i % 2 == 0 { MessageRole::User } else { MessageRole::Assistant };
+            let role = if i % 2 == 0 {
+                MessageRole::User
+            } else {
+                MessageRole::Assistant
+            };
             let msg = Message {
                 id: Uuid::now_v7(),
                 conversation_id: conv_id,
                 role,
-                content: MessageContent::Text { text: format!("message number {i}") },
+                content: MessageContent::Text {
+                    text: format!("message number {i}"),
+                },
                 created_at: base + chrono::Duration::milliseconds(i),
                 token_count: Some(u32::try_from(i).unwrap_or(0) + 1),
             };
@@ -1023,7 +1090,9 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let content = MessageContent::ToolCall {
             name: "file_read".to_string(),
@@ -1045,7 +1114,9 @@ mod tests {
             .await
             .expect("get");
         assert_eq!(messages.len(), 1);
-        assert!(matches!(&messages[0].content, MessageContent::ToolCall { name, .. } if name == "file_read"));
+        assert!(
+            matches!(&messages[0].content, MessageContent::ToolCall { name, .. } if name == "file_read")
+        );
     }
 
     // --- Concurrent access ---
@@ -1070,7 +1141,9 @@ mod tests {
                     id: Uuid::now_v7(),
                     conversation_id: conv_id,
                     role: MessageRole::User,
-                    content: MessageContent::Text { text: format!("concurrent {i}") },
+                    content: MessageContent::Text {
+                        text: format!("concurrent {i}"),
+                    },
                     created_at: base + chrono::Duration::milliseconds(i),
                     token_count: None,
                 };
@@ -1099,18 +1172,27 @@ mod tests {
         let agent_id = AgentId::new();
         let conv = make_conversation(agent_id);
         let conv_id = conv.id;
-        ConversationStore::create(&pool, conv).await.expect("create");
+        ConversationStore::create(&pool, conv)
+            .await
+            .expect("create");
 
         let base = Utc::now();
-        for (i, role) in [MessageRole::User, MessageRole::Assistant, MessageRole::System, MessageRole::Tool]
-            .iter()
-            .enumerate()
+        for (i, role) in [
+            MessageRole::User,
+            MessageRole::Assistant,
+            MessageRole::System,
+            MessageRole::Tool,
+        ]
+        .iter()
+        .enumerate()
         {
             let msg = Message {
                 id: Uuid::now_v7(),
                 conversation_id: conv_id,
                 role: *role,
-                content: MessageContent::Text { text: format!("{role:?} message") },
+                content: MessageContent::Text {
+                    text: format!("{role:?} message"),
+                },
                 created_at: base + chrono::Duration::seconds(i as i64),
                 token_count: None,
             };

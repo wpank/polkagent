@@ -1,0 +1,27 @@
+All done. Here's a summary of what was created:
+
+## `polkagent-store-postgres` — Complete
+
+### Files created
+
+| File | Purpose |
+|---|---|
+| `Cargo.toml` | Crate manifest with `sqlx` (postgres feature), `blake3`, store-trait deps |
+| `src/lib.rs` | Module declarations, re-exports `PgPool` |
+| `src/pool.rs` | `PgPool` wrapper with connection pooling, tenant-scoped `SET LOCAL`, and schema migration |
+| `src/schema.sql` | Full PostgreSQL schema with **Row-Level Security** on every tenant-scoped table |
+| `src/run_store.rs` | `RunStore` trait impl — CRUD, terminal state `completed_at`, list with pagination |
+| `src/effect_store.rs` | `EffectStore` trait impl — propose/claim/release/outcome lifecycle with `FOR UPDATE SKIP LOCKED` |
+| `src/event_store.rs` | `EventStore` trait impl — append durable/diagnostic, monotonic sequence, terminal-event guard, cursor pagination, query with dynamic filters |
+| `src/artifact_store.rs` | `ArtifactStore` trait impl — content-addressed storage with BLAKE3 digest verification |
+| `tests/conformance.rs` | Calls all 16 shared conformance test functions from `polkagent-store-trait::conformance` (gracefully skipped without `TEST_DATABASE_URL`) |
+| `tests/cross_tenant.rs` | **5 cross-tenant denial tests** verifying RLS isolation for runs, artifacts, events, list operations, and update prevention |
+
+### Architecture highlights
+
+- **Row-Level Security**: Every tenant-scoped table has `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` with policies keyed on `current_setting('app.tenant_id')`. Every query runs inside a transaction with `SET LOCAL app.tenant_id` applied first.
+- **Connection pooling**: Uses `sqlx::PgPool` with configurable max connections (default 10).
+- **Concurrency**: `claim_intent()` uses `SELECT ... FOR UPDATE SKIP LOCKED` for lock-free contention handling.
+- **Global sequence**: Uses PostgreSQL's `BIGSERIAL` on `durable_events.global_sequence` for monotonic ordering.
+- **Content addressing**: `artifact_bodies` table is shared (no RLS) — access is mediated through the tenant-scoped `artifacts` table.
+- **`cargo check --workspace`** passes cleanly with zero errors.

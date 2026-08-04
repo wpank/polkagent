@@ -89,11 +89,7 @@ impl MetricRecorder {
     /// Record a run as started.
     pub fn runs_started(&self) {
         let total = self.runs_started.fetch_add(1, Ordering::Relaxed) + 1;
-        tracing::info!(
-            metric = "runs.started",
-            runs.started = total,
-            "run started"
-        );
+        tracing::info!(metric = "runs.started", runs.started = total, "run started");
     }
 
     /// Record a run as successfully completed.
@@ -109,11 +105,7 @@ impl MetricRecorder {
     /// Record a run as failed.
     pub fn runs_failed(&self) {
         let total = self.runs_failed.fetch_add(1, Ordering::Relaxed) + 1;
-        tracing::info!(
-            metric = "runs.failed",
-            runs.failed = total,
-            "run failed"
-        );
+        tracing::info!(metric = "runs.failed", runs.failed = total, "run failed");
     }
 
     /// Record an effect as approved by the operator.
@@ -204,7 +196,10 @@ mod tests {
     fn runs_completed_increments() {
         let r = MetricRecorder::new();
         r.runs_completed();
-        assert_eq!(r.runs_completed.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            r.runs_completed.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]
@@ -232,8 +227,7 @@ mod tests {
         let r = MetricRecorder::new();
         r.effects_denied();
         assert_eq!(
-            r.effects_denied
-                .load(std::sync::atomic::Ordering::Relaxed),
+            r.effects_denied.load(std::sync::atomic::Ordering::Relaxed),
             1
         );
     }

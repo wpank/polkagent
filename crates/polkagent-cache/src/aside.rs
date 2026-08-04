@@ -13,8 +13,11 @@ use crate::store::{CacheStore, CachedValue};
 ///
 /// Given a cache key, returns the value to populate into the cache (or an
 /// error string).
-pub type LoaderFn =
-    Arc<dyn Fn(CacheKey) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>> + Send + Sync>;
+pub type LoaderFn = Arc<
+    dyn Fn(CacheKey) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Implements the *cache-aside* (read-through) pattern on top of any
 /// [`CacheStore`].
@@ -39,6 +42,7 @@ impl<S: CacheStore> CacheAside<S> {
     }
 
     /// Set the default TTL for values populated by the loader.
+    #[must_use]
     pub fn with_default_ttl(mut self, ttl: Duration) -> Self {
         self.default_ttl = Some(ttl);
         self
@@ -75,11 +79,7 @@ impl<S: CacheStore> CacheAside<S> {
 
         // Re-read from the store so that the caller gets the same view as a
         // future cache hit would.
-        Ok(self
-            .store
-            .get(&key)
-            .await
-            .unwrap_or(value))
+        Ok(self.store.get(&key).await.unwrap_or(value))
     }
 
     /// Invalidate a key and re-fetch it via the loader.

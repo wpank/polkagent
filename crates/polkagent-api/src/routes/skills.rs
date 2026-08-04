@@ -58,9 +58,7 @@ fn manifest_to_response(manifest: &polkagent_skill::SkillManifest) -> SkillRespo
 /// List all loaded skills from the skill registry.
 ///
 /// Returns 501 Not Implemented when no skill registry is configured.
-pub async fn list_skills(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_skills(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let registry = state
         .skill_registry
         .as_ref()

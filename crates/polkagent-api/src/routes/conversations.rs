@@ -21,17 +21,14 @@ use chrono::Utc;
 use tracing::instrument;
 use uuid::Uuid;
 
-use polkagent_conversation::types::{
-    Conversation, Message, MessageContent, MessageRole,
-};
+use polkagent_conversation::types::{Conversation, Message, MessageContent, MessageRole};
 use polkagent_core::ids::{AgentId, ConversationId};
 
 use crate::{
     dto::{
-        ConversationResponse, CreateConversationRequest, CreateConversationResponse,
-        CreateMessageRequest, CreateMessageResponse, ListConversationsQuery,
-        ListConversationsResponse, ConversationSummaryDto, MessageDto, API_VERSION,
-        CursorInfo, PageMeta,
+        ConversationResponse, ConversationSummaryDto, CreateConversationRequest,
+        CreateConversationResponse, CreateMessageRequest, CreateMessageResponse, CursorInfo,
+        ListConversationsQuery, ListConversationsResponse, MessageDto, PageMeta, API_VERSION,
     },
     error::ApiError,
     state::AppState,
@@ -103,9 +100,7 @@ pub async fn list_conversations(
     let agent_id: AgentId = query
         .agent_id
         .parse()
-        .map_err(|_| {
-            ApiError::ValidationError(format!("invalid agent_id: {}", query.agent_id))
-        })?;
+        .map_err(|_| ApiError::ValidationError(format!("invalid agent_id: {}", query.agent_id)))?;
 
     let limit = query.limit.unwrap_or(50).min(100) as usize;
     let offset = query.offset.unwrap_or(0) as usize;
@@ -170,16 +165,13 @@ pub async fn get_conversation(
         .parse()
         .map_err(|_| ApiError::ValidationError(format!("invalid conversation id: {id}")))?;
 
-    let conv = store
-        .get(conv_id)
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("not found") {
-                ApiError::NotFound(format!("conversation '{id}'"))
-            } else {
-                ApiError::InternalError(e.to_string())
-            }
-        })?;
+    let conv = store.get(conv_id).await.map_err(|e| {
+        if e.to_string().contains("not found") {
+            ApiError::NotFound(format!("conversation '{id}'"))
+        } else {
+            ApiError::InternalError(e.to_string())
+        }
+    })?;
 
     let messages = store
         .get_messages(conv_id, 100, 0)
@@ -357,8 +349,10 @@ mod tests {
                 &self,
                 _worker_id: polkagent_core::WorkerId,
                 _lease_duration: std::time::Duration,
-            ) -> Result<Option<polkagent_store_trait::StoredIntent>, polkagent_store_trait::StoreError>
-            {
+            ) -> Result<
+                Option<polkagent_store_trait::StoredIntent>,
+                polkagent_store_trait::StoreError,
+            > {
                 Ok(None)
             }
 
@@ -367,7 +361,8 @@ mod tests {
                 intent_id: polkagent_core::EffectId,
                 _worker_id: polkagent_core::WorkerId,
                 _lease_duration: std::time::Duration,
-            ) -> Result<polkagent_store_trait::StoredIntent, polkagent_store_trait::StoreError> {
+            ) -> Result<polkagent_store_trait::StoredIntent, polkagent_store_trait::StoreError>
+            {
                 Err(polkagent_store_trait::StoreError::NotFound {
                     resource_type: "EffectIntent",
                     id: intent_id.to_string(),
@@ -385,7 +380,8 @@ mod tests {
             async fn get_intent(
                 &self,
                 intent_id: polkagent_core::EffectId,
-            ) -> Result<polkagent_store_trait::StoredIntent, polkagent_store_trait::StoreError> {
+            ) -> Result<polkagent_store_trait::StoredIntent, polkagent_store_trait::StoreError>
+            {
                 Err(polkagent_store_trait::StoreError::NotFound {
                     resource_type: "EffectIntent",
                     id: intent_id.to_string(),
@@ -444,7 +440,8 @@ mod tests {
                 &self,
                 intent_id: polkagent_core::EffectId,
                 _new_state: &str,
-            ) -> Result<polkagent_store_trait::StoredIntent, polkagent_store_trait::StoreError> {
+            ) -> Result<polkagent_store_trait::StoredIntent, polkagent_store_trait::StoreError>
+            {
                 Err(polkagent_store_trait::StoreError::NotFound {
                     resource_type: "EffectIntent",
                     id: intent_id.to_string(),
@@ -453,9 +450,7 @@ mod tests {
         }
 
         /// Build an `AppState` with a conversation store attached.
-        pub fn state_with_conversation_store(
-            store: Arc<dyn ConversationStore>,
-        ) -> AppState {
+        pub fn state_with_conversation_store(store: Arc<dyn ConversationStore>) -> AppState {
             let agents = Arc::new(InMemoryAgentStore::new());
             let run_manager = Arc::new(InMemoryRunManager::new());
             let effect_store: Arc<dyn EffectStore> = Arc::new(NoopEffectStore);
@@ -635,9 +630,7 @@ mod tests {
             .to_owned();
 
         let resp = server
-            .post(&format!(
-                "/api/v1alpha1/conversations/{conv_id}/messages"
-            ))
+            .post(&format!("/api/v1alpha1/conversations/{conv_id}/messages"))
             .json(&json!({
                 "role": "user",
                 "content": "Hello, agent!"
@@ -822,9 +815,7 @@ mod tests {
         let fake_id = ConversationId::new();
 
         let resp = server
-            .post(&format!(
-                "/api/v1alpha1/conversations/{fake_id}/messages"
-            ))
+            .post(&format!("/api/v1alpha1/conversations/{fake_id}/messages"))
             .json(&json!({
                 "role": "user",
                 "content": "Hello?"
@@ -873,9 +864,7 @@ mod tests {
             .to_owned();
 
         let resp = server
-            .post(&format!(
-                "/api/v1alpha1/conversations/{conv_id}/messages"
-            ))
+            .post(&format!("/api/v1alpha1/conversations/{conv_id}/messages"))
             .json(&json!({
                 "role": "alien",
                 "content": "Take me to your leader"

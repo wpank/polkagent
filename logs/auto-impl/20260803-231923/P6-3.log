@@ -1,0 +1,27 @@
+Done. Here's what was created:
+
+### `crates/polkagent-vitality/` — new files
+
+| File | Purpose |
+|---|---|
+| `Cargo.toml` | Minimal deps (`serde`, `chrono`, `thiserror`), workspace lints, no features exposed |
+| `src/lib.rs` | Crate root with experimental maturity label, re-exports, and 6 integration tests |
+| `src/affect.rs` | Three affect dimension newtypes (`Engagement`, `Confidence`, `Fatigue`) + `AffectState` composite — all `[0.0, 1.0]` clamped, `Serialize`/`Deserialize` |
+| `src/error.rs` | `VitalityError` enum (`OutOfRange`, `NoData`) |
+| `src/tracker.rs` | `VitalityTracker` with 64-slot rolling window of `RunSnapshot`s; derives affect state from success rate, latency, error frequency, and budget burn |
+
+### Design alignment with PRD-09 §10.1 / §10.4
+
+- **Engagement** = budget utilisation momentum (energy level)
+- **Confidence** = success rate (focus)  
+- **Fatigue** = composite of error frequency + latency + budget burn (stress)
+- Crate is a **pure data projection** — reads metrics, never writes to run lifecycle, grants, or policy
+- No other crate depends on it → **zero influence on core** unless explicitly feature-gated in
+- Prominent `EXPERIMENTAL` maturity label in crate-level docs
+- `default-features = false` (crate defines no features; workspace member only)
+
+### Verification
+
+- `cargo check -p polkagent-vitality` ✅
+- `cargo test -p polkagent-vitality` ✅ (6/6 pass)
+- `cargo check --workspace` ✅

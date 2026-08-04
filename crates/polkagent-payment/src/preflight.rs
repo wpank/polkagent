@@ -162,8 +162,7 @@ impl PreFlightCheck for BalanceCheck {
                 "insufficient_balance",
                 format!(
                     "available balance {} is less than transfer amount {}",
-                    self.available_balance,
-                    intent.amount.value
+                    self.available_balance, intent.amount.value
                 ),
             ))
         } else {
@@ -199,13 +198,11 @@ impl FeeCheck {
 #[async_trait::async_trait]
 impl PreFlightCheck for FeeCheck {
     async fn check(&self, intent: &PaymentIntent) -> Result<PreFlightResult, PaymentError> {
-        let total_needed = intent
-            .amount
-            .value
-            .checked_add(self.estimated_fee)
-            .ok_or(PaymentError::ArithmeticOverflow {
+        let total_needed = intent.amount.value.checked_add(self.estimated_fee).ok_or(
+            PaymentError::ArithmeticOverflow {
                 context: "fee check: amount + fee overflow".into(),
-            })?;
+            },
+        )?;
 
         if self.available_balance < total_needed {
             Ok(PreFlightResult::fail(
@@ -240,11 +237,7 @@ pub struct ExistentialDepositCheck {
 impl ExistentialDepositCheck {
     /// Create a new existential deposit check.
     #[must_use]
-    pub fn new(
-        existential_deposit: u128,
-        sender_remaining: u128,
-        recipient_balance: u128,
-    ) -> Self {
+    pub fn new(existential_deposit: u128, sender_remaining: u128, recipient_balance: u128) -> Self {
         Self {
             existential_deposit,
             sender_remaining,
@@ -487,9 +480,7 @@ impl CompositePreFlight {
     /// Create a composite with no checks.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            checks: Vec::new(),
-        }
+        Self { checks: Vec::new() }
     }
 
     /// Add a check to the composite.
@@ -720,7 +711,10 @@ mod tests {
         let intent = test_intent(500);
         let result = check.check(&intent).await.expect("check");
         assert!(!result.passed);
-        assert!(result.blockers.iter().any(|b| b.code == "recipient_below_ed"));
+        assert!(result
+            .blockers
+            .iter()
+            .any(|b| b.code == "recipient_below_ed"));
     }
 
     #[tokio::test]

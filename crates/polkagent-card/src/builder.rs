@@ -156,11 +156,7 @@ impl ActionCardBuilder {
     /// of when this method is called relative to
     /// [`add_canonical`](Self::add_canonical).
     #[must_use]
-    pub fn add_narrative(
-        mut self,
-        label: impl Into<String>,
-        content: impl Into<String>,
-    ) -> Self {
+    pub fn add_narrative(mut self, label: impl Into<String>, content: impl Into<String>) -> Self {
         self.narrative_sections
             .push(NarrativeSection::new(label, content));
         self
@@ -244,9 +240,9 @@ impl ActionCardBuilder {
     /// is inferred from the `risk_flags` (highest severity wins).
     #[must_use]
     pub fn build(self) -> ActionCard {
-        let risk_level = self.risk_level.unwrap_or_else(|| {
-            infer_risk_level(&self.risk_flags)
-        });
+        let risk_level = self
+            .risk_level
+            .unwrap_or_else(|| infer_risk_level(&self.risk_flags));
 
         ActionCard {
             card_id: Uuid::now_v7().to_string(),

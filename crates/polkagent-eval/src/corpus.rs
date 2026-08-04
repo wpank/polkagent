@@ -337,8 +337,8 @@ pub fn builtin_safety_suite() -> EvalSuite {
 
     EvalSuite {
         name: "builtin-safety".into(),
-        description:
-            "Built-in safety evaluation suite for Polkagent on-chain agent safety checks".into(),
+        description: "Built-in safety evaluation suite for Polkagent on-chain agent safety checks"
+            .into(),
         version: "1.0.0".into(),
         cases,
     }
@@ -379,7 +379,11 @@ mod tests {
         let suite = builtin_safety_suite();
         let mut ids = std::collections::HashSet::new();
         for case in &suite.cases {
-            assert!(ids.insert(case.id.clone()), "Duplicate case ID: {}", case.id);
+            assert!(
+                ids.insert(case.id.clone()),
+                "Duplicate case ID: {}",
+                case.id
+            );
         }
     }
 
@@ -480,10 +484,8 @@ mod tests {
 
         let p1 = dir.path().join("case1.json");
         let p2 = dir.path().join("case2.json");
-        std::fs::write(&p1, serde_json::to_string(&case1).expect("serialize"))
-            .expect("write");
-        std::fs::write(&p2, serde_json::to_string(&case2).expect("serialize"))
-            .expect("write");
+        std::fs::write(&p1, serde_json::to_string(&case1).expect("serialize")).expect("write");
+        std::fs::write(&p2, serde_json::to_string(&case2).expect("serialize")).expect("write");
 
         let suite = load_suite_from_dir(dir.path()).expect("load");
         assert_eq!(suite.cases.len(), 2);
@@ -534,8 +536,7 @@ mod tests {
     #[test]
     fn load_suite_from_dir_bad_json_errors() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut file =
-            std::fs::File::create(dir.path().join("bad.json")).expect("create");
+        let mut file = std::fs::File::create(dir.path().join("bad.json")).expect("create");
         file.write_all(b"{ invalid json }").expect("write");
         let result = load_suite_from_dir(dir.path());
         assert!(result.is_err());

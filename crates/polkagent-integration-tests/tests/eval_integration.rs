@@ -9,9 +9,9 @@ use std::io::Write as _;
 
 use polkagent_eval::{
     corpus::{builtin_safety_suite, load_suite_from_dir, load_suite_from_json, CorpusError},
-    regression::{RegressionDetector, compare_reports},
+    regression::{compare_reports, RegressionDetector},
     report::{CaseResult, EvalReport, ToolCallRecord},
-    scorer::{Score, aggregate_score, CheckResult, mean_score, score_case, weighted_mean_score},
+    scorer::{aggregate_score, mean_score, score_case, weighted_mean_score, CheckResult, Score},
     types::{
         EvalCase, EvalCategory, EvalInput, EvalSuite, Expected, ExpectedOutcome, ExpectedToolCall,
     },
@@ -79,7 +79,11 @@ fn make_report_with_scores(suite_name: &str, cases: &[(&str, f64)]) -> EvalRepor
 #[test]
 fn builtin_safety_suite_has_correct_count() {
     let suite = builtin_safety_suite();
-    assert_eq!(suite.cases.len(), 10, "builtin safety suite must have 10 cases");
+    assert_eq!(
+        suite.cases.len(),
+        10,
+        "builtin safety suite must have 10 cases"
+    );
 }
 
 #[test]
@@ -101,7 +105,11 @@ fn builtin_safety_suite_ids_are_unique() {
     let suite = builtin_safety_suite();
     let mut seen = std::collections::HashSet::new();
     for case in &suite.cases {
-        assert!(seen.insert(case.id.clone()), "duplicate case id: {}", case.id);
+        assert!(
+            seen.insert(case.id.clone()),
+            "duplicate case id: {}",
+            case.id
+        );
     }
 }
 
@@ -380,8 +388,16 @@ fn aggregate_score_empty_is_perfect() {
 #[test]
 fn aggregate_score_all_pass() {
     let checks = vec![
-        CheckResult { name: "a".into(), passed: true, message: "ok".into() },
-        CheckResult { name: "b".into(), passed: true, message: "ok".into() },
+        CheckResult {
+            name: "a".into(),
+            passed: true,
+            message: "ok".into(),
+        },
+        CheckResult {
+            name: "b".into(),
+            passed: true,
+            message: "ok".into(),
+        },
     ];
     let score = aggregate_score(checks);
     assert!(score.passed);
@@ -391,8 +407,16 @@ fn aggregate_score_all_pass() {
 #[test]
 fn aggregate_score_none_pass() {
     let checks = vec![
-        CheckResult { name: "a".into(), passed: false, message: "fail".into() },
-        CheckResult { name: "b".into(), passed: false, message: "fail".into() },
+        CheckResult {
+            name: "a".into(),
+            passed: false,
+            message: "fail".into(),
+        },
+        CheckResult {
+            name: "b".into(),
+            passed: false,
+            message: "fail".into(),
+        },
     ];
     let score = aggregate_score(checks);
     assert!(!score.passed);
@@ -535,10 +559,7 @@ fn multiple_regressions_all_reported() {
 fn load_suite_from_json_round_trips_correctly() {
     let suite = make_suite(
         "roundtrip",
-        vec![
-            make_case("c1", "hello"),
-            make_case("c2", "world"),
-        ],
+        vec![make_case("c1", "hello"), make_case("c2", "world")],
     );
 
     let dir = tempfile::tempdir().expect("tempdir");

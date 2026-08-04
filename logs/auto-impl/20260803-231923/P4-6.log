@@ -1,0 +1,44 @@
+All done. Here's a summary of what was implemented:
+
+## PCA C1 Bridge Protocol — Implementation Summary
+
+### What was implemented
+
+The C1 bridge allows PCA (Polkadot Communication Architecture) clients to send instructions to a Polkagent run through a compatibility HTTP API, matching the wire format specified in PRD-06 §20.4.
+
+### Files changed
+
+**1. `crates/polkagent-api/src/dto.rs`** — Added 13 new bridge DTOs matching the PRD-06 §20.4 wire format:
+- `BridgeDelivery`, `BridgeAttachment` — inbound delivery wire types
+- `BridgeAckRequest`, `BridgeRenewRequest`, `BridgeSendRequest` — request bodies
+- `BridgeHealthResponse`, `BridgeIdentityInfo`, `BridgeTransportInfo`, `BridgeCapabilities` — health/discovery
+- `BridgeInboundResponse`, `BridgeAckResponse`, `BridgeRenewResponse`, `BridgeSendResponse` — response types
+
+**2. `crates/polkagent-api/src/routes/bridge.rs`** (new) — Five route handlers:
+| Method | Path | Handler |
+|--------|------|---------|
+| `GET` | `/v1/compat/pca/health` | `bridge_health` — reports identity, transport, capabilities |
+| `GET` | `/v1/compat/pca/inbound` | `bridge_inbound` — polls pending deliveries |
+| `POST` | `/v1/compat/pca/inbound/ack` | `bridge_ack` — acknowledges a leased delivery |
+| `POST` | `/v1/compat/pca/inbound/renew` | `bridge_renew` — extends a delivery lease |
+| `POST` | `/v1/compat/pca/send` | `bridge_send` — sends a reply through the bridge |
+
+**3. `crates/polkagent-api/src/routes/mod.rs`** — Registered the `bridge` module and mounted all 5 routes at `/v1/compat/pca/` (outside the `/api/v1alpha1` prefix, matching PRD-06 F15–F18).
+
+**4. `openapi.yaml`** — Added:
+- `bridge` tag for the PCA C1 bridge section
+- 5 path entries under `/v1/compat/pca/` with full request/response schemas
+- 14 new component schemas matching all bridge DTOs
+
+**5. `crates/polkagent-api/tests/api_tests.rs`** — Added 10 integration tests:
+- Health endpoint returns identity and capabilities
+- Inbound returns empty deliveries
+- ACK/renew validate required fields
+- ACK/renew succeed with valid IDs
+- Send validates chat_id and text
+- Send returns message_id on success
+- Send works with optional reply_to/edit/delivery fields
+
+### Verification
+- `cargo check --workspace` ✅ clean
+- `cargo test -p polkagent-api` ✅ 130 tests pass (10 new bridge tests)

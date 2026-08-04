@@ -1,0 +1,28 @@
+All 314 tests pass (256 unit + 56 integration + 0 doc-tests).
+
+**Summary of the fix:**
+
+In `audit_events()` (line 474), the `LIMIT` clause was constructed via `format!()` string interpolation:
+
+```rust
+// Before (SQL injection risk)
+let mut stmt = self.conn.prepare(&format!(
+    "SELECT ... LIMIT {limit}",
+    limit = limit,
+))?;
+// ...
+stmt.query_map([], |row| { ... })?
+```
+
+Changed to a parameterized query:
+
+```rust
+// After (safe)
+let mut stmt = self.conn.prepare(
+    "SELECT ... LIMIT ?1",
+)?;
+// ...
+stmt.query_map(rusqlite::params![limit as i64], |row| { ... })?
+```
+
+This was the only `format!`-interpolated SQL query in the file. The other queries (in `memory_entries`, `delete_memory_entry`, `approve_effect`, etc.) already used parameterized queries correctly.

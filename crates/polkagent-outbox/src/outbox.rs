@@ -149,10 +149,7 @@ impl DurableOutbox {
         let id = OutboxId::new();
         let partition_key = message.partition_key.clone();
 
-        let seq = self
-            .partition_seq
-            .entry(partition_key.clone())
-            .or_insert(0);
+        let seq = self.partition_seq.entry(partition_key.clone()).or_insert(0);
         let sequence = *seq;
         *seq += 1;
 
@@ -193,10 +190,7 @@ impl DurableOutbox {
     /// # Errors
     ///
     /// Returns [`OutboxError::EmptyConsumerId`] when `consumer_id` is empty.
-    pub fn claim_next(
-        &mut self,
-        consumer_id: &str,
-    ) -> Result<Option<OutboxItem>, OutboxError> {
+    pub fn claim_next(&mut self, consumer_id: &str) -> Result<Option<OutboxItem>, OutboxError> {
         if consumer_id.is_empty() {
             return Err(OutboxError::EmptyConsumerId);
         }
@@ -550,11 +544,11 @@ mod tests {
 
         // A second consumer should be able to reclaim.
         let reclaim = ob.claim_next("consumer-b").expect("c2");
-        assert!(reclaim.is_some(), "item should be reclaimable after lease expiry");
-        assert_eq!(
-            reclaim.unwrap().claimed_by.as_deref(),
-            Some("consumer-b")
+        assert!(
+            reclaim.is_some(),
+            "item should be reclaimable after lease expiry"
         );
+        assert_eq!(reclaim.unwrap().claimed_by.as_deref(), Some("consumer-b"));
     }
 
     // -----------------------------------------------------------------------
@@ -591,7 +585,11 @@ mod tests {
         ob.nack(id).expect("nack2"); // retry_count=2 > max_retries=1 → dead-letter
 
         assert_eq!(ob.live_count(), 0, "item must be removed from live queue");
-        assert_eq!(ob.dead_letter_items().len(), 1, "item must be in dead-letter");
+        assert_eq!(
+            ob.dead_letter_items().len(),
+            1,
+            "item must be in dead-letter"
+        );
     }
 
     #[test]
@@ -644,7 +642,10 @@ mod tests {
 
         // consumer-b should get nothing — queue is empty / item is claimed.
         let item_b = ob.claim_next("consumer-b").expect("b");
-        assert!(item_b.is_none(), "consumer-b must not receive the claimed item");
+        assert!(
+            item_b.is_none(),
+            "consumer-b must not receive the claimed item"
+        );
     }
 
     // -----------------------------------------------------------------------

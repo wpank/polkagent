@@ -126,24 +126,15 @@ async fn fake_executor_with_responses_cycles_correctly() {
     let executor = FakeExecutor::with_responses(vec![r1, r2]);
 
     // First call -> alpha
-    let resp1 = executor
-        .complete(minimal_request())
-        .await
-        .expect("call 1");
+    let resp1 = executor.complete(minimal_request()).await.expect("call 1");
     assert_eq!(resp1.text, "alpha");
 
     // Second call -> beta
-    let resp2 = executor
-        .complete(minimal_request())
-        .await
-        .expect("call 2");
+    let resp2 = executor.complete(minimal_request()).await.expect("call 2");
     assert_eq!(resp2.text, "beta");
 
     // Third call -> cycles back to alpha
-    let resp3 = executor
-        .complete(minimal_request())
-        .await
-        .expect("call 3");
+    let resp3 = executor.complete(minimal_request()).await.expect("call 3");
     assert_eq!(resp3.text, "alpha");
 
     // Verify call count
@@ -170,7 +161,10 @@ async fn fake_executor_failing_returns_error_on_stream() {
         message: "test failure".into(),
     });
     let result = executor.stream(minimal_request()).await;
-    assert!(result.is_err(), "stream should return error for failing executor");
+    assert!(
+        result.is_err(),
+        "stream should return error for failing executor"
+    );
 }
 
 #[tokio::test]
@@ -216,10 +210,7 @@ async fn fake_executor_stream_with_tool_calls_emits_tool_call_complete() {
         arguments_json: r#"{"key":"value"}"#.into(),
     };
     let executor = FakeExecutor::with_tool_calls(vec![call]);
-    let stream = executor
-        .stream(minimal_request())
-        .await
-        .expect("stream ok");
+    let stream = executor.stream(minimal_request()).await.expect("stream ok");
     let events: Vec<_> = stream.collect().await;
 
     // Should contain a ToolCallComplete event.

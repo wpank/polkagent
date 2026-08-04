@@ -36,7 +36,7 @@ use polkagent_event::EventBus;
 use polkagent_store_trait::EffectStore;
 use polkagent_telemetry::{LogFormat, TelemetryConfig, TelemetryGuard};
 
-use crate::rate_limit::{RateLimitState, rate_limit_middleware};
+use crate::rate_limit::{rate_limit_middleware, RateLimitState};
 use crate::run::RunManagerTrait;
 use crate::state::AgentStore;
 
@@ -143,9 +143,9 @@ impl ApiServer {
         // Per-client rate limiting middleware, configured via
         // `config.server.rate_limit`. When `enabled` is false the middleware
         // is a no-op pass-through (no performance overhead).
-        let rate_limit_state = Arc::new(
-            RateLimitState::from_config(&self.state.config.server.rate_limit),
-        );
+        let rate_limit_state = Arc::new(RateLimitState::from_config(
+            &self.state.config.server.rate_limit,
+        ));
 
         routes::register(self.state)
             .layer(middleware::from_fn_with_state(
@@ -218,12 +218,13 @@ impl ApiServer {
     /// # }
     /// ```
     pub async fn serve(self, bind_addr: &str) -> Result<(), ServerError> {
-        let addr: std::net::SocketAddr = bind_addr
-            .parse()
-            .map_err(|source| ServerError::InvalidAddr {
-                addr: bind_addr.to_owned(),
-                source,
-            })?;
+        let addr: std::net::SocketAddr =
+            bind_addr
+                .parse()
+                .map_err(|source| ServerError::InvalidAddr {
+                    addr: bind_addr.to_owned(),
+                    source,
+                })?;
 
         // Initialise telemetry from config before building the router.
         // The guard is kept alive for the duration of the server.

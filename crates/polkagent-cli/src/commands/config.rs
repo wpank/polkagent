@@ -196,14 +196,8 @@ fn path(cmd: &ConfigPathCmd) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         println!("Config file paths:");
-        println!(
-            "  user:    {}",
-            user.as_deref().unwrap_or("<unknown>")
-        );
-        println!(
-            "  project: {}",
-            project.as_deref().unwrap_or("<not found>")
-        );
+        println!("  user:    {}", user.as_deref().unwrap_or("<unknown>"));
+        println!("  project: {}", project.as_deref().unwrap_or("<not found>"));
         if resolved.is_empty() {
             println!("  (no config files found; using built-in defaults)");
         } else {
@@ -275,9 +269,7 @@ fn toml_to_json(v: &toml::Value) -> serde_json::Value {
             .unwrap_or(serde_json::Value::Null),
         toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
         toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
-        toml::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(toml_to_json).collect())
-        }
+        toml::Value::Array(arr) => serde_json::Value::Array(arr.iter().map(toml_to_json).collect()),
         toml::Value::Table(tbl) => {
             let map = tbl
                 .iter()
@@ -333,19 +325,19 @@ mod tests {
     fn load_config_defaults_when_no_file() {
         // No explicit path → falls back to built-in defaults (no file needed).
         let cfg = load_config(None).expect("load default config");
-        assert_eq!(cfg.meta.schema_version, polkagent_config::CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            cfg.meta.schema_version,
+            polkagent_config::CURRENT_SCHEMA_VERSION
+        );
         assert_eq!(cfg.log.level, "info");
     }
 
     #[test]
     fn load_config_from_explicit_path() {
         let tmp = TempDir::new().expect("tempdir");
-        let path = write_config(
-            tmp.path(),
-            "[log]\nlevel = \"debug\"\n",
-        );
-        let cfg = load_config(Some(path.to_str().unwrap().to_owned()))
-            .expect("load config from file");
+        let path = write_config(tmp.path(), "[log]\nlevel = \"debug\"\n");
+        let cfg =
+            load_config(Some(path.to_str().unwrap().to_owned())).expect("load config from file");
         assert_eq!(cfg.log.level, "debug");
         // Other fields should still be at defaults.
         assert_eq!(cfg.execution.max_concurrent_runs, 10);
@@ -402,8 +394,7 @@ mod tests {
         cfg.database.postgres.url = "postgres://user:secret@host/db".to_owned();
         let redacted = redact_config(cfg);
         assert_eq!(
-            redacted.database.postgres.url,
-            REDACTED,
+            redacted.database.postgres.url, REDACTED,
             "postgres URL should be redacted"
         );
     }
@@ -523,10 +514,7 @@ mod tests {
 
     #[test]
     fn toml_to_json_array() {
-        let v = toml::Value::Array(vec![
-            toml::Value::Integer(1),
-            toml::Value::Integer(2),
-        ]);
+        let v = toml::Value::Array(vec![toml::Value::Integer(1), toml::Value::Integer(2)]);
         let j = toml_to_json(&v);
         assert_eq!(j, serde_json::json!([1, 2]));
     }

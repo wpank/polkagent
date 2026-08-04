@@ -81,10 +81,7 @@ impl MigrationStatus {
         lines.push("-".repeat(96));
 
         for entry in entries {
-            let applied = entry
-                .applied_at
-                .as_deref()
-                .unwrap_or("-");
+            let applied = entry.applied_at.as_deref().unwrap_or("-");
             let reversible = if entry.reversible { "yes" } else { "no" };
             lines.push(format!(
                 "{:<8} {:<40} {:<10} {:<28} {}",
@@ -141,7 +138,11 @@ mod tests {
 
     fn sample_migrations() -> Vec<Migration> {
         vec![
-            Migration::new(1, "create users", "CREATE TABLE users (id INTEGER PRIMARY KEY);"),
+            Migration::new(
+                1,
+                "create users",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+            ),
             Migration::new(2, "add email", "ALTER TABLE users ADD COLUMN email TEXT;"),
             Migration::new_reversible(
                 3,
@@ -171,7 +172,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("apply");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
         let entries = MigrationStatus::gather(&conn, &migrations).expect("gather");
 
         assert_eq!(entries.len(), 3);
@@ -187,7 +190,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let original = sample_migrations();
 
-        runner.apply_pending(&conn, &original, false).expect("apply");
+        runner
+            .apply_pending(&conn, &original, false)
+            .expect("apply");
 
         // Modify the SQL of migration 1 to simulate tampering.
         let mut tampered = sample_migrations();
@@ -216,7 +221,9 @@ mod tests {
         let migrations = sample_migrations();
 
         // Apply only the first migration.
-        runner.apply_pending(&conn, &migrations[..1], false).expect("apply");
+        runner
+            .apply_pending(&conn, &migrations[..1], false)
+            .expect("apply");
         let entries = MigrationStatus::gather(&conn, &migrations).expect("gather");
         let summary = MigrationStatus::summary(&entries);
 

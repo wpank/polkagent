@@ -17,16 +17,21 @@ const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 
 /// Strategy for a valid log level string (mixed case).
 fn arb_valid_log_level() -> impl Strategy<Value = String> {
-    prop::sample::select(VALID_LOG_LEVELS)
-        .prop_flat_map(|level| {
-            // Randomly capitalize characters to test case-insensitivity.
-            Just(level.to_string()).prop_map(|s| {
-                s.chars()
-                    .enumerate()
-                    .map(|(i, c)| if i % 2 == 0 { c.to_uppercase().next().unwrap_or(c) } else { c })
-                    .collect::<String>()
-            })
+    prop::sample::select(VALID_LOG_LEVELS).prop_flat_map(|level| {
+        // Randomly capitalize characters to test case-insensitivity.
+        Just(level.to_string()).prop_map(|s| {
+            s.chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i % 2 == 0 {
+                        c.to_uppercase().next().unwrap_or(c)
+                    } else {
+                        c
+                    }
+                })
+                .collect::<String>()
         })
+    })
 }
 
 /// Strategy for an invalid log level string.

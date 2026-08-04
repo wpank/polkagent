@@ -1,0 +1,20 @@
+Here's a summary of the changes made:
+
+## Changes
+
+### Problem
+When a run entered `AwaitingApproval` or `WaitingEffect` state, the routing data (`request_id` and `pending_intent_ids`) was stored in memory only. The `Display` impl for `RunState` serialized these as bare strings (`"awaiting_approval"`, `"waiting_effect"`) without the associated data. On process restart, `parse_run_state` reconstructed these states with empty routing data, making it impossible to match approvals or resolved effects.
+
+### Fix — 3 files, minimal changes
+
+1. **`crates/polkagent-core/src/run.rs`** — Updated `Display for RunState` to encode routing data in the serialized string, following the same `"tag:data"` pattern already used by `Failed` and `Cancelled`:
+   - `AwaitingApproval { request_id: "req-1" }` → `"awaiting_approval:req-1"`
+   - `WaitingEffect { pending_intent_ids: [id1, id2] }` → `"waiting_effect:uuid1,uuid2"`
+
+2. **`crates/polkagent-run/src/manager.rs`** — Two changes:
+   - **`parse_run_state`**: Updated to parse the routing data back from the stored string, restoring `request_id` and `pending_intent_ids` (using `EffectId::from_str` for each comma-separated UUID).
+   - **`request_approval`**: After the state machine returns the generic `AwaitingApproval { request_id: "" }`, the method now sets the actual `request_id` on the state before persisting, so the value round-trips through the store.
+
+3. **Test update**: Strengthened the `approval_flow` test to assert `request_id == "req-1"` (not just `matches!(AwaitingApproval { .. })`), verifying the round-trip.
+
+All 224 `polkagent-run` tests and all 243 `polkagent-core` tests pass.

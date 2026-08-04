@@ -7,7 +7,7 @@ use std::fs;
 
 use tempfile::TempDir;
 
-use polkagent_config::{Config, ConfigLoader, validate};
+use polkagent_config::{validate, Config, ConfigLoader};
 
 // ---------------------------------------------------------------------------
 // Load a config file from a temp directory and validate it

@@ -49,9 +49,7 @@ fn receipt_to_response(
 /// Get the current agent budget and balance summary.
 ///
 /// Returns 501 Not Implemented when no payment store is configured.
-pub async fn get_balance(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn get_balance(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let store = state
         .payment_store
         .as_ref()
@@ -83,9 +81,7 @@ pub async fn get_balance(
 /// Get aggregated usage statistics (token counts, estimated cost).
 ///
 /// Returns 501 Not Implemented when no payment store is configured.
-pub async fn get_usage(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn get_usage(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let store = state
         .payment_store
         .as_ref()
@@ -117,9 +113,7 @@ pub async fn get_usage(
 /// List all payment receipts.
 ///
 /// Returns 501 Not Implemented when no payment store is configured.
-pub async fn list_receipts(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_receipts(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let store = state
         .payment_store
         .as_ref()
@@ -159,17 +153,12 @@ pub async fn get_receipt(
         .parse::<Uuid>()
         .map_err(|_| ApiError::ValidationError(format!("invalid UUID: '{receipt_id}'")))?;
 
-    let receipt = store
-        .get_receipt(intent_id)
-        .await
-        .map_err(|e| {
-            match e {
-                polkagent_payment::PaymentError::IntentNotFound { .. } => {
-                    ApiError::NotFound(format!("receipt '{receipt_id}'"))
-                }
-                other => ApiError::InternalError(other.to_string()),
-            }
-        })?;
+    let receipt = store.get_receipt(intent_id).await.map_err(|e| match e {
+        polkagent_payment::PaymentError::IntentNotFound { .. } => {
+            ApiError::NotFound(format!("receipt '{receipt_id}'"))
+        }
+        other => ApiError::InternalError(other.to_string()),
+    })?;
 
     Ok(Json(receipt_to_response(&receipt)))
 }
@@ -245,7 +234,11 @@ mod tests {
 
         async fn get_costs(&self, run_id: &str) -> Result<Vec<CostRecord>, PaymentError> {
             let costs = self.costs.read().await;
-            Ok(costs.iter().filter(|c| c.run_id == run_id).cloned().collect())
+            Ok(costs
+                .iter()
+                .filter(|c| c.run_id == run_id)
+                .cloned()
+                .collect())
         }
 
         async fn get_usage(
@@ -255,10 +248,7 @@ mod tests {
             until: DateTime<Utc>,
         ) -> Result<UsageSummary, PaymentError> {
             let costs = self.costs.read().await;
-            let total_tokens: u64 = costs
-                .iter()
-                .map(|c| c.input_tokens + c.output_tokens)
-                .sum();
+            let total_tokens: u64 = costs.iter().map(|c| c.input_tokens + c.output_tokens).sum();
             let estimated_usd: f64 = costs.iter().map(|c| c.estimated_usd).sum();
             let total_runs = costs
                 .iter()
@@ -458,8 +448,7 @@ mod tests {
         let config = Config::default();
         let agents = Arc::new(InMemoryAgentStore::new());
         let run_manager = Arc::new(InMemoryRunManager::new());
-        let effect_store: Arc<dyn polkagent_store_trait::EffectStore> =
-            Arc::new(StubEffectStore);
+        let effect_store: Arc<dyn polkagent_store_trait::EffectStore> = Arc::new(StubEffectStore);
         let event_bus = EventBus::new(128);
 
         let mut state = AppState::new(config, agents, run_manager, effect_store, event_bus);
@@ -478,10 +467,7 @@ mod tests {
             .with_state(state)
     }
 
-    async fn get_json(
-        router: &Router,
-        uri: &str,
-    ) -> (StatusCode, serde_json::Value) {
+    async fn get_json(router: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
         let req = Request::builder()
             .uri(uri)
             .body(Body::empty())
@@ -704,8 +690,7 @@ mod tests {
 
         let state = make_test_state(Some(store));
         let router = payment_router(state);
-        let (status, body) =
-            get_json(&router, &format!("/payments/receipts/{intent_id}")).await;
+        let (status, body) = get_json(&router, &format!("/payments/receipts/{intent_id}")).await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["version"], "v1alpha1");
@@ -726,8 +711,7 @@ mod tests {
         let state = make_test_state(Some(store));
         let router = payment_router(state);
         let missing_id = Uuid::now_v7();
-        let (status, body) =
-            get_json(&router, &format!("/payments/receipts/{missing_id}")).await;
+        let (status, body) = get_json(&router, &format!("/payments/receipts/{missing_id}")).await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["code"], "NOT_FOUND");
@@ -742,8 +726,7 @@ mod tests {
         let store = Arc::new(MockPaymentStore::new());
         let state = make_test_state(Some(store));
         let router = payment_router(state);
-        let (status, body) =
-            get_json(&router, "/payments/receipts/not-a-uuid").await;
+        let (status, body) = get_json(&router, "/payments/receipts/not-a-uuid").await;
 
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body["error"]["code"], "VALIDATION_ERROR");

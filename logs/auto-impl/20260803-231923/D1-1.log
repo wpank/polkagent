@@ -1,0 +1,9 @@
+All 218 tests pass, including the critical `full_happy_path_created_to_completed` test which emits 5 events for a single run (sequence values 1 through 5) — this would fail with `NonMonotonicSequence` if the sequence were hardcoded to 0.
+
+The bug described has **already been fixed**. Looking at the `emit_event` method (lines 437-457), the implementation correctly:
+
+1. Holds a `sequences: Arc<Mutex<HashMap<String, u64>>>` field on `RunManager` (line 58)
+2. On each `emit_event` call, locks the mutex, gets or creates the entry for the run (starting at 0), increments it by 1, and uses the result as the sequence number (lines 438-443)
+3. Passes that monotonically increasing sequence to `RunEvent::new_durable` (line 449)
+
+The in-memory `MemEventStore` in the test module (line 653) explicitly validates monotonicity — `if event.sequence <= current` returns `NonMonotonicSequence` — and the `full_happy_path_created_to_completed` test successfully emits 5 sequential events, confirming the fix works correctly. No changes needed.

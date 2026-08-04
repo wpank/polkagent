@@ -3,13 +3,13 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::info;
 use polkagent_core::ids::AgentId;
 use polkagent_memory::retention::{RetentionPolicy, RetentionSweeper};
 use polkagent_memory::sqlite::SqliteMemoryStore;
 use polkagent_memory::store::MemoryStore;
 use polkagent_memory::types::{MemoryId, MemoryType};
 use polkagent_memory::MemoryService;
+use tracing::info;
 
 use crate::cli::{
     MemoryCmd, MemoryExportCmd, MemoryForgetCmd, MemoryImportCmd, MemoryListCmd, MemorySearchCmd,
@@ -37,25 +37,35 @@ pub fn run(cmd: &MemoryCmd) -> Result<()> {
 // search
 // ---------------------------------------------------------------------------
 
-fn search(cmd: &MemorySearchCmd, svc: &MemoryService, _store: &SqliteMemoryStore) -> Result<()> {
+fn search(cmd: &MemorySearchCmd, _svc: &MemoryService, store: &SqliteMemoryStore) -> Result<()> {
     let rt = tokio_handle()?;
 
     let limit = cmd.limit;
     let query = &cmd.query;
 
-    // Resolve the agent_id: use the provided one, or fall back to a cross-agent
-    // direct search when none is given.
-    let results = if let Some(ref agent_id_str) = cmd.agent_id {
-        let agent_id: AgentId = agent_id_str
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", agent_id_str))?;
-        rt.block_on(async { svc.recall(agent_id, query, limit).await })
-    } else {
-        anyhow::bail!(
-            "Error: --agent-id is required for search. \
-             Use `polkagent agent list` to see available agents."
-        );
+    // Resolve the agent_id: use the provided one, or search across all agents
+    // when none is given.
+    let agent_id: Option<AgentId> = match cmd.agent_id {
+        Some(ref id_str) => Some(
+            id_str
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+        ),
+        None => None,
     };
+
+    let results = rt.block_on(async {
+        let q = polkagent_memory::types::MemoryQuery {
+            agent_id,
+            query_text: query.to_string(),
+            memory_types: None,
+            limit,
+            min_relevance: None,
+            since: None,
+            episode_id: None,
+        };
+        store.search(&q).await.map_err(|e| anyhow::anyhow!("{e}"))
+    });
 
     match results {
         Ok(entries) => {
@@ -108,10 +118,12 @@ fn search(cmd: &MemorySearchCmd, svc: &MemoryService, _store: &SqliteMemoryStore
 fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
     let rt = tokio_handle()?;
 
-    let agent_id: AgentId = match cmd.agent_id {
-        Some(ref id_str) => id_str
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+    let agent_id: Option<AgentId> = match cmd.agent_id {
+        Some(ref id_str) => Some(
+            id_str
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+        ),
         None => {
             anyhow::bail!(
                 "Error: --agent-id is required for list. \
@@ -155,10 +167,7 @@ fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
             } else if entries.is_empty() {
                 println!("No memories found.");
             } else {
-                println!(
-                    "{:<36}  {:<12}  {:<8}  Content",
-                    "ID", "Type", "Score"
-                );
+                println!("{:<36}  {:<12}  {:<8}  Content", "ID", "Type", "Score");
                 println!("{}", "-".repeat(100));
                 for entry in &entries {
                     println!(
@@ -316,9 +325,7 @@ fn export(cmd: &MemoryExportCmd, svc: &MemoryService) -> Result<()> {
 
     match result {
         Ok(count) => {
-            let file_size = std::fs::metadata(path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
             if cmd.json {
                 let out = serde_json::json!({
@@ -437,10 +444,9 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
         // without actually deleting anything.
         let result = rt.block_on(async {
             // Count entries that would be deleted by age.
-            let cutoff = chrono::Utc::now()
-                - chrono::Duration::days(policy.max_age_days as i64);
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(policy.max_age_days as i64);
             let all_query = polkagent_memory::types::MemoryQuery {
-                agent_id,
+                agent_id: Some(agent_id),
                 query_text: String::new(),
                 memory_types: None,
                 limit: usize::MAX / 2,
@@ -450,10 +456,7 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
             };
             let all_entries = store.search(&all_query).await?;
 
-            let by_age = all_entries
-                .iter()
-                .filter(|e| e.created_at < cutoff)
-                .count();
+            let by_age = all_entries.iter().filter(|e| e.created_at < cutoff).count();
 
             let remaining_after_age: Vec<_> = all_entries
                 .iter()
@@ -505,8 +508,7 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
             }
         }
     } else {
-        let sweeper =
-            RetentionSweeper::new(Arc::new(store.clone()), policy, agent_id);
+        let sweeper = RetentionSweeper::new(Arc::new(store.clone()), policy, agent_id);
 
         let result = rt.block_on(async { sweeper.sweep().await });
 
@@ -550,22 +552,12 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Obtain a tokio runtime handle.
-///
-/// Prefers the current runtime (when called from inside `#[tokio::main]`).
-/// Falls back to creating a new multi-threaded runtime if no current one
-/// exists.
-fn tokio_handle() -> Result<tokio::runtime::Handle> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(h) => Ok(h),
-        Err(_) => {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| anyhow::anyhow!("failed to build tokio runtime: {e}"))?;
-            Ok(rt.handle().clone())
-        }
-    }
+/// Build a Tokio runtime for blocking on async operations.
+fn tokio_handle() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build tokio runtime: {e}"))
 }
 
 fn open_memory_store() -> Result<SqliteMemoryStore> {

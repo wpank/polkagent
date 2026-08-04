@@ -9,8 +9,7 @@ use polkagent_grant::gate::{
     AllowlistField, AllowlistGate, BudgetGate, ComposedGate, Gate, GateRequest, GateResult,
 };
 use polkagent_grant::policy::{
-    Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
-    evaluate,
+    evaluate, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
 };
 
 // ---------------------------------------------------------------------------
@@ -155,13 +154,23 @@ async fn budget_gate_tracks_cumulative_spend() {
 
     // First transfer: 600 units (within budget).
     let r1 = gate
-        .check(&gate_req("agent-1", "chain/transfer", "account/bob", Some(600)))
+        .check(&gate_req(
+            "agent-1",
+            "chain/transfer",
+            "account/bob",
+            Some(600),
+        ))
         .await;
     assert_eq!(r1, GateResult::Allow);
 
     // Second transfer: 500 units (total 1100 > 1000 budget).
     let r2 = gate
-        .check(&gate_req("agent-1", "chain/transfer", "account/bob", Some(500)))
+        .check(&gate_req(
+            "agent-1",
+            "chain/transfer",
+            "account/bob",
+            Some(500),
+        ))
         .await;
     assert!(
         matches!(r2, GateResult::Deny { .. }),
@@ -170,7 +179,12 @@ async fn budget_gate_tracks_cumulative_spend() {
 
     // Different principal: should have independent budget.
     let r3 = gate
-        .check(&gate_req("agent-2", "chain/transfer", "account/bob", Some(900)))
+        .check(&gate_req(
+            "agent-2",
+            "chain/transfer",
+            "account/bob",
+            Some(900),
+        ))
         .await;
     assert_eq!(
         r3,
@@ -195,13 +209,23 @@ async fn composed_gate_allowlist_plus_budget() {
 
     // Allowed resource within budget.
     let r1 = gate
-        .check(&gate_req("agent-1", "chain/transfer", "account/bob", Some(200)))
+        .check(&gate_req(
+            "agent-1",
+            "chain/transfer",
+            "account/bob",
+            Some(200),
+        ))
         .await;
     assert_eq!(r1, GateResult::Allow);
 
     // Disallowed resource.
     let r2 = gate
-        .check(&gate_req("agent-1", "chain/transfer", "account/eve", Some(100)))
+        .check(&gate_req(
+            "agent-1",
+            "chain/transfer",
+            "account/eve",
+            Some(100),
+        ))
         .await;
     assert!(
         matches!(r2, GateResult::Deny { .. }),
@@ -210,7 +234,12 @@ async fn composed_gate_allowlist_plus_budget() {
 
     // Allowed resource but exceeds budget.
     let r3 = gate
-        .check(&gate_req("agent-1", "chain/transfer", "account/bob", Some(400)))
+        .check(&gate_req(
+            "agent-1",
+            "chain/transfer",
+            "account/bob",
+            Some(400),
+        ))
         .await;
     assert!(
         matches!(r3, GateResult::Deny { .. }),

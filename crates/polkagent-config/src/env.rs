@@ -59,6 +59,7 @@ pub fn apply_env_overrides(config: &mut Config) {
     apply_harness_overrides(config);
     apply_artifact_overrides(config);
     apply_observability_overrides(config);
+    apply_watcher_overrides(config);
     check_api_key_env_vars();
 }
 
@@ -75,7 +76,11 @@ fn apply_log_overrides(config: &mut Config) {
     if let Some(format) = env_str("POLKAGENT_LOG_FORMAT") {
         match format.to_lowercase().as_str() {
             "json" => {
-                debug!(variable = "POLKAGENT_LOG_FORMAT", value = "json", "applying env override");
+                debug!(
+                    variable = "POLKAGENT_LOG_FORMAT",
+                    value = "json",
+                    "applying env override"
+                );
                 config.log.format = LogFormat::Json;
             }
             "pretty" => {
@@ -105,7 +110,11 @@ fn apply_database_overrides(config: &mut Config) {
     if let Some(backend) = env_str("POLKAGENT_DATABASE_BACKEND") {
         match backend.to_lowercase().as_str() {
             "sqlite" => {
-                debug!(variable = "POLKAGENT_DATABASE_BACKEND", value = "sqlite", "applying env override");
+                debug!(
+                    variable = "POLKAGENT_DATABASE_BACKEND",
+                    value = "sqlite",
+                    "applying env override"
+                );
                 config.database.backend = DatabaseBackend::Sqlite;
             }
             "postgres" => {
@@ -127,17 +136,27 @@ fn apply_database_overrides(config: &mut Config) {
     }
 
     if let Some(path) = env_str("POLKAGENT_DATABASE_SQLITE_PATH") {
-        debug!(variable = "POLKAGENT_DATABASE_SQLITE_PATH", "applying env override");
+        debug!(
+            variable = "POLKAGENT_DATABASE_SQLITE_PATH",
+            "applying env override"
+        );
         config.database.sqlite.path = path;
     }
 
     if let Some(url) = env_str("POLKAGENT_DATABASE_POSTGRES_URL") {
-        debug!(variable = "POLKAGENT_DATABASE_POSTGRES_URL", "applying env override (value redacted)");
+        debug!(
+            variable = "POLKAGENT_DATABASE_POSTGRES_URL",
+            "applying env override (value redacted)"
+        );
         config.database.postgres.url = url;
     }
 
     if let Some(max) = env_parse::<u32>("POLKAGENT_DATABASE_POSTGRES_MAX_CONNECTIONS") {
-        debug!(variable = "POLKAGENT_DATABASE_POSTGRES_MAX_CONNECTIONS", value = max, "applying env override");
+        debug!(
+            variable = "POLKAGENT_DATABASE_POSTGRES_MAX_CONNECTIONS",
+            value = max,
+            "applying env override"
+        );
         config.database.postgres.max_connections = max;
     }
 }
@@ -204,7 +223,11 @@ fn apply_api_overrides(config: &mut Config) {
     }
 
     if let Some(enabled) = env_parse::<bool>("POLKAGENT_API_ENABLED") {
-        debug!(variable = "POLKAGENT_API_ENABLED", value = enabled, "applying env override");
+        debug!(
+            variable = "POLKAGENT_API_ENABLED",
+            value = enabled,
+            "applying env override"
+        );
         config.api.enabled = enabled;
     }
 }
@@ -217,11 +240,19 @@ fn apply_tui_overrides(config: &mut Config) {
     if let Some(theme) = env_str("POLKAGENT_TUI_THEME") {
         match theme.to_lowercase().as_str() {
             "dark" => {
-                debug!(variable = "POLKAGENT_TUI_THEME", value = "dark", "applying env override");
+                debug!(
+                    variable = "POLKAGENT_TUI_THEME",
+                    value = "dark",
+                    "applying env override"
+                );
                 config.tui.theme = TuiTheme::Dark;
             }
             "no_color" | "nocolor" | "no-color" => {
-                debug!(variable = "POLKAGENT_TUI_THEME", value = "no_color", "applying env override");
+                debug!(
+                    variable = "POLKAGENT_TUI_THEME",
+                    value = "no_color",
+                    "applying env override"
+                );
                 config.tui.theme = TuiTheme::NoColor;
             }
             "high_contrast" | "highcontrast" | "high-contrast" => {
@@ -258,7 +289,11 @@ fn apply_tui_overrides(config: &mut Config) {
 
 fn apply_memory_overrides(config: &mut Config) {
     if let Some(enabled) = env_parse::<bool>("POLKAGENT_MEMORY_ENABLED") {
-        debug!(variable = "POLKAGENT_MEMORY_ENABLED", value = enabled, "applying env override");
+        debug!(
+            variable = "POLKAGENT_MEMORY_ENABLED",
+            value = enabled,
+            "applying env override"
+        );
         config.memory.enabled = enabled;
     }
 
@@ -295,7 +330,11 @@ fn apply_server_overrides(config: &mut Config) {
     }
 
     if let Some(rps) = env_parse::<u32>("POLKAGENT_SERVER_RATE_LIMIT_RPS") {
-        debug!(variable = "POLKAGENT_SERVER_RATE_LIMIT_RPS", value = rps, "applying env override");
+        debug!(
+            variable = "POLKAGENT_SERVER_RATE_LIMIT_RPS",
+            value = rps,
+            "applying env override"
+        );
         config.server.rate_limit.requests_per_second = rps;
     }
 
@@ -315,7 +354,11 @@ fn apply_server_overrides(config: &mut Config) {
 
 fn apply_auth_overrides(config: &mut Config) {
     if let Some(enabled) = env_parse::<bool>("POLKAGENT_AUTH_ENABLED") {
-        debug!(variable = "POLKAGENT_AUTH_ENABLED", value = enabled, "applying env override");
+        debug!(
+            variable = "POLKAGENT_AUTH_ENABLED",
+            value = enabled,
+            "applying env override"
+        );
         config.auth.enabled = enabled;
     }
 
@@ -340,7 +383,11 @@ fn apply_auth_overrides(config: &mut Config) {
 
 fn apply_security_overrides(config: &mut Config) {
     if let Some(enabled) = env_parse::<bool>("POLKAGENT_SECURITY_SANDBOX") {
-        debug!(variable = "POLKAGENT_SECURITY_SANDBOX", value = enabled, "applying env override");
+        debug!(
+            variable = "POLKAGENT_SECURITY_SANDBOX",
+            value = enabled,
+            "applying env override"
+        );
         config.security.sandbox_enabled = enabled;
     }
 
@@ -354,7 +401,11 @@ fn apply_security_overrides(config: &mut Config) {
     }
 
     if let Some(mb) = env_parse::<u64>("POLKAGENT_SECURITY_MAX_MEMORY_MB") {
-        debug!(variable = "POLKAGENT_SECURITY_MAX_MEMORY_MB", value = mb, "applying env override");
+        debug!(
+            variable = "POLKAGENT_SECURITY_MAX_MEMORY_MB",
+            value = mb,
+            "applying env override"
+        );
         config.security.max_memory_mb = mb;
     }
 
@@ -381,7 +432,11 @@ fn apply_skills_overrides(config: &mut Config) {
     }
 
     if let Some(auto) = env_parse::<bool>("POLKAGENT_SKILLS_AUTO_LOAD") {
-        debug!(variable = "POLKAGENT_SKILLS_AUTO_LOAD", value = auto, "applying env override");
+        debug!(
+            variable = "POLKAGENT_SKILLS_AUTO_LOAD",
+            value = auto,
+            "applying env override"
+        );
         config.skills.auto_load = auto;
     }
 
@@ -402,12 +457,20 @@ fn apply_harness_overrides(config: &mut Config) {
     }
 
     if let Some(secs) = env_parse::<u64>("POLKAGENT_HARNESS_TIMEOUT_SECS") {
-        debug!(variable = "POLKAGENT_HARNESS_TIMEOUT_SECS", value = secs, "applying env override");
+        debug!(
+            variable = "POLKAGENT_HARNESS_TIMEOUT_SECS",
+            value = secs,
+            "applying env override"
+        );
         config.harness.timeout_secs = secs;
     }
 
     if let Some(max) = env_parse::<u32>("POLKAGENT_HARNESS_MAX_CONCURRENT") {
-        debug!(variable = "POLKAGENT_HARNESS_MAX_CONCURRENT", value = max, "applying env override");
+        debug!(
+            variable = "POLKAGENT_HARNESS_MAX_CONCURRENT",
+            value = max,
+            "applying env override"
+        );
         config.harness.max_concurrent = max;
     }
 }
@@ -485,6 +548,26 @@ fn apply_observability_overrides(config: &mut Config) {
             "applying env override"
         );
         config.observability.service_name = name;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Watchers  (PRD-08 §7)
+// ---------------------------------------------------------------------------
+
+fn apply_watcher_overrides(config: &mut Config) {
+    // A global kill-switch: POLKAGENT_WATCHER_ENABLED=false disables all
+    // configured watchers without removing them from the config file.
+    if let Some(enabled) = env_parse::<bool>("POLKAGENT_WATCHER_ENABLED") {
+        if !enabled {
+            debug!(
+                variable = "POLKAGENT_WATCHER_ENABLED",
+                "disabling all watchers via env override"
+            );
+            for w in &mut config.watchers {
+                w.enabled = false;
+            }
+        }
     }
 }
 
@@ -600,9 +683,13 @@ mod tests {
     #[test]
     fn database_postgres_url_override() {
         let mut cfg = Config::default();
-        with_env("POLKAGENT_DATABASE_POSTGRES_URL", "postgres://localhost/test", || {
-            apply_env_overrides(&mut cfg);
-        });
+        with_env(
+            "POLKAGENT_DATABASE_POSTGRES_URL",
+            "postgres://localhost/test",
+            || {
+                apply_env_overrides(&mut cfg);
+            },
+        );
         assert_eq!(cfg.database.postgres.url, "postgres://localhost/test");
     }
 
@@ -631,7 +718,11 @@ mod tests {
             with_env("POLKAGENT_TUI_THEME", alias, || {
                 apply_env_overrides(&mut cfg);
             });
-            assert_eq!(cfg.tui.theme, TuiTheme::HighContrast, "alias '{alias}' should work");
+            assert_eq!(
+                cfg.tui.theme,
+                TuiTheme::HighContrast,
+                "alias '{alias}' should work"
+            );
         }
     }
 
@@ -660,9 +751,13 @@ mod tests {
         // test interference on shared env vars.
         let default_timeout = Config::default().execution.default_timeout_secs;
         let mut cfg = Config::default();
-        with_env("POLKAGENT_EXECUTION_DEFAULT_TIMEOUT_SECS", "not-a-number", || {
-            apply_env_overrides(&mut cfg);
-        });
+        with_env(
+            "POLKAGENT_EXECUTION_DEFAULT_TIMEOUT_SECS",
+            "not-a-number",
+            || {
+                apply_env_overrides(&mut cfg);
+            },
+        );
         // The unparseable value must leave the field at its default.
         assert_eq!(cfg.execution.default_timeout_secs, default_timeout);
     }
@@ -787,9 +882,13 @@ mod tests {
     #[test]
     fn skills_registry_url_override() {
         let mut cfg = Config::default();
-        with_env("POLKAGENT_SKILLS_REGISTRY_URL", "https://registry.example.com", || {
-            apply_env_overrides(&mut cfg);
-        });
+        with_env(
+            "POLKAGENT_SKILLS_REGISTRY_URL",
+            "https://registry.example.com",
+            || {
+                apply_env_overrides(&mut cfg);
+            },
+        );
         assert_eq!(
             cfg.skills.registry_url,
             Some("https://registry.example.com".to_owned())

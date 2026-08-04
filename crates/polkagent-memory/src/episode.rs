@@ -136,7 +136,9 @@ impl RedactionRule {
 
     /// Apply this rule to the given text, returning the redacted version.
     pub fn apply(&self, text: &str) -> String {
-        self.pattern.replace_all(text, self.replacement.as_str()).into_owned()
+        self.pattern
+            .replace_all(text, self.replacement.as_str())
+            .into_owned()
     }
 }
 
@@ -391,17 +393,14 @@ impl EpisodeLogger {
     pub fn append(&self, mut entry: EpisodeEntry) -> MemoryResult<()> {
         self.redactor.redact_entry(&mut entry);
 
-        let line = serde_json::to_string(&entry)
-            .map_err(MemoryError::Json)?;
+        let line = serde_json::to_string(&entry).map_err(MemoryError::Json)?;
         let line_bytes = line.as_bytes();
         let line_len = line_bytes.len() as u64 + 1; // +1 for newline
 
         let mut state = self.state.lock();
 
         // Check if rotation is needed.
-        if state.current_size + line_len > self.config.max_file_size
-            && state.current_size > 0
-        {
+        if state.current_size + line_len > self.config.max_file_size && state.current_size > 0 {
             self.rotate_locked(&mut state)?;
         }
 
@@ -755,7 +754,9 @@ mod tests {
         // Extra rule applies.
         assert!(r.redact("foobar test").contains("[X]"));
         // Built-in rules still apply.
-        assert!(r.redact("sk-abcdefghijklmnopqrstuv").contains("[REDACTED_API_KEY]"));
+        assert!(r
+            .redact("sk-abcdefghijklmnopqrstuv")
+            .contains("[REDACTED_API_KEY]"));
     }
 
     #[test]
@@ -818,8 +819,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ep = EpisodeId::new();
         let config = tmp_config(dir.path());
-        let _logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let _logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
         assert!(dir.path().join(ep.to_string()).exists());
     }
 
@@ -828,11 +828,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ep = EpisodeId::new();
         let config = tmp_config(dir.path());
-        let logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
 
         logger.append(make_entry(Role::User, "Hello")).unwrap();
-        logger.append(make_entry(Role::Assistant, "Hi there")).unwrap();
+        logger
+            .append(make_entry(Role::Assistant, "Hi there"))
+            .unwrap();
 
         assert_eq!(logger.entry_count().unwrap(), 2);
     }
@@ -842,8 +843,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ep = EpisodeId::new();
         let config = tmp_config(dir.path());
-        let logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
 
         logger.append(make_entry(Role::User, "Question")).unwrap();
         logger
@@ -868,11 +868,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ep = EpisodeId::new();
         let config = tmp_config(dir.path());
-        let logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
 
         logger
-            .append(make_entry(Role::User, "My key is sk-abcdefghijklmnopqrstuv"))
+            .append(make_entry(
+                Role::User,
+                "My key is sk-abcdefghijklmnopqrstuv",
+            ))
             .unwrap();
 
         let content = fs::read_to_string(logger.active_path()).unwrap();
@@ -888,13 +890,15 @@ mod tests {
         let config = EpisodeLoggerConfig::new(dir.path())
             .with_max_file_size(100)
             .with_compression(false);
-        let logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
 
         // Write enough entries to trigger rotation.
         for i in 0..10 {
             logger
-                .append(make_entry(Role::User, &format!("Message number {i} with some padding")))
+                .append(make_entry(
+                    Role::User,
+                    &format!("Message number {i} with some padding"),
+                ))
                 .unwrap();
         }
 
@@ -918,12 +922,14 @@ mod tests {
         let config = EpisodeLoggerConfig::new(dir.path())
             .with_max_file_size(100)
             .with_compression(true);
-        let logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
 
         for i in 0..10 {
             logger
-                .append(make_entry(Role::User, &format!("Message number {i} with some padding")))
+                .append(make_entry(
+                    Role::User,
+                    &format!("Message number {i} with some padding"),
+                ))
                 .unwrap();
         }
 
@@ -944,8 +950,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ep = EpisodeId::new();
         let config = tmp_config(dir.path());
-        let logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
         assert_eq!(logger.episode_id(), ep);
     }
 
@@ -958,8 +963,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ep = EpisodeId::new();
         let config = tmp_config(dir.path());
-        let logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
 
         logger.append(make_entry(Role::User, "Hello")).unwrap();
         logger.append(make_entry(Role::Assistant, "Hi")).unwrap();
@@ -1032,8 +1036,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ep = EpisodeId::new();
         let config = tmp_config(dir.path());
-        let logger =
-            EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
+        let logger = EpisodeLogger::new(config, StandardRedactor::new(), ep).unwrap();
 
         logger
             .append(make_entry(Role::System, "System prompt"))

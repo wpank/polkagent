@@ -9,13 +9,12 @@ use std::io::{IsTerminal, Write};
 use std::ops::ControlFlow;
 use std::time::Instant;
 
-use crossterm::style::{
-    Attribute, Color as CtColor, ResetColor, SetAttribute, SetForegroundColor,
-};
+use crossterm::style::{Attribute, Color as CtColor, ResetColor, SetAttribute, SetForegroundColor};
 use ratatui::style::Color as RatColor;
 
 use polkagent_core::event::{EventKind, LogLevel, RunEvent};
 
+use crate::error_explainer;
 use crate::tui::theme::Theme;
 
 // ---------------------------------------------------------------------------
@@ -155,11 +154,7 @@ impl RunPrinter {
     ///
     /// Returns `ControlFlow::Break(())` for terminal events (completed,
     /// failed, cancelled, timed out) so the caller can exit the event loop.
-    pub fn handle_event(
-        &mut self,
-        w: &mut impl Write,
-        event: &RunEvent,
-    ) -> ControlFlow<()> {
+    pub fn handle_event(&mut self, w: &mut impl Write, event: &RunEvent) -> ControlFlow<()> {
         match &event.kind {
             // -- Suppressed / silent ----------------------------------------
             EventKind::RunCreated
@@ -320,12 +315,7 @@ impl RunPrinter {
                     LogLevel::Debug => "DEBUG",
                     LogLevel::Trace => "TRACE",
                 };
-                let _ = self.styled_line(
-                    w,
-                    &format!("  [{label}] {message}"),
-                    color,
-                    false,
-                );
+                let _ = self.styled_line(w, &format!("  [{label}] {message}"), color, false);
             }
 
             // -- Budget -----------------------------------------------------
@@ -370,22 +360,26 @@ impl RunPrinter {
                 return ControlFlow::Break(());
             }
             EventKind::RunCancelled { reason } => {
-                let _ = writeln!(w);
-                let _ = self.styled_line(
-                    w,
-                    &format!("  ✗ Run cancelled: {reason}"),
-                    self.theme.danger,
-                    true,
-                );
+                let cancel_reason = format!("cancelled: {reason}");
+                let _ = self.print_failure_card(w, &cancel_reason);
                 return ControlFlow::Break(());
             }
             EventKind::RunTimedOut => {
-                let _ = writeln!(w);
-                let _ = self.styled_line(w, "  ✗ Run timed out", self.theme.danger, true);
+                let _ = self.print_failure_card(w, "run timed out");
                 return ControlFlow::Break(());
             }
             EventKind::RunRetryQueued => {
                 let _ = self.styled_line(w, "  ↻ Retry queued", self.theme.warning, false);
+            }
+            EventKind::MetadataDriftDetected {
+                chain_id,
+                pinned_hash,
+                current_hash,
+            } => {
+                let msg = format!(
+                    "  ⚠ Metadata drift on {chain_id}: pinned={pinned_hash} current={current_hash}"
+                );
+                let _ = self.styled_line(w, &msg, self.theme.warning, false);
             }
         }
 
@@ -480,21 +474,27 @@ impl RunPrinter {
         Ok(())
     }
 
-    /// Render the failure card.
+    /// Render the failure card with structured error explanation.
     fn print_failure_card(&self, w: &mut impl Write, reason: &str) -> std::io::Result<()> {
         let elapsed = format_elapsed(self.start_time.elapsed());
+        let explanation = error_explainer::explain(reason);
 
-        let line1 = format!("  ✗ Run failed                       {elapsed}");
+        let line1 = format!(
+            "  ✗ Run failed: {:<26}{elapsed}",
+            explanation.category.label()
+        );
         let line2 = format!("  {reason}");
         let inner_w = line1.len().max(line2.len()) + 2;
 
         let top = format!(" ┌{}┐", "─".repeat(inner_w));
+        let mid = format!(" ├{}┤", "─".repeat(inner_w));
         let bot = format!(" └{}┘", "─".repeat(inner_w));
 
         writeln!(w)?;
         self.set_fg(w, self.theme.rose_ember)?;
         writeln!(w, "{top}")?;
 
+        // Line 1: status + category + elapsed.
         write!(w, " │")?;
         self.set_fg(w, self.theme.danger)?;
         self.set_bold(w)?;
@@ -505,6 +505,7 @@ impl RunPrinter {
         self.set_fg(w, self.theme.rose_ember)?;
         writeln!(w, "│")?;
 
+        // Line 2: raw reason.
         write!(w, " │")?;
         self.set_fg(w, self.theme.text_primary)?;
         write!(w, "{line2}")?;
@@ -514,9 +515,45 @@ impl RunPrinter {
         self.set_fg(w, self.theme.rose_ember)?;
         writeln!(w, "│")?;
 
+        // Separator.
+        self.set_fg(w, self.theme.rose_ember)?;
+        writeln!(w, "{mid}")?;
+
+        // What happened.
+        self.print_box_line(
+            w,
+            explanation.what_happened,
+            inner_w,
+            self.theme.text_primary,
+        )?;
+
+        // Next step.
+        let next = format!("→ {}", explanation.next_step_summary());
+        self.print_box_line(w, &next, inner_w, self.theme.bone)?;
+
         writeln!(w, "{bot}")?;
         self.reset(w)?;
 
+        Ok(())
+    }
+
+    /// Write a single line inside a box-drawn card.
+    fn print_box_line(
+        &self,
+        w: &mut impl Write,
+        text: &str,
+        inner_w: usize,
+        color: RatColor,
+    ) -> std::io::Result<()> {
+        let content = format!("  {text}");
+        write!(w, " │")?;
+        self.set_fg(w, color)?;
+        write!(w, "{content}")?;
+        self.reset(w)?;
+        let pad = inner_w - content.len().min(inner_w);
+        write!(w, "{:width$}", "", width = pad)?;
+        self.set_fg(w, self.theme.rose_ember)?;
+        writeln!(w, "│")?;
         Ok(())
     }
 
@@ -610,7 +647,14 @@ mod tests {
     #[test]
     fn rat_to_ct_rgb() {
         let ct = rat_to_ct(RatColor::Rgb(170, 112, 136));
-        assert_eq!(ct, CtColor::Rgb { r: 170, g: 112, b: 136 });
+        assert_eq!(
+            ct,
+            CtColor::Rgb {
+                r: 170,
+                g: 112,
+                b: 136
+            }
+        );
     }
 
     #[test]
@@ -658,7 +702,12 @@ mod tests {
 
         let mut buf = Vec::new();
         printer
-            .print_header(&mut buf, &"abcd1234-5678-9abc-def0-123456789abc", "dev-helper", "claude-opus-4-6")
+            .print_header(
+                &mut buf,
+                &"abcd1234-5678-9abc-def0-123456789abc",
+                "dev-helper",
+                "claude-opus-4-6",
+            )
             .unwrap();
 
         let output = String::from_utf8(buf).unwrap();
@@ -689,6 +738,8 @@ mod tests {
             1,
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
             polkagent_core::event::EventCorrelation::default(),
         );

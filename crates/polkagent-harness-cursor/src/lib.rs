@@ -186,10 +186,7 @@ impl AcpConfigurator for CursorConfigurator {
             supports_tools: true,
             supports_sessions: true,
             max_context_tokens: 200_000,
-            models: vec![
-                "claude-sonnet-4-6".into(),
-                "gpt-4o".into(),
-            ],
+            models: vec!["claude-sonnet-4-6".into(), "gpt-4o".into()],
             transport: Some(TransportFlavor::JsonRpcStdio),
             model_override: None,
             session_resume: SessionResumeMode::ById,

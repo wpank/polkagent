@@ -1,0 +1,24 @@
+──────────────────────────────────────────────────────────────────────
+[22:03:52] Polkagent Overnight Implementation Driver
+[22:03:52] Tool:    claude (model: haiku)
+[22:03:52] Tasks:   25
+[22:03:52] Budget:  $0.50 per task
+[22:03:52] Turns:   50 per task
+[22:03:52] Verify:  true
+[22:03:52] Logs:    /Users/will/dev/par/polkagent/logs/overnight/20260803-220352/
+[22:03:52] Started: 2026-08-03 22:03:52
+──────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────
+[22:03:52] Task 1/25: [D0-1] Fix run_events column names
+[22:03:52]   Invoking claude for D0-1...
+[22:03:52]   Log: /Users/will/dev/par/polkagent/logs/overnight/20260803-220352/D0-1.log
+  PASS   claude completed D0-1
+[22:06:25]   Verifying: cargo check --workspace
+  PASS   cargo check passed
+[22:06:49]   Verifying: cargo test --workspace (quick)
+  PASS   cargo test passed
+  PASS   Verified: D0-1
+──────────────────────────────────────────────────────────────────────
+[22:10:18] Task 2/25: [D0-2] Fix effect store schema mismatches
+[22:10:18]   Invoking claude for D0-2...
+[22:10:18]   Log: /Users/will/dev/par/polkagent/logs/overnight/20260803-220352/D0-2.log

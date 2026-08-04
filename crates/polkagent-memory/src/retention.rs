@@ -83,12 +83,12 @@ pub struct RetentionSweeper {
 impl RetentionSweeper {
     /// Create a new sweeper for `agent_id` using the given store and policy.
     #[must_use]
-    pub fn new(
-        store: Arc<dyn MemoryStore>,
-        policy: RetentionPolicy,
-        agent_id: AgentId,
-    ) -> Self {
-        Self { store, policy, agent_id }
+    pub fn new(store: Arc<dyn MemoryStore>, policy: RetentionPolicy, agent_id: AgentId) -> Self {
+        Self {
+            store,
+            policy,
+            agent_id,
+        }
     }
 
     /// Execute a full retention sweep for the agent and return statistics.
@@ -115,7 +115,7 @@ impl RetentionSweeper {
         // entries (the store's search API only supports a *minimum* filter, not a
         // *maximum*, so we invert the logic here).
         let all_query = MemoryQuery {
-            agent_id: self.agent_id,
+            agent_id: Some(self.agent_id),
             query_text: String::new(),
             memory_types: None,
             limit: usize::MAX / 2, // effectively unlimited
@@ -232,7 +232,10 @@ mod tests {
         // 2 old entries (5 days old, policy max_age_days = 2) + 1 recent entry.
         store.store_memory(&make_old_entry(agent, 5)).await.unwrap();
         store.store_memory(&make_old_entry(agent, 5)).await.unwrap();
-        store.store_memory(&make_entry(agent, "recent", 0.9)).await.unwrap();
+        store
+            .store_memory(&make_entry(agent, "recent", 0.9))
+            .await
+            .unwrap();
 
         let policy = RetentionPolicy {
             max_entries_per_agent: 1000,
@@ -255,9 +258,18 @@ mod tests {
         let store = make_store();
         let agent = AgentId::new();
 
-        store.store_memory(&make_entry(agent, "high relevance A", 0.9)).await.unwrap();
-        store.store_memory(&make_entry(agent, "low relevance B", 0.05)).await.unwrap();
-        store.store_memory(&make_entry(agent, "low relevance C", 0.04)).await.unwrap();
+        store
+            .store_memory(&make_entry(agent, "high relevance A", 0.9))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent, "low relevance B", 0.05))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent, "low relevance C", 0.04))
+            .await
+            .unwrap();
 
         let policy = RetentionPolicy {
             max_entries_per_agent: 1000,
@@ -307,8 +319,14 @@ mod tests {
         let agent = AgentId::new();
 
         // 1 old, 1 low-relevance, 5 normal — then cap at 3.
-        store.store_memory(&make_old_entry(agent, 10)).await.unwrap();
-        store.store_memory(&make_entry(agent, "low rel", 0.01)).await.unwrap();
+        store
+            .store_memory(&make_old_entry(agent, 10))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent, "low rel", 0.01))
+            .await
+            .unwrap();
         for i in 0..5 {
             store
                 .store_memory(&make_entry(agent, &format!("normal {i}"), 0.9))
@@ -337,8 +355,14 @@ mod tests {
         let store = make_store();
         let agent = AgentId::new();
 
-        store.store_memory(&make_entry(agent, "alpha", 0.8)).await.unwrap();
-        store.store_memory(&make_entry(agent, "beta", 0.7)).await.unwrap();
+        store
+            .store_memory(&make_entry(agent, "alpha", 0.8))
+            .await
+            .unwrap();
+        store
+            .store_memory(&make_entry(agent, "beta", 0.7))
+            .await
+            .unwrap();
 
         let policy = RetentionPolicy {
             max_entries_per_agent: 100,

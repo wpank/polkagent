@@ -72,14 +72,15 @@ fn map_sqlite_err_with_id(e: rusqlite::Error, id: &str) -> StoreError {
 
 /// Extract a `RunSummary` from a `rusqlite::Row`.
 ///
-/// Expected column order: id, agent_id, state, created_at, completed_at
+/// Expected column order: id, agent_id, state, created_at, started_at, completed_at
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRunSummary> {
     Ok(RawRunSummary {
         id: row.get(0)?,
         agent_id: row.get(1)?,
         state: row.get(2)?,
         created_at: row.get(3)?,
-        completed_at: row.get(4)?,
+        started_at: row.get(4)?,
+        completed_at: row.get(5)?,
     })
 }
 
@@ -89,6 +90,7 @@ struct RawRunSummary {
     agent_id: String,
     state: String,
     created_at: String,
+    started_at: Option<String>,
     completed_at: Option<String>,
 }
 
@@ -99,11 +101,8 @@ impl RawRunSummary {
             agent_id: self.agent_id,
             status: RunStatus::new(self.state),
             created_at: parse_ts(&self.created_at)?,
-            completed_at: self
-                .completed_at
-                .as_deref()
-                .map(parse_ts)
-                .transpose()?,
+            started_at: self.started_at.as_deref().map(parse_ts).transpose()?,
+            completed_at: self.completed_at.as_deref().map(parse_ts).transpose()?,
         })
     }
 }
@@ -151,7 +150,7 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
             let raw = writer
                 .query_row(
-                    "SELECT id, agent_id, state, created_at, completed_at
+                    "SELECT id, agent_id, state, created_at, started_at, completed_at
                      FROM runs WHERE id = ?1",
                     [&id_str],
                     row_to_summary,
@@ -171,11 +170,7 @@ impl RunStore for SqlitePool {
         })?
     }
 
-    async fn update_state(
-        &self,
-        run_id: RunId,
-        new_status: RunStatus,
-    ) -> Result<(), StoreError> {
+    async fn update_state(&self, run_id: RunId, new_status: RunStatus) -> Result<(), StoreError> {
         let pool = self.clone();
         let status_str = new_status.0;
 
@@ -191,11 +186,14 @@ impl RunStore for SqlitePool {
             );
             let completed_at: Option<String> = if is_terminal { Some(now.clone()) } else { None };
 
+            // If the status is "running", set started_at (first transition only).
+            let started_at: Option<String> = if status_str == "running" { Some(now.clone()) } else { None };
+
             let n = writer
                 .execute(
-                    "UPDATE runs SET state = ?1, updated_at = ?2, completed_at = COALESCE(?3, completed_at)
-                     WHERE id = ?4",
-                    rusqlite::params![status_str, now, completed_at, id_str],
+                    "UPDATE runs SET state = ?1, updated_at = ?2, started_at = COALESCE(started_at, ?3), completed_at = COALESCE(?4, completed_at)
+                     WHERE id = ?5",
+                    rusqlite::params![status_str, now, started_at, completed_at, id_str],
                 )
                 .map_err(|e| map_sqlite_err(e))?;
 
@@ -226,7 +224,7 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
             let mut stmt = writer
                 .prepare(
-                    "SELECT id, agent_id, state, created_at, completed_at
+                    "SELECT id, agent_id, state, created_at, started_at, completed_at
                      FROM runs
                      WHERE agent_id = ?1
                      ORDER BY created_at DESC
@@ -264,7 +262,7 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
             let mut stmt = writer
                 .prepare(
-                    "SELECT id, agent_id, state, created_at, completed_at
+                    "SELECT id, agent_id, state, created_at, started_at, completed_at
                      FROM runs
                      WHERE state = ?1
                      ORDER BY created_at DESC
@@ -585,17 +583,15 @@ mod tests {
             .await
             .expect("create 2");
 
-        let created_runs =
-            RunStore::list_by_state(&pool, RunStatus::new("created"), 10, 0)
-                .await
-                .expect("list created");
+        let created_runs = RunStore::list_by_state(&pool, RunStatus::new("created"), 10, 0)
+            .await
+            .expect("list created");
         assert_eq!(created_runs.len(), 1);
         assert_eq!(created_runs[0].id, id1);
 
-        let running_runs =
-            RunStore::list_by_state(&pool, RunStatus::new("running"), 10, 0)
-                .await
-                .expect("list running");
+        let running_runs = RunStore::list_by_state(&pool, RunStatus::new("running"), 10, 0)
+            .await
+            .expect("list running");
         assert_eq!(running_runs.len(), 1);
         assert_eq!(running_runs[0].id, id2);
     }

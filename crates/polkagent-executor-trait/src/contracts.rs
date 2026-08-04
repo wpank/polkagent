@@ -117,10 +117,7 @@ pub async fn test_stream_emits_completed(executor: &dyn ModelExecutor) {
         .collect::<Result<Vec<_>, _>>()
         .expect("stream events must not contain errors for a valid request");
 
-    assert!(
-        !events.is_empty(),
-        "stream() must emit at least one event"
-    );
+    assert!(!events.is_empty(), "stream() must emit at least one event");
 
     let last = events.last().expect("events is non-empty");
     assert!(

@@ -405,23 +405,17 @@ impl From<ProviderError> for ExecutorError {
             ProviderError::RateLimit {
                 retry_after_secs, ..
             } => ExecutorError::RateLimit { retry_after_secs },
-            ProviderError::AuthFailure { message, .. } => {
-                ExecutorError::Authentication { message }
-            }
-            ProviderError::Timeout { .. } => ExecutorError::Timeout {
-                elapsed_ms: 0,
-            },
+            ProviderError::AuthFailure { message, .. } => ExecutorError::Authentication { message },
+            ProviderError::Timeout { .. } => ExecutorError::Timeout { elapsed_ms: 0 },
             ProviderError::ServerError { status, message } => ExecutorError::Transport {
                 message: format!("server error ({status}): {message}"),
                 retryable: true,
             },
             ProviderError::ContentPolicy { message } => ExecutorError::ContentPolicy { message },
-            ProviderError::ContextOverflow { .. } => {
-                ExecutorError::ContextWindowExceeded {
-                    tokens_requested: 0,
-                    tokens_allowed: 0,
-                }
-            }
+            ProviderError::ContextOverflow { .. } => ExecutorError::ContextWindowExceeded {
+                tokens_requested: 0,
+                tokens_allowed: 0,
+            },
             ProviderError::ModelNotFound { model, message } => {
                 ExecutorError::ModelNotFound { model, message }
             }
@@ -518,7 +512,10 @@ impl ExecutorError {
             self,
             Self::RateLimit { .. }
                 | Self::Timeout { .. }
-                | Self::Transport { retryable: true, .. }
+                | Self::Transport {
+                    retryable: true,
+                    ..
+                }
         )
     }
 
@@ -580,10 +577,8 @@ pub trait ModelExecutor: Send + Sync + 'static {
     /// Execute one inference call and return the complete response.
     ///
     /// The `step_id` within `request` may be used as an idempotency hint.
-    async fn complete(
-        &self,
-        request: InferenceRequest,
-    ) -> Result<InferenceResponse, ExecutorError>;
+    async fn complete(&self, request: InferenceRequest)
+        -> Result<InferenceResponse, ExecutorError>;
 
     /// Execute one inference call and return a stream of events.
     ///
@@ -614,13 +609,17 @@ mod tests {
 
     #[test]
     fn executor_error_rate_limit_is_retryable() {
-        let e = ExecutorError::RateLimit { retry_after_secs: Some(30) };
+        let e = ExecutorError::RateLimit {
+            retry_after_secs: Some(30),
+        };
         assert!(e.is_retryable());
     }
 
     #[test]
     fn executor_error_authentication_not_retryable() {
-        let e = ExecutorError::Authentication { message: "invalid key".into() };
+        let e = ExecutorError::Authentication {
+            message: "invalid key".into(),
+        };
         assert!(!e.is_retryable());
     }
 
@@ -643,7 +642,9 @@ mod tests {
             step_id: polkagent_core::StepId::new(),
             messages: vec![InferenceMessage {
                 role: MessageRole::User,
-                content: vec![ContentBlock::Text { text: "hello".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }],
             }],
             system: Some("You are a helpful assistant.".into()),
             tools: vec![],
@@ -669,7 +670,11 @@ mod tests {
             text: "result".into(),
             tool_calls: vec![],
             stop_reason: "end_turn".into(),
-            usage: TokenUsage { input_tokens: 10, output_tokens: 5, ..Default::default() },
+            usage: TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Default::default()
+            },
             provider_request_id: Some("req-123".into()),
         };
         let json = serde_json::to_string(&resp).expect("serialize");
@@ -693,7 +698,13 @@ mod tests {
     #[test]
     fn provider_error_classify_429_is_rate_limit() {
         let pe = ProviderError::classify(429, "rate limited", Some(30), "gpt-4o");
-        assert!(matches!(pe, ProviderError::RateLimit { retry_after_secs: Some(30), .. }));
+        assert!(matches!(
+            pe,
+            ProviderError::RateLimit {
+                retry_after_secs: Some(30),
+                ..
+            }
+        ));
         assert!(pe.is_retryable());
         assert_eq!(pe.retry_after(), Some(30));
     }
@@ -701,7 +712,13 @@ mod tests {
     #[test]
     fn provider_error_classify_429_no_retry_after() {
         let pe = ProviderError::classify(429, "rate limited", None, "gpt-4o");
-        assert!(matches!(pe, ProviderError::RateLimit { retry_after_secs: None, .. }));
+        assert!(matches!(
+            pe,
+            ProviderError::RateLimit {
+                retry_after_secs: None,
+                ..
+            }
+        ));
         assert!(pe.is_retryable());
         assert_eq!(pe.retry_after(), None);
     }
@@ -794,7 +811,12 @@ mod tests {
             message: "slow down".into(),
         };
         let ee: ExecutorError = pe.into();
-        assert!(matches!(ee, ExecutorError::RateLimit { retry_after_secs: Some(60) }));
+        assert!(matches!(
+            ee,
+            ExecutorError::RateLimit {
+                retry_after_secs: Some(60)
+            }
+        ));
         assert!(ee.is_retryable());
     }
 
@@ -837,13 +859,21 @@ mod tests {
             message: "unavailable".into(),
         };
         let ee: ExecutorError = pe.into();
-        assert!(matches!(ee, ExecutorError::Transport { retryable: true, .. }));
+        assert!(matches!(
+            ee,
+            ExecutorError::Transport {
+                retryable: true,
+                ..
+            }
+        ));
         assert!(ee.is_retryable());
     }
 
     #[test]
     fn executor_error_content_policy_not_retryable() {
-        let e = ExecutorError::ContentPolicy { message: "blocked".into() };
+        let e = ExecutorError::ContentPolicy {
+            message: "blocked".into(),
+        };
         assert!(!e.is_retryable());
     }
 
@@ -858,8 +888,16 @@ mod tests {
 
     #[test]
     fn executor_error_as_provider_error_roundtrip() {
-        let ee = ExecutorError::RateLimit { retry_after_secs: Some(10) };
+        let ee = ExecutorError::RateLimit {
+            retry_after_secs: Some(10),
+        };
         let pe = ee.as_provider_error().expect("should convert");
-        assert!(matches!(pe, ProviderError::RateLimit { retry_after_secs: Some(10), .. }));
+        assert!(matches!(
+            pe,
+            ProviderError::RateLimit {
+                retry_after_secs: Some(10),
+                ..
+            }
+        ));
     }
 }

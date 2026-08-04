@@ -20,11 +20,10 @@ use polkagent_effect::pipeline::{EffectIntentSpec, EffectPipeline};
 use polkagent_effect::types::{EffectKind, EffectOutcome, OutcomeResult};
 use polkagent_grant::budget::BudgetTracker;
 use polkagent_grant::grant::{
-    EffectSet, GrantDecision, GrantLimits, GrantResolver, ResolvedGrant,
-    ResolverConfig,
+    EffectSet, GrantDecision, GrantLimits, GrantResolver, ResolvedGrant, ResolverConfig,
 };
 use polkagent_grant::policy::{Effect, EvaluationContext, PolicyRule, PolicySet};
-use polkagent_store_trait::{EffectStore, StoredIntent, StoredOutcome, StoreError};
+use polkagent_store_trait::{EffectStore, StoreError, StoredIntent, StoredOutcome};
 
 // ===========================================================================
 // Shared test infrastructure
@@ -147,9 +146,7 @@ impl EffectStore for InMemoryStore {
             .values()
             .filter(|i| {
                 i.state.eq_ignore_ascii_case("claimed")
-                    && i.lease_expires
-                        .map(|exp| exp < cutoff)
-                        .unwrap_or(false)
+                    && i.lease_expires.map(|exp| exp < cutoff).unwrap_or(false)
             })
             .cloned()
             .collect())
@@ -187,10 +184,7 @@ impl EffectStore for InMemoryStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         let outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
         Ok(outcomes
             .iter()
@@ -356,7 +350,9 @@ mod config_tampering {
 // ===========================================================================
 
 mod policy_bypass {
-    use polkagent_grant::policy::{evaluate, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet};
+    use polkagent_grant::policy::{
+        evaluate, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
+    };
 
     fn empty_ctx() -> EvaluationContext {
         EvaluationContext::default()
@@ -536,9 +532,9 @@ mod policy_bypass {
 // ===========================================================================
 
 mod artifact_integrity {
+    use polkagent_core::now;
     use polkagent_metadata::types::MetadataHash;
     use polkagent_metadata::{ChainId, MetadataService, MetadataSnapshot, MetadataVersion};
-    use polkagent_core::now;
 
     #[test]
     fn tampered_metadata_body_changes_hash() {
@@ -602,23 +598,12 @@ mod artifact_integrity {
         let chain = ChainId::new("kusama");
 
         let data = b"stable_metadata".to_vec();
-        let snap1 = MetadataSnapshot::new(
-            chain.clone(),
-            MetadataVersion::V14,
-            data.clone(),
-            now(),
-            42,
-        );
+        let snap1 =
+            MetadataSnapshot::new(chain.clone(), MetadataVersion::V14, data.clone(), now(), 42);
         svc.register_snapshot(snap1);
         svc.pin_current(&chain, "stable").expect("pin");
 
-        let snap2 = MetadataSnapshot::new(
-            chain.clone(),
-            MetadataVersion::V14,
-            data,
-            now(),
-            42,
-        );
+        let snap2 = MetadataSnapshot::new(chain.clone(), MetadataVersion::V14, data, now(), 42);
         let drift = svc.register_snapshot(snap2);
 
         assert!(
@@ -635,7 +620,10 @@ mod artifact_integrity {
         let h3 = MetadataHash::from_bytes(data);
 
         assert_eq!(h1, h2, "hash must be deterministic");
-        assert_eq!(h2, h3, "hash must be deterministic across any number of calls");
+        assert_eq!(
+            h2, h3,
+            "hash must be deterministic across any number of calls"
+        );
     }
 
     #[test]
@@ -653,7 +641,12 @@ mod artifact_integrity {
             "single bit change must produce a different hash"
         );
         // The hashes should differ in many characters (avalanche effect).
-        let diff_count = hash_a.0.chars().zip(hash_b.0.chars()).filter(|(a, b)| a != b).count();
+        let diff_count = hash_a
+            .0
+            .chars()
+            .zip(hash_b.0.chars())
+            .filter(|(a, b)| a != b)
+            .count();
         assert!(
             diff_count > 10,
             "avalanche effect: hashes should differ in many characters, but only {diff_count} differ"
@@ -672,7 +665,8 @@ mod secret_leakage {
     const SECRET_API_KEY: &str = "sk-ant-api03-ULTRA_SECRET_KEY_xyzabc123456789";
     const SECRET_MNEMONIC: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    const SECRET_PRIVKEY: &str = "0xdeadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef";
+    const SECRET_PRIVKEY: &str =
+        "0xdeadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn all_secrets() -> Vec<&'static str> {
         vec![SECRET_API_KEY, SECRET_MNEMONIC, SECRET_PRIVKEY]
@@ -697,7 +691,10 @@ mod secret_leakage {
 
         assert_no_leak(&debug, &all_secrets(), "validation error Debug");
         assert_no_leak(&display, &all_secrets(), "validation error Display");
-        assert!(display.contains("provider.api_key"), "field name must be present");
+        assert!(
+            display.contains("provider.api_key"),
+            "field name must be present"
+        );
     }
 
     #[test]
@@ -767,7 +764,14 @@ mod grant_escalation {
 
         // Allowed: chain/query (read).
         let read_decision = resolver
-            .resolve("agent-ro", "chain/query", "account/alice", &empty_ctx(), None, None)
+            .resolve(
+                "agent-ro",
+                "chain/query",
+                "account/alice",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .unwrap_or_else(|e| panic!("resolver error: {e}"));
         assert!(
@@ -777,7 +781,14 @@ mod grant_escalation {
 
         // Denied: chain/transfer (write).
         let write_decision = resolver
-            .resolve("agent-ro", "chain/transfer", "account/alice", &empty_ctx(), None, None)
+            .resolve(
+                "agent-ro",
+                "chain/transfer",
+                "account/alice",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .unwrap_or_else(|e| panic!("resolver error: {e}"));
         assert!(
@@ -794,7 +805,14 @@ mod grant_escalation {
         let resolver = GrantResolver::new(set, ResolverConfig::default());
 
         let decision = resolver
-            .resolve("agent-ro", "chain/broadcast", "tx/0xabcd", &empty_ctx(), None, None)
+            .resolve(
+                "agent-ro",
+                "chain/broadcast",
+                "tx/0xabcd",
+                &empty_ctx(),
+                None,
+                None,
+            )
             .await
             .unwrap_or_else(|e| panic!("resolver error: {e}"));
         assert!(
@@ -878,7 +896,11 @@ mod grant_escalation {
                 .check_budget(agent_id, 3)
                 .await
                 .unwrap_or_else(|e| panic!("check_budget failed at {i}: {e}"));
-            assert!(within, "spend {i} (cumulative {}) must be within budget 10", (i + 1) * 3);
+            assert!(
+                within,
+                "spend {i} (cumulative {}) must be within budget 10",
+                (i + 1) * 3
+            );
             tracker
                 .record_spend(agent_id, run_id, 3)
                 .await
@@ -921,8 +943,8 @@ mod grant_escalation {
 // ===========================================================================
 
 mod metadata_pinning {
-    use polkagent_metadata::{ChainId, MetadataService, MetadataSnapshot, MetadataVersion};
     use polkagent_core::now;
+    use polkagent_metadata::{ChainId, MetadataService, MetadataSnapshot, MetadataVersion};
 
     #[test]
     fn metadata_hash_checked_before_use() {
@@ -1001,10 +1023,7 @@ mod metadata_pinning {
         // Cannot pin metadata for a chain that has nothing cached.
         let svc = MetadataService::new();
         let result = svc.pin_current(&ChainId::new("unknown-chain"), "label");
-        assert!(
-            result.is_err(),
-            "pinning without cached metadata must fail"
-        );
+        assert!(result.is_err(), "pinning without cached metadata must fail");
     }
 
     #[test]
@@ -1326,7 +1345,9 @@ mod replay_protection {
 mod cross_cutting {
     use polkagent_config::schema::Config;
     use polkagent_config::validate;
-    use polkagent_grant::policy::{evaluate, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet};
+    use polkagent_grant::policy::{
+        evaluate, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
+    };
     use polkagent_metadata::types::MetadataHash;
 
     #[test]
@@ -1388,7 +1409,11 @@ mod cross_cutting {
         // Verify the deserialized policy still evaluates correctly.
         let ctx = EvaluationContext::default();
         let query_decision = evaluate(&back, "chain/query", "account/alice", &ctx);
-        assert_eq!(query_decision, PolicyDecision::Allow, "allow rule preserved");
+        assert_eq!(
+            query_decision,
+            PolicyDecision::Allow,
+            "allow rule preserved"
+        );
 
         let submit_decision = evaluate(&back, "chain/submit", "account/alice", &ctx);
         assert!(

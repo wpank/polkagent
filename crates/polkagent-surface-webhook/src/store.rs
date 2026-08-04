@@ -145,11 +145,7 @@ pub trait DeliveryStore: Send + Sync {
     async fn list_pending_retries(&self, limit: usize) -> Result<Vec<DeliveryRecord>>;
 
     /// Count deliveries by status for a given webhook.
-    async fn count_by_status(
-        &self,
-        webhook_id: Uuid,
-        status: DeliveryStatus,
-    ) -> Result<usize>;
+    async fn count_by_status(&self, webhook_id: Uuid, status: DeliveryStatus) -> Result<usize>;
 }
 
 // ---------------------------------------------------------------------------

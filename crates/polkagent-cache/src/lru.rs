@@ -63,12 +63,14 @@ where
     }
 
     /// Set the default TTL for entries that don't specify one.
+    #[must_use]
     pub fn with_default_ttl(mut self, ttl: Duration) -> Self {
         self.default_ttl = Some(ttl);
         self
     }
 
     /// Register an eviction callback.
+    #[must_use]
     pub fn with_eviction_callback(mut self, cb: EvictionCallback<K, V>) -> Self {
         self.on_evict = Some(cb);
         self
@@ -86,7 +88,9 @@ where
 
         // If the key already exists, update in place and promote.
         if let Some(&idx) = self.index.get(&key) {
-            let entry = self.entries[idx].as_mut().expect("indexed entry must exist");
+            let entry = self.entries[idx]
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("indexed entry must exist"));
             let old = entry.value.clone();
             entry.value = value;
             entry.expires_at = expires_at;
@@ -142,7 +146,9 @@ where
         }
 
         self.promote(idx);
-        let entry = self.entries[idx].as_mut().expect("entry must exist");
+        let entry = self.entries[idx]
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("entry must exist"));
         entry.access_count += 1;
         Some(&entry.value)
     }
@@ -230,7 +236,9 @@ where
 
     /// Insert an index at the head of the doubly-linked list.
     fn push_front(&mut self, idx: usize) {
-        let entry = self.entries[idx].as_mut().expect("entry must exist");
+        let entry = self.entries[idx]
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("entry must exist"));
         entry.prev = None;
         entry.next = self.head;
 
@@ -248,9 +256,8 @@ where
     /// Remove an index from the doubly-linked list without freeing the slot.
     fn unlink(&mut self, idx: usize) {
         let (prev, next) = {
-            let entry = match self.entries[idx].as_ref() {
-                Some(e) => e,
-                None => return,
+            let Some(entry) = self.entries[idx].as_ref() else {
+                return;
             };
             (entry.prev, entry.next)
         };
@@ -346,12 +353,13 @@ mod tests {
     fn eviction_callback_fires() {
         let evicted = Arc::new(Mutex::new(Vec::new()));
         let evicted_clone = Arc::clone(&evicted);
-        let mut cache = LruCache::new(2).with_eviction_callback(Box::new(move |k: &&str, v: &i32| {
-            evicted_clone
-                .lock()
-                .expect("lock poisoned")
-                .push(((*k).to_string(), *v));
-        }));
+        let mut cache =
+            LruCache::new(2).with_eviction_callback(Box::new(move |k: &&str, v: &i32| {
+                evicted_clone
+                    .lock()
+                    .expect("lock poisoned")
+                    .push(((*k).to_string(), *v));
+            }));
         cache.insert("a", 1, None);
         cache.insert("b", 2, None);
         cache.insert("c", 3, None); // evicts "a"

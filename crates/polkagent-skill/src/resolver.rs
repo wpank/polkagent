@@ -61,13 +61,12 @@ pub fn resolve(manifests: &[SkillManifest]) -> Result<Vec<SkillId>, SkillError> 
     // Check that all dependencies exist and satisfy version requirements.
     for manifest in manifests {
         for (dep_name, dep_spec) in &manifest.dependencies {
-            let version_req =
-                VersionReq::parse(&dep_spec.version).map_err(|e| {
-                    SkillError::InvalidVersionReq {
-                        requirement: dep_spec.version.clone(),
-                        reason: e.to_string(),
-                    }
-                })?;
+            let version_req = VersionReq::parse(&dep_spec.version).map_err(|e| {
+                SkillError::InvalidVersionReq {
+                    requirement: dep_spec.version.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
 
             match index.get(dep_name.as_str()) {
                 None => {
@@ -183,9 +182,7 @@ fn find_cycle_description(manifests: &[SkillManifest], remaining: &[&str]) -> St
 
         for _ in 0..remaining.len() + 1 {
             // Find a dependency of `current` that is also in the remaining set.
-            let manifest = manifests
-                .iter()
-                .find(|m| m.skill.name == current);
+            let manifest = manifests.iter().find(|m| m.skill.name == current);
 
             if let Some(m) = manifest {
                 if let Some(next) = m
@@ -222,11 +219,7 @@ mod tests {
     use super::*;
 
     /// Helper: create a manifest with optional dependencies.
-    fn make_manifest(
-        name: &str,
-        version: &str,
-        deps: &[(&str, &str)],
-    ) -> SkillManifest {
+    fn make_manifest(name: &str, version: &str, deps: &[(&str, &str)]) -> SkillManifest {
         let mut dependencies = HashMap::new();
         for (dep_name, ver_req) in deps {
             dependencies.insert(

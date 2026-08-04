@@ -374,6 +374,26 @@ impl BuiltInModelCatalog {
                 cost_cache_read_per_m: Some(0.0375),
                 cost_cache_write_per_m: None,
             },
+            // ── OpenRouter ────────────────────────────────────────────
+            ModelDescriptor {
+                slug: "openrouter/auto".into(),
+                provider: "openrouter".into(),
+                context_window: 200_000,
+                max_output: Some(32_000),
+                supports_tools: true,
+                supports_thinking: false,
+                supports_vision: true,
+                supports_streaming: true,
+                supports_caching: false,
+                supports_structured_output: true,
+                supports_web_search: false,
+                tool_format: ToolFormat::OpenAiJson,
+                use_max_completion_tokens: false,
+                cost_input_per_m: None,
+                cost_output_per_m: None,
+                cost_cache_read_per_m: None,
+                cost_cache_write_per_m: None,
+            },
             // ── Perplexity ─────────────────────────────────────────────
             ModelDescriptor {
                 slug: "sonar-pro".into(),
@@ -482,10 +502,10 @@ const ENV_PROVIDER_SPECS: &[EnvProviderSpec] = &[
     EnvProviderSpec {
         env_var: "OPENROUTER_API_KEY",
         id: "openrouter",
-        provider_type: "openai_compatible",
+        provider_type: "openrouter",
         kind: ProviderKind::Openrouter,
         base_url: "https://openrouter.ai/api/v1",
-        default_model: "claude-sonnet-4-6",
+        default_model: "anthropic/claude-sonnet-4-6",
     },
     EnvProviderSpec {
         env_var: "PERPLEXITY_API_KEY",
@@ -546,9 +566,9 @@ mod tests {
     // ── Catalog completeness ───────────────────────────────────────────
 
     #[test]
-    fn builtin_catalog_has_13_models() {
+    fn builtin_catalog_has_14_models() {
         let catalog = BuiltInModelCatalog::new();
-        assert_eq!(catalog.list().len(), 13);
+        assert_eq!(catalog.list().len(), 14);
     }
 
     #[test]
@@ -566,14 +586,12 @@ mod tests {
             "codex-mini",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
+            "openrouter/auto",
             "sonar-pro",
             "sonar",
         ];
         for slug in &expected {
-            assert!(
-                catalog.get(slug).is_some(),
-                "missing model: {slug}"
-            );
+            assert!(catalog.get(slug).is_some(), "missing model: {slug}");
         }
     }
 
@@ -629,7 +647,7 @@ mod tests {
     fn find_capable_empty_predicates_returns_all() {
         let catalog = BuiltInModelCatalog::new();
         let all = catalog.find_capable(&[]);
-        assert_eq!(all.len(), 13);
+        assert_eq!(all.len(), 14);
     }
 
     #[test]

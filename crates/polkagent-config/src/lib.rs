@@ -51,15 +51,19 @@ pub mod watch;
 pub use error::{ConfigError, Result};
 pub use loader::{merge, ConfigLoader};
 pub use model_registry::{
-    BuiltInModelCatalog, ModelCatalog, ModelDescriptor, ProviderKind, ToolFormat,
-    synthesize_providers_from_env,
+    synthesize_providers_from_env, BuiltInModelCatalog, ModelCatalog, ModelDescriptor,
+    ProviderKind, ToolFormat,
 };
 pub use schema::{
-    ApiConfig, ArtifactConfig, AuthConfig, BudgetConfig, Config, DatabaseBackend, DatabaseConfig,
-    ExecutionConfig, HarnessConfig, HarnessEntryConfig, LogConfig, LogFormat, MemoryConfig,
-    MetaConfig, ModelOverrideConfig, ObservabilityConfig, PolicyConfig, PostgresConfig,
-    ProviderConfig, RateLimitConfig, SecurityConfig, ServerConfig, SkillsConfig, SqliteConfig,
-    TlsConfig, TuiConfig, TuiTheme, CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
+    ApiConfig, ArtifactConfig, AuthConfig, BudgetConfig, CloudConfig, Config, DataRegion,
+    DatabaseBackend, DatabaseConfig, ExecutionConfig, HarnessConfig, HarnessEntryConfig, LogConfig,
+    LogFormat, MemoryConfig, MetaConfig, ModelOverrideConfig, ObservabilityConfig, PolicyConfig,
+    PostgresConfig, ProviderConfig, RateLimitConfig, SecurityConfig, ServerConfig, SkillsConfig,
+    SqliteConfig, TlsConfig, TuiConfig, TuiTheme, WatcherConfig, WatcherSchedule,
+    CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
 };
 pub use validate::ValidationError;
-pub use watch::{AtomicConfig, ConfigDiff, ConfigSnapshot, ConfigWatcher, ReloadPolicy, WatchEvent, WatchEventKind, WatchError};
+pub use watch::{
+    AtomicConfig, ConfigDiff, ConfigSnapshot, ConfigWatcher, ReloadPolicy, WatchError, WatchEvent,
+    WatchEventKind,
+};

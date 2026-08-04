@@ -1,7 +1,7 @@
 //! Tests for [`ScaleDecoder`] and [`ScaleEncoder`].
 
-use crate::scale::{ScaleDecoder, ScaleEncoder};
 use crate::error::CodecError;
+use crate::scale::{ScaleDecoder, ScaleEncoder};
 
 // ---------------------------------------------------------------------------
 // Compact encoding round-trips
@@ -236,9 +236,7 @@ fn option_none_round_trip() {
     let bytes = enc.finish();
     assert_eq!(bytes, vec![0x00]);
     let mut dec = ScaleDecoder::new(&bytes);
-    let decoded = dec
-        .decode_option(|d| d.decode_u32())
-        .expect("none decode");
+    let decoded = dec.decode_option(|d| d.decode_u32()).expect("none decode");
     assert_eq!(decoded, None);
 }
 

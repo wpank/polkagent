@@ -212,9 +212,7 @@ impl HarnessRegistry {
     /// Check if a harness is available (previously probed).
     #[must_use]
     pub fn is_available(&self, harness_id: &str) -> bool {
-        self.entries
-            .get(harness_id)
-            .map_or(false, |e| e.available)
+        self.entries.get(harness_id).map_or(false, |e| e.available)
     }
 
     /// Get the binary path for a harness, if probed and found.
@@ -246,11 +244,7 @@ impl HarnessRegistry {
     pub fn first_available(&self) -> Option<&str> {
         self.probe_order
             .iter()
-            .find(|id| {
-                self.entries
-                    .get(id.as_str())
-                    .map_or(false, |e| e.available)
-            })
+            .find(|id| self.entries.get(id.as_str()).map_or(false, |e| e.available))
             .map(String::as_str)
     }
 
@@ -291,16 +285,14 @@ impl HarnessRegistry {
         if let Some(default) = config_default {
             if !default.is_empty() {
                 if self.probe(default) {
-                    let note =
-                        format!("Using harness '{default}' (from config default).");
+                    let note = format!("Using harness '{default}' (from config default).");
                     return HarnessResolution {
                         harness_name: Some(default.to_owned()),
                         note: Some(note),
                     };
                 }
-                let note = format!(
-                    "Warning: configured default harness '{default}' not found on PATH."
-                );
+                let note =
+                    format!("Warning: configured default harness '{default}' not found on PATH.");
                 warn!("{}", note);
             }
         }
@@ -375,7 +367,11 @@ fn which_binary(name: &str) -> Option<String> {
         .filter(|o| o.status.success())
         .and_then(|o| {
             let path = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-            if path.is_empty() { None } else { Some(path) }
+            if path.is_empty() {
+                None
+            } else {
+                Some(path)
+            }
         })
 }
 

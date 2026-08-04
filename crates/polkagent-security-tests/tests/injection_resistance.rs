@@ -12,8 +12,8 @@ use polkagent_core::PolkagentError;
 // ===========================================================================
 
 mod config_injection {
-    use polkagent_config::validate;
     use polkagent_config::schema::Config;
+    use polkagent_config::validate;
 
     #[test]
     fn config_with_script_tag_in_log_level_is_rejected() {
@@ -63,7 +63,7 @@ mod config_injection {
 // ===========================================================================
 
 mod path_traversal {
-    use polkagent_grant::policy::{evaluate, EvaluationContext, PolicySet, PolicyRule, Effect};
+    use polkagent_grant::policy::{evaluate, Effect, EvaluationContext, PolicyRule, PolicySet};
 
     fn make_ctx() -> EvaluationContext {
         EvaluationContext::default()
@@ -126,8 +126,8 @@ mod path_traversal {
 // ===========================================================================
 
 mod string_limits {
-    use polkagent_config::validate;
     use polkagent_config::schema::Config;
+    use polkagent_config::validate;
 
     #[test]
     fn extremely_long_log_level_is_rejected() {
@@ -258,9 +258,9 @@ mod malformed_uuids {
             "not-a-uuid",
             "12345",
             "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
-            "00000000-0000-0000-0000",  // too short
+            "00000000-0000-0000-0000",               // too short
             "00000000-0000-0000-0000-0000000000000", // too long
-            "00000000_0000_0000_0000_000000000000", // wrong separator
+            "00000000_0000_0000_0000_000000000000",  // wrong separator
             "\0\0\0\0-\0\0\0\0-\0\0\0\0-\0\0\0\0-\0\0\0\0\0\0\0\0\0\0\0\0",
         ];
 

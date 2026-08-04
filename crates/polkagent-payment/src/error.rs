@@ -60,6 +60,16 @@ pub enum PaymentError {
         model: String,
     },
 
+    // --- Ledger errors (EXPERIMENTAL — PRD-08 §5.2 prototype) ---
+    /// The agent's ledger balance is too low for the requested spend.
+    #[error("insufficient balance: have {available_planck} planck, need {required_planck}")]
+    InsufficientBalance {
+        /// The current balance in planck.
+        available_planck: u128,
+        /// The amount the operation requires.
+        required_planck: u128,
+    },
+
     // --- Arithmetic errors ---
     /// An arithmetic overflow occurred during amount calculation.
     #[error("arithmetic overflow: {context}")]

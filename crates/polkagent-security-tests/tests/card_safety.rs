@@ -7,9 +7,7 @@
 use polkagent_card::builder::ActionCardBuilder;
 use polkagent_card::card::RiskLevel;
 use polkagent_card::render::render_text;
-use polkagent_card::sections::{
-    RiskFlag, RiskFlagType, SectionSource, Severity,
-};
+use polkagent_card::sections::{RiskFlag, RiskFlagType, SectionSource, Severity};
 
 // ===========================================================================
 // Canonical sections cannot be overridden by model text
@@ -176,7 +174,11 @@ fn extremely_long_values_do_not_break_render() {
 fn unicode_content_does_not_break_render() {
     let card = ActionCardBuilder::new("Transfer 10 DOT")
         .add_canonical("Amount", "10 DOT", SectionSource::Metadata)
-        .add_canonical("Note", "\u{1F4B0}\u{1F525}\u{2620}", SectionSource::Metadata)
+        .add_canonical(
+            "Note",
+            "\u{1F4B0}\u{1F525}\u{2620}",
+            SectionSource::Metadata,
+        )
         .add_narrative("Context", "Emoji test: \u{1F600}\u{1F602}\u{1F60D}")
         .with_payload_hash("ee")
         .build();

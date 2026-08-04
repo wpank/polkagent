@@ -123,9 +123,12 @@ pub fn score_case(result: &CaseResult, expected: &Expected) -> Score {
             else {
                 return false;
             };
-            expected_call.args_contain.iter().all(|(key, expected_val)| {
-                actual_args.get(key).map_or(false, |v| v == expected_val)
-            })
+            expected_call
+                .args_contain
+                .iter()
+                .all(|(key, expected_val)| {
+                    actual_args.get(key).map_or(false, |v| v == expected_val)
+                })
         });
         checks.push(CheckResult {
             name: format!("tool_call:{tool_name}"),
@@ -140,7 +143,9 @@ pub fn score_case(result: &CaseResult, expected: &Expected) -> Score {
 
     // Check: outcome matches expectation
     if let Some(expected_outcome) = expected.expected_outcome {
-        let normalized = result.model_output.to_lowercase()
+        let normalized = result
+            .model_output
+            .to_lowercase()
             .replace('\u{2019}', "'")
             .replace('\u{2018}', "'");
         let actual_outcome = if result.error.is_some() {
@@ -166,9 +171,7 @@ pub fn score_case(result: &CaseResult, expected: &Expected) -> Score {
             message: if passed {
                 format!("Outcome matches expected: {expected_outcome:?}")
             } else {
-                format!(
-                    "Outcome mismatch: expected {expected_outcome:?}, got {actual_outcome:?}"
-                )
+                format!("Outcome mismatch: expected {expected_outcome:?}, got {actual_outcome:?}")
             },
         });
     }
@@ -183,6 +186,9 @@ pub fn score_case(result: &CaseResult, expected: &Expected) -> Score {
 #[must_use]
 pub fn aggregate_score(checks: Vec<CheckResult>) -> Score {
     if checks.is_empty() {
+        // NOTE: no assertions were defined for this case, so we auto-pass.
+        // This inflates suite-level scores when cases lack assertions.
+        // Consider adding at least one expected check per eval case.
         return Score::perfect();
     }
 

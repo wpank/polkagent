@@ -15,7 +15,12 @@ pub struct MigrateCli {
     pub database: PathBuf,
 
     /// Directory containing migration files.
-    #[arg(short, long, env = "POLKAGENT_MIGRATIONS_DIR", default_value = "migrations")]
+    #[arg(
+        short,
+        long,
+        env = "POLKAGENT_MIGRATIONS_DIR",
+        default_value = "migrations"
+    )]
     pub migrations_dir: PathBuf,
 
     /// The subcommand to execute.
@@ -76,27 +81,17 @@ mod tests {
 
     #[test]
     fn parse_run_command() {
-        let cli = MigrateCli::try_parse_from([
-            "migrate",
-            "--database",
-            "test.db",
-            "run",
-        ])
-        .expect("parse");
+        let cli =
+            MigrateCli::try_parse_from(["migrate", "--database", "test.db", "run"]).expect("parse");
         assert!(matches!(cli.command, MigrateCommand::Run(_)));
         assert_eq!(cli.database, PathBuf::from("test.db"));
     }
 
     #[test]
     fn parse_run_with_dry_run() {
-        let cli = MigrateCli::try_parse_from([
-            "migrate",
-            "--database",
-            "test.db",
-            "run",
-            "--dry-run",
-        ])
-        .expect("parse");
+        let cli =
+            MigrateCli::try_parse_from(["migrate", "--database", "test.db", "run", "--dry-run"])
+                .expect("parse");
         match cli.command {
             MigrateCommand::Run(args) => assert!(args.dry_run),
             other => panic!("expected Run, got {other:?}"),
@@ -105,25 +100,15 @@ mod tests {
 
     #[test]
     fn parse_status_command() {
-        let cli = MigrateCli::try_parse_from([
-            "migrate",
-            "--database",
-            "test.db",
-            "status",
-        ])
-        .expect("parse");
+        let cli = MigrateCli::try_parse_from(["migrate", "--database", "test.db", "status"])
+            .expect("parse");
         assert!(matches!(cli.command, MigrateCommand::Status));
     }
 
     #[test]
     fn parse_verify_command() {
-        let cli = MigrateCli::try_parse_from([
-            "migrate",
-            "--database",
-            "test.db",
-            "verify",
-        ])
-        .expect("parse");
+        let cli = MigrateCli::try_parse_from(["migrate", "--database", "test.db", "verify"])
+            .expect("parse");
         assert!(matches!(cli.command, MigrateCommand::Verify));
     }
 
@@ -165,13 +150,8 @@ mod tests {
 
     #[test]
     fn parse_rollback_command() {
-        let cli = MigrateCli::try_parse_from([
-            "migrate",
-            "--database",
-            "test.db",
-            "rollback",
-        ])
-        .expect("parse");
+        let cli = MigrateCli::try_parse_from(["migrate", "--database", "test.db", "rollback"])
+            .expect("parse");
         assert!(matches!(cli.command, MigrateCommand::Rollback(_)));
     }
 
@@ -207,13 +187,8 @@ mod tests {
 
     #[test]
     fn default_migrations_dir() {
-        let cli = MigrateCli::try_parse_from([
-            "migrate",
-            "--database",
-            "test.db",
-            "status",
-        ])
-        .expect("parse");
+        let cli = MigrateCli::try_parse_from(["migrate", "--database", "test.db", "status"])
+            .expect("parse");
         assert_eq!(cli.migrations_dir, PathBuf::from("migrations"));
     }
 

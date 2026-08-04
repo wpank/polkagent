@@ -172,8 +172,7 @@ impl IntentCardSpec {
         }
 
         // Compute the payload hash — deterministic BLAKE3 of the canonical JSON.
-        let payload_bytes = serde_json::to_vec(&self.payload_json)
-            .unwrap_or_default();
+        let payload_bytes = serde_json::to_vec(&self.payload_json).unwrap_or_default();
         let payload_hash = compute_payload_hash(&payload_bytes);
 
         // Build the title from kind + target if available.
@@ -190,17 +189,9 @@ impl IntentCardSpec {
             SectionSource::Metadata,
         );
 
-        builder = builder.add_canonical(
-            "Effect ID",
-            &self.effect_id,
-            SectionSource::Metadata,
-        );
+        builder = builder.add_canonical("Effect ID", &self.effect_id, SectionSource::Metadata);
 
-        builder = builder.add_canonical(
-            "Run ID",
-            &self.run_id,
-            SectionSource::Metadata,
-        );
+        builder = builder.add_canonical("Run ID", &self.run_id, SectionSource::Metadata);
 
         if let Some(pallet) = &self.pallet {
             builder = builder.add_canonical("Pallet", pallet, SectionSource::Metadata);
@@ -211,19 +202,11 @@ impl IntentCardSpec {
         }
 
         if let Some(args) = &self.arguments_summary {
-            builder = builder.add_canonical_unverified(
-                "Arguments",
-                args,
-                SectionSource::Metadata,
-            );
+            builder = builder.add_canonical_unverified("Arguments", args, SectionSource::Metadata);
         }
 
         if let Some(cost) = &self.estimated_cost {
-            builder = builder.add_canonical(
-                "Estimated cost",
-                cost,
-                SectionSource::Simulation,
-            );
+            builder = builder.add_canonical("Estimated cost", cost, SectionSource::Simulation);
         }
 
         // Narrative section — model-generated text, always after canonical.
@@ -341,7 +324,11 @@ mod tests {
         let spec = make_spec(EffectKindTag::SignatureRequest);
         let card = spec.build_card().unwrap();
 
-        let labels: Vec<&str> = card.canonical_sections.iter().map(|s| s.label.as_str()).collect();
+        let labels: Vec<&str> = card
+            .canonical_sections
+            .iter()
+            .map(|s| s.label.as_str())
+            .collect();
         assert!(labels.contains(&"Effect kind"), "missing Effect kind");
         assert!(labels.contains(&"Effect ID"), "missing Effect ID");
         assert!(labels.contains(&"Pallet"), "missing Pallet");
@@ -349,13 +336,25 @@ mod tests {
         assert!(labels.contains(&"Arguments"), "missing Arguments");
         assert!(labels.contains(&"Estimated cost"), "missing Estimated cost");
 
-        let kind_section = card.canonical_sections.iter().find(|s| s.label == "Effect kind").unwrap();
+        let kind_section = card
+            .canonical_sections
+            .iter()
+            .find(|s| s.label == "Effect kind")
+            .unwrap();
         assert_eq!(kind_section.value, "Sign request");
 
-        let pallet_section = card.canonical_sections.iter().find(|s| s.label == "Pallet").unwrap();
+        let pallet_section = card
+            .canonical_sections
+            .iter()
+            .find(|s| s.label == "Pallet")
+            .unwrap();
         assert_eq!(pallet_section.value, "Balances");
 
-        let call_section = card.canonical_sections.iter().find(|s| s.label == "Call").unwrap();
+        let call_section = card
+            .canonical_sections
+            .iter()
+            .find(|s| s.label == "Call")
+            .unwrap();
         assert_eq!(call_section.value, "transfer_keep_alive");
     }
 
@@ -368,7 +367,10 @@ mod tests {
 
         let hash1 = compute_payload_hash(&bytes);
         let hash2 = compute_payload_hash(&bytes);
-        assert_eq!(hash1, hash2, "hash must be deterministic for the same input");
+        assert_eq!(
+            hash1, hash2,
+            "hash must be deterministic for the same input"
+        );
         assert_eq!(hash1.len(), 64, "BLAKE3 hex is 64 chars");
     }
 
@@ -416,7 +418,11 @@ mod tests {
             EffectKindTag::Delivery,
             EffectKindTag::HarnessOperation,
         ] {
-            assert_eq!(kind.risk_level(), RiskLevel::Medium, "{kind:?} must be Medium");
+            assert_eq!(
+                kind.risk_level(),
+                RiskLevel::Medium,
+                "{kind:?} must be Medium"
+            );
         }
     }
 
@@ -438,7 +444,10 @@ mod tests {
         let spec = make_spec(EffectKindTag::Broadcast);
         let card = spec.build_card().unwrap();
         assert!(card.title.contains("Balances"), "title must include pallet");
-        assert!(card.title.contains("transfer_keep_alive"), "title must include call");
+        assert!(
+            card.title.contains("transfer_keep_alive"),
+            "title must include call"
+        );
     }
 
     #[test]
@@ -456,8 +465,14 @@ mod tests {
     fn narrative_section_present_for_explanation() {
         let spec = make_spec(EffectKindTag::SignatureRequest);
         let card = spec.build_card().unwrap();
-        assert!(!card.narrative_sections.is_empty(), "explanation must produce a narrative");
-        assert_eq!(card.narrative_sections[0].disclaimer, "AI-generated explanation");
+        assert!(
+            !card.narrative_sections.is_empty(),
+            "explanation must produce a narrative"
+        );
+        assert_eq!(
+            card.narrative_sections[0].disclaimer,
+            "AI-generated explanation"
+        );
     }
 
     #[test]
@@ -465,7 +480,10 @@ mod tests {
         let mut spec = make_spec(EffectKindTag::SignatureRequest);
         spec.model_explanation = None;
         let card = spec.build_card().unwrap();
-        assert!(card.narrative_sections.is_empty(), "no explanation → no narrative");
+        assert!(
+            card.narrative_sections.is_empty(),
+            "no explanation → no narrative"
+        );
     }
 
     // ── Canonical sections always precede narrative sections ─────────────────

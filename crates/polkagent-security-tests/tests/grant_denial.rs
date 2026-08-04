@@ -10,14 +10,14 @@ use std::time::Duration;
 
 use chrono::Utc;
 use polkagent_core::ids::{AgentId, GrantId, RunId};
-use polkagent_grant::grant::{
-    ActiveGrant, EffectSet, GrantDecision, GrantLimits, GrantResolver, ResolverConfig,
-};
-use polkagent_grant::policy::{Effect, EvaluationContext, PolicyRule, PolicySet};
 use polkagent_grant::budget::BudgetTracker;
 use polkagent_grant::gate::{
     AllowlistField, AllowlistGate, BudgetGate, Gate, GateRequest, GateResult, RateLimitGate,
 };
+use polkagent_grant::grant::{
+    ActiveGrant, EffectSet, GrantDecision, GrantLimits, GrantResolver, ResolverConfig,
+};
+use polkagent_grant::policy::{Effect, EvaluationContext, PolicyRule, PolicySet};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,7 +57,14 @@ fn deny_rule(id: &str, actions: &[&str], resources: &[&str]) -> PolicyRule {
 async fn default_deny_empty_policy_blocks_all() {
     let resolver = GrantResolver::new(PolicySet::default(), ResolverConfig::default());
     let decision = resolver
-        .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "chain/transfer",
+            "account/bob",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -75,7 +82,14 @@ async fn default_deny_unmatched_action_blocked() {
 
     let resolver = GrantResolver::new(set, ResolverConfig::default());
     let decision = resolver
-        .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "chain/transfer",
+            "account/bob",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -110,7 +124,14 @@ async fn expired_grant_is_rejected() {
         .await;
 
     let decision = resolver
-        .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "chain/transfer",
+            "account/bob",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -152,7 +173,14 @@ async fn budget_exhaustion_blocks_spend() {
 
     // First spend: 80 of 100 -- should succeed.
     let d1 = resolver
-        .resolve(&principal, "chain/transfer", "account/bob", &empty_ctx(), Some(80), Some(run_id))
+        .resolve(
+            &principal,
+            "chain/transfer",
+            "account/bob",
+            &empty_ctx(),
+            Some(80),
+            Some(run_id),
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
     assert!(
@@ -162,7 +190,14 @@ async fn budget_exhaustion_blocks_spend() {
 
     // Second spend: 30 more -- 80+30=110 > 100 -- should be denied.
     let d2 = resolver
-        .resolve(&principal, "chain/transfer", "account/bob", &empty_ctx(), Some(30), Some(run_id))
+        .resolve(
+            &principal,
+            "chain/transfer",
+            "account/bob",
+            &empty_ctx(),
+            Some(30),
+            Some(run_id),
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
     assert!(
@@ -219,7 +254,14 @@ async fn deny_always_overrides_allow_regardless_of_order() {
 
     let resolver1 = GrantResolver::new(set1, ResolverConfig::default());
     let d1 = resolver1
-        .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "chain/transfer",
+            "account/bob",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
     assert!(
@@ -234,7 +276,14 @@ async fn deny_always_overrides_allow_regardless_of_order() {
 
     let resolver2 = GrantResolver::new(set2, ResolverConfig::default());
     let d2 = resolver2
-        .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "chain/transfer",
+            "account/bob",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
     assert!(
@@ -257,7 +306,14 @@ async fn undeclared_capability_rejected() {
 
     // Attempt to use chain/transfer which is NOT declared.
     let decision = resolver
-        .resolve("alice", "chain/transfer", "account/bob", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "chain/transfer",
+            "account/bob",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
     assert!(
@@ -267,7 +323,14 @@ async fn undeclared_capability_rejected() {
 
     // Attempt to use governance/vote which is NOT declared.
     let decision2 = resolver
-        .resolve("alice", "governance/vote", "referendum/1", &empty_ctx(), None, None)
+        .resolve(
+            "alice",
+            "governance/vote",
+            "referendum/1",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
     assert!(
@@ -302,7 +365,14 @@ async fn grant_with_wrong_principal_is_rejected() {
 
     // "bob" tries to use alice's grant pattern -- should NOT reuse alice's grant.
     let decision = resolver
-        .resolve("bob", "chain/transfer", "account/charlie", &empty_ctx(), None, None)
+        .resolve(
+            "bob",
+            "chain/transfer",
+            "account/charlie",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -356,7 +426,11 @@ async fn budget_gate_tracks_cumulative_spend() {
 
     // Spend 60, then 50 -- cumulative 110 > 100.
     let r1 = gate.check(&req(60)).await;
-    assert_eq!(r1, GateResult::Allow, "first spend (60/100) must be allowed");
+    assert_eq!(
+        r1,
+        GateResult::Allow,
+        "first spend (60/100) must be allowed"
+    );
 
     let r2 = gate.check(&req(50)).await;
     assert!(

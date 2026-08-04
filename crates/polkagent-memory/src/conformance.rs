@@ -25,7 +25,9 @@ use polkagent_core::ids::AgentId;
 
 use crate::error::MemoryError;
 use crate::store::MemoryStore;
-use crate::types::{Episode, EpisodeId, MemoryEntry, MemoryId, MemoryProvenance, MemoryQuery, MemoryType};
+use crate::types::{
+    Episode, EpisodeId, MemoryEntry, MemoryId, MemoryProvenance, MemoryQuery, MemoryType,
+};
 
 // ---------------------------------------------------------------------------
 // Builder helpers
@@ -49,6 +51,9 @@ pub fn make_memory_entry(agent_id: AgentId, content: impl Into<String>) -> Memor
             extraction_method: "conformance_test".into(),
             confidence: 1.0,
             verified: true,
+            source_artifact_id: None,
+            source_agent_id: None,
+            ingested_at: None,
         }),
         created_at: now,
         accessed_at: now,
@@ -133,9 +138,7 @@ pub async fn test_get_memory_not_found(store: &dyn MemoryStore) {
     match result {
         Err(MemoryError::NotFound(_)) => {}
         Err(other) => {
-            panic!(
-                "get_memory() on missing id should return MemoryError::NotFound; got: {other}"
-            );
+            panic!("get_memory() on missing id should return MemoryError::NotFound; got: {other}");
         }
         Ok(_) => unreachable!(),
     }
@@ -155,7 +158,7 @@ pub async fn test_search_returns_relevant(store: &dyn MemoryStore, agent_id: Age
 
     // Search for content related to "Rust".
     let query = MemoryQuery {
-        agent_id,
+        agent_id: Some(agent_id),
         query_text: "Rust programming".into(),
         memory_types: None,
         limit: 10,
@@ -175,9 +178,7 @@ pub async fn test_search_returns_relevant(store: &dyn MemoryStore, agent_id: Age
     );
 
     // The Rust-related memory should appear in the results.
-    let has_rust = results
-        .iter()
-        .any(|m| m.content.contains("Rust"));
+    let has_rust = results.iter().any(|m| m.content.contains("Rust"));
 
     assert!(
         has_rust,
@@ -196,7 +197,7 @@ pub async fn test_search_respects_limit(store: &dyn MemoryStore, agent_id: Agent
     }
 
     let query = MemoryQuery {
-        agent_id,
+        agent_id: Some(agent_id),
         query_text: "widgets".into(),
         memory_types: None,
         limit: 2,
@@ -295,7 +296,10 @@ pub async fn test_episode_lifecycle(store: &dyn MemoryStore, agent_id: AgentId) 
     assert_eq!(retrieved.id, episode_id);
     assert_eq!(retrieved.agent_id, agent_id);
     assert_eq!(retrieved.title, "Conformance test episode");
-    assert!(retrieved.ended_at.is_none(), "episode must not be ended yet");
+    assert!(
+        retrieved.ended_at.is_none(),
+        "episode must not be ended yet"
+    );
 
     // End.
     store
@@ -325,7 +329,10 @@ pub async fn test_list_episodes_ordered(store: &dyn MemoryStore, agent_id: Agent
     // Create three episodes.
     for i in 0..3_u32 {
         let episode = make_episode(agent_id, format!("Episode {i}"));
-        store.create_episode(&episode).await.expect("create_episode");
+        store
+            .create_episode(&episode)
+            .await
+            .expect("create_episode");
     }
 
     let episodes = store
@@ -375,7 +382,10 @@ pub async fn test_memory_with_episode(store: &dyn MemoryStore, agent_id: AgentId
     // Create an episode first.
     let episode = make_episode(agent_id, "Episode for memory association");
     let episode_id = episode.id;
-    store.create_episode(&episode).await.expect("create_episode");
+    store
+        .create_episode(&episode)
+        .await
+        .expect("create_episode");
 
     // Store a memory linked to that episode.
     let mut entry = make_memory_entry(agent_id, "Memory inside episode.");
@@ -385,10 +395,7 @@ pub async fn test_memory_with_episode(store: &dyn MemoryStore, agent_id: AgentId
     store.store_memory(&entry).await.expect("store_memory");
 
     // Retrieve and verify the episode_id.
-    let retrieved = store
-        .get_memory(memory_id)
-        .await
-        .expect("get_memory()");
+    let retrieved = store.get_memory(memory_id).await.expect("get_memory()");
 
     assert_eq!(
         retrieved.episode_id,

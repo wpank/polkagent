@@ -1,0 +1,28 @@
+All done. Here's a summary of the changes:
+
+## Changes Made
+
+### 1. `crates/polkagent-cli/Cargo.toml`
+Added three new dependencies:
+- `polkagent-tool` — for `ToolRegistry`
+- `polkagent-tool-governance` — for `register_governance_tools()`
+- `polkagent-tool-treasury` — for `register_treasury_tools()`
+
+### 2. `crates/polkagent-cli/src/commands/run.rs`
+
+**New import:** `polkagent_chain_trait::ChainClient`
+
+**New `build_chain_client()` function** that implements graceful degradation:
+- When `POLKAGENT_RPC_URL` is set → builds a `SubxtChainClient` with a Polkadot chain profile pointing at the configured RPC endpoint
+- If the builder fails → logs a warning and falls back to `FakeChainClient`
+- When no RPC URL is set → uses `FakeChainClient` with representative offline data (same config as the `network` command uses)
+
+**Wiring in the `run()` function** — between event recorder creation and AppService builder:
+1. Calls `build_chain_client()` to get an `Arc<dyn ChainClient>`
+2. Creates a `ToolRegistry` and registers governance tools (with the chain client) and treasury tools
+3. Passes both `.with_chain_client(chain_client)` and `.with_tool_registry(Arc::new(tool_registry))` to the AppService builder
+
+**Key design decisions:**
+- Governance tools receive the real/fake chain client directly since they accept `Arc<dyn ChainClient>` in their constructors
+- Treasury tools are registered without a chain client since they don't accept one yet (they use placeholder data internally — a future task can wire them up when their API changes)
+- The fallback pattern matches the existing `network status` command's approach

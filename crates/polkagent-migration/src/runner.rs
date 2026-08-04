@@ -186,19 +186,20 @@ impl MigrationRunner {
             );
 
             // Run each migration in its own transaction.
-            let tx = conn.unchecked_transaction().map_err(|e| MigrationError::Apply {
-                version: migration.version,
-                name: migration.name.clone(),
-                reason: format!("begin transaction: {e}"),
-            })?;
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| MigrationError::Apply {
+                    version: migration.version,
+                    name: migration.name.clone(),
+                    reason: format!("begin transaction: {e}"),
+                })?;
 
-            tx.execute_batch(&migration.sql).map_err(|e| {
-                MigrationError::Apply {
+            tx.execute_batch(&migration.sql)
+                .map_err(|e| MigrationError::Apply {
                     version: migration.version,
                     name: migration.name.clone(),
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
 
             let checksum = compute_checksum(&migration.sql);
             let applied_at = Utc::now().to_rfc3339();
@@ -220,7 +221,10 @@ impl MigrationRunner {
                 reason: format!("commit: {e}"),
             })?;
 
-            info!(version = migration.version, "migration applied successfully");
+            info!(
+                version = migration.version,
+                "migration applied successfully"
+            );
             results.push(ApplyResult {
                 version: migration.version,
                 name: migration.name.clone(),
@@ -295,17 +299,20 @@ impl MigrationRunner {
             "rolling back migration"
         );
 
-        let tx = conn.unchecked_transaction().map_err(|e| MigrationError::Apply {
-            version: migration.version,
-            name: migration.name.clone(),
-            reason: format!("begin rollback transaction: {e}"),
-        })?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| MigrationError::Apply {
+                version: migration.version,
+                name: migration.name.clone(),
+                reason: format!("begin rollback transaction: {e}"),
+            })?;
 
-        tx.execute_batch(down_sql).map_err(|e| MigrationError::Apply {
-            version: migration.version,
-            name: migration.name.clone(),
-            reason: format!("rollback SQL: {e}"),
-        })?;
+        tx.execute_batch(down_sql)
+            .map_err(|e| MigrationError::Apply {
+                version: migration.version,
+                name: migration.name.clone(),
+                reason: format!("rollback SQL: {e}"),
+            })?;
 
         tx.execute(
             "DELETE FROM schema_migrations WHERE version = ?1",
@@ -377,11 +384,7 @@ mod tests {
                 "create users",
                 "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
             ),
-            Migration::new(
-                2,
-                "add email",
-                "ALTER TABLE users ADD COLUMN email TEXT;",
-            ),
+            Migration::new(2, "add email", "ALTER TABLE users ADD COLUMN email TEXT;"),
             Migration::new(
                 3,
                 "create posts",
@@ -413,7 +416,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        let results = runner.apply_pending(&conn, &migrations, false).expect("apply");
+        let results = runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
         assert_eq!(results.len(), 3);
         assert_eq!(MigrationRunner::current_version(&conn).expect("v"), 3);
     }
@@ -424,8 +429,12 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("first apply");
-        let results = runner.apply_pending(&conn, &migrations, false).expect("second apply");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("first apply");
+        let results = runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("second apply");
         assert!(results.is_empty(), "no new migrations should be applied");
         assert_eq!(MigrationRunner::current_version(&conn).expect("v"), 3);
     }
@@ -436,7 +445,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        let results = runner.apply_pending(&conn, &migrations, true).expect("dry run");
+        let results = runner
+            .apply_pending(&conn, &migrations, true)
+            .expect("dry run");
         assert_eq!(results.len(), 3);
         assert!(results[0].dry_run);
         // Version should still be 0 — nothing was actually applied.
@@ -450,12 +461,16 @@ mod tests {
 
         // Apply only the first migration.
         let first = &sample_migrations()[..1];
-        runner.apply_pending(&conn, first, false).expect("apply first");
+        runner
+            .apply_pending(&conn, first, false)
+            .expect("apply first");
         assert_eq!(MigrationRunner::current_version(&conn).expect("v"), 1);
 
         // Now apply all — only 2 and 3 should run.
         let all = sample_migrations();
-        let results = runner.apply_pending(&conn, &all, false).expect("apply rest");
+        let results = runner
+            .apply_pending(&conn, &all, false)
+            .expect("apply rest");
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].version, 2);
         assert_eq!(results[1].version, 3);
@@ -467,10 +482,14 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = reversible_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("apply");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
         assert_eq!(MigrationRunner::current_version(&conn).expect("v"), 2);
 
-        let result = runner.rollback_last(&conn, &migrations, false).expect("rollback");
+        let result = runner
+            .rollback_last(&conn, &migrations, false)
+            .expect("rollback");
         assert_eq!(result.version, 2);
         assert!(!result.dry_run);
         assert_eq!(MigrationRunner::current_version(&conn).expect("v"), 1);
@@ -482,8 +501,12 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = reversible_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("apply");
-        let result = runner.rollback_last(&conn, &migrations, true).expect("dry rollback");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
+        let result = runner
+            .rollback_last(&conn, &migrations, true)
+            .expect("dry rollback");
         assert!(result.dry_run);
         assert_eq!(MigrationRunner::current_version(&conn).expect("v"), 2);
     }
@@ -494,8 +517,12 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("apply");
-        let err = runner.rollback_last(&conn, &migrations, false).expect_err("should fail");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
+        let err = runner
+            .rollback_last(&conn, &migrations, false)
+            .expect_err("should fail");
         assert!(matches!(err, MigrationError::RollbackUnavailable { .. }));
     }
 
@@ -505,7 +532,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        let err = runner.rollback_last(&conn, &migrations, false).expect_err("should fail");
+        let err = runner
+            .rollback_last(&conn, &migrations, false)
+            .expect_err("should fail");
         assert!(matches!(err, MigrationError::NothingToRollback));
     }
 
@@ -518,7 +547,9 @@ mod tests {
             Migration::new(2, "second", "SELECT 1;"),
             Migration::new(1, "first", "SELECT 2;"),
         ];
-        let err = runner.apply_pending(&conn, &bad, false).expect_err("ordering");
+        let err = runner
+            .apply_pending(&conn, &bad, false)
+            .expect_err("ordering");
         assert!(matches!(err, MigrationError::VersionOrdering { .. }));
     }
 
@@ -528,7 +559,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
 
         let bad = vec![Migration::new(0, "bad", "SELECT 1;")];
-        let err = runner.apply_pending(&conn, &bad, false).expect_err("zero version");
+        let err = runner
+            .apply_pending(&conn, &bad, false)
+            .expect_err("zero version");
         assert!(matches!(err, MigrationError::InvalidVersion(0)));
     }
 
@@ -542,7 +575,9 @@ mod tests {
         let runner = MigrationRunner::new(Some(dir.path()));
         let migrations = sample_migrations();
 
-        let err = runner.apply_pending(&conn, &migrations, false).expect_err("locked");
+        let err = runner
+            .apply_pending(&conn, &migrations, false)
+            .expect_err("locked");
         assert!(matches!(err, MigrationError::Locked { .. }));
     }
 
@@ -555,7 +590,9 @@ mod tests {
         let runner = MigrationRunner::new(Some(dir.path()));
         let migrations = sample_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("apply");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
         assert!(!lock_path.exists(), "lock file should be removed after run");
     }
 
@@ -565,7 +602,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("apply");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
         let applied = MigrationRunner::applied_migrations(&conn).expect("list");
         assert_eq!(applied.len(), 3);
         assert_eq!(applied[0].version, 1);
@@ -583,7 +622,9 @@ mod tests {
             Migration::new(2, "bad", "THIS IS NOT VALID SQL!!!"),
         ];
 
-        let err = runner.apply_pending(&conn, &migrations, false).expect_err("bad sql");
+        let err = runner
+            .apply_pending(&conn, &migrations, false)
+            .expect_err("bad sql");
         assert!(matches!(err, MigrationError::Apply { version: 2, .. }));
         // Version should be 1 — the good migration should have stuck.
         assert_eq!(MigrationRunner::current_version(&conn).expect("v"), 1);

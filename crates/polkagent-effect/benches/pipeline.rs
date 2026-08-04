@@ -20,9 +20,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use polkagent_core::{
-    EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, TurnId, WorkerId,
-};
+use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, TurnId, WorkerId};
 use polkagent_effect::{
     idempotency::IdempotencyKey,
     pipeline::{EffectIntentSpec, EffectPipeline},
@@ -31,7 +29,7 @@ use polkagent_effect::{
         EffectOutcome, EffectPriority, ErrorClass, OutcomeResult, ResolutionHint,
     },
 };
-use polkagent_store_trait::{EffectStore, StoredIntent, StoredOutcome, StoreError};
+use polkagent_store_trait::{EffectStore, StoreError, StoredIntent, StoredOutcome};
 
 // ---------------------------------------------------------------------------
 // Minimal in-memory EffectStore for benchmarks
@@ -162,9 +160,7 @@ impl EffectStore for InMemoryStore {
             .values()
             .filter(|i| {
                 i.state.eq_ignore_ascii_case("claimed")
-                    && i.lease_expires
-                        .map(|exp| exp < cutoff)
-                        .unwrap_or(false)
+                    && i.lease_expires.map(|exp| exp < cutoff).unwrap_or(false)
             })
             .cloned()
             .collect())
@@ -217,10 +213,7 @@ impl EffectStore for InMemoryStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         let outcomes = self.outcomes.lock().expect("lock");
         Ok(outcomes
             .iter()
@@ -736,8 +729,7 @@ fn bench_serde(c: &mut Criterion) {
 
     group.bench_function("EffectIntent/deserialize", |b| {
         b.iter(|| {
-            let back: EffectIntent =
-                serde_json::from_str(&intent_json).expect("deserialize");
+            let back: EffectIntent = serde_json::from_str(&intent_json).expect("deserialize");
             criterion::black_box(back.id);
         });
     });
@@ -755,8 +747,7 @@ fn bench_serde(c: &mut Criterion) {
 
     group.bench_function("EffectOutcome/deserialize", |b| {
         b.iter(|| {
-            let back: EffectOutcome =
-                serde_json::from_str(&outcome_json).expect("deserialize");
+            let back: EffectOutcome = serde_json::from_str(&outcome_json).expect("deserialize");
             criterion::black_box(back.id);
         });
     });
@@ -774,8 +765,7 @@ fn bench_serde(c: &mut Criterion) {
 
     group.bench_function("EffectAttempt/deserialize", |b| {
         b.iter(|| {
-            let back: EffectAttempt =
-                serde_json::from_str(&attempt_json).expect("deserialize");
+            let back: EffectAttempt = serde_json::from_str(&attempt_json).expect("deserialize");
             criterion::black_box(back.id);
         });
     });
@@ -836,8 +826,7 @@ fn bench_serde(c: &mut Criterion) {
             &json_str,
             |b, json| {
                 b.iter(|| {
-                    let back: OutcomeResult =
-                        serde_json::from_str(json).expect("deserialize");
+                    let back: OutcomeResult = serde_json::from_str(json).expect("deserialize");
                     criterion::black_box(&back);
                 });
             },
@@ -863,8 +852,7 @@ fn bench_serde(c: &mut Criterion) {
 
     group.bench_function("IdempotencyKey/deserialize", |b| {
         b.iter(|| {
-            let back: IdempotencyKey =
-                serde_json::from_str(&key_json).expect("deserialize");
+            let back: IdempotencyKey = serde_json::from_str(&key_json).expect("deserialize");
             criterion::black_box(back);
         });
     });
@@ -1042,7 +1030,11 @@ fn bench_priority_ordering(c: &mut Criterion) {
                     intent
                 })
                 .collect();
-            intents.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.sequence.cmp(&b.sequence)));
+            intents.sort_by(|a, b| {
+                b.priority
+                    .cmp(&a.priority)
+                    .then(a.sequence.cmp(&b.sequence))
+            });
             criterion::black_box(intents[0].priority);
         });
     });
@@ -1221,9 +1213,7 @@ fn bench_filtering(c: &mut Criterion) {
 
             // Claim some intents to create mixed states
             for _ in 0..50 {
-                let _ = pipeline
-                    .claim_with_duration(Duration::from_secs(600))
-                    .await;
+                let _ = pipeline.claim_with_duration(Duration::from_secs(600)).await;
             }
 
             (inner, dyn_store)
@@ -1236,7 +1226,10 @@ fn bench_filtering(c: &mut Criterion) {
         let (_, dyn_store) = setup_store();
         b.iter(|| {
             rt.block_on(async {
-                let results = dyn_store.get_by_run(target_run_id).await.expect("get_by_run");
+                let results = dyn_store
+                    .get_by_run(target_run_id)
+                    .await
+                    .expect("get_by_run");
                 criterion::black_box(results.len());
             });
         });
@@ -1314,10 +1307,7 @@ fn bench_filtering(c: &mut Criterion) {
             let intents = inner.intents.lock().expect("lock");
             let matching: Vec<_> = intents
                 .values()
-                .filter(|i| {
-                    i.run_id == target_run_id
-                        && i.state.eq_ignore_ascii_case("pending")
-                })
+                .filter(|i| i.run_id == target_run_id && i.state.eq_ignore_ascii_case("pending"))
                 .collect();
             criterion::black_box(matching.len());
         });

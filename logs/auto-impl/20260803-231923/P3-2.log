@@ -1,0 +1,36 @@
+Here's a summary of what was implemented:
+
+## New crate: `polkagent-tool-workbench`
+
+Created at `crates/polkagent-tool-workbench/` — a new tool crate for PRD-05 builder workflow tools, starting with the storage migration rehearsal tool (workflow A1).
+
+### Files created:
+
+| File | Purpose |
+|------|---------|
+| `Cargo.toml` | Crate manifest following the same pattern as `polkagent-tool-governance` |
+| `src/lib.rs` | Crate root with `register_workbench_tools()`, re-exports, MockChainClient for tests, and registration tests |
+| `src/error.rs` | `WorkbenchError` enum with variants: `WasmNotFound`, `InvalidWasm`, `InvalidBlockNumber`, `MigrationFailed`, `Chain`, `Decode` |
+| `src/types.rs` | Domain types: `StorageKeyChange` (enum: Modified/Added/Removed), `StorageDiff`, `MigrationRehearsalReport` |
+| `src/migration_rehearsal.rs` | The `MigrationRehearsalTool` implementing `ToolHandler` |
+
+### Tool: `polkagent.workbench.migration_rehearsal`
+
+- **Inputs**: `wasm_blob_path` (string, required) and `block_number` (integer, required)
+- **Grant**: Requires `chain.query` (read-only)
+- **Output**: Structured `MigrationRehearsalReport` containing:
+  - `wasm_blob_path`, `block_number`
+  - `modified_count`, `added_count`, `removed_count`, `total_changes`
+  - `diff` with categorized `StorageKeyChange` entries (Modified/Added/Removed with hex-encoded keys/values)
+- **Output classification**: `Internal`
+- **Side effects**: None — fully read-only
+
+### Design decisions:
+- Follows the exact `ToolHandler` trait pattern used by governance/treasury tools
+- Uses `BTreeMap`/`BTreeSet` for deterministic diff ordering
+- Queries pre/post migration snapshots via `ChainClient::query_storage` (will plug into Chopsticks adapter when WORK-04 is implemented)
+- `diff_snapshots()` is a pure function independently testable
+
+### Verification:
+- `cargo check --workspace` ✅ (clean)
+- `cargo test -p polkagent-tool-workbench` ✅ (39 unit tests + 1 doc-test, all passing)

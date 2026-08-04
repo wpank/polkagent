@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use polkagent_core::{AgentId, RunId};
 use polkagent_core::run::RunState;
+use polkagent_core::{AgentId, RunId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -140,10 +140,7 @@ pub trait RunManagerTrait: Send + Sync {
     /// List runs, applying filter and cursor-based pagination from `params`.
     ///
     /// Returns `(page, has_more)`.
-    async fn list_runs(
-        &self,
-        params: ListRunsParams,
-    ) -> Result<(Vec<RunRecord>, bool), RunError>;
+    async fn list_runs(&self, params: ListRunsParams) -> Result<(Vec<RunRecord>, bool), RunError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,9 +235,7 @@ impl RunManagerTrait for InMemoryRunManager {
     #[instrument(skip(self), fields(run_id = %run_id))]
     async fn cancel_run(&self, run_id: RunId) -> Result<RunRecord, RunError> {
         let mut guard = self.runs.write().await;
-        let record = guard
-            .get_mut(&run_id)
-            .ok_or(RunError::NotFound(run_id))?;
+        let record = guard.get_mut(&run_id).ok_or(RunError::NotFound(run_id))?;
 
         if record.state.is_terminal() {
             return Err(RunError::InvalidTransition {
@@ -262,9 +257,7 @@ impl RunManagerTrait for InMemoryRunManager {
     #[instrument(skip(self), fields(run_id = %run_id))]
     async fn resume_run(&self, run_id: RunId) -> Result<RunRecord, RunError> {
         let mut guard = self.runs.write().await;
-        let record = guard
-            .get_mut(&run_id)
-            .ok_or(RunError::NotFound(run_id))?;
+        let record = guard.get_mut(&run_id).ok_or(RunError::NotFound(run_id))?;
 
         match &record.state {
             RunState::AwaitingApproval { .. } => {
@@ -283,10 +276,7 @@ impl RunManagerTrait for InMemoryRunManager {
         }
     }
 
-    async fn list_runs(
-        &self,
-        params: ListRunsParams,
-    ) -> Result<(Vec<RunRecord>, bool), RunError> {
+    async fn list_runs(&self, params: ListRunsParams) -> Result<(Vec<RunRecord>, bool), RunError> {
         let guard = self.runs.read().await;
 
         // Collect and sort by `created_at` ascending for stable pagination.

@@ -1,0 +1,38 @@
+All done. Here's a summary of everything implemented:
+
+---
+
+## Summary
+
+Implemented the **error explainer for failed runs** (PRD-13 deliverable 3.7) across 6 files:
+
+### New file
+- **`crates/polkagent-cli/src/error_explainer.rs`** — Core error classification and explanation engine
+  - `ErrorCategory` enum: `Timeout`, `ProviderError`, `PolicyDenial`, `ChainError`, `BudgetExceeded`, `AuthError`, `HarnessError`, `Unknown`
+  - `ErrorExplanation` struct with: `what_happened`, `what_is_safe`, `next_steps`
+  - `explain(reason)` function: classifies a free-form failure reason string against known patterns and returns a structured explanation
+  - Pattern matching priority: Timeout → Budget → Auth → Policy → Chain → Provider → Harness → Unknown
+  - 14 unit tests covering all categories plus case insensitivity and edge cases
+
+### Modified files
+
+1. **`src/lib.rs`** + **`src/main.rs`** — Registered `error_explainer` module in both lib and binary crate roots
+
+2. **`src/tui/state.rs`** — Added `failure_reason: Option<String>` field to `RunDetail` struct, updated test helper
+
+3. **`src/tui/db.rs`** — Added query to extract failure reason from `run_events` table (looking for `RunFailed`/`RunCancelled`/`RunTimedOut` event `data_json`) when the run is in a terminal failure state
+
+4. **`src/tui/views/run_detail.rs`** — When a run is `failed`/`timed_out`/`cancelled`, the info panel now renders a structured error explanation section following PRD-13 §12.1:
+   - Error category label (bold, danger color)
+   - Raw error reason
+   - "What happened" explanation
+   - "What is safe" assurance
+   - "What you can do" with bulleted next steps
+
+5. **`src/commands/run_printer.rs`** — Enhanced the CLI failure card with structured error explanation:
+   - Category label in the header line
+   - Separator + "what happened" explanation
+   - `→ Next step` suggestion
+   - `RunTimedOut` and `RunCancelled` events now also use the full failure card (instead of a simple one-liner)
+
+**Cargo check** ✅ and **all 115 tests** ✅ pass.

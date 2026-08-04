@@ -4,9 +4,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Describes the time-to-live policy for cached entries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum TtlPolicy {
     /// No expiration -- entries live until explicitly removed or evicted.
+    #[default]
     None,
 
     /// A fixed duration after insertion.
@@ -60,22 +61,18 @@ impl TtlPolicy {
                 Some(now + chrono::Duration::milliseconds(millis))
             }
             Self::Adaptive { max, factor, .. } => {
-                let remaining = current_expiry
-                    .map(|e| e - now)
-                    .unwrap_or_else(|| chrono::Duration::zero());
+                let remaining = current_expiry.map_or_else(chrono::Duration::zero, |e| e - now);
+                #[allow(clippy::cast_precision_loss)]
                 let remaining_ms = remaining.num_milliseconds().max(0) as f64;
                 let extended_ms = remaining_ms * factor;
+                #[allow(clippy::cast_precision_loss)]
                 let max_ms = max.as_millis() as f64;
                 let capped_ms = extended_ms.min(max_ms);
-                Some(now + chrono::Duration::milliseconds(capped_ms as i64))
+                #[allow(clippy::cast_possible_truncation)]
+                let capped_i64 = capped_ms as i64;
+                Some(now + chrono::Duration::milliseconds(capped_i64))
             }
         }
-    }
-}
-
-impl Default for TtlPolicy {
-    fn default() -> Self {
-        Self::None
     }
 }
 

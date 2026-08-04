@@ -25,9 +25,7 @@ use polkagent_chain_trait::{
     PinnedMetadata, TxHash,
 };
 use polkagent_core::{AgentId, RunId};
-use polkagent_signer_trait::{
-    ApprovalId, CanonicalSignRequest, GrantDigest, Signer, SignerError,
-};
+use polkagent_signer_trait::{ApprovalId, CanonicalSignRequest, GrantDigest, Signer, SignerError};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -340,7 +338,11 @@ pub fn build_action_card(decoded: &DecodedCall, metadata: &PinnedMetadata) -> Ac
     ActionCardBuilder::new(&title)
         .add_canonical("Pallet", &decoded.pallet, SectionSource::Metadata)
         .add_canonical("Call", &decoded.call_name, SectionSource::Metadata)
-        .add_canonical("Arguments", &decoded.arguments_json, SectionSource::Metadata)
+        .add_canonical(
+            "Arguments",
+            &decoded.arguments_json,
+            SectionSource::Metadata,
+        )
         .add_canonical(
             "Spec version",
             &metadata.spec_version.to_string(),
@@ -353,7 +355,10 @@ pub fn build_action_card(decoded: &DecodedCall, metadata: &PinnedMetadata) -> Ac
         )
         .add_canonical(
             "Pinned at block",
-            &format!("#{} ({})", metadata.block_ref.number, metadata.block_ref.hash),
+            &format!(
+                "#{} ({})",
+                metadata.block_ref.number, metadata.block_ref.hash
+            ),
             SectionSource::Chain,
         )
         .with_payload_hash(&metadata.metadata_digest.0)
@@ -463,9 +468,7 @@ pub async fn full_pipeline(
     // For the full pipeline, we trust that fetch_metadata already
     // validated the genesis hash. We do an additional metadata-level
     // check here.
-    let metadata = chain
-        .fetch_metadata(request.chain_profile.clone())
-        .await?;
+    let metadata = chain.fetch_metadata(request.chain_profile.clone()).await?;
     // Use a sentinel genesis hash for the validation check — in production
     // this would come from the resolved ChainProfile.
     let _expected_genesis = GenesisHash::new("expected");
@@ -475,13 +478,7 @@ pub async fn full_pipeline(
 
     // Stage 3: Sign the EXACT original bytes and submit.
     // AC-P2-003: The signer gets the identical call_bytes from the request.
-    let result = sign_and_submit(
-        signer,
-        chain,
-        &request.call_bytes,
-        request.chain_profile,
-    )
-    .await?;
+    let result = sign_and_submit(signer, chain, &request.call_bytes, request.chain_profile).await?;
 
     // Log the explain result for audit trail.
     tracing::info!(
@@ -526,9 +523,8 @@ mod tests {
 
     use async_trait::async_trait;
     use polkagent_chain_trait::{
-        BlockRef, ChainError, ChainProfileId, DecodedCall, DryRunResult,
-        FinalityObservation, GenesisHash, MetadataDigest, PinnedMetadata,
-        SimulationResult, TxHash,
+        BlockRef, ChainError, ChainProfileId, DecodedCall, DryRunResult, FinalityObservation,
+        GenesisHash, MetadataDigest, PinnedMetadata, SimulationResult, TxHash,
     };
     use polkagent_signer_trait::{
         AccountRef, CanonicalSignRequest, SignedPayload, Signer, SignerCapabilities, SignerError,
@@ -722,10 +718,7 @@ mod tests {
             Ok(None)
         }
 
-        async fn dry_run_call(
-            &self,
-            _extrinsic: &[u8],
-        ) -> Result<DryRunResult, ChainError> {
+        async fn dry_run_call(&self, _extrinsic: &[u8]) -> Result<DryRunResult, ChainError> {
             Err(ChainError::Unsupported {
                 operation: "dry_run_call".into(),
             })
@@ -830,10 +823,7 @@ mod tests {
             })
         }
 
-        async fn sign(
-            &self,
-            request: CanonicalSignRequest,
-        ) -> Result<SignedPayload, SignerError> {
+        async fn sign(&self, request: CanonicalSignRequest) -> Result<SignedPayload, SignerError> {
             // Capture the payload for test assertions.
             {
                 let mut guard = self
@@ -856,8 +846,7 @@ mod tests {
             }
 
             Ok(SignedPayload {
-                signed_extrinsic: [request.payload.as_slice(), &[0xFF, 0xFE]]
-                    .concat(),
+                signed_extrinsic: [request.payload.as_slice(), &[0xFF, 0xFE]].concat(),
                 public_key: vec![2u8; 32],
                 signature: vec![3u8; 64],
             })
@@ -914,10 +903,7 @@ mod tests {
             .await
             .expect("should succeed");
 
-        assert_eq!(
-            result.action_card.title,
-            "Balances.transfer_keep_alive"
-        );
+        assert_eq!(result.action_card.title, "Balances.transfer_keep_alive");
     }
 
     /// AC-P2-001: Decode failure produces ExplainError::DecodeFailure.
@@ -1175,7 +1161,9 @@ mod tests {
             .await
             .expect("should succeed");
 
-        let captured = signer.captured_payload().expect("should have captured payload");
+        let captured = signer
+            .captured_payload()
+            .expect("should have captured payload");
         assert_eq!(
             captured, original,
             "AC-P2-003: signer must receive exact original bytes"
@@ -1470,7 +1458,11 @@ mod tests {
 
         assert!(!result.tx_hash.0.is_empty());
         // finality should be Finalized in the mock.
-        if let FinalityObservation::Finalized { block_ref, tx_index } = &result.finality {
+        if let FinalityObservation::Finalized {
+            block_ref,
+            tx_index,
+        } = &result.finality
+        {
             assert_eq!(block_ref.number, 100);
             assert_eq!(*tx_index, 0);
         } else {

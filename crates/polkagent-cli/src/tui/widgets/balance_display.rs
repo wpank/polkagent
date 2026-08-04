@@ -78,7 +78,10 @@ pub fn format_balance(plancks: u128, denom: Denomination) -> String {
     let symbol = denom.symbol();
     if frac_shifted == 0 && frac > 0 {
         // Very small amount — show full precision.
-        format!("{whole}.{frac:0>width$} {symbol}", width = decimals as usize)
+        format!(
+            "{whole}.{frac:0>width$} {symbol}",
+            width = decimals as usize
+        )
     } else {
         format!(
             "{whole}.{frac_shifted:0>width$} {symbol}",
@@ -133,9 +136,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &BalanceDisplayData<'_>, them
         .border_style(Style::default().fg(theme.border))
         .title(Span::styled(
             " Balances ",
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(theme.bg_raised));
 
@@ -150,9 +151,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &BalanceDisplayData<'_>, them
         // Asset header.
         lines.push(Line::from(Span::styled(
             format!("  {}", asset.label),
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
         )));
 
         // Free balance.
@@ -198,10 +197,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &BalanceDisplayData<'_>, them
             format_balance(data.existential_deposit, data.ed_denomination),
             Style::default().fg(theme.text_dim),
         ),
-        Span::styled(
-            " (min balance)",
-            Style::default().fg(theme.text_ghost),
-        ),
+        Span::styled(" (min balance)", Style::default().fg(theme.text_ghost)),
     ]));
 
     let para = Paragraph::new(lines);

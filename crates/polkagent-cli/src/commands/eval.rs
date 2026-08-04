@@ -12,12 +12,12 @@ use anyhow::{Context, Result};
 
 use polkagent_eval::corpus::load_suite_from_json;
 use polkagent_eval::regression::RegressionDetector;
-use polkagent_eval::report::{EvalReport, report_to_markdown, report_to_json, report_summary};
+use polkagent_eval::report::{report_summary, report_to_json, report_to_markdown, EvalReport};
 use polkagent_eval::runner::{EvalRunner, EvalRunnerConfig};
 
 use polkagent_executor_fake::FakeExecutor;
 
-use crate::cli::{EvalCmd, EvalRunCmd, EvalListCmd, EvalReportCmd, EvalCompareCmd};
+use crate::cli::{EvalCmd, EvalCompareCmd, EvalListCmd, EvalReportCmd, EvalRunCmd};
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -155,8 +155,8 @@ fn list_suites(cmd: &EvalListCmd) -> Result<()> {
 
     let mut suites: Vec<SuiteEntry> = Vec::new();
 
-    let read_dir = std::fs::read_dir(dir)
-        .with_context(|| format!("reading directory {}", dir.display()))?;
+    let read_dir =
+        std::fs::read_dir(dir).with_context(|| format!("reading directory {}", dir.display()))?;
 
     for entry in read_dir.filter_map(|e| e.ok()) {
         let path = entry.path();
@@ -197,7 +197,10 @@ fn list_suites(cmd: &EvalListCmd) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!(items))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!(items))?
+        );
     } else {
         println!("Available eval suites in {}:", dir.display());
         println!("{}", "-".repeat(60));
@@ -271,8 +274,16 @@ fn compare_reports(cmd: &EvalCompareCmd) -> Result<()> {
     } else {
         println!("# Eval Comparison");
         println!();
-        println!("Baseline: {} ({})", baseline.suite_name, cmd.baseline.display());
-        println!("Current:  {} ({})", current.suite_name, cmd.current.display());
+        println!(
+            "Baseline: {} ({})",
+            baseline.suite_name,
+            cmd.baseline.display()
+        );
+        println!(
+            "Current:  {} ({})",
+            current.suite_name,
+            cmd.current.display()
+        );
         println!();
 
         // Summary table.
@@ -326,10 +337,7 @@ fn compare_reports(cmd: &EvalCompareCmd) -> Result<()> {
         if result.is_clean() {
             println!("No regressions detected.");
         } else {
-            println!(
-                "{} regression(s) detected.",
-                result.regressions.len()
-            );
+            println!("{} regression(s) detected.", result.regressions.len());
         }
     }
 
@@ -346,8 +354,7 @@ fn save_report_json(report: &EvalReport, path: &Path) -> Result<()> {
             .with_context(|| format!("creating directory {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(report).context("serializing report")?;
-    std::fs::write(path, json)
-        .with_context(|| format!("writing report to {}", path.display()))?;
+    std::fs::write(path, json).with_context(|| format!("writing report to {}", path.display()))?;
     Ok(())
 }
 
@@ -444,8 +451,8 @@ mod tests {
     // ------------------------------------------------------------------
     #[test]
     fn parse_eval_run_defaults() {
-        let cli = Cli::try_parse_from(["polkagent", "eval", "run", "suite.json"])
-            .expect("should parse");
+        let cli =
+            Cli::try_parse_from(["polkagent", "eval", "run", "suite.json"]).expect("should parse");
 
         match cli.command {
             Some(crate::cli::Commands::Eval(crate::cli::EvalCmd::Run(cmd))) => {
@@ -557,10 +564,7 @@ mod tests {
 
         // Simulate the agent injection done in run_suite.
         if let Some(obj) = json.as_object_mut() {
-            obj.insert(
-                "agent".into(),
-                serde_json::Value::String("my-agent".into()),
-            );
+            obj.insert("agent".into(), serde_json::Value::String("my-agent".into()));
         }
 
         assert_eq!(json["agent"], "my-agent");
@@ -593,8 +597,7 @@ mod tests {
 
         // Verify the saved file is valid JSON and deserializes to an EvalReport.
         let content = std::fs::read_to_string(&output_path).expect("read report");
-        let report: EvalReport =
-            serde_json::from_str(&content).expect("parse saved report");
+        let report: EvalReport = serde_json::from_str(&content).expect("parse saved report");
         assert_eq!(report.suite_name, "test-suite");
         assert_eq!(report.total_cases, 1);
     }
@@ -604,14 +607,8 @@ mod tests {
     // ------------------------------------------------------------------
     #[test]
     fn parse_eval_list_args() {
-        let cli = Cli::try_parse_from([
-            "polkagent",
-            "eval",
-            "list",
-            "/tmp/suites",
-            "--json",
-        ])
-        .expect("should parse");
+        let cli = Cli::try_parse_from(["polkagent", "eval", "list", "/tmp/suites", "--json"])
+            .expect("should parse");
 
         match cli.command {
             Some(crate::cli::Commands::Eval(crate::cli::EvalCmd::List(cmd))) => {

@@ -167,6 +167,7 @@ pub fn run(cmd: &DoctorCmd) -> Result<()> {
     system_checks.push(check_signer());
     system_checks.push(check_chain_rpc());
     system_checks.push(check_daemon());
+    system_checks.extend(check_metadata_drift(&config));
 
     // Provider checks.
     let provider_checks = check_providers(&config);
@@ -188,11 +189,7 @@ pub fn run(cmd: &DoctorCmd) -> Result<()> {
 // JSON output
 // ---------------------------------------------------------------------------
 
-fn print_json(
-    system: &[Check],
-    providers: &[Check],
-    harnesses: &[Check],
-) -> Result<()> {
+fn print_json(system: &[Check], providers: &[Check], harnesses: &[Check]) -> Result<()> {
     let to_json = |checks: &[Check]| -> Vec<serde_json::Value> {
         checks
             .iter()
@@ -648,35 +645,30 @@ fn check_database() -> Check {
 }
 
 fn check_config() -> Check {
-    let candidates = vec![
-        ".polkagent/polkagent.toml".to_owned(),
-        {
-            let home = std::env::var("HOME").unwrap_or_default();
-            format!("{home}/.config/polkagent/polkagent.toml")
-        },
-    ];
+    let candidates = vec![".polkagent/polkagent.toml".to_owned(), {
+        let home = std::env::var("HOME").unwrap_or_default();
+        format!("{home}/.config/polkagent/polkagent.toml")
+    }];
 
     for path in &candidates {
         if std::path::Path::new(path).exists() {
             match std::fs::read_to_string(path) {
-                Ok(content) => {
-                    match toml::from_str::<polkagent_config::schema::Config>(&content) {
-                        Ok(_) => {
-                            return Check {
-                                name: "Config".to_owned(),
-                                status: CheckStatus::Ok,
-                                message: format!("Valid config at {path}"),
-                            }
-                        }
-                        Err(e) => {
-                            return Check {
-                                name: "Config".to_owned(),
-                                status: CheckStatus::Fail,
-                                message: format!("Config at {path} is invalid: {e}"),
-                            }
+                Ok(content) => match toml::from_str::<polkagent_config::schema::Config>(&content) {
+                    Ok(_) => {
+                        return Check {
+                            name: "Config".to_owned(),
+                            status: CheckStatus::Ok,
+                            message: format!("Valid config at {path}"),
                         }
                     }
-                }
+                    Err(e) => {
+                        return Check {
+                            name: "Config".to_owned(),
+                            status: CheckStatus::Fail,
+                            message: format!("Config at {path} is invalid: {e}"),
+                        }
+                    }
+                },
                 Err(e) => {
                     return Check {
                         name: "Config".to_owned(),
@@ -786,8 +778,8 @@ fn check_chain_rpc() -> Check {
 }
 
 fn check_daemon() -> Check {
-    let bind_addr = std::env::var("POLKAGENT_API_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
+    let bind_addr =
+        std::env::var("POLKAGENT_API_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
 
     let reachable = probe_tcp_addr(&bind_addr);
 
@@ -806,6 +798,45 @@ fn check_daemon() -> Check {
                  Start the daemon with `polkagent-serve` or check POLKAGENT_API_BIND."
             ),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Metadata drift checks (PRD-05 §4.4)
+// ---------------------------------------------------------------------------
+
+fn check_metadata_drift(_config: &polkagent_config::schema::Config) -> Vec<Check> {
+    use polkagent_metadata::{ChainId, MetadataService};
+    use polkagent_service::metadata_watcher::check_drift_all;
+
+    let svc = MetadataService::new();
+
+    // Use well-known Polkadot ecosystem chains for drift detection.
+    let chain_ids: Vec<ChainId> = vec![ChainId::new("polkadot"), ChainId::new("kusama")];
+
+    let drifts = check_drift_all(&svc, &chain_ids);
+
+    if drifts.is_empty() {
+        vec![Check {
+            name: "Metadata Drift".to_owned(),
+            status: CheckStatus::Ok,
+            message: format!(
+                "no metadata drift detected across {} chain(s)",
+                chain_ids.len()
+            ),
+        }]
+    } else {
+        drifts
+            .iter()
+            .map(|d| Check {
+                name: format!("Metadata Drift/{}", d.chain_id),
+                status: CheckStatus::Warn,
+                message: format!(
+                    "drift detected: pinned={} current={}",
+                    d.pinned_hash, d.current_hash
+                ),
+            })
+            .collect()
     }
 }
 
@@ -932,7 +963,13 @@ fn parse_semver(version_str: &str) -> Option<(u32, u32, u32)> {
     // Find the first sequence that looks like digits.digits.digits.
     let re_like = version_str
         .split(|c: char| !c.is_ascii_digit() && c != '.')
-        .find(|s| s.contains('.') && s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))?;
+        .find(|s| {
+            s.contains('.')
+                && s.chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+        })?;
 
     let mut parts = re_like.splitn(3, '.');
     let major: u32 = parts.next()?.parse().ok()?;

@@ -1,0 +1,24 @@
+All 12 tests pass, and the full integration test suite remains green. Here's a summary of what was done:
+
+### Changes Made
+
+**1. `crates/polkagent-integration-tests/Cargo.toml`** — Added dependencies:
+- `polkagent-transport-pca` 
+- `polkagent-transport-trait`
+
+**2. `crates/polkagent-integration-tests/tests/pca_transport_e2e.rs`** — New test file with 12 tests covering the full PCA C0 bot E2E lifecycle:
+
+| Test | What it verifies |
+|------|-----------------|
+| `bot_registers_with_server_via_handshake` | X25519 handshake between bot and server, both reach `Active` state |
+| `bot_sends_message_and_receives_ack` | Bot sends a message and gets a `DeliveryReceipt` with valid ID |
+| `bot_receives_response_from_server` | Bot receives injected server message, verifies sender + content, ACKs |
+| `messages_are_received_in_fifo_order` | 10 messages injected and received in strict FIFO order |
+| `outgoing_messages_preserve_order` | 5 outgoing messages drained in send order with correct content |
+| `full_e2e_bot_server_conversation` | Complete round-trip: bot sends → server receives/ACKs → server replies → bot receives/ACKs |
+| `send_fails_when_disconnected` | Error on send without session |
+| `receive_fails_when_disconnected` | Error on receive without session |
+| `disconnect_terminates_active_session` | Disconnect closes channels and blocks further operations |
+| `unacked_messages_remain_pending` | Pending ACK count tracks correctly with partial ACKs |
+| `content_integrity_roundtrip` | Empty, unicode, large (10K), and JSON payloads survive the round-trip unchanged |
+| `capabilities_report_pca_auth_methods` | PCA capabilities include `x25519-chacha20poly1305` and `ss58` auth |

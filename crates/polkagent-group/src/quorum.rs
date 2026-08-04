@@ -133,16 +133,9 @@ pub enum QuorumResult {
 ///
 /// A [`QuorumResult`] indicating whether quorum is reached, pending, or
 /// failed.
-pub fn check_quorum(
-    policy: &QuorumPolicy,
-    votes: &[Vote],
-    total_members: usize,
-) -> QuorumResult {
+pub fn check_quorum(policy: &QuorumPolicy, votes: &[Vote], total_members: usize) -> QuorumResult {
     // Filter to only voting-eligible votes.
-    let eligible_votes: Vec<&Vote> = votes
-        .iter()
-        .filter(|v| v.role.can_vote())
-        .collect();
+    let eligible_votes: Vec<&Vote> = votes.iter().filter(|v| v.role.can_vote()).collect();
 
     let approve_count = eligible_votes
         .iter()
@@ -321,7 +314,9 @@ mod tests {
         let result = check_quorum(&QuorumPolicy::Unanimous, &votes, 3);
         assert!(matches!(
             result,
-            QuorumResult::Reached { decision: Decision::Approved }
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
         ));
     }
 
@@ -338,10 +333,7 @@ mod tests {
 
     #[test]
     fn unanimous_abstain_fails_quorum() {
-        let votes = vec![
-            approve(MemberRole::Leader),
-            abstain(MemberRole::Worker),
-        ];
+        let votes = vec![approve(MemberRole::Leader), abstain(MemberRole::Worker)];
         let result = check_quorum(&QuorumPolicy::Unanimous, &votes, 2);
         assert!(matches!(result, QuorumResult::Failed(_)));
     }
@@ -365,7 +357,9 @@ mod tests {
         let result = check_quorum(&QuorumPolicy::Majority, &votes, 3);
         assert!(matches!(
             result,
-            QuorumResult::Reached { decision: Decision::Approved }
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
         ));
     }
 
@@ -414,26 +408,20 @@ mod tests {
             approve(MemberRole::Worker),
             deny(MemberRole::Worker),
         ];
-        let result = check_quorum(
-            &QuorumPolicy::Threshold { fraction: 0.75 },
-            &votes,
-            4,
-        );
+        let result = check_quorum(&QuorumPolicy::Threshold { fraction: 0.75 }, &votes, 4);
         // ceil(4 * 0.75) = 3, 3 approvals => reached
         assert!(matches!(
             result,
-            QuorumResult::Reached { decision: Decision::Approved }
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
         ));
     }
 
     #[test]
     fn threshold_custom_pending_when_not_enough_yet() {
         let votes = vec![approve(MemberRole::Leader)];
-        let result = check_quorum(
-            &QuorumPolicy::Threshold { fraction: 0.5 },
-            &votes,
-            4,
-        );
+        let result = check_quorum(&QuorumPolicy::Threshold { fraction: 0.5 }, &votes, 4);
         // ceil(4 * 0.5) = 2, 1 approval => pending, needed = 1
         assert!(matches!(result, QuorumResult::Pending { needed: 1 }));
     }
@@ -445,11 +433,7 @@ mod tests {
             deny(MemberRole::Worker),
             deny(MemberRole::Worker),
         ];
-        let result = check_quorum(
-            &QuorumPolicy::Threshold { fraction: 0.75 },
-            &votes,
-            3,
-        );
+        let result = check_quorum(&QuorumPolicy::Threshold { fraction: 0.75 }, &votes, 3);
         // ceil(3*0.75) = 3, 0 approvals, 0 uncast → can't reach 3
         assert!(matches!(result, QuorumResult::Failed(_)));
     }
@@ -465,16 +449,15 @@ mod tests {
         let result = check_quorum(&QuorumPolicy::LeaderOnly, &votes, 2);
         assert!(matches!(
             result,
-            QuorumResult::Reached { decision: Decision::Approved }
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
         ));
     }
 
     #[test]
     fn leader_only_leader_deny_fails_quorum() {
-        let votes = vec![
-            deny(MemberRole::Leader),
-            approve(MemberRole::Worker),
-        ];
+        let votes = vec![deny(MemberRole::Leader), approve(MemberRole::Worker)];
         let result = check_quorum(&QuorumPolicy::LeaderOnly, &votes, 2);
         assert!(matches!(result, QuorumResult::Failed(_)));
     }
@@ -506,7 +489,9 @@ mod tests {
         let result = check_quorum(&QuorumPolicy::Unanimous, &votes, 2);
         assert!(matches!(
             result,
-            QuorumResult::Reached { decision: Decision::Approved }
+            QuorumResult::Reached {
+                decision: Decision::Approved
+            }
         ));
     }
 

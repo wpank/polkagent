@@ -1,0 +1,43 @@
+Here's a summary of all changes made:
+
+### Files Modified
+
+**1. `Cargo.toml` (workspace root)**
+- Added `blake2 = "0.10"` and `twox-hash = "1"` to `[workspace.dependencies]` — needed for Substrate storage key computation (twox128 and blake2-128-concat hashing).
+
+**2. `crates/polkagent-cli/Cargo.toml`**
+- Added `polkagent-chain-subxt` dependency (brings in the real chain client)
+- Added `blake2` and `twox-hash` workspace deps (for storage key hashing in balance queries)
+
+**3. `crates/polkagent-cli/src/main.rs`**
+- Changed the `Chain` command dispatch from sync `commands::chain::run(cmd)` to async `commands::chain::run(cmd, rpc_url.as_deref()).await`
+- Added `resolve_rpc_url()` function that checks the `POLKAGENT_RPC_URL` env var
+- The RPC URL is passed to chain commands; if absent, they show a helpful setup message
+
+**4. `crates/polkagent-cli/src/commands/chain.rs`** (complete rewrite)
+- **`run()`** is now `async` and accepts an optional `rpc_url`
+- **`status()`**: Connects to the RPC node and queries `system_chain`, `system_health`, best block, and finalized block — displays chain name, peer count, syncing status, best/finalized block numbers and hashes
+- **`metadata()`**: Fetches raw metadata via `state_getMetadata`, parses it with `polkagent-chain-subxt::decode::parse_runtime_metadata`, and displays metadata version (V14/V15) and full pallet list
+- **`decode()`**: Fetches metadata from the node, then uses `decode_call_bytes` to decode hex calldata into pallet/call/arguments
+- **`balance()`**: Computes the `System.Account` storage key using `twox128` + `blake2_128_concat`, queries `state_getStorage`, and parses the `AccountInfo` struct to show free/reserved/frozen balances
+- All commands gracefully handle missing RPC URL with a clear message pointing to `POLKAGENT_RPC_URL`
+- All commands support `--json` for structured output
+
+### How to Use
+
+```bash
+# Set the RPC endpoint
+export POLKAGENT_RPC_URL=https://rpc.polkadot.io
+
+# Chain status (name, block numbers, peers, sync state)
+polkagent chain status
+
+# Metadata (version, pallet list)
+polkagent chain metadata
+
+# Decode call data
+polkagent chain decode 0x0500...
+
+# Balance (hex account ID)
+polkagent chain balance 0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d
+```

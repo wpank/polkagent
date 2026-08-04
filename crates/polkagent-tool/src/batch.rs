@@ -187,7 +187,10 @@ impl BatchToolExecutor {
             let ctx = ctx.clone();
             async move {
                 debug!(tool = %inv.tool_name, "executing tool in batch");
-                match registry.execute(&inv.tool_name, inv.input.clone(), &ctx).await {
+                match registry
+                    .execute(&inv.tool_name, inv.input.clone(), &ctx)
+                    .await
+                {
                     Ok(tool_result) => {
                         // Serialize the ToolResult into a JSON value for the
                         // batch processor's generic result slot.
@@ -203,9 +206,7 @@ impl BatchToolExecutor {
 
         // Map the batch processor result back to our domain types.
         match process_result {
-            Ok(batch_result) => {
-                self.build_result(&invocations, &batch_result, mode)
-            }
+            Ok(batch_result) => self.build_result(&invocations, &batch_result, mode),
             Err(batch_err) => {
                 warn!(error = %batch_err, "batch processing infrastructure error");
                 // If the batch infrastructure itself fails, report all as failed.
@@ -255,12 +256,12 @@ impl BatchToolExecutor {
                         Err(e) => (false, None, Some(format!("deserialization error: {e}"))),
                     }
                 }
-                Some(ir) if ir.error.is_some() => {
-                    (false, None, ir.error.clone())
-                }
-                _ => {
-                    (false, None, Some("no result from batch processor".to_string()))
-                }
+                Some(ir) if ir.error.is_some() => (false, None, ir.error.clone()),
+                _ => (
+                    false,
+                    None,
+                    Some("no result from batch processor".to_string()),
+                ),
             };
 
             results.push(ToolInvocationResult {
@@ -277,9 +278,7 @@ impl BatchToolExecutor {
 
         info!(
             total = invocations.len(),
-            succeeded,
-            failed,
-            "batch tool execution complete"
+            succeeded, failed, "batch tool execution complete"
         );
 
         BatchToolResult {
@@ -382,10 +381,7 @@ mod tests {
             input: Value,
             _context: &ToolContext,
         ) -> Result<ToolResult, ToolError> {
-            let should_fail = input
-                .get("fail")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+            let should_fail = input.get("fail").and_then(Value::as_bool).unwrap_or(false);
 
             if should_fail {
                 return Err(ToolError::ExecutionFailed {
@@ -564,9 +560,7 @@ mod tests {
 
         let invocations: Vec<ToolInvocation> = ["a", "b", "c", "d", "e"]
             .iter()
-            .map(|id| {
-                ToolInvocation::new("batch.order", serde_json::json!({ "id": id }))
-            })
+            .map(|id| ToolInvocation::new("batch.order", serde_json::json!({ "id": id })))
             .collect();
 
         let result = executor
@@ -585,11 +579,11 @@ mod tests {
         // Verify result order matches submission order.
         let ids = ["a", "b", "c", "d", "e"];
         for (i, inv_result) in result.results.iter().enumerate() {
-            let output = inv_result
-                .result
-                .as_ref()
-                .expect("should have result");
-            assert_eq!(output.output["order"], i, "result {i} should have order {i}");
+            let output = inv_result.result.as_ref().expect("should have result");
+            assert_eq!(
+                output.output["order"], i,
+                "result {i} should have order {i}"
+            );
             assert_eq!(inv_result.input["id"], ids[i]);
         }
     }
@@ -618,11 +612,7 @@ mod tests {
         // Sequential timing.
         let start_seq = Instant::now();
         let result_seq = executor
-            .execute(
-                invocations.clone(),
-                &ctx,
-                BatchExecutionMode::Sequential,
-            )
+            .execute(invocations.clone(), &ctx, BatchExecutionMode::Sequential)
             .await;
         let elapsed_seq = start_seq.elapsed();
         assert!(result_seq.all_succeeded());

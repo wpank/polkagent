@@ -177,6 +177,20 @@ impl AcpConfig {
             timeout: Duration::from_secs(300),
         }
     }
+
+    /// Create a configuration for the OpenCode ACP agent.
+    ///
+    /// Spawns `opencode acp` (or the given binary path).
+    pub fn opencode(binary: impl Into<String>, cwd: Option<PathBuf>) -> Self {
+        Self {
+            command: binary.into(),
+            args: vec!["acp".into()],
+            cwd,
+            env: HashMap::new(),
+            protocol_version: "0.12.2".into(),
+            timeout: Duration::from_secs(300),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -339,10 +353,7 @@ impl AcpStdioClient {
         }
 
         let mut child = cmd.spawn().map_err(|e| {
-            AcpError::SpawnFailed(format!(
-                "failed to spawn '{}': {e}",
-                self.config.command
-            ))
+            AcpError::SpawnFailed(format!("failed to spawn '{}': {e}", self.config.command))
         })?;
 
         let stdin = child
@@ -451,10 +462,7 @@ impl AcpStdioClient {
     }
 
     /// Load (resume) a previously created session.
-    pub async fn load_session(
-        &mut self,
-        session_key: &str,
-    ) -> Result<serde_json::Value, AcpError> {
+    pub async fn load_session(&mut self, session_key: &str) -> Result<serde_json::Value, AcpError> {
         let params = serde_json::json!({
             "sessionKey": session_key,
         });
@@ -551,9 +559,10 @@ impl AcpStdioClient {
         // Register the pending response channel.
         let (tx, rx) = oneshot::channel();
         {
-            let mut pending = self.pending.lock().map_err(|e| {
-                AcpError::ProtocolError(format!("pending map lock poisoned: {e}"))
-            })?;
+            let mut pending = self
+                .pending
+                .lock()
+                .map_err(|e| AcpError::ProtocolError(format!("pending map lock poisoned: {e}")))?;
             pending.insert(id, tx);
         }
 
@@ -565,9 +574,7 @@ impl AcpStdioClient {
         let result = tokio::time::timeout(self.config.timeout, rx)
             .await
             .map_err(|_| AcpError::Timeout)?
-            .map_err(|_| {
-                AcpError::ProtocolError("response channel closed unexpectedly".into())
-            })?;
+            .map_err(|_| AcpError::ProtocolError("response channel closed unexpectedly".into()))?;
 
         // Check for JSON-RPC error.
         if let Some(error) = result.get("error") {
@@ -739,16 +746,17 @@ impl AcpStdioClient {
                     .unwrap_or("")
                     .to_owned();
 
-                let permission: AcpPermission = serde_json::from_value(
-                    params.get("permission").cloned().unwrap_or(serde_json::json!({
-                        "type": "unknown",
-                    })),
-                )
-                .unwrap_or(AcpPermission {
-                    permission_type: "unknown".into(),
-                    description: None,
-                    extra: HashMap::new(),
-                });
+                let permission: AcpPermission =
+                    serde_json::from_value(params.get("permission").cloned().unwrap_or(
+                        serde_json::json!({
+                            "type": "unknown",
+                        }),
+                    ))
+                    .unwrap_or(AcpPermission {
+                        permission_type: "unknown".into(),
+                        description: None,
+                        extra: HashMap::new(),
+                    });
 
                 let notification = AcpNotification::PermissionRequest {
                     id,
@@ -954,10 +962,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         status.clone()
     }
 
-    async fn start_session(
-        &self,
-        config: SessionConfig,
-    ) -> Result<SessionId, HarnessError> {
+    async fn start_session(&self, config: SessionConfig) -> Result<SessionId, HarnessError> {
         let session_id = SessionId::new();
 
         let mut client_guard = self.client.lock().await;
@@ -1007,16 +1012,12 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         Ok(session_id)
     }
 
-    async fn send_message(
-        &self,
-        session_id: SessionId,
-        message: &str,
-    ) -> Result<(), HarnessError> {
+    async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError> {
         let session_key = {
             let sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let state = sessions.get(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let state = sessions
+                .get(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
 
             if !state.active {
                 return Err(HarnessError::InvalidState {
@@ -1115,15 +1116,12 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         Ok(Box::pin(stream))
     }
 
-    async fn end_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError> {
+    async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         let session_key = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let state = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let state = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
 
             if !state.active {
                 return Ok(());
@@ -1171,6 +1169,102 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
             }
         }
     }
+
+    async fn save_session_state(
+        &self,
+        session_id: SessionId,
+    ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let session = sessions
+            .get(&session_id)
+            .ok_or(HarnessError::SessionNotFound { session_id })?;
+
+        let mut backend_state = std::collections::HashMap::new();
+        backend_state.insert("session_key".into(), serde_json::json!(session.session_key));
+
+        let snapshot = polkagent_harness_trait::SessionSnapshot {
+            session_id,
+            harness_id: self.configurator.harness_id(),
+            process_pid: None,
+            started_at: chrono::Utc::now(),
+            working_directory: self.harness_config.workspace_path.clone(),
+            turn_count: 0,
+            backend_state,
+        };
+
+        polkagent_harness_trait::persist_session_state(&snapshot)?;
+        debug!(session_id = %session_id, "ACP session state saved");
+        Ok(snapshot)
+    }
+
+    async fn resume_session(&self, session_id: SessionId) -> Result<SessionId, HarnessError> {
+        let snapshot = polkagent_harness_trait::load_session_state(session_id)?;
+
+        let session_key = snapshot
+            .backend_state
+            .get("session_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| HarnessError::ParseError {
+                message: "missing session_key in saved state".into(),
+            })?
+            .to_owned();
+
+        // Re-connect the ACP client if needed.
+        let mut client_guard = self.client.lock().await;
+        if client_guard.is_none() {
+            let acp_config = self.configurator.build_config(&self.harness_config);
+            let mut client = AcpStdioClient::new(acp_config);
+            client.connect().await?;
+            *client_guard = Some(client);
+        }
+
+        // Re-register the session in our local map.
+        {
+            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            sessions.insert(
+                session_id,
+                AcpSessionState {
+                    session_key,
+                    active: true,
+                },
+            );
+        }
+
+        {
+            let mut status = self.status.lock().expect("status mutex poisoned");
+            *status = HarnessStatus::Running {
+                since: chrono::Utc::now(),
+                run_id: None,
+            };
+        }
+
+        polkagent_harness_trait::remove_session_state(session_id)?;
+        info!(session_id = %session_id, "ACP session resumed");
+        Ok(session_id)
+    }
+
+    async fn cancel_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
+        let session_key = {
+            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let state = sessions
+                .get(&session_id)
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
+            state.session_key.clone()
+        };
+
+        let mut client_guard = self.client.lock().await;
+        if let Some(client) = client_guard.as_mut() {
+            let _ = client.cancel(&session_key).await;
+        }
+        drop(client_guard);
+
+        polkagent_harness_trait::remove_session_state(session_id).ok();
+        self.end_session(session_id).await
+    }
+
+    fn health_interval(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,10 +1286,7 @@ pub fn build_jsonrpc_request(
 }
 
 /// Build a JSON-RPC 2.0 notification (no id).
-pub fn build_jsonrpc_notification(
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
+pub fn build_jsonrpc_notification(method: &str, params: serde_json::Value) -> serde_json::Value {
     let mut msg = serde_json::json!({
         "jsonrpc": "2.0",
         "method": method,
@@ -1789,8 +1880,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_spawn_failure() {
-        let config =
-            AcpConfig::cursor("nonexistent-binary-that-does-not-exist-12345", None);
+        let config = AcpConfig::cursor("nonexistent-binary-that-does-not-exist-12345", None);
         let mut client = AcpStdioClient::new(config);
         let result = client.connect().await;
         assert!(result.is_err());

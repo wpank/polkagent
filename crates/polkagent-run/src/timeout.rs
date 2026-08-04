@@ -156,8 +156,7 @@ impl TimeoutEnforcer {
         }
 
         // Global max deadline.
-        if let (Some(max_dur), Some(started_at)) =
-            (self.config.global_max_duration, run.started_at)
+        if let (Some(max_dur), Some(started_at)) = (self.config.global_max_duration, run.started_at)
         {
             let elapsed = now
                 .signed_duration_since(started_at)
@@ -185,11 +184,9 @@ impl TimeoutEnforcer {
         // Compute the deadline implied by the global max duration, if both
         // the max duration and a start time are available.
         let global = match (self.config.global_max_duration, run.started_at) {
-            (Some(max_dur), Some(started_at)) => {
-                chrono::Duration::from_std(max_dur)
-                    .ok()
-                    .map(|dur| started_at + dur)
-            }
+            (Some(max_dur), Some(started_at)) => chrono::Duration::from_std(max_dur)
+                .ok()
+                .map(|dur| started_at + dur),
             _ => None,
         };
 
@@ -287,7 +284,7 @@ mod tests {
     #[test]
     fn run_without_started_at_skips_global_limit_check() {
         let run = make_run(); // started_at is None
-        // Global max is 60 seconds but no started_at → no timeout
+                              // Global max is 60 seconds but no started_at → no timeout
         let result = enforcer_with_limit(60).check(&run);
         assert!(result.is_ok());
     }
@@ -339,10 +336,7 @@ mod tests {
     #[test]
     fn default_config_has_600_second_global_max() {
         let config = TimeoutConfig::default();
-        assert_eq!(
-            config.global_max_duration,
-            Some(Duration::from_secs(600))
-        );
+        assert_eq!(config.global_max_duration, Some(Duration::from_secs(600)));
     }
 
     #[test]

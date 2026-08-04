@@ -179,7 +179,9 @@ pub struct ConfidenceChecker {
 
 impl Default for ConfidenceChecker {
     fn default() -> Self {
-        Self { min_confidence: 0.5 }
+        Self {
+            min_confidence: 0.5,
+        }
     }
 }
 
@@ -227,7 +229,9 @@ impl CompositeAdmission {
     /// Create an empty composite (accepts everything).
     #[must_use]
     pub fn new() -> Self {
-        Self { policies: Vec::new() }
+        Self {
+            policies: Vec::new(),
+        }
     }
 
     /// Add a policy to the chain.
@@ -262,10 +266,10 @@ impl AdmissionPolicy for CompositeAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-    use polkagent_core::ids::AgentId;
     use crate::classification::Classification;
     use crate::types::{MemoryId, MemoryType};
+    use chrono::Utc;
+    use polkagent_core::ids::AgentId;
 
     fn base_entry(agent_id: AgentId, content: &str) -> MemoryEntry {
         let now = Utc::now();
@@ -293,10 +297,16 @@ mod tests {
     fn novelty_novel_entry_accepted() {
         let agent = AgentId::new();
         let checker = NoveltyChecker::default();
-        let new_entry = base_entry(agent, "Rust is a systems language with zero-cost abstractions");
+        let new_entry = base_entry(
+            agent,
+            "Rust is a systems language with zero-cost abstractions",
+        );
         let existing = vec![base_entry(agent, "Python is a dynamic scripting language")];
 
-        assert_eq!(checker.evaluate(&new_entry, &existing), AdmissionDecision::Accept);
+        assert_eq!(
+            checker.evaluate(&new_entry, &existing),
+            AdmissionDecision::Accept
+        );
     }
 
     #[test]
@@ -320,7 +330,10 @@ mod tests {
         // Let's use nearly identical sentences.
         let checker = NoveltyChecker::default();
         let new_entry = base_entry(agent, "Rust is fast memory safe language");
-        let existing = vec![base_entry(agent, "Rust is fast memory safe language systems")];
+        let existing = vec![base_entry(
+            agent,
+            "Rust is fast memory safe language systems",
+        )];
         // Jaccard = 5/6 ≈ 0.83 → rejected
         match checker.evaluate(&new_entry, &existing) {
             AdmissionDecision::Reject(_) => (),
@@ -337,7 +350,10 @@ mod tests {
         existing.memory_type = MemoryType::Procedural; // different type
 
         // Should accept because we only compare same memory_type.
-        assert_eq!(checker.evaluate(&new_entry, &[existing]), AdmissionDecision::Accept);
+        assert_eq!(
+            checker.evaluate(&new_entry, &[existing]),
+            AdmissionDecision::Accept
+        );
     }
 
     // -- RelevanceChecker --
@@ -469,10 +485,16 @@ mod tests {
             .with(NoveltyChecker::default())
             .with(ConfidenceChecker::default());
 
-        let existing = vec![base_entry(agent, "python scripting language for automation")];
+        let existing = vec![base_entry(
+            agent,
+            "python scripting language for automation",
+        )];
         let new_entry = base_entry(agent, "Rust systems language zero cost abstractions safe");
 
-        assert_eq!(composite.evaluate(&new_entry, &existing), AdmissionDecision::Accept);
+        assert_eq!(
+            composite.evaluate(&new_entry, &existing),
+            AdmissionDecision::Accept
+        );
     }
 
     #[test]

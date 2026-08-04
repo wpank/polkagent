@@ -99,11 +99,7 @@ where
     /// - `store` — the task persistence backend.
     /// - `executor` — the task executor for dispatching actions.
     /// - `poll_interval` — how often the runner checks for due tasks.
-    pub fn new(
-        store: Arc<S>,
-        executor: Arc<E>,
-        poll_interval: std::time::Duration,
-    ) -> Self {
+    pub fn new(store: Arc<S>, executor: Arc<E>, poll_interval: std::time::Duration) -> Self {
         Self {
             store,
             executor,
@@ -131,10 +127,7 @@ where
     }
 
     /// Register a new task with the scheduler's store.
-    pub async fn add_task(
-        &self,
-        task: ScheduledTask,
-    ) -> Result<ScheduledTask, SchedulerError> {
+    pub async fn add_task(&self, task: ScheduledTask) -> Result<ScheduledTask, SchedulerError> {
         self.store.create_task(task).await
     }
 

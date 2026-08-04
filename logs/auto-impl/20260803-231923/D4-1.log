@@ -1,0 +1,22 @@
+All three issues are **already fixed** in the current code. Here's the evidence:
+
+**1. Route ordering (`mod.rs` lines 203–205)** — `/events/stream` is already registered **before** `/events/{id}`:
+```rust
+.route("/events", get(events_rest::list_events))
+.route("/events/stream", get(events::event_stream))   // ← static route first
+.route("/events/{id}", get(events_rest::get_event))    // ← parameterized route second
+```
+
+**2. Health routes (`mod.rs` lines 145–148)** — Already using the real `HealthState`-aware handlers, not inline closures:
+```rust
+.route("/health/ready", get(health::readiness))   // checks HealthState + components
+.route("/health/startup", get(health::startup))    // checks HealthState.is_ready()
+```
+Both `readiness()` and `startup()` extract `Arc<HealthState>` (via the `FromRef<AppState>` impl in `state.rs`) and return 503 when appropriate.
+
+**3. Metrics in `create_run` (`runs.rs` lines 55–85)** — There is no `runs_completed()` call. The code correctly calls:
+- `runs_started()` on successful creation
+- `runs_failed()` on error
+- `runs_completed()` is not called anywhere (it exists only in `MetricRecorder` for when actual completion tracking is wired up)
+
+**Tests:** `cargo check` passes cleanly and all **120 tests pass**, 0 failures.

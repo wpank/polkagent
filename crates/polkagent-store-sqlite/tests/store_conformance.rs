@@ -104,10 +104,7 @@ impl EventStore for EventStoreWithRunSetup {
         self.pool.query(filter).await
     }
 
-    async fn max_sequence(
-        &self,
-        run_id: polkagent_core::RunId,
-    ) -> Result<u64, EventStoreError> {
+    async fn max_sequence(&self, run_id: polkagent_core::RunId) -> Result<u64, EventStoreError> {
         self.pool.max_sequence(run_id).await
     }
 

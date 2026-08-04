@@ -259,7 +259,10 @@ mod tests {
         let bytes = [0u8; 32];
         let id = AccountId32::from_bytes(bytes);
         let display = id.to_string();
-        assert_eq!(display, "0x0000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(
+            display,
+            "0x0000000000000000000000000000000000000000000000000000000000000000"
+        );
     }
 
     #[test]

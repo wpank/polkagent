@@ -189,6 +189,15 @@ pub struct MemoryProvenance {
     pub confidence: f64,
     /// Whether a human has verified this memory.
     pub verified: bool,
+    /// The artifact that sourced this memory (for `forget(artifact_id)` cascading).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_artifact_id: Option<String>,
+    /// The agent that originally produced this memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_agent_id: Option<String>,
+    /// Timestamp when this memory was ingested into the store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingested_at: Option<DateTime<Utc>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +258,8 @@ fn default_confidence() -> f64 {
 /// Parameters for searching memories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryQuery {
-    /// The agent whose memories to search.
-    pub agent_id: AgentId,
+    /// The agent whose memories to search. `None` searches across all agents.
+    pub agent_id: Option<AgentId>,
     /// Free-text query string.
     pub query_text: String,
     /// Optional filter to specific memory types.
@@ -346,9 +355,18 @@ mod tests {
 
     #[test]
     fn memory_type_from_str() {
-        assert_eq!("episodic".parse::<MemoryType>().unwrap(), MemoryType::Episodic);
-        assert_eq!("semantic".parse::<MemoryType>().unwrap(), MemoryType::Semantic);
-        assert_eq!("procedural".parse::<MemoryType>().unwrap(), MemoryType::Procedural);
+        assert_eq!(
+            "episodic".parse::<MemoryType>().unwrap(),
+            MemoryType::Episodic
+        );
+        assert_eq!(
+            "semantic".parse::<MemoryType>().unwrap(),
+            MemoryType::Semantic
+        );
+        assert_eq!(
+            "procedural".parse::<MemoryType>().unwrap(),
+            MemoryType::Procedural
+        );
         assert!("unknown".parse::<MemoryType>().is_err());
     }
 
@@ -369,6 +387,9 @@ mod tests {
             extraction_method: "llm_extraction".into(),
             confidence: 0.95,
             verified: false,
+            source_artifact_id: Some("artifact-abc".into()),
+            source_agent_id: Some("agent-xyz".into()),
+            ingested_at: None,
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: MemoryProvenance = serde_json::from_str(&json).unwrap();

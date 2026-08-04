@@ -160,13 +160,7 @@ fn build_query(cmd: &LogsCmd, after_seq: Option<i64>) -> (String, Vec<String>) {
     (sql, params)
 }
 
-fn print_event(
-    seq: i64,
-    kind: &str,
-    run_id: &str,
-    data: &str,
-    timestamp: &str,
-) {
+fn print_event(seq: i64, kind: &str, run_id: &str, data: &str, timestamp: &str) {
     // Shorten the timestamp to just the time portion for readability.
     let ts = timestamp
         .split('T')

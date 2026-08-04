@@ -22,6 +22,9 @@ uuid = { workspace = true }
 sha2 = "0.10"
 toml = { workspace = true }
 
+[features]
+evolutionary = []
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

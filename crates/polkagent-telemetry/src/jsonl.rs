@@ -52,10 +52,7 @@ impl JsonlWriter {
     /// Returns [`JsonlError::Io`] if the file cannot be opened.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, JsonlError> {
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             writer: BufWriter::new(file),
             path,
@@ -135,6 +132,7 @@ fn event_kind_label(kind: &polkagent_core::event::EventKind) -> &'static str {
         EventKind::DiagnosticLog { .. } => "diagnostic_log",
         EventKind::BudgetConsumed { .. } => "budget_consumed",
         EventKind::BudgetWarning { .. } => "budget_warning",
+        EventKind::MetadataDriftDetected { .. } => "metadata_drift_detected",
     }
 }
 
@@ -179,8 +177,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
 
         // Parse the JSON line to verify structure.
-        let parsed: serde_json::Value =
-            serde_json::from_str(lines[0]).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(lines[0]).expect("valid JSON");
         assert!(parsed.get("timestamp").is_some());
         assert_eq!(parsed["event_type"], "run_created");
         assert!(parsed.get("run_id").is_some());

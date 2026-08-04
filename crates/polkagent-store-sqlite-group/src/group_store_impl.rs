@@ -985,7 +985,9 @@ mod tests {
         GroupStore::create_group(&store, group)
             .await
             .expect("create");
-        GroupStore::delete_group(&store, &gid).await.expect("delete");
+        GroupStore::delete_group(&store, &gid)
+            .await
+            .expect("delete");
 
         let err = GroupStore::get_group(&store, &gid)
             .await
@@ -1020,7 +1022,9 @@ mod tests {
         GroupStore::create_group(&store, group)
             .await
             .expect("create");
-        GroupStore::delete_group(&store, &gid).await.expect("delete");
+        GroupStore::delete_group(&store, &gid)
+            .await
+            .expect("delete");
 
         // Verify members were cascade-deleted.
         let count: i64 = {
@@ -1217,9 +1221,13 @@ mod tests {
         // Add members with different timestamps.
         for _ in 0..3 {
             let new_agent = AgentId::new();
-            GroupStore::add_member(&store, &gid, GroupMember::new(new_agent, MemberRole::Worker))
-                .await
-                .expect("add member");
+            GroupStore::add_member(
+                &store,
+                &gid,
+                GroupMember::new(new_agent, MemberRole::Worker),
+            )
+            .await
+            .expect("add member");
         }
 
         let members = GroupStore::list_members(&store, &gid).await.expect("list");

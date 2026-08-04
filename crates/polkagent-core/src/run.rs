@@ -116,8 +116,17 @@ impl std::fmt::Display for RunState {
             Self::Created => write!(f, "created"),
             Self::Queued => write!(f, "queued"),
             Self::Running => write!(f, "running"),
-            Self::AwaitingApproval { .. } => write!(f, "awaiting_approval"),
-            Self::WaitingEffect { .. } => write!(f, "waiting_effect"),
+            Self::AwaitingApproval { request_id } => write!(f, "awaiting_approval:{request_id}"),
+            Self::WaitingEffect { pending_intent_ids } => {
+                write!(f, "waiting_effect:")?;
+                for (i, id) in pending_intent_ids.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ",")?;
+                    }
+                    write!(f, "{id}")?;
+                }
+                Ok(())
+            }
             Self::Completing => write!(f, "completing"),
             Self::Completed => write!(f, "completed"),
             Self::Failed { reason } => write!(f, "failed:{reason}"),

@@ -25,8 +25,8 @@ pub mod conformance;
 pub mod xcm;
 
 pub use xcm::{
-    estimate_xcm_fees, resolve_xcm_mechanism, FeeEstimate, XcmError, XcmHop, XcmMechanism,
-    XcmPlan, XcmRoute, XcmVersionCompat,
+    estimate_xcm_fees, resolve_xcm_mechanism, FeeEstimate, XcmError, XcmHop, XcmMechanism, XcmPlan,
+    XcmRoute, XcmVersionCompat,
 };
 
 use async_trait::async_trait;
@@ -322,7 +322,13 @@ impl ChainError {
     /// Returns `true` if the caller may safely retry the operation.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Rpc { retryable: true, .. })
+        matches!(
+            self,
+            Self::Rpc {
+                retryable: true,
+                ..
+            }
+        )
     }
 }
 
@@ -427,10 +433,7 @@ pub trait ChainClient: Send + Sync + 'static {
     /// Returns execution outcome, events, and an optional destination fee
     /// estimate. Adapters that do not support this runtime API should return
     /// [`ChainError::Unsupported`].
-    async fn dry_run_call(
-        &self,
-        extrinsic: &[u8],
-    ) -> Result<DryRunResult, ChainError>;
+    async fn dry_run_call(&self, extrinsic: &[u8]) -> Result<DryRunResult, ChainError>;
 
     /// Query the XCM payment assets accepted by the runtime.
     ///
@@ -512,7 +515,10 @@ mod tests {
     #[test]
     fn finality_observation_unknown_serializes() {
         let obs = FinalityObservation::Unknown {
-            last_checked_block: BlockRef { number: 1000, hash: "0xabc".into() },
+            last_checked_block: BlockRef {
+                number: 1000,
+                hash: "0xabc".into(),
+            },
         };
         let json = serde_json::to_string(&obs).expect("serialize");
         assert!(json.contains("unknown"));
@@ -528,7 +534,10 @@ mod tests {
                 key_prefix: "0x26aa".into(),
                 change_type: StorageChangeType::Write,
             }],
-            block_ref: BlockRef { number: 500, hash: "0xfeed".into() },
+            block_ref: BlockRef {
+                number: 500,
+                hash: "0xfeed".into(),
+            },
         };
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(json.contains("1000000"));

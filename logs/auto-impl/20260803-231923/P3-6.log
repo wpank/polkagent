@@ -1,0 +1,1 @@
+The plan is ready for review. It modifies only 2 files (`cli.rs` and `commands/chain.rs`) to add `polkagent chain identity <ADDRESS>` — following the exact pattern of the existing `chain balance` command. The SCALE decoding for `Identity.IdentityOf` and `Identity.SubsOf` uses the existing `ScaleDecoder` and `polkagent-identity` types. TUI integration is deferred.

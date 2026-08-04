@@ -118,7 +118,12 @@ impl HealthCheck for ReadinessProbe {
             Status::Up
         };
 
-        debug!(check = "readiness", ?status, deps = sub_results.len(), "readiness check completed");
+        debug!(
+            check = "readiness",
+            ?status,
+            deps = sub_results.len(),
+            "readiness check completed"
+        );
 
         HealthStatus {
             name: self.name().to_string(),

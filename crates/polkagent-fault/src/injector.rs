@@ -42,7 +42,9 @@ impl Default for FaultInjector {
 impl FaultInjector {
     /// Create a new, empty `FaultInjector`.
     pub fn new() -> Self {
-        Self { fault_points: RwLock::new(HashMap::new()) }
+        Self {
+            fault_points: RwLock::new(HashMap::new()),
+        }
     }
 
     /// Register a fault at the named injection point.
@@ -184,7 +186,9 @@ mod tests {
         fi.add_fault("point_a", Fault::Crash, FaultSchedule::Always);
         fi.add_fault(
             "point_b",
-            Fault::Error { message: "boom".into() },
+            Fault::Error {
+                message: "boom".into(),
+            },
             FaultSchedule::Always,
         );
         fi.add_fault("point_c", Fault::Crash, FaultSchedule::AfterN(10));
@@ -211,7 +215,7 @@ mod tests {
         fi.add_fault("p", Fault::Crash, FaultSchedule::Once);
         fi.check("p"); // consume the once
         fi.check("p"); // now suppressed
-        // Replace with Always.
+                       // Replace with Always.
         fi.add_fault("p", Fault::Crash, FaultSchedule::Always);
         assert!(fi.check("p").is_some());
     }

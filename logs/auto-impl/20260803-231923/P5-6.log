@@ -1,0 +1,29 @@
+Done. Here's a summary of what was created:
+
+## `polkagent-cloud-control` (18 tests)
+
+**Location:** `crates/polkagent-cloud-control/`
+
+**Control plane features:**
+- **Job queue** — `ControlPlane::enqueue()`, priority-ordered (`Low`/`Normal`/`High`/`Critical`), configurable max capacity
+- **Worker registration** — `register_worker()`, `deregister_worker()`, `list_workers()`, `get_worker()`
+- **Heartbeat tracking** — `heartbeat()` to update timestamps, `sweep_stale_workers()` to mark workers that missed their heartbeat window as `Stale`; a subsequent heartbeat recovers them to `Active`
+- **Load-aware job assignment** — `assign_next()` picks the highest-priority pending job, filters workers by capability, then assigns to the worker with the most free slots (least loaded)
+- **Job lifecycle** — `complete_job()` / `fail_job()` update status and decrement worker active-job counters
+
+**Types:** `Job`, `JobPriority`, `JobStatus`, `WorkerRecord`, `WorkerStatus`, `ControlPlane`, `ControlPlaneConfig`, `ControlError`
+
+## `polkagent-cloud-worker` (12 tests)
+
+**Location:** `crates/polkagent-cloud-worker/`
+
+**Worker plane features:**
+- **Registration** — `register()` creates a `WorkerRecord` and registers with the control plane; `deregister()` removes it
+- **Heartbeat** — `send_heartbeat()` pings the control plane periodically
+- **Job execution** — `poll_and_execute()` gets the next job assignment via the control plane, runs it through a pluggable `JobExecutor` trait, then reports completion/failure
+- **Graceful drain** — `drain()` sets drain mode (stops accepting new work), `wait_for_drain()` blocks until in-flight jobs finish
+- **State snapshot** — `snapshot()` returns a `WorkerSnapshot` with active/completed/failed counters
+
+**Types:** `CloudWorker`, `WorkerConfig`, `WorkerSnapshot`, `JobExecutor` (async trait), `WorkerError`
+
+Both crates depend on `polkagent-core` and `polkagent-config`, follow all workspace conventions (lint config, edition, license), and `cargo check --workspace` passes cleanly.

@@ -38,6 +38,7 @@ uuid = { workspace = true }
 
 [features]
 identity = ["dep:polkagent-identity"]
+personhood = ["identity"]
 
 [dev-dependencies]
 criterion = { workspace = true }

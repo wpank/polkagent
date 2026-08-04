@@ -32,9 +32,7 @@ use polkagent_signer_trait::{
     AccountRef, ApprovalId, CanonicalSignRequest, ChainProfileId, GrantDigest, MetadataDigest,
     SignerError,
 };
-use polkagent_store_trait::{
-    EffectStore, StoredIntent, StoredOutcome, StoreError,
-};
+use polkagent_store_trait::{EffectStore, StoreError, StoredIntent, StoredOutcome};
 
 // ===========================================================================
 // Shared test infrastructure (minimal in-memory store, re-used across scenarios)
@@ -148,15 +146,22 @@ impl EffectStore for InMemoryStore {
 
     async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
         let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
-        intents.get(&intent_id).cloned().ok_or_else(|| StoreError::NotFound {
-            resource_type: "EffectIntent",
-            id: intent_id.to_string(),
-        })
+        intents
+            .get(&intent_id)
+            .cloned()
+            .ok_or_else(|| StoreError::NotFound {
+                resource_type: "EffectIntent",
+                id: intent_id.to_string(),
+            })
     }
 
     async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
         let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(intents.values().filter(|i| i.run_id == run_id).cloned().collect())
+        Ok(intents
+            .values()
+            .filter(|i| i.run_id == run_id)
+            .cloned()
+            .collect())
     }
 
     async fn expired_leases(
@@ -181,7 +186,10 @@ impl EffectStore for InMemoryStore {
         _worker_id: WorkerId,
         payload: serde_json::Value,
     ) -> Result<(), StoreError> {
-        self.attempts.lock().unwrap_or_else(|e| e.into_inner()).push(payload);
+        self.attempts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(payload);
         Ok(())
     }
 
@@ -203,10 +211,7 @@ impl EffectStore for InMemoryStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         let outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
         Ok(outcomes
             .iter()
@@ -309,7 +314,11 @@ fn rt02_hidden_proxy_inner_call_rendered_canonically() {
     // in canonical sections, not just the outer proxy wrapper.
     let card = ActionCardBuilder::new("Proxy(Transfer 10 DOT)")
         .add_canonical("Outer call", "proxy.proxy", SectionSource::Metadata)
-        .add_canonical("Inner call", "balances.transferKeepAlive", SectionSource::Metadata)
+        .add_canonical(
+            "Inner call",
+            "balances.transferKeepAlive",
+            SectionSource::Metadata,
+        )
         .add_canonical(
             "Inner destination",
             "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
@@ -330,7 +339,11 @@ fn rt02_hidden_proxy_inner_call_rendered_canonically() {
         .build();
 
     // The inner call details must be in canonical sections.
-    let canonical_labels: Vec<&str> = card.canonical_sections.iter().map(|s| s.label.as_str()).collect();
+    let canonical_labels: Vec<&str> = card
+        .canonical_sections
+        .iter()
+        .map(|s| s.label.as_str())
+        .collect();
     assert!(
         canonical_labels.contains(&"Inner call"),
         "inner call pallet.call must appear as canonical section"
@@ -420,8 +433,16 @@ fn rt03_canonical_section_stores_full_address_not_truncated() {
     poisoned[21] = 0xAA;
 
     // Both start with 0x01010101 and end with 0x01010101, like a poisoned address.
-    assert_eq!(&legitimate[..4], &poisoned[..4], "first 4 bytes must match for this test");
-    assert_eq!(&legitimate[28..], &poisoned[28..], "last 4 bytes must match for this test");
+    assert_eq!(
+        &legitimate[..4],
+        &poisoned[..4],
+        "first 4 bytes must match for this test"
+    );
+    assert_eq!(
+        &legitimate[28..],
+        &poisoned[28..],
+        "last 4 bytes must match for this test"
+    );
     assert_ne!(legitimate, poisoned, "middle bytes must differ");
 
     // Encode both as hex for the card.
@@ -440,8 +461,7 @@ fn rt03_canonical_section_stores_full_address_not_truncated() {
 
     // Full addresses must differ in the canonical section.
     assert_ne!(
-        legit_card.canonical_sections[0].value,
-        poison_card.canonical_sections[0].value,
+        legit_card.canonical_sections[0].value, poison_card.canonical_sections[0].value,
         "RT-03: full 32-byte addresses must differ even when prefix/suffix match"
     );
 }
@@ -504,8 +524,7 @@ fn rt03_poisoned_address_payload_hash_differs() {
         .build();
 
     assert_ne!(
-        legit_card.payload_hash,
-        poison_card.payload_hash,
+        legit_card.payload_hash, poison_card.payload_hash,
         "RT-03: different recipient addresses must bind to different payload hashes"
     );
 }
@@ -523,8 +542,7 @@ fn rt03_full_address_stored_in_canonical_section_not_truncated() {
 
     // The canonical section value must be the full address — never truncated at storage.
     assert_eq!(
-        card.canonical_sections[0].value,
-        full_address,
+        card.canonical_sections[0].value, full_address,
         "RT-03: canonical section must store the full address, not a truncated form"
     );
 
@@ -563,7 +581,11 @@ fn rt04_suspiciously_high_fee_triggers_high_risk_flag() {
     let card = ActionCardBuilder::new("Transfer 10 DOT")
         .add_canonical("Amount", "10 DOT", SectionSource::Metadata)
         .add_canonical("Fee", "1.000 DOT", SectionSource::Simulation)
-        .add_canonical("Recipient", "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", SectionSource::Chain)
+        .add_canonical(
+            "Recipient",
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+            SectionSource::Chain,
+        )
         .add_risk_flag(RiskFlag::new(
             RiskFlagType::HighValue,
             "Fee of 1.000 DOT is >10x the typical 0.01 DOT — verify fee",
@@ -640,8 +662,7 @@ fn rt04_fee_canonical_section_not_overridable_by_narrative() {
 
     // The canonical fee is unchanged by the narrative.
     assert_eq!(
-        card.canonical_sections[0].value,
-        "1.000 DOT",
+        card.canonical_sections[0].value, "1.000 DOT",
         "RT-04: narrative cannot override canonical fee value"
     );
 }
@@ -687,7 +708,9 @@ fn rt05_sign_request_account_must_match_managed_account() {
     let bob = AccountRef::from_bytes(bob_bytes);
 
     // The signer error for a wrong account should be AccountNotFound.
-    let err = SignerError::AccountNotFound { account: bob.clone() };
+    let err = SignerError::AccountNotFound {
+        account: bob.clone(),
+    };
     assert!(
         matches!(err, SignerError::AccountNotFound { .. }),
         "RT-05: wrong signer account must produce AccountNotFound error"
@@ -709,7 +732,11 @@ fn rt05_canonical_payload_hash_in_card_matches_sign_request() {
 
     let card = ActionCardBuilder::new("Transfer 10 DOT")
         .add_canonical("Amount", "10 DOT", SectionSource::Metadata)
-        .add_canonical("Recipient", "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", SectionSource::Chain)
+        .add_canonical(
+            "Recipient",
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+            SectionSource::Chain,
+        )
         .with_payload_hash(&payload_hash_hex)
         .build();
 
@@ -784,7 +811,10 @@ fn rt05_expired_sign_request_is_rejected_class() {
         "RT-05: expired signing request must produce Expired error, not silently succeed"
     );
     let msg = format!("{err}");
-    assert!(msg.contains("expired"), "RT-05: Expired error must mention expiry");
+    assert!(
+        msg.contains("expired"),
+        "RT-05: Expired error must mention expiry"
+    );
 }
 
 #[test]
@@ -797,7 +827,10 @@ fn rt05_grant_mismatch_blocks_signature() {
         "RT-05: grant digest mismatch must produce GrantMismatch error"
     );
     let msg = format!("{err}");
-    assert!(msg.contains("grant"), "RT-05: GrantMismatch error must mention grant");
+    assert!(
+        msg.contains("grant"),
+        "RT-05: GrantMismatch error must mention grant"
+    );
 }
 
 // ===========================================================================
@@ -812,8 +845,8 @@ fn rt05_grant_mismatch_blocks_signature() {
 
 #[test]
 fn rt06_stale_metadata_produces_explicit_error_not_wrong_decode() {
-    use polkagent_metadata::{ChainId, MetadataService, MetadataSnapshot, MetadataVersion};
     use polkagent_core::now;
+    use polkagent_metadata::{ChainId, MetadataService, MetadataSnapshot, MetadataVersion};
 
     let svc = MetadataService::new();
     let chain = ChainId::new("polkadot");
@@ -827,7 +860,8 @@ fn rt06_stale_metadata_produces_explicit_error_not_wrong_decode() {
         1000,
     );
     svc.register_snapshot(old_snap);
-    svc.pin_current(&chain, "spec-1000").expect("pin old metadata");
+    svc.pin_current(&chain, "spec-1000")
+        .expect("pin old metadata");
 
     // Register new metadata (spec_version 1001 — runtime upgrade).
     let new_snap = MetadataSnapshot::new(
@@ -872,7 +906,10 @@ fn rt06_stale_metadata_flag_shown_on_card() {
         "RT-06: stale metadata must elevate risk level to High"
     );
 
-    let stale_flag = card.risk_flags.iter().find(|f| f.flag_type == RiskFlagType::StaleMetadata);
+    let stale_flag = card
+        .risk_flags
+        .iter()
+        .find(|f| f.flag_type == RiskFlagType::StaleMetadata);
     assert!(
         stale_flag.is_some(),
         "RT-06: stale metadata must be captured as a StaleMetadata risk flag"
@@ -901,7 +938,10 @@ fn rt06_same_bytes_produces_same_hash_deterministic() {
     let h1 = MetadataHash::from_bytes(data);
     let h2 = MetadataHash::from_bytes(data);
 
-    assert_eq!(h1, h2, "RT-06: hash must be deterministic for the same bytes");
+    assert_eq!(
+        h1, h2,
+        "RT-06: hash must be deterministic for the same bytes"
+    );
 }
 
 // ===========================================================================
@@ -1066,16 +1106,26 @@ async fn rt08_cumulative_small_transactions_exhaust_budget() {
 
     // Submit 100 spends of 1 unit each — all must succeed.
     for i in 0..100u64 {
-        let within = tracker.check_budget(agent_id, 1).await
+        let within = tracker
+            .check_budget(agent_id, 1)
+            .await
             .unwrap_or_else(|e| panic!("check_budget failed at spend {i}: {e}"));
-        assert!(within, "RT-08: spend {i} (cumulative {}) must be within budget", i + 1);
+        assert!(
+            within,
+            "RT-08: spend {i} (cumulative {}) must be within budget",
+            i + 1
+        );
 
-        tracker.record_spend(agent_id, run_id, 1).await
+        tracker
+            .record_spend(agent_id, run_id, 1)
+            .await
             .unwrap_or_else(|e| panic!("record_spend failed at spend {i}: {e}"));
     }
 
     // 101st spend must be rejected.
-    let within_101 = tracker.check_budget(agent_id, 1).await
+    let within_101 = tracker
+        .check_budget(agent_id, 1)
+        .await
         .unwrap_or_else(|e| panic!("check_budget failed at 101st spend: {e}"));
     assert!(
         !within_101,
@@ -1092,16 +1142,29 @@ async fn rt08_budget_status_tracks_cumulative_spend_accurately() {
     let run_id = RunId::new();
 
     for _ in 0..50u64 {
-        tracker.record_spend(agent_id, run_id, 1).await
+        tracker
+            .record_spend(agent_id, run_id, 1)
+            .await
             .unwrap_or_else(|e| panic!("record_spend failed: {e}"));
     }
 
-    let status = tracker.get_remaining(agent_id).await
+    let status = tracker
+        .get_remaining(agent_id)
+        .await
         .unwrap_or_else(|e| panic!("get_remaining failed: {e}"));
 
-    assert_eq!(status.spent, 50, "RT-08: cumulative spend must equal number of 1-unit transactions");
-    assert_eq!(status.remaining, 50, "RT-08: remaining must be budget minus cumulative spend");
-    assert_eq!(status.max_spend, 100, "RT-08: max_spend must be the configured budget");
+    assert_eq!(
+        status.spent, 50,
+        "RT-08: cumulative spend must equal number of 1-unit transactions"
+    );
+    assert_eq!(
+        status.remaining, 50,
+        "RT-08: remaining must be budget minus cumulative spend"
+    );
+    assert_eq!(
+        status.max_spend, 100,
+        "RT-08: max_spend must be the configured budget"
+    );
 }
 
 #[tokio::test]
@@ -1126,7 +1189,14 @@ async fn rt08_grant_resolver_rejects_cumulative_overspend() {
     // 10 spends of 1 unit.
     for i in 0..10 {
         let d = resolver
-            .resolve(&principal, "chain/transfer", "account/alice", &empty_ctx(), Some(1), Some(run_id))
+            .resolve(
+                &principal,
+                "chain/transfer",
+                "account/alice",
+                &empty_ctx(),
+                Some(1),
+                Some(run_id),
+            )
             .await
             .unwrap_or_else(|e| panic!("resolve failed at step {i}: {e}"));
         assert!(
@@ -1137,7 +1207,14 @@ async fn rt08_grant_resolver_rejects_cumulative_overspend() {
 
     // 11th spend must be denied.
     let d11 = resolver
-        .resolve(&principal, "chain/transfer", "account/alice", &empty_ctx(), Some(1), Some(run_id))
+        .resolve(
+            &principal,
+            "chain/transfer",
+            "account/alice",
+            &empty_ctx(),
+            Some(1),
+            Some(run_id),
+        )
         .await
         .unwrap_or_else(|e| panic!("resolve failed at 11th spend: {e}"));
     assert!(
@@ -1155,11 +1232,15 @@ async fn rt08_record_spend_over_budget_returns_error_not_panic() {
     tracker.configure(agent_id, 5).await;
 
     let run_id = RunId::new();
-    tracker.record_spend(agent_id, run_id, 5).await
+    tracker
+        .record_spend(agent_id, run_id, 5)
+        .await
         .unwrap_or_else(|e| panic!("first record_spend failed: {e}"));
 
     // Any additional spend must return BudgetExceeded, not panic.
-    let err = tracker.record_spend(agent_id, run_id, 1).await
+    let err = tracker
+        .record_spend(agent_id, run_id, 1)
+        .await
         .expect_err("RT-08: over-budget spend must return BudgetExceeded");
     assert!(
         matches!(err, BudgetError::BudgetExceeded { .. }),
@@ -1183,19 +1264,23 @@ fn rt09_different_displayed_amounts_produce_different_payload_hashes() {
     // Signer A sees "Transfer 1 DOT".
     let card_a = ActionCardBuilder::new("Transfer 1 DOT")
         .add_canonical("Amount", "1 DOT", SectionSource::Metadata)
-        .add_canonical("Recipient", "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", SectionSource::Chain)
-        .with_payload_hash(
-            "1_dot_transfer_cafebabe_1000000_planck",
+        .add_canonical(
+            "Recipient",
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+            SectionSource::Chain,
         )
+        .with_payload_hash("1_dot_transfer_cafebabe_1000000_planck")
         .build();
 
     // Signer B sees "Transfer 100 DOT".
     let card_b = ActionCardBuilder::new("Transfer 100 DOT")
         .add_canonical("Amount", "100 DOT", SectionSource::Metadata)
-        .add_canonical("Recipient", "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", SectionSource::Chain)
-        .with_payload_hash(
-            "100_dot_transfer_cafebabe_100000000000_planck",
+        .add_canonical(
+            "Recipient",
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+            SectionSource::Chain,
         )
+        .with_payload_hash("100_dot_transfer_cafebabe_100000000000_planck")
         .build();
 
     // Payload hashes must differ — they cannot both sign the same transaction.
@@ -1267,7 +1352,14 @@ async fn rt10_narrow_mandate_blocks_out_of_scope_pallet() {
 
     // Allowed: balances.transfer.
     let d_allowed = resolver
-        .resolve("agent", "pallet/balances/transfer", "account/alice", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/balances/transfer",
+            "account/alice",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
     assert!(
@@ -1277,7 +1369,14 @@ async fn rt10_narrow_mandate_blocks_out_of_scope_pallet() {
 
     // Denied: staking.bond.
     let d_denied = resolver
-        .resolve("agent", "pallet/staking/bond", "account/alice", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/staking/bond",
+            "account/alice",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
     assert!(
@@ -1289,12 +1388,23 @@ async fn rt10_narrow_mandate_blocks_out_of_scope_pallet() {
 #[tokio::test]
 async fn rt10_governance_pallet_blocked_by_narrow_mandate() {
     let mut set = PolicySet::default();
-    set.add_rule(allow_rule("balances-only", &["pallet/balances/**"], &["**"]));
+    set.add_rule(allow_rule(
+        "balances-only",
+        &["pallet/balances/**"],
+        &["**"],
+    ));
 
     let resolver = GrantResolver::new(set, ResolverConfig::default());
 
     let denied = resolver
-        .resolve("agent", "pallet/democracy/vote", "referendum/42", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/democracy/vote",
+            "referendum/42",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -1308,12 +1418,23 @@ async fn rt10_governance_pallet_blocked_by_narrow_mandate() {
 async fn rt10_system_pallet_blocked_for_standard_agent() {
     // A standard agent should not be able to call system.* calls.
     let mut set = PolicySet::default();
-    set.add_rule(allow_rule("balances-only", &["pallet/balances/**"], &["**"]));
+    set.add_rule(allow_rule(
+        "balances-only",
+        &["pallet/balances/**"],
+        &["**"],
+    ));
 
     let resolver = GrantResolver::new(set, ResolverConfig::default());
 
     let denied = resolver
-        .resolve("agent", "pallet/system/setCode", "runtime/wasm", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/system/setCode",
+            "runtime/wasm",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -1335,24 +1456,51 @@ async fn rt10_explicit_deny_for_privileged_pallets() {
 
     // Allowed: balances.
     let d1 = resolver
-        .resolve("agent", "pallet/balances/transfer", "account/alice", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/balances/transfer",
+            "account/alice",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("{e}"));
     assert!(matches!(d1, GrantDecision::Permit(_)));
 
     // Denied: system.
     let d2 = resolver
-        .resolve("agent", "pallet/system/fillBlock", "block/current", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/system/fillBlock",
+            "block/current",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("{e}"));
-    assert!(matches!(d2, GrantDecision::Deny(_)), "RT-10: system pallet must be denied by explicit deny rule");
+    assert!(
+        matches!(d2, GrantDecision::Deny(_)),
+        "RT-10: system pallet must be denied by explicit deny rule"
+    );
 
     // Denied: staking.
     let d3 = resolver
-        .resolve("agent", "pallet/staking/nominate", "account/alice", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/staking/nominate",
+            "account/alice",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("{e}"));
-    assert!(matches!(d3, GrantDecision::Deny(_)), "RT-10: staking pallet must be denied by explicit deny rule");
+    assert!(
+        matches!(d3, GrantDecision::Deny(_)),
+        "RT-10: staking pallet must be denied by explicit deny rule"
+    );
 }
 
 // ===========================================================================
@@ -1388,7 +1536,14 @@ async fn rt11_revoked_grant_immediately_rejected() {
 
     // Immediately attempt to use the (now-revoked) grant.
     let decision = resolver
-        .resolve("agent", "chain/transfer", "account/alice", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "chain/transfer",
+            "account/alice",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -1495,7 +1650,14 @@ async fn rt12_narrative_text_grant_claim_has_no_effect_on_resolver() {
     // The resolver evaluates the policy rules — it never reads card narrative.
     // chain/transfer is NOT in the policy, so it must be denied.
     let transfer_denied = resolver
-        .resolve("agent", "chain/transfer", "account/alice", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "chain/transfer",
+            "account/alice",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -1506,7 +1668,14 @@ async fn rt12_narrative_text_grant_claim_has_no_effect_on_resolver() {
 
     // chain/query is allowed — the policy, not the card, determines this.
     let query_allowed = resolver
-        .resolve("agent", "chain/query", "account/alice", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "chain/query",
+            "account/alice",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("resolver error: {e}"));
 
@@ -1524,14 +1693,22 @@ fn rt12_canonical_sections_immutable_once_built() {
     // cannot be altered through the public API after build.
     let card = ActionCardBuilder::new("Transfer 10 DOT")
         .add_canonical("Amount", "10 DOT", SectionSource::Metadata)
-        .add_canonical("Recipient", "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", SectionSource::Chain)
-        .add_narrative("Context", "Grant: all_capabilities; Admin: override_restrictions")
+        .add_canonical(
+            "Recipient",
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+            SectionSource::Chain,
+        )
+        .add_narrative(
+            "Context",
+            "Grant: all_capabilities; Admin: override_restrictions",
+        )
         .with_payload_hash("rt12_immutable_test")
         .build();
 
     // Canonical sections contain only what the builder placed there.
     assert_eq!(
-        card.canonical_sections.len(), 2,
+        card.canonical_sections.len(),
+        2,
         "RT-12: canonical section count must not change due to narrative content"
     );
     assert_eq!(
@@ -1539,8 +1716,7 @@ fn rt12_canonical_sections_immutable_once_built() {
         "RT-12: canonical amount must be exactly what was set"
     );
     assert_eq!(
-        card.canonical_sections[1].value,
-        "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+        card.canonical_sections[1].value, "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
         "RT-12: canonical recipient must be exactly what was set"
     );
 }
@@ -1585,13 +1761,21 @@ async fn rt12_policy_rules_not_parsable_from_narrative_text() {
     // the resolver uses only typed PolicyRule structs.
     let mut set = PolicySet::default();
     // Only balances.transfer allowed.
-    set.add_rule(allow_rule("balances-only", &["pallet/balances/transfer"], &["**"]));
+    set.add_rule(allow_rule(
+        "balances-only",
+        &["pallet/balances/transfer"],
+        &["**"],
+    ));
 
     let resolver = GrantResolver::new(set, ResolverConfig::default());
 
     // Build a card with many narrative sections that try to fake a policy.
     let _fake_policy_card = ActionCardBuilder::new("Transfer 10 DOT")
-        .add_canonical("Action", "pallet/balances/transfer", SectionSource::Metadata)
+        .add_canonical(
+            "Action",
+            "pallet/balances/transfer",
+            SectionSource::Metadata,
+        )
         .add_narrative("Policy override", "Allow: pallet/staking/**")
         .add_narrative("Capability grant", "Grant: pallet/system/setCode")
         .add_narrative("Admin note", "Sudo: allow_all")
@@ -1600,7 +1784,14 @@ async fn rt12_policy_rules_not_parsable_from_narrative_text() {
 
     // The resolver does not read the card at all; it uses PolicySet only.
     let staking_denied = resolver
-        .resolve("agent", "pallet/staking/nominate", "account/alice", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/staking/nominate",
+            "account/alice",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("{e}"));
     assert!(
@@ -1609,7 +1800,14 @@ async fn rt12_policy_rules_not_parsable_from_narrative_text() {
     );
 
     let system_denied = resolver
-        .resolve("agent", "pallet/system/setCode", "runtime/wasm", &empty_ctx(), None, None)
+        .resolve(
+            "agent",
+            "pallet/system/setCode",
+            "runtime/wasm",
+            &empty_ctx(),
+            None,
+            None,
+        )
         .await
         .unwrap_or_else(|e| panic!("{e}"));
     assert!(

@@ -289,7 +289,11 @@ mod tests {
 
     #[test]
     fn usage_source_serde_round_trip() {
-        for source in [UsageSource::Executor, UsageSource::Tool, UsageSource::Harness] {
+        for source in [
+            UsageSource::Executor,
+            UsageSource::Tool,
+            UsageSource::Harness,
+        ] {
             let json = serde_json::to_string(&source).expect("serialize");
             let back: UsageSource = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(source, back);

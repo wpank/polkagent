@@ -133,8 +133,7 @@ impl<S: DeliveryStore> WebhookService<S> {
 
         for sub in &subscriptions {
             let delivery_id = Uuid::now_v7();
-            let payload =
-                WebhookPayload::new(event_type, sub.id, delivery_id, data.clone());
+            let payload = WebhookPayload::new(event_type, sub.id, delivery_id, data.clone());
 
             let record = self.delivery.deliver(&sub.config, &payload).await?;
             records.push(record);

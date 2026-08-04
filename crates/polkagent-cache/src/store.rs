@@ -57,7 +57,12 @@ pub trait CacheStore: Send + Sync {
     async fn get(&self, key: &CacheKey) -> Option<CachedValue>;
 
     /// Insert or update a value under `key` with an optional TTL.
-    async fn set(&self, key: CacheKey, value: CachedValue, ttl: Option<Duration>) -> CacheResult<()>;
+    async fn set(
+        &self,
+        key: CacheKey,
+        value: CachedValue,
+        ttl: Option<Duration>,
+    ) -> CacheResult<()>;
 
     /// Remove a key.  Returns `true` if the key existed.
     async fn remove(&self, key: &CacheKey) -> CacheResult<bool>;

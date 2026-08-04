@@ -40,10 +40,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
 
         let left_rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(cols[0]);
 
         let right_rows = Layout::default()
@@ -179,9 +176,16 @@ fn render_stats(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) 
     let lines = vec![
         section_header("Database", theme),
         kv_line("  Size on disk", &db_size, theme.text_primary, theme),
-        kv_line("  Pending effects", &pending_count,
-            if state.pending_approvals.is_empty() { theme.success } else { theme.warning },
-            theme),
+        kv_line(
+            "  Pending effects",
+            &pending_count,
+            if state.pending_approvals.is_empty() {
+                theme.success
+            } else {
+                theme.warning
+            },
+            theme,
+        ),
         Line::from(""),
         section_header("Memory Store", theme),
         kv_line("  Loaded entries", &memory_count, theme.text_primary, theme),
@@ -219,12 +223,17 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
         .last_refresh
         .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
         .unwrap_or_else(|| "(never)".into());
-    let err_display = state
-        .last_error
-        .clone()
-        .unwrap_or_else(|| "none".into());
-    let err_color = if err_display == "none" { theme.success } else { theme.danger };
-    let theme_label = if std::env::var_os("NO_COLOR").is_some() { "no_color" } else { "dark (ROSEDUST)" };
+    let err_display = state.last_error.clone().unwrap_or_else(|| "none".into());
+    let err_color = if err_display == "none" {
+        theme.success
+    } else {
+        theme.danger
+    };
+    let theme_label = if std::env::var_os("NO_COLOR").is_some() {
+        "no_color"
+    } else {
+        "dark (ROSEDUST)"
+    };
 
     // Config source detection.
     let config_sources = detect_config_sources();
@@ -239,7 +248,12 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
         kv_line("  Database", &db_path, theme.text_primary, theme),
         Line::from(""),
         section_header("Config Sources", theme),
-        kv_line("  Loaded from", &config_sources_str, theme.text_primary, theme),
+        kv_line(
+            "  Loaded from",
+            &config_sources_str,
+            theme.text_primary,
+            theme,
+        ),
         Line::from(""),
         section_header("TUI", theme),
         kv_line("  Theme", theme_label, theme.text_primary, theme),
@@ -250,7 +264,12 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
         kv_line("  F1-F8 / 1-8", "Switch tabs", theme.text_primary, theme),
         kv_line("  j / k", "Scroll up / down", theme.text_primary, theme),
         kv_line("  Enter", "Select / drill-down", theme.text_primary, theme),
-        kv_line("  a / d", "Approve / deny effect", theme.text_primary, theme),
+        kv_line(
+            "  a / d",
+            "Approve / deny effect",
+            theme.text_primary,
+            theme,
+        ),
         kv_line("  Del", "Delete memory entry", theme.text_primary, theme),
         kv_line("  g / G", "Jump to top / bottom", theme.text_primary, theme),
         kv_line("  f", "Cycle filter (audit)", theme.text_primary, theme),
@@ -259,11 +278,7 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
     ];
 
     // Environment overrides section.
-    let env_vars = [
-        "POLKAGENT_DB_PATH",
-        "POLKAGENT_MEMORY_DB_PATH",
-        "NO_COLOR",
-    ];
+    let env_vars = ["POLKAGENT_DB_PATH", "POLKAGENT_MEMORY_DB_PATH", "NO_COLOR"];
     let set_vars: Vec<String> = env_vars
         .iter()
         .filter(|v| std::env::var_os(v).is_some())
@@ -275,7 +290,11 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
         lines.push(section_header("Env Overrides", theme));
         for v in &set_vars {
             let val = std::env::var(v).unwrap_or_default();
-            let display = if val.len() > 30 { format!("{}…", &val[..29]) } else { val };
+            let display = if val.len() > 30 {
+                format!("{}…", &val[..29])
+            } else {
+                val
+            };
             lines.push(kv_line(&format!("  {v}"), &display, theme.bone, theme));
         }
     }
@@ -312,7 +331,11 @@ fn render_chain_status_panel(frame: &mut Frame, area: Rect, state: &TuiState, th
             Some(state.node_version.as_str())
         },
         metadata_version: 14,
-        metadata_freshness: if state.chain_connected { "fresh" } else { "stale" },
+        metadata_freshness: if state.chain_connected {
+            "fresh"
+        } else {
+            "stale"
+        },
     };
 
     chain_status::render(frame, area, &data, theme);
@@ -357,9 +380,7 @@ fn render_balance_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme: 
 fn section_header(title: &str, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
         format!("  {title}"),
-        Style::default()
-            .fg(theme.bone)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -370,10 +391,7 @@ fn kv_line(
     theme: &Theme,
 ) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("{key:<24}"),
-            Style::default().fg(theme.text_dim),
-        ),
+        Span::styled(format!("{key:<24}"), Style::default().fg(theme.text_dim)),
         Span::styled(value.to_owned(), Style::default().fg(value_color)),
     ])
 }
@@ -399,11 +417,7 @@ fn process_rss_kb() -> Option<u64> {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
         for line in status.lines() {
             if let Some(rest) = line.strip_prefix("VmRSS:") {
-                let kb: u64 = rest
-                    .split_whitespace()
-                    .next()?
-                    .parse()
-                    .ok()?;
+                let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
                 return Some(kb);
             }
         }
@@ -429,21 +443,19 @@ fn process_rss_kb() -> Option<u64> {
 /// Return a list of config file paths that exist on disk.
 ///
 /// Matches the paths checked by `ConfigLoader`:
-///   1. `$HOME/.config/polkagent/polkagent.toml`
-///   2. `$HOME/.polkagent/polkagent.toml`  (legacy / convenience)
+///   1. Global: `dirs::config_dir()/polkagent/polkagent.toml`
+///   2. Project: `.polkagent/polkagent.toml` (walks up from CWD)
 fn detect_config_sources() -> Vec<String> {
     let mut sources = Vec::new();
 
-    let home = std::env::var("HOME").unwrap_or_default();
-    let candidates = [
-        format!("{home}/.config/polkagent/polkagent.toml"),
-        format!("{home}/.polkagent/polkagent.toml"),
-    ];
-
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            sources.push(path.clone());
+    if let Some(global) = polkagent_config::loader::global_config_path() {
+        if global.exists() {
+            sources.push(global.display().to_string());
         }
+    }
+
+    if let Some(project) = polkagent_config::loader::find_project_config() {
+        sources.push(project.display().to_string());
     }
 
     sources

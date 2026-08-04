@@ -207,8 +207,14 @@ fn get_returns_registered_handler() {
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(EchoTool));
 
-    assert!(reg.get("test.echo").is_some(), "registered tool must be findable by get");
-    assert!(reg.get("nonexistent").is_none(), "absent tool must return None");
+    assert!(
+        reg.get("test.echo").is_some(),
+        "registered tool must be findable by get"
+    );
+    assert!(
+        reg.get("nonexistent").is_none(),
+        "absent tool must return None"
+    );
 }
 
 #[test]
@@ -258,16 +264,17 @@ async fn execute_tool_without_grant_requirement_succeeds() {
         .await
         .expect("execute should succeed");
 
-    assert_eq!(result.output, input, "output must equal input for echo tool");
+    assert_eq!(
+        result.output, input,
+        "output must equal input for echo tool"
+    );
     assert_eq!(result.classification, DataClassification::Public);
 }
 
 #[tokio::test]
 async fn execute_returns_not_found_for_unknown_tool() {
     let reg = ToolRegistry::new();
-    let result = reg
-        .execute("no.such.tool", json!({}), &empty_ctx())
-        .await;
+    let result = reg.execute("no.such.tool", json!({}), &empty_ctx()).await;
     assert!(
         matches!(result, Err(ToolError::NotFound { .. })),
         "unknown tool name must return NotFound"
@@ -279,9 +286,7 @@ async fn execute_propagates_handler_error() {
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(FailingTool));
 
-    let result = reg
-        .execute("test.failing", json!({}), &empty_ctx())
-        .await;
+    let result = reg.execute("test.failing", json!({}), &empty_ctx()).await;
     assert!(
         matches!(result, Err(ToolError::ExecutionFailed { .. })),
         "handler error must propagate through registry"
@@ -332,9 +337,7 @@ async fn execute_grant_gated_tool_with_wrong_grant_is_denied() {
 
     // Grant for a different action.
     let ctx = ctx_with_grant("test/different-action");
-    let result = reg
-        .execute("test.privileged", json!({}), &ctx)
-        .await;
+    let result = reg.execute("test.privileged", json!({}), &ctx).await;
     assert!(
         matches!(result, Err(ToolError::PermissionDenied { .. })),
         "wrong grant action must not satisfy grant requirement"
@@ -352,9 +355,7 @@ async fn execute_grant_gated_tool_with_expired_grant_is_denied() {
         ..empty_ctx()
     };
 
-    let result = reg
-        .execute("test.privileged", json!({}), &ctx)
-        .await;
+    let result = reg.execute("test.privileged", json!({}), &ctx).await;
     assert!(
         matches!(result, Err(ToolError::PermissionDenied { .. })),
         "expired grant must not satisfy grant requirement"
@@ -387,10 +388,16 @@ async fn execute_grant_gated_tool_with_multiple_grants_one_matching_succeeds() {
             expires_at: Utc::now() + Duration::hours(1),
         },
     ];
-    let ctx = ToolContext { grants, ..empty_ctx() };
+    let ctx = ToolContext {
+        grants,
+        ..empty_ctx()
+    };
 
     let result = reg.execute("test.privileged", json!({}), &ctx).await;
-    assert!(result.is_ok(), "any valid matching grant must satisfy the requirement");
+    assert!(
+        result.is_ok(),
+        "any valid matching grant must satisfy the requirement"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +436,10 @@ async fn execute_passes_correct_run_id_to_handler() {
         .expect("execute");
 
     let captured = capture.last_context().expect("context must be captured");
-    assert_eq!(captured.run_id, run_id, "handler must receive the correct run_id");
+    assert_eq!(
+        captured.run_id, run_id,
+        "handler must receive the correct run_id"
+    );
 }
 
 #[tokio::test]
@@ -457,13 +467,19 @@ async fn execute_output_classification_matches_handler_spec() {
 #[test]
 fn tool_spec_required_grant_is_optional() {
     let spec = EchoTool.spec();
-    assert!(spec.required_grant.is_none(), "EchoTool must have no required grant");
+    assert!(
+        spec.required_grant.is_none(),
+        "EchoTool must have no required grant"
+    );
 }
 
 #[test]
 fn tool_spec_required_grant_is_present_for_privileged_tool() {
     let spec = PrivilegedTool.spec();
-    assert!(spec.required_grant.is_some(), "PrivilegedTool must declare a required grant");
+    assert!(
+        spec.required_grant.is_some(),
+        "PrivilegedTool must declare a required grant"
+    );
     assert_eq!(spec.required_grant.unwrap(), "test/privileged-action");
 }
 

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, Timestamp, WorkerId};
-use polkagent_store_trait::{EffectStore, StoredIntent, StoredOutcome, StoreError};
+use polkagent_store_trait::{EffectStore, StoreError, StoredIntent, StoredOutcome};
 
 use crate::injector::FaultInjector;
 use crate::types::Fault;
@@ -35,7 +35,9 @@ pub struct FaultStore {
 
 impl std::fmt::Debug for FaultStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FaultStore").field("injector", &self.injector).finish()
+        f.debug_struct("FaultStore")
+            .field("injector", &self.injector)
+            .finish()
     }
 }
 
@@ -73,7 +75,9 @@ impl EffectStore for FaultStore {
         worker_id: WorkerId,
         lease_duration: Duration,
     ) -> Result<StoredIntent, StoreError> {
-        self.inner.claim_intent_by_id(intent_id, worker_id, lease_duration).await
+        self.inner
+            .claim_intent_by_id(intent_id, worker_id, lease_duration)
+            .await
     }
 
     async fn release_claim(
@@ -113,10 +117,7 @@ impl EffectStore for FaultStore {
         self.inner.get_by_run(run_id).await
     }
 
-    async fn expired_leases(
-        &self,
-        cutoff: Timestamp,
-    ) -> Result<Vec<StoredIntent>, StoreError> {
+    async fn expired_leases(&self, cutoff: Timestamp) -> Result<Vec<StoredIntent>, StoreError> {
         self.inner.expired_leases(cutoff).await
     }
 
@@ -132,7 +133,9 @@ impl EffectStore for FaultStore {
         payload: serde_json::Value,
     ) -> Result<(), StoreError> {
         apply_store_fault_write(self.injector.check("before_write")).await?;
-        self.inner.record_attempt_start(attempt_id, intent_id, worker_id, payload).await?;
+        self.inner
+            .record_attempt_start(attempt_id, intent_id, worker_id, payload)
+            .await?;
         apply_store_fault_write(self.injector.check("after_write")).await?;
         Ok(())
     }
@@ -148,10 +151,7 @@ impl EffectStore for FaultStore {
         Ok(())
     }
 
-    async fn unconsumed_outcomes(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredOutcome>, StoreError> {
+    async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
         apply_store_fault_read(self.injector.check("before_read")).await?;
         self.inner.unconsumed_outcomes(run_id).await
     }
@@ -185,7 +185,9 @@ async fn apply_store_fault_write(fault: Option<Fault>) -> Result<(), StoreError>
         Fault::Error { message } => Err(StoreError::Internal { message }),
         Fault::Timeout { ms } => {
             tokio::time::sleep(Duration::from_millis(ms)).await;
-            Err(StoreError::Internal { message: "write timed out".into() })
+            Err(StoreError::Internal {
+                message: "write timed out".into(),
+            })
         }
         Fault::SlowDown { ms } => {
             tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -203,7 +205,9 @@ async fn apply_store_fault_read(fault: Option<Fault>) -> Result<(), StoreError> 
         Fault::Error { message } => Err(StoreError::Internal { message }),
         Fault::Timeout { ms } => {
             tokio::time::sleep(Duration::from_millis(ms)).await;
-            Err(StoreError::Internal { message: "read timed out".into() })
+            Err(StoreError::Internal {
+                message: "read timed out".into(),
+            })
         }
         Fault::SlowDown { ms } => {
             tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -258,9 +262,15 @@ mod tests {
             _worker_id: WorkerId,
             _lease_duration: Duration,
         ) -> Result<StoredIntent, StoreError> {
-            self.intents.lock().expect("lock").get(&intent_id).cloned().ok_or_else(|| {
-                StoreError::NotFound { resource_type: "Intent", id: intent_id.to_string() }
-            })
+            self.intents
+                .lock()
+                .expect("lock")
+                .get(&intent_id)
+                .cloned()
+                .ok_or_else(|| StoreError::NotFound {
+                    resource_type: "Intent",
+                    id: intent_id.to_string(),
+                })
         }
 
         async fn release_claim(
@@ -290,9 +300,15 @@ mod tests {
         }
 
         async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
-            self.intents.lock().expect("lock").get(&intent_id).cloned().ok_or_else(|| {
-                StoreError::NotFound { resource_type: "Intent", id: intent_id.to_string() }
-            })
+            self.intents
+                .lock()
+                .expect("lock")
+                .get(&intent_id)
+                .cloned()
+                .ok_or_else(|| StoreError::NotFound {
+                    resource_type: "Intent",
+                    id: intent_id.to_string(),
+                })
         }
 
         async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
@@ -401,7 +417,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "before_write",
-            Fault::Error { message: "disk full".into() },
+            Fault::Error {
+                message: "disk full".into(),
+            },
             FaultSchedule::Always,
         );
         let store = make_fault_store(Arc::clone(&injector));
@@ -432,7 +450,9 @@ mod tests {
         inner.propose_intent(intent).await.expect("insert");
         injector.add_fault(
             "before_read",
-            Fault::Error { message: "I/O error".into() },
+            Fault::Error {
+                message: "I/O error".into(),
+            },
             FaultSchedule::Always,
         );
         let store = FaultStore::new(Arc::clone(&inner) as Arc<dyn EffectStore>, injector);
@@ -445,7 +465,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "before_write",
-            Fault::Error { message: "no space left".into() },
+            Fault::Error {
+                message: "no space left".into(),
+            },
             FaultSchedule::Always,
         );
         let store = make_fault_store(Arc::clone(&injector));
@@ -473,7 +495,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "after_write",
-            Fault::Error { message: "post-write failure".into() },
+            Fault::Error {
+                message: "post-write failure".into(),
+            },
             FaultSchedule::Always,
         );
         let store = make_fault_store(Arc::clone(&injector));

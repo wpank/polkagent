@@ -15,6 +15,7 @@
 //! | [`router`] | [`DefaultModelRouter`]: health-aware model routing with pluggable policies |
 //! | [`plugins`] | [`ServicePluginManager`]: plugin lifecycle management and capability validation |
 //! | [`scheduled`] | [`ScheduledTaskManager`]: scheduled/recurring agent runs |
+//! | [`metadata_watcher`] | [`MetadataDriftWatcher`]: periodic metadata drift detection |
 //! | [`error`] | [`ServiceError`]: unified error type |
 //!
 //! # Quick start
@@ -51,11 +52,14 @@ pub mod error;
 pub mod explain;
 pub mod harness;
 pub mod lifecycle;
+pub mod metadata_watcher;
 pub mod negotiate;
 pub mod plugins;
 pub mod provider;
 pub mod router;
 pub mod scheduled;
+#[cfg(feature = "watcher")]
+pub mod watcher_agent;
 pub mod webhook;
 
 // ---------------------------------------------------------------------------
@@ -65,16 +69,19 @@ pub mod webhook;
 pub use app::{AppService, AppServiceBuilder};
 pub use error::ServiceError;
 pub use harness::{HarnessInfo, HarnessRegistry, HarnessResolution};
-pub use lifecycle::{StartupContext, shutdown, startup};
+pub use lifecycle::{shutdown, startup, StartupContext};
+pub use metadata_watcher::MetadataDriftWatcher;
 pub use negotiate::{
     Capability, CapabilityRequirement, MissingCapability, NegotiatedCapabilities, ProbeCache,
     ProviderRestrictions,
 };
-pub use provider::{ProviderInfo, ProviderRegistry, ProviderStatus};
 pub use plugins::{PluginInfo, ServicePluginManager};
+pub use provider::{ProviderInfo, ProviderRegistry, ProviderStatus};
 pub use router::{
     DefaultModelRouter, ModelRouter, ProviderHealthInfo, RouteDecision, RouteError, RouteReason,
     RouteRequest, RoutingPolicy, SelectedRoute,
 };
 pub use scheduled::ScheduledTaskManager;
+#[cfg(feature = "watcher")]
+pub use watcher_agent::WatcherAgentManager;
 pub use webhook::WebhookDispatcher;

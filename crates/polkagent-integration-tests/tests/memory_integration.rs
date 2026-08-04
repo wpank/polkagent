@@ -19,8 +19,7 @@ use polkagent_memory::{
 // ---------------------------------------------------------------------------
 
 fn make_service() -> MemoryService {
-    let store =
-        SqliteMemoryStore::open_in_memory().expect("in-memory SQLite store should open");
+    let store = SqliteMemoryStore::open_in_memory().expect("in-memory SQLite store should open");
     MemoryService::new(Arc::new(store))
 }
 
@@ -85,7 +84,10 @@ async fn recall_returns_empty_for_unmatched_query() {
         .recall(agent, "bitcoin mining", 10)
         .await
         .expect("recall");
-    assert!(results.is_empty(), "unrelated query should return no results");
+    assert!(
+        results.is_empty(),
+        "unrelated query should return no results"
+    );
 }
 
 #[tokio::test]
@@ -163,14 +165,9 @@ async fn episodic_memory_start_add_end() {
     .await
     .expect("store ep mem 1");
 
-    svc.remember(
-        agent,
-        "Agent explained NPoS",
-        MemoryType::Episodic,
-        None,
-    )
-    .await
-    .expect("store ep mem 2");
+    svc.remember(agent, "Agent explained NPoS", MemoryType::Episodic, None)
+        .await
+        .expect("store ep mem 2");
 
     // End the episode.
     svc.end_episode(ep_id, "Discussed staking and NPoS consensus")
@@ -227,7 +224,10 @@ async fn semantic_memory_is_searchable_by_content() {
 
     // Search for blockchain-related content.
     let results = svc.recall(agent, "blockchain", 10).await.expect("recall");
-    assert!(!results.is_empty(), "should find blockchain-related memories");
+    assert!(
+        !results.is_empty(),
+        "should find blockchain-related memories"
+    );
     assert!(results[0].content.contains("blockchain"));
 }
 
@@ -246,6 +246,9 @@ async fn memory_provenance_is_tracked() {
         extraction_method: "user_input".into(),
         confidence: 0.95,
         verified: true,
+        source_artifact_id: None,
+        source_agent_id: None,
+        ingested_at: None,
     };
 
     let id = svc
@@ -259,7 +262,10 @@ async fn memory_provenance_is_tracked() {
         .expect("store with provenance");
 
     // Recall and verify provenance is preserved.
-    let results = svc.recall(agent, "account balance", 10).await.expect("recall");
+    let results = svc
+        .recall(agent, "account balance", 10)
+        .await
+        .expect("recall");
     assert_eq!(results.len(), 1);
 
     let entry = &results[0];
@@ -284,7 +290,10 @@ async fn memory_without_provenance_has_none() {
         .await
         .expect("store");
 
-    let results = svc.recall(agent, "No provenance", 10).await.expect("recall");
+    let results = svc
+        .recall(agent, "No provenance", 10)
+        .await
+        .expect("recall");
     assert_eq!(results.len(), 1);
     assert!(
         results[0].provenance.is_none(),
@@ -312,15 +321,24 @@ async fn forget_removes_memory_from_search_results() {
         .expect("store");
 
     // Verify it is findable before deletion.
-    let before = svc.recall(agent, "secret forgotten", 10).await.expect("recall before");
+    let before = svc
+        .recall(agent, "secret forgotten", 10)
+        .await
+        .expect("recall before");
     assert_eq!(before.len(), 1);
 
     // Forget it.
     svc.forget(id).await.expect("forget should succeed");
 
     // Verify it is no longer findable.
-    let after = svc.recall(agent, "secret forgotten", 10).await.expect("recall after");
-    assert!(after.is_empty(), "forgotten memory should not appear in results");
+    let after = svc
+        .recall(agent, "secret forgotten", 10)
+        .await
+        .expect("recall after");
+    assert!(
+        after.is_empty(),
+        "forgotten memory should not appear in results"
+    );
 }
 
 #[tokio::test]
@@ -339,7 +357,10 @@ async fn forget_does_not_affect_other_memories() {
 
     svc.forget(id_to_forget).await.expect("forget");
 
-    let results = svc.recall(agent, "Keep this memory", 10).await.expect("recall");
+    let results = svc
+        .recall(agent, "Keep this memory", 10)
+        .await
+        .expect("recall");
     assert_eq!(results.len(), 1);
     assert!(results[0].content.contains("Keep"));
 }
@@ -354,9 +375,14 @@ async fn different_agents_have_isolated_memories() {
     let agent_a = AgentId::new();
     let agent_b = AgentId::new();
 
-    svc.remember(agent_a, "Agent A knows Polkadot", MemoryType::Semantic, None)
-        .await
-        .expect("store for A");
+    svc.remember(
+        agent_a,
+        "Agent A knows Polkadot",
+        MemoryType::Semantic,
+        None,
+    )
+    .await
+    .expect("store for A");
 
     svc.remember(agent_b, "Agent B knows Kusama", MemoryType::Semantic, None)
         .await
@@ -367,5 +393,8 @@ async fn different_agents_have_isolated_memories() {
     assert!(results_a[0].content.contains("Agent A"));
 
     let results_b = svc.recall(agent_b, "Polkadot", 10).await.expect("recall B");
-    assert!(results_b.is_empty(), "Agent B should not see Agent A's memories");
+    assert!(
+        results_b.is_empty(),
+        "Agent B should not see Agent A's memories"
+    );
 }

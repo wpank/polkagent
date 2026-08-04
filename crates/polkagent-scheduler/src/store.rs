@@ -92,9 +92,5 @@ pub trait TaskStore: Send + Sync {
     ///
     /// Returns [`SchedulerError::TaskNotFound`] if no task with the given ID
     /// exists.
-    async fn mark_failed(
-        &self,
-        task_id: TaskId,
-        error: String,
-    ) -> Result<(), SchedulerError>;
+    async fn mark_failed(&self, task_id: TaskId, error: String) -> Result<(), SchedulerError>;
 }

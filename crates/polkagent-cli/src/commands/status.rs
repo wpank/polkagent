@@ -67,12 +67,9 @@ pub fn run(cmd: &StatusCmd, pool: &SqlitePool) -> Result<()> {
         let default = format!("{home}/.local/share/polkagent/memory.db");
         let mem_path = std::env::var("POLKAGENT_MEMORY_DB_PATH").unwrap_or(default);
 
-        rusqlite::Connection::open_with_flags(
-            &mem_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .and_then(|conn| conn.query_row("SELECT count(*) FROM memories", [], |r| r.get(0)))
-        .unwrap_or(0)
+        rusqlite::Connection::open_with_flags(&mem_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|conn| conn.query_row("SELECT count(*) FROM memories", [], |r| r.get(0)))
+            .unwrap_or(0)
     };
 
     if cmd.json {

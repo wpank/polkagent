@@ -54,21 +54,18 @@ impl CacheStore for InMemoryCache {
     async fn get(&self, key: &CacheKey) -> Option<CachedValue> {
         let canonical = key.canonical().to_owned();
         let mut inner = self.inner.write();
-        match inner.get(&canonical) {
-            Some(entry) => {
-                self.stats.record_hit();
-                let cached = CachedValue {
-                    data: entry.data.clone(),
-                    inserted_at: chrono::Utc::now(), // approximation; real insert time is in LRU
-                    expires_at: None,
-                    access_count: entry.access_count,
-                };
-                Some(cached)
-            }
-            None => {
-                self.stats.record_miss();
-                None
-            }
+        if let Some(entry) = inner.get(&canonical) {
+            self.stats.record_hit();
+            let cached = CachedValue {
+                data: entry.data.clone(),
+                inserted_at: chrono::Utc::now(), // approximation; real insert time is in LRU
+                expires_at: None,
+                access_count: entry.access_count,
+            };
+            Some(cached)
+        } else {
+            self.stats.record_miss();
+            None
         }
     }
 
@@ -176,9 +173,18 @@ mod tests {
         let k2 = CacheKey::new("test", "b");
         let k3 = CacheKey::new("test", "c");
 
-        cache.set(k1.clone(), CachedValue::new(json!(1)), None).await.expect("set");
-        cache.set(k2.clone(), CachedValue::new(json!(2)), None).await.expect("set");
-        cache.set(k3.clone(), CachedValue::new(json!(3)), None).await.expect("set");
+        cache
+            .set(k1.clone(), CachedValue::new(json!(1)), None)
+            .await
+            .expect("set");
+        cache
+            .set(k2.clone(), CachedValue::new(json!(2)), None)
+            .await
+            .expect("set");
+        cache
+            .set(k3.clone(), CachedValue::new(json!(3)), None)
+            .await
+            .expect("set");
 
         // "a" should have been evicted
         assert!(cache.get(&k1).await.is_none());
@@ -190,7 +196,10 @@ mod tests {
     async fn stats_track_hits_and_misses() {
         let cache = InMemoryCache::new(10);
         let key = CacheKey::new("test", "k1");
-        cache.set(key.clone(), CachedValue::new(json!(1)), None).await.expect("set");
+        cache
+            .set(key.clone(), CachedValue::new(json!(1)), None)
+            .await
+            .expect("set");
 
         cache.get(&key).await; // hit
         cache.get(&key).await; // hit
@@ -206,7 +215,10 @@ mod tests {
         let cache = InMemoryCache::new(10);
         let key = CacheKey::new("test", "k1");
         assert!(!cache.contains(&key).await);
-        cache.set(key.clone(), CachedValue::new(json!(1)), None).await.expect("set");
+        cache
+            .set(key.clone(), CachedValue::new(json!(1)), None)
+            .await
+            .expect("set");
         assert!(cache.contains(&key).await);
     }
 
@@ -216,8 +228,14 @@ mod tests {
         let k1 = CacheKey::new("ns1", "id");
         let k2 = CacheKey::new("ns2", "id");
 
-        cache.set(k1.clone(), CachedValue::new(json!("a")), None).await.expect("set");
-        cache.set(k2.clone(), CachedValue::new(json!("b")), None).await.expect("set");
+        cache
+            .set(k1.clone(), CachedValue::new(json!("a")), None)
+            .await
+            .expect("set");
+        cache
+            .set(k2.clone(), CachedValue::new(json!("b")), None)
+            .await
+            .expect("set");
 
         let v1 = cache.get(&k1).await.expect("ns1 should exist");
         let v2 = cache.get(&k2).await.expect("ns2 should exist");

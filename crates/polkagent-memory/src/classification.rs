@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Variants are ordered from least to most sensitive so that numeric
 /// comparison (`<=`) implements "may read" logic.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Classification {
     /// Freely shareable; no restrictions.
@@ -146,10 +148,22 @@ mod tests {
     #[test]
     fn classification_from_str() {
         use std::str::FromStr;
-        assert_eq!(Classification::from_str("public").unwrap(), Classification::Public);
-        assert_eq!(Classification::from_str("internal").unwrap(), Classification::Internal);
-        assert_eq!(Classification::from_str("confidential").unwrap(), Classification::Confidential);
-        assert_eq!(Classification::from_str("restricted").unwrap(), Classification::Restricted);
+        assert_eq!(
+            Classification::from_str("public").unwrap(),
+            Classification::Public
+        );
+        assert_eq!(
+            Classification::from_str("internal").unwrap(),
+            Classification::Internal
+        );
+        assert_eq!(
+            Classification::from_str("confidential").unwrap(),
+            Classification::Confidential
+        );
+        assert_eq!(
+            Classification::from_str("restricted").unwrap(),
+            Classification::Restricted
+        );
         assert!(Classification::from_str("unknown").is_err());
     }
 

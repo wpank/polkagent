@@ -200,11 +200,9 @@ impl RunStateMachine {
             (RunState::WaitingEffect { .. }, RunTransition::EffectsResolved) => {
                 Ok(RunState::Running)
             }
-            (RunState::WaitingEffect { .. }, RunTransition::Fail(reason)) => {
-                Ok(RunState::Failed {
-                    reason: reason.clone(),
-                })
-            }
+            (RunState::WaitingEffect { .. }, RunTransition::Fail(reason)) => Ok(RunState::Failed {
+                reason: reason.clone(),
+            }),
             (RunState::WaitingEffect { .. }, RunTransition::Cancel(reason)) => {
                 Ok(RunState::Cancelled {
                     reason: reason.clone(),
@@ -230,9 +228,7 @@ impl RunStateMachine {
             _ => Err(TransitionError::new(
                 current.clone(),
                 event.clone(),
-                format!(
-                    "transition `{event:?}` is not defined for state `{current}`"
-                ),
+                format!("transition `{event:?}` is not defined for state `{current}`"),
             )),
         }
     }
@@ -262,7 +258,9 @@ mod tests {
 
     #[test]
     fn created_to_queued_via_start() {
-        let next = sm().transition(&RunState::Created, RunTransition::Start).unwrap();
+        let next = sm()
+            .transition(&RunState::Created, RunTransition::Start)
+            .unwrap();
         assert_eq!(next, RunState::Queued);
     }
 
@@ -353,7 +351,10 @@ mod tests {
     #[test]
     fn running_to_cancelled_via_cancel() {
         let next = sm()
-            .transition(&RunState::Running, RunTransition::Cancel("user cancel".into()))
+            .transition(
+                &RunState::Running,
+                RunTransition::Cancel("user cancel".into()),
+            )
             .unwrap();
         assert!(matches!(next, RunState::Cancelled { .. }));
     }
@@ -373,7 +374,9 @@ mod tests {
         let current = RunState::AwaitingApproval {
             request_id: "req-1".into(),
         };
-        let next = sm().transition(&current, RunTransition::GrantApproval).unwrap();
+        let next = sm()
+            .transition(&current, RunTransition::GrantApproval)
+            .unwrap();
         assert_eq!(next, RunState::Running);
     }
 
@@ -476,7 +479,10 @@ mod tests {
     #[test]
     fn completing_to_failed() {
         let next = sm()
-            .transition(&RunState::Completing, RunTransition::Fail("late error".into()))
+            .transition(
+                &RunState::Completing,
+                RunTransition::Fail("late error".into()),
+            )
             .unwrap();
         assert!(matches!(next, RunState::Failed { .. }));
     }
@@ -484,7 +490,10 @@ mod tests {
     #[test]
     fn completing_to_cancelled() {
         let next = sm()
-            .transition(&RunState::Completing, RunTransition::Cancel("cancel".into()))
+            .transition(
+                &RunState::Completing,
+                RunTransition::Cancel("cancel".into()),
+            )
             .unwrap();
         assert!(matches!(next, RunState::Cancelled { .. }));
     }
@@ -529,9 +538,7 @@ mod tests {
     #[test]
     fn cancelled_is_terminal() {
         let state = RunState::Cancelled { reason: "x".into() };
-        let err = sm()
-            .transition(&state, RunTransition::Start)
-            .unwrap_err();
+        let err = sm().transition(&state, RunTransition::Start).unwrap_err();
         assert!(err.from_state.is_terminal());
     }
 
@@ -588,7 +595,10 @@ mod tests {
     #[test]
     fn fail_reason_is_preserved_in_failed_state() {
         let next = sm()
-            .transition(&RunState::Running, RunTransition::Fail("provider timeout".into()))
+            .transition(
+                &RunState::Running,
+                RunTransition::Fail("provider timeout".into()),
+            )
             .unwrap();
         match next {
             RunState::Failed { reason } => assert_eq!(reason, "provider timeout"),
@@ -620,7 +630,10 @@ mod tests {
             request_id: "req-42".into(),
         };
         let next = sm()
-            .transition(&current, RunTransition::DenyApproval("budget exceeded".into()))
+            .transition(
+                &current,
+                RunTransition::DenyApproval("budget exceeded".into()),
+            )
             .unwrap();
         match next {
             RunState::Cancelled { reason } => assert_eq!(reason, "budget exceeded"),

@@ -68,7 +68,9 @@ mod tests {
     #[test]
     fn npm_warnings_are_benign() {
         assert!(is_benign("npm warn deprecated package@1.0.0"));
-        assert!(is_benign("npm WARN config global `--global`, `--local` are deprecated"));
+        assert!(is_benign(
+            "npm WARN config global `--global`, `--local` are deprecated"
+        ));
         assert!(is_benign("npm notice New major version available!"));
     }
 
@@ -98,7 +100,9 @@ mod tests {
     fn real_errors_are_not_benign() {
         assert!(!is_benign("Error: ENOENT: no such file or directory"));
         assert!(!is_benign("SyntaxError: Unexpected token"));
-        assert!(!is_benign("TypeError: Cannot read property 'x' of undefined"));
+        assert!(!is_benign(
+            "TypeError: Cannot read property 'x' of undefined"
+        ));
         assert!(!is_benign("fatal: something bad happened"));
     }
 }

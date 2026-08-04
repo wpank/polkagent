@@ -1,0 +1,47 @@
+All done. Here's a summary of everything delivered:
+
+---
+
+## Deliverables
+
+### 1. ADR Document — `docs/adr/ADR-001-Agent-to-Agent-Escrow.md`
+
+Architecture Decision Record covering:
+
+- **Context**: Why agents need escrow (pay-before-work vs work-before-pay risk)
+- **Polkadot primitives researched**: `pallet_multisig` (2-of-2 co-signing), `pallet_proxy` pure proxy (keyless escrow account), time-delay proxy (abort window for timeout refund), proxy filters (restrict to balance transfers)
+- **Decision**: 2-of-2 multisig + time-delay proxy on a pure-proxy account — matches PRD-08 §3.5.2 exactly
+- **4 options considered**: plain multisig (no timeout), pure proxy + multisig + time-delay (chosen), smart contract (Phase 3+), off-chain escrow service
+- **On-chain account topology** diagram showing release path (multisig.as_multi) and refund path (proxy.announce with T-block delay)
+- **PAY-ESCROW-002 compliance**: deterministic block-based timeout, immutable once funded
+- **Consequences**: positive (no smart-contract risk, deterministic timeout), negative (3-extrinsic setup, block-based timing), neutral (extensible to 2-of-3 arbiter)
+
+### 2. Escrow State Machine — `crates/polkagent-payment/src/escrow.rs`
+
+Labeled **EXPERIMENTAL**, following the existing `ledger.rs` / `intent.rs` patterns:
+
+| Type | Purpose |
+|------|---------|
+| `EscrowStatus` | 10-variant enum: Proposed → Funded → Active → AwaitingRelease → Released / Expired / Disputed → Resolved / Refunded / Cancelled |
+| `validate_escrow_transition()` | Enforces the directed transition graph |
+| `EscrowAgreement` | Terms struct: buyer/seller IDs, amount, escrow account, timeout_blocks, description |
+| `EscrowStateMachine` | State machine with timestamped history, agreement tracking, `funds_locked()` helper |
+
+Full serde round-trip support, 24 unit tests covering:
+- Happy path (Proposed → Released)
+- Timeout path (Active → Expired)  
+- Dispute path (Active → Disputed → Refunded)
+- Cancellation path (Proposed/Funded → Cancelled)
+- Invalid transitions (skip, backward, from terminal)
+- Serde serialization, history ordering
+
+### 3. Module Registration — `lib.rs` updated
+
+- `pub mod escrow` added in alphabetical order
+- Convenience re-exports: `EscrowAgreement`, `EscrowStateMachine`, `EscrowStatus`
+- Module table updated with EXPERIMENTAL label
+
+### Build Verification
+
+- `cargo check --workspace` — **clean, zero warnings**
+- `cargo test -p polkagent-payment` — **211 tests passed, 0 failures**

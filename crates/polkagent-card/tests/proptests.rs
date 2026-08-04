@@ -8,9 +8,7 @@ use proptest::prelude::*;
 use polkagent_card::builder::ActionCardBuilder;
 use polkagent_card::card::RiskLevel;
 use polkagent_card::render::{render_text, render_tui};
-use polkagent_card::sections::{
-    CanonicalSection, RiskFlag, RiskFlagType, SectionSource, Severity,
-};
+use polkagent_card::sections::{CanonicalSection, RiskFlag, RiskFlagType, SectionSource, Severity};
 
 // =========================================================================
 // Helpers: strategies for generating domain values

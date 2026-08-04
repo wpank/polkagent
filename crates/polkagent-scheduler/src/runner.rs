@@ -82,11 +82,7 @@ where
     /// - `store` — the task persistence backend.
     /// - `executor` — the task executor for dispatching actions.
     /// - `poll_interval` — how often to check for due tasks.
-    pub fn new(
-        store: Arc<S>,
-        executor: Arc<E>,
-        poll_interval: std::time::Duration,
-    ) -> Self {
+    pub fn new(store: Arc<S>, executor: Arc<E>, poll_interval: std::time::Duration) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             store,
@@ -145,11 +141,7 @@ where
                 }
                 Err(e) => {
                     warn!(task_id = %task_id, error = %e, "task execution failed");
-                    if let Err(store_err) = self
-                        .store
-                        .mark_failed(task_id, e.to_string())
-                        .await
-                    {
+                    if let Err(store_err) = self.store.mark_failed(task_id, e.to_string()).await {
                         error!(
                             task_id = %task_id,
                             error = %store_err,
@@ -247,11 +239,7 @@ mod tests {
     async fn poll_once_no_tasks() {
         let store = Arc::new(InMemoryTaskStore::new());
         let executor = Arc::new(NoOpExecutor);
-        let runner = SchedulerRunner::new(
-            store,
-            executor,
-            std::time::Duration::from_secs(1),
-        );
+        let runner = SchedulerRunner::new(store, executor, std::time::Duration::from_secs(1));
 
         let count = runner.poll_once().await.expect("poll");
         assert_eq!(count, 0);
@@ -262,14 +250,17 @@ mod tests {
         let store = Arc::new(InMemoryTaskStore::new());
         let executor = Arc::new(NoOpExecutor);
 
-        store.create_task(make_due_task("due")).await.expect("create");
-        store.create_task(make_future_task("not-due")).await.expect("create");
+        store
+            .create_task(make_due_task("due"))
+            .await
+            .expect("create");
+        store
+            .create_task(make_future_task("not-due"))
+            .await
+            .expect("create");
 
-        let runner = SchedulerRunner::new(
-            store.clone(),
-            executor,
-            std::time::Duration::from_secs(1),
-        );
+        let runner =
+            SchedulerRunner::new(store.clone(), executor, std::time::Duration::from_secs(1));
 
         let count = runner.poll_once().await.expect("poll");
         assert_eq!(count, 1);
@@ -289,11 +280,7 @@ mod tests {
         store.create_task(make_due_task("b")).await.expect("create");
         store.create_task(make_due_task("c")).await.expect("create");
 
-        let runner = SchedulerRunner::new(
-            store,
-            executor,
-            std::time::Duration::from_secs(1),
-        );
+        let runner = SchedulerRunner::new(store, executor, std::time::Duration::from_secs(1));
 
         let count = runner.poll_once().await.expect("poll");
         assert_eq!(count, 3);
@@ -303,19 +290,12 @@ mod tests {
     async fn shutdown_stops_runner() {
         let store = Arc::new(InMemoryTaskStore::new());
         let executor = Arc::new(NoOpExecutor);
-        let mut runner = SchedulerRunner::new(
-            store,
-            executor,
-            std::time::Duration::from_millis(50),
-        );
+        let mut runner =
+            SchedulerRunner::new(store, executor, std::time::Duration::from_millis(50));
 
         runner.shutdown();
         // The run loop should exit promptly.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            runner.run(),
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), runner.run()).await;
         assert!(result.is_ok(), "runner should stop within timeout");
     }
 

@@ -36,27 +36,27 @@ impl RiskLevel {
     /// Short label for display.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Low    => "LOW",
+            Self::Low => "LOW",
             Self::Medium => "MEDIUM",
-            Self::High   => "HIGH",
+            Self::High => "HIGH",
         }
     }
 
     /// The glyph shown before the risk label.
     pub fn glyph(self) -> &'static str {
         match self {
-            Self::Low    => "●",
+            Self::Low => "●",
             Self::Medium => "▲",
-            Self::High   => "◆",
+            Self::High => "◆",
         }
     }
 
     /// Map risk level to the appropriate theme colour.
     fn color(self, theme: &Theme) -> ratatui::style::Color {
         match self {
-            Self::Low    => theme.success,  // jade
-            Self::Medium => theme.warning,  // amber
-            Self::High   => theme.danger,   // crimson
+            Self::Low => theme.success,    // jade
+            Self::Medium => theme.warning, // amber
+            Self::High => theme.danger,    // crimson
         }
     }
 }
@@ -109,7 +109,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ActionCardData<'_>, theme: &
         .constraints([
             Constraint::Length(canonical_height), // canonical section
             Constraint::Min(3),                   // narrative section
-            Constraint::Length(1),                 // risk + hash footer
+            Constraint::Length(1),                // risk + hash footer
         ])
         .split(inner);
 
@@ -128,14 +128,10 @@ fn render_canonical(frame: &mut Frame, area: Rect, data: &ActionCardData<'_>, th
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     // Title: Pallet::Call
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{}::{}", data.pallet, data.call),
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        format!("{}::{}", data.pallet, data.call),
+        Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
+    )]));
 
     // Blank separator.
     lines.push(Line::raw(""));
@@ -193,9 +189,7 @@ fn render_footer(frame: &mut Frame, area: Rect, data: &ActionCardData<'_>, theme
     let line = Line::from(vec![
         Span::styled(
             format!(" {} Risk: {} ", data.risk.glyph(), data.risk.label()),
-            Style::default()
-                .fg(risk_color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ", Style::default()),
         Span::styled(

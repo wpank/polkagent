@@ -23,7 +23,11 @@ use polkagent_card::{
 fn make_card() -> polkagent_card::card::ActionCard {
     ActionCardBuilder::new("Transfer 10 DOT")
         .add_canonical("Amount", "10 DOT", SectionSource::Metadata)
-        .add_canonical("Recipient", "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", SectionSource::Chain)
+        .add_canonical(
+            "Recipient",
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+            SectionSource::Chain,
+        )
         .add_canonical("Nonce", "42", SectionSource::Chain)
         .add_canonical("Fee", "0.001 DOT (estimated)", SectionSource::Metadata)
         .add_narrative(

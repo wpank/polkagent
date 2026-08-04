@@ -76,8 +76,7 @@ pub fn redact_string(s: &str) -> String {
     let mut result = s.to_owned();
 
     // API keys: sk-... or pk-... (at least 8 chars after prefix)
-    let api_key_re =
-        regex_lite::Regex::new(r"(sk-|pk-)[A-Za-z0-9_\-]{8,}").expect("valid regex");
+    let api_key_re = regex_lite::Regex::new(r"(sk-|pk-)[A-Za-z0-9_\-]{8,}").expect("valid regex");
     result = api_key_re
         .replace_all(&result, "${1}***REDACTED***")
         .into_owned();
@@ -100,18 +99,14 @@ pub fn redact_string(s: &str) -> String {
         .into_owned();
 
     // Mnemonics: 24 lowercase words first, then 12 (greedy match order)
-    let mnemonic_24_re = regex_lite::Regex::new(
-        r"(?:^|\s)([a-z]{2,}(?:\s+[a-z]{2,}){23})(?:\s|$)",
-    )
-    .expect("valid regex");
+    let mnemonic_24_re = regex_lite::Regex::new(r"(?:^|\s)([a-z]{2,}(?:\s+[a-z]{2,}){23})(?:\s|$)")
+        .expect("valid regex");
     result = mnemonic_24_re
         .replace_all(&result, " ***MNEMONIC_REDACTED*** ")
         .into_owned();
 
-    let mnemonic_12_re = regex_lite::Regex::new(
-        r"(?:^|\s)([a-z]{2,}(?:\s+[a-z]{2,}){11})(?:\s|$)",
-    )
-    .expect("valid regex");
+    let mnemonic_12_re = regex_lite::Regex::new(r"(?:^|\s)([a-z]{2,}(?:\s+[a-z]{2,}){11})(?:\s|$)")
+        .expect("valid regex");
     result = mnemonic_12_re
         .replace_all(&result, " ***MNEMONIC_REDACTED*** ")
         .into_owned();

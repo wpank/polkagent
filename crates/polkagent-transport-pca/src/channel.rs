@@ -210,8 +210,7 @@ impl MessageChannel {
 
     /// Close the channel, preventing further enqueues and waking any waiters.
     pub fn close(&self) {
-        self.closed
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         self.notify.notify_waiters();
     }
 
@@ -340,9 +339,7 @@ mod tests {
         let channel = std::sync::Arc::new(MessageChannel::new(100));
         let ch = channel.clone();
 
-        let handle = tokio::spawn(async move {
-            ch.dequeue().await.expect("dequeue")
-        });
+        let handle = tokio::spawn(async move { ch.dequeue().await.expect("dequeue") });
 
         // Give the dequeue task time to start waiting.
         tokio::task::yield_now().await;
@@ -358,9 +355,7 @@ mod tests {
         let channel = std::sync::Arc::new(MessageChannel::new(100));
         let ch = channel.clone();
 
-        let handle = tokio::spawn(async move {
-            ch.dequeue().await
-        });
+        let handle = tokio::spawn(async move { ch.dequeue().await });
 
         tokio::task::yield_now().await;
 

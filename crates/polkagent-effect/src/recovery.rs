@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use polkagent_core::EffectId;
-use polkagent_store_trait::{EffectStore, StoredIntent, StoreRetryClass};
+use polkagent_store_trait::{EffectStore, StoreRetryClass, StoredIntent};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -58,10 +58,7 @@ pub enum RecoveryAction {
 
     /// Mark the intent as failed with an `Unknown` outcome. Used for
     /// `NoAutoRetry` effects where the actual outcome is indeterminate.
-    MarkFailed {
-        intent_id: EffectId,
-        reason: String,
-    },
+    MarkFailed { intent_id: EffectId, reason: String },
 
     /// The intent cannot be automatically resolved. An operator must
     /// investigate (e.g., check whether a chain transaction was submitted).
@@ -151,7 +148,11 @@ impl CrashRecovery {
 
         for action in &actions {
             match action {
-                RecoveryAction::Retry { intent_id, retry_class, reason } => {
+                RecoveryAction::Retry {
+                    intent_id,
+                    retry_class,
+                    reason,
+                } => {
                     info!(
                         intent_id = %intent_id,
                         retry_class = ?retry_class,
@@ -207,7 +208,11 @@ impl CrashRecovery {
     ) -> Result<(), PipelineError> {
         for action in actions {
             match action {
-                RecoveryAction::Retry { intent_id, retry_class, reason } => {
+                RecoveryAction::Retry {
+                    intent_id,
+                    retry_class,
+                    reason,
+                } => {
                     info!(
                         intent_id = %intent_id,
                         retry_class = ?retry_class,
@@ -327,7 +332,7 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use polkagent_core::{EffectId, RunId, WorkerId};
-    use polkagent_store_trait::{StoredIntent, StoreRetryClass};
+    use polkagent_store_trait::{StoreRetryClass, StoredIntent};
     use std::time::Duration as StdDuration;
 
     // -----------------------------------------------------------------------
@@ -392,8 +397,11 @@ mod tests {
 
     #[test]
     fn check_before_retry_expired_lease_becomes_retry() {
-        let intent =
-            make_stored_intent(EffectId::new(), StoreRetryClass::CheckBeforeRetry, "claimed");
+        let intent = make_stored_intent(
+            EffectId::new(),
+            StoreRetryClass::CheckBeforeRetry,
+            "claimed",
+        );
         let action = classify_expired(&intent);
         assert!(
             matches!(
@@ -471,7 +479,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl EffectStore for ExpiredLeaseStore {
-        async fn propose_intent(&self, _: StoredIntent) -> Result<(), polkagent_store_trait::StoreError> {
+        async fn propose_intent(
+            &self,
+            _: StoredIntent,
+        ) -> Result<(), polkagent_store_trait::StoreError> {
             Ok(())
         }
         async fn claim_intent(
@@ -496,7 +507,11 @@ mod tests {
                     id: id.to_string(),
                 })
         }
-        async fn release_claim(&self, _: EffectId, _: WorkerId) -> Result<(), polkagent_store_trait::StoreError> {
+        async fn release_claim(
+            &self,
+            _: EffectId,
+            _: WorkerId,
+        ) -> Result<(), polkagent_store_trait::StoreError> {
             Ok(())
         }
         async fn update_intent_state(
@@ -514,7 +529,10 @@ mod tests {
                     id: id.to_string(),
                 })
         }
-        async fn get_intent(&self, id: EffectId) -> Result<StoredIntent, polkagent_store_trait::StoreError> {
+        async fn get_intent(
+            &self,
+            id: EffectId,
+        ) -> Result<StoredIntent, polkagent_store_trait::StoreError> {
             self.intents
                 .iter()
                 .find(|i| i.id == id)
@@ -524,7 +542,10 @@ mod tests {
                     id: id.to_string(),
                 })
         }
-        async fn get_by_run(&self, _: RunId) -> Result<Vec<StoredIntent>, polkagent_store_trait::StoreError> {
+        async fn get_by_run(
+            &self,
+            _: RunId,
+        ) -> Result<Vec<StoredIntent>, polkagent_store_trait::StoreError> {
             Ok(vec![])
         }
         async fn expired_leases(
@@ -551,7 +572,8 @@ mod tests {
         async fn unconsumed_outcomes(
             &self,
             _: RunId,
-        ) -> Result<Vec<polkagent_store_trait::StoredOutcome>, polkagent_store_trait::StoreError> {
+        ) -> Result<Vec<polkagent_store_trait::StoredOutcome>, polkagent_store_trait::StoreError>
+        {
             Ok(vec![])
         }
         async fn mark_outcomes_consumed(
@@ -572,8 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn recover_all_idempotent_expired_returns_retry() {
-        let intent =
-            make_stored_intent(EffectId::new(), StoreRetryClass::Idempotent, "claimed");
+        let intent = make_stored_intent(EffectId::new(), StoreRetryClass::Idempotent, "claimed");
         let store = Arc::new(ExpiredLeaseStore {
             intents: vec![intent],
         });
@@ -649,10 +670,12 @@ mod tests {
     fn is_idempotent_returns_true_for_idempotent_and_check_before() {
         let idempotent =
             make_stored_intent(EffectId::new(), StoreRetryClass::Idempotent, "pending");
-        let check_before =
-            make_stored_intent(EffectId::new(), StoreRetryClass::CheckBeforeRetry, "pending");
-        let no_auto =
-            make_stored_intent(EffectId::new(), StoreRetryClass::NoAutoRetry, "pending");
+        let check_before = make_stored_intent(
+            EffectId::new(),
+            StoreRetryClass::CheckBeforeRetry,
+            "pending",
+        );
+        let no_auto = make_stored_intent(EffectId::new(), StoreRetryClass::NoAutoRetry, "pending");
 
         assert!(CrashRecovery::is_idempotent(&idempotent));
         assert!(CrashRecovery::is_idempotent(&check_before));

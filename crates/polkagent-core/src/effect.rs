@@ -507,10 +507,7 @@ mod tests {
             },
         ];
         for state in &non_terminal {
-            assert!(
-                !state.is_terminal(),
-                "{state:?} should not be terminal"
-            );
+            assert!(!state.is_terminal(), "{state:?} should not be terminal");
         }
     }
 

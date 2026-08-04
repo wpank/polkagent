@@ -48,7 +48,12 @@ impl BatchResult {
     #[must_use]
     pub fn from_items(
         batch_id: BatchId,
-        items: &[(ItemId, ItemStatus, Option<serde_json::Value>, Option<String>)],
+        items: &[(
+            ItemId,
+            ItemStatus,
+            Option<serde_json::Value>,
+            Option<String>,
+        )],
         started_at: DateTime<Utc>,
     ) -> Self {
         let total = items.len();
@@ -99,6 +104,7 @@ impl BatchResult {
     /// Returns the number of items still pending (not processed).
     #[must_use]
     pub fn pending_count(&self) -> usize {
-        self.total.saturating_sub(self.succeeded + self.failed + self.skipped)
+        self.total
+            .saturating_sub(self.succeeded + self.failed + self.skipped)
     }
 }

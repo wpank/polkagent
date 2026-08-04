@@ -161,14 +161,8 @@ impl RiskGate for BatchHidingDetector {
         let hidden: Vec<&serde_json::Value> = calls
             .iter()
             .filter(|c| {
-                let pallet = c
-                    .get("pallet")
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("");
-                let call = c
-                    .get("call")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("");
+                let pallet = c.get("pallet").and_then(|p| p.as_str()).unwrap_or("");
+                let call = c.get("call").and_then(|c| c.as_str()).unwrap_or("");
                 // Non-transfer calls inside a batch are suspicious.
                 !(pallet == "Balances"
                     && (call == "transfer_keep_alive"
@@ -382,10 +376,7 @@ impl Default for CompositeRiskGate {
 
 impl RiskGate for CompositeRiskGate {
     fn assess(&self, intent: &PaymentIntent) -> Vec<RiskFinding> {
-        self.gates
-            .iter()
-            .flat_map(|g| g.assess(intent))
-            .collect()
+        self.gates.iter().flat_map(|g| g.assess(intent)).collect()
     }
 }
 
@@ -446,7 +437,11 @@ mod tests {
 
     #[test]
     fn severity_serde_round_trip() {
-        for severity in [RiskSeverity::Info, RiskSeverity::Warning, RiskSeverity::Critical] {
+        for severity in [
+            RiskSeverity::Info,
+            RiskSeverity::Warning,
+            RiskSeverity::Critical,
+        ] {
             let json = serde_json::to_string(&severity).expect("serialize");
             let back: RiskSeverity = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(severity, back);
@@ -464,9 +459,15 @@ mod tests {
         assert_eq!(RiskCode::HighValue.to_string(), "high_value");
         assert_eq!(RiskCode::NearDuplicate.to_string(), "near_duplicate");
         assert_eq!(RiskCode::StaleMetadata.to_string(), "stale_metadata");
-        assert_eq!(RiskCode::NearExistentialDeposit.to_string(), "near_existential_deposit");
+        assert_eq!(
+            RiskCode::NearExistentialDeposit.to_string(),
+            "near_existential_deposit"
+        );
         assert_eq!(RiskCode::UnknownFee.to_string(), "unknown_fee");
-        assert_eq!(RiskCode::FirstTimeRecipient.to_string(), "first_time_recipient");
+        assert_eq!(
+            RiskCode::FirstTimeRecipient.to_string(),
+            "first_time_recipient"
+        );
         assert_eq!(RiskCode::ProxyCall.to_string(), "proxy_call");
         assert_eq!(RiskCode::CrossChain.to_string(), "cross_chain");
     }
@@ -669,10 +670,16 @@ mod tests {
         assert_eq!(findings[0].code, RiskCode::HomoglyphAddress);
         assert_eq!(findings[0].severity, RiskSeverity::Critical);
 
-        let confusables = findings[0].evidence.get("confusables").expect("has confusables");
+        let confusables = findings[0]
+            .evidence
+            .get("confusables")
+            .expect("has confusables");
         let arr = confusables.as_array().expect("is array");
         assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0].get("codepoint").and_then(|v| v.as_str()), Some("U+0410"));
+        assert_eq!(
+            arr[0].get("codepoint").and_then(|v| v.as_str()),
+            Some("U+0410")
+        );
         assert_eq!(arr[0].get("looks_like").and_then(|v| v.as_str()), Some("A"));
     }
 
@@ -714,7 +721,10 @@ mod tests {
             .get("confusables")
             .and_then(|v| v.as_array())
             .expect("confusables array");
-        assert_eq!(confusables[0].get("looks_like").and_then(|v| v.as_str()), Some("p"));
+        assert_eq!(
+            confusables[0].get("looks_like").and_then(|v| v.as_str()),
+            Some("p")
+        );
     }
 
     #[test]
@@ -730,7 +740,10 @@ mod tests {
             .get("confusables")
             .and_then(|v| v.as_array())
             .expect("confusables array");
-        assert_eq!(confusables[0].get("looks_like").and_then(|v| v.as_str()), Some("?"));
+        assert_eq!(
+            confusables[0].get("looks_like").and_then(|v| v.as_str()),
+            Some("?")
+        );
     }
 
     #[test]
@@ -748,7 +761,10 @@ mod tests {
     #[test]
     fn high_value_below_threshold() {
         let detector = HighValueDetector::new(100_000_000_000); // 10 DOT
-        let intent = make_intent("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", 50_000_000_000);
+        let intent = make_intent(
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+            50_000_000_000,
+        );
         let findings = detector.assess(&intent);
         assert!(findings.is_empty());
     }
@@ -814,9 +830,18 @@ mod tests {
         assert_eq!(findings.len(), 1);
 
         let evidence = &findings[0].evidence;
-        assert_eq!(evidence.get("value_planck").and_then(|v| v.as_u64()), Some(5000));
-        assert_eq!(evidence.get("threshold_planck").and_then(|v| v.as_u64()), Some(1000));
-        assert_eq!(evidence.get("asset").and_then(|v| v.as_str()), Some("NATIVE"));
+        assert_eq!(
+            evidence.get("value_planck").and_then(|v| v.as_u64()),
+            Some(5000)
+        );
+        assert_eq!(
+            evidence.get("threshold_planck").and_then(|v| v.as_u64()),
+            Some(1000)
+        );
+        assert_eq!(
+            evidence.get("asset").and_then(|v| v.as_str()),
+            Some("NATIVE")
+        );
     }
 
     // ======================================================================

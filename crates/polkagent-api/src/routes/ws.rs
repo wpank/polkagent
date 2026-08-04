@@ -37,11 +37,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
     response::IntoResponse,
 };
-use axum::extract::ws::{Message, WebSocket};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
@@ -185,15 +185,9 @@ pub enum ClientMessage {
     /// Authenticate using a bearer token.
     Auth { token: Option<String> },
     /// Subscribe to a channel.
-    Subscribe {
-        id: Option<String>,
-        channel: String,
-    },
+    Subscribe { id: Option<String>, channel: String },
     /// Unsubscribe from a channel.
-    Unsubscribe {
-        id: Option<String>,
-        channel: String,
-    },
+    Unsubscribe { id: Option<String>, channel: String },
     /// Client ping — server responds with `"pong"`.
     Ping { id: Option<String> },
 }
@@ -349,12 +343,13 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     // Check if a token was provided as query parameter.
-    let pre_authenticated = query.token.as_deref().map(|t| !t.is_empty()).unwrap_or(false);
+    let pre_authenticated = query
+        .token
+        .as_deref()
+        .map(|t| !t.is_empty())
+        .unwrap_or(false);
 
-    debug!(
-        pre_authenticated,
-        "WebSocket v1alpha1 upgrade accepted"
-    );
+    debug!(pre_authenticated, "WebSocket v1alpha1 upgrade accepted");
 
     let session = if pre_authenticated {
         WsSession::authenticated()
@@ -376,7 +371,7 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
     ping_interval.tick().await;
 
     // Track when the last ping was sent so we can detect pong timeouts.
-    let mut last_ping_sent: Option<Instant> = None;
+    let mut ping_sent_at: Option<Instant> = None;
     let mut waiting_for_pong = false;
 
     loop {
@@ -394,7 +389,6 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
                     }
                     Some(Ok(Message::Pong(_))) => {
                         trace!("WebSocket v1alpha1: received Pong");
-                        last_ping_sent = None;
                         waiting_for_pong = false;
                     }
                     Some(Ok(Message::Ping(data))) => {
@@ -479,13 +473,11 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
             _ = ping_interval.tick() => {
                 // Check pong timeout from the previous ping.
                 if waiting_for_pong {
-                    if let Some(t) = last_ping_sent {
+                    if let Some(t) = ping_sent_at {
                         if t.elapsed() > PONG_TIMEOUT {
                             debug!("WebSocket v1alpha1: pong timeout; closing connection");
                             break;
                         }
-                    } else {
-                        // Ping was sent but pong already cleared it; no timeout.
                     }
                 }
 
@@ -495,7 +487,7 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
                     break;
                 }
                 trace!("WebSocket v1alpha1: sent Ping");
-                last_ping_sent = Some(Instant::now());
+                ping_sent_at = Some(Instant::now());
                 waiting_for_pong = true;
             }
         }
@@ -770,17 +762,13 @@ mod tests {
     fn client_message_subscribe_parses() {
         let json = r#"{"msg_type":"subscribe","id":"r1","channel":"system"}"#;
         let msg: ClientMessage = serde_json::from_str(json).expect("parse");
-        assert!(
-            matches!(msg, ClientMessage::Subscribe { ref channel, .. } if channel == "system")
-        );
+        assert!(matches!(msg, ClientMessage::Subscribe { ref channel, .. } if channel == "system"));
     }
 
     #[test]
     fn client_message_unsubscribe_parses() {
         let run_id = RunId::new();
-        let json = format!(
-            r#"{{"msg_type":"unsubscribe","id":"r2","channel":"runs:{run_id}"}}"#
-        );
+        let json = format!(r#"{{"msg_type":"unsubscribe","id":"r2","channel":"runs:{run_id}"}}"#);
         let msg: ClientMessage = serde_json::from_str(&json).expect("parse");
         assert!(matches!(msg, ClientMessage::Unsubscribe { .. }));
     }

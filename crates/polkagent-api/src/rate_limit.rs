@@ -90,11 +90,7 @@ impl RateLimitState {
 /// request is keyed as `"unknown"`.
 fn extract_key<B>(req: &Request<B>) -> String {
     // 1. Try X-Api-Key header.
-    if let Some(api_key) = req
-        .headers()
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-    {
+    if let Some(api_key) = req.headers().get("x-api-key").and_then(|v| v.to_str().ok()) {
         if !api_key.is_empty() {
             return format!("apikey:{api_key}");
         }
@@ -162,14 +158,8 @@ pub async fn rate_limit_middleware(
         // Forward to inner handler, then append rate-limit headers.
         let mut response = next.run(req).await;
         let headers = response.headers_mut();
-        headers.insert(
-            "x-ratelimit-limit",
-            HeaderValue::from(state.limit),
-        );
-        headers.insert(
-            "x-ratelimit-remaining",
-            HeaderValue::from(result.remaining),
-        );
+        headers.insert("x-ratelimit-limit", HeaderValue::from(state.limit));
+        headers.insert("x-ratelimit-remaining", HeaderValue::from(result.remaining));
         response
     } else {
         // Compute Retry-After in whole seconds (minimum 1).
@@ -196,18 +186,9 @@ pub async fn rate_limit_middleware(
 
         let mut response = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
         let headers = response.headers_mut();
-        headers.insert(
-            "retry-after",
-            HeaderValue::from(retry_secs as u32),
-        );
-        headers.insert(
-            "x-ratelimit-limit",
-            HeaderValue::from(state.limit),
-        );
-        headers.insert(
-            "x-ratelimit-remaining",
-            HeaderValue::from(0u32),
-        );
+        headers.insert("retry-after", HeaderValue::from(retry_secs as u32));
+        headers.insert("x-ratelimit-limit", HeaderValue::from(state.limit));
+        headers.insert("x-ratelimit-remaining", HeaderValue::from(0u32));
         response
     }
 }
@@ -235,10 +216,7 @@ mod tests {
 
         Router::new()
             .route("/test", get(|| async { "ok" }))
-            .layer(middleware::from_fn_with_state(
-                state,
-                rate_limit_middleware,
-            ))
+            .layer(middleware::from_fn_with_state(state, rate_limit_middleware))
     }
 
     /// Helper: send a GET /test with an optional X-Api-Key header.
@@ -485,9 +463,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 4096)
-            .await
-            .unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "RATE_LIMIT_EXCEEDED");
         assert_eq!(body["error"]["message"], "too many requests");

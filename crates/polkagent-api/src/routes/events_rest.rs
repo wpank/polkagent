@@ -115,8 +115,7 @@ pub async fn get_event(
         .find(|e| e.id == id)
         .ok_or_else(|| ApiError::NotFound(format!("event {id}")))?;
 
-    let data =
-        serde_json::to_value(&event).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    let data = serde_json::to_value(&event).map_err(|e| ApiError::InternalError(e.to_string()))?;
 
     Ok(Json(EventResponse {
         version: API_VERSION.to_owned(),

@@ -19,7 +19,7 @@ use crate::cli::{AuthCmd, AuthLoginCmd, AuthLogoutCmd, AuthStatusCmd, AuthWhoami
 /// Dispatch the `auth` subcommand.
 pub fn run(cmd: &AuthCmd) -> Result<()> {
     match cmd {
-        AuthCmd::Login(c)  => login(c),
+        AuthCmd::Login(c) => login(c),
         AuthCmd::Logout(c) => logout(c),
         AuthCmd::Whoami(c) => whoami(c),
         AuthCmd::Status(c) => status(c),
@@ -69,8 +69,12 @@ fn home_dir() -> Option<PathBuf> {
 ///
 /// Each tuple is `(provider_name, primary_env_var, polkagent_prefixed_env_var)`.
 const PROVIDER_KEYS: &[(&str, &str, &str)] = &[
-    ("Anthropic", "ANTHROPIC_API_KEY", "POLKAGENT_ANTHROPIC_API_KEY"),
-    ("OpenAI",    "OPENAI_API_KEY",    "POLKAGENT_OPENAI_API_KEY"),
+    (
+        "Anthropic",
+        "ANTHROPIC_API_KEY",
+        "POLKAGENT_ANTHROPIC_API_KEY",
+    ),
+    ("OpenAI", "OPENAI_API_KEY", "POLKAGENT_OPENAI_API_KEY"),
 ];
 
 /// Determine whether an API key is set for the given pair of env var names.
@@ -136,9 +140,11 @@ fn login(cmd: &AuthLoginCmd) -> Result<()> {
     let mut lines: Vec<String> = Vec::new();
 
     for (provider, primary, _prefixed) in PROVIDER_KEYS {
-        if cmd.provider.as_deref().map_or(false, |p| {
-            !p.eq_ignore_ascii_case(provider)
-        }) {
+        if cmd
+            .provider
+            .as_deref()
+            .map_or(false, |p| !p.eq_ignore_ascii_case(provider))
+        {
             continue;
         }
 
@@ -166,7 +172,11 @@ fn login(cmd: &AuthLoginCmd) -> Result<()> {
 
     if cmd.dry_run {
         println!();
-        println!("  [dry-run] Would write {} key(s) to {}", lines.len(), creds_path.display());
+        println!(
+            "  [dry-run] Would write {} key(s) to {}",
+            lines.len(),
+            creds_path.display()
+        );
         return Ok(());
     }
 
@@ -193,7 +203,11 @@ fn login(cmd: &AuthLoginCmd) -> Result<()> {
     }
 
     println!();
-    println!("  Stored {} key(s) to {}", lines.len(), creds_path.display());
+    println!(
+        "  Stored {} key(s) to {}",
+        lines.len(),
+        creds_path.display()
+    );
     println!("  Permissions set to 0600 (owner read/write only).");
 
     Ok(())
@@ -276,8 +290,8 @@ fn whoami(cmd: &AuthWhoamiCmd) -> Result<()> {
     println!("  API Keys:");
     for info in &key_infos {
         let provider = info["provider"].as_str().unwrap_or("?");
-        let key      = info["key"].as_str().unwrap_or("[not configured]");
-        let method   = info["method"].as_str().unwrap_or("none");
+        let key = info["key"].as_str().unwrap_or("[not configured]");
+        let method = info["method"].as_str().unwrap_or("none");
         println!("    {provider:<12} {key:<20}  (source: {method})");
     }
     println!();
@@ -335,9 +349,9 @@ fn status(cmd: &AuthStatusCmd) -> Result<()> {
     println!();
     println!("  Providers:");
     for p in &providers {
-        let name       = p["provider"].as_str().unwrap_or("?");
+        let name = p["provider"].as_str().unwrap_or("?");
         let configured = p["configured"].as_bool().unwrap_or(false);
-        let method     = p["method"].as_str().unwrap_or("none");
+        let method = p["method"].as_str().unwrap_or("none");
         let glyph = if configured { "\u{25C9}" } else { "\u{25A0}" };
         let label = if configured { "OK  " } else { "MISS" };
         println!("    {glyph} [{label}] {name:<12}  source: {method}");
@@ -347,7 +361,10 @@ fn status(cmd: &AuthStatusCmd) -> Result<()> {
     println!("    exists: {creds_exists}");
     println!();
 
-    if providers.iter().all(|p| !p["configured"].as_bool().unwrap_or(false)) {
+    if providers
+        .iter()
+        .all(|p| !p["configured"].as_bool().unwrap_or(false))
+    {
         println!("  No API keys configured. Run `polkagent auth login` to add keys.");
     }
 

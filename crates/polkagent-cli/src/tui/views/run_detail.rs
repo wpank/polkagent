@@ -19,6 +19,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::error_explainer;
 use crate::tui::state::{RunDetail, TuiState};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::{context_gauge, token_sparkline};
@@ -43,7 +44,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    render_info_panel(frame, cols[0], detail, state, state.detail_panel_index == 0, theme);
+    render_info_panel(
+        frame,
+        cols[0],
+        detail,
+        state,
+        state.detail_panel_index == 0,
+        theme,
+    );
     render_turns_panel(frame, cols[1], detail, state.detail_panel_index == 1, theme);
 }
 
@@ -109,8 +117,14 @@ fn render_info_panel(
     // ── Text content ──────────────────────────────────────────────────────
     let now = Utc::now();
     let state_color = theme.status_color(&detail.state);
-    let created = detail.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-    let updated = detail.updated_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    let created = detail
+        .created_at
+        .format("%Y-%m-%d %H:%M:%S UTC")
+        .to_string();
+    let updated = detail
+        .updated_at
+        .format("%Y-%m-%d %H:%M:%S UTC")
+        .to_string();
     let completed = detail
         .completed_at
         .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
@@ -121,14 +135,13 @@ fn render_info_panel(
     let mut lines: Vec<Line> = vec![
         // State header.
         Line::from(vec![
-            Span::styled(
-                detail.state_glyph(),
-                Style::default().fg(state_color),
-            ),
+            Span::styled(detail.state_glyph(), Style::default().fg(state_color)),
             Span::raw("  "),
             Span::styled(
                 detail.state.clone(),
-                Style::default().fg(state_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(state_color)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
@@ -146,8 +159,18 @@ fn render_info_panel(
         Line::from(""),
         // Token usage.
         section_header("Token Usage", theme),
-        kv_line("  Input", &format_tokens(detail.input_tokens), theme.text_primary, theme),
-        kv_line("  Output", &format_tokens(detail.output_tokens), theme.text_primary, theme),
+        kv_line(
+            "  Input",
+            &format_tokens(detail.input_tokens),
+            theme.text_primary,
+            theme,
+        ),
+        kv_line(
+            "  Output",
+            &format_tokens(detail.output_tokens),
+            theme.text_primary,
+            theme,
+        ),
         kv_line("  Total", &format_tokens(total_tokens), theme.rose, theme),
         Line::from(""),
     ];
@@ -164,6 +187,60 @@ fn render_info_panel(
         lines.push(kv_line("  Succeeded", &eff_ok, theme.success, theme));
         lines.push(kv_line("  Failed", &eff_fail, theme.danger, theme));
         lines.push(kv_line("  Pending", &eff_pend, theme.warning, theme));
+    }
+
+    // Error explanation for failed runs.
+    if matches!(detail.state.as_str(), "failed" | "timed_out" | "cancelled") {
+        let reason = detail
+            .failure_reason
+            .as_deref()
+            .unwrap_or(match detail.state.as_str() {
+                "timed_out" => "run timed out",
+                "cancelled" => "cancelled",
+                _ => "unknown error",
+            });
+        let explanation = error_explainer::explain(reason);
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            format!("  {} ", explanation.category.label()),
+            Style::default()
+                .fg(theme.danger)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(Span::styled(
+            format!("  {reason}"),
+            Style::default().fg(theme.danger),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  What happened:",
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("    {}", explanation.what_happened),
+            Style::default().fg(theme.text_primary),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  What is safe:",
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("    {}", explanation.what_is_safe),
+            Style::default().fg(theme.text_primary),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  What you can do:",
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
+        )));
+        for step in explanation.next_steps {
+            lines.push(Line::from(Span::styled(
+                format!("    • {step}"),
+                Style::default().fg(theme.text_primary),
+            )));
+        }
     }
 
     frame.render_widget(Paragraph::new(lines), text_area);
@@ -233,25 +310,25 @@ fn render_turns_panel(
     }
 
     // Header line.
-    let mut lines: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled(
-                format!("  {:<4} {:<10} {:<8} {:<8} {:>8}",
-                    "#", "Role", "In tok", "Out tok", "Time"),
-                Style::default().fg(theme.text_dim).add_modifier(Modifier::UNDERLINED),
-            ),
-        ]),
-    ];
+    let mut lines: Vec<Line> = vec![Line::from(vec![Span::styled(
+        format!(
+            "  {:<4} {:<10} {:<8} {:<8} {:>8}",
+            "#", "Role", "In tok", "Out tok", "Time"
+        ),
+        Style::default()
+            .fg(theme.text_dim)
+            .add_modifier(Modifier::UNDERLINED),
+    )])];
 
     // Turn rows.
     let visible = inner.height.saturating_sub(1) as usize;
     for turn in detail.turns.iter().take(visible) {
         let role_color = match turn.role.as_str() {
             "assistant" => theme.rose,
-            "user"      => theme.bone,
-            "system"    => theme.dream,
-            "tool"      => theme.success,
-            _           => theme.text_primary,
+            "user" => theme.bone,
+            "system" => theme.dream,
+            "tool" => theme.success,
+            _ => theme.text_primary,
         };
 
         let elapsed = turn
@@ -311,7 +388,11 @@ fn render_turns_panel(
 // ---------------------------------------------------------------------------
 
 fn styled_block<'a>(title: &'a str, focused: bool, theme: &'a Theme) -> Block<'a> {
-    let border_color = if focused { theme.border_active } else { theme.border };
+    let border_color = if focused {
+        theme.border_active
+    } else {
+        theme.border
+    };
     Block::default()
         .title(Span::styled(
             title,
@@ -328,9 +409,7 @@ fn styled_block<'a>(title: &'a str, focused: bool, theme: &'a Theme) -> Block<'a
 fn section_header(title: &str, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
         format!("  {title}"),
-        Style::default()
-            .fg(theme.bone)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -341,10 +420,7 @@ fn kv_line(
     theme: &Theme,
 ) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("{key:<14}"),
-            Style::default().fg(theme.text_dim),
-        ),
+        Span::styled(format!("{key:<14}"), Style::default().fg(theme.text_dim)),
         Span::styled(value.to_owned(), Style::default().fg(value_color)),
     ])
 }

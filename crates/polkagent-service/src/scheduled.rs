@@ -74,11 +74,7 @@ impl std::fmt::Debug for ScheduledTaskManager {
             .field("poll_interval", &self.poll_interval)
             .field(
                 "history_len",
-                &self
-                    .history
-                    .lock()
-                    .map(|h| h.len())
-                    .unwrap_or(0),
+                &self.history.lock().map(|h| h.len()).unwrap_or(0),
             )
             .finish()
     }
@@ -211,10 +207,7 @@ impl ScheduledTaskManager {
     ///
     /// Entries are ordered chronologically (oldest first).
     pub fn history(&self) -> Vec<HistoryEntry> {
-        self.history
-            .lock()
-            .map(|h| h.clone())
-            .unwrap_or_default()
+        self.history.lock().map(|h| h.clone()).unwrap_or_default()
     }
 
     /// Run a single poll cycle: find due tasks and execute them.
@@ -452,7 +445,12 @@ mod tests {
         let agent_id = AgentId::new();
 
         let task_id = manager
-            .register_run("cancel-me", agent_id, "will be cancelled", make_future_schedule())
+            .register_run(
+                "cancel-me",
+                agent_id,
+                "will be cancelled",
+                make_future_schedule(),
+            )
             .await
             .expect("register");
 

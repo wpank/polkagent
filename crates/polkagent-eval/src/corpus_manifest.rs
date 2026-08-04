@@ -168,12 +168,13 @@ pub fn load_corpus_from_toml(path: &Path) -> Result<CorpusManifest> {
         message: e.to_string(),
     })?;
 
-    let created_at = raw.created_at.parse::<DateTime<Utc>>().map_err(|e| {
-        ManifestError::Parse {
+    let created_at = raw
+        .created_at
+        .parse::<DateTime<Utc>>()
+        .map_err(|e| ManifestError::Parse {
             path: path.display().to_string(),
             message: format!("Invalid created_at timestamp: {e}"),
-        }
-    })?;
+        })?;
 
     Ok(CorpusManifest {
         id: raw.id,
@@ -322,10 +323,7 @@ mod tests {
     // load_corpus_from_toml
     // -----------------------------------------------------------------------
 
-    fn write_toml_manifest(
-        dir: &std::path::Path,
-        manifest: &CorpusManifest,
-    ) -> std::path::PathBuf {
+    fn write_toml_manifest(dir: &std::path::Path, manifest: &CorpusManifest) -> std::path::PathBuf {
         // Build a TOML string manually since CorpusManifest derives Serialize
         // using serde, which round-trips through JSON for nested EvalCase values.
         // For test purposes we use serde_json + a wrapper struct.

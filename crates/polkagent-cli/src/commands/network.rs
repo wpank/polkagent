@@ -15,7 +15,9 @@ use anyhow::Result;
 use polkagent_chain_fake::FakeChainClientBuilder;
 use polkagent_chain_trait::{ChainClient, ChainProfileId};
 
-use crate::cli::{NetworkCmd, NetworkMetadataCmd, NetworkStartCmd, NetworkStatusCmd, NetworkStopCmd};
+use crate::cli::{
+    NetworkCmd, NetworkMetadataCmd, NetworkStartCmd, NetworkStatusCmd, NetworkStopCmd,
+};
 
 // ---------------------------------------------------------------------------
 // Well-known pallet names for the fake metadata display
@@ -65,10 +67,10 @@ const KNOWN_PALLETS: &[&str] = &[
 /// Dispatch the `network` subcommand.
 pub async fn run(cmd: &NetworkCmd) -> Result<()> {
     match cmd {
-        NetworkCmd::Status(c)   => status(c).await,
+        NetworkCmd::Status(c) => status(c).await,
         NetworkCmd::Metadata(c) => metadata(c).await,
-        NetworkCmd::Start(c)    => start(c),
-        NetworkCmd::Stop(c)     => stop(c),
+        NetworkCmd::Start(c) => start(c),
+        NetworkCmd::Stop(c) => stop(c),
     }
 }
 
@@ -91,9 +93,7 @@ fn probe_tcp(addr: &str) -> bool {
     addr_with_port
         .parse()
         .ok()
-        .and_then(|sock_addr| {
-            TcpStream::connect_timeout(&sock_addr, Duration::from_secs(2)).ok()
-        })
+        .and_then(|sock_addr| TcpStream::connect_timeout(&sock_addr, Duration::from_secs(2)).ok())
         .is_some()
 }
 

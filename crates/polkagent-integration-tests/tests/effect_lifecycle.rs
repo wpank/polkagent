@@ -9,12 +9,16 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RetryClass, RunId, StepId, WorkerId};
+use polkagent_core::{
+    EffectAttemptId, EffectId, EffectOutcomeId, RetryClass, RunId, StepId, WorkerId,
+};
 use polkagent_effect::pipeline::EffectIntentSpec;
-use polkagent_effect::types::{AttemptState, EffectAttempt, EffectKind, EffectOutcome, OutcomeResult};
+use polkagent_effect::types::{
+    AttemptState, EffectAttempt, EffectKind, EffectOutcome, OutcomeResult,
+};
 use polkagent_effect::IdempotencyKey;
 use polkagent_integration_tests::{make_effect_pipeline, MemEffectStore};
-use polkagent_store_trait::{EffectStore, StoredIntent, StoreRetryClass};
+use polkagent_store_trait::{EffectStore, StoreRetryClass, StoredIntent};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,7 +55,9 @@ async fn effect_intent_propose_persists_in_pending_state() {
         .expect("propose should succeed");
 
     let intents = store.intents.lock().expect("lock");
-    let intent = intents.get(&intent_id).expect("intent exists after propose");
+    let intent = intents
+        .get(&intent_id)
+        .expect("intent exists after propose");
     assert_eq!(
         intent.state, "pending",
         "newly proposed intent must be in 'pending' state"
@@ -236,10 +242,7 @@ async fn effect_lifecycle_persists_across_simulated_restart() {
     }
 
     // Simulate restart: create a new pipeline on the same backing store.
-    let pipeline2 = polkagent_effect::EffectPipeline::new(
-        Arc::clone(&store_dyn),
-        WorkerId::new(),
-    );
+    let pipeline2 = polkagent_effect::EffectPipeline::new(Arc::clone(&store_dyn), WorkerId::new());
 
     // The second pipeline can claim and complete the intent.
     let guard = pipeline2
@@ -315,7 +318,10 @@ async fn duplicate_idempotency_key_is_rejected() {
         action_card: None,
     };
 
-    pipeline.propose(spec.clone()).await.expect("first propose should succeed");
+    pipeline
+        .propose(spec.clone())
+        .await
+        .expect("first propose should succeed");
 
     let result = pipeline.propose(spec).await;
     assert!(
@@ -336,11 +342,17 @@ async fn different_idempotency_keys_are_both_accepted() {
     let run_id = RunId::new();
 
     let key1 = IdempotencyKey::generate(
-        run_id, 1, 0, EffectKind::ModelCall,
+        run_id,
+        1,
+        0,
+        EffectKind::ModelCall,
         IdempotencyKey::hash_params(b"params-1"),
     );
     let key2 = IdempotencyKey::generate(
-        run_id, 1, 1, EffectKind::ModelCall,
+        run_id,
+        1,
+        1,
+        EffectKind::ModelCall,
         IdempotencyKey::hash_params(b"params-2"),
     );
 

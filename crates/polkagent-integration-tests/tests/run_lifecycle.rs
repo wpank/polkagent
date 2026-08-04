@@ -32,12 +32,14 @@ async fn full_lifecycle_created_to_completed() {
     assert_eq!(state, RunState::Running);
 
     // 4. Completing (Running -> Completing)
-    mgr.completing_run(run_id.clone()).await.expect("completing");
+    mgr.completing_run(run_id.clone())
+        .await
+        .expect("completing");
     let state = mgr.get_state(run_id.clone()).await.expect("state");
     assert_eq!(state, RunState::Completing);
 
     // 5. Completed (Completing -> Completed)
-    mgr.complete_run(run_id.clone(), None)
+    mgr.complete_run(run_id.clone(), None, 0, 0)
         .await
         .expect("complete");
     let state = mgr.get_state(run_id.clone()).await.expect("state");
@@ -144,8 +146,10 @@ async fn terminal_run_cannot_be_cancelled() {
 
     mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
     mgr.start_run(run_id.clone()).await.expect("start");
-    mgr.completing_run(run_id.clone()).await.expect("completing");
-    mgr.complete_run(run_id.clone(), None)
+    mgr.completing_run(run_id.clone())
+        .await
+        .expect("completing");
+    mgr.complete_run(run_id.clone(), None, 0, 0)
         .await
         .expect("complete");
 
@@ -174,14 +178,8 @@ async fn two_runs_have_independent_event_sequences() {
     mgr.enqueue_run(run_a.clone()).await.expect("enqueue a");
     mgr.enqueue_run(run_b.clone()).await.expect("enqueue b");
 
-    let a_events = event_store
-        .read_run_events(run_a)
-        .await
-        .expect("read a");
-    let b_events = event_store
-        .read_run_events(run_b)
-        .await
-        .expect("read b");
+    let a_events = event_store.read_run_events(run_a).await.expect("read a");
+    let b_events = event_store.read_run_events(run_b).await.expect("read b");
 
     // Each run should have exactly 2 events with independent per-run sequences.
     assert_eq!(a_events.len(), 2);

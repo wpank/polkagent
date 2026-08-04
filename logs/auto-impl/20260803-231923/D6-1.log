@@ -1,0 +1,11 @@
+All three fixes applied, `cargo check -p polkagent-cli` passes clean. Summary:
+
+**Fix #1 — `synthesize_providers_from_env` empty key check:** Already correct. Line 522 of `model_registry.rs` already has `.filter(|spec| env_lookup(spec.env_var).is_ok_and(|v| !v.is_empty()))`. No change needed.
+
+**Fix #2 — Gemini routing to proper executor** (`run.rs`):
+- Added `polkagent-executor-gemini` as a dependency in `Cargo.toml`
+- Added `use polkagent_executor_gemini::GeminiExecutor;` import
+- Replaced the OpenAI-compat shim fallback with `GeminiExecutor::new(api_key, pc.default_model.clone())` in `executor_from_provider_config`
+
+**Fix #3 — Config source detection** (`system.rs` `detect_config_sources`):
+- Replaced hardcoded `$HOME/.config/polkagent/polkagent.toml` and `$HOME/.polkagent/polkagent.toml` paths with calls to `polkagent_config::loader::global_config_path()` (platform-aware via `dirs::config_dir()`) and `polkagent_config::loader::find_project_config()` (walks up CWD for `.polkagent/polkagent.toml`) — matching exactly what `ConfigLoader` does.

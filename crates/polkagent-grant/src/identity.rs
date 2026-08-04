@@ -101,9 +101,7 @@ impl IdentityPrincipal {
 /// Requires the `identity` crate feature.
 #[cfg(feature = "identity")]
 #[must_use]
-pub fn context_from_identity(
-    identity: &polkagent_identity::AgentIdentity,
-) -> EvaluationContext {
+pub fn context_from_identity(identity: &polkagent_identity::AgentIdentity) -> EvaluationContext {
     build_context_impl(
         &identity.agent_id.to_string(),
         &identity.display_name,
@@ -277,7 +275,10 @@ mod tests {
 
         let ss58_0 = ctx.attributes.get("identity.ss58.0").expect("ss58.0");
         let ss58_1 = ctx.attributes.get("identity.ss58.1").expect("ss58.1");
-        assert_ne!(ss58_0, ss58_1, "different accounts must have different SS58s");
+        assert_ne!(
+            ss58_0, ss58_1,
+            "different accounts must have different SS58s"
+        );
     }
 
     #[test]
@@ -285,7 +286,9 @@ mod tests {
         let identity = AgentIdentity::new(AgentId::new(), "unique-name-xyz");
         let ctx = ctx_from(&identity);
         assert_eq!(
-            ctx.attributes.get("identity.display_name").map(String::as_str),
+            ctx.attributes
+                .get("identity.display_name")
+                .map(String::as_str),
             Some("unique-name-xyz")
         );
     }
@@ -349,8 +352,7 @@ mod tests {
     fn ss58_principal_matching_exact_address_allows() {
         use crate::policy::{evaluate, Effect, PolicyDecision, PolicyRule, PolicySet};
 
-        let account =
-            ChainAccount::new(AccountId32::from_bytes([0xAAu8; 32]), NetworkId::Polkadot);
+        let account = ChainAccount::new(AccountId32::from_bytes([0xAAu8; 32]), NetworkId::Polkadot);
         let ss58 = account.ss58_address().as_str().to_owned();
 
         let identity = AgentIdentity::new(AgentId::new(), "ss58-test").with_account(account);
@@ -388,8 +390,7 @@ mod tests {
         // But the identity uses [0xBB; 32].
         let other_account =
             ChainAccount::new(AccountId32::from_bytes([0xBBu8; 32]), NetworkId::Polkadot);
-        let identity =
-            AgentIdentity::new(AgentId::new(), "wrong-addr").with_account(other_account);
+        let identity = AgentIdentity::new(AgentId::new(), "wrong-addr").with_account(other_account);
         let ctx = ctx_from(&identity);
 
         let mut set = PolicySet::default();

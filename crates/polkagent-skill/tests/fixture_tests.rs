@@ -21,8 +21,7 @@ fn load_manifest(rel: &str) -> SkillManifest {
     let path = fixture_path(rel);
     let content =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    SkillManifest::from_toml(&content)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    SkillManifest::from_toml(&content).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +66,10 @@ fn balance_checker_config_has_default_chain() {
     let manifest = load_manifest("balance-checker/skill.toml");
 
     assert_eq!(
-        manifest.config.get("default_chain").and_then(|v| v.as_str()),
+        manifest
+            .config
+            .get("default_chain")
+            .and_then(|v| v.as_str()),
         Some("polkadot")
     );
 }

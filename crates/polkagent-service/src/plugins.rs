@@ -24,7 +24,7 @@ use parking_lot::RwLock;
 use tracing::{debug, info, warn};
 
 use polkagent_plugin::{
-    PluginCapability, PluginManifest, PluginManager, PluginRegistry, PluginSandbox,
+    PluginCapability, PluginManager, PluginManifest, PluginRegistry, PluginSandbox,
 };
 
 use crate::error::ServiceError;
@@ -471,7 +471,8 @@ required = ["network.http"]
             async fn get(
                 &self,
                 run_id: polkagent_core::RunId,
-            ) -> Result<polkagent_store_trait::RunSummary, polkagent_store_trait::StoreError> {
+            ) -> Result<polkagent_store_trait::RunSummary, polkagent_store_trait::StoreError>
+            {
                 Err(polkagent_store_trait::StoreError::NotFound {
                     resource_type: "Run",
                     id: run_id.to_string(),
@@ -524,8 +525,7 @@ required = ["network.http"]
         let dir = empty_plugin_dir();
         let manager = ServicePluginManager::new(dir.path().to_path_buf());
 
-        let event_store: Arc<dyn EventStore + Send + Sync> =
-            Arc::new(FakeEventStore);
+        let event_store: Arc<dyn EventStore + Send + Sync> = Arc::new(FakeEventStore);
         let recorder = EventRecorder::new(event_store, Default::default());
 
         let app = AppServiceBuilder::new()
@@ -610,10 +610,7 @@ required = ["chain.submit"]
 
         // The forbidden plugin should not appear in the list.
         let plugins = manager.list_plugins();
-        let names: Vec<&str> = plugins
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect();
+        let names: Vec<&str> = plugins.iter().map(|p| p.name.as_str()).collect();
         assert!(!names.contains(&"forbidden-plugin"));
     }
 
@@ -643,9 +640,7 @@ required = ["chain.submit"]
         assert!(!plugins[0].enabled);
 
         // Re-enable it.
-        manager
-            .enable_plugin("test-plugin")
-            .expect("should enable");
+        manager.enable_plugin("test-plugin").expect("should enable");
         assert!(manager.is_enabled("test-plugin"));
 
         // list_plugins should reflect enabled status.
@@ -739,12 +734,16 @@ required = ["chain.submit"]
 
         // Only allow chain.query — memory.read is missing from allowed set,
         // so the plugin should be rejected.
-        let allowed: HashSet<PluginCapability> = [PluginCapability::ChainQuery].into_iter().collect();
+        let allowed: HashSet<PluginCapability> =
+            [PluginCapability::ChainQuery].into_iter().collect();
         let manager =
             ServicePluginManager::with_allowed_capabilities(dir.path().to_path_buf(), allowed);
 
         let loaded = manager.load_plugins().expect("should succeed");
-        assert!(loaded.is_empty(), "plugin should be rejected due to missing memory.read");
+        assert!(
+            loaded.is_empty(),
+            "plugin should be rejected due to missing memory.read"
+        );
     }
 
     // -------------------------------------------------------------------

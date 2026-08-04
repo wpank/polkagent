@@ -1,0 +1,42 @@
+Here's a summary of everything implemented:
+
+## Implemented: Experimental Evolutionary Skill Selection (PRD-09 §6.5)
+
+### New files created (4):
+
+**`crates/polkagent-eval/src/variant_runner.rs`** — Multi-variant evaluation comparison
+- `VariantId` — opaque identifier for skill variants
+- `VariantReport` — wraps an `EvalReport` with its variant ID
+- `VariantComparison` — compares multiple variants side-by-side, computing rankings with deterministic tiebreaking and a `score_for()` lookup
+
+**`crates/polkagent-eval/src/thompson.rs`** — Thompson sampling selector
+- `ThompsonSelector` — Beta-Bernoulli Thompson sampling strategy
+  - `record(variant, score)` / `record_scores()` — feed observed scores
+  - `select()` — draw from each arm's posterior, return the best
+  - `means()` — expose posterior means for transparency
+  - Reproducible via `set_seed()`
+  - Serializable (serde round-trip)
+- `BetaArm` — per-variant Beta distribution state
+- `SimpleRng` — minimal xorshift64 PRNG with Marsaglia-Tsang Gamma sampling and Box-Muller normals (avoids external `rand` dependency)
+
+**`crates/polkagent-skill/src/evolutionary.rs`** — Wired into skill system
+- `SkillVariant` — pairs a label with a `SkillManifest`
+- `EvolutionarySelector` — manages a pool of skill variants with:
+  - Thompson sampling selection (`select()`)
+  - User pinning (`pin()` / `unpin()`) to disable evolutionary selection
+  - Score recording and posterior means
+  - **Safety invariant**: never modifies Cedar grants or safety gates (verified by test)
+
+### Modified files (4):
+- `polkagent-eval/Cargo.toml` — added `[features] evolutionary = []`
+- `polkagent-eval/src/lib.rs` — conditionally expose `thompson` and `variant_runner` modules
+- `polkagent-skill/Cargo.toml` — added `[features] evolutionary = []`
+- `polkagent-skill/src/lib.rs` — conditionally expose `evolutionary` module with re-exports
+
+### Test coverage:
+- **132 tests pass** in polkagent-eval (20 new across thompson + variant_runner)
+- **70 tests pass** in polkagent-skill (9 new in evolutionary)
+- Tests include 3+ variant score comparisons in both crates (`three_variants_score_comparison`, `three_variants_score_comparison_thompson`, `three_variant_ranking_integration`)
+- `dominant_variant_selected_more_often` verifies exploitation behavior
+- `does_not_modify_grants_invariant` verifies safety boundary
+- `cargo check --workspace` passes clean

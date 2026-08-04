@@ -152,10 +152,10 @@ async fn apply_executor_fault(fault: Fault) -> Result<(), ExecutorError> {
 mod tests {
     use super::*;
     use crate::types::{Corruption, FaultSchedule};
+    use polkagent_core::{RunId, StepId};
     use polkagent_executor_trait::{
         ContentBlock, ExecutorError, InferenceMessage, MessageRole, TokenUsage,
     };
-    use polkagent_core::{RunId, StepId};
 
     // A minimal always-succeeding executor for testing.
     struct OkExecutor;
@@ -227,7 +227,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "before_execute",
-            Fault::Error { message: "injected".into() },
+            Fault::Error {
+                message: "injected".into(),
+            },
             FaultSchedule::Always,
         );
         let executor = FaultExecutor::new(OkExecutor, Arc::clone(&injector));
@@ -255,7 +257,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "after_execute",
-            Fault::CorruptData { corruption: Corruption::FlipBit(0) },
+            Fault::CorruptData {
+                corruption: Corruption::FlipBit(0),
+            },
             FaultSchedule::Always,
         );
         let executor = FaultExecutor::new(OkExecutor, Arc::clone(&injector));
@@ -281,7 +285,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "before_execute",
-            Fault::Error { message: "injected".into() },
+            Fault::Error {
+                message: "injected".into(),
+            },
             FaultSchedule::Always,
         );
         let executor = FaultExecutor::new(OkExecutor, Arc::clone(&injector));

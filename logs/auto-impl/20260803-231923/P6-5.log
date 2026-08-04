@@ -1,0 +1,58 @@
+All tasks complete. Here's a summary of everything implemented:
+
+---
+
+## Summary of Changes
+
+### PRD-08 Deliverable 6.6: Always-On Watcher Agents
+
+#### 1. `polkagent-config` — Configuration Schema
+
+**`crates/polkagent-config/src/schema.rs`**
+- Added `WatcherSchedule` enum — supports `Cron { expr }` and `Interval { every_secs }` variants, tagged-union for TOML/JSON serialization
+- Added `WatcherConfig` struct — declares a watcher with: `name`, `agent_id`, `schedule`, `cedar_policy`, `enabled` (default `true`), `read_only` (default `true`), `timeout_secs` (default `120`)
+- Added `watchers: Vec<WatcherConfig>` field to root `Config` struct
+- Added 5 unit tests for config serialization round-trips and defaults
+
+**`crates/polkagent-config/src/lib.rs`**
+- Exported `WatcherConfig` and `WatcherSchedule`
+
+**`crates/polkagent-config/src/validate.rs`**
+- Added `validate_watchers()` — validates name/agent_id/cedar_policy non-empty, duplicate name detection, cron field count, interval > 0, timeout > 0
+- Added 9 validation tests covering all error cases
+
+**`crates/polkagent-config/src/env.rs`**
+- Added `POLKAGENT_WATCHER_ENABLED` env var — global kill-switch that disables all watchers when set to `false`
+
+#### 2. `polkagent-service` — Watcher Agent Manager
+
+**`crates/polkagent-service/Cargo.toml`**
+- Added `[features]` section with `watcher = []` feature flag
+
+**`crates/polkagent-service/src/watcher_agent.rs`** (new file, feature-gated)
+- `WatcherAgentManager` — manages watcher lifecycle using `polkagent-scheduler`:
+  - `register_watcher()` — registers a watcher, builds a Cedar policy, schedules it
+  - `register_all()` — bulk registration, skipping disabled watchers
+  - `unregister_watcher()` — removes a watcher
+  - `watcher_policy()` — returns the Cedar `PolicySet` for a watcher
+  - `poll_once()` — manual poll cycle for testing
+- `build_watcher_policy()` — constructs a Cedar `PolicySet` per watcher:
+  - Always allows `chain.query`, `chain.decode`, `model.inference`
+  - When `read_only = true`, adds deny-overrides rule blocking `chain.submit`, `chain.transfer`, `effect.*`
+- `to_scheduler_schedule()` — converts `WatcherSchedule` → scheduler `Schedule` (with `CronExpr::parse()`)
+- **Requires `TimeoutEnforcer` (DX-3)** — refuses registration if timeout enforcement is not active
+- 14 unit tests covering: creation, TimeoutEnforcer requirement, registration, policy rules (read-only deny, non-read-only allow), disabled watcher handling, unregistration, history recording, schedule conversion, multiple watchers
+
+**`crates/polkagent-service/src/lib.rs`**
+- Added `#[cfg(feature = "watcher")] pub mod watcher_agent` and re-export
+
+#### 3. Pre-existing fix (minimal)
+
+**`crates/polkagent-service/src/app.rs`**
+- Added missing `forget()` stub to `FakeMemoryStore` test helper (pre-existing compilation failure in test code)
+
+#### Test Results
+- **polkagent-config**: All tests pass (81 total)
+- **polkagent-service** (with `--features watcher`): 241 pass, 1 pre-existing failure (unrelated `router::tests::budget_too_low_returns_no_capable`)
+- **All 15 watcher-specific tests pass**
+- **`cargo check --workspace`**: Clean

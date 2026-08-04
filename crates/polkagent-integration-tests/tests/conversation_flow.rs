@@ -77,7 +77,10 @@ async fn create_conversation_and_retrieve_it() {
 async fn get_nonexistent_conversation_returns_not_found() {
     let store = InMemoryConversationStore::new();
     let result = store.get(ConversationId::new()).await;
-    assert!(result.is_err(), "getting nonexistent conversation must fail");
+    assert!(
+        result.is_err(),
+        "getting nonexistent conversation must fail"
+    );
 }
 
 #[tokio::test]
@@ -89,14 +92,20 @@ async fn delete_conversation_removes_it() {
     store.delete(id).await.expect("delete");
 
     let result = store.get(id).await;
-    assert!(result.is_err(), "deleted conversation must not be retrievable");
+    assert!(
+        result.is_err(),
+        "deleted conversation must not be retrievable"
+    );
 }
 
 #[tokio::test]
 async fn delete_nonexistent_conversation_returns_error() {
     let store = InMemoryConversationStore::new();
     let result = store.delete(ConversationId::new()).await;
-    assert!(result.is_err(), "deleting nonexistent conversation must fail");
+    assert!(
+        result.is_err(),
+        "deleting nonexistent conversation must fail"
+    );
 }
 
 #[tokio::test]
@@ -117,7 +126,9 @@ async fn update_title_modifies_stored_title() {
 #[tokio::test]
 async fn update_title_on_nonexistent_conversation_fails() {
     let store = InMemoryConversationStore::new();
-    let result = store.update_title(ConversationId::new(), "title".into()).await;
+    let result = store
+        .update_title(ConversationId::new(), "title".into())
+        .await;
     assert!(result.is_err());
 }
 
@@ -135,11 +146,23 @@ async fn add_messages_and_retrieve_in_insertion_order() {
     let m2 = make_text_message(conv_id, MessageRole::Assistant, "Hi there");
     let m3 = make_text_message(conv_id, MessageRole::User, "What can you do?");
 
-    store.add_message(conv_id, m1.clone()).await.expect("add m1");
-    store.add_message(conv_id, m2.clone()).await.expect("add m2");
-    store.add_message(conv_id, m3.clone()).await.expect("add m3");
+    store
+        .add_message(conv_id, m1.clone())
+        .await
+        .expect("add m1");
+    store
+        .add_message(conv_id, m2.clone())
+        .await
+        .expect("add m2");
+    store
+        .add_message(conv_id, m3.clone())
+        .await
+        .expect("add m3");
 
-    let messages = store.get_messages(conv_id, 10, 0).await.expect("get_messages");
+    let messages = store
+        .get_messages(conv_id, 10, 0)
+        .await
+        .expect("get_messages");
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[0].id, m1.id);
     assert_eq!(messages[1].id, m2.id);
@@ -157,7 +180,10 @@ async fn message_count_updates_after_each_add() {
         store.add_message(conv_id, msg).await.expect("add");
 
         let fetched = store.get(conv_id).await.expect("get");
-        assert_eq!(fetched.message_count, i, "message_count must equal {i} after adding {i} messages");
+        assert_eq!(
+            fetched.message_count, i,
+            "message_count must equal {i} after adding {i} messages"
+        );
     }
 }
 
@@ -167,7 +193,10 @@ async fn add_message_to_nonexistent_conversation_fails() {
     let conv_id = ConversationId::new();
     let msg = make_text_message(conv_id, MessageRole::User, "orphan");
     let result = store.add_message(conv_id, msg).await;
-    assert!(result.is_err(), "adding message to nonexistent conversation must fail");
+    assert!(
+        result.is_err(),
+        "adding message to nonexistent conversation must fail"
+    );
 }
 
 #[tokio::test]
@@ -207,7 +236,10 @@ async fn get_recent_messages_returns_last_n() {
     assert_eq!(recent.len(), 3, "must return 3 most recent messages");
 
     if let MessageContent::Text { text } = &recent[0].content {
-        assert_eq!(text, "msg 7", "first recent must be msg 7 (8th message, 0-indexed)");
+        assert_eq!(
+            text, "msg 7",
+            "first recent must be msg 7 (8th message, 0-indexed)"
+        );
     } else {
         panic!("expected text content");
     }
@@ -227,7 +259,10 @@ async fn delete_conversation_also_removes_its_messages() {
     let conv_id = store.create(conv).await.expect("create");
 
     store
-        .add_message(conv_id, make_text_message(conv_id, MessageRole::User, "hello"))
+        .add_message(
+            conv_id,
+            make_text_message(conv_id, MessageRole::User, "hello"),
+        )
         .await
         .expect("add");
 
@@ -235,7 +270,10 @@ async fn delete_conversation_also_removes_its_messages() {
 
     // Messages must be gone too.
     let result = store.get_messages(conv_id, 10, 0).await;
-    assert!(result.is_err(), "messages must be removed when conversation is deleted");
+    assert!(
+        result.is_err(),
+        "messages must be removed when conversation is deleted"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +294,11 @@ async fn list_returns_only_conversations_for_given_agent() {
     store.create(conv_b).await.expect("create b");
 
     let summaries = store.list(agent_a, 10, 0).await.expect("list");
-    assert_eq!(summaries.len(), 3, "must return only agent_a's conversations");
+    assert_eq!(
+        summaries.len(),
+        3,
+        "must return only agent_a's conversations"
+    );
 
     for s in &summaries {
         assert_eq!(s.agent_id, agent_a);
@@ -288,7 +330,11 @@ async fn list_with_offset_skips_results() {
     }
 
     let page = store.list(agent, 10, 3).await.expect("list offset");
-    assert_eq!(page.len(), 2, "offset 3 of 5 must return 2 remaining results");
+    assert_eq!(
+        page.len(),
+        2,
+        "offset 3 of 5 must return 2 remaining results"
+    );
 }
 
 #[tokio::test]
@@ -309,7 +355,10 @@ async fn list_returns_conversation_summaries_with_correct_fields() {
     assert_eq!(s.id, conv_id);
     assert_eq!(s.agent_id, agent);
     assert_eq!(s.message_count, 1);
-    assert!(s.last_message_at.is_some(), "summary must have last_message_at after a message is added");
+    assert!(
+        s.last_message_at.is_some(),
+        "summary must have last_message_at after a message is added"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -370,13 +419,20 @@ fn add_message_with_estimated_tokens_uses_heuristic() {
 fn context_window_evicts_oldest_when_over_budget() {
     let mut cw = ContextWindow::new(100);
     cw.add_message(context_msg_with_tokens(MessageRole::User, "first", 40));
-    cw.add_message(context_msg_with_tokens(MessageRole::Assistant, "second", 40));
+    cw.add_message(context_msg_with_tokens(
+        MessageRole::Assistant,
+        "second",
+        40,
+    ));
     assert_eq!(cw.message_count(), 2);
 
     // Adding third message pushes total to 120 > 100; first must be evicted.
     cw.add_message(context_msg_with_tokens(MessageRole::User, "third", 40));
     assert_eq!(cw.message_count(), 2, "eviction must bring count back to 2");
-    assert!(cw.current_tokens() <= 100, "total tokens must fit within budget after eviction");
+    assert!(
+        cw.current_tokens() <= 100,
+        "total tokens must fit within budget after eviction"
+    );
 }
 
 #[test]
@@ -384,7 +440,11 @@ fn context_window_system_messages_evicted_last() {
     let mut cw = ContextWindow::new(100);
     cw.add_message(context_msg_with_tokens(MessageRole::System, "system", 30));
     cw.add_message(context_msg_with_tokens(MessageRole::User, "user msg", 30));
-    cw.add_message(context_msg_with_tokens(MessageRole::Assistant, "asst msg", 30));
+    cw.add_message(context_msg_with_tokens(
+        MessageRole::Assistant,
+        "asst msg",
+        30,
+    ));
 
     // Adding a fourth message (30 tokens) pushes to 120; a non-system must be evicted.
     cw.add_message(context_msg_with_tokens(MessageRole::User, "new msg", 30));
@@ -402,7 +462,11 @@ fn context_window_single_message_larger_than_budget_is_kept() {
     let mut cw = ContextWindow::new(10);
     // A message larger than the entire budget should still be kept (min 1 message).
     cw.add_message(context_msg_with_tokens(MessageRole::User, "huge", 500));
-    assert_eq!(cw.message_count(), 1, "oversized single message must be kept");
+    assert_eq!(
+        cw.message_count(),
+        1,
+        "oversized single message must be kept"
+    );
     assert_eq!(cw.current_tokens(), 500);
 }
 
@@ -428,7 +492,11 @@ fn remaining_tokens_does_not_underflow() {
     let mut cw = ContextWindow::new(10);
     cw.add_message(context_msg_with_tokens(MessageRole::User, "big", 100));
     // remaining_tokens uses saturating_sub.
-    assert_eq!(cw.remaining_tokens(), 0, "remaining tokens must be 0 when over budget (not negative)");
+    assert_eq!(
+        cw.remaining_tokens(),
+        0,
+        "remaining tokens must be 0 when over budget (not negative)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -501,7 +569,11 @@ fn to_inference_messages_converts_tool_call_content() {
     let inferred = cw.to_inference_messages();
     assert_eq!(inferred.len(), 1);
     match &inferred[0].content[0] {
-        InferenceContentBlock::ToolUse { tool_call_id, tool_name, .. } => {
+        InferenceContentBlock::ToolUse {
+            tool_call_id,
+            tool_name,
+            ..
+        } => {
             assert_eq!(tool_call_id, &msg_id);
             assert_eq!(tool_name, "my.tool");
         }
@@ -527,7 +599,11 @@ fn to_inference_messages_converts_tool_result_content() {
 
     let inferred = cw.to_inference_messages();
     match &inferred[0].content[0] {
-        InferenceContentBlock::ToolResult { tool_call_id, content, is_error } => {
+        InferenceContentBlock::ToolResult {
+            tool_call_id,
+            content,
+            is_error,
+        } => {
             assert_eq!(tool_call_id, "call-xyz");
             assert!(content.contains("result text"));
             assert!(!is_error);

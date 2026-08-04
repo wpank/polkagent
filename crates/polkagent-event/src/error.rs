@@ -7,7 +7,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum EventError {
     // ── Recording invariant violations ───────────────────────────────────
-
     /// Attempted to record a second terminal event for a run that already has
     /// one (PRD-10 REQ-EVT-004).
     #[error("run {run_id} already has a terminal event; duplicate rejected")]
@@ -26,13 +25,11 @@ pub enum EventError {
     },
 
     // ── Store errors ──────────────────────────────────────────────────────
-
     /// The underlying event store rejected the write.
     #[error("event store error: {0}")]
     Store(#[from] polkagent_store_trait::event::EventStoreError),
 
     // ── Projection errors ─────────────────────────────────────────────────
-
     /// A projection's `apply` method returned an error.
     #[error("projection '{name}' failed to apply event: {source}")]
     ProjectionApply {
@@ -42,7 +39,6 @@ pub enum EventError {
     },
 
     // ── Serialisation ─────────────────────────────────────────────────────
-
     /// Serialisation or deserialisation of an event payload failed.
     #[error("serialisation error: {0}")]
     Serialisation(#[from] serde_json::Error),

@@ -52,11 +52,7 @@ impl CircuitBreaker {
     /// - `failure_threshold`: consecutive failures before opening
     /// - `success_threshold`: consecutive successes in half-open before closing
     /// - `open_duration`: how long the circuit stays open
-    pub fn new(
-        failure_threshold: u32,
-        success_threshold: u32,
-        open_duration: Duration,
-    ) -> Self {
+    pub fn new(failure_threshold: u32, success_threshold: u32, open_duration: Duration) -> Self {
         Self {
             config: CircuitBreakerConfig {
                 failure_threshold,

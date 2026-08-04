@@ -286,10 +286,7 @@ impl EventStore for SqlitePool {
         .map_err(map_join)?
     }
 
-    async fn read_run_events(
-        &self,
-        run_id: RunId,
-    ) -> Result<Vec<StoredEvent>, EventStoreError> {
+    async fn read_run_events(&self, run_id: RunId) -> Result<Vec<StoredEvent>, EventStoreError> {
         let pool = self.clone();
         let run_id_str = run_id.to_string();
 
@@ -745,7 +742,9 @@ mod tests {
         };
 
         let expires = "2099-12-31T23:59:59Z".to_string();
-        pool.append_diagnostic(evt, expires).await.expect("append diagnostic");
+        pool.append_diagnostic(evt, expires)
+            .await
+            .expect("append diagnostic");
     }
 
     #[tokio::test]
@@ -871,10 +870,7 @@ mod tests {
             .await
             .expect("e2");
 
-        let results = pool
-            .query(EventFilter::default())
-            .await
-            .expect("query");
+        let results = pool.query(EventFilter::default()).await.expect("query");
 
         assert_eq!(results.len(), 2);
     }

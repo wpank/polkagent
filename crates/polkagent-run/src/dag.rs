@@ -274,10 +274,7 @@ impl ExecutionDag {
         }
 
         // Tentatively add the edge and check for cycles.
-        self.edges.push(DagEdge {
-            from,
-            to,
-        });
+        self.edges.push(DagEdge { from, to });
 
         if let Err(e) = self.topological_order() {
             // Remove the edge we just added.
@@ -778,7 +775,8 @@ mod tests {
         dag.mark_running(a).expect("mark running");
         assert!(!dag.is_complete());
 
-        dag.mark_completed(a, json!("done")).expect("mark completed");
+        dag.mark_completed(a, json!("done"))
+            .expect("mark completed");
         assert!(dag.is_complete());
     }
 
@@ -1092,7 +1090,9 @@ mod tests {
             NodeState::Running
         ));
 
-        executor.complete_node(a, json!("result")).expect("complete");
+        executor
+            .complete_node(a, json!("result"))
+            .expect("complete");
         assert!(executor.is_complete());
         assert_eq!(executor.next_ready(), None);
     }
@@ -1304,11 +1304,11 @@ mod tests {
         assert!(!NodeState::Pending.is_terminal());
         assert!(!NodeState::Ready.is_terminal());
         assert!(!NodeState::Running.is_terminal());
-        assert!(NodeState::Completed { result: json!(null) }.is_terminal());
-        assert!(NodeState::Failed {
-            error: "x".into()
+        assert!(NodeState::Completed {
+            result: json!(null)
         }
         .is_terminal());
+        assert!(NodeState::Failed { error: "x".into() }.is_terminal());
         assert!(NodeState::Skipped.is_terminal());
     }
 

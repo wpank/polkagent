@@ -288,7 +288,10 @@ mod tests {
             .iter()
             .find(|r| r.id == "allow-shell")
             .expect("should have allow-shell rule");
-        assert_eq!(shell_rule.conditions.get("max_timeout"), Some(&"30".to_string()));
+        assert_eq!(
+            shell_rule.conditions.get("max_timeout"),
+            Some(&"30".to_string())
+        );
     }
 
     #[test]
@@ -320,14 +323,8 @@ mod tests {
         assert_eq!(set.rules.len(), 13);
 
         // Deny rules should come before allow rules after merge.
-        let first_allow_idx = set
-            .rules
-            .iter()
-            .position(|r| r.effect == Effect::Allow);
-        let last_deny_idx = set
-            .rules
-            .iter()
-            .rposition(|r| r.effect == Effect::Deny);
+        let first_allow_idx = set.rules.iter().position(|r| r.effect == Effect::Allow);
+        let last_deny_idx = set.rules.iter().rposition(|r| r.effect == Effect::Deny);
 
         if let (Some(first_allow), Some(last_deny)) = (first_allow_idx, last_deny_idx) {
             assert!(
@@ -615,11 +612,10 @@ mod tests {
         let path = fixtures_dir().join("time-limited.toml");
         let set = load_policy_file(&path).expect("load");
 
-        let ctx = EvaluationContext::default()
-            .with_attribute(
-                "environment.time_window",
-                ContextAttribute::String("business_hours".to_string()),
-            );
+        let ctx = EvaluationContext::default().with_attribute(
+            "environment.time_window",
+            ContextAttribute::String("business_hours".to_string()),
+        );
 
         assert_eq!(
             evaluate(&set, "chain.query", "any", &ctx),

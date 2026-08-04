@@ -91,10 +91,7 @@ pub fn render(frame: &mut Frame, area: Rect, ratio: f64, theme: &Theme) {
     let filled_chars = full_cells + if partial_idx > 0 { 1 } else { 0 };
     let empty_chars = width.saturating_sub(filled_chars);
     if empty_chars > 0 {
-        spans.push(Span::styled(
-            "░".repeat(empty_chars),
-            empty_style,
-        ));
+        spans.push(Span::styled("░".repeat(empty_chars), empty_style));
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);

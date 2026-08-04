@@ -19,11 +19,9 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::negotiate::{negotiate, Capability, CapabilityRequirement, NegotiatedCapabilities};
 use polkagent_config::model_registry::{ModelCatalog, ModelDescriptor};
 use polkagent_retry::provider_health::HealthState;
-use crate::negotiate::{
-    Capability, CapabilityRequirement, NegotiatedCapabilities, negotiate,
-};
 
 // ---------------------------------------------------------------------------
 // RouteError
@@ -263,9 +261,7 @@ impl DefaultModelRouter {
 
     /// Update the health status for a provider.
     pub fn set_health(&self, provider_id: &str, info: ProviderHealthInfo) {
-        self.health
-            .write()
-            .insert(provider_id.to_string(), info);
+        self.health.write().insert(provider_id.to_string(), info);
     }
 
     /// Get the health status for a provider.
@@ -323,15 +319,13 @@ impl DefaultModelRouter {
             }
             RoutingPolicy::LatencyOptimized => {
                 let health = self.health.read();
-                let latency = health
-                    .get(&desc.provider)
-                    .map_or(u64::MAX, |h| {
-                        if h.latency_p50_ms == 0 {
-                            u64::MAX
-                        } else {
-                            h.latency_p50_ms
-                        }
-                    });
+                let latency = health.get(&desc.provider).map_or(u64::MAX, |h| {
+                    if h.latency_p50_ms == 0 {
+                        u64::MAX
+                    } else {
+                        h.latency_p50_ms
+                    }
+                });
                 (latency as f64, RouteReason::LowestLatency)
             }
             RoutingPolicy::CapabilityMaximized => {
@@ -359,12 +353,13 @@ impl ModelRouter for DefaultModelRouter {
     async fn route(&self, request: &RouteRequest) -> Result<RouteDecision, RouteError> {
         // Step 1: Handle Exact policy.
         if request.policy == RoutingPolicy::Exact {
-            let model_slug = request
-                .preferred_model
-                .as_deref()
-                .ok_or_else(|| RouteError::Internal {
-                    message: "Exact policy requires preferred_model".into(),
-                })?;
+            let model_slug =
+                request
+                    .preferred_model
+                    .as_deref()
+                    .ok_or_else(|| RouteError::Internal {
+                        message: "Exact policy requires preferred_model".into(),
+                    })?;
 
             let desc = self
                 .catalog
@@ -386,7 +381,11 @@ impl ModelRouter for DefaultModelRouter {
                 None,
             );
             if !neg.satisfied {
-                let missing = neg.hard_missing().into_iter().map(|m| m.capability.clone()).collect();
+                let missing = neg
+                    .hard_missing()
+                    .into_iter()
+                    .map(|m| m.capability.clone())
+                    .collect();
                 return Err(RouteError::NoCapableModel { missing });
             }
 
@@ -435,13 +434,9 @@ impl ModelRouter for DefaultModelRouter {
 
         // Step 4: Filter by budget constraint.
         if let Some(max_cost) = request.max_cost_input_per_m {
-            candidates.retain(|(desc, _)| {
-                desc.cost_input_per_m.map_or(true, |c| c <= max_cost)
-            });
+            candidates.retain(|(desc, _)| desc.cost_input_per_m.map_or(false, |c| c <= max_cost));
             if candidates.is_empty() {
-                return Err(RouteError::NoCapableModel {
-                    missing: vec![],
-                });
+                return Err(RouteError::NoCapableModel { missing: vec![] });
             }
         }
 
@@ -451,23 +446,20 @@ impl ModelRouter for DefaultModelRouter {
             .filter(|(desc, _)| self.is_provider_usable(&desc.provider))
             .collect();
 
-        let effective: Vec<(&ModelDescriptor, &NegotiatedCapabilities)> = if !healthy_candidates
-            .is_empty()
-        {
-            healthy_candidates
-                .iter()
-                .map(|(desc, neg)| (*desc, neg))
-                .collect()
-        } else {
-            // All unhealthy — use all candidates anyway.
-            candidates.iter().map(|(desc, neg)| (*desc, neg)).collect()
-        };
+        let effective: Vec<(&ModelDescriptor, &NegotiatedCapabilities)> =
+            if !healthy_candidates.is_empty() {
+                healthy_candidates
+                    .iter()
+                    .map(|(desc, neg)| (*desc, neg))
+                    .collect()
+            } else {
+                // All unhealthy — use all candidates anyway.
+                candidates.iter().map(|(desc, neg)| (*desc, neg)).collect()
+            };
 
         // Step 6: Prefer the requested model/provider if available.
         if let Some(pref_model) = &request.preferred_model {
-            if let Some((desc, _neg)) = effective
-                .iter()
-                .find(|(desc, _)| desc.slug == *pref_model)
+            if let Some((desc, _neg)) = effective.iter().find(|(desc, _)| desc.slug == *pref_model)
             {
                 let selected = SelectedRoute {
                     model: desc.slug.clone(),
@@ -667,10 +659,13 @@ mod tests {
     #[tokio::test]
     async fn exact_route_unhealthy_provider() {
         let router = DefaultModelRouter::new(test_catalog());
-        router.set_health("anthropic", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
+        router.set_health(
+            "anthropic",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
         let request = RouteRequest {
             required_capabilities: vec![],
             preferred_model: Some("claude-opus-4-6".into()),
@@ -749,7 +744,10 @@ mod tests {
                 .expect("exists"),
         )
         .len();
-        assert!(cap_count >= 7, "selected model should have >= 7 capabilities, has {cap_count}");
+        assert!(
+            cap_count >= 7,
+            "selected model should have >= 7 capabilities, has {cap_count}"
+        );
     }
 
     // ── Latency optimized routing ─────────────────────────────────────
@@ -757,18 +755,27 @@ mod tests {
     #[tokio::test]
     async fn latency_optimized_picks_fastest_provider() {
         let router = DefaultModelRouter::new(test_catalog());
-        router.set_health("anthropic", ProviderHealthInfo {
-            state: HealthState::Healthy,
-            latency_p50_ms: 500,
-        });
-        router.set_health("openai", ProviderHealthInfo {
-            state: HealthState::Healthy,
-            latency_p50_ms: 200,
-        });
-        router.set_health("gemini", ProviderHealthInfo {
-            state: HealthState::Healthy,
-            latency_p50_ms: 300,
-        });
+        router.set_health(
+            "anthropic",
+            ProviderHealthInfo {
+                state: HealthState::Healthy,
+                latency_p50_ms: 500,
+            },
+        );
+        router.set_health(
+            "openai",
+            ProviderHealthInfo {
+                state: HealthState::Healthy,
+                latency_p50_ms: 200,
+            },
+        );
+        router.set_health(
+            "gemini",
+            ProviderHealthInfo {
+                state: HealthState::Healthy,
+                latency_p50_ms: 300,
+            },
+        );
         let request = RouteRequest {
             required_capabilities: vec![tools_req()],
             preferred_model: None,
@@ -804,10 +811,13 @@ mod tests {
     #[tokio::test]
     async fn preferred_model_skipped_when_unhealthy() {
         let router = DefaultModelRouter::new(test_catalog());
-        router.set_health("openai", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
+        router.set_health(
+            "openai",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
         let request = RouteRequest {
             required_capabilities: vec![tools_req()],
             preferred_model: Some("gpt-4o".into()),
@@ -841,22 +851,34 @@ mod tests {
     async fn degraded_provider_is_still_usable() {
         let router = DefaultModelRouter::new(test_catalog());
         // Mark all providers unhealthy except anthropic which is degraded.
-        router.set_health("anthropic", ProviderHealthInfo {
-            state: HealthState::Degraded,
-            latency_p50_ms: 100,
-        });
-        router.set_health("openai", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
-        router.set_health("gemini", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
-        router.set_health("perplexity", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
+        router.set_health(
+            "anthropic",
+            ProviderHealthInfo {
+                state: HealthState::Degraded,
+                latency_p50_ms: 100,
+            },
+        );
+        router.set_health(
+            "openai",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
+        router.set_health(
+            "gemini",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
+        router.set_health(
+            "perplexity",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
         let request = RouteRequest {
             required_capabilities: vec![tools_req()],
             preferred_model: None,
@@ -952,8 +974,14 @@ mod tests {
     fn routing_policy_display() {
         assert_eq!(RoutingPolicy::Exact.to_string(), "exact");
         assert_eq!(RoutingPolicy::CostOptimized.to_string(), "cost_optimized");
-        assert_eq!(RoutingPolicy::LatencyOptimized.to_string(), "latency_optimized");
-        assert_eq!(RoutingPolicy::CapabilityMaximized.to_string(), "capability_maximized");
+        assert_eq!(
+            RoutingPolicy::LatencyOptimized.to_string(),
+            "latency_optimized"
+        );
+        assert_eq!(
+            RoutingPolicy::CapabilityMaximized.to_string(),
+            "capability_maximized"
+        );
         assert_eq!(
             RoutingPolicy::Custom("weighted".into()).to_string(),
             "custom(weighted)"
@@ -965,8 +993,13 @@ mod tests {
     #[test]
     fn route_reason_display() {
         assert_eq!(format!("{}", RouteReason::ExactMatch), "exact match");
-        assert!(format!("{}", RouteReason::LowestCost { cost_input_per_m: 1.5 })
-            .contains("1.5"));
+        assert!(format!(
+            "{}",
+            RouteReason::LowestCost {
+                cost_input_per_m: 1.5
+            }
+        )
+        .contains("1.5"));
         assert_eq!(format!("{}", RouteReason::LowestLatency), "lowest latency");
         assert!(format!(
             "{}",
@@ -1027,10 +1060,13 @@ mod tests {
     #[test]
     fn set_and_get_health() {
         let router = DefaultModelRouter::new(test_catalog());
-        router.set_health("test-prov", ProviderHealthInfo {
-            state: HealthState::Healthy,
-            latency_p50_ms: 42,
-        });
+        router.set_health(
+            "test-prov",
+            ProviderHealthInfo {
+                state: HealthState::Healthy,
+                latency_p50_ms: 42,
+            },
+        );
         let info = router.get_health("test-prov");
         assert_eq!(info.state, HealthState::Healthy);
         assert_eq!(info.latency_p50_ms, 42);
@@ -1175,9 +1211,13 @@ mod tests {
     fn route_reason_serde_round_trip() {
         let reasons = vec![
             RouteReason::ExactMatch,
-            RouteReason::LowestCost { cost_input_per_m: 3.0 },
+            RouteReason::LowestCost {
+                cost_input_per_m: 3.0,
+            },
             RouteReason::LowestLatency,
-            RouteReason::MostCapabilities { capability_count: 5 },
+            RouteReason::MostCapabilities {
+                capability_count: 5,
+            },
             RouteReason::PreferredAndHealthy,
             RouteReason::OnlyOption,
         ];
@@ -1222,22 +1262,34 @@ mod tests {
     #[tokio::test]
     async fn all_unhealthy_still_routes() {
         let router = DefaultModelRouter::new(test_catalog());
-        router.set_health("anthropic", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
-        router.set_health("openai", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
-        router.set_health("gemini", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
-        router.set_health("perplexity", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 0,
-        });
+        router.set_health(
+            "anthropic",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
+        router.set_health(
+            "openai",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
+        router.set_health(
+            "gemini",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
+        router.set_health(
+            "perplexity",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 0,
+            },
+        );
         let request = RouteRequest {
             required_capabilities: vec![tools_req()],
             preferred_model: None,
@@ -1255,16 +1307,22 @@ mod tests {
     #[test]
     fn health_update_overwrites() {
         let router = DefaultModelRouter::new(test_catalog());
-        router.set_health("prov", ProviderHealthInfo {
-            state: HealthState::Healthy,
-            latency_p50_ms: 10,
-        });
+        router.set_health(
+            "prov",
+            ProviderHealthInfo {
+                state: HealthState::Healthy,
+                latency_p50_ms: 10,
+            },
+        );
         assert_eq!(router.get_health("prov").state, HealthState::Healthy);
 
-        router.set_health("prov", ProviderHealthInfo {
-            state: HealthState::Unhealthy,
-            latency_p50_ms: 9999,
-        });
+        router.set_health(
+            "prov",
+            ProviderHealthInfo {
+                state: HealthState::Unhealthy,
+                latency_p50_ms: 9999,
+            },
+        );
         assert_eq!(router.get_health("prov").state, HealthState::Unhealthy);
         assert_eq!(router.get_health("prov").latency_p50_ms, 9999);
     }

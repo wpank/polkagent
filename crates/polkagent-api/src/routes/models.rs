@@ -128,9 +128,7 @@ pub async fn list_provider_models(
 /// List all models across every configured provider.
 ///
 /// Each provider contributes its `default_model` to the list.
-pub async fn list_all_models(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_all_models(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let data: Vec<ModelResponse> = state
         .config
         .providers

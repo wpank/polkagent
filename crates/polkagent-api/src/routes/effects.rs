@@ -14,8 +14,8 @@ use axum::{
 };
 use chrono::Utc;
 use polkagent_core::{
-    EffectId, EventId, RunId,
     event::{EventKind, RunEvent},
+    EffectId, EventId, RunId,
 };
 use polkagent_store_trait::StoreError;
 use serde::Serialize;
@@ -83,9 +83,7 @@ pub async fn list_effects(
 
     let data: Vec<serde_json::Value> = intents
         .into_iter()
-        .map(|intent| {
-            serde_json::to_value(&intent).unwrap_or_else(|_| serde_json::Value::Null)
-        })
+        .map(|intent| serde_json::to_value(&intent).unwrap_or_else(|_| serde_json::Value::Null))
         .collect();
 
     Ok(Json(ListEffectsResponse {
@@ -117,8 +115,7 @@ pub async fn get_effect(
             other => ApiError::InternalError(other.to_string()),
         })?;
 
-    let data =
-        serde_json::to_value(&intent).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    let data = serde_json::to_value(&intent).map_err(|e| ApiError::InternalError(e.to_string()))?;
 
     Ok(Json(EffectResponse {
         version: API_VERSION.to_owned(),
@@ -349,7 +346,7 @@ mod tests {
     use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, WorkerId};
     use polkagent_event::EventBus;
     use polkagent_store_trait::{
-        EffectStore, StoreError, StoredIntent, StoredOutcome, StoreRetryClass,
+        EffectStore, StoreError, StoreRetryClass, StoredIntent, StoredOutcome,
     };
     use serde_json::json;
     use tokio::sync::RwLock;
@@ -517,7 +514,13 @@ mod tests {
         let run_manager = Arc::new(InMemoryRunManager::new());
         let effect_store: Arc<dyn EffectStore> = store;
         let event_bus = EventBus::with_default_capacity();
-        let state = AppState::new(Config::default(), agents, run_manager, effect_store, event_bus);
+        let state = AppState::new(
+            Config::default(),
+            agents,
+            run_manager,
+            effect_store,
+            event_bus,
+        );
         let router = crate::routes::register(state);
         TestServer::new(router)
     }
@@ -531,9 +534,7 @@ mod tests {
         let store = Arc::new(FakeEffectStore::new());
         let srv = make_app(store);
         let id = EffectId::new();
-        let resp = srv
-            .get(&format!("/api/v1alpha1/effects/{id}"))
-            .await;
+        let resp = srv.get(&format!("/api/v1alpha1/effects/{id}")).await;
         assert_eq!(resp.status_code(), StatusCode::NOT_FOUND);
     }
 
@@ -545,9 +546,7 @@ mod tests {
             .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
             .await;
         let srv = make_app(store);
-        let resp = srv
-            .get(&format!("/api/v1alpha1/effects/{id}"))
-            .await;
+        let resp = srv.get(&format!("/api/v1alpha1/effects/{id}")).await;
         assert_eq!(resp.status_code(), StatusCode::OK);
         let body: serde_json::Value = resp.json();
         assert_eq!(body["version"], "v1alpha1");
@@ -790,9 +789,7 @@ mod tests {
             .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
             .await;
         let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/deny"))
-            .await;
+        let resp = srv.post(&format!("/api/v1alpha1/effects/{id}/deny")).await;
         assert_eq!(resp.status_code(), StatusCode::OK);
         let body: serde_json::Value = resp.json();
         assert_eq!(body["new_state"], "denied");

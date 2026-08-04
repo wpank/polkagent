@@ -88,7 +88,10 @@ impl DependencyResolver {
 
     /// Check whether a specific version satisfies a version requirement
     /// string.
-    pub fn is_compatible(version: &semver::Version, requirement: &str) -> Result<bool, PluginError> {
+    pub fn is_compatible(
+        version: &semver::Version,
+        requirement: &str,
+    ) -> Result<bool, PluginError> {
         let req = VersionReq::parse(requirement).map_err(|e| PluginError::InvalidVersionReq {
             requirement: requirement.to_string(),
             reason: e.to_string(),
@@ -118,9 +121,7 @@ impl DependencyResolver {
 
         for manifest in manifests {
             for dep_name in manifest.dependencies.keys() {
-                *in_degree
-                    .entry(manifest.plugin.name.as_str())
-                    .or_insert(0) += 1;
+                *in_degree.entry(manifest.plugin.name.as_str()).or_insert(0) += 1;
                 dependents
                     .entry(dep_name.as_str())
                     .or_default()
@@ -244,6 +245,7 @@ mod tests {
             },
             capabilities: Default::default(),
             dependencies,
+            provenance: Default::default(),
         }
     }
 
@@ -279,9 +281,7 @@ mod tests {
         let c = make_manifest("c", "1.0.0", &[("a", "^1.0")]);
         let d = make_manifest("d", "1.0.0", &[("b", "^1.0"), ("c", "^1.0")]);
 
-        let order = resolver
-            .resolve(&[d, b, c, a])
-            .expect("should resolve");
+        let order = resolver.resolve(&[d, b, c, a]).expect("should resolve");
         let names: Vec<&str> = order.iter().map(|id| id.name.as_str()).collect();
 
         let pos_a = names.iter().position(|&n| n == "a").expect("a present");

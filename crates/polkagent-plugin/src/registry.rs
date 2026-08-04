@@ -193,6 +193,7 @@ mod tests {
                 optional: Vec::new(),
             },
             dependencies: HashMap::new(),
+            provenance: Default::default(),
         }
     }
 
@@ -242,7 +243,10 @@ mod tests {
 
         let chain_plugins = registry.find_by_capability(PluginCapability::ChainQuery);
         assert_eq!(chain_plugins.len(), 2);
-        let names: Vec<&str> = chain_plugins.iter().map(|m| m.plugin.name.as_str()).collect();
+        let names: Vec<&str> = chain_plugins
+            .iter()
+            .map(|m| m.plugin.name.as_str())
+            .collect();
         assert!(names.contains(&"a"));
         assert!(names.contains(&"b"));
 
@@ -259,18 +263,12 @@ mod tests {
         let registry = PluginRegistry::new();
         registry.register(make_manifest("plugin", "1.0.0", &[]));
 
-        assert_eq!(
-            registry.get_state("plugin"),
-            Some(PluginState::Discovered)
-        );
+        assert_eq!(registry.get_state("plugin"), Some(PluginState::Discovered));
 
         registry
             .set_state("plugin", PluginState::Initialized)
             .expect("should succeed");
-        assert_eq!(
-            registry.get_state("plugin"),
-            Some(PluginState::Initialized)
-        );
+        assert_eq!(registry.get_state("plugin"), Some(PluginState::Initialized));
 
         registry
             .set_state("plugin", PluginState::Running)

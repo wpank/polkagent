@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use tracing::info;
 
 use crate::cli::InitCmd;
@@ -27,7 +27,10 @@ pub fn run(cmd: &InitCmd) -> Result<()> {
 
     // Write default config.
     let config_path = polkagent_dir.join("polkagent.toml");
-    write_file(&config_path, polkagent_config::schema::DEFAULT_CONFIG_TEMPLATE)?;
+    write_file(
+        &config_path,
+        polkagent_config::schema::DEFAULT_CONFIG_TEMPLATE,
+    )?;
 
     // Write .gitignore to avoid committing the database.
     let gitignore_path = polkagent_dir.join(".gitignore");
@@ -46,11 +49,9 @@ pub fn run(cmd: &InitCmd) -> Result<()> {
 }
 
 fn create_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)
-        .with_context(|| format!("creating directory {}", path.display()))
+    fs::create_dir_all(path).with_context(|| format!("creating directory {}", path.display()))
 }
 
 fn write_file(path: &Path, content: &str) -> Result<()> {
-    fs::write(path, content)
-        .with_context(|| format!("writing {}", path.display()))
+    fs::write(path, content).with_context(|| format!("writing {}", path.display()))
 }

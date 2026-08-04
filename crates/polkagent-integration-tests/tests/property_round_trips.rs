@@ -16,7 +16,9 @@ use chrono::Utc;
 use polkagent_core::agent::{AgentSpec, MemoryConfig, ModelPreference, ResourceLimits};
 use polkagent_core::artifact::{Artifact, ArtifactKind, BlobRef};
 use polkagent_core::config::{AutonomyLevel, DataClassification};
-use polkagent_core::effect::{EffectIntent, EffectIntentState, EffectKind, IdempotencyKey, RetryClass};
+use polkagent_core::effect::{
+    EffectIntent, EffectIntentState, EffectKind, IdempotencyKey, RetryClass,
+};
 use polkagent_core::event::{EventCorrelation, EventKind, RunEvent};
 use polkagent_core::ids::{AgentId, ArtifactId, EffectId, EventId, RunId, StepId, TurnId};
 
@@ -27,7 +29,7 @@ use polkagent_card::sections::{
 };
 
 use polkagent_grant::policy::{
-    Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet, evaluate,
+    evaluate, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
 };
 
 use polkagent_payment::{Amount, AssetId, BudgetConfig};
@@ -39,14 +41,12 @@ use polkagent_payment::{Amount, AssetId, BudgetConfig};
 /// Generate a non-empty printable ASCII string of bounded length, suitable
 /// for use as identifiers, names, and short text fields.
 fn arb_name(max_len: usize) -> impl Strategy<Value = String> {
-    prop::string::string_regex(&format!("[A-Za-z0-9_-]{{1,{max_len}}}"))
-        .expect("valid regex")
+    prop::string::string_regex(&format!("[A-Za-z0-9_-]{{1,{max_len}}}")).expect("valid regex")
 }
 
 /// Generate a valid-looking model identifier.
 fn arb_model() -> impl Strategy<Value = String> {
-    prop::string::string_regex("[a-z]{2,8}/[a-z0-9-]{3,20}")
-        .expect("valid regex")
+    prop::string::string_regex("[a-z]{2,8}/[a-z0-9-]{3,20}").expect("valid regex")
 }
 
 /// Generate an AutonomyLevel.
@@ -202,9 +202,8 @@ fn arb_asset_id() -> impl Strategy<Value = AssetId> {
 
 /// Generate an Amount with a reasonable value range.
 fn arb_amount() -> impl Strategy<Value = Amount> {
-    (0u128..10u128.pow(18), 0u8..18).prop_map(|(value, decimals)| {
-        Amount::new(value, AssetId::Native, decimals)
-    })
+    (0u128..10u128.pow(18), 0u8..18)
+        .prop_map(|(value, decimals)| Amount::new(value, AssetId::Native, decimals))
 }
 
 /// Generate a BudgetConfig with arbitrary limits.
@@ -261,8 +260,8 @@ fn arb_effect_intent() -> impl Strategy<Value = EffectIntent> {
         1u32..10,
         proptest::option::of(arb_name(500)),
     )
-        .prop_map(|(kind, idem_key, sequence, retry_class, max_attempts, payload)| {
-            EffectIntent {
+        .prop_map(
+            |(kind, idem_key, sequence, retry_class, max_attempts, payload)| EffectIntent {
                 id: EffectId::new(),
                 run_id: RunId::new(),
                 turn_id: TurnId::new(),
@@ -278,8 +277,8 @@ fn arb_effect_intent() -> impl Strategy<Value = EffectIntent> {
                 resolved_at: None,
                 deadline: None,
                 payload_json: payload,
-            }
-        })
+            },
+        )
 }
 
 /// Generate a SectionSource.
@@ -1012,7 +1011,10 @@ fn hex_round_trip_known_value() {
     let bytes: [u8; 32] = [0xAA; 32];
     let encoded: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(encoded.len(), 64);
-    assert_eq!(&encoded, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert_eq!(
+        &encoded,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
 
     let decoded: Vec<u8> = (0..32)
         .map(|i| u8::from_str_radix(&encoded[i * 2..i * 2 + 2], 16).unwrap())
@@ -1030,8 +1032,7 @@ fn all_autonomy_levels_have_unique_display() {
         AutonomyLevel::FullyAutonomous,
     ];
     let strings: Vec<String> = levels.iter().map(|l| l.to_string()).collect();
-    let unique: std::collections::HashSet<&str> =
-        strings.iter().map(|s| s.as_str()).collect();
+    let unique: std::collections::HashSet<&str> = strings.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         strings.len(),
         unique.len(),
@@ -1050,8 +1051,7 @@ fn all_data_classifications_have_unique_display() {
         DataClassification::SecretForbidden,
     ];
     let strings: Vec<String> = classes.iter().map(|c| c.to_string()).collect();
-    let unique: std::collections::HashSet<&str> =
-        strings.iter().map(|s| s.as_str()).collect();
+    let unique: std::collections::HashSet<&str> = strings.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         strings.len(),
         unique.len(),

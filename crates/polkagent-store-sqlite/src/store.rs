@@ -19,8 +19,7 @@ use uuid::Uuid;
 
 use polkagent_core::{EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, WorkerId};
 use polkagent_store_trait::{
-    EffectStore, StoredIntent, StoredOutcome, StoreRetryClass,
-    StoreError as TraitStoreError,
+    EffectStore, StoreError as TraitStoreError, StoreRetryClass, StoredIntent, StoredOutcome,
 };
 
 use crate::error::{StoreError, StoreResult};
@@ -458,12 +457,7 @@ impl SqliteRunStore {
 
     /// Insert a new turn for a run.
     #[instrument(skip(self))]
-    pub fn create_turn(
-        &self,
-        run_id: &str,
-        sequence: i64,
-        role: &str,
-    ) -> StoreResult<TurnRow> {
+    pub fn create_turn(&self, run_id: &str, sequence: i64, role: &str) -> StoreResult<TurnRow> {
         let row = TurnRow {
             id: new_id(),
             run_id: run_id.to_string(),
@@ -985,9 +979,7 @@ impl SqliteEffectStore {
             )
             .map_err(|e| {
                 if StoreError::is_unique_violation(&e) {
-                    StoreError::Duplicate(format!(
-                        "outcome already exists for intent {intent_id}"
-                    ))
+                    StoreError::Duplicate(format!("outcome already exists for intent {intent_id}"))
                 } else {
                     StoreError::Sqlite(e)
                 }
@@ -1189,9 +1181,8 @@ impl SqliteArtifactStore {
     /// Return all parent IDs for a given artifact.
     pub fn parents_of(&self, child_id: &str) -> StoreResult<Vec<String>> {
         let writer = self.pool.writer();
-        let mut stmt = writer.prepare(
-            "SELECT parent_id FROM artifact_lineage WHERE child_id = ?1",
-        )?;
+        let mut stmt =
+            writer.prepare("SELECT parent_id FROM artifact_lineage WHERE child_id = ?1")?;
         let ids = stmt
             .query_map([child_id], |r| r.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
@@ -1201,9 +1192,8 @@ impl SqliteArtifactStore {
     /// Return all child IDs for a given artifact.
     pub fn children_of(&self, parent_id: &str) -> StoreResult<Vec<String>> {
         let writer = self.pool.writer();
-        let mut stmt = writer.prepare(
-            "SELECT child_id FROM artifact_lineage WHERE parent_id = ?1",
-        )?;
+        let mut stmt =
+            writer.prepare("SELECT child_id FROM artifact_lineage WHERE parent_id = ?1")?;
         let ids = stmt
             .query_map([parent_id], |r| r.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
@@ -1375,7 +1365,6 @@ fn map_sqlite_err(e: rusqlite::Error) -> TraitStoreError {
     }
 }
 
-
 /// Read a `StoredIntent` from a row.  The SELECT columns must be:
 ///
 /// 0: id, 1: `run_id`, 2: `step_id`, 3: state (derived), 4: `claimed_by`,
@@ -1413,8 +1402,10 @@ struct StoredIntentRaw {
 impl StoredIntentRaw {
     fn into_stored_intent(self) -> Result<StoredIntent, TraitStoreError> {
         let payload_inner: serde_json::Value =
-            serde_json::from_str(&self.params_json).map_err(|e| TraitStoreError::Serialisation {
-                message: format!("intent params_json: {e}"),
+            serde_json::from_str(&self.params_json).map_err(|e| {
+                TraitStoreError::Serialisation {
+                    message: format!("intent params_json: {e}"),
+                }
             })?;
 
         // Build the payload as { "kind": "<kind>", "params": <params_json> }
@@ -1433,10 +1424,7 @@ impl StoredIntentRaw {
             .map(|s| parse_id::<WorkerId>(s, "WorkerId"))
             .transpose()?;
 
-        let lease_expires = self
-            .claimed_until
-            .map(|s| parse_ts(&s))
-            .transpose()?;
+        let lease_expires = self.claimed_until.map(|s| parse_ts(&s)).transpose()?;
 
         let step_id = self
             .step_id
@@ -1471,8 +1459,7 @@ impl StoredIntentRaw {
 ///   - 'failed'               => "failed"
 ///   - 'permanently_failed'   => "permanently_failed"
 ///   - anything else          => "claimed"  (a real worker UUID holds the lease)
-const INTENT_SELECT: &str =
-    "SELECT id, run_id, step_id, \
+const INTENT_SELECT: &str = "SELECT id, run_id, step_id, \
             CASE \
                 WHEN claimed_by IS NULL THEN 'pending' \
                 WHEN claimed_by = 'resolved' THEN 'resolved' \
@@ -1495,6 +1482,11 @@ impl EffectStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             let id_str = intent.id.to_string();
             let run_id_str = intent.run_id.to_string();
+            let turn_id_str: Option<String> = intent
+                .payload
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
             let step_id_str = intent.step_id.to_string();
             let created_at_str = intent.created_at.to_rfc3339();
 
@@ -1510,27 +1502,44 @@ impl EffectStore for SqlitePool {
                 .get("params")
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-            let params_json = serde_json::to_string(&params).map_err(|e| {
-                TraitStoreError::Serialisation {
+            let params_json =
+                serde_json::to_string(&params).map_err(|e| TraitStoreError::Serialisation {
                     message: format!("params: {e}"),
-                }
-            })?;
+                })?;
+
+            let priority: i64 = intent
+                .payload
+                .get("priority")
+                .and_then(|v| match v {
+                    serde_json::Value::Number(n) => n.as_i64(),
+                    serde_json::Value::String(s) => match s.as_str() {
+                        "low" => Some(0),
+                        "normal" => Some(1),
+                        "high" => Some(2),
+                        "critical" => Some(3),
+                        _ => Some(1),
+                    },
+                    _ => Some(1),
+                })
+                .unwrap_or(1);
 
             let writer = pool.writer();
             writer
                 .execute(
                     "INSERT INTO effect_intents \
-                     (id, run_id, step_id, kind, params_json, idempotency_key, \
-                      created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (id, run_id, turn_id, step_id, kind, params_json, idempotency_key, \
+                      created_at, priority) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     rusqlite::params![
                         id_str,
                         run_id_str,
+                        turn_id_str,
                         step_id_str,
                         kind,
                         params_json,
                         intent.idempotency_key,
                         created_at_str,
+                        priority,
                     ],
                 )
                 .map_err(|e| {
@@ -1561,24 +1570,28 @@ impl EffectStore for SqlitePool {
         let pool = self.clone();
         tokio::task::spawn_blocking(move || {
             let worker_str = worker_id.to_string();
-            let lease_until = (Utc::now() + chrono::Duration::from_std(lease_duration)
-                .map_err(|e| TraitStoreError::Internal {
-                    message: format!("duration conversion: {e}"),
+            let lease_until = (Utc::now()
+                + chrono::Duration::from_std(lease_duration).map_err(|e| {
+                    TraitStoreError::Internal {
+                        message: format!("duration conversion: {e}"),
+                    }
                 })?)
             .to_rfc3339();
 
             let writer = pool.writer();
 
             // BEGIN IMMEDIATE to serialise concurrent writers.
-            writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
+            writer
+                .execute_batch("BEGIN IMMEDIATE")
+                .map_err(map_sqlite_err)?;
 
             let result = (|| -> Result<Option<StoredIntent>, TraitStoreError> {
-                // Find the first pending intent (claimed_by IS NULL).
+                // Find the highest-priority pending intent (claimed_by IS NULL).
                 let maybe_id: Option<String> = writer
                     .query_row(
                         "SELECT id FROM effect_intents \
                          WHERE claimed_by IS NULL \
-                         ORDER BY created_at ASC LIMIT 1",
+                         ORDER BY priority DESC, created_at ASC LIMIT 1",
                         [],
                         |r| r.get(0),
                     )
@@ -1642,15 +1655,19 @@ impl EffectStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             let id_str = intent_id.to_string();
             let worker_str = worker_id.to_string();
-            let lease_until = (Utc::now() + chrono::Duration::from_std(lease_duration)
-                .map_err(|e| TraitStoreError::Internal {
-                    message: format!("duration conversion: {e}"),
+            let lease_until = (Utc::now()
+                + chrono::Duration::from_std(lease_duration).map_err(|e| {
+                    TraitStoreError::Internal {
+                        message: format!("duration conversion: {e}"),
+                    }
                 })?)
             .to_rfc3339();
             let now_str = Utc::now().to_rfc3339();
 
             let writer = pool.writer();
-            writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
+            writer
+                .execute_batch("BEGIN IMMEDIATE")
+                .map_err(map_sqlite_err)?;
 
             let result = (|| -> Result<StoredIntent, TraitStoreError> {
                 // Attempt to claim: only if pending (unclaimed), or the lease has expired.
@@ -1782,7 +1799,9 @@ impl EffectStore for SqlitePool {
             let writer = pool.writer();
 
             let mut stmt = writer
-                .prepare(&format!("{INTENT_SELECT} WHERE run_id = ?1 ORDER BY created_at ASC"))
+                .prepare(&format!(
+                    "{INTENT_SELECT} WHERE run_id = ?1 ORDER BY created_at ASC"
+                ))
                 .map_err(map_sqlite_err)?;
 
             let raw_rows: Vec<StoredIntentRaw> = stmt
@@ -1873,12 +1892,7 @@ impl EffectStore for SqlitePool {
                     "INSERT INTO effect_attempts \
                      (id, intent_id, attempt_number, started_at) \
                      VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![
-                        attempt_str,
-                        intent_str,
-                        attempt_number,
-                        now,
-                    ],
+                    rusqlite::params![attempt_str, intent_str, attempt_number, now,],
                 )
                 .map_err(|e| {
                     if StoreError::is_unique_violation(&e) {
@@ -2390,10 +2404,9 @@ mod effect_store_tests {
             .await
             .expect("first claim");
 
-        let err =
-            EffectStore::claim_intent_by_id(&pool, intent_id, w2, Duration::from_secs(600))
-                .await
-                .expect_err("second claim should fail");
+        let err = EffectStore::claim_intent_by_id(&pool, intent_id, w2, Duration::from_secs(600))
+            .await
+            .expect_err("second claim should fail");
 
         assert!(
             matches!(err, TraitStoreError::InvalidTransition { .. }),
@@ -2761,5 +2774,4 @@ mod effect_store_tests {
             "expected NotFound, got: {err:?}"
         );
     }
-
 }

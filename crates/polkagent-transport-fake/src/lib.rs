@@ -92,7 +92,9 @@ impl FakeTransportHandle {
     ///
     /// Panics if the paired [`FakeTransport`] has been dropped.
     pub fn inject_message(&self, msg: IncomingMessage) {
-        self.incoming_tx.send(msg).expect("FakeTransport receiver dropped");
+        self.incoming_tx
+            .send(msg)
+            .expect("FakeTransport receiver dropped");
     }
 
     /// Return and clear all outgoing messages that have been sent through the
@@ -155,26 +157,42 @@ pub struct FakeTransport {
 
 /// Copyable description of a transport error to inject on the next send.
 enum SendErrorKind {
-    Authentication { message: String },
-    DeliveryFailed { conversation_id: String, message: String },
+    Authentication {
+        message: String,
+    },
+    DeliveryFailed {
+        conversation_id: String,
+        message: String,
+    },
     ConnectionLost,
-    RateLimit { retry_after: Option<Duration> },
-    Internal { message: String },
+    RateLimit {
+        retry_after: Option<Duration>,
+    },
+    Internal {
+        message: String,
+    },
 }
 
 impl SendErrorKind {
     fn to_error(&self) -> TransportError {
         match self {
-            Self::Authentication { message } => {
-                TransportError::Authentication { message: message.clone() }
-            }
-            Self::DeliveryFailed { conversation_id, message } => TransportError::DeliveryFailed {
+            Self::Authentication { message } => TransportError::Authentication {
+                message: message.clone(),
+            },
+            Self::DeliveryFailed {
+                conversation_id,
+                message,
+            } => TransportError::DeliveryFailed {
                 conversation_id: conversation_id.clone(),
                 message: message.clone(),
             },
             Self::ConnectionLost => TransportError::ConnectionLost,
-            Self::RateLimit { retry_after } => TransportError::RateLimit { retry_after: *retry_after },
-            Self::Internal { message } => TransportError::Internal { message: message.clone() },
+            Self::RateLimit { retry_after } => TransportError::RateLimit {
+                retry_after: *retry_after,
+            },
+            Self::Internal { message } => TransportError::Internal {
+                message: message.clone(),
+            },
         }
     }
 }
@@ -196,7 +214,10 @@ impl FakeTransport {
             next_send_error: Mutex::new(None),
             ack_count: AtomicU64::new(0),
         };
-        let handle = FakeTransportHandle { incoming_tx: tx, sent };
+        let handle = FakeTransportHandle {
+            incoming_tx: tx,
+            sent,
+        };
         (transport, handle)
     }
 
@@ -208,7 +229,8 @@ impl FakeTransport {
     ///
     /// [`send`]: Transport::send
     pub fn set_send_delay(&self, delay: Duration) {
-        self.send_delay_ms.store(delay.as_millis() as u64, Ordering::SeqCst);
+        self.send_delay_ms
+            .store(delay.as_millis() as u64, Ordering::SeqCst);
     }
 
     /// Inject an error to be returned by the next [`send`] call.
@@ -219,12 +241,14 @@ impl FakeTransport {
     /// [`send`]: Transport::send
     pub fn set_next_send_error(&self, error: TransportError) {
         let kind = match error {
-            TransportError::Authentication { message } => {
-                SendErrorKind::Authentication { message }
-            }
-            TransportError::DeliveryFailed { conversation_id, message } => {
-                SendErrorKind::DeliveryFailed { conversation_id, message }
-            }
+            TransportError::Authentication { message } => SendErrorKind::Authentication { message },
+            TransportError::DeliveryFailed {
+                conversation_id,
+                message,
+            } => SendErrorKind::DeliveryFailed {
+                conversation_id,
+                message,
+            },
             TransportError::ConnectionLost => SendErrorKind::ConnectionLost,
             TransportError::RateLimit { retry_after } => SendErrorKind::RateLimit { retry_after },
             TransportError::Internal { message } => SendErrorKind::Internal { message },
@@ -324,7 +348,10 @@ impl Transport for FakeTransport {
 
         self.push_sent(message);
 
-        Ok(DeliveryReceipt { delivery_id, delivered_at })
+        Ok(DeliveryReceipt {
+            delivery_id,
+            delivered_at,
+        })
     }
 
     fn capabilities(&self) -> TransportCapabilities {
@@ -362,7 +389,9 @@ mod tests {
                 display_name: None,
                 trust_tier: SenderTrustTier::Authenticated,
             },
-            body: MessageBody::Text { content: "test message".into() },
+            body: MessageBody::Text {
+                content: "test message".into(),
+            },
             received_at: now(),
         }
     }
@@ -371,7 +400,9 @@ mod tests {
         OutgoingMessage {
             conversation_id: conv,
             run_id: None,
-            body: OutgoingBody::Text { content: "response".into() },
+            body: OutgoingBody::Text {
+                content: "response".into(),
+            },
             classification: Classification::Public,
         }
     }
@@ -388,7 +419,10 @@ mod tests {
     async fn send_is_accumulated_in_handle() {
         let (transport, handle) = FakeTransport::new();
         let conv = ConversationId::new();
-        transport.send(make_outgoing(conv.clone())).await.expect("send ok");
+        transport
+            .send(make_outgoing(conv.clone()))
+            .await
+            .expect("send ok");
         transport.send(make_outgoing(conv)).await.expect("send ok");
         assert_eq!(handle.sent_count(), 2);
     }
@@ -407,8 +441,14 @@ mod tests {
     async fn ack_increments_counter() {
         let (transport, _handle) = FakeTransport::new();
         assert_eq!(transport.ack_count(), 0);
-        transport.ack(DeliveryId::new("d-001")).await.expect("ack ok");
-        transport.ack(DeliveryId::new("d-002")).await.expect("ack ok");
+        transport
+            .ack(DeliveryId::new("d-001"))
+            .await
+            .expect("ack ok");
+        transport
+            .ack(DeliveryId::new("d-002"))
+            .await
+            .expect("ack ok");
         assert_eq!(transport.ack_count(), 2);
     }
 
@@ -465,10 +505,16 @@ mod tests {
         });
         let conv = ConversationId::new();
         // First send should fail.
-        let err = transport.send(make_outgoing(conv.clone())).await.expect_err("must fail");
+        let err = transport
+            .send(make_outgoing(conv.clone()))
+            .await
+            .expect_err("must fail");
         assert!(matches!(err, TransportError::Internal { .. }));
         // Second send should succeed.
-        transport.send(make_outgoing(conv)).await.expect("second send ok");
+        transport
+            .send(make_outgoing(conv))
+            .await
+            .expect("second send ok");
         assert_eq!(handle.sent_count(), 1);
     }
 

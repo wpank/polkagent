@@ -1,0 +1,43 @@
+All done. Here's a summary of everything that was implemented:
+
+---
+
+## Summary: C2/C3 Compatibility Extensions for `polkagent-transport-pca`
+
+### Files modified
+- **`src/error.rs`** — Added 4 new error variants: `GroupError`, `GroupKeyAgreementFailed` (C2), `SyncError`, `StatementStoreError` (C3)
+- **`src/lib.rs`** — Added module declarations and doc table entries for `group`, `sync`, `statement`
+
+### New files (3 modules)
+
+#### `src/group.rs` — C2: End-to-end encrypted group messaging
+- **`GroupSession`** — Multi-party encrypted session using pairwise X25519 fan-out
+- **Multi-party key agreement** — Each member does pairwise DH; a group epoch key is derived from XOR of all pairwise secrets (sorted by SS58 address for determinism)
+- **Member join/leave** — `add_member()` and `remove_member()` both advance the epoch. On leave, the group key is re-derived excluding the departed member (forward secrecy)
+- **`GroupEnvelope`** — Wire format for group messages with epoch, per-sender sequence, and AAD binding to group_id
+- **`GroupSessionSnapshot`** — Serializable persistence type
+- **19 tests** covering: creation, add/remove members, epoch advancement, encrypt/decrypt roundtrip, bidirectional messaging, sequence ordering, 3-party groups, forward secrecy on leave, serialization
+
+#### `src/sync.rs` — C3: Cross-device sync + app-layer ACK
+- **`AppAck`** — Application-layer acknowledgement with individual or cumulative modes (TCP-style)
+- **`SyncEnvelope`** — Message wrapper with per-device sequence numbers and piggy-backed ACKs
+- **`DeviceSyncState`** — Tracks per-device high-water marks, cumulative/selective ACK state, and pending counts
+- **`SyncClock`** — Aggregates sync state across multiple devices; supports wrap/receive envelopes, on-the-fly device registration, snapshot/restore
+- **18 tests** covering: ACK modes, selective vs cumulative, pending count math, device registration, piggyback ACK, snapshot roundtrip, serialization
+
+#### `src/statement.rs` — C3: Statement store / bulletin CID anchoring
+- **`Cid`** — Content identifier type (backend-agnostic)
+- **`BulletinEntry`** — Anchored statement with conversation_id, sequence, timestamp, payload hash
+- **`StatementAnchor`** — Signed entry with signer address and confirmation status
+- **`StatementStore` trait** — Backend-agnostic interface: `anchor()`, `verify()`, `lookup()`, `list_by_conversation()`
+- **`InMemoryStatementStore`** — Test implementation with idempotent anchoring
+- **13 tests** covering: anchor/lookup, idempotency, ordering, verification, multi-conversation, serialization
+
+### What requires external infrastructure (documented in module docs)
+- **Group messaging** — The pairwise key distribution requires an out-of-band public key exchange mechanism. For groups >50 members, an MLS-based tree protocol would be needed.
+- **Statement store** — Production backends (IPFS, Arweave, Filecoin) require separate crates with storage SDK dependencies. The `StatementStore` trait is ready for pluggable implementations.
+- **Cross-device sync** — Full sync requires a relay/mailbox service for offline device message buffering. The `SyncClock` provides local bookkeeping; the relay transport plugs in via `DeviceChannelSet`.
+
+### Build results
+- **`cargo check --workspace`** — ✅ clean
+- **`cargo test -p polkagent-transport-pca`** — ✅ 206 tests passed (was 157 before; +49 new tests)

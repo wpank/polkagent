@@ -21,9 +21,7 @@ use crate::{
 /// This endpoint exposes only fields that are safe to show to authenticated
 /// clients: platform version, uptime, and non-sensitive config values. No
 /// secrets, API keys, or database URLs are included.
-pub async fn system_info(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let config = &state.config;
 
     let config_summary = ConfigSummary {

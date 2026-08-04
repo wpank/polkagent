@@ -1,0 +1,17 @@
+The fix is clean and compiles successfully. Here's what was done:
+
+**Problem:** The `skill.rs` CLI commands query a `skills` table that doesn't exist in the database schema, causing runtime errors on fresh installs.
+
+**Fix (option b — self-healing):** Added an `ensure_skills_table()` helper that runs `CREATE TABLE IF NOT EXISTS skills(...)` on the writer connection, called at the top of `run()` before dispatching any subcommand. The table definition matches all columns used across the five subcommands:
+
+| Column | Type | Notes |
+|---|---|---|
+| `name` | `TEXT PRIMARY KEY` | used as unique key for `ON CONFLICT(name)` in upsert |
+| `version` | `TEXT NOT NULL` | default `'0.1.0'` |
+| `description` | `TEXT NOT NULL` | default `''` |
+| `path` | `TEXT NOT NULL` | filesystem path to skill |
+| `manifest_json` | `TEXT NOT NULL` | serialized manifest |
+| `installed_at` | `TEXT NOT NULL` | ISO 8601 timestamp |
+| `updated_at` | `TEXT NOT NULL` | ISO 8601 timestamp |
+
+This ensures the table exists before any read or write, regardless of whether the main schema migration has been run.

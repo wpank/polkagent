@@ -86,6 +86,36 @@ pub enum PcaError {
         /// Human-readable description.
         reason: String,
     },
+
+    // -- C2: Group messaging errors ------------------------------------------
+    /// A group operation failed (e.g. member already present, group not found).
+    #[error("group error: {reason}")]
+    GroupError {
+        /// Human-readable description.
+        reason: String,
+    },
+
+    /// Multi-party key agreement failed.
+    #[error("group key agreement failed: {reason}")]
+    GroupKeyAgreementFailed {
+        /// Human-readable description.
+        reason: String,
+    },
+
+    // -- C3: Sync / statement errors -----------------------------------------
+    /// A cross-device sync operation failed.
+    #[error("sync error: {reason}")]
+    SyncError {
+        /// Human-readable description.
+        reason: String,
+    },
+
+    /// A statement store operation failed.
+    #[error("statement store error: {reason}")]
+    StatementStoreError {
+        /// Human-readable description.
+        reason: String,
+    },
 }
 
 impl From<PcaError> for TransportError {

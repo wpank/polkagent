@@ -38,6 +38,9 @@
 //! | [`dedup`] | Deduplication store for at-least-once delivery |
 //! | [`device_channels`] | Per-device channel subscription tracking |
 //! | [`persistence`] | Crash-safe state persistence |
+//! | [`group`] | C2: End-to-end encrypted group messaging |
+//! | [`sync`] | C3: Cross-device sync and app-layer ACK |
+//! | [`statement`] | C3: Statement store / bulletin CID anchoring |
 //! | [`error`] | PCA-specific error types |
 
 #![forbid(unsafe_code)]
@@ -60,9 +63,12 @@ pub mod crypto;
 pub mod dedup;
 pub mod device_channels;
 pub mod error;
+pub mod group;
 pub mod outbound;
 pub mod persistence;
 pub mod session;
+pub mod statement;
+pub mod sync;
 
 use std::sync::Arc;
 
@@ -154,8 +160,10 @@ impl PcaTransport {
         peer_address: &str,
         peer_public_key: &[u8; 32],
     ) -> Result<[u8; 32], PcaError> {
-        let (mut session, local_pub) =
-            Session::initiate(self.config.local_ss58_address.clone(), self.config.session_timeout);
+        let (mut session, local_pub) = Session::initiate(
+            self.config.local_ss58_address.clone(),
+            self.config.session_timeout,
+        );
 
         session.complete_handshake(peer_public_key, peer_address.to_string())?;
 
@@ -202,18 +210,14 @@ impl PcaTransport {
     /// The envelope is decrypted using the current session before enqueuing.
     pub fn inject_encrypted(&self, envelope: &EncryptedEnvelope) -> Result<String, PcaError> {
         let mut session_guard = self.session.lock();
-        let session = session_guard
-            .as_mut()
-            .ok_or(PcaError::Shutdown)?;
+        let session = session_guard.as_mut().ok_or(PcaError::Shutdown)?;
         self.incoming.enqueue_encrypted(session, envelope)
     }
 
     /// Encrypt a plaintext payload using the current session.
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<EncryptedEnvelope, PcaError> {
         let mut session_guard = self.session.lock();
-        let session = session_guard
-            .as_mut()
-            .ok_or(PcaError::Shutdown)?;
+        let session = session_guard.as_mut().ok_or(PcaError::Shutdown)?;
         session.encrypt(plaintext)
     }
 
@@ -222,18 +226,14 @@ impl PcaTransport {
     /// Returns the new public key to send to the peer.
     pub fn rotate_session_key(&self) -> Result<[u8; 32], PcaError> {
         let mut session_guard = self.session.lock();
-        let session = session_guard
-            .as_mut()
-            .ok_or(PcaError::Shutdown)?;
+        let session = session_guard.as_mut().ok_or(PcaError::Shutdown)?;
         session.rotate_key()
     }
 
     /// Apply a key rotation from the peer.
     pub fn apply_peer_rotation(&self, new_peer_public: &[u8; 32]) -> Result<(), PcaError> {
         let mut session_guard = self.session.lock();
-        let session = session_guard
-            .as_mut()
-            .ok_or(PcaError::Shutdown)?;
+        let session = session_guard.as_mut().ok_or(PcaError::Shutdown)?;
         session.apply_rotation(new_peer_public)
     }
 
@@ -365,10 +365,9 @@ impl Transport for PcaTransport {
             body_json,
         };
 
-        let payload =
-            serde_json::to_vec(&wire_msg).map_err(|e| TransportError::Internal {
-                message: format!("failed to serialize PCA wire message: {e}"),
-            })?;
+        let payload = serde_json::to_vec(&wire_msg).map_err(|e| TransportError::Internal {
+            message: format!("failed to serialize PCA wire message: {e}"),
+        })?;
 
         // Check message size.
         if payload.len() as u64 > self.config.max_message_bytes {
@@ -407,10 +406,7 @@ impl Transport for PcaTransport {
             supports_structured_cards: true,
             supports_file_transfer: false,
             max_message_bytes: self.config.max_message_bytes,
-            supported_auth_methods: vec![
-                "x25519-chacha20poly1305".into(),
-                "ss58".into(),
-            ],
+            supported_auth_methods: vec!["x25519-chacha20poly1305".into(), "ss58".into()],
         }
     }
 }
@@ -425,8 +421,7 @@ mod tests {
     use polkagent_transport_trait::{Classification, OutgoingBody};
 
     fn test_config() -> PcaConfig {
-        PcaConfig::new("5GrwvaEF...")
-            .with_peer("5FHneW46...", Some("Alice".into()))
+        PcaConfig::new("5GrwvaEF...").with_peer("5FHneW46...", Some("Alice".into()))
     }
 
     fn make_wire_message(body: &str) -> Vec<u8> {
@@ -491,10 +486,7 @@ mod tests {
 
         let msg = transport.receive().await.expect("receive");
         assert_eq!(msg.sender.user_id, UserId::new("5FHneW46..."));
-        assert_eq!(
-            msg.sender.display_name.as_deref(),
-            Some("Alice")
-        );
+        assert_eq!(msg.sender.display_name.as_deref(), Some("Alice"));
         assert!(matches!(msg.body, MessageBody::Text { ref content } if content == "Hello PCA!"));
     }
 
@@ -608,7 +600,10 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let conv = polkagent_core::ConversationId::new();
-        transport.send(make_outgoing(conv.clone())).await.expect("send 1");
+        transport
+            .send(make_outgoing(conv.clone()))
+            .await
+            .expect("send 1");
         transport.send(make_outgoing(conv)).await.expect("send 2");
 
         let drained = transport.drain_outgoing();
@@ -617,13 +612,9 @@ mod tests {
 
     #[test]
     fn session_establishment() {
-        let alice_transport = PcaTransport::new(
-            PcaConfig::new("5Alice...")
-        ).expect("create alice");
+        let alice_transport = PcaTransport::new(PcaConfig::new("5Alice...")).expect("create alice");
 
-        let bob_transport = PcaTransport::new(
-            PcaConfig::new("5Bob...")
-        ).expect("create bob");
+        let bob_transport = PcaTransport::new(PcaConfig::new("5Bob...")).expect("create bob");
 
         // Alice generates a keypair for session initiation.
         let alice_kp = crate::crypto::KeyPair::generate();

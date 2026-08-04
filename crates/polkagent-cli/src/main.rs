@@ -17,6 +17,7 @@ use polkagent_telemetry::{LogFormat, MetricRecorder, TelemetryConfig, TelemetryG
 
 mod cli;
 mod commands;
+mod error_explainer;
 mod exit_codes;
 mod output;
 mod tui;
@@ -48,8 +49,7 @@ async fn main() -> Result<()> {
 
     // Initialise telemetry (before any command runs). Hold the guard for the
     // entire program lifetime so that OTLP spans are flushed on exit.
-    let _telemetry_guard =
-        init_telemetry(cli.verbose, &obs_config, log_file_path.as_deref())?;
+    let _telemetry_guard = init_telemetry(cli.verbose, &obs_config, log_file_path.as_deref())?;
 
     // Metrics recorder — shared across the process lifetime.
     let _metrics = MetricRecorder::new();
@@ -78,7 +78,8 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Chain(cmd)) => {
             let _span = tracing::info_span!("chain").entered();
-            return commands::chain::run(cmd);
+            let rpc_url = resolve_rpc_url(cli.config.as_ref().map(|p| p.as_path()));
+            return commands::chain::run(cmd, rpc_url.as_deref()).await;
         }
         Some(Commands::Doctor(cmd)) => {
             return commands::doctor::run(cmd);
@@ -145,6 +146,10 @@ async fn main() -> Result<()> {
             commands::skill::run(cmd, &pool)?;
         }
 
+        Some(Commands::Kit(cmd)) => {
+            commands::kit::run(cmd, &pool)?;
+        }
+
         Some(Commands::Export(cmd)) => {
             commands::export::run(cmd, &pool)?;
         }
@@ -203,14 +208,13 @@ fn open_pool(db_path: &str) -> Result<SqlitePool> {
             .with_context(|| format!("creating database directory {}", parent.display()))?;
     }
 
-    let pool = SqlitePool::open(&expanded)
-        .with_context(|| format!("opening database at {expanded}"))?;
+    let pool =
+        SqlitePool::open(&expanded).with_context(|| format!("opening database at {expanded}"))?;
 
     // Apply any pending schema migrations (idempotent).
     {
         let writer = pool.writer();
-        migrations::migrate(&writer)
-            .with_context(|| "running database migrations")?;
+        migrations::migrate(&writer).with_context(|| "running database migrations")?;
     }
 
     Ok(pool)
@@ -222,7 +226,7 @@ fn open_pool(db_path: &str) -> Result<SqlitePool> {
 
 /// Launch the interactive ROSEDUST TUI and ensure teardown on exit.
 fn launch_tui(pool: SqlitePool) -> Result<()> {
-    use crate::tui::app::{App, enter_tui, exit_tui};
+    use crate::tui::app::{enter_tui, exit_tui, App};
     use crate::tui::theme::Theme;
 
     let theme = Theme::from_env();
@@ -231,9 +235,7 @@ fn launch_tui(pool: SqlitePool) -> Result<()> {
     let mut terminal = enter_tui()?;
 
     // Ensure the terminal is restored even on panic.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        app.run(&mut terminal)
-    }));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.run(&mut terminal)));
 
     exit_tui(&mut terminal)?;
 
@@ -456,6 +458,24 @@ fn resolve_db_path(config_override: Option<&std::path::Path>) -> String {
 
     // 3. Default.
     format!("{home}/.local/share/polkagent/polkagent.db")
+}
+
+// ---------------------------------------------------------------------------
+// RPC URL resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the chain RPC URL.
+///
+/// Resolution order:
+/// 1. `POLKAGENT_RPC_URL` environment variable.
+/// 2. Default: none (chain commands will show a helpful message).
+fn resolve_rpc_url(_config_override: Option<&std::path::Path>) -> Option<String> {
+    if let Ok(url) = std::env::var("POLKAGENT_RPC_URL") {
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

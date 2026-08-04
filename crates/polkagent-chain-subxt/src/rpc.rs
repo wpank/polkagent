@@ -147,7 +147,10 @@ impl RpcClient {
                 Err(e) => {
                     let retryable = matches!(
                         &e,
-                        SubxtError::Transport { retryable: true, .. }
+                        SubxtError::Transport {
+                            retryable: true,
+                            ..
+                        }
                     );
 
                     if retryable && attempt < self.config.max_retries {
@@ -208,10 +211,13 @@ impl RpcClient {
         }
 
         let rpc_response: JsonRpcResponse =
-            response.json().await.map_err(|e| SubxtError::InvalidResponse {
-                endpoint: endpoint.to_string(),
-                message: format!("failed to parse JSON-RPC response: {e}"),
-            })?;
+            response
+                .json()
+                .await
+                .map_err(|e| SubxtError::InvalidResponse {
+                    endpoint: endpoint.to_string(),
+                    message: format!("failed to parse JSON-RPC response: {e}"),
+                })?;
 
         if let Some(error) = rpc_response.error {
             return Err(SubxtError::RpcError {
@@ -221,10 +227,12 @@ impl RpcClient {
             });
         }
 
-        rpc_response.result.ok_or_else(|| SubxtError::InvalidResponse {
-            endpoint: endpoint.to_string(),
-            message: "JSON-RPC response has neither result nor error".into(),
-        })
+        rpc_response
+            .result
+            .ok_or_else(|| SubxtError::InvalidResponse {
+                endpoint: endpoint.to_string(),
+                message: "JSON-RPC response has neither result nor error".into(),
+            })
     }
 
     // -----------------------------------------------------------------------
@@ -240,10 +248,13 @@ impl RpcClient {
     ) -> Result<String, SubxtError> {
         let params = block_hash.map(|h| serde_json::json!([h]));
         let result = self.call(endpoint, "state_getMetadata", params).await?;
-        result.as_str().map(String::from).ok_or_else(|| SubxtError::InvalidResponse {
-            endpoint: endpoint.to_string(),
-            message: "state_getMetadata did not return a string".into(),
-        })
+        result
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| SubxtError::InvalidResponse {
+                endpoint: endpoint.to_string(),
+                message: "state_getMetadata did not return a string".into(),
+            })
     }
 
     /// Call `state_getStorage` to query a storage key at an optional block hash.
@@ -285,10 +296,13 @@ impl RpcClient {
         let result = self
             .call(endpoint, "author_submitExtrinsic", params)
             .await?;
-        result.as_str().map(String::from).ok_or_else(|| SubxtError::InvalidResponse {
-            endpoint: endpoint.to_string(),
-            message: "author_submitExtrinsic did not return a string".into(),
-        })
+        result
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| SubxtError::InvalidResponse {
+                endpoint: endpoint.to_string(),
+                message: "author_submitExtrinsic did not return a string".into(),
+            })
     }
 
     /// Call `chain_getBlockHash` to get the block hash at a given height.
@@ -301,22 +315,25 @@ impl RpcClient {
     ) -> Result<String, SubxtError> {
         let params = block_number.map(|n| serde_json::json!([n]));
         let result = self.call(endpoint, "chain_getBlockHash", params).await?;
-        result.as_str().map(String::from).ok_or_else(|| SubxtError::InvalidResponse {
-            endpoint: endpoint.to_string(),
-            message: "chain_getBlockHash did not return a string".into(),
-        })
+        result
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| SubxtError::InvalidResponse {
+                endpoint: endpoint.to_string(),
+                message: "chain_getBlockHash did not return a string".into(),
+            })
     }
 
     /// Call `chain_getFinalizedHead` to get the last finalized block hash.
-    pub async fn chain_get_finalized_head(
-        &self,
-        endpoint: &str,
-    ) -> Result<String, SubxtError> {
+    pub async fn chain_get_finalized_head(&self, endpoint: &str) -> Result<String, SubxtError> {
         let result = self.call(endpoint, "chain_getFinalizedHead", None).await?;
-        result.as_str().map(String::from).ok_or_else(|| SubxtError::InvalidResponse {
-            endpoint: endpoint.to_string(),
-            message: "chain_getFinalizedHead did not return a string".into(),
-        })
+        result
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| SubxtError::InvalidResponse {
+                endpoint: endpoint.to_string(),
+                message: "chain_getFinalizedHead did not return a string".into(),
+            })
     }
 
     /// Call `chain_getHeader` to get the block header at a given hash.
@@ -333,10 +350,7 @@ impl RpcClient {
     }
 
     /// Call `system_health` to check the node health.
-    pub async fn system_health(
-        &self,
-        endpoint: &str,
-    ) -> Result<NodeHealth, SubxtError> {
+    pub async fn system_health(&self, endpoint: &str) -> Result<NodeHealth, SubxtError> {
         let result = self.call(endpoint, "system_health", None).await?;
         serde_json::from_value(result).map_err(|e| SubxtError::InvalidResponse {
             endpoint: endpoint.to_string(),
@@ -345,15 +359,15 @@ impl RpcClient {
     }
 
     /// Call `system_version` to get the node implementation version.
-    pub async fn system_version(
-        &self,
-        endpoint: &str,
-    ) -> Result<String, SubxtError> {
+    pub async fn system_version(&self, endpoint: &str) -> Result<String, SubxtError> {
         let result = self.call(endpoint, "system_version", None).await?;
-        result.as_str().map(String::from).ok_or_else(|| SubxtError::InvalidResponse {
-            endpoint: endpoint.to_string(),
-            message: "system_version did not return a string".into(),
-        })
+        result
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| SubxtError::InvalidResponse {
+                endpoint: endpoint.to_string(),
+                message: "system_version did not return a string".into(),
+            })
     }
 
     /// Call `state_call` with the given function and input data.
@@ -371,10 +385,13 @@ impl RpcClient {
             None => Some(serde_json::json!([function, data_hex])),
         };
         let result = self.call(endpoint, "state_call", params).await?;
-        result.as_str().map(String::from).ok_or_else(|| SubxtError::InvalidResponse {
-            endpoint: endpoint.to_string(),
-            message: "state_call did not return a string".into(),
-        })
+        result
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| SubxtError::InvalidResponse {
+                endpoint: endpoint.to_string(),
+                message: "state_call did not return a string".into(),
+            })
     }
 
     /// Return a reference to the underlying configuration.
@@ -402,7 +419,10 @@ mod tests {
         let json = serde_json::to_string(&req).expect("serialize");
         assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert!(json.contains("\"method\":\"system_health\""));
-        assert!(!json.contains("params"), "params should be omitted when None");
+        assert!(
+            !json.contains("params"),
+            "params should be omitted when None"
+        );
     }
 
     #[test]
@@ -431,7 +451,8 @@ mod tests {
 
     #[test]
     fn json_rpc_response_deserializes_error() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).expect("deserialize");
         assert!(resp.result.is_none());
         let err = resp.error.expect("should have error");

@@ -80,9 +80,9 @@ impl ContextWindow {
                     MessageRole::System | MessageRole::Tool => InferenceMessageRole::User,
                 };
                 let content = match &msg.content {
-                    MessageContent::Text { text } => vec![InferenceContentBlock::Text {
-                        text: text.clone(),
-                    }],
+                    MessageContent::Text { text } => {
+                        vec![InferenceContentBlock::Text { text: text.clone() }]
+                    }
                     MessageContent::ToolCall { name, arguments } => {
                         vec![InferenceContentBlock::ToolUse {
                             tool_call_id: msg.id.to_string(),
@@ -90,18 +90,22 @@ impl ContextWindow {
                             arguments_json: arguments.to_string(),
                         }]
                     }
-                    MessageContent::ToolResult { tool_call_id, output } => {
+                    MessageContent::ToolResult {
+                        tool_call_id,
+                        output,
+                    } => {
                         vec![InferenceContentBlock::ToolResult {
                             tool_call_id: tool_call_id.clone(),
                             content: output.to_string(),
                             is_error: false,
                         }]
                     }
-                    MessageContent::Mixed { parts } => {
-                        parts.iter().map(|part| match part {
-                            ContentPart::Text { text } => InferenceContentBlock::Text {
-                                text: text.clone(),
-                            },
+                    MessageContent::Mixed { parts } => parts
+                        .iter()
+                        .map(|part| match part {
+                            ContentPart::Text { text } => {
+                                InferenceContentBlock::Text { text: text.clone() }
+                            }
                             ContentPart::ToolUse { id, name, input } => {
                                 InferenceContentBlock::ToolUse {
                                     tool_call_id: id.clone(),
@@ -116,8 +120,8 @@ impl ContextWindow {
                                     is_error: false,
                                 }
                             }
-                        }).collect()
-                    }
+                        })
+                        .collect(),
                 };
                 InferenceMessage { role, content }
             })
@@ -307,7 +311,11 @@ mod tests {
     fn evicts_oldest_when_over_budget() {
         let mut cw = ContextWindow::new(100);
         cw.add_message(text_message_with_tokens(MessageRole::User, "First", 40));
-        cw.add_message(text_message_with_tokens(MessageRole::Assistant, "Second", 40));
+        cw.add_message(text_message_with_tokens(
+            MessageRole::Assistant,
+            "Second",
+            40,
+        ));
         assert_eq!(cw.message_count(), 2);
         assert_eq!(cw.current_tokens(), 80);
 
@@ -320,9 +328,17 @@ mod tests {
     #[test]
     fn system_messages_evicted_last() {
         let mut cw = ContextWindow::new(100);
-        cw.add_message(text_message_with_tokens(MessageRole::System, "System prompt", 30));
+        cw.add_message(text_message_with_tokens(
+            MessageRole::System,
+            "System prompt",
+            30,
+        ));
         cw.add_message(text_message_with_tokens(MessageRole::User, "User msg", 30));
-        cw.add_message(text_message_with_tokens(MessageRole::Assistant, "Asst msg", 30));
+        cw.add_message(text_message_with_tokens(
+            MessageRole::Assistant,
+            "Asst msg",
+            30,
+        ));
 
         // Adding a message that pushes over budget should evict User first.
         cw.add_message(text_message_with_tokens(MessageRole::User, "New msg", 30));
@@ -462,7 +478,9 @@ mod tests {
             role: MessageRole::Assistant,
             content: MessageContent::Mixed {
                 parts: vec![
-                    ContentPart::Text { text: "Let me check.".into() },
+                    ContentPart::Text {
+                        text: "Let me check.".into(),
+                    },
                     ContentPart::ToolUse {
                         id: "tu-1".into(),
                         name: "search".into(),

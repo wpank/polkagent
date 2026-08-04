@@ -22,7 +22,9 @@ fn minimal_request() -> InferenceRequest {
         step_id: StepId::new(),
         messages: vec![InferenceMessage {
             role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: "hello".into() }],
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
         }],
         system: None,
         tools: vec![],
@@ -47,7 +49,11 @@ fn make_response(text: &str) -> InferenceResponse {
         text: text.into(),
         tool_calls: vec![],
         stop_reason: "end_turn".into(),
-        usage: TokenUsage { input_tokens: 5, output_tokens: 3, ..Default::default() },
+        usage: TokenUsage {
+            input_tokens: 5,
+            output_tokens: 3,
+            ..Default::default()
+        },
         provider_request_id: None,
     }
 }
@@ -85,17 +91,11 @@ async fn stream_emits_text_delta_per_character_in_order() {
 #[tokio::test]
 async fn stream_ends_with_completed_event() {
     let executor = FakeExecutor::new();
-    let stream = executor
-        .stream(minimal_request())
-        .await
-        .expect("stream ok");
+    let stream = executor.stream(minimal_request()).await.expect("stream ok");
 
     let events: Vec<_> = stream.collect().await;
 
-    assert!(
-        !events.is_empty(),
-        "stream must emit at least one event"
-    );
+    assert!(!events.is_empty(), "stream must emit at least one event");
 
     // The last event must be Completed.
     match events.last().expect("events not empty") {
@@ -151,7 +151,10 @@ async fn streaming_tokens_reconstruct_complete_text() {
         })
         .collect();
 
-    assert_eq!(collected, text, "concatenated deltas must equal the original text");
+    assert_eq!(
+        collected, text,
+        "concatenated deltas must equal the original text"
+    );
 }
 
 #[tokio::test]
@@ -168,7 +171,11 @@ async fn streaming_character_count_matches_text_length() {
         .count();
 
     // FakeExecutor emits one delta per character.
-    assert_eq!(delta_count, text.len(), "one TextDelta per character expected");
+    assert_eq!(
+        delta_count,
+        text.len(),
+        "one TextDelta per character expected"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +205,11 @@ async fn stream_with_tool_calls_emits_tool_call_complete_event() {
         })
         .collect();
 
-    assert_eq!(tool_events.len(), 1, "exactly one ToolCallComplete event expected");
+    assert_eq!(
+        tool_events.len(),
+        1,
+        "exactly one ToolCallComplete event expected"
+    );
     assert_eq!(tool_events[0].tool_name, "polkagent.file.read");
     assert_eq!(tool_events[0].tool_call_id, "tc-001");
 }
@@ -278,14 +289,23 @@ async fn multi_turn_executor_cycles_through_responses() {
     ];
     let executor = FakeExecutor::with_responses(responses);
 
-    for (i, expected) in ["first turn", "second turn", "third turn"].iter().enumerate() {
-        let resp = executor.complete(minimal_request()).await.expect("complete");
+    for (i, expected) in ["first turn", "second turn", "third turn"]
+        .iter()
+        .enumerate()
+    {
+        let resp = executor
+            .complete(minimal_request())
+            .await
+            .expect("complete");
         assert_eq!(resp.text, *expected, "turn {i} response mismatch");
     }
 
     // Cycle back to the first.
     let wrapped = executor.complete(minimal_request()).await.expect("wrap");
-    assert_eq!(wrapped.text, "first turn", "should cycle back to first response");
+    assert_eq!(
+        wrapped.text, "first turn",
+        "should cycle back to first response"
+    );
 }
 
 #[tokio::test]
@@ -327,7 +347,10 @@ async fn empty_response_produces_no_text_deltas() {
         .filter(|e| matches!(e, Ok(StreamEvent::TextDelta { .. })))
         .count();
 
-    assert_eq!(delta_count, 0, "empty response must produce no TextDelta events");
+    assert_eq!(
+        delta_count, 0,
+        "empty response must produce no TextDelta events"
+    );
 
     // Should still have a Completed event.
     assert!(
@@ -367,7 +390,9 @@ async fn failing_executor_propagates_error_from_stream() {
 
 #[tokio::test]
 async fn rate_limit_error_is_retryable() {
-    let executor = FakeExecutor::failing(ExecutorError::RateLimit { retry_after_secs: Some(30) });
+    let executor = FakeExecutor::failing(ExecutorError::RateLimit {
+        retry_after_secs: Some(30),
+    });
     let err = executor
         .complete(minimal_request())
         .await
@@ -409,12 +434,21 @@ async fn last_request_is_recorded_after_complete() {
 async fn last_request_is_updated_on_subsequent_calls() {
     let executor = FakeExecutor::new();
 
-    executor.complete(request_with_text("first")).await.expect("ok");
-    executor.complete(request_with_text("second")).await.expect("ok");
+    executor
+        .complete(request_with_text("first"))
+        .await
+        .expect("ok");
+    executor
+        .complete(request_with_text("second"))
+        .await
+        .expect("ok");
 
     let captured = executor.last_request().expect("request");
     if let ContentBlock::Text { text } = &captured.messages[0].content[0] {
-        assert_eq!(text, "second", "last_request must reflect the most recent call");
+        assert_eq!(
+            text, "second",
+            "last_request must reflect the most recent call"
+        );
     } else {
         panic!("expected text content block");
     }

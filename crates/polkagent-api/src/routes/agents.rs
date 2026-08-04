@@ -14,7 +14,7 @@ use axum::{
     Json,
 };
 use chrono::Utc;
-use polkagent_core::{AgentId, agent::AgentSpec};
+use polkagent_core::{agent::AgentSpec, AgentId};
 use tracing::{info, instrument};
 
 use crate::{

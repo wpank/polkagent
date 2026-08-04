@@ -184,8 +184,8 @@ proptest! {
 
 mod budget_props {
     use super::*;
-    use polkagent_grant::budget::BudgetTracker;
     use polkagent_core::ids::{AgentId, RunId};
+    use polkagent_grant::budget::BudgetTracker;
 
     proptest! {
         // ----- 2a: Spending within budget always succeeds --------------------
@@ -353,11 +353,7 @@ mod pb01_grant_intersection_narrowing {
             "staking.bond",
             "identity.attest",
         ];
-        prop::collection::vec(
-            prop::sample::select(effect_names),
-            0..=5,
-        )
-        .prop_map(|v| {
+        prop::collection::vec(prop::sample::select(effect_names), 0..=5).prop_map(|v| {
             // Deduplicate
             let mut seen = std::collections::HashSet::new();
             v.into_iter()
@@ -448,22 +444,28 @@ mod pb02_grant_intersection_algebraic {
 
     fn arb_effect_set() -> impl Strategy<Value = Vec<String>> {
         let effect_names = vec![
-            "chain.transfer", "chain.query", "model.inference",
-            "tool.call", "file.read", "file.write",
-            "notification.send", "governance.vote",
+            "chain.transfer",
+            "chain.query",
+            "model.inference",
+            "tool.call",
+            "file.read",
+            "file.write",
+            "notification.send",
+            "governance.vote",
         ];
-        prop::collection::vec(prop::sample::select(effect_names), 0..=5)
-            .prop_map(|v| {
-                let mut seen = std::collections::HashSet::new();
-                v.into_iter()
-                    .filter(|s| seen.insert(s.to_string()))
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-            })
+        prop::collection::vec(prop::sample::select(effect_names), 0..=5).prop_map(|v| {
+            let mut seen = std::collections::HashSet::new();
+            v.into_iter()
+                .filter(|s| seen.insert(s.to_string()))
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        })
     }
 
     fn intersect(a: &EffectSet, b: &EffectSet) -> EffectSet {
-        let effects = a.effects.iter()
+        let effects = a
+            .effects
+            .iter()
             .filter(|e| b.contains(e))
             .cloned()
             .collect::<Vec<_>>();
@@ -540,22 +542,28 @@ mod pb03_child_grant_subset_of_parent {
 
     fn arb_effect_set() -> impl Strategy<Value = Vec<String>> {
         let effect_names = vec![
-            "chain.transfer", "chain.query", "model.inference",
-            "tool.call", "file.read", "file.write",
-            "notification.send", "governance.vote",
+            "chain.transfer",
+            "chain.query",
+            "model.inference",
+            "tool.call",
+            "file.read",
+            "file.write",
+            "notification.send",
+            "governance.vote",
         ];
-        prop::collection::vec(prop::sample::select(effect_names), 0..=6)
-            .prop_map(|v| {
-                let mut seen = std::collections::HashSet::new();
-                v.into_iter()
-                    .filter(|s| seen.insert(s.to_string()))
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-            })
+        prop::collection::vec(prop::sample::select(effect_names), 0..=6).prop_map(|v| {
+            let mut seen = std::collections::HashSet::new();
+            v.into_iter()
+                .filter(|s| seen.insert(s.to_string()))
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        })
     }
 
     fn intersect(a: &EffectSet, b: &EffectSet) -> EffectSet {
-        let effects = a.effects.iter()
+        let effects = a
+            .effects
+            .iter()
             .filter(|e| b.contains(e))
             .cloned()
             .collect::<Vec<_>>();
@@ -614,8 +622,8 @@ mod pb03_child_grant_subset_of_parent {
 
 mod pb09_budget_enforcement {
     use super::*;
-    use polkagent_grant::budget::BudgetTracker;
     use polkagent_core::ids::{AgentId, RunId};
+    use polkagent_grant::budget::BudgetTracker;
 
     proptest! {
         /// After check_budget passes, the total accumulated spend across a

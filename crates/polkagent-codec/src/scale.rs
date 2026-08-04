@@ -95,14 +95,18 @@ impl<'a> ScaleDecoder<'a> {
     /// Decode a little-endian `u64`.
     pub fn decode_u64(&mut self) -> Result<u64> {
         let bytes = self.read_bytes(8)?;
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| CodecError::decode("u64 slice conversion failed"))?;
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| CodecError::decode("u64 slice conversion failed"))?;
         Ok(u64::from_le_bytes(arr))
     }
 
     /// Decode a little-endian `u128`.
     pub fn decode_u128(&mut self) -> Result<u128> {
         let bytes = self.read_bytes(16)?;
-        let arr: [u8; 16] = bytes.try_into().map_err(|_| CodecError::decode("u128 slice conversion failed"))?;
+        let arr: [u8; 16] = bytes
+            .try_into()
+            .map_err(|_| CodecError::decode("u128 slice conversion failed"))?;
         Ok(u128::from_le_bytes(arr))
     }
 
@@ -212,9 +216,8 @@ impl<'a> ScaleDecoder<'a> {
     /// Decode a UTF-8 string (compact length + UTF-8 bytes).
     pub fn decode_string(&mut self) -> Result<String> {
         let bytes = self.decode_bytes()?;
-        String::from_utf8(bytes).map_err(|e| {
-            CodecError::invalid_type(format!("invalid UTF-8 string: {e}"))
-        })
+        String::from_utf8(bytes)
+            .map_err(|e| CodecError::invalid_type(format!("invalid UTF-8 string: {e}")))
     }
 
     /// Decode a SCALE `Vec<T>` by first reading the compact element count,

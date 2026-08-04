@@ -1,0 +1,36 @@
+All done. Here's a summary of what was created:
+
+## Created: `polkagent-chain-jam` crate (PRD-05 §11, deliverable 6.1)
+
+### Files created
+
+| File | Purpose |
+|---|---|
+| `crates/polkagent-chain-jam/Cargo.toml` | Crate manifest, description includes "EXPERIMENTAL" label |
+| `crates/polkagent-chain-jam/src/lib.rs` | Root module with `MATURITY_LABEL = "Experimental"` constant, re-exports |
+| `crates/polkagent-chain-jam/src/types.rs` | `JamBlock`, `JamBlockHeader`, `JamServiceId` — JAM-specific block types modeled from Graypaper |
+| `crates/polkagent-chain-jam/src/error.rs` | `JamError` enum: `Transport`, `InvalidResponse`, `BlockNotFound`, `NotConnected` |
+| `crates/polkagent-chain-jam/src/mock.rs` | `MockJamBackend` — deterministic mock that serves pre-loaded blocks by slot, builds parent-hash chains |
+| `crates/polkagent-chain-jam/src/client.rs` | `JamClient` — async client with two backends: `Mock` (works now) and `Rpc` (returns `NotConnected` until JAM testnet is live) |
+
+### PRD-05 compliance
+
+| Requirement | How it's met |
+|---|---|
+| **Feature-gated** (§11.5 principle 5, PINT-N06) | No other workspace crate depends on it; isolated leaf crate |
+| **Experimental maturity label** (§11.5 principle 3) | `MATURITY_LABEL` constant + crate description |
+| **Leaf adapter only** (§11.5 principle 2) | No dependency on `polkagent-core`, `polkagent-chain-trait`, or any kernel crate |
+| **No v1 dependency** (§11.5 principle 1) | Not wired into run orchestration, policy, signing, or submission |
+| **Graceful absence** (§11.5 principle 5, INT-CC-10) | `cargo check --workspace` passes; no crate imports it |
+| **Mock backend** | `MockJamBackend::with_blocks(n)` builds a consistent chain for testing |
+
+### Test results
+
+**19 tests pass** covering:
+- Type serialization/deserialization round-trips
+- Mock backend chain consistency (parent hash linking)
+- Client block queries via mock
+- Client returns `NotConnected` for live RPC endpoints
+- Health checks for both backends
+- Block parsing and structure verification
+- Error display formatting

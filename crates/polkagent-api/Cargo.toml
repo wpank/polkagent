@@ -20,6 +20,7 @@ polkagent-tool = { path = "../polkagent-tool" }
 polkagent-payment = { path = "../polkagent-payment" }
 polkagent-telemetry = { path = "../polkagent-telemetry" }
 polkagent-rate-limit = { path = "../polkagent-rate-limit" }
+polkagent-marketplace = { path = "../polkagent-marketplace" }
 
 # Web
 axum = { workspace = true }

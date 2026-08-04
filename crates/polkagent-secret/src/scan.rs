@@ -217,11 +217,12 @@ fn detect_hex_private_keys(text: &str) -> Vec<SecretDetection> {
 
     while i < n {
         // Check for optional `0x` prefix.
-        let (prefix_len, hex_start) = if i + 1 < n && bytes[i] == b'0' && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
-            (2usize, i + 2)
-        } else {
-            (0usize, i)
-        };
+        let (prefix_len, hex_start) =
+            if i + 1 < n && bytes[i] == b'0' && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+                (2usize, i + 2)
+            } else {
+                (0usize, i)
+            };
 
         // Verify there are at least 128 hex chars starting at hex_start.
         if hex_start + HEX_LEN <= n
@@ -384,7 +385,10 @@ mod tests {
     fn detect_generic_api_key() {
         let text = "OPENAI_KEY=sk-proj-abcdefghij";
         let findings = detect_secrets(text);
-        let api_keys: Vec<_> = findings.iter().filter(|f| f.kind == SecretKind::ApiKey).collect();
+        let api_keys: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == SecretKind::ApiKey)
+            .collect();
         assert!(!api_keys.is_empty(), "should detect generic API key");
     }
 
@@ -393,8 +397,14 @@ mod tests {
         let text = "sk-ant-abc123";
         let findings = detect_secrets(text);
         // Should only produce AnthropicApiKey, not also ApiKey.
-        let generic: Vec<_> = findings.iter().filter(|f| f.kind == SecretKind::ApiKey).collect();
-        assert!(generic.is_empty(), "Anthropic key should not be flagged as generic ApiKey");
+        let generic: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == SecretKind::ApiKey)
+            .collect();
+        assert!(
+            generic.is_empty(),
+            "Anthropic key should not be flagged as generic ApiKey"
+        );
     }
 
     // --- detect_secrets: Bearer tokens ---
@@ -403,7 +413,10 @@ mod tests {
     fn detect_bearer_token() {
         let text = "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig";
         let findings = detect_secrets(text);
-        let bearer: Vec<_> = findings.iter().filter(|f| f.kind == SecretKind::BearerToken).collect();
+        let bearer: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == SecretKind::BearerToken)
+            .collect();
         assert!(!bearer.is_empty(), "should detect Bearer token");
         assert!(bearer[0].redacted_preview.starts_with("Bearer "));
     }
@@ -413,8 +426,14 @@ mod tests {
         // "Bearer " with only trailing whitespace / end-of-string.
         let text = "Bearer ";
         let findings = detect_secrets(text);
-        let bearer: Vec<_> = findings.iter().filter(|f| f.kind == SecretKind::BearerToken).collect();
-        assert!(bearer.is_empty(), "should not detect Bearer without a token value");
+        let bearer: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == SecretKind::BearerToken)
+            .collect();
+        assert!(
+            bearer.is_empty(),
+            "should not detect Bearer without a token value"
+        );
     }
 
     // --- detect_secrets: hex private keys ---
@@ -424,8 +443,14 @@ mod tests {
         let key = format!("0x{}", "a".repeat(128));
         let text = format!("key={key}");
         let findings = detect_secrets(&text);
-        let hex: Vec<_> = findings.iter().filter(|f| f.kind == SecretKind::HexPrivateKey).collect();
-        assert!(!hex.is_empty(), "should detect hex private key with 0x prefix");
+        let hex: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == SecretKind::HexPrivateKey)
+            .collect();
+        assert!(
+            !hex.is_empty(),
+            "should detect hex private key with 0x prefix"
+        );
         assert!(hex[0].redacted_preview.starts_with("0x"));
     }
 
@@ -434,7 +459,10 @@ mod tests {
         let key = "b".repeat(128);
         let text = format!("privkey={key}");
         let findings = detect_secrets(&text);
-        let hex: Vec<_> = findings.iter().filter(|f| f.kind == SecretKind::HexPrivateKey).collect();
+        let hex: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == SecretKind::HexPrivateKey)
+            .collect();
         assert!(!hex.is_empty(), "should detect raw hex private key");
     }
 
@@ -443,8 +471,14 @@ mod tests {
         let key = "a".repeat(64); // only 32 bytes, not 64
         let text = format!("key={key}");
         let findings = detect_secrets(&text);
-        let hex: Vec<_> = findings.iter().filter(|f| f.kind == SecretKind::HexPrivateKey).collect();
-        assert!(hex.is_empty(), "short hex should not be flagged as private key");
+        let hex: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == SecretKind::HexPrivateKey)
+            .collect();
+        assert!(
+            hex.is_empty(),
+            "short hex should not be flagged as private key"
+        );
     }
 
     // --- detect_secrets: passwords ---
@@ -453,7 +487,10 @@ mod tests {
     fn detect_password_field() {
         let text = "jdbc:postgresql://host/db?password=s3cr3tP@ss";
         let findings = detect_secrets(text);
-        let passwords: Vec<_> = findings.iter().filter(|f| f.kind == SecretKind::Password).collect();
+        let passwords: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == SecretKind::Password)
+            .collect();
         assert!(!passwords.is_empty(), "should detect password= field");
         assert!(passwords[0].redacted_preview.starts_with("password="));
     }

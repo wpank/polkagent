@@ -101,21 +101,25 @@ impl std::fmt::Debug for SubxtChainClient {
 impl SubxtChainClient {
     /// Return the chain profile for the given ID, or an error.
     fn get_profile(&self, id: &ChainProfileId) -> Result<&ChainProfile, SubxtError> {
-        self.profiles.get(&id.0).ok_or_else(|| SubxtError::ProfileNotFound {
-            profile_id: id.0.clone(),
-        })
+        self.profiles
+            .get(&id.0)
+            .ok_or_else(|| SubxtError::ProfileNotFound {
+                profile_id: id.0.clone(),
+            })
     }
 
     /// Pick the first available RPC endpoint from a profile.
     fn primary_endpoint(profile: &ChainProfile) -> Result<&str, SubxtError> {
-        profile.rpc_endpoints.first().map(|s| s.as_str()).ok_or_else(|| {
-            SubxtError::Config {
+        profile
+            .rpc_endpoints
+            .first()
+            .map(|s| s.as_str())
+            .ok_or_else(|| SubxtError::Config {
                 message: format!(
                     "chain profile '{}' has no RPC endpoints configured",
                     profile.id
                 ),
-            }
-        })
+            })
     }
 
     /// Fetch the block hash at a given number from the node.
@@ -129,10 +133,7 @@ impl SubxtChainClient {
     }
 
     /// Fetch the current block number and hash from a node.
-    async fn fetch_current_block(
-        &self,
-        endpoint: &str,
-    ) -> Result<BlockRef, SubxtError> {
+    async fn fetch_current_block(&self, endpoint: &str) -> Result<BlockRef, SubxtError> {
         let hash = self.rpc.chain_get_block_hash(endpoint, None).await?;
         let header = self.rpc.chain_get_header(endpoint, Some(&hash)).await?;
         let number_hex = header
@@ -147,10 +148,7 @@ impl SubxtChainClient {
     }
 
     /// Fetch the finalized block ref from a node.
-    async fn fetch_finalized_block(
-        &self,
-        endpoint: &str,
-    ) -> Result<BlockRef, SubxtError> {
+    async fn fetch_finalized_block(&self, endpoint: &str) -> Result<BlockRef, SubxtError> {
         let hash = self.rpc.chain_get_finalized_head(endpoint).await?;
         let header = self.rpc.chain_get_header(endpoint, Some(&hash)).await?;
         let number_hex = header
@@ -217,12 +215,15 @@ impl ChainClient for SubxtChainClient {
         let metadata_digest = compute_metadata_digest(&metadata_bytes);
 
         // Parse metadata to extract spec version.
-        let runtime_metadata = decode::parse_runtime_metadata(&metadata_bytes)
-            .map_err(|e| ChainError::MetadataFetch {
+        let runtime_metadata = decode::parse_runtime_metadata(&metadata_bytes).map_err(|e| {
+            ChainError::MetadataFetch {
                 message: format!("failed to parse metadata: {e}"),
-            })?;
+            }
+        })?;
 
-        let spec_version = profile.spec_version.unwrap_or(runtime_metadata.version as u32);
+        let spec_version = profile
+            .spec_version
+            .unwrap_or(runtime_metadata.version as u32);
 
         debug!(
             spec_version,
@@ -273,11 +274,10 @@ impl ChainClient for SubxtChainClient {
         match result {
             Ok(result_hex) => {
                 // Parse the fee estimate from the response.
-                let result_bytes = hex_to_bytes(&result_hex).map_err(|e| {
-                    ChainError::SimulationFailed {
+                let result_bytes =
+                    hex_to_bytes(&result_hex).map_err(|e| ChainError::SimulationFailed {
                         message: format!("failed to decode simulation result: {e}"),
-                    }
-                })?;
+                    })?;
 
                 // The response contains RuntimeDispatchInfo with partial_fee as u128.
                 // For now, extract the fee if we have enough bytes.
@@ -341,9 +341,9 @@ impl ChainClient for SubxtChainClient {
             .author_submit_extrinsic(endpoint, &extrinsic_hex)
             .await
             .map_err(|e| match e {
-                SubxtError::RpcError { message, .. } => ChainError::ExtrinsicRejected {
-                    reason: message,
-                },
+                SubxtError::RpcError { message, .. } => {
+                    ChainError::ExtrinsicRejected { reason: message }
+                }
                 other => other.into(),
             })?;
 
@@ -368,8 +368,7 @@ impl ChainClient for SubxtChainClient {
             "watching finality"
         );
 
-        let deadline =
-            tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
         let poll_interval = tokio::time::Duration::from_secs(2);
 
         loop {
@@ -447,8 +446,12 @@ impl ChainClient for SubxtChainClient {
             "decoding call bytes"
         );
 
-        decode_call_bytes(call_bytes, &metadata.metadata_bytes, &metadata.metadata_digest)
-            .map_err(ChainError::from)
+        decode_call_bytes(
+            call_bytes,
+            &metadata.metadata_bytes,
+            &metadata.metadata_digest,
+        )
+        .map_err(ChainError::from)
     }
 
     async fn query_storage(
@@ -483,10 +486,7 @@ impl ChainClient for SubxtChainClient {
         }
     }
 
-    async fn dry_run_call(
-        &self,
-        _extrinsic: &[u8],
-    ) -> Result<DryRunResult, ChainError> {
+    async fn dry_run_call(&self, _extrinsic: &[u8]) -> Result<DryRunResult, ChainError> {
         Err(ChainError::Unsupported {
             operation: "dry_run_call".into(),
         })
@@ -644,7 +644,9 @@ mod tests {
         ChainProfile {
             id: ChainProfileId::new("test"),
             name: "Test Network".into(),
-            genesis_hash: GenesisHash::new("0x0000000000000000000000000000000000000000000000000000000000000000"),
+            genesis_hash: GenesisHash::new(
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+            ),
             spec_version: Some(1_000),
             rpc_endpoints: vec!["http://localhost:9933".into()],
             network_type: NetworkType::Development,
@@ -655,7 +657,9 @@ mod tests {
         ChainProfile {
             id: ChainProfileId::new("polkadot"),
             name: "Polkadot".into(),
-            genesis_hash: GenesisHash::new("0x91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3"),
+            genesis_hash: GenesisHash::new(
+                "0x91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3",
+            ),
             spec_version: Some(1_003_000),
             rpc_endpoints: vec!["https://rpc.polkadot.io".into()],
             network_type: NetworkType::Production,
@@ -860,9 +864,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_no_profiles_succeeds() {
-        let client = SubxtChainClientBuilder::new()
-            .build()
-            .expect("build");
+        let client = SubxtChainClientBuilder::new().build().expect("build");
         let result = client.health().await;
         assert!(result.is_ok());
     }
@@ -1010,7 +1012,9 @@ mod tests {
             .build()
             .expect("build");
 
-        let p = client.get_profile(&ChainProfileId::new("test")).expect("ok");
+        let p = client
+            .get_profile(&ChainProfileId::new("test"))
+            .expect("ok");
         assert_eq!(p.name, "Updated Test");
     }
 
@@ -1169,7 +1173,7 @@ mod tests {
         // Single byte.
         assert_eq!(hex_to_bytes("0xff").expect("ok"), vec![0xFF]);
         // Large value.
-        let hex = "0x" .to_string() + &"ab".repeat(256);
+        let hex = "0x".to_string() + &"ab".repeat(256);
         let bytes = hex_to_bytes(&hex).expect("ok");
         assert_eq!(bytes.len(), 256);
     }
@@ -1223,9 +1227,7 @@ mod tests {
 
         assert!(client.get_profile(&ChainProfileId::new("test")).is_ok());
         assert!(client.get_profile(&ChainProfileId::new("polkadot")).is_ok());
-        assert!(client
-            .get_profile(&ChainProfileId::new("kusama"))
-            .is_err());
+        assert!(client.get_profile(&ChainProfileId::new("kusama")).is_err());
     }
 
     // -----------------------------------------------------------------------

@@ -162,11 +162,7 @@ impl GroupCoordinator {
     /// - [`GroupError::NotMember`] if the agent is not a member.
     /// - [`GroupError::PermissionDenied`] if the agent is the owner (owners
     ///   cannot be removed via this method).
-    pub fn remove_member(
-        &mut self,
-        group_id: &GroupId,
-        agent_id: &AgentId,
-    ) -> GroupResult<()> {
+    pub fn remove_member(&mut self, group_id: &GroupId, agent_id: &AgentId) -> GroupResult<()> {
         let group = self.get_group_mut(group_id)?;
 
         if &group.owner_agent_id == agent_id {
@@ -502,10 +498,7 @@ mod tests {
     fn add_member_duplicate_returns_internal_error() {
         let (mut coord, group_id, owner) = make_coordinator_with_group();
         let result = coord.add_member(&group_id, GroupMember::new(owner, MemberRole::Worker));
-        assert!(
-            result.is_err(),
-            "adding duplicate member should fail"
-        );
+        assert!(result.is_err(), "adding duplicate member should fail");
     }
 
     #[test]

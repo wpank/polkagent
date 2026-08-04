@@ -20,11 +20,7 @@ use polkagent_integration_tests::MemEventStore;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_stored_event(
-    run_id: RunId,
-    event_type: &str,
-    sequence: u64,
-) -> StoredEvent {
+fn make_stored_event(run_id: RunId, event_type: &str, sequence: u64) -> StoredEvent {
     StoredEvent {
         id: Uuid::now_v7().to_string(),
         event_type: event_type.to_string(),
@@ -80,11 +76,7 @@ async fn append_multiple_events_per_run_in_sequence_order() {
     let store = Arc::new(MemEventStore::default());
     let run = RunId::new();
 
-    for (seq, kind) in [
-        (1, "run_created"),
-        (2, "run_queued"),
-        (3, "run_started"),
-    ] {
+    for (seq, kind) in [(1, "run_created"), (2, "run_queued"), (3, "run_started")] {
         let ev = make_stored_event(run, kind, seq);
         store.append_durable(ev).await.expect("append");
     }
@@ -159,7 +151,11 @@ async fn query_by_run_id_returns_only_that_runs_events() {
 
     assert_eq!(results.len(), 2, "query for run_a must return 2 events");
     for ev in &results {
-        assert_eq!(ev.run_id, run_a.to_string(), "all results must belong to run_a");
+        assert_eq!(
+            ev.run_id,
+            run_a.to_string(),
+            "all results must belong to run_a"
+        );
     }
 }
 
@@ -178,7 +174,10 @@ async fn query_by_run_id_returns_empty_for_unknown_run() {
         ..Default::default()
     };
     let results = store.query(filter).await.expect("query");
-    assert!(results.is_empty(), "query for unknown run must return empty");
+    assert!(
+        results.is_empty(),
+        "query for unknown run must return empty"
+    );
 }
 
 #[tokio::test]
@@ -187,8 +186,14 @@ async fn read_run_events_returns_only_given_runs_events() {
     let run_a = RunId::new();
     let run_b = RunId::new();
 
-    store.append_durable(make_stored_event(run_a, "run_created", 1)).await.expect("a");
-    store.append_durable(make_stored_event(run_b, "run_created", 1)).await.expect("b");
+    store
+        .append_durable(make_stored_event(run_a, "run_created", 1))
+        .await
+        .expect("a");
+    store
+        .append_durable(make_stored_event(run_b, "run_created", 1))
+        .await
+        .expect("b");
 
     let a_events = store.read_run_events(run_a).await.expect("read a");
     assert_eq!(a_events.len(), 1);
@@ -222,7 +227,10 @@ async fn max_sequence_updates_after_each_append() {
             .await
             .expect("append");
         let max = store.max_sequence(run).await.expect("max_seq");
-        assert_eq!(max, seq, "max_sequence must be {seq} after appending seq={seq}");
+        assert_eq!(
+            max, seq,
+            "max_sequence must be {seq} after appending seq={seq}"
+        );
     }
 }
 
@@ -244,7 +252,10 @@ async fn non_monotonic_sequence_returns_error() {
 
     use polkagent_store_trait::event::EventStoreError;
     assert!(
-        matches!(result.unwrap_err(), EventStoreError::NonMonotonicSequence { .. }),
+        matches!(
+            result.unwrap_err(),
+            EventStoreError::NonMonotonicSequence { .. }
+        ),
         "error must be NonMonotonicSequence"
     );
 }
@@ -345,7 +356,11 @@ async fn read_from_cursor_with_limit() {
     }
 
     let results = store.read_from_cursor(0, 3).await.expect("cursor limit");
-    assert_eq!(results.len(), 3, "limit must restrict number of returned events");
+    assert_eq!(
+        results.len(),
+        3,
+        "limit must restrict number of returned events"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +386,10 @@ async fn has_terminal_event_returns_true_after_terminal_appended() {
         .expect("append terminal");
 
     let result = store.has_terminal_event(run).await.expect("check");
-    assert!(result, "run must have terminal event after run_completed appended");
+    assert!(
+        result,
+        "run must have terminal event after run_completed appended"
+    );
 }
 
 #[tokio::test]
@@ -392,14 +410,22 @@ async fn appending_second_terminal_event_is_rejected() {
 
     use polkagent_store_trait::event::EventStoreError;
     assert!(
-        matches!(result.unwrap_err(), EventStoreError::DuplicateTerminalEvent { .. }),
+        matches!(
+            result.unwrap_err(),
+            EventStoreError::DuplicateTerminalEvent { .. }
+        ),
         "error must be DuplicateTerminalEvent"
     );
 }
 
 #[tokio::test]
 async fn all_four_terminal_types_set_the_terminal_flag() {
-    for terminal_type in &["run_completed", "run_failed", "run_cancelled", "run_timed_out"] {
+    for terminal_type in &[
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_timed_out",
+    ] {
         let store = Arc::new(MemEventStore::default());
         let run = RunId::new();
 
@@ -441,7 +467,6 @@ async fn non_terminal_events_do_not_set_terminal_flag() {
 
 #[tokio::test]
 async fn event_recorder_appends_events_to_store() {
-
     let (store, _recorder) = make_store_with_recorder();
 
     let run_id = RunId::new();
@@ -499,5 +524,8 @@ async fn append_diagnostic_does_not_increment_durable_count() {
 
     // Durable store must still be empty.
     let events = store.read_run_events(run).await.expect("read");
-    assert!(events.is_empty(), "diagnostic events must not appear in durable read_run_events");
+    assert!(
+        events.is_empty(),
+        "diagnostic events must not appear in durable read_run_events"
+    );
 }

@@ -108,12 +108,7 @@ impl ToolNameNormalizer {
     }
 
     /// Register an alias scoped to a specific backend.
-    pub fn register_backend_alias(
-        &mut self,
-        backend: Backend,
-        alias: &str,
-        canonical: &str,
-    ) {
+    pub fn register_backend_alias(&mut self, backend: Backend, alias: &str, canonical: &str) {
         let key = self.normalize_key(alias);
         self.backend_aliases
             .entry(backend)
@@ -135,21 +130,14 @@ impl ToolNameNormalizer {
     }
 
     /// Register multiple backend-scoped aliases at once.
-    pub fn register_backend_aliases<I, A, C>(
-        &mut self,
-        backend: Backend,
-        aliases: I,
-    ) where
+    pub fn register_backend_aliases<I, A, C>(&mut self, backend: Backend, aliases: I)
+    where
         I: IntoIterator<Item = (A, C)>,
         A: AsRef<str>,
         C: AsRef<str>,
     {
         for (alias, canonical) in aliases {
-            self.register_backend_alias(
-                backend,
-                alias.as_ref(),
-                canonical.as_ref(),
-            );
+            self.register_backend_alias(backend, alias.as_ref(), canonical.as_ref());
         }
     }
 
@@ -170,11 +158,7 @@ impl ToolNameNormalizer {
     /// Normalize a tool name using the backend-specific alias map first,
     /// falling back to the global map, and finally returning the original
     /// name if no match is found.
-    pub fn normalize_for_backend<'a>(
-        &'a self,
-        name: &'a str,
-        backend: Backend,
-    ) -> &'a str {
+    pub fn normalize_for_backend<'a>(&'a self, name: &'a str, backend: Backend) -> &'a str {
         let key = self.normalize_key(name);
 
         // 1. Backend-specific map.
@@ -202,11 +186,7 @@ impl ToolNameNormalizer {
 
     /// Look up the canonical name for a backend-specific alias, falling
     /// back to the global map. Returns `None` if no alias matches.
-    pub fn canonical_name_for_backend(
-        &self,
-        name: &str,
-        backend: Backend,
-    ) -> Option<&str> {
+    pub fn canonical_name_for_backend(&self, name: &str, backend: Backend) -> Option<&str> {
         let key = self.normalize_key(name);
 
         if let Some(backend_map) = self.backend_aliases.get(&backend) {
@@ -226,10 +206,7 @@ impl ToolNameNormalizer {
     }
 
     /// Return aliases for a specific backend as `(alias, canonical)` pairs.
-    pub fn backend_alias_entries(
-        &self,
-        backend: Backend,
-    ) -> impl Iterator<Item = (&str, &str)> {
+    pub fn backend_alias_entries(&self, backend: Backend) -> impl Iterator<Item = (&str, &str)> {
         self.backend_aliases
             .get(&backend)
             .into_iter()
@@ -239,8 +216,7 @@ impl ToolNameNormalizer {
     /// Return the total number of registered aliases (global + all backends).
     #[must_use]
     pub fn alias_count(&self) -> usize {
-        let backend: usize =
-            self.backend_aliases.values().map(HashMap::len).sum();
+        let backend: usize = self.backend_aliases.values().map(HashMap::len).sum();
         self.global_aliases.len() + backend
     }
 
@@ -301,10 +277,7 @@ mod tests {
         let mut n = ToolNameNormalizer::new();
         n.register_alias("Read", "polkagent.file.read");
 
-        assert_eq!(
-            n.canonical_name("Read"),
-            Some("polkagent.file.read")
-        );
+        assert_eq!(n.canonical_name("Read"), Some("polkagent.file.read"));
     }
 
     #[test]
@@ -389,11 +362,7 @@ mod tests {
     fn backend_alias_falls_back_to_global() {
         let mut n = ToolNameNormalizer::new();
         n.register_alias("Read", "polkagent.file.read");
-        n.register_backend_alias(
-            Backend::OpenAI,
-            "search_code",
-            "polkagent.search.code",
-        );
+        n.register_backend_alias(Backend::OpenAI, "search_code", "polkagent.search.code");
 
         // "Read" is not in OpenAI backend map, falls back to global.
         assert_eq!(
@@ -415,11 +384,7 @@ mod tests {
     fn canonical_name_for_backend_checks_backend_first() {
         let mut n = ToolNameNormalizer::new();
         n.register_alias("read", "global.read");
-        n.register_backend_alias(
-            Backend::Mcp,
-            "read",
-            "mcp.read",
-        );
+        n.register_backend_alias(Backend::Mcp, "read", "mcp.read");
 
         assert_eq!(
             n.canonical_name_for_backend("read", Backend::Mcp),
@@ -435,10 +400,7 @@ mod tests {
     #[test]
     fn canonical_name_for_backend_returns_none_when_no_match() {
         let n = ToolNameNormalizer::new();
-        assert_eq!(
-            n.canonical_name_for_backend("nope", Backend::Gemini),
-            None,
-        );
+        assert_eq!(n.canonical_name_for_backend("nope", Backend::Gemini), None,);
     }
 
     // -- Batch registration --
@@ -506,20 +468,14 @@ mod tests {
     #[test]
     fn backend_alias_entries_iterator() {
         let mut n = ToolNameNormalizer::new();
-        n.register_backend_alias(
-            Backend::Anthropic,
-            "Read",
-            "polkagent.file.read",
-        );
+        n.register_backend_alias(Backend::Anthropic, "Read", "polkagent.file.read");
 
-        let entries: Vec<_> =
-            n.backend_alias_entries(Backend::Anthropic).collect();
+        let entries: Vec<_> = n.backend_alias_entries(Backend::Anthropic).collect();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0], ("Read", "polkagent.file.read"));
 
         // Empty for another backend.
-        let entries: Vec<_> =
-            n.backend_alias_entries(Backend::OpenAI).collect();
+        let entries: Vec<_> = n.backend_alias_entries(Backend::OpenAI).collect();
         assert!(entries.is_empty());
     }
 
@@ -561,9 +517,6 @@ mod tests {
         n.register_alias("Read", "polkagent.file.read");
 
         // The canonical name itself is not registered as an alias.
-        assert_eq!(
-            n.normalize("polkagent.file.read"),
-            "polkagent.file.read"
-        );
+        assert_eq!(n.normalize("polkagent.file.read"), "polkagent.file.read");
     }
 }

@@ -27,11 +27,7 @@ use polkagent_store_trait::event::{EventStore, EventStoreError, StoredEvent};
 use serde_json;
 use tracing::{debug, error, instrument};
 
-use crate::{
-    bus::EventBus,
-    error::EventError,
-    types::EventType,
-};
+use crate::{bus::EventBus, error::EventError, types::EventType};
 
 // ---------------------------------------------------------------------------
 // EventRecorder
@@ -137,8 +133,7 @@ impl EventRecorder {
         event.sequence = next_seq;
 
         // Serialise the kind payload.
-        let payload =
-            serde_json::to_value(&event.kind).map_err(EventError::Serialisation)?;
+        let payload = serde_json::to_value(&event.kind).map_err(EventError::Serialisation)?;
 
         let stored = StoredEvent {
             id: event.id.to_string(),
@@ -188,8 +183,7 @@ impl EventRecorder {
     }
 
     async fn record_diagnostic(&self, event: &mut RunEvent) -> Result<(), EventError> {
-        let payload =
-            serde_json::to_value(&event.kind).map_err(EventError::Serialisation)?;
+        let payload = serde_json::to_value(&event.kind).map_err(EventError::Serialisation)?;
 
         let stored = StoredEvent {
             id: event.id.to_string(),
@@ -230,8 +224,9 @@ fn durability_of(kind: &EventKind) -> DurabilityClass {
     // Map from the core EventKind to our DurabilityClass.
     // By default everything is Durable unless it's a known streaming kind.
     match kind {
-        EventKind::StreamingToken { .. }
-        | EventKind::ProgressUpdate { .. } => DurabilityClass::Ephemeral,
+        EventKind::StreamingToken { .. } | EventKind::ProgressUpdate { .. } => {
+            DurabilityClass::Ephemeral
+        }
 
         EventKind::ToolCallStarted { .. }
         | EventKind::ToolCallCompleted { .. }
@@ -283,9 +278,7 @@ mod tests {
         event::{EventCorrelation, EventKind, RunEvent},
         ids::{EventId, RunId},
     };
-    use polkagent_store_trait::event::{
-        EventFilter, EventStore, EventStoreError, StoredEvent,
-    };
+    use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tokio;
@@ -372,10 +365,7 @@ mod tests {
                 .collect())
         }
 
-        async fn query(
-            &self,
-            filter: EventFilter,
-        ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        async fn query(&self, filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
             let durable = self.durable.lock().expect("lock");
             Ok(durable
                 .iter()
@@ -415,7 +405,13 @@ mod tests {
             run_id: run_id.clone(),
             ..Default::default()
         };
-        RunEvent::new_durable(EventId::new(), run_id, 0 /* pre-assign */, kind, correlation)
+        RunEvent::new_durable(
+            EventId::new(),
+            run_id,
+            0, /* pre-assign */
+            kind,
+            correlation,
+        )
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────
@@ -452,6 +448,8 @@ mod tests {
             run_id.clone(),
             EventKind::RunCompleted {
                 output_artifact_id: None,
+                input_tokens: 0,
+                output_tokens: 0,
             },
         );
         recorder.record(e1).await.expect("first terminal ok");

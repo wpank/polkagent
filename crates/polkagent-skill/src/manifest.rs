@@ -165,10 +165,9 @@ pub struct DependencySpec {
 impl SkillManifest {
     /// Parse a manifest from a TOML string.
     pub fn from_toml(content: &str) -> Result<Self, SkillError> {
-        let manifest: Self =
-            toml::from_str(content).map_err(|e| SkillError::ManifestParse {
-                reason: e.to_string(),
-            })?;
+        let manifest: Self = toml::from_str(content).map_err(|e| SkillError::ManifestParse {
+            reason: e.to_string(),
+        })?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -222,11 +221,9 @@ impl SkillManifest {
 
         // Validate dependency version requirements.
         for (dep_name, dep_spec) in &self.dependencies {
-            VersionReq::parse(&dep_spec.version).map_err(|e| {
-                SkillError::InvalidVersionReq {
-                    requirement: format!("{dep_name}: {}", dep_spec.version),
-                    reason: e.to_string(),
-                }
+            VersionReq::parse(&dep_spec.version).map_err(|e| SkillError::InvalidVersionReq {
+                requirement: format!("{dep_name}: {}", dep_spec.version),
+                reason: e.to_string(),
             })?;
         }
 
@@ -288,7 +285,10 @@ version = "1.0.0"
             "You are a governance research assistant..."
         );
         assert_eq!(
-            manifest.config.get("default_chain").and_then(|v| v.as_str()),
+            manifest
+                .config
+                .get("default_chain")
+                .and_then(|v| v.as_str()),
             Some("polkadot")
         );
     }

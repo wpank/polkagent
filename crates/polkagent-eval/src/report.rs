@@ -121,9 +121,9 @@ impl EvalReport {
 /// Serialize an `EvalReport` to a `serde_json::Value`.
 #[must_use]
 pub fn report_to_json(report: &EvalReport) -> serde_json::Value {
-    serde_json::to_value(report).unwrap_or_else(|e| {
-        serde_json::json!({ "error": format!("Failed to serialize report: {e}") })
-    })
+    serde_json::to_value(report).unwrap_or_else(
+        |e| serde_json::json!({ "error": format!("Failed to serialize report: {e}") }),
+    )
 }
 
 /// Render an `EvalReport` as a Markdown document.
@@ -143,10 +143,7 @@ pub fn report_to_markdown(report: &EvalReport) -> String {
     md.push_str(&format!("| Passed | {} |\n", report.passed));
     md.push_str(&format!("| Failed | {} |\n", report.failed));
     md.push_str(&format!("| Skipped | {} |\n", report.skipped));
-    md.push_str(&format!(
-        "| Mean score | {:.3} |\n",
-        report.mean_score
-    ));
+    md.push_str(&format!("| Mean score | {:.3} |\n", report.mean_score));
     md.push('\n');
 
     if !report.category_scores.is_empty() {
@@ -375,10 +372,7 @@ mod tests {
     fn report_skipped_count() {
         let mut errored = failing_result("c1", EvalCategory::General);
         errored.error = Some("timeout".into());
-        let results = vec![
-            passing_result("c2", EvalCategory::General),
-            errored,
-        ];
+        let results = vec![passing_result("c2", EvalCategory::General), errored];
         let report = EvalReport::from_results("suite", results);
         assert_eq!(report.skipped, 1);
     }

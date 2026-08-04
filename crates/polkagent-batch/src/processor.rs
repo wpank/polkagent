@@ -221,12 +221,7 @@ impl BatchProcessor {
                                 Err(e) => {
                                     attempts += 1;
                                     if attempts > max_retries {
-                                        return (
-                                            idx,
-                                            ItemStatus::Failed,
-                                            None,
-                                            Some(e),
-                                        );
+                                        return (idx, ItemStatus::Failed, None, Some(e));
                                     }
                                 }
                             }

@@ -66,15 +66,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, trace, warn};
 
 use polkagent_harness_trait::{
-    CancelMode, Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent,
-    HarnessId, HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode,
-    ToolInjection, TransportFlavor,
+    CancelMode, Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent, HarnessId,
+    HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
+    TransportFlavor,
 };
 
 use crate::protocol::{
-    CodexNotification, InitializeParams, ClientInfo,
-    RawIncoming, RpcNotification, RpcRequest, TurnStartParams,
-    BACKPRESSURE_ERROR_CODE,
+    ClientInfo, CodexNotification, InitializeParams, RawIncoming, RpcNotification, RpcRequest,
+    TurnStartParams, BACKPRESSURE_ERROR_CODE,
 };
 
 // ---------------------------------------------------------------------------
@@ -225,10 +224,7 @@ impl CodexHarness {
     ) -> Result<Self, HarnessError> {
         if config.id.as_str() != "codex" {
             return Err(HarnessError::InvalidState {
-                message: format!(
-                    "CodexHarness requires id \"codex\", got \"{}\"",
-                    config.id
-                ),
+                message: format!("CodexHarness requires id \"codex\", got \"{}\"", config.id),
             });
         }
 
@@ -289,16 +285,12 @@ impl CodexHarness {
     ///
     /// This takes stdin out of the session, writes outside the lock, then
     /// puts it back. Callers must hold no lock on `self.sessions`.
-    async fn write_line(
-        &self,
-        session_id: SessionId,
-        json_line: &str,
-    ) -> Result<(), HarnessError> {
+    async fn write_line(&self, session_id: SessionId, json_line: &str) -> Result<(), HarnessError> {
         let mut taken_stdin = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 return Err(HarnessError::InvalidState {
@@ -339,10 +331,7 @@ impl CodexHarness {
     }
 
     /// Send the initialize handshake: `initialize` request + `initialized` notification.
-    async fn perform_handshake(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError> {
+    async fn perform_handshake(&self, session_id: SessionId) -> Result<(), HarnessError> {
         let req_id = self.next_id();
 
         // Send initialize request.
@@ -368,9 +357,9 @@ impl CodexHarness {
         // Read lines from stdout until we get the initialize response.
         let stdout = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
             session.stdout.take().ok_or_else(|| HarnessError::IoError {
                 message: format!("session {session_id} stdout not available for handshake"),
             })?
@@ -380,50 +369,51 @@ impl CodexHarness {
         let mut line_buf = String::new();
 
         let handshake_timeout = Duration::from_secs(30);
-        let result = tokio::time::timeout(handshake_timeout, async {
-            loop {
-                line_buf.clear();
-                let bytes_read = reader.read_line(&mut line_buf).await.map_err(|e| {
-                    HarnessError::IoError {
-                        message: format!("failed to read handshake response: {e}"),
-                    }
-                })?;
-
-                if bytes_read == 0 {
-                    return Err(HarnessError::IoError {
-                        message: "Codex stdout closed during handshake".into(),
-                    });
-                }
-
-                let trimmed = line_buf.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                match serde_json::from_str::<RawIncoming>(trimmed) {
-                    Ok(raw) => {
-                        // Check if this is our response.
-                        if raw.id.as_ref().and_then(serde_json::Value::as_u64) == Some(req_id) {
-                            if let Some(err) = &raw.error {
-                                return Err(HarnessError::IoError {
-                                    message: format!(
-                                        "initialize failed: {} (code {})",
-                                        err.message, err.code
-                                    ),
-                                });
-                            }
-                            debug!(session_id = %session_id, "Initialize response received");
-                            return Ok(());
+        let result =
+            tokio::time::timeout(handshake_timeout, async {
+                loop {
+                    line_buf.clear();
+                    let bytes_read = reader.read_line(&mut line_buf).await.map_err(|e| {
+                        HarnessError::IoError {
+                            message: format!("failed to read handshake response: {e}"),
                         }
-                        // Not our response, skip.
+                    })?;
+
+                    if bytes_read == 0 {
+                        return Err(HarnessError::IoError {
+                            message: "Codex stdout closed during handshake".into(),
+                        });
                     }
-                    Err(_) => {
-                        trace!("Ignoring non-JSON line during handshake: {trimmed}");
+
+                    let trimmed = line_buf.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    match serde_json::from_str::<RawIncoming>(trimmed) {
+                        Ok(raw) => {
+                            // Check if this is our response.
+                            if raw.id.as_ref().and_then(serde_json::Value::as_u64) == Some(req_id) {
+                                if let Some(err) = &raw.error {
+                                    return Err(HarnessError::IoError {
+                                        message: format!(
+                                            "initialize failed: {} (code {})",
+                                            err.message, err.code
+                                        ),
+                                    });
+                                }
+                                debug!(session_id = %session_id, "Initialize response received");
+                                return Ok(());
+                            }
+                            // Not our response, skip.
+                        }
+                        Err(_) => {
+                            trace!("Ignoring non-JSON line during handshake: {trimmed}");
+                        }
                     }
                 }
-            }
-        })
-        .await;
+            })
+            .await;
 
         // Reconstruct the stdout from the reader and put it back.
         let stdout = reader.into_inner();
@@ -467,10 +457,7 @@ impl CodexHarness {
     }
 
     /// Send `thread/start` and wait for the response to extract the thread ID.
-    async fn start_thread(
-        &self,
-        session_id: SessionId,
-    ) -> Result<String, HarnessError> {
+    async fn start_thread(&self, session_id: SessionId) -> Result<String, HarnessError> {
         let req_id = self.next_id();
         let req = RpcRequest {
             id: req_id,
@@ -487,66 +474,71 @@ impl CodexHarness {
         // Wait for the thread/start response to get the thread ID.
         let stdout = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
-            session.stdout.take().ok_or_else(|| HarnessError::InvalidState {
-                message: format!("session {session_id} stdout not available for thread/start"),
-            })?
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+            session
+                .stdout
+                .take()
+                .ok_or_else(|| HarnessError::InvalidState {
+                    message: format!("session {session_id} stdout not available for thread/start"),
+                })?
         };
 
         let mut reader = BufReader::new(stdout);
         let mut line_buf = String::new();
 
         let timeout_dur = Duration::from_secs(30);
-        let result = tokio::time::timeout(timeout_dur, async {
-            loop {
-                line_buf.clear();
-                let bytes_read = reader.read_line(&mut line_buf).await.map_err(|e| {
-                    HarnessError::IoError {
-                        message: format!("failed to read thread/start response: {e}"),
+        let result =
+            tokio::time::timeout(timeout_dur, async {
+                loop {
+                    line_buf.clear();
+                    let bytes_read = reader.read_line(&mut line_buf).await.map_err(|e| {
+                        HarnessError::IoError {
+                            message: format!("failed to read thread/start response: {e}"),
+                        }
+                    })?;
+                    if bytes_read == 0 {
+                        return Err(HarnessError::IoError {
+                            message: "Codex stdout closed during thread/start".into(),
+                        });
                     }
-                })?;
-                if bytes_read == 0 {
-                    return Err(HarnessError::IoError {
-                        message: "Codex stdout closed during thread/start".into(),
-                    });
-                }
-                let trimmed = line_buf.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<RawIncoming>(trimmed) {
-                    Ok(raw) => {
-                        if raw.id.as_ref().and_then(serde_json::Value::as_u64) == Some(req_id) {
-                            if let Some(err) = &raw.error {
-                                return Err(HarnessError::IoError {
-                                    message: format!(
-                                        "thread/start failed: {} (code {})",
-                                        err.message, err.code
-                                    ),
-                                });
+                    let trimmed = line_buf.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<RawIncoming>(trimmed) {
+                        Ok(raw) => {
+                            if raw.id.as_ref().and_then(serde_json::Value::as_u64) == Some(req_id) {
+                                if let Some(err) = &raw.error {
+                                    return Err(HarnessError::IoError {
+                                        message: format!(
+                                            "thread/start failed: {} (code {})",
+                                            err.message, err.code
+                                        ),
+                                    });
+                                }
+                                // Extract thread ID from result.thread.id
+                                let thread_id = raw
+                                    .result
+                                    .as_ref()
+                                    .and_then(|r| r.get("thread"))
+                                    .and_then(|t| t.get("id"))
+                                    .and_then(|id| id.as_str())
+                                    .ok_or_else(|| HarnessError::IoError {
+                                        message: "thread/start response missing thread.id".into(),
+                                    })?
+                                    .to_owned();
+                                return Ok(thread_id);
                             }
-                            // Extract thread ID from result.thread.id
-                            let thread_id = raw.result
-                                .as_ref()
-                                .and_then(|r| r.get("thread"))
-                                .and_then(|t| t.get("id"))
-                                .and_then(|id| id.as_str())
-                                .ok_or_else(|| HarnessError::IoError {
-                                    message: "thread/start response missing thread.id".into(),
-                                })?
-                                .to_owned();
-                            return Ok(thread_id);
+                        }
+                        Err(_) => {
+                            trace!("Ignoring non-JSON line during thread/start: {trimmed}");
                         }
                     }
-                    Err(_) => {
-                        trace!("Ignoring non-JSON line during thread/start: {trimmed}");
-                    }
                 }
-            }
-        })
-        .await;
+            })
+            .await;
 
         // Put stdout back.
         let stdout = reader.into_inner();
@@ -602,7 +594,6 @@ impl CodexHarness {
         debug!(session_id = %session_id, "Sending turn/start");
         self.write_line(session_id, &json).await
     }
-
 }
 
 #[async_trait]
@@ -633,10 +624,7 @@ impl Harness for CodexHarness {
         status.clone()
     }
 
-    async fn start_session(
-        &self,
-        config: SessionConfig,
-    ) -> Result<SessionId, HarnessError> {
+    async fn start_session(&self, config: SessionConfig) -> Result<SessionId, HarnessError> {
         let session_id = SessionId::new();
         let exe_path = self.executable_path();
         let working_dir = self.resolve_working_dir(&config);
@@ -673,10 +661,7 @@ impl Harness for CodexHarness {
                 }
             } else {
                 HarnessError::SpawnFailed {
-                    message: format!(
-                        "failed to spawn '{}': {e}",
-                        exe_path.display()
-                    ),
+                    message: format!("failed to spawn '{}': {e}", exe_path.display()),
                 }
             }
         })?;
@@ -745,17 +730,13 @@ impl Harness for CodexHarness {
         Ok(session_id)
     }
 
-    async fn send_message(
-        &self,
-        session_id: SessionId,
-        message: &str,
-    ) -> Result<(), HarnessError> {
+    async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError> {
         // Record the message and grab thread_id.
         let thread_id = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
             if !session.active {
                 return Err(HarnessError::InvalidState {
                     message: format!("session {session_id} is no longer active"),
@@ -817,17 +798,18 @@ impl Harness for CodexHarness {
     ) -> Result<Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>, HarnessError> {
         let stdout = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
-            session.stdout.take().ok_or_else(|| {
-                HarnessError::InvalidState {
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+            session
+                .stdout
+                .take()
+                .ok_or_else(|| HarnessError::InvalidState {
                     message: format!(
                         "session {session_id} stdout already consumed \
                          (event stream can only be created once)"
                     ),
-                }
-            })?
+                })?
         };
 
         // Capture values needed by the stream closure.
@@ -837,9 +819,9 @@ impl Harness for CodexHarness {
         // out as well. We'll manage it inside the stream.
         let stdin = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
             session.stdin.take()
         };
 
@@ -1026,17 +1008,14 @@ impl Harness for CodexHarness {
         Ok(Box::pin(stream))
     }
 
-    async fn end_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError> {
+    async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         let timeout = self.codex_config.timeout;
 
         let pid = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 warn!(
@@ -1079,9 +1058,9 @@ impl Harness for CodexHarness {
                     let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
                     if let Some(session) = sessions.get_mut(&session_id) {
                         match session.child.try_wait() {
-                            Ok(Some(_)) => None,     // exited
-                            Ok(None) => Some(true),  // still running
-                            Err(_) => None,           // treat as exited
+                            Ok(Some(_)) => None,    // exited
+                            Ok(None) => Some(true), // still running
+                            Err(_) => None,         // treat as exited
                         }
                     } else {
                         None // session removed
@@ -1160,6 +1139,122 @@ impl Harness for CodexHarness {
             }),
         }
     }
+
+    async fn save_session_state(
+        &self,
+        session_id: SessionId,
+    ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let session = sessions
+            .get(&session_id)
+            .ok_or(HarnessError::SessionNotFound { session_id })?;
+
+        let pid = session.child.id();
+
+        let mut backend_state = std::collections::HashMap::new();
+        if let Some(ref tid) = session.thread_id {
+            backend_state.insert("thread_id".into(), serde_json::json!(tid));
+        }
+        backend_state.insert("initialized".into(), serde_json::json!(session.initialized));
+        backend_state.insert(
+            "messages".into(),
+            serde_json::Value::Array(
+                session
+                    .messages
+                    .iter()
+                    .map(|m| serde_json::Value::String(m.clone()))
+                    .collect(),
+            ),
+        );
+
+        let snapshot = polkagent_harness_trait::SessionSnapshot {
+            session_id,
+            harness_id: self.config.id.clone(),
+            process_pid: pid,
+            started_at: chrono::Utc::now(),
+            working_directory: session.working_dir.clone(),
+            turn_count: session.messages.len() as u32,
+            backend_state,
+        };
+
+        polkagent_harness_trait::persist_session_state(&snapshot)?;
+        debug!(session_id = %session_id, "Codex session state saved");
+        Ok(snapshot)
+    }
+
+    async fn resume_session(&self, session_id: SessionId) -> Result<SessionId, HarnessError> {
+        let snapshot = polkagent_harness_trait::load_session_state(session_id)?;
+
+        // Check if the old process is still alive.
+        if let Some(pid) = snapshot.process_pid {
+            let alive =
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok();
+
+            if alive {
+                debug!(pid, session_id = %session_id, "Re-attaching to live Codex process");
+                return Ok(session_id);
+            }
+        }
+
+        // Re-launch with saved context via a new session.
+        let working_dir = snapshot.working_directory.clone();
+        let session_config = SessionConfig {
+            working_directory: working_dir,
+            ..SessionConfig::default()
+        };
+        let new_id = self.start_session(session_config).await?;
+
+        polkagent_harness_trait::remove_session_state(session_id)?;
+        debug!(
+            old_session = %session_id,
+            new_session = %new_id,
+            "Codex session resumed with new process"
+        );
+        Ok(new_id)
+    }
+
+    async fn cancel_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
+        #[cfg(unix)]
+        {
+            let raw_pid = {
+                let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                let session = sessions
+                    .get(&session_id)
+                    .ok_or(HarnessError::SessionNotFound { session_id })?;
+                session.child.id()
+            };
+
+            if let Some(pid) = raw_pid {
+                debug!(session_id = %session_id, pid, "Sending SIGTERM to Codex process");
+                let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+                let _ = nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM);
+
+                // Wait up to 5 seconds for clean exit.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    let exited = {
+                        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                        if let Some(session) = sessions.get_mut(&session_id) {
+                            matches!(session.child.try_wait(), Ok(Some(_)))
+                        } else {
+                            true
+                        }
+                    };
+                    if exited || std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+
+        polkagent_harness_trait::remove_session_state(session_id).ok();
+        self.end_session(session_id).await
+    }
+
+    fn health_interval(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1191,16 +1286,14 @@ mod tests {
     #[test]
     fn codex_harness_id() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         assert_eq!(harness.id().as_str(), "codex");
     }
 
     #[test]
     fn codex_harness_capabilities() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         let caps = harness.capabilities();
         assert!(caps.supports_streaming);
         assert!(caps.supports_tools);
@@ -1210,24 +1303,21 @@ mod tests {
     #[test]
     fn codex_harness_initial_status_is_idle() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         assert!(matches!(harness.status(), HarnessStatus::Idle));
     }
 
     #[test]
     fn codex_harness_active_session_count_starts_at_zero() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         assert_eq!(harness.active_session_count(), 0);
     }
 
     #[test]
     fn codex_harness_executable_path_default() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         assert_eq!(harness.executable_path(), PathBuf::from("codex"));
     }
 
@@ -1235,8 +1325,7 @@ mod tests {
     fn codex_harness_executable_path_override() {
         let mut config = HarnessConfig::new("codex");
         config.executable_path = Some(PathBuf::from("/usr/local/bin/codex"));
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         assert_eq!(
             harness.executable_path(),
             PathBuf::from("/usr/local/bin/codex")
@@ -1266,8 +1355,7 @@ mod tests {
     #[tokio::test]
     async fn send_message_unknown_session_returns_error() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         let fake_id = SessionId::new();
         let result = harness.send_message(fake_id, "hello").await;
         assert!(result.is_err());
@@ -1280,8 +1368,7 @@ mod tests {
     #[tokio::test]
     async fn receive_events_unknown_session_returns_error() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         let fake_id = SessionId::new();
         let result = harness.receive_events(fake_id).await;
         assert!(result.is_err());
@@ -1290,8 +1377,7 @@ mod tests {
     #[tokio::test]
     async fn end_session_unknown_session_returns_error() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         let fake_id = SessionId::new();
         let result = harness.end_session(fake_id).await;
         assert!(result.is_err());
@@ -1302,8 +1388,7 @@ mod tests {
     #[test]
     fn next_id_is_monotonic() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         let id1 = harness.next_id();
         let id2 = harness.next_id();
         let id3 = harness.next_id();
@@ -1316,8 +1401,7 @@ mod tests {
     #[test]
     fn codex_harness_debug_format() {
         let config = HarnessConfig::new("codex");
-        let harness =
-            CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
+        let harness = CodexHarness::new(config, CodexHarnessConfig::default()).expect("create");
         let debug = format!("{harness:?}");
         assert!(debug.contains("CodexHarness"));
         assert!(debug.contains("codex"));
@@ -1356,8 +1440,7 @@ mod tests {
             reader.read_line(&mut line).await.expect("read init");
 
             // Parse and verify it's an initialize request.
-            let raw: serde_json::Value =
-                serde_json::from_str(line.trim()).expect("parse init");
+            let raw: serde_json::Value = serde_json::from_str(line.trim()).expect("parse init");
             assert_eq!(raw["method"], "initialize");
             let req_id = raw["id"].as_u64().expect("id");
 
@@ -1380,8 +1463,7 @@ mod tests {
             // Read initialized notification.
             line.clear();
             reader.read_line(&mut line).await.expect("read notif");
-            let raw: serde_json::Value =
-                serde_json::from_str(line.trim()).expect("parse notif");
+            let raw: serde_json::Value = serde_json::from_str(line.trim()).expect("parse notif");
             assert_eq!(raw["method"], "initialized");
         });
 
@@ -1475,11 +1557,26 @@ mod tests {
         }
 
         assert_eq!(notifications.len(), 6);
-        assert!(matches!(notifications[0], CodexNotification::TurnStarted { .. }));
-        assert!(matches!(notifications[1], CodexNotification::ItemStarted { .. }));
-        assert!(matches!(notifications[2], CodexNotification::AgentMessageDelta { .. }));
-        assert!(matches!(notifications[3], CodexNotification::AgentMessageDelta { .. }));
-        assert!(matches!(notifications[4], CodexNotification::ItemCompleted { .. }));
+        assert!(matches!(
+            notifications[0],
+            CodexNotification::TurnStarted { .. }
+        ));
+        assert!(matches!(
+            notifications[1],
+            CodexNotification::ItemStarted { .. }
+        ));
+        assert!(matches!(
+            notifications[2],
+            CodexNotification::AgentMessageDelta { .. }
+        ));
+        assert!(matches!(
+            notifications[3],
+            CodexNotification::AgentMessageDelta { .. }
+        ));
+        assert!(matches!(
+            notifications[4],
+            CodexNotification::ItemCompleted { .. }
+        ));
         assert!(matches!(notifications[5], CodexNotification::TurnCompleted));
     }
 

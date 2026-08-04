@@ -57,9 +57,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
 
 use polkagent_harness_trait::{
-    CancelMode, Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent,
-    HarnessId, HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode,
-    ToolInjection, TransportFlavor,
+    CancelMode, Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent, HarnessId,
+    HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
+    TransportFlavor,
 };
 
 // ---------------------------------------------------------------------------
@@ -309,10 +309,7 @@ impl Harness for ClaudeHarness {
             supports_tools: true,
             supports_sessions: true,
             max_context_tokens: 200_000,
-            models: vec![
-                "claude-opus-4-6".into(),
-                "claude-sonnet-4-6".into(),
-            ],
+            models: vec!["claude-opus-4-6".into(), "claude-sonnet-4-6".into()],
             transport: Some(TransportFlavor::JsonRpcStdio),
             model_override: None,
             session_resume: SessionResumeMode::ById,
@@ -328,10 +325,7 @@ impl Harness for ClaudeHarness {
         status.clone()
     }
 
-    async fn start_session(
-        &self,
-        config: SessionConfig,
-    ) -> Result<SessionId, HarnessError> {
+    async fn start_session(&self, config: SessionConfig) -> Result<SessionId, HarnessError> {
         let session_id = SessionId::new();
         let exe_path = self.executable_path();
         let working_dir = self.resolve_working_dir(&config);
@@ -369,10 +363,7 @@ impl Harness for ClaudeHarness {
                 }
             } else {
                 HarnessError::SpawnFailed {
-                    message: format!(
-                        "failed to spawn '{}': {e}",
-                        exe_path.display()
-                    ),
+                    message: format!("failed to spawn '{}': {e}", exe_path.display()),
                 }
             }
         })?;
@@ -411,11 +402,7 @@ impl Harness for ClaudeHarness {
         Ok(session_id)
     }
 
-    async fn send_message(
-        &self,
-        session_id: SessionId,
-        message: &str,
-    ) -> Result<(), HarnessError> {
+    async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError> {
         // Serialize the message as a JSON line.
         let json_line = serde_json::to_string(&serde_json::json!({
             "type": "message",
@@ -431,9 +418,9 @@ impl Harness for ClaudeHarness {
         // the message, then drop the lock before performing async I/O.
         let mut taken_stdin = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 return Err(HarnessError::InvalidState {
@@ -451,10 +438,8 @@ impl Harness for ClaudeHarness {
             session.messages.push(message.to_owned());
 
             // Take the stdin handle so we can write outside the lock.
-            session.stdin.take().ok_or_else(|| {
-                HarnessError::IoError {
-                    message: format!("session {session_id} stdin is not available"),
-                }
+            session.stdin.take().ok_or_else(|| HarnessError::IoError {
+                message: format!("session {session_id} stdin is not available"),
             })?
             // MutexGuard (`sessions`) is dropped here at the end of the block.
         };
@@ -493,18 +478,19 @@ impl Harness for ClaudeHarness {
         // Take the stdout handle from the session.
         let stdout = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
 
-            session.stdout.take().ok_or_else(|| {
-                HarnessError::InvalidState {
+            session
+                .stdout
+                .take()
+                .ok_or_else(|| HarnessError::InvalidState {
                     message: format!(
                         "session {session_id} stdout already consumed \
                          (event stream can only be created once)"
                     ),
-                }
-            })?
+                })?
         };
 
         debug!(
@@ -562,19 +548,16 @@ impl Harness for ClaudeHarness {
         Ok(Box::pin(stream))
     }
 
-    async fn end_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<(), HarnessError> {
+    async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         let timeout = self.claude_config.timeout;
 
         // Phase 1: Under the lock, mark inactive and close I/O handles.
         // Extract the PID for signal-based termination.
         let pid = {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
-            let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                HarnessError::SessionNotFound { session_id }
-            })?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 warn!(
@@ -628,8 +611,7 @@ impl Harness for ClaudeHarness {
             let exited = tokio::time::timeout(timeout, async {
                 loop {
                     let done = {
-                        let mut sessions =
-                            self.sessions.lock().expect("sessions mutex poisoned");
+                        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
                         match sessions.get_mut(&session_id) {
                             Some(session) => match session.child.try_wait() {
                                 Ok(Some(_)) => true,
@@ -764,6 +746,118 @@ impl Harness for ClaudeHarness {
             }
         }
     }
+
+    async fn save_session_state(
+        &self,
+        session_id: SessionId,
+    ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let session = sessions
+            .get(&session_id)
+            .ok_or(HarnessError::SessionNotFound { session_id })?;
+
+        let pid = session.child.id();
+
+        let mut backend_state = std::collections::HashMap::new();
+        backend_state.insert(
+            "messages".into(),
+            serde_json::Value::Array(
+                session
+                    .messages
+                    .iter()
+                    .map(|m| serde_json::Value::String(m.clone()))
+                    .collect(),
+            ),
+        );
+
+        let snapshot = polkagent_harness_trait::SessionSnapshot {
+            session_id,
+            harness_id: self.config.id.clone(),
+            process_pid: pid,
+            started_at: chrono::Utc::now(),
+            working_directory: session.working_dir.clone(),
+            turn_count: session.messages.len() as u32,
+            backend_state,
+        };
+
+        polkagent_harness_trait::persist_session_state(&snapshot)?;
+        debug!(session_id = %session_id, "Claude Code session state saved");
+        Ok(snapshot)
+    }
+
+    async fn resume_session(&self, session_id: SessionId) -> Result<SessionId, HarnessError> {
+        let snapshot = polkagent_harness_trait::load_session_state(session_id)?;
+
+        // Check if the old process is still alive.
+        if let Some(pid) = snapshot.process_pid {
+            let alive =
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok();
+
+            if alive {
+                debug!(pid, session_id = %session_id, "Re-attaching to live Claude process");
+                return Ok(session_id);
+            }
+        }
+
+        // Re-launch with saved context via a new session.
+        let working_dir = snapshot.working_directory.clone();
+        let session_config = SessionConfig {
+            working_directory: working_dir,
+            ..SessionConfig::default()
+        };
+        let new_id = self.start_session(session_config).await?;
+
+        polkagent_harness_trait::remove_session_state(session_id)?;
+        debug!(
+            old_session = %session_id,
+            new_session = %new_id,
+            "Claude Code session resumed with new process"
+        );
+        Ok(new_id)
+    }
+
+    async fn cancel_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
+        #[cfg(unix)]
+        {
+            let raw_pid = {
+                let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                let session = sessions
+                    .get(&session_id)
+                    .ok_or(HarnessError::SessionNotFound { session_id })?;
+                session.child.id()
+            };
+
+            if let Some(pid) = raw_pid {
+                debug!(session_id = %session_id, pid, "Sending SIGTERM to Claude process");
+                let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+                let _ = nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM);
+
+                // Wait up to 5 seconds for clean exit.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    let exited = {
+                        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                        if let Some(session) = sessions.get_mut(&session_id) {
+                            matches!(session.child.try_wait(), Ok(Some(_)))
+                        } else {
+                            true
+                        }
+                    };
+                    if exited || std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+
+        polkagent_harness_trait::remove_session_state(session_id).ok();
+        self.end_session(session_id).await
+    }
+
+    fn health_interval(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -856,21 +950,15 @@ mod tests {
 
     #[test]
     fn new_accepts_claude_code_id() {
-        let harness = ClaudeHarness::new(
-            test_config(),
-            ClaudeHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = ClaudeHarness::new(test_config(), ClaudeHarnessConfig::default())
+            .expect("should succeed");
         assert_eq!(harness.id().as_str(), "claude-code");
     }
 
     #[test]
     fn capabilities_returns_expected_values() {
-        let harness = ClaudeHarness::new(
-            test_config(),
-            ClaudeHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = ClaudeHarness::new(test_config(), ClaudeHarnessConfig::default())
+            .expect("should succeed");
         let caps = harness.capabilities();
         assert!(caps.supports_streaming);
         assert!(caps.supports_tools);
@@ -882,21 +970,15 @@ mod tests {
 
     #[test]
     fn initial_status_is_idle() {
-        let harness = ClaudeHarness::new(
-            test_config(),
-            ClaudeHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = ClaudeHarness::new(test_config(), ClaudeHarnessConfig::default())
+            .expect("should succeed");
         assert!(matches!(harness.status(), HarnessStatus::Idle));
     }
 
     #[test]
     fn executable_path_default() {
-        let harness = ClaudeHarness::new(
-            test_config(),
-            ClaudeHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = ClaudeHarness::new(test_config(), ClaudeHarnessConfig::default())
+            .expect("should succeed");
         assert_eq!(harness.executable_path(), PathBuf::from("claude"));
     }
 
@@ -912,11 +994,8 @@ mod tests {
 
     #[test]
     fn initial_active_session_count_is_zero() {
-        let harness = ClaudeHarness::new(
-            test_config(),
-            ClaudeHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness = ClaudeHarness::new(test_config(), ClaudeHarnessConfig::default())
+            .expect("should succeed");
         assert_eq!(harness.active_session_count(), 0);
     }
 
@@ -934,7 +1013,10 @@ mod tests {
         let harness = ClaudeHarness::new(config, claude_config).expect("construct");
 
         let result = harness.start_session(SessionConfig::default()).await;
-        assert!(result.is_err(), "start_session should fail for missing binary");
+        assert!(
+            result.is_err(),
+            "start_session should fail for missing binary"
+        );
 
         let err = result.expect_err("should be an error");
         // Should be ExecutableNotFound, not a panic.
@@ -1097,7 +1179,10 @@ mod tests {
             .expect("start");
 
         harness.send_message(session_id, "first").await.expect("ok");
-        harness.send_message(session_id, "second").await.expect("ok");
+        harness
+            .send_message(session_id, "second")
+            .await
+            .expect("ok");
         harness.send_message(session_id, "third").await.expect("ok");
 
         let messages = harness
@@ -1109,9 +1194,7 @@ mod tests {
         assert_eq!(messages[2], "third");
 
         // Metadata should reflect message count.
-        let meta = harness
-            .session_metadata(session_id)
-            .expect("metadata");
+        let meta = harness.session_metadata(session_id).expect("metadata");
         assert_eq!(meta.message_count, 3);
 
         harness.end_session(session_id).await.expect("end");
@@ -1160,15 +1243,17 @@ mod tests {
         harness.end_session(session_id).await.expect("end");
 
         // Collect events with a timeout.
-        let events: Vec<HarnessEvent> = tokio::time::timeout(
-            Duration::from_secs(5),
-            event_stream.collect(),
-        )
-        .await
-        .expect("event collection should not time out");
+        let events: Vec<HarnessEvent> =
+            tokio::time::timeout(Duration::from_secs(5), event_stream.collect())
+                .await
+                .expect("event collection should not time out");
 
         // Should have at least SessionStarted and SessionEnded.
-        assert!(events.len() >= 2, "expected at least 2 events, got {}", events.len());
+        assert!(
+            events.len() >= 2,
+            "expected at least 2 events, got {}",
+            events.len()
+        );
 
         // First event should be SessionStarted.
         assert!(
@@ -1185,10 +1270,13 @@ mod tests {
         );
 
         // There should be a MessageReceived in between (the echoed JSON line).
-        let has_message = events.iter().any(|e| {
-            matches!(e, HarnessEvent::MessageReceived { .. })
-        });
-        assert!(has_message, "should have at least one MessageReceived event");
+        let has_message = events
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::MessageReceived { .. }));
+        assert!(
+            has_message,
+            "should have at least one MessageReceived event"
+        );
     }
 
     #[tokio::test]
@@ -1248,11 +1336,8 @@ mod tests {
     #[tokio::test]
     async fn health_with_nonexistent_path_returns_false() {
         let config = test_config_with_path("/nonexistent/path/to/claude");
-        let harness = ClaudeHarness::new(
-            config,
-            ClaudeHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness =
+            ClaudeHarness::new(config, ClaudeHarnessConfig::default()).expect("should succeed");
         let result = harness.health().await.expect("health check");
         assert!(!result);
     }
@@ -1260,11 +1345,8 @@ mod tests {
     #[tokio::test]
     async fn health_with_existing_path_returns_true() {
         let config = test_config_with_path("/bin/sh");
-        let harness = ClaudeHarness::new(
-            config,
-            ClaudeHarnessConfig::default(),
-        )
-        .expect("should succeed");
+        let harness =
+            ClaudeHarness::new(config, ClaudeHarnessConfig::default()).expect("should succeed");
         let result = harness.health().await.expect("health check");
         assert!(result);
     }
@@ -1313,7 +1395,9 @@ mod tests {
         assert_eq!(harness.active_session_count(), 0);
 
         // 6. Metadata reflects ended state.
-        let meta = harness.session_metadata(session_id).expect("meta after end");
+        let meta = harness
+            .session_metadata(session_id)
+            .expect("meta after end");
         assert!(!meta.active);
     }
 

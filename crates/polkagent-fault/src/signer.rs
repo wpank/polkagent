@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use polkagent_signer_trait::{
-    CanonicalSignRequest, Signer, SignedPayload, SignerCapabilities, SignerError,
+    CanonicalSignRequest, SignedPayload, Signer, SignerCapabilities, SignerError,
 };
 
 use crate::injector::FaultInjector;
@@ -98,7 +98,9 @@ fn apply_signer_fault_pre(fault: Fault) -> Result<(), SignerError> {
         Fault::Timeout { .. } | Fault::SlowDown { .. } => {
             // Synchronous pre-check; timeout/slow-down would need async,
             // so we treat them as errors in the synchronous path.
-            Err(SignerError::Internal { message: "timeout injected at before_sign".into() })
+            Err(SignerError::Internal {
+                message: "timeout injected at before_sign".into(),
+            })
         }
         Fault::CorruptData { .. } | Fault::PartialWrite => Ok(()),
     }
@@ -131,10 +133,7 @@ mod tests {
             })
         }
 
-        async fn sign(
-            &self,
-            request: CanonicalSignRequest,
-        ) -> Result<SignedPayload, SignerError> {
+        async fn sign(&self, request: CanonicalSignRequest) -> Result<SignedPayload, SignerError> {
             let signature = vec![0xAA; 64];
             let mut signed_extrinsic = request.payload.clone();
             signed_extrinsic.extend_from_slice(&signature);
@@ -177,7 +176,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "after_sign",
-            Fault::CorruptData { corruption: Corruption::FlipBit(0) },
+            Fault::CorruptData {
+                corruption: Corruption::FlipBit(0),
+            },
             FaultSchedule::Always,
         );
         let signer = FaultSigner::new(OkSigner, Arc::clone(&injector));
@@ -193,7 +194,9 @@ mod tests {
         let injector = Arc::new(FaultInjector::new());
         injector.add_fault(
             "before_sign",
-            Fault::Error { message: "injected pre-sign error".into() },
+            Fault::Error {
+                message: "injected pre-sign error".into(),
+            },
             FaultSchedule::Always,
         );
         let signer = FaultSigner::new(OkSigner, Arc::clone(&injector));

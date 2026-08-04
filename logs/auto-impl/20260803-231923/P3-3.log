@@ -1,0 +1,38 @@
+All done. Here's a summary of what was implemented:
+
+---
+
+## Summary
+
+### Changes across 2 crates, 5 files modified + 1 new file
+
+#### 1. `polkagent-metadata` — Enhanced diff to track constants
+
+**`crates/polkagent-metadata/src/diff.rs`**
+- Added `ConstantMetadata` import
+- Added 3 new fields to `PalletDiff`: `added_constants`, `removed_constants`, `changed_constants`
+- Updated `PalletDiff::is_empty()` and `has_breaking_changes()` to account for constant changes
+- Added 3 new fields to `MetadataDiff`: `added_constants`, `removed_constants`, `changed_constants`
+- Updated `MetadataDiff::is_empty()` accordingly
+- Added `diff_constants()` function that compares constants by name and detects type_id changes
+- Updated `diff_metadata()` to track constants for added/removed/common pallets
+- Updated `generate_impact_brief()` to include constants in output
+- Updated all existing tests for the new struct fields
+
+#### 2. `polkagent-tool-workbench` — New metadata comparison tool (PRD-05 A2)
+
+**`crates/polkagent-tool-workbench/Cargo.toml`** — Added `polkagent-metadata` and `polkagent-codec` deps
+
+**`crates/polkagent-tool-workbench/src/types.rs`** — Added 3 new types:
+- `MetadataComparisonReport` — full structured report with old/new source, breaking flag, pallet lists, summary, and impact brief
+- `ComparisonSummary` — counts for all change categories (pallets, calls, events, storage, constants)
+- `PalletComparisonDetail` — per-pallet change detail
+
+**`crates/polkagent-tool-workbench/src/metadata_comparison.rs`** *(new)* — The tool implementation:
+- `MetadataComparisonTool` implements `ToolHandler` as `polkagent.workbench.metadata_comparison`
+- Accepts `old_block_number`/`old_file_path` and `new_block_number`/`new_file_path` (block number preferred over file path when both provided)
+- Loads metadata from file or chain client, parses via `polkagent_codec::parse_metadata`, runs `diff_metadata`, and produces a structured report
+- Requires `chain.query` grant, outputs `DataClassification::Internal`
+- 14 unit tests covering spec validation, input parsing, serialization, and error handling
+
+**`crates/polkagent-tool-workbench/src/lib.rs`** — Updated module declarations, re-exports, registration (now registers 2 tools), doc table, and all related test assertions

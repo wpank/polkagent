@@ -17,11 +17,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
-    extract::State as AxumState,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
+    extract::State as AxumState, http::StatusCode, response::IntoResponse, routing::get, Json,
+    Router,
 };
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -226,9 +223,7 @@ pub fn check_memory_store(configured: bool) -> ComponentHealth {
 /// Full health report: aggregate status, version, uptime, and per-component
 /// checks. Returns 200 when aggregate is `"ok"` or `"degraded"`, 503 when
 /// any component reports `"error"`.
-pub async fn health(
-    AxumState(state): AxumState<Arc<HealthState>>,
-) -> impl IntoResponse {
+pub async fn health(AxumState(state): AxumState<Arc<HealthState>>) -> impl IntoResponse {
     let checks = state.component_snapshot().await;
     let status = aggregate_status(&checks);
     let code = if status == "error" {
@@ -251,19 +246,14 @@ pub async fn health(
 ///
 /// Always returns 200 OK. If this endpoint fails, the process is dead.
 pub async fn liveness() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({ "status": "ok" })),
-    )
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
 }
 
 /// `GET /health/ready`
 ///
 /// Returns 200 when all critical components are healthy (no `"error"`
 /// entries) and `ready` is `true`. Returns 503 otherwise.
-pub async fn readiness(
-    AxumState(state): AxumState<Arc<HealthState>>,
-) -> impl IntoResponse {
+pub async fn readiness(AxumState(state): AxumState<Arc<HealthState>>) -> impl IntoResponse {
     let checks = state.component_snapshot().await;
     let all_ok = checks.iter().all(|c| c.status != "error");
     let ready = state.is_ready() && all_ok;
@@ -289,9 +279,7 @@ pub async fn readiness(
 /// Returns 200 once `HealthState::ready` has been set to `true` (i.e.,
 /// initial setup is complete). Returns 503 while the server is still
 /// initialising.
-pub async fn startup(
-    AxumState(state): AxumState<Arc<HealthState>>,
-) -> impl IntoResponse {
+pub async fn startup(AxumState(state): AxumState<Arc<HealthState>>) -> impl IntoResponse {
     if state.is_ready() {
         (
             StatusCode::OK,
@@ -390,14 +378,8 @@ mod tests {
         health_router(state)
     }
 
-    async fn get_json(
-        router: &Router,
-        uri: &str,
-    ) -> (StatusCode, serde_json::Value) {
-        let req = Request::builder()
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap();
+    async fn get_json(router: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
 
         let response = router.clone().oneshot(req).await.unwrap();
         let status = response.status();
@@ -439,12 +421,14 @@ mod tests {
     #[tokio::test]
     async fn readiness_ok_when_ready_and_no_errors() {
         let state = test_state_ready();
-        state.set_component(ComponentHealth {
-            name: "database".to_owned(),
-            status: "ok",
-            latency_ms: Some(1),
-            message: None,
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "database".to_owned(),
+                status: "ok",
+                latency_ms: Some(1),
+                message: None,
+            })
+            .await;
 
         let router = test_router(state);
         let (status, body) = get_json(&router, "/health/ready").await;
@@ -468,12 +452,14 @@ mod tests {
     #[tokio::test]
     async fn readiness_503_when_component_error() {
         let state = test_state_ready();
-        state.set_component(ComponentHealth {
-            name: "database".to_owned(),
-            status: "error",
-            latency_ms: None,
-            message: Some("connection refused".to_owned()),
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "database".to_owned(),
+                status: "error",
+                latency_ms: None,
+                message: Some("connection refused".to_owned()),
+            })
+            .await;
 
         let router = test_router(state);
         let (status, body) = get_json(&router, "/health/ready").await;
@@ -485,12 +471,14 @@ mod tests {
     #[tokio::test]
     async fn readiness_ok_with_degraded_component() {
         let state = test_state_ready();
-        state.set_component(ComponentHealth {
-            name: "memory_store".to_owned(),
-            status: "degraded",
-            latency_ms: None,
-            message: Some("not configured".to_owned()),
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "memory_store".to_owned(),
+                status: "degraded",
+                latency_ms: None,
+                message: Some("not configured".to_owned()),
+            })
+            .await;
 
         let router = test_router(state);
         let (status, body) = get_json(&router, "/health/ready").await;
@@ -553,18 +541,22 @@ mod tests {
     #[tokio::test]
     async fn health_200_with_all_ok_components() {
         let state = test_state_ready();
-        state.set_component(ComponentHealth {
-            name: "database".to_owned(),
-            status: "ok",
-            latency_ms: Some(2),
-            message: None,
-        }).await;
-        state.set_component(ComponentHealth {
-            name: "event_bus".to_owned(),
-            status: "ok",
-            latency_ms: Some(0),
-            message: None,
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "database".to_owned(),
+                status: "ok",
+                latency_ms: Some(2),
+                message: None,
+            })
+            .await;
+        state
+            .set_component(ComponentHealth {
+                name: "event_bus".to_owned(),
+                status: "ok",
+                latency_ms: Some(0),
+                message: None,
+            })
+            .await;
 
         let router = test_router(state);
         let (status, body) = get_json(&router, "/health").await;
@@ -577,18 +569,22 @@ mod tests {
     #[tokio::test]
     async fn health_degraded_with_degraded_component() {
         let state = test_state_ready();
-        state.set_component(ComponentHealth {
-            name: "database".to_owned(),
-            status: "ok",
-            latency_ms: Some(1),
-            message: None,
-        }).await;
-        state.set_component(ComponentHealth {
-            name: "memory_store".to_owned(),
-            status: "degraded",
-            latency_ms: None,
-            message: Some("not configured".to_owned()),
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "database".to_owned(),
+                status: "ok",
+                latency_ms: Some(1),
+                message: None,
+            })
+            .await;
+        state
+            .set_component(ComponentHealth {
+                name: "memory_store".to_owned(),
+                status: "degraded",
+                latency_ms: None,
+                message: Some("not configured".to_owned()),
+            })
+            .await;
 
         let router = test_router(state);
         let (status, body) = get_json(&router, "/health").await;
@@ -600,12 +596,14 @@ mod tests {
     #[tokio::test]
     async fn health_503_with_error_component() {
         let state = test_state_ready();
-        state.set_component(ComponentHealth {
-            name: "database".to_owned(),
-            status: "error",
-            latency_ms: Some(500),
-            message: Some("connection timeout".to_owned()),
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "database".to_owned(),
+                status: "error",
+                latency_ms: Some(500),
+                message: Some("connection timeout".to_owned()),
+            })
+            .await;
 
         let router = test_router(state);
         let (status, body) = get_json(&router, "/health").await;
@@ -617,18 +615,22 @@ mod tests {
     #[tokio::test]
     async fn health_error_overrides_degraded() {
         let state = test_state_ready();
-        state.set_component(ComponentHealth {
-            name: "memory_store".to_owned(),
-            status: "degraded",
-            latency_ms: None,
-            message: None,
-        }).await;
-        state.set_component(ComponentHealth {
-            name: "database".to_owned(),
-            status: "error",
-            latency_ms: None,
-            message: Some("down".to_owned()),
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "memory_store".to_owned(),
+                status: "degraded",
+                latency_ms: None,
+                message: None,
+            })
+            .await;
+        state
+            .set_component(ComponentHealth {
+                name: "database".to_owned(),
+                status: "error",
+                latency_ms: None,
+                message: Some("down".to_owned()),
+            })
+            .await;
 
         let router = test_router(state);
         let (_, body) = get_json(&router, "/health").await;
@@ -693,12 +695,14 @@ mod tests {
     #[tokio::test]
     async fn state_set_and_snapshot_component() {
         let state = HealthState::new();
-        state.set_component(ComponentHealth {
-            name: "alpha".to_owned(),
-            status: "ok",
-            latency_ms: Some(5),
-            message: None,
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "alpha".to_owned(),
+                status: "ok",
+                latency_ms: Some(5),
+                message: None,
+            })
+            .await;
 
         let snap = state.component_snapshot().await;
         assert_eq!(snap.len(), 1);
@@ -709,12 +713,14 @@ mod tests {
     #[tokio::test]
     async fn state_remove_component() {
         let state = HealthState::new();
-        state.set_component(ComponentHealth {
-            name: "temp".to_owned(),
-            status: "ok",
-            latency_ms: None,
-            message: None,
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "temp".to_owned(),
+                status: "ok",
+                latency_ms: None,
+                message: None,
+            })
+            .await;
         assert_eq!(state.component_snapshot().await.len(), 1);
 
         state.remove_component("temp").await;
@@ -724,18 +730,22 @@ mod tests {
     #[tokio::test]
     async fn state_snapshot_sorted_by_name() {
         let state = HealthState::new();
-        state.set_component(ComponentHealth {
-            name: "zebra".to_owned(),
-            status: "ok",
-            latency_ms: None,
-            message: None,
-        }).await;
-        state.set_component(ComponentHealth {
-            name: "alpha".to_owned(),
-            status: "ok",
-            latency_ms: None,
-            message: None,
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "zebra".to_owned(),
+                status: "ok",
+                latency_ms: None,
+                message: None,
+            })
+            .await;
+        state
+            .set_component(ComponentHealth {
+                name: "alpha".to_owned(),
+                status: "ok",
+                latency_ms: None,
+                message: None,
+            })
+            .await;
 
         let snap = state.component_snapshot().await;
         assert_eq!(snap[0].name, "alpha");
@@ -757,8 +767,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_database_error() {
-        let result =
-            check_database(|| async { Err("connection refused".to_owned()) }).await;
+        let result = check_database(|| async { Err("connection refused".to_owned()) }).await;
         assert_eq!(result.name, "database");
         assert_eq!(result.status, "error");
         assert!(result.latency_ms.is_some());
@@ -876,7 +885,8 @@ mod tests {
                     status: "ok",
                     latency_ms: Some(i),
                     message: None,
-                }).await;
+                })
+                .await;
             }));
         }
 
@@ -893,12 +903,14 @@ mod tests {
         let state = Arc::new(HealthState::new_ready());
 
         // Seed one component.
-        state.set_component(ComponentHealth {
-            name: "db".to_owned(),
-            status: "ok",
-            latency_ms: Some(1),
-            message: None,
-        }).await;
+        state
+            .set_component(ComponentHealth {
+                name: "db".to_owned(),
+                status: "ok",
+                latency_ms: Some(1),
+                message: None,
+            })
+            .await;
 
         let mut handles = Vec::new();
 
@@ -911,7 +923,8 @@ mod tests {
                     status: "ok",
                     latency_ms: Some(i),
                     message: None,
-                }).await;
+                })
+                .await;
             }));
         }
 

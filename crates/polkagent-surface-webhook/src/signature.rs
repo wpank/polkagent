@@ -76,7 +76,10 @@ pub fn verify(secret: &str, timestamp: &str, body: &[u8], signature: &str) -> Re
 /// This ensures we always have a fixed-length key regardless of the secret
 /// length.
 fn derive_key(secret: &str) -> [u8; 32] {
-    blake3::derive_key("polkagent-surface-webhook v1 signing key", secret.as_bytes())
+    blake3::derive_key(
+        "polkagent-surface-webhook v1 signing key",
+        secret.as_bytes(),
+    )
 }
 
 /// Constant-time byte-string comparison to prevent timing side-channels.
@@ -143,7 +146,12 @@ mod tests {
 
     #[test]
     fn verify_rejects_wrong_signature() {
-        let result = verify("secret", "ts", b"body", "0000000000000000000000000000000000000000000000000000000000000000");
+        let result = verify(
+            "secret",
+            "ts",
+            b"body",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
         assert!(result.is_err());
     }
 

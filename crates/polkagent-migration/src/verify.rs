@@ -68,10 +68,7 @@ pub fn verify_checksums(
 /// Verify checksums and return an error on the first mismatch.
 ///
 /// This is a stricter variant of [`verify_checksums`] that fails fast.
-pub fn verify_or_fail(
-    conn: &Connection,
-    migrations: &[Migration],
-) -> MigrationResult<()> {
+pub fn verify_or_fail(conn: &Connection, migrations: &[Migration]) -> MigrationResult<()> {
     let results = verify_checksums(conn, migrations)?;
 
     for r in &results {
@@ -155,7 +152,11 @@ mod tests {
 
     fn sample_migrations() -> Vec<Migration> {
         vec![
-            Migration::new(1, "create users", "CREATE TABLE users (id INTEGER PRIMARY KEY);"),
+            Migration::new(
+                1,
+                "create users",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+            ),
             Migration::new(2, "add email", "ALTER TABLE users ADD COLUMN email TEXT;"),
         ]
     }
@@ -166,7 +167,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("apply");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
         let results = verify_checksums(&conn, &migrations).expect("verify");
 
         assert_eq!(results.len(), 2);
@@ -180,7 +183,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let original = sample_migrations();
 
-        runner.apply_pending(&conn, &original, false).expect("apply");
+        runner
+            .apply_pending(&conn, &original, false)
+            .expect("apply");
 
         // Modify SQL of migration 1 to simulate tampering.
         let tampered = vec![
@@ -199,7 +204,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let original = sample_migrations();
 
-        runner.apply_pending(&conn, &original, false).expect("apply");
+        runner
+            .apply_pending(&conn, &original, false)
+            .expect("apply");
 
         let tampered = vec![
             Migration::new(1, "create users", "CREATE TABLE users (id INT, name TEXT);"),
@@ -207,7 +214,10 @@ mod tests {
         ];
 
         let err = verify_or_fail(&conn, &tampered).expect_err("should fail");
-        assert!(matches!(err, MigrationError::ChecksumMismatch { version: 1, .. }));
+        assert!(matches!(
+            err,
+            MigrationError::ChecksumMismatch { version: 1, .. }
+        ));
     }
 
     #[test]
@@ -216,7 +226,9 @@ mod tests {
         let runner = MigrationRunner::new(None);
         let migrations = sample_migrations();
 
-        runner.apply_pending(&conn, &migrations, false).expect("apply");
+        runner
+            .apply_pending(&conn, &migrations, false)
+            .expect("apply");
         verify_or_fail(&conn, &migrations).expect("should pass");
     }
 
@@ -233,8 +245,12 @@ mod tests {
         let results = vec![VerifyResult {
             version: 1,
             name: String::from("test"),
-            expected_checksum: String::from("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
-            actual_checksum: String::from("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
+            expected_checksum: String::from(
+                "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            ),
+            actual_checksum: String::from(
+                "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            ),
             ok: true,
         }];
         let report = format_verify_report(&results);

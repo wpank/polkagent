@@ -85,12 +85,14 @@ impl CacheConfig {
     }
 
     /// Set the default TTL.
+    #[must_use]
     pub fn with_default_ttl(mut self, ttl: Duration) -> Self {
         self.default_ttl = Some(ttl);
         self
     }
 
     /// Set the TTL policy.
+    #[must_use]
     pub fn with_ttl_policy(mut self, policy: TtlPolicy) -> Self {
         self.ttl_policy = policy;
         self
@@ -150,9 +152,8 @@ mod tests {
     #[tokio::test]
     async fn end_to_end_cache_aside() {
         let store = Arc::new(InMemoryCache::new(100));
-        let loader: LoaderFn = Arc::new(|key: CacheKey| {
-            Box::pin(async move { Ok(json!({"chain": key.name()})) })
-        });
+        let loader: LoaderFn =
+            Arc::new(|key: CacheKey| Box::pin(async move { Ok(json!({"chain": key.name()})) }));
         let aside = CacheAside::new(store, loader);
 
         let key = CacheKey::new("metadata", "polkadot");

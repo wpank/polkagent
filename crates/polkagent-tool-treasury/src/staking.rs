@@ -83,10 +83,9 @@ impl ToolHandler for StakingInfoTool {
             nominations: vec![],
         };
 
-        let output =
-            serde_json::to_value(&position).map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("failed to serialize staking position: {e}"),
-            })?;
+        let output = serde_json::to_value(&position).map_err(|e| ToolError::ExecutionFailed {
+            reason: format!("failed to serialize staking position: {e}"),
+        })?;
 
         Ok(ToolResult {
             output,

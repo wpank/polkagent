@@ -137,23 +137,21 @@ impl Message {
 fn estimate_tokens_for_content(content: &MessageContent) -> u32 {
     let char_count = match content {
         MessageContent::Text { text } => text.len(),
-        MessageContent::ToolCall { name, arguments } => {
-            name.len() + arguments.to_string().len()
-        }
-        MessageContent::ToolResult { tool_call_id, output } => {
-            tool_call_id.len() + output.to_string().len()
-        }
-        MessageContent::Mixed { parts } => {
-            parts.iter().map(|p| match p {
+        MessageContent::ToolCall { name, arguments } => name.len() + arguments.to_string().len(),
+        MessageContent::ToolResult {
+            tool_call_id,
+            output,
+        } => tool_call_id.len() + output.to_string().len(),
+        MessageContent::Mixed { parts } => parts
+            .iter()
+            .map(|p| match p {
                 ContentPart::Text { text } => text.len(),
                 ContentPart::ToolUse { id, name, input } => {
                     id.len() + name.len() + input.to_string().len()
                 }
-                ContentPart::ToolResult { id, content } => {
-                    id.len() + content.to_string().len()
-                }
-            }).sum()
-        }
+                ContentPart::ToolResult { id, content } => id.len() + content.to_string().len(),
+            })
+            .sum(),
     };
     // 4 chars ~= 1 token, rounding up
     #[allow(clippy::cast_possible_truncation)]
@@ -249,7 +247,12 @@ mod tests {
 
     #[test]
     fn message_role_serde_round_trip() {
-        for role in [MessageRole::User, MessageRole::Assistant, MessageRole::System, MessageRole::Tool] {
+        for role in [
+            MessageRole::User,
+            MessageRole::Assistant,
+            MessageRole::System,
+            MessageRole::Tool,
+        ] {
             let json = serde_json::to_string(&role).expect("serialize");
             let back: MessageRole = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(role, back);
@@ -258,15 +261,29 @@ mod tests {
 
     #[test]
     fn message_role_serializes_snake_case() {
-        assert_eq!(serde_json::to_string(&MessageRole::User).expect("serialize"), r#""user""#);
-        assert_eq!(serde_json::to_string(&MessageRole::Assistant).expect("serialize"), r#""assistant""#);
-        assert_eq!(serde_json::to_string(&MessageRole::System).expect("serialize"), r#""system""#);
-        assert_eq!(serde_json::to_string(&MessageRole::Tool).expect("serialize"), r#""tool""#);
+        assert_eq!(
+            serde_json::to_string(&MessageRole::User).expect("serialize"),
+            r#""user""#
+        );
+        assert_eq!(
+            serde_json::to_string(&MessageRole::Assistant).expect("serialize"),
+            r#""assistant""#
+        );
+        assert_eq!(
+            serde_json::to_string(&MessageRole::System).expect("serialize"),
+            r#""system""#
+        );
+        assert_eq!(
+            serde_json::to_string(&MessageRole::Tool).expect("serialize"),
+            r#""tool""#
+        );
     }
 
     #[test]
     fn message_content_text_serde() {
-        let content = MessageContent::Text { text: "hello world".into() };
+        let content = MessageContent::Text {
+            text: "hello world".into(),
+        };
         let json = serde_json::to_string(&content).expect("serialize");
         let back: MessageContent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(content, back);
@@ -299,7 +316,9 @@ mod tests {
     fn message_content_mixed_serde() {
         let content = MessageContent::Mixed {
             parts: vec![
-                ContentPart::Text { text: "Hello".into() },
+                ContentPart::Text {
+                    text: "Hello".into(),
+                },
                 ContentPart::ToolUse {
                     id: "tu-1".into(),
                     name: "calculator".into(),
@@ -322,7 +341,9 @@ mod tests {
             id: Uuid::now_v7(),
             conversation_id: ConversationId::new(),
             role: MessageRole::User,
-            content: MessageContent::Text { text: "hello world!".into() }, // 12 chars => 3 tokens
+            content: MessageContent::Text {
+                text: "hello world!".into(),
+            }, // 12 chars => 3 tokens
             created_at: Utc::now(),
             token_count: None,
         };
@@ -335,7 +356,9 @@ mod tests {
             id: Uuid::now_v7(),
             conversation_id: ConversationId::new(),
             role: MessageRole::User,
-            content: MessageContent::Text { text: "hello world!".into() },
+            content: MessageContent::Text {
+                text: "hello world!".into(),
+            },
             created_at: Utc::now(),
             token_count: Some(42),
         };
@@ -348,7 +371,9 @@ mod tests {
             id: Uuid::now_v7(),
             conversation_id: ConversationId::new(),
             role: MessageRole::User,
-            content: MessageContent::Text { text: String::new() },
+            content: MessageContent::Text {
+                text: String::new(),
+            },
             created_at: Utc::now(),
             token_count: None,
         };
@@ -402,7 +427,9 @@ mod tests {
             id: Uuid::now_v7(),
             conversation_id: ConversationId::new(),
             role: MessageRole::Assistant,
-            content: MessageContent::Text { text: "I can help with that.".into() },
+            content: MessageContent::Text {
+                text: "I can help with that.".into(),
+            },
             created_at: Utc::now(),
             token_count: Some(10),
         };

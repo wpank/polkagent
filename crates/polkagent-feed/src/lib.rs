@@ -52,18 +52,16 @@ pub use error::{FeedError, Result};
 pub use types::{Cursor, EventFilter, Feed, FeedId, FeedItem, FeedSource, FeedStatus};
 
 pub use trigger::{
-    CompOp, Trigger, TriggerAction, TriggerCondition, TriggerResult, TriggerId, evaluate_trigger,
+    evaluate_trigger, CompOp, Trigger, TriggerAction, TriggerCondition, TriggerId, TriggerResult,
 };
 
-pub use recipe::{
-    ParamType, Recipe, RecipeId, RecipeParameter, instantiate_recipe,
-};
+pub use recipe::{instantiate_recipe, ParamType, Recipe, RecipeId, RecipeParameter};
 
 pub use store::FeedStore;
 
 pub use memory_store::MemoryStore;
 
-pub use processor::{FeedProcessor, initial_cursor};
+pub use processor::{initial_cursor, FeedProcessor};
 
 pub use durable::{
     DurableFeedStore, FeedCursor, Gap, InMemoryDurableFeedStore, PendingAction, TriggerDedup,

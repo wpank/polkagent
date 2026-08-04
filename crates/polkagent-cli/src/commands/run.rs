@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing::info;
 
+use polkagent_chain_trait::ChainClient;
 use polkagent_config::model_registry::synthesize_providers_from_env;
 use polkagent_config::Config;
 use polkagent_core::event::EventKind;
@@ -18,9 +19,11 @@ use polkagent_core::{AgentId, AgentSpec};
 use polkagent_event::{EventBus, EventRecorder};
 use polkagent_executor_anthropic::AnthropicExecutor;
 use polkagent_executor_fake::FakeExecutor;
+use polkagent_executor_gemini::GeminiExecutor;
 use polkagent_executor_local::LocalExecutor;
 use polkagent_executor_openai::OpenAiExecutor;
-use polkagent_executor_trait::ModelExecutor;
+use polkagent_executor_openrouter::OpenRouterExecutor;
+use polkagent_executor_trait::{ExecutorError, ModelExecutor};
 use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
@@ -62,8 +65,12 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     let registry = build_provider_registry(&config);
 
     // Resolve provider and executor.
-    let (executor, executor_note) =
-        resolve_provider(cmd.provider.as_deref(), cmd.model.as_deref(), &config, &registry);
+    let (executor, executor_note) = resolve_provider(
+        cmd.provider.as_deref(),
+        cmd.model.as_deref(),
+        &config,
+        &registry,
+    );
 
     if let Some(note) = &executor_note {
         eprintln!("{note}");
@@ -79,10 +86,8 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
             harness_registry.register(id, id);
         }
     }
-    let resolution = harness_registry.resolve(
-        cmd.harness.as_deref(),
-        config.harness.default.as_deref(),
-    );
+    let resolution =
+        harness_registry.resolve(cmd.harness.as_deref(), config.harness.default.as_deref());
 
     if let Some(note) = &resolution.note {
         eprintln!("{note}");
@@ -137,6 +142,16 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     // Arc<dyn EventStore> for the EventRecorder.
     let event_recorder = EventRecorder::new(Arc::new(pool.clone()), event_bus.clone());
 
+    // -----------------------------------------------------------------------
+    // Build chain client and tool registry
+    // -----------------------------------------------------------------------
+
+    let chain_client: Arc<dyn ChainClient> = build_chain_client();
+
+    let mut tool_registry = polkagent_tool::ToolRegistry::new();
+    polkagent_tool_governance::register_governance_tools(&mut tool_registry, chain_client.clone());
+    polkagent_tool_treasury::register_treasury_tools(&mut tool_registry);
+
     // Wrap AppService in Arc so it can be shared with the Ctrl-C handler task.
     let mut builder = AppService::builder()
         .with_config(config)
@@ -144,17 +159,15 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
         .with_event_bus(event_bus.clone())
         .with_event_recorder(event_recorder)
         .with_executor(executor)
-        .with_provider_registry(registry);
+        .with_provider_registry(registry)
+        .with_chain_client(chain_client)
+        .with_tool_registry(Arc::new(tool_registry));
 
     if let Some(h) = harness {
         builder = builder.with_harness(h);
     }
 
-    let app_service = Arc::new(
-        builder
-            .build()
-            .context("building AppService")?,
-    );
+    let app_service = Arc::new(builder.build().context("building AppService")?);
 
     // Reconstruct the AgentSpec from the DB row and register it with AppService.
     let agent_spec = build_agent_spec(agent_id, &agent.name, &agent.spec_json, cmd.model.clone());
@@ -247,7 +260,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
                         "\nRun timed out after {} seconds",
                         cmd.timeout
                     );
-                    let _ = app_service.cancel_run(run_id).await;
+                    let _ = app_service.timeout_run(run_id).await;
                     return Err(anyhow::anyhow!(
                         "run timed out after {} seconds",
                         cmd.timeout
@@ -327,6 +340,86 @@ fn load_config() -> Config {
 }
 
 // ---------------------------------------------------------------------------
+// Fallback executor
+// ---------------------------------------------------------------------------
+
+use async_trait::async_trait;
+use polkagent_executor_trait::{InferenceRequest, InferenceResponse, StreamEvent};
+
+struct FallbackExecutor {
+    primary: Arc<dyn ModelExecutor>,
+    fallbacks: Vec<Arc<dyn ModelExecutor>>,
+}
+
+impl FallbackExecutor {
+    fn new(primary: Arc<dyn ModelExecutor>, fallbacks: Vec<Arc<dyn ModelExecutor>>) -> Arc<Self> {
+        Arc::new(Self { primary, fallbacks })
+    }
+}
+
+#[async_trait]
+impl ModelExecutor for FallbackExecutor {
+    async fn complete(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<InferenceResponse, ExecutorError> {
+        match self.primary.complete(request.clone()).await {
+            Ok(resp) => return Ok(resp),
+            Err(e) if !self.fallbacks.is_empty() => {
+                tracing::warn!(error = %e, "primary executor failed, trying fallback chain");
+                for (i, fallback) in self.fallbacks.iter().enumerate() {
+                    match fallback.complete(request.clone()).await {
+                        Ok(resp) => return Ok(resp),
+                        Err(e2) => {
+                            tracing::warn!(
+                                error = %e2,
+                                fallback_index = i,
+                                "fallback executor failed"
+                            );
+                        }
+                    }
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn stream(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<
+        Box<dyn futures::Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
+        ExecutorError,
+    > {
+        match self.primary.stream(request.clone()).await {
+            Ok(s) => return Ok(s),
+            Err(e) if !self.fallbacks.is_empty() => {
+                tracing::warn!(error = %e, "primary executor stream failed, trying fallback chain");
+                for (i, fallback) in self.fallbacks.iter().enumerate() {
+                    match fallback.stream(request.clone()).await {
+                        Ok(s) => return Ok(s),
+                        Err(e2) => {
+                            tracing::warn!(
+                                error = %e2,
+                                fallback_index = i,
+                                "fallback executor stream failed"
+                            );
+                        }
+                    }
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn health(&self) -> Result<(), ExecutorError> {
+        self.primary.health().await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Provider registry construction
 // ---------------------------------------------------------------------------
 
@@ -389,11 +482,8 @@ fn executor_from_provider_config(
             };
             Some(LocalExecutor::custom(url, pc.default_model.clone()))
         }
-        "gemini" => {
-            // Gemini executor not yet available; use OpenAI-compat shim.
-            tracing::warn!("Gemini executor not yet available; falling back to OpenAI-compatible shim");
-            Some(OpenAiExecutor::new(api_key, pc.default_model.clone()))
-        }
+        "gemini" => Some(GeminiExecutor::new(api_key, pc.default_model.clone())),
+        "openrouter" => Some(OpenRouterExecutor::new(api_key, pc.default_model.clone())),
         _ => None,
     }
 }
@@ -415,15 +505,46 @@ fn resolve_provider(
     config: &Config,
     registry: &ProviderRegistry,
 ) -> (Arc<dyn ModelExecutor>, Option<String>) {
+    let (primary, primary_id, note) =
+        resolve_primary_provider(provider_flag, model_override, config, registry);
+
+    // Build fallback chain from remaining registered providers.
+    let fallbacks = collect_fallback_executors(registry, primary_id.as_deref());
+    if fallbacks.is_empty() {
+        return (primary, note);
+    }
+
+    let fallback_ids: Vec<String> = registry
+        .list_providers()
+        .iter()
+        .filter(|p| primary_id.as_deref() != Some(p.id.as_str()))
+        .map(|p| p.id.clone())
+        .collect();
+    let mut note_text = note.unwrap_or_default();
+    if !fallback_ids.is_empty() {
+        use std::fmt::Write;
+        write!(note_text, " Fallback chain: {}.", fallback_ids.join(" → ")).ok();
+    }
+
+    let executor = FallbackExecutor::new(primary, fallbacks);
+    (executor, Some(note_text))
+}
+
+fn resolve_primary_provider(
+    provider_flag: Option<&str>,
+    model_override: Option<&str>,
+    config: &Config,
+    registry: &ProviderRegistry,
+) -> (Arc<dyn ModelExecutor>, Option<String>, Option<String>) {
     // 1. CLI flag — look up in the registry.
     if let Some(provider_id) = provider_flag {
         if let Ok(executor) = registry.get_executor(provider_id) {
             let note = format!("Using provider '{provider_id}' (from --provider flag).");
-            return (executor, Some(note));
+            return (executor, Some(provider_id.to_owned()), Some(note));
         }
         // Provider flag given but not in registry — try env-based matching.
-        if let Some(result) = try_provider_by_name(provider_id, model_override) {
-            return result;
+        if let Some((executor, note)) = try_provider_by_name(provider_id, model_override) {
+            return (executor, Some(provider_id.to_owned()), note);
         }
         eprintln!(
             "Warning: provider '{provider_id}' not found in config and no matching \
@@ -435,14 +556,10 @@ fn resolve_provider(
     if let Some(ref default_id) = config.execution.default_provider {
         if !default_id.is_empty() {
             if let Ok(executor) = registry.get_executor(default_id) {
-                let note = format!(
-                    "Using provider '{default_id}' (from config default_provider)."
-                );
-                return (executor, Some(note));
+                let note = format!("Using provider '{default_id}' (from config default_provider).");
+                return (executor, Some(default_id.clone()), Some(note));
             }
-            eprintln!(
-                "Warning: configured default_provider '{default_id}' not found in registry."
-            );
+            eprintln!("Warning: configured default_provider '{default_id}' not found in registry.");
         }
     }
 
@@ -454,19 +571,32 @@ fn resolve_provider(
                 "Using provider '{}' (auto-detected from environment).",
                 first.id
             );
-            return (executor, Some(note));
+            return (executor, Some(first.id.clone()), Some(note));
         }
     }
 
     // 4. Fallback — fake executor.
     let note = Some(
-        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY) and no local \
-         model configured (OLLAMA_URL / OLLAMA_MODEL). Using the fake \
-         executor \u{2014} responses will be simulated. Set an API key or \
-         local model environment variable to use a real model."
+        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / \
+         OPENROUTER_API_KEY) and no local model configured (OLLAMA_URL / \
+         OLLAMA_MODEL). Using the fake executor \u{2014} responses will be \
+         simulated. Set an API key or local model environment variable to \
+         use a real model."
             .to_string(),
     );
-    (FakeExecutor::new(), note)
+    (FakeExecutor::new(), None, note)
+}
+
+fn collect_fallback_executors(
+    registry: &ProviderRegistry,
+    primary_id: Option<&str>,
+) -> Vec<Arc<dyn ModelExecutor>> {
+    registry
+        .list_providers()
+        .iter()
+        .filter(|p| primary_id != Some(p.id.as_str()))
+        .filter_map(|p| registry.get_executor(&p.id).ok())
+        .collect()
 }
 
 /// Try to build an executor by matching a provider name to well-known types.
@@ -476,16 +606,26 @@ fn try_provider_by_name(
 ) -> Option<(Arc<dyn ModelExecutor>, Option<String>)> {
     match name {
         "anthropic" => {
-            let api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty())?;
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())?;
             let model = model_override.unwrap_or("claude-sonnet-4-6").to_string();
             let executor = AnthropicExecutor::new(api_key, model.clone());
-            Some((executor, Some(format!("Using Anthropic executor (model: {model})."))))
+            Some((
+                executor,
+                Some(format!("Using Anthropic executor (model: {model}).")),
+            ))
         }
         "openai" => {
-            let api_key = std::env::var("OPENAI_API_KEY").ok().filter(|k| !k.is_empty())?;
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())?;
             let model = model_override.unwrap_or("gpt-4o").to_string();
             let executor = OpenAiExecutor::new(api_key, model.clone());
-            Some((executor, Some(format!("Using OpenAI executor (model: {model})."))))
+            Some((
+                executor,
+                Some(format!("Using OpenAI executor (model: {model}).")),
+            ))
         }
         "ollama" | "local" => {
             let url = std::env::var("OLLAMA_URL")
@@ -494,7 +634,35 @@ fn try_provider_by_name(
                 .unwrap_or_else(|| "http://localhost:11434/v1".to_owned());
             let model = model_override.unwrap_or("llama3.2").to_string();
             let executor = LocalExecutor::custom(url.clone(), model.clone());
-            Some((executor, Some(format!("Using local executor at {url} (model: {model})."))))
+            Some((
+                executor,
+                Some(format!("Using local executor at {url} (model: {model}).")),
+            ))
+        }
+        "gemini" => {
+            let api_key = std::env::var("GEMINI_API_KEY")
+                .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+                .ok()
+                .filter(|k| !k.is_empty())?;
+            let model = model_override.unwrap_or("gemini-2.5-flash").to_string();
+            let executor = GeminiExecutor::new(api_key, model.clone());
+            Some((
+                executor,
+                Some(format!("Using Gemini executor (model: {model}).")),
+            ))
+        }
+        "openrouter" => {
+            let api_key = std::env::var("OPENROUTER_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())?;
+            let model = model_override
+                .unwrap_or("anthropic/claude-sonnet-4-6")
+                .to_string();
+            let executor = OpenRouterExecutor::new(api_key, model.clone());
+            Some((
+                executor,
+                Some(format!("Using OpenRouter executor (model: {model}).")),
+            ))
         }
         _ => None,
     }
@@ -512,19 +680,13 @@ fn try_provider_by_name(
 /// 4. `OLLAMA_MODEL` present → [`LocalExecutor`] with default Ollama endpoint.
 /// 5. Otherwise → [`FakeExecutor`] with a helpful note.
 #[cfg(test)]
-fn detect_executor(
-    model_override: Option<&str>,
-) -> (Arc<dyn ModelExecutor>, Option<String>) {
+fn detect_executor(model_override: Option<&str>) -> (Arc<dyn ModelExecutor>, Option<String>) {
     // 1. Anthropic
     if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
         if !api_key.is_empty() {
-            let model = model_override
-                .unwrap_or("claude-sonnet-4-6")
-                .to_string();
+            let model = model_override.unwrap_or("claude-sonnet-4-6").to_string();
             let executor = AnthropicExecutor::new(api_key, model.clone());
-            let note = Some(format!(
-                "Using Anthropic executor (model: {model})."
-            ));
+            let note = Some(format!("Using Anthropic executor (model: {model})."));
             return (executor, note);
         }
     }
@@ -534,9 +696,7 @@ fn detect_executor(
         if !api_key.is_empty() {
             let model = model_override.unwrap_or("gpt-4o").to_string();
             let executor = OpenAiExecutor::new(api_key, model.clone());
-            let note = Some(format!(
-                "Using OpenAI executor (model: {model})."
-            ));
+            let note = Some(format!("Using OpenAI executor (model: {model})."));
             return (executor, note);
         }
     }
@@ -546,9 +706,7 @@ fn detect_executor(
         if !url.is_empty() {
             let model = model_override.unwrap_or("llama3.2").to_string();
             let executor = LocalExecutor::custom(url.clone(), model.clone());
-            let note = Some(format!(
-                "Using local executor at {url} (model: {model})."
-            ));
+            let note = Some(format!("Using local executor at {url} (model: {model})."));
             return (executor, note);
         }
     }
@@ -558,19 +716,18 @@ fn detect_executor(
         if !ollama_model.is_empty() {
             let model = model_override.unwrap_or(&ollama_model).to_string();
             let executor = LocalExecutor::ollama(model.clone());
-            let note = Some(format!(
-                "Using local Ollama executor (model: {model})."
-            ));
+            let note = Some(format!("Using local Ollama executor (model: {model})."));
             return (executor, note);
         }
     }
 
     // 5. Fallback — fake executor
     let note = Some(
-        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY) and no local \
-         model configured (OLLAMA_URL / OLLAMA_MODEL). Using the fake \
-         executor \u{2014} responses will be simulated. Set an API key or \
-         local model environment variable to use a real model."
+        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / \
+         OPENROUTER_API_KEY) and no local model configured (OLLAMA_URL / \
+         OLLAMA_MODEL). Using the fake executor \u{2014} responses will be \
+         simulated. Set an API key or local model environment variable to \
+         use a real model."
             .to_string(),
     );
     (FakeExecutor::new(), note)
@@ -590,9 +747,8 @@ fn build_agent_spec(
     spec_json: &str,
     model_override: Option<String>,
 ) -> AgentSpec {
-    let mut spec: AgentSpec = serde_json::from_str(spec_json).unwrap_or_else(|_| {
-        AgentSpec::new(agent_id, name, "fake/default-model")
-    });
+    let mut spec: AgentSpec = serde_json::from_str(spec_json)
+        .unwrap_or_else(|_| AgentSpec::new(agent_id, name, "fake/default-model"));
 
     // Force the ID to match what is stored in the database.
     spec.id = agent_id;
@@ -603,6 +759,58 @@ fn build_agent_spec(
     }
 
     spec
+}
+
+// ---------------------------------------------------------------------------
+// Chain client construction
+// ---------------------------------------------------------------------------
+
+/// Build a chain client for governance and treasury tools.
+///
+/// When `POLKAGENT_RPC_URL` is set, builds a [`SubxtChainClient`] that queries
+/// a live chain node. Otherwise falls back to a [`FakeChainClient`] so tools
+/// still work (returning representative offline data).
+fn build_chain_client() -> Arc<dyn ChainClient> {
+    use polkagent_chain_trait::{ChainProfile, ChainProfileId, GenesisHash, NetworkType};
+
+    if let Ok(rpc_url) = std::env::var("POLKAGENT_RPC_URL") {
+        if !rpc_url.is_empty() {
+            let profile = ChainProfile {
+                id: ChainProfileId::new("polkadot"),
+                name: "Polkadot".into(),
+                genesis_hash: GenesisHash::new(
+                    "0x91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3",
+                ),
+                spec_version: None,
+                rpc_endpoints: vec![rpc_url.clone()],
+                network_type: NetworkType::Production,
+            };
+
+            match polkagent_chain_subxt::SubxtChainClientBuilder::new()
+                .add_profile(profile)
+                .build()
+            {
+                Ok(client) => {
+                    info!(rpc = %rpc_url, "using SubxtChainClient for governance/treasury tools");
+                    return Arc::new(client);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to build SubxtChainClient, falling back to FakeChainClient"
+                    );
+                }
+            }
+        }
+    }
+
+    info!("no RPC endpoint configured, using FakeChainClient for governance/treasury tools");
+    Arc::new(
+        polkagent_chain_fake::FakeChainClientBuilder::polkadot()
+            .with_block_number(22_543_871)
+            .with_runtime_version(1_003_004, 0)
+            .build(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -658,12 +866,7 @@ mod tests {
         })
         .to_string();
 
-        let spec = build_agent_spec(
-            id,
-            "test-agent",
-            &json,
-            Some("openai/gpt-4o".to_string()),
-        );
+        let spec = build_agent_spec(id, "test-agent", &json, Some("openai/gpt-4o".to_string()));
         assert_eq!(spec.model, "openai/gpt-4o");
     }
 

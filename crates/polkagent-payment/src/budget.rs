@@ -147,8 +147,7 @@ impl BudgetChecker {
                             ),
                         };
                     }
-                    let decision =
-                        maybe_warn(&projected, max_day, config.warn_at_percent, "daily");
+                    let decision = maybe_warn(&projected, max_day, config.warn_at_percent, "daily");
                     if let Some(d) = decision {
                         return d;
                     }
@@ -201,12 +200,15 @@ impl BudgetChecker {
         let state = self
             .states
             .entry(agent_id.to_string())
-            .or_insert_with(|| {
-                BudgetState::new(AssetId::Native, 0)
-            });
+            .or_insert_with(|| BudgetState::new(AssetId::Native, 0));
 
         let now = Utc::now();
-        maybe_reset_state(state, now, &state.spent_today.asset.clone(), state.spent_today.decimals);
+        maybe_reset_state(
+            state,
+            now,
+            &state.spent_today.asset.clone(),
+            state.spent_today.decimals,
+        );
 
         // Convert USD cost to a comparable Amount. We use a u128 representation
         // of micro-dollars (6 decimal places) for internal tracking.
@@ -218,12 +220,13 @@ impl BudgetChecker {
                 context: "recording daily spend".into(),
             }
         })?;
-        state.spent_this_month = state
-            .spent_this_month
-            .checked_add(&cost_amount)
-            .map_err(|_| PaymentError::ArithmeticOverflow {
-                context: "recording monthly spend".into(),
-            })?;
+        state.spent_this_month =
+            state
+                .spent_this_month
+                .checked_add(&cost_amount)
+                .map_err(|_| PaymentError::ArithmeticOverflow {
+                    context: "recording monthly spend".into(),
+                })?;
 
         Ok(())
     }
@@ -233,7 +236,12 @@ impl BudgetChecker {
     /// This returns the currently tracked state; for historical queries the
     /// caller should use the [`PaymentStore`](crate::store::PaymentStore).
     #[must_use]
-    pub fn get_usage(&self, agent_id: &str, period_start: DateTime<Utc>, period_end: DateTime<Utc>) -> UsageSummary {
+    pub fn get_usage(
+        &self,
+        agent_id: &str,
+        period_start: DateTime<Utc>,
+        period_end: DateTime<Utc>,
+    ) -> UsageSummary {
         let state = self.states.get(agent_id);
 
         let (tokens, usd) = match state {
@@ -294,9 +302,7 @@ fn maybe_warn(
     let threshold = u128::from(warn_percent);
     if usage_pct >= threshold {
         let remaining = 100u128.saturating_sub(usage_pct);
-        warn!(
-            "{label} budget at {usage_pct}% — {remaining}% remaining",
-        );
+        warn!("{label} budget at {usage_pct}% — {remaining}% remaining",);
         Some(BudgetDecision::Warn {
             remaining_percent: remaining.min(100) as u8,
         })
@@ -345,13 +351,10 @@ mod tests {
         assert_eq!(decision, BudgetDecision::Allow);
 
         // Record the $5.
-        checker
-            .states
-            .entry("agent-1".to_string())
-            .and_modify(|s| {
-                s.spent_today = usd(5_000_000);
-                s.spent_this_month = usd(5_000_000);
-            });
+        checker.states.entry("agent-1".to_string()).and_modify(|s| {
+            s.spent_today = usd(5_000_000);
+            s.spent_this_month = usd(5_000_000);
+        });
 
         // Next $6 should be denied (total $11 > $10).
         let decision = checker.check("agent-1", &usd(6_000_000));
@@ -371,13 +374,14 @@ mod tests {
         );
 
         // Pre-set state to $7 spent.
-        checker
-            .states
-            .insert("agent-1".to_string(), BudgetState {
+        checker.states.insert(
+            "agent-1".to_string(),
+            BudgetState {
                 spent_today: usd(7_000_000),
                 spent_this_month: usd(7_000_000),
                 last_reset: Utc::now(),
-            });
+            },
+        );
 
         // Next $2 puts us at $9 = 90% -> should warn.
         let decision = checker.check("agent-1", &usd(2_000_000));
@@ -397,13 +401,14 @@ mod tests {
         );
 
         // Pre-set state to $95 spent.
-        checker
-            .states
-            .insert("agent-1".to_string(), BudgetState {
+        checker.states.insert(
+            "agent-1".to_string(),
+            BudgetState {
                 spent_today: usd(5_000_000),
                 spent_this_month: usd(95_000_000),
                 last_reset: Utc::now(),
-            });
+            },
+        );
 
         // Next $6 should be denied (total $101 > $100).
         let decision = checker.check("agent-1", &usd(6_000_000));
@@ -425,7 +430,9 @@ mod tests {
             recorded_at: Utc::now(),
         };
 
-        checker.record_spend("agent-1", &cost).expect("should succeed");
+        checker
+            .record_spend("agent-1", &cost)
+            .expect("should succeed");
         let state = checker.states.get("agent-1").expect("state should exist");
         // 0.0105 USD = 10_500 micro-dollars
         assert_eq!(state.spent_today.value, 10_500);

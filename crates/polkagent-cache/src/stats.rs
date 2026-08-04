@@ -77,6 +77,7 @@ impl CacheStats {
     /// Compute the hit rate as a value between 0.0 and 1.0.
     ///
     /// Returns 0.0 when no lookups have been performed.
+    #[allow(clippy::cast_precision_loss)]
     pub fn hit_rate(&self) -> f64 {
         let h = self.hits() as f64;
         let m = self.misses() as f64;

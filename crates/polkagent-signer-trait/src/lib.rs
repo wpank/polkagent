@@ -57,13 +57,19 @@ impl AccountRef {
     /// Construct an `AccountRef` from raw 32-byte account bytes.
     #[must_use]
     pub fn from_bytes(account_id: [u8; 32]) -> Self {
-        Self { account_id, ss58_display: None }
+        Self {
+            account_id,
+            ss58_display: None,
+        }
     }
 
     /// Construct an `AccountRef` with a display-only SS58 address.
     #[must_use]
     pub fn with_ss58(account_id: [u8; 32], ss58: impl Into<String>) -> Self {
-        Self { account_id, ss58_display: Some(ss58.into()) }
+        Self {
+            account_id,
+            ss58_display: Some(ss58.into()),
+        }
     }
 }
 
@@ -306,7 +312,10 @@ mod tests {
 
     #[test]
     fn account_ref_with_ss58_stores_address() {
-        let account = AccountRef::with_ss58([1u8; 32], "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY");
+        let account = AccountRef::with_ss58(
+            [1u8; 32],
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+        );
         assert!(account.ss58_display.is_some());
         assert_eq!(account.account_id, [1u8; 32]);
     }
@@ -335,7 +344,9 @@ mod tests {
 
     #[test]
     fn signer_error_hardware_includes_message() {
-        let e = SignerError::Hardware { message: "device disconnected".into() };
+        let e = SignerError::Hardware {
+            message: "device disconnected".into(),
+        };
         assert!(format!("{e}").contains("device disconnected"));
     }
 

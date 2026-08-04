@@ -94,14 +94,16 @@ fn render_list(
             let is_selected = abs_idx == selected_idx;
 
             let row_style = if is_selected {
-                Style::default().bg(theme.bg_highlight).fg(theme.rose_bright)
+                Style::default()
+                    .bg(theme.bg_highlight)
+                    .fg(theme.rose_bright)
             } else {
                 Style::default().fg(theme.text_primary)
             };
 
             let glyph_color = match a.state.as_str() {
-                "active"    => theme.rose,
-                "paused"    => theme.warning,
+                "active" => theme.rose,
+                "paused" => theme.warning,
                 "configured" | "created" => theme.text_dim,
                 _ => theme.danger,
             };
@@ -150,12 +152,27 @@ fn render_list(
     let footer_y = inner.y + inner.height.saturating_sub(1);
     if footer_y < inner.y + inner.height {
         let active_count = agents.iter().filter(|a| a.state == "active").count();
-        let idle_count = agents.iter().filter(|a| matches!(a.state.as_str(), "configured" | "created")).count();
-        let err_count = agents.iter().filter(|a| a.active_runs == 0 && !matches!(a.state.as_str(), "active" | "configured" | "created" | "archived")).count();
+        let idle_count = agents
+            .iter()
+            .filter(|a| matches!(a.state.as_str(), "configured" | "created"))
+            .count();
+        let err_count = agents
+            .iter()
+            .filter(|a| {
+                a.active_runs == 0
+                    && !matches!(
+                        a.state.as_str(),
+                        "active" | "configured" | "created" | "archived"
+                    )
+            })
+            .count();
 
         let summary = format!(
             " {} agents  ·  {} active  ·  {} idle  ·  {} error",
-            agents.len(), active_count, idle_count, err_count
+            agents.len(),
+            active_count,
+            idle_count,
+            err_count
         );
         let footer_area = Rect {
             y: footer_y,

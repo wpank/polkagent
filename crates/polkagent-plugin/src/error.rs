@@ -93,6 +93,49 @@ pub enum PluginError {
         /// What went wrong.
         reason: String,
     },
+
+    /// A package's cosign signature is missing or invalid.
+    #[error("signature verification failed for package '{package_name}': {reason}")]
+    SignatureVerificationFailed {
+        /// The package that failed verification.
+        package_name: String,
+        /// What went wrong.
+        reason: String,
+    },
+
+    /// A package is unsigned and the policy does not allow unsigned packages.
+    #[error("unsigned package rejected: '{package_name}' has no cosign signature")]
+    UnsignedPackageRejected {
+        /// The package that was rejected.
+        package_name: String,
+    },
+
+    /// SLSA provenance attestation is missing or invalid.
+    #[error("SLSA attestation failed for package '{package_name}': {reason}")]
+    SlsaAttestationFailed {
+        /// The package that failed attestation.
+        package_name: String,
+        /// What went wrong.
+        reason: String,
+    },
+
+    /// A sandboxed operation was denied at the WASM host boundary.
+    #[error("sandbox denied operation for plugin '{plugin_name}': {operation}")]
+    SandboxDenied {
+        /// The plugin that attempted the operation.
+        plugin_name: String,
+        /// The operation that was denied.
+        operation: String,
+    },
+
+    /// WASM sandbox resource limits were exceeded.
+    #[error("sandbox resource limit exceeded for plugin '{plugin_name}': {resource}")]
+    SandboxResourceExhausted {
+        /// The plugin that exceeded limits.
+        plugin_name: String,
+        /// The resource that was exhausted.
+        resource: String,
+    },
 }
 
 /// Helper for optional plugin name display.
@@ -236,5 +279,59 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("flaky"));
         assert!(msg.contains("init timed out"));
+    }
+
+    #[test]
+    fn signature_verification_failed_display() {
+        let err = PluginError::SignatureVerificationFailed {
+            package_name: "bad-sig".into(),
+            reason: "certificate expired".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("bad-sig"));
+        assert!(msg.contains("certificate expired"));
+    }
+
+    #[test]
+    fn unsigned_package_rejected_display() {
+        let err = PluginError::UnsignedPackageRejected {
+            package_name: "no-sig".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("no-sig"));
+        assert!(msg.contains("unsigned"));
+    }
+
+    #[test]
+    fn slsa_attestation_failed_display() {
+        let err = PluginError::SlsaAttestationFailed {
+            package_name: "bad-provenance".into(),
+            reason: "missing build steps".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("bad-provenance"));
+        assert!(msg.contains("missing build steps"));
+    }
+
+    #[test]
+    fn sandbox_denied_display() {
+        let err = PluginError::SandboxDenied {
+            plugin_name: "rogue".into(),
+            operation: "http_request to evil.com".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("rogue"));
+        assert!(msg.contains("http_request to evil.com"));
+    }
+
+    #[test]
+    fn sandbox_resource_exhausted_display() {
+        let err = PluginError::SandboxResourceExhausted {
+            plugin_name: "greedy".into(),
+            resource: "fuel budget (10000 instructions)".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("greedy"));
+        assert!(msg.contains("fuel budget"));
     }
 }

@@ -155,7 +155,10 @@ mod tests {
         assert_eq!(identity.agent_id, id);
         assert_eq!(identity.display_name, "test-agent");
         assert_eq!(identity.accounts.len(), 1);
-        assert_eq!(identity.metadata.get("version").map(String::as_str), Some("0.1.0"));
+        assert_eq!(
+            identity.metadata.get("version").map(String::as_str),
+            Some("0.1.0")
+        );
     }
 
     #[test]
@@ -183,7 +186,10 @@ mod tests {
         let bytes1 = card.to_bytes();
         let bytes2 = card.to_bytes();
 
-        assert_eq!(bytes1, bytes2, "canonical serialization must be deterministic");
+        assert_eq!(
+            bytes1, bytes2,
+            "canonical serialization must be deterministic"
+        );
         assert!(!bytes1.is_empty());
     }
 
@@ -203,11 +209,9 @@ mod tests {
 
     #[test]
     fn agent_card_serde_round_trip() {
-        let identity = AgentIdentity::new(AgentId::new(), "card-serde")
-            .with_account(ChainAccount::new(
-                AccountId32::from_bytes([0xDD; 32]),
-                NetworkId::Westend,
-            ));
+        let identity = AgentIdentity::new(AgentId::new(), "card-serde").with_account(
+            ChainAccount::new(AccountId32::from_bytes([0xDD; 32]), NetworkId::Westend),
+        );
         let card = AgentCard::new(identity, vec!["query".into()]);
 
         let json = serde_json::to_string(&card).expect("serialize");

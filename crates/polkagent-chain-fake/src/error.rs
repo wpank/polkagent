@@ -9,7 +9,9 @@ pub use polkagent_chain_trait::ChainError;
 /// Construct a generic [`ChainError::Internal`] with a message.
 #[must_use]
 pub fn internal(message: impl Into<String>) -> ChainError {
-    ChainError::Internal { message: message.into() }
+    ChainError::Internal {
+        message: message.into(),
+    }
 }
 
 /// Construct a simulated [`ChainError::Rpc`] error for fault injection.

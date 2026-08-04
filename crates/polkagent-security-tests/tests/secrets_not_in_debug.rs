@@ -89,16 +89,8 @@ mod polkagent_error {
         let debug = format!("{err:?}");
         let display = format!("{err}");
 
-        assert_no_leak(
-            &debug,
-            &all_secrets(),
-            "ClassificationViolation debug",
-        );
-        assert_no_leak(
-            &display,
-            &all_secrets(),
-            "ClassificationViolation display",
-        );
+        assert_no_leak(&debug, &all_secrets(), "ClassificationViolation debug");
+        assert_no_leak(&display, &all_secrets(), "ClassificationViolation display");
         assert!(display.contains("secret_forbidden"));
     }
 
@@ -265,16 +257,8 @@ mod signer_error {
         let debug = format!("{err:?}");
         let display = format!("{err}");
 
-        assert_no_leak(
-            &debug,
-            &all_secrets(),
-            "SignerError::Hardware debug",
-        );
-        assert_no_leak(
-            &display,
-            &all_secrets(),
-            "SignerError::Hardware display",
-        );
+        assert_no_leak(&debug, &all_secrets(), "SignerError::Hardware debug");
+        assert_no_leak(&display, &all_secrets(), "SignerError::Hardware display");
     }
 
     #[test]

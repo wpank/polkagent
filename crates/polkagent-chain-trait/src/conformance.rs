@@ -207,9 +207,8 @@ pub async fn test_decode_call_no_panic(client: &dyn ChainClient) {
 /// than an error.  If the adapter returns an error that is also acceptable
 /// (it might if it cannot connect).  Panics are not acceptable.
 pub async fn test_watch_finality_unknown_on_timeout(client: &dyn ChainClient) {
-    let bogus_hash = crate::TxHash::new(
-        "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-    );
+    let bogus_hash =
+        crate::TxHash::new("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     let result = client
         .watch_finality(
             bogus_hash,

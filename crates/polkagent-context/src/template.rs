@@ -222,7 +222,10 @@ mod tests {
     #[test]
     fn capabilities_list_variable() {
         let mut engine = TemplateEngine::new();
-        engine.set("capabilities", "- Transfer tokens\n- Query balances\n- Sign transactions");
+        engine.set(
+            "capabilities",
+            "- Transfer tokens\n- Query balances\n- Sign transactions",
+        );
         let template = "You can:\n{{capabilities}}";
         let result = engine.render(template).expect("render");
         assert!(result.contains("Transfer tokens"));

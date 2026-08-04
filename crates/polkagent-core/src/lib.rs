@@ -54,7 +54,9 @@ pub mod usage;
 // `polkagent_core::ids::RunId`.
 // ---------------------------------------------------------------------------
 
-pub use agent::{AgentSpec, AgentState, DegradationStage, MemoryConfig, ModelPreference, ResourceLimits};
+pub use agent::{
+    AgentSpec, AgentState, DegradationStage, MemoryConfig, ModelPreference, ResourceLimits,
+};
 pub use artifact::{Artifact, ArtifactKind, BlobRef};
 pub use config::{AutonomyLevel, DataClassification};
 pub use effect::{
@@ -69,5 +71,5 @@ pub use ids::{
 };
 pub use run::{Run, RunState};
 pub use turn::{MessageRole, Step, StepKind, TokenUsage, Turn};
-pub use types::{DurabilityClass, Timestamp, now};
+pub use types::{now, DurabilityClass, Timestamp};
 pub use usage::{Budget, BudgetLimits, BudgetScope, Cost, UsageRecord, UsageSource, UsageSummary};

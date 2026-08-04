@@ -51,10 +51,7 @@ impl DriftDetector {
             pinned_hash: first_pin.hash.clone(),
             current_hash: current_hash.clone(),
             detected_at: now(),
-            affected_pallets: Self::diff_pallets_by_hash(
-                &first_pin.hash,
-                current_hash,
-            ),
+            affected_pallets: Self::diff_pallets_by_hash(&first_pin.hash, current_hash),
         })
     }
 
@@ -145,7 +142,10 @@ mod tests {
         let drift = result.expect("drift should be present");
         assert_eq!(drift.chain_id, ChainId::new("polkadot"));
         assert_eq!(drift.pinned_hash, MetadataHash::from_bytes(b"old_metadata"));
-        assert_eq!(drift.current_hash, MetadataHash::from_bytes(b"new_metadata"));
+        assert_eq!(
+            drift.current_hash,
+            MetadataHash::from_bytes(b"new_metadata")
+        );
         assert!(!drift.affected_pallets.is_empty());
     }
 

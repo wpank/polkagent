@@ -103,10 +103,9 @@ impl EventFilter {
     /// all values for that dimension".
     #[must_use]
     pub fn matches(&self, event_kind: &str, agent_id: &str) -> bool {
-        let kind_ok = self.event_kinds.is_empty()
-            || self.event_kinds.iter().any(|k| k == event_kind);
-        let agent_ok = self.agent_ids.is_empty()
-            || self.agent_ids.iter().any(|a| a == agent_id);
+        let kind_ok =
+            self.event_kinds.is_empty() || self.event_kinds.iter().any(|k| k == event_kind);
+        let agent_ok = self.agent_ids.is_empty() || self.agent_ids.iter().any(|a| a == agent_id);
         kind_ok && agent_ok
     }
 }

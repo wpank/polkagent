@@ -111,9 +111,7 @@ impl GroupStore for MemoryGroupStore {
 
     async fn list_members(&self, group_id: &GroupId) -> GroupResult<Vec<GroupMember>> {
         let map = self.inner.read().await;
-        let group = map
-            .get(group_id)
-            .ok_or(GroupError::NotFound(*group_id))?;
+        let group = map.get(group_id).ok_or(GroupError::NotFound(*group_id))?;
         Ok(group.members.clone())
     }
 }
@@ -326,7 +324,10 @@ mod tests {
         let group = coord.create_group("concurrent-test", owner);
         let group_id = group.id;
         coord
-            .set_budget(&group_id, crate::types::GroupBudget::new(10_000, None, None))
+            .set_budget(
+                &group_id,
+                crate::types::GroupBudget::new(10_000, None, None),
+            )
             .expect("set ok");
 
         // Add 9 workers.

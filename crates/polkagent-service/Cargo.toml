@@ -28,6 +28,7 @@ polkagent-skill = { path = "../polkagent-skill" }
 polkagent-conversation = { path = "../polkagent-conversation" }
 polkagent-identity = { path = "../polkagent-identity" }
 polkagent-plugin = { path = "../polkagent-plugin" }
+polkagent-metadata = { path = "../polkagent-metadata" }
 polkagent-scheduler = { path = "../polkagent-scheduler" }
 polkagent-surface-webhook = { path = "../polkagent-surface-webhook" }
 polkagent-harness-trait = { path = "../polkagent-harness-trait" }
@@ -56,6 +57,9 @@ parking_lot = { workspace = true }
 
 # Errors
 thiserror = { workspace = true }
+
+[features]
+watcher = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

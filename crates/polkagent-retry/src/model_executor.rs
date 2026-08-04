@@ -127,10 +127,7 @@ impl RetryModelExecutor {
         if let Some(cb) = &self.circuit_breaker {
             if let Err(open) = cb.check() {
                 return Err(ExecutorError::Transport {
-                    message: format!(
-                        "circuit breaker open; retry after {:?}",
-                        open.remaining
-                    ),
+                    message: format!("circuit breaker open; retry after {:?}", open.remaining),
                     retryable: false,
                 });
             }
@@ -170,14 +167,20 @@ impl ModelExecutor for RetryModelExecutor {
             // Circuit breaker gate
             self.check_circuit()?;
 
-            debug!(attempt, total_attempts, "RetryModelExecutor::complete attempt");
+            debug!(
+                attempt,
+                total_attempts, "RetryModelExecutor::complete attempt"
+            );
 
             let result = self.inner.complete(request.clone()).await;
 
             match result {
                 Ok(response) => {
                     if attempt > 0 {
-                        debug!(attempt, "RetryModelExecutor::complete succeeded after retry");
+                        debug!(
+                            attempt,
+                            "RetryModelExecutor::complete succeeded after retry"
+                        );
                     }
                     self.record_success();
                     return Ok(response);
@@ -234,7 +237,10 @@ impl ModelExecutor for RetryModelExecutor {
         for attempt in 0..total_attempts {
             self.check_circuit()?;
 
-            debug!(attempt, total_attempts, "RetryModelExecutor::stream attempt");
+            debug!(
+                attempt,
+                total_attempts, "RetryModelExecutor::stream attempt"
+            );
 
             let result = self.inner.stream(request.clone()).await;
 
@@ -466,9 +472,16 @@ mod tests {
         let policy = RetryPolicy::fixed(3, Duration::from_millis(1));
         let executor = RetryModelExecutor::new(inner.clone() as Arc<dyn ModelExecutor>, policy);
 
-        let resp = executor.complete(minimal_request()).await.expect("should succeed");
+        let resp = executor
+            .complete(minimal_request())
+            .await
+            .expect("should succeed");
         assert_eq!(resp.text, "ok");
-        assert_eq!(inner.call_count(), 1, "should have called inner exactly once");
+        assert_eq!(
+            inner.call_count(),
+            1,
+            "should have called inner exactly once"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -484,7 +497,10 @@ mod tests {
         let policy = RetryPolicy::fixed(5, Duration::from_millis(1));
         let executor = RetryModelExecutor::new(inner.clone() as Arc<dyn ModelExecutor>, policy);
 
-        let resp = executor.complete(minimal_request()).await.expect("should succeed after retries");
+        let resp = executor
+            .complete(minimal_request())
+            .await
+            .expect("should succeed after retries");
         assert_eq!(resp.text, "ok");
         assert_eq!(inner.call_count(), 3, "should have tried 3 times total");
     }
@@ -531,7 +547,11 @@ mod tests {
             .expect_err("should fail immediately");
 
         assert!(matches!(err, ExecutorError::Authentication { .. }));
-        assert_eq!(inner.call_count(), 1, "must not retry authentication errors");
+        assert_eq!(
+            inner.call_count(),
+            1,
+            "must not retry authentication errors"
+        );
     }
 
     #[tokio::test]
@@ -581,7 +601,13 @@ mod tests {
             .await
             .expect_err("should fail immediately");
 
-        assert!(matches!(err, ExecutorError::Transport { retryable: false, .. }));
+        assert!(matches!(
+            err,
+            ExecutorError::Transport {
+                retryable: false,
+                ..
+            }
+        ));
         assert_eq!(inner.call_count(), 1);
     }
 
@@ -612,7 +638,13 @@ mod tests {
         // So we expect 2 real calls + 1 circuit-blocked attempt.
         assert_eq!(inner.call_count(), 2);
         assert!(
-            matches!(err, ExecutorError::Transport { retryable: false, .. }),
+            matches!(
+                err,
+                ExecutorError::Transport {
+                    retryable: false,
+                    ..
+                }
+            ),
             "circuit open should surface as non-retryable transport: got {err:?}"
         );
 
@@ -635,12 +667,18 @@ mod tests {
         let executor = RetryModelExecutor::new(inner.clone() as Arc<dyn ModelExecutor>, policy)
             .with_circuit_breaker(cb.clone());
 
-        let resp = executor.complete(minimal_request()).await.expect("should succeed");
+        let resp = executor
+            .complete(minimal_request())
+            .await
+            .expect("should succeed");
         assert_eq!(resp.text, "ok");
 
         // The circuit breaker should be closed because the success reset
         // the failure counter.
-        assert!(cb.check().is_ok(), "circuit breaker should be closed after success");
+        assert!(
+            cb.check().is_ok(),
+            "circuit breaker should be closed after success"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -654,7 +692,10 @@ mod tests {
         let policy = RetryPolicy::exponential(3, Duration::from_millis(20));
         let executor = RetryModelExecutor::new(inner.clone() as Arc<dyn ModelExecutor>, policy);
 
-        let resp = executor.complete(minimal_request()).await.expect("should succeed");
+        let resp = executor
+            .complete(minimal_request())
+            .await
+            .expect("should succeed");
         assert_eq!(resp.text, "ok");
 
         let ts = inner.timestamps();
@@ -724,7 +765,10 @@ mod tests {
         let policy = RetryPolicy::fixed(3, Duration::from_millis(1));
         let executor = RetryModelExecutor::new(inner.clone() as Arc<dyn ModelExecutor>, policy);
 
-        let resp = executor.complete(minimal_request()).await.expect("should succeed");
+        let resp = executor
+            .complete(minimal_request())
+            .await
+            .expect("should succeed");
         assert_eq!(resp.text, "ok");
         assert_eq!(inner.call_count(), 2);
     }
@@ -739,7 +783,10 @@ mod tests {
         let policy = RetryPolicy::fixed(3, Duration::from_millis(1));
         let executor = RetryModelExecutor::new(inner.clone() as Arc<dyn ModelExecutor>, policy);
 
-        let resp = executor.complete(minimal_request()).await.expect("should succeed");
+        let resp = executor
+            .complete(minimal_request())
+            .await
+            .expect("should succeed");
         assert_eq!(resp.text, "ok");
         assert_eq!(inner.call_count(), 2);
     }

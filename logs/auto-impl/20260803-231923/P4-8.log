@@ -1,0 +1,53 @@
+All tasks complete. Here's a summary of everything that was done:
+
+---
+
+## Summary of Changes
+
+### 1. Provenance Chain (PRD-09 §4.8)
+
+**`crates/polkagent-memory/src/types.rs`** — Added 3 new fields to `MemoryProvenance`:
+- `source_artifact_id: Option<String>` — links memory to the artifact that produced it (enables `forget(artifact_id)` cascading)
+- `source_agent_id: Option<String>` — the agent that originally produced the memory
+- `ingested_at: Option<DateTime<Utc>>` — when the memory was ingested
+
+All new fields use `#[serde(default, skip_serializing_if = "Option::is_none")]` for backward-compatible serialization.
+
+**`crates/polkagent-memory/src/sqlite.rs`** — Updated the `memory_provenance` schema with 3 new columns (`source_artifact_id`, `source_agent_id`, `ingested_at`) and an index on `source_artifact_id`. Updated the INSERT statement to store the new fields.
+
+### 2. `forget(artifact_id)` — Atomic FTS5 + SQLite Removal
+
+**`crates/polkagent-memory/src/store.rs`** — Added `forget(&self, artifact_id: &str) -> MemoryResult<usize>` to the `MemoryStore` trait.
+
+**`crates/polkagent-memory/src/sqlite.rs`** — Implemented `forget()` using a `SAVEPOINT` for atomicity. Deletes from `memories` table (which cascades to `memory_provenance` via `ON DELETE CASCADE` and to `memories_fts` via the `AFTER DELETE` trigger).
+
+**`crates/polkagent-memory/src/tenant.rs`** — Implemented `forget()` delegation for `TenantAwareStore`.
+
+### 3. Tenant Isolation Enforcement
+
+**`crates/polkagent-memory/src/tenant.rs`** — Fixed critical gap: `search()` and `search_with_classification()` now **force `agent_id = Some(self.scope.agent_id)`** even when the caller passes `None`. Previously, a `None` agent_id would bypass tenant isolation and return results from all agents.
+
+### 4. Tests
+
+**7 new provenance tests** in `sqlite.rs`:
+- `provenance_source_artifact_id_round_trip` — full provenance chain storage/retrieval
+- `provenance_fields_default_to_none` — backward compat with None fields
+- `forget_removes_memories_by_artifact_id` — cascading delete (2 of 3 removed)
+- `forget_nonexistent_artifact_returns_zero` — edge case
+- `forget_removes_fts5_entries` — verifies FTS5 index is cleaned
+- `provenance_table_populated_with_new_fields` — direct DB verification
+
+**11 new cross-tenant isolation tests** in `tenant.rs`:
+- `search_with_none_agent_id_is_scoped_to_tenant` — the key fix
+- `search_with_classification_none_agent_id_scoped`
+- `tenant_cannot_delete_other_tenants_memory`
+- `tenant_cannot_update_other_tenants_relevance`
+- `list_entries_cross_tenant_returns_empty`
+- `delete_by_age_cross_tenant_deletes_nothing`
+- `get_episode_cross_tenant_returns_not_found`
+- `end_episode_cross_tenant_returns_not_found`
+- `list_episodes_cross_tenant_returns_empty`
+- `create_episode_forced_to_tenant_agent_id`
+- `forget_cross_tenant_does_not_remove_other_agents_memories`
+
+**Result: 231 tests pass, 0 failures.**

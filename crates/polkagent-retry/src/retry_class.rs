@@ -146,10 +146,7 @@ mod tests {
             status: 500,
             message: "internal".into(),
         };
-        assert_eq!(
-            classify_provider_error(&err),
-            RetryClass::RetryImmediate
-        );
+        assert_eq!(classify_provider_error(&err), RetryClass::RetryImmediate);
     }
 
     #[test]
@@ -158,10 +155,7 @@ mod tests {
             status: 502,
             message: "bad gateway".into(),
         };
-        assert_eq!(
-            classify_provider_error(&err),
-            RetryClass::RetryImmediate
-        );
+        assert_eq!(classify_provider_error(&err), RetryClass::RetryImmediate);
     }
 
     #[test]
@@ -182,10 +176,7 @@ mod tests {
             status: 504,
             message: "gateway timeout".into(),
         };
-        assert_eq!(
-            classify_provider_error(&err),
-            RetryClass::RetryImmediate
-        );
+        assert_eq!(classify_provider_error(&err), RetryClass::RetryImmediate);
     }
 
     #[test]

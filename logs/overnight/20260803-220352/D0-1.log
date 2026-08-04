@@ -1,0 +1,28 @@
+Perfect! I can now see that all references to `event_type` are **variable names in Rust code**, not SQL column names. The actual SQL column is correctly named `kind`, but the code stores that value in a local variable called `event_type` or a struct field called `event_type`.
+
+Let me verify this is all working correctly by confirming the comprehensive schema match:
+
+**Summary of my audit:**
+
+✅ **All SQL queries are CORRECT:**
+- `run_events()` in db.rs: Uses `kind, data_json, timestamp` 
+- `audit_events()` in db.rs: Uses `kind, data_json, timestamp`
+- `recent_error_count()` in db.rs: Uses `kind`
+- Test schema in db.rs: Uses `kind, data_json, timestamp`
+- All 4 SELECT variants in logs.rs: Use `kind, data_json, timestamp`
+- Both INSERT statements in inbox.rs: Use `kind, data_json, timestamp`
+- `export_events()` in export.rs: Uses `kind, data_json, timestamp`
+
+✅ **All tests pass:** 256 tests in polkagent-cli
+✅ **Cargo check passes:** No compilation errors
+
+## Conclusion
+
+**The code is already perfectly aligned with the production schema!** All SQL queries are using the correct column names from the production schema:
+- `kind` (not `event_type`)
+- `data_json` (not `payload_json`)  
+- `timestamp` (not `created_at`)
+
+The references to `event_type` you see in the code are just **Rust variable and struct field names**, which is a common naming practice (storing the database column value `kind` in a variable named `event_type` for code clarity).
+
+There are **no SQL schema mismatches** to fix. The codebase is already compliant with the production schema defined in `schema.sql`.

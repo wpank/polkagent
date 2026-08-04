@@ -16,7 +16,7 @@ use axum::{
     Json,
 };
 use chrono::DateTime;
-use polkagent_audit::{AuditQuery, entry::AuditId};
+use polkagent_audit::{entry::AuditId, AuditQuery};
 use tracing::instrument;
 
 use crate::{
@@ -61,29 +61,23 @@ pub async fn list_audit_entries(
     }
 
     if let Some(ref action_str) = params.action {
-        let action: polkagent_audit::AuditAction =
-            serde_json::from_value(serde_json::Value::String(action_str.clone())).map_err(
-                |_| {
-                    ApiError::ValidationError(format!("invalid audit action: '{action_str}'"))
-                },
-            )?;
+        let action: polkagent_audit::AuditAction = serde_json::from_value(
+            serde_json::Value::String(action_str.clone()),
+        )
+        .map_err(|_| ApiError::ValidationError(format!("invalid audit action: '{action_str}'")))?;
         query = query.action(action);
     }
 
     if let Some(ref since_str) = params.since {
         let since = DateTime::parse_from_rfc3339(since_str)
-            .map_err(|e| {
-                ApiError::ValidationError(format!("invalid 'since' timestamp: {e}"))
-            })?
+            .map_err(|e| ApiError::ValidationError(format!("invalid 'since' timestamp: {e}")))?
             .to_utc();
         query = query.since(since);
     }
 
     if let Some(ref until_str) = params.until {
         let until = DateTime::parse_from_rfc3339(until_str)
-            .map_err(|e| {
-                ApiError::ValidationError(format!("invalid 'until' timestamp: {e}"))
-            })?
+            .map_err(|e| ApiError::ValidationError(format!("invalid 'until' timestamp: {e}")))?
             .to_utc();
         query = query.until(until);
     }

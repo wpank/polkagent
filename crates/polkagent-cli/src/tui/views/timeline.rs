@@ -39,14 +39,26 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(area);
 
-        render_event_list(frame, cols[0], &state.run_events, &state.timeline_scroll, theme);
+        render_event_list(
+            frame,
+            cols[0],
+            &state.run_events,
+            &state.timeline_scroll,
+            theme,
+        );
         if let Some(sel) = state.timeline_scroll.selected {
             if let Some(event) = state.run_events.get(sel) {
                 render_event_detail(frame, cols[1], event, theme);
             }
         }
     } else {
-        render_event_list(frame, area, &state.run_events, &state.timeline_scroll, theme);
+        render_event_list(
+            frame,
+            area,
+            &state.run_events,
+            &state.timeline_scroll,
+            theme,
+        );
     }
 }
 
@@ -86,7 +98,8 @@ fn render_event_list(
     theme: &Theme,
 ) {
     let run_hint = if events.is_empty() { "" } else { "" };
-    let title = format!(" EVENTS ({count}){hint} ",
+    let title = format!(
+        " EVENTS ({count}){hint} ",
         count = events.len(),
         hint = run_hint,
     );
@@ -104,14 +117,12 @@ fn render_event_list(
     }
 
     // Header row.
-    let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            format!("  {:<12} {:<28} {}", "Time", "Type", "Description"),
-            Style::default()
-                .fg(theme.text_dim)
-                .add_modifier(Modifier::UNDERLINED),
-        )),
-    ];
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        format!("  {:<12} {:<28} {}", "Time", "Type", "Description"),
+        Style::default()
+            .fg(theme.text_dim)
+            .add_modifier(Modifier::UNDERLINED),
+    ))];
 
     let selected_idx = scroll.selected.unwrap_or(usize::MAX);
     let visible = inner.height.saturating_sub(1) as usize;
@@ -138,7 +149,10 @@ fn render_event_list(
         let glyph_color = type_color;
 
         lines.push(Line::from(vec![
-            Span::styled(format!("  {glyph} "), Style::default().fg(glyph_color).patch(row_bg)),
+            Span::styled(
+                format!("  {glyph} "),
+                Style::default().fg(glyph_color).patch(row_bg),
+            ),
             Span::styled(
                 format!("{time_str:<10}"),
                 Style::default().fg(theme.text_dim).patch(row_bg),
@@ -147,7 +161,10 @@ fn render_event_list(
                 format!("{type_display:<28}"),
                 Style::default().fg(type_color).patch(row_bg),
             ),
-            Span::styled(desc_display, Style::default().fg(theme.text_primary).patch(row_bg)),
+            Span::styled(
+                desc_display,
+                Style::default().fg(theme.text_primary).patch(row_bg),
+            ),
         ]));
     }
 
@@ -164,9 +181,7 @@ fn render_event_detail(frame: &mut Frame, area: Rect, event: &EventSummary, them
     let block = Block::default()
         .title(Span::styled(
             format!(" {} ", event.event_type),
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -176,7 +191,10 @@ fn render_event_detail(frame: &mut Frame, area: Rect, event: &EventSummary, them
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let ts = event.timestamp.format("%Y-%m-%d %H:%M:%S.%3f UTC").to_string();
+    let ts = event
+        .timestamp
+        .format("%Y-%m-%d %H:%M:%S.%3f UTC")
+        .to_string();
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
@@ -187,9 +205,7 @@ fn render_event_detail(frame: &mut Frame, area: Rect, event: &EventSummary, them
             Span::raw("  "),
             Span::styled(
                 event.event_type.clone(),
-                Style::default()
-                    .fg(type_color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(type_color).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
@@ -198,9 +214,7 @@ fn render_event_detail(frame: &mut Frame, area: Rect, event: &EventSummary, them
         Line::from(""),
         Line::from(Span::styled(
             "  Payload:",
-            Style::default()
-                .fg(theme.bone)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
@@ -214,10 +228,7 @@ fn render_event_detail(frame: &mut Frame, area: Rect, event: &EventSummary, them
         )));
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -228,9 +239,7 @@ fn styled_block<'a>(title: &'a str, theme: &'a Theme) -> Block<'a> {
     Block::default()
         .title(Span::styled(
             title,
-            Style::default()
-                .fg(theme.rose)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.rose).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -274,10 +283,7 @@ fn kv_line(
     theme: &Theme,
 ) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("{key:<14}"),
-            Style::default().fg(theme.text_dim),
-        ),
+        Span::styled(format!("{key:<14}"), Style::default().fg(theme.text_dim)),
         Span::styled(value.to_owned(), Style::default().fg(value_color)),
     ])
 }

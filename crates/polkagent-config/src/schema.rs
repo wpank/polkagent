@@ -68,6 +68,11 @@ pub struct Config {
     pub artifacts: ArtifactConfig,
     /// OpenTelemetry observability settings.
     pub observability: ObservabilityConfig,
+    /// Cloud control plane settings (regions, data residency).
+    pub cloud: CloudConfig,
+    /// Always-on watcher agent definitions (PRD-08 §7, deliverable 6.6).
+    #[serde(default)]
+    pub watchers: Vec<WatcherConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -843,6 +848,143 @@ impl Default for ObservabilityConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Cloud
+// ---------------------------------------------------------------------------
+
+/// Geographic region for data residency enforcement.
+///
+/// Jobs submitted by tenants in a given region may only be routed to workers
+/// operating in the same region unless `allow_cross_region` is enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DataRegion {
+    /// European Union
+    Eu,
+    /// United States
+    Us,
+    /// Asia-Pacific
+    Ap,
+    /// Australia
+    Au,
+    /// Canada
+    Ca,
+}
+
+impl std::fmt::Display for DataRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DataRegion::Eu => write!(f, "eu"),
+            DataRegion::Us => write!(f, "us"),
+            DataRegion::Ap => write!(f, "ap"),
+            DataRegion::Au => write!(f, "au"),
+            DataRegion::Ca => write!(f, "ca"),
+        }
+    }
+}
+
+/// Cloud control-plane settings.
+///
+/// Configures the data region for this deployment and whether cross-region
+/// data movement is permitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudConfig {
+    /// The data region for this deployment. When set, the control plane will
+    /// only assign jobs to workers in the same region. Default: `None` (region
+    /// enforcement disabled).
+    pub region: Option<DataRegion>,
+    /// When `true`, the control plane may route jobs to workers in a different
+    /// region. Requires explicit operator intent. Default: `false`.
+    pub allow_cross_region: bool,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            region: None,
+            allow_cross_region: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Watchers  (PRD-08 §7 — deliverable 6.6)
+// ---------------------------------------------------------------------------
+
+/// Schedule specification for an always-on watcher agent.
+///
+/// Supports both cron expressions and fixed-interval repetitions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum WatcherSchedule {
+    /// Standard 5-field cron expression (minute hour day month day-of-week).
+    Cron {
+        /// Cron expression, e.g. `"*/5 * * * *"` (every 5 minutes).
+        expr: String,
+    },
+    /// Fixed interval in seconds between successive runs.
+    Interval {
+        /// Number of seconds between runs.
+        every_secs: u64,
+    },
+}
+
+/// Configuration for a single always-on watcher agent.
+///
+/// Watchers run as background scheduled tasks that observe on-chain or
+/// off-chain state and create proposals/notifications under policy. By
+/// default, watchers have **no write authority** — a separate Cedar grant
+/// must be issued to permit any mutating effects.
+///
+/// # Feature gate
+///
+/// Watcher support requires the `watcher` feature flag on `polkagent-service`.
+///
+/// # TOML example
+///
+/// ```toml
+/// [[watchers]]
+/// name = "balance-monitor"
+/// agent_id = "agent-balance-watcher"
+/// schedule = { type = "interval", every_secs = 300 }
+/// cedar_policy = "watcher-read-only"
+/// enabled = true
+/// read_only = true
+/// timeout_secs = 60
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatcherConfig {
+    /// Human-readable name for this watcher.
+    pub name: String,
+    /// Identifier of the agent to run on each tick.
+    pub agent_id: String,
+    /// When and how often the watcher fires.
+    pub schedule: WatcherSchedule,
+    /// Name of the Cedar policy that governs this watcher's grants.
+    /// The policy must exist in the configured `policy_dir`.
+    pub cedar_policy: String,
+    /// Whether this watcher is active. Default: `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// When `true` (the default), the watcher has strictly read-only authority.
+    /// A separate Cedar grant must be issued to allow any write effects.
+    #[serde(default = "default_true")]
+    pub read_only: bool,
+    /// Maximum number of seconds a single watcher run may execute before being
+    /// killed by the `TimeoutEnforcer`. Default: `120`.
+    #[serde(default = "default_watcher_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_watcher_timeout() -> u64 {
+    120
+}
+
+// ---------------------------------------------------------------------------
 // Template
 // ---------------------------------------------------------------------------
 
@@ -1060,6 +1202,14 @@ otlp_protocol = "grpc"     # grpc | http/protobuf
 metrics_enabled = true
 traces_enabled = true
 service_name = "polkagent"
+
+# ─── Cloud ──────────────────────────────────────────────────────────────────
+# Data residency: restrict job routing to a specific geographic region.
+# Override: POLKAGENT_CLOUD_REGION=eu
+
+[cloud]
+# region = "eu"            # eu | us | ap | au | ca
+allow_cross_region = false
 "#;
 
 // ---------------------------------------------------------------------------
@@ -1157,7 +1307,11 @@ mod tests {
 
     #[test]
     fn rate_limit_config_serde_round_trip() {
-        let original = RateLimitConfig { enabled: true, requests_per_second: 50, burst: 100 };
+        let original = RateLimitConfig {
+            enabled: true,
+            requests_per_second: 50,
+            burst: 100,
+        };
         let json = serde_json::to_string(&original).expect("serialize");
         let back: RateLimitConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, original);
@@ -1173,7 +1327,11 @@ mod tests {
                 ca_path: None,
             }),
             cors_origins: vec!["https://example.com".to_owned()],
-            rate_limit: RateLimitConfig { enabled: true, requests_per_second: 200, burst: 400 },
+            rate_limit: RateLimitConfig {
+                enabled: true,
+                requests_per_second: 200,
+                burst: 400,
+            },
         };
         let toml = toml::to_string_pretty(&original).expect("serialize");
         let back: ServerConfig = toml::from_str(&toml).expect("deserialize");
@@ -1216,7 +1374,10 @@ mod tests {
         assert!(!cfg.sandbox_enabled);
         assert_eq!(cfg.max_file_size_bytes, 10 * 1024 * 1024);
         assert!(cfg.allowed_paths.is_empty());
-        assert!(!cfg.denied_paths.is_empty(), "should have default denied paths");
+        assert!(
+            !cfg.denied_paths.is_empty(),
+            "should have default denied paths"
+        );
         assert_eq!(cfg.max_memory_mb, 512);
         assert_eq!(cfg.max_cpu_seconds, 300);
     }
@@ -1637,6 +1798,84 @@ max_concurrent = 1
             provider: "p1".to_owned(),
             context_window: Some(200_000),
             ..Default::default()
+        }];
+        let serialized = toml::to_string_pretty(&cfg).expect("serialize");
+        let back: Config = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(cfg, back);
+    }
+
+    // -----------------------------------------------------------------------
+    // Watcher config  (PRD-08 §7, deliverable 6.6)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_default_has_no_watchers() {
+        let cfg = Config::default();
+        assert!(cfg.watchers.is_empty());
+    }
+
+    #[test]
+    fn watcher_config_interval_toml_round_trip() {
+        let w = WatcherConfig {
+            name: "balance-watcher".to_owned(),
+            agent_id: "agent-balance".to_owned(),
+            schedule: WatcherSchedule::Interval { every_secs: 300 },
+            cedar_policy: "watcher-read-only".to_owned(),
+            enabled: true,
+            read_only: true,
+            timeout_secs: 120,
+        };
+        let serialized = toml::to_string_pretty(&w).expect("serialize");
+        let back: WatcherConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(w, back);
+    }
+
+    #[test]
+    fn watcher_config_cron_toml_round_trip() {
+        let w = WatcherConfig {
+            name: "hourly-check".to_owned(),
+            agent_id: "agent-hourly".to_owned(),
+            schedule: WatcherSchedule::Cron {
+                expr: "0 * * * *".to_owned(),
+            },
+            cedar_policy: "watcher-cron-policy".to_owned(),
+            enabled: false,
+            read_only: true,
+            timeout_secs: 60,
+        };
+        let serialized = toml::to_string_pretty(&w).expect("serialize");
+        let back: WatcherConfig = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(w, back);
+    }
+
+    #[test]
+    fn watcher_config_defaults_read_only_and_enabled() {
+        let toml_str = r#"
+name = "test"
+agent_id = "a1"
+cedar_policy = "p1"
+
+[schedule]
+type = "interval"
+every_secs = 60
+"#;
+        let cfg: WatcherConfig = toml::from_str(toml_str).expect("parse");
+        assert!(cfg.enabled, "enabled should default to true");
+        assert!(cfg.read_only, "read_only should default to true");
+        assert_eq!(cfg.timeout_secs, 120, "timeout should default to 120");
+    }
+
+    #[test]
+    fn full_config_with_watchers_toml_round_trip() {
+        let mut cfg = Config::default();
+        cfg.watchers = vec![WatcherConfig {
+            name: "w1".to_owned(),
+            agent_id: "agent-w1".to_owned(),
+            schedule: WatcherSchedule::Interval { every_secs: 60 },
+            cedar_policy: "watch-policy".to_owned(),
+            enabled: true,
+            read_only: true,
+            timeout_secs: 120,
         }];
         let serialized = toml::to_string_pretty(&cfg).expect("serialize");
         let back: Config = toml::from_str(&serialized).expect("deserialize");

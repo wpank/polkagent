@@ -1,0 +1,42 @@
+Here's a summary of everything implemented:
+
+## Changes Made
+
+### `polkagent-payment` — Earn/Spend Ledger + x402 Headers
+
+**New file: `src/ledger.rs`** — Experimental module (labeled PRD-08 §5.2 prototype)
+- **`Ledger`** — In-memory ledger tracking per-agent balance, earnings, and spending
+  - `record_earning(skill_name, amount, description)` — credits balance when a skill task completes
+  - `record_spend(tool_name, amount, description)` — debits balance for tool invocations
+  - `prepare_x402_payment(tool_name, amount)` → `X402PaymentHeader` — combines spend + header construction
+  - `balance()`, `balance_planck()`, `total_earned_planck()`, `total_spent_planck()`, `entries()`
+- **`LedgerEntry`** / **`LedgerEntryKind`** — Individual earn/spend records with timestamps
+- **`X402PaymentHeader`** — Prototype x402 payment header for HTTP tool calls
+  - `to_header_value()` → `"x402 amount=...;asset=...;payer=...;sig=..."`
+
+**Modified: `src/error.rs`** — Added `InsufficientBalance { available_planck, required_planck }` variant
+
+**Modified: `src/lib.rs`** — Added `pub mod ledger` + re-exports
+
+**New file: `tests/earn_spend_cycle.rs`** — Integration test exercising the full cycle:
+1. Agent earns from skill completion → balance increases
+2. Agent invokes tool with x402 payment header → balance decreases, header well-formed
+3. Multiple earn/spend rounds tracked correctly
+4. Insufficient balance rejection verified
+5. Independent agent ledgers verified
+
+### `polkagent-skill` — Reward Definitions
+
+**New file: `src/reward.rs`** — Experimental module (labeled PRD-08 §5.2 prototype)
+- **`SkillReward`** — Reward earned for completing a skill (name, amount, asset, description)
+  - `new()`, `native()` constructors
+- **`RewardPolicy`** — Maps skill names to reward amounts with a default fallback
+  - `add_entry()`, `reward_for(skill_name)` → `SkillReward`
+
+**Modified: `src/lib.rs`** — Added `pub mod reward` + re-exports
+
+### Verification
+
+- `cargo check --workspace` ✅ — clean
+- `cargo test -p polkagent-payment` ✅ — 191 tests passed (including 4 new integration tests)
+- `cargo test -p polkagent-skill` ✅ — 61 tests passed (including 5 new reward tests)

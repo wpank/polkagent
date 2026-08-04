@@ -227,10 +227,8 @@ fn to_api_message(msg: &InferenceMessage) -> ApiMessage {
                 tool_name,
                 arguments_json,
             } => {
-                let input: serde_json::Value =
-                    serde_json::from_str(arguments_json).unwrap_or(serde_json::Value::Object(
-                        serde_json::Map::new(),
-                    ));
+                let input: serde_json::Value = serde_json::from_str(arguments_json)
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
                 ApiContentBlock::ToolUse {
                     id: tool_call_id.clone(),
                     name: tool_name.clone(),
@@ -319,7 +317,10 @@ fn to_inference_response(resp: &MessageResponse) -> InferenceResponse {
     InferenceResponse {
         text: text_parts.join(""),
         tool_calls,
-        stop_reason: resp.stop_reason.clone().unwrap_or_else(|| "end_turn".to_string()),
+        stop_reason: resp
+            .stop_reason
+            .clone()
+            .unwrap_or_else(|| "end_turn".to_string()),
         usage: to_token_usage(&resp.usage),
         provider_request_id: Some(resp.id.clone()),
     }
@@ -327,7 +328,12 @@ fn to_inference_response(resp: &MessageResponse) -> InferenceResponse {
 
 /// Map an HTTP status code, optional error body, and optional `Retry-After`
 /// header to an [`ExecutorError`] via [`ProviderError`] classification.
-fn map_api_error(status: u16, body: &str, retry_after_secs: Option<u64>, model_id: &str) -> ExecutorError {
+fn map_api_error(
+    status: u16,
+    body: &str,
+    retry_after_secs: Option<u64>,
+    model_id: &str,
+) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
         .map(|e| e.error.message)
         .unwrap_or_else(|_| body.to_string());
@@ -388,17 +394,13 @@ fn process_sse_events(sse_events: Vec<SseEvent>) -> Vec<Result<StreamEvent, Exec
                 provider_request_id = Some(message.id);
                 usage = to_token_usage(&message.usage);
             }
-            SseEvent::ContentBlockStart {
-                content_block, ..
-            } => match content_block {
+            SseEvent::ContentBlockStart { content_block, .. } => match content_block {
                 ApiContentBlock::ToolUse { id, name, .. } => {
                     // Finish previous tool if any.
                     if let Some(prev_id) = current_tool_id.take() {
                         let call = ToolCall {
                             tool_call_id: prev_id,
-                            tool_name: current_tool_name
-                                .take()
-                                .unwrap_or_default(),
+                            tool_name: current_tool_name.take().unwrap_or_default(),
                             arguments_json: current_tool_input.clone(),
                         };
                         stream_events
@@ -432,9 +434,7 @@ fn process_sse_events(sse_events: Vec<SseEvent>) -> Vec<Result<StreamEvent, Exec
                 DeltaBlock::InputJsonDelta { partial_json } => {
                     current_tool_input.push_str(&partial_json);
                     stream_events.push(Ok(StreamEvent::ToolCallDelta {
-                        tool_call_id: current_tool_id
-                            .clone()
-                            .unwrap_or_default(),
+                        tool_call_id: current_tool_id.clone().unwrap_or_default(),
                         name: None,
                         input_delta: partial_json,
                     }));
@@ -448,8 +448,7 @@ fn process_sse_events(sse_events: Vec<SseEvent>) -> Vec<Result<StreamEvent, Exec
                         tool_name: current_tool_name.take().unwrap_or_default(),
                         arguments_json: current_tool_input.clone(),
                     };
-                    stream_events
-                        .push(Ok(StreamEvent::ToolCallComplete { call: call.clone() }));
+                    stream_events.push(Ok(StreamEvent::ToolCallComplete { call: call.clone() }));
                     tool_calls.push(call);
                     current_tool_input.clear();
                 }
@@ -638,11 +637,13 @@ impl AnthropicExecutor {
 
             let status = response.status().as_u16();
             if status == 200 {
-                let response_body = response.text().await.map_err(|e| {
-                    ExecutorError::InvalidResponse {
-                        message: format!("failed to read response body: {e}"),
-                    }
-                })?;
+                let response_body =
+                    response
+                        .text()
+                        .await
+                        .map_err(|e| ExecutorError::InvalidResponse {
+                            message: format!("failed to read response body: {e}"),
+                        })?;
 
                 let parsed: MessageResponse =
                     serde_json::from_str(&response_body).map_err(|e| {
@@ -708,11 +709,12 @@ impl AnthropicExecutor {
             return Err(map_api_error(status, &error_body, retry_after, &self.model));
         }
 
-        let full_body = response.text().await.map_err(|e| {
-            ExecutorError::InvalidResponse {
+        let full_body = response
+            .text()
+            .await
+            .map_err(|e| ExecutorError::InvalidResponse {
                 message: format!("failed to read SSE stream body: {e}"),
-            }
-        })?;
+            })?;
 
         let sse_events = parse_sse_events(&full_body);
         Ok(process_sse_events(sse_events))
@@ -1083,8 +1085,13 @@ mod tests {
         let body = build_request_body(&req, false);
         let json = serde_json::to_value(&body).expect("serialize");
 
-        let temp = json["temperature"].as_f64().expect("temperature is a number");
-        assert!((temp - 0.7).abs() < 0.001, "temperature should be ~0.7, got {temp}");
+        let temp = json["temperature"]
+            .as_f64()
+            .expect("temperature is a number");
+        assert!(
+            (temp - 0.7).abs() < 0.001,
+            "temperature should be ~0.7, got {temp}"
+        );
     }
 
     #[test]
@@ -1207,7 +1214,9 @@ mod tests {
 
         assert_eq!(parsed.id, "msg_01XFDUDYJgAACzvnptvVoYEL");
         assert_eq!(parsed.content.len(), 1);
-        assert!(matches!(&parsed.content[0], ApiContentBlock::Text { text } if text == "Hello! How can I help you today?"));
+        assert!(
+            matches!(&parsed.content[0], ApiContentBlock::Text { text } if text == "Hello! How can I help you today?")
+        );
         assert_eq!(parsed.stop_reason, Some("end_turn".to_string()));
         assert_eq!(parsed.usage.input_tokens, 25);
         assert_eq!(parsed.usage.output_tokens, 12);
@@ -1221,7 +1230,9 @@ mod tests {
         assert_eq!(parsed.content.len(), 2);
 
         // First block: text.
-        assert!(matches!(&parsed.content[0], ApiContentBlock::Text { text } if text.contains("read that file")));
+        assert!(
+            matches!(&parsed.content[0], ApiContentBlock::Text { text } if text.contains("read that file"))
+        );
 
         // Second block: tool_use.
         match &parsed.content[1] {
@@ -1323,7 +1334,12 @@ mod tests {
     fn error_mapping_429_rate_limit_with_retry_after() {
         let body = sample_error_response_json("rate_limit_error", "rate limit exceeded");
         let err = map_api_error(429, &body, Some(30), "test-model");
-        assert!(matches!(err, ExecutorError::RateLimit { retry_after_secs: Some(30) }));
+        assert!(matches!(
+            err,
+            ExecutorError::RateLimit {
+                retry_after_secs: Some(30)
+            }
+        ));
     }
 
     #[test]
@@ -1354,7 +1370,9 @@ mod tests {
     fn error_mapping_404_model_not_found() {
         let body = sample_error_response_json("not_found_error", "model not found");
         let err = map_api_error(404, &body, None, "claude-nonexistent");
-        assert!(matches!(err, ExecutorError::ModelNotFound { ref model, .. } if model == "claude-nonexistent"));
+        assert!(
+            matches!(err, ExecutorError::ModelNotFound { ref model, .. } if model == "claude-nonexistent")
+        );
         assert!(!err.is_retryable());
     }
 
@@ -1601,10 +1619,7 @@ mod tests {
             assert_eq!(result.stop_reason, "end_turn");
             assert_eq!(result.usage.input_tokens, 20);
             assert_eq!(result.usage.output_tokens, 5);
-            assert_eq!(
-                result.provider_request_id.as_deref(),
-                Some("msg_stream_01")
-            );
+            assert_eq!(result.provider_request_id.as_deref(), Some("msg_stream_01"));
         } else {
             panic!("last event should be Completed");
         }
@@ -1643,10 +1658,7 @@ mod tests {
         assert_eq!(tool_completes.len(), 1);
         assert_eq!(tool_completes[0].tool_call_id, "toolu_abc123");
         assert_eq!(tool_completes[0].tool_name, "file_read");
-        assert_eq!(
-            tool_completes[0].arguments_json,
-            r#"{"path":"/tmp/test"}"#
-        );
+        assert_eq!(tool_completes[0].arguments_json, r#"{"path":"/tmp/test"}"#);
 
         // Verify final Completed event.
         if let Ok(StreamEvent::Completed { result }) = stream_events.last().expect("events") {
@@ -1664,9 +1676,9 @@ mod tests {
         let sse_events = parse_sse_events(&raw);
         let stream_events = process_sse_events(sse_events);
 
-        let has_usage_update = stream_events.iter().any(|e| {
-            matches!(e, Ok(StreamEvent::UsageUpdate { .. }))
-        });
+        let has_usage_update = stream_events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::UsageUpdate { .. })));
         assert!(has_usage_update, "should have a UsageUpdate event");
     }
 
@@ -1679,7 +1691,10 @@ mod tests {
         let tool_deltas: Vec<(Option<String>, String)> = stream_events
             .iter()
             .filter_map(|e| {
-                if let Ok(StreamEvent::ToolCallDelta { name, input_delta, .. }) = e {
+                if let Ok(StreamEvent::ToolCallDelta {
+                    name, input_delta, ..
+                }) = e
+                {
                     Some((name.clone(), input_delta.clone()))
                 } else {
                     None
@@ -1758,8 +1773,8 @@ mod tests {
 
     #[test]
     fn with_max_retries_overrides_default() {
-        let executor = AnthropicExecutor::new_builder("key".into(), "model".into())
-            .with_max_retries(5);
+        let executor =
+            AnthropicExecutor::new_builder("key".into(), "model".into()).with_max_retries(5);
         assert_eq!(executor.max_retries, 5);
     }
 
@@ -1776,8 +1791,8 @@ mod tests {
 
     #[test]
     fn with_max_concurrent_creates_semaphore() {
-        let executor = AnthropicExecutor::new_builder("key".into(), "model".into())
-            .with_max_concurrent(5);
+        let executor =
+            AnthropicExecutor::new_builder("key".into(), "model".into()).with_max_concurrent(5);
         assert!(executor.concurrency_semaphore.is_some());
         let sem = executor.concurrency_semaphore.as_ref().unwrap();
         assert_eq!(sem.available_permits(), 5);
@@ -1806,7 +1821,11 @@ mod tests {
         assert_eq!(executor.max_retries, 2);
         assert!(executor.concurrency_semaphore.is_some());
         assert_eq!(
-            executor.concurrency_semaphore.as_ref().unwrap().available_permits(),
+            executor
+                .concurrency_semaphore
+                .as_ref()
+                .unwrap()
+                .available_permits(),
             10
         );
     }
@@ -1880,9 +1899,7 @@ mod tests {
     fn response_with_no_stop_reason_defaults_to_end_turn() {
         let resp = MessageResponse {
             id: "msg_1".into(),
-            content: vec![ApiContentBlock::Text {
-                text: "hi".into(),
-            }],
+            content: vec![ApiContentBlock::Text { text: "hi".into() }],
             model: "test".into(),
             stop_reason: None,
             usage: ApiUsage {
@@ -2003,7 +2020,12 @@ mod tests {
     #[test]
     fn map_api_error_produces_non_retryable_for_client_errors() {
         for status in [401, 403] {
-            let err = map_api_error(status, r#"{"error":{"type":"e","message":"m"}}"#, None, "test-model");
+            let err = map_api_error(
+                status,
+                r#"{"error":{"type":"e","message":"m"}}"#,
+                None,
+                "test-model",
+            );
             assert!(
                 !err.is_retryable(),
                 "status {status} should produce non-retryable error"
@@ -2076,8 +2098,7 @@ mod tests {
             }
         });
 
-        let parsed: MessageResponse =
-            serde_json::from_value(json).expect("parse response");
+        let parsed: MessageResponse = serde_json::from_value(json).expect("parse response");
         let response = to_inference_response(&parsed);
 
         assert_eq!(

@@ -56,10 +56,8 @@ impl FeedProcessor {
     /// `last_fired_at` — has not changed between calls).
     pub async fn process_item(&self, feed: &Feed, item: &FeedItem) -> Result<Vec<TriggerResult>> {
         let triggers = self.store.list_triggers(&feed.id).await?;
-        let results: Vec<TriggerResult> = triggers
-            .iter()
-            .map(|t| evaluate_trigger(t, item))
-            .collect();
+        let results: Vec<TriggerResult> =
+            triggers.iter().map(|t| evaluate_trigger(t, item)).collect();
         Ok(results)
     }
 

@@ -1,0 +1,36 @@
+All done. Here's a summary of what was done:
+
+---
+
+### Changes Made
+
+**1. inbox.rs** — Already correct ✅  
+The `approve` and `deny` functions were already inserting into `effect_outcomes` (not writing `claimed_by`), and the `run_events` INSERT already used the correct column names (`kind`, `data_json`, `timestamp`). No changes needed.
+
+**2. store.rs `propose_intent` — persist `turn_id`** ✅  
+- Extracted `turn_id` from `intent.payload["turn_id"]` as an `Option<String>`
+- Added `turn_id` to the INSERT statement (now 9 columns instead of 7)
+- Also added `priority` extraction from the payload (see #3)
+
+**3. store.rs `claim_intent` — ORDER BY priority** ✅  
+- Created new migration **V9** (`v9_intent_priority.sql`) that adds a `priority INTEGER NOT NULL DEFAULT 1` column to `effect_intents` with a covering index
+- Registered V9 in `migrations.rs`
+- Updated `claim_intent` query from `ORDER BY created_at ASC` to `ORDER BY priority DESC, created_at ASC` — higher-priority intents are now claimed first
+- Updated `propose_intent` to persist the priority value (parsed from payload as integer or string enum: low=0, normal=1, high=2, critical=3)
+- Updated test assertions from version 8 → 9
+
+**4. pipeline.rs — BLAKE3 digest computation** ✅  
+- `record_outcome` now computes a real BLAKE3 digest of `serde_json::to_vec(&outcome.result)` using the `blake3` crate (already a dependency)
+- The hex-encoded digest is embedded in the stored payload under `"digest_hex"` and logged
+- Updated `make_outcome` test helper to compute the real digest instead of `[0u8; 32]`
+
+### Files Modified
+- `crates/polkagent-store-sqlite/src/store.rs` — propose_intent + claim_intent fixes
+- `crates/polkagent-store-sqlite/src/migrations.rs` — V9 registration
+- `crates/polkagent-store-sqlite/src/v9_intent_priority.sql` — new migration (new file)
+- `crates/polkagent-store-sqlite/tests/integration.rs` — version assertions 8→9
+- `crates/polkagent-effect/src/pipeline.rs` — BLAKE3 digest computation
+
+### Verification
+- `cargo check --workspace` passes cleanly
+- All 46 tests in `polkagent-store-sqlite` + `polkagent-effect` pass

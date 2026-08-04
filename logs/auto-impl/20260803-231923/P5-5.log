@@ -1,0 +1,44 @@
+Everything is complete. Here's a summary of all changes made:
+
+---
+
+## Summary
+
+### New crate: `polkagent-marketplace`
+
+Created `crates/polkagent-marketplace/` with 4 source files:
+
+| File | Purpose |
+|---|---|
+| `Cargo.toml` | Crate manifest with async-trait, serde, chrono, uuid, tokio dependencies |
+| `src/lib.rs` | Crate root — re-exports core types and trait |
+| `src/types.rs` | Data types: `ServiceListing`, `ServicePricing`, `ServiceAvailability`, `CreateListingRequest`, `SearchFilter` |
+| `src/store.rs` | `ServiceRegistryStore` async trait with `create_listing`, `get_listing`, `search` methods + `RegistryError` |
+| `src/memory.rs` | `InMemoryServiceRegistry` — full in-memory implementation with 5 passing tests |
+
+Service declarations include **capabilities**, **pricing** (model/unit/price/currency), **availability** (available/maintenance/deprecated/offline), **version**, SLA tier, protocols, and API schema — as specified by PRD-12.
+
+### Modified: `polkagent-api`
+
+**`Cargo.toml`** — Added `polkagent-marketplace` dependency.
+
+**`src/state.rs`** — Added `service_registry_store: Option<Arc<dyn ServiceRegistryStore>>` to `AppState` with a `with_service_registry_store()` builder method (follows the existing optional-store pattern, returns 501 when `None`).
+
+**`src/dto.rs`** — Added registry DTOs: `CreateServiceListingRequest`, `ServiceListingResponse`, `ListServiceListingsResponse`, `SearchListingsQuery`.
+
+**`src/routes/registry.rs`** (new) — Three handlers:
+- **`POST /api/v1alpha1/registry/listings`** — Creates a service listing (returns 201)
+- **`GET /api/v1alpha1/registry/listings/{id}`** — Gets a listing by UUID
+- **`GET /api/v1alpha1/registry/search`** — Discovery API with query params: `q` (free text), `capability` (comma-separated), `tag` (comma-separated), `author` (exact match), `limit`, `offset`
+
+**`src/routes/mod.rs`** — Registered the `registry` module and wired routes into the v1alpha1 router.
+
+### Modified: Workspace `Cargo.toml`
+
+Added `"crates/polkagent-marketplace"` to workspace members.
+
+### Verification
+
+- ✅ `cargo check --workspace` — clean
+- ✅ `cargo test -p polkagent-marketplace` — 5/5 tests pass
+- ✅ `cargo test -p polkagent-api` — 303/303 tests pass (173 unit + 130 integration)

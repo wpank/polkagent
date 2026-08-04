@@ -15,7 +15,9 @@
 
 use std::net::SocketAddr;
 
-use crate::schema::{Config, DatabaseBackend, HarnessEntryConfig, CURRENT_SCHEMA_VERSION};
+use crate::schema::{
+    Config, DatabaseBackend, HarnessEntryConfig, WatcherSchedule, CURRENT_SCHEMA_VERSION,
+};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -77,6 +79,7 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
     validate_harness(config, &mut errors);
     validate_artifact(config, &mut errors);
     validate_observability(config, &mut errors);
+    validate_watchers(config, &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -101,7 +104,10 @@ fn validate_meta(config: &Config, errors: &mut Vec<ValidationError>) {
     }
 
     if config.meta.api_version.is_empty() {
-        errors.push(ValidationError::new("meta.api_version", "must not be empty"));
+        errors.push(ValidationError::new(
+            "meta.api_version",
+            "must not be empty",
+        ));
     }
 }
 
@@ -134,8 +140,8 @@ fn validate_database(config: &Config, errors: &mut Vec<ValidationError>) {
         DatabaseBackend::Postgres => {
             // URL may be empty in the config file when loaded from env var.
             // We only reject it if it is both empty AND the env var is absent.
-            let url_from_env = std::env::var("POLKAGENT_DATABASE_POSTGRES_URL")
-                .is_ok_and(|v| !v.is_empty());
+            let url_from_env =
+                std::env::var("POLKAGENT_DATABASE_POSTGRES_URL").is_ok_and(|v| !v.is_empty());
             if config.database.postgres.url.is_empty() && !url_from_env {
                 errors.push(ValidationError::new(
                     "database.postgres.url",
@@ -151,7 +157,8 @@ fn validate_database(config: &Config, errors: &mut Vec<ValidationError>) {
                 ));
             }
             let valid_ssl_modes = ["disable", "prefer", "require"];
-            if !valid_ssl_modes.contains(&config.database.postgres.ssl_mode.to_lowercase().as_str()) {
+            if !valid_ssl_modes.contains(&config.database.postgres.ssl_mode.to_lowercase().as_str())
+            {
                 errors.push(ValidationError::new(
                     "database.postgres.ssl_mode",
                     format!(
@@ -208,7 +215,10 @@ fn validate_providers(config: &Config, errors: &mut Vec<ValidationError>) {
         let prefix = format!("providers[{idx}]");
 
         if provider.id.is_empty() {
-            errors.push(ValidationError::new(format!("{prefix}.id"), "must not be empty"));
+            errors.push(ValidationError::new(
+                format!("{prefix}.id"),
+                "must not be empty",
+            ));
         } else if !seen_ids.insert(provider.id.clone()) {
             errors.push(ValidationError::new(
                 format!("{prefix}.id"),
@@ -255,11 +265,8 @@ fn validate_providers(config: &Config, errors: &mut Vec<ValidationError>) {
 }
 
 fn validate_models(config: &Config, errors: &mut Vec<ValidationError>) {
-    let provider_ids: std::collections::HashSet<&str> = config
-        .providers
-        .iter()
-        .map(|p| p.id.as_str())
-        .collect();
+    let provider_ids: std::collections::HashSet<&str> =
+        config.providers.iter().map(|p| p.id.as_str()).collect();
     let mut seen_slugs = std::collections::HashSet::new();
 
     for (idx, model) in config.models.iter().enumerate() {
@@ -617,7 +624,9 @@ fn validate_harness(config: &Config, errors: &mut Vec<ValidationError>) {
 
     // If a default harness is named, it must appear in the harnesses map.
     if let Some(default_name) = &config.harness.default {
-        if !config.harness.harnesses.contains_key(default_name) && !config.harness.harnesses.is_empty() {
+        if !config.harness.harnesses.contains_key(default_name)
+            && !config.harness.harnesses.is_empty()
+        {
             errors.push(ValidationError::new(
                 "harness.default",
                 format!(
@@ -738,6 +747,77 @@ fn validate_observability(config: &Config, errors: &mut Vec<ValidationError>) {
     }
 }
 
+fn validate_watchers(config: &Config, errors: &mut Vec<ValidationError>) {
+    let mut names = std::collections::HashSet::new();
+
+    for (i, w) in config.watchers.iter().enumerate() {
+        let prefix = format!("watchers[{i}]");
+
+        if w.name.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.name"),
+                "watcher name must not be empty",
+            ));
+        } else if !names.insert(w.name.clone()) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.name"),
+                format!("duplicate watcher name '{}'", w.name),
+            ));
+        }
+
+        if w.agent_id.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.agent_id"),
+                "agent_id must not be empty",
+            ));
+        }
+
+        if w.cedar_policy.is_empty() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.cedar_policy"),
+                "cedar_policy must not be empty",
+            ));
+        }
+
+        match &w.schedule {
+            WatcherSchedule::Cron { expr } => {
+                if expr.is_empty() {
+                    errors.push(ValidationError::new(
+                        format!("{prefix}.schedule.expr"),
+                        "cron expression must not be empty",
+                    ));
+                } else {
+                    let parts: Vec<&str> = expr.split_whitespace().collect();
+                    if parts.len() != 5 {
+                        errors.push(ValidationError::new(
+                            format!("{prefix}.schedule.expr"),
+                            format!(
+                                "cron expression '{}' must have exactly 5 fields (minute hour day month dow)",
+                                expr
+                            ),
+                        ));
+                    }
+                }
+            }
+            WatcherSchedule::Interval { every_secs } => {
+                if *every_secs == 0 {
+                    errors.push(ValidationError::new(
+                        format!("{prefix}.schedule.every_secs"),
+                        "interval must be greater than zero",
+                    ));
+                }
+            }
+        }
+
+        if w.timeout_secs == 0 {
+            errors.push(ValidationError::new(
+                format!("{prefix}.timeout_secs"),
+                "timeout_secs must be greater than zero",
+            ));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -750,7 +830,7 @@ mod tests {
     use crate::schema::{
         ArtifactConfig, AuthConfig, Config, DatabaseBackend, HarnessConfig, HarnessEntryConfig,
         ModelOverrideConfig, ObservabilityConfig, RateLimitConfig, SecurityConfig, ServerConfig,
-        SkillsConfig, TlsConfig,
+        SkillsConfig, TlsConfig, WatcherConfig, WatcherSchedule,
     };
 
     /// Serialise tests that read or mutate process-level env vars.
@@ -806,7 +886,8 @@ mod tests {
         cfg.execution.max_concurrent_runs = 0;
         let errs = validate(&cfg).unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field == "execution.max_concurrent_runs"),
+            errs.iter()
+                .any(|e| e.field == "execution.max_concurrent_runs"),
             "expected max_concurrent_runs error, got: {errs:?}"
         );
     }
@@ -817,7 +898,8 @@ mod tests {
         cfg.execution.budget.warn_threshold_percent = 101;
         let errs = validate(&cfg).unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field == "execution.budget.warn_threshold_percent"),
+            errs.iter()
+                .any(|e| e.field == "execution.budget.warn_threshold_percent"),
             "got: {errs:?}"
         );
     }
@@ -937,7 +1019,8 @@ mod tests {
         cfg.server.rate_limit.requests_per_second = 0;
         let errs = validate(&cfg).unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field == "server.rate_limit.requests_per_second"),
+            errs.iter()
+                .any(|e| e.field == "server.rate_limit.requests_per_second"),
             "expected rate_limit.requests_per_second error, got: {errs:?}"
         );
     }
@@ -987,12 +1070,8 @@ mod tests {
     fn server_tls_nonexistent_cert_path_is_rejected() {
         let mut cfg = Config::default();
         cfg.server.tls = Some(TlsConfig {
-            cert_path: Some(std::path::PathBuf::from(
-                "/nonexistent/path/to/cert.pem",
-            )),
-            key_path: Some(std::path::PathBuf::from(
-                "/nonexistent/path/to/key.pem",
-            )),
+            cert_path: Some(std::path::PathBuf::from("/nonexistent/path/to/cert.pem")),
+            key_path: Some(std::path::PathBuf::from("/nonexistent/path/to/key.pem")),
             ca_path: None,
         });
         let errs = validate(&cfg).unwrap_err();
@@ -1064,7 +1143,8 @@ mod tests {
         cfg.security.max_file_size_bytes = 0;
         let errs = validate(&cfg).unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field == "security.max_file_size_bytes"),
+            errs.iter()
+                .any(|e| e.field == "security.max_file_size_bytes"),
             "expected max_file_size_bytes error, got: {errs:?}"
         );
     }
@@ -1115,7 +1195,8 @@ mod tests {
         )];
         let errs = validate(&cfg).unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field.starts_with("skills.directories")),
+            errs.iter()
+                .any(|e| e.field.starts_with("skills.directories")),
             "expected skills.directories error, got: {errs:?}"
         );
     }
@@ -1167,8 +1248,7 @@ mod tests {
     #[test]
     fn harness_nonexistent_binary_path_is_rejected() {
         let mut cfg = Config::default();
-        cfg.harness.binary_path =
-            Some(std::path::PathBuf::from("/nonexistent/harness/binary"));
+        cfg.harness.binary_path = Some(std::path::PathBuf::from("/nonexistent/harness/binary"));
         let errs = validate(&cfg).unwrap_err();
         assert!(
             errs.iter().any(|e| e.field == "harness.binary_path"),
@@ -1223,7 +1303,8 @@ mod tests {
         cfg.observability.otlp_protocol = "tcp".to_owned();
         let errs = validate(&cfg).unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field == "observability.otlp_protocol"),
+            errs.iter()
+                .any(|e| e.field == "observability.otlp_protocol"),
             "expected observability.otlp_protocol error, got: {errs:?}"
         );
     }
@@ -1234,7 +1315,8 @@ mod tests {
         cfg.observability.otlp_endpoint = Some("localhost:4317".to_owned()); // missing scheme
         let errs = validate(&cfg).unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field == "observability.otlp_endpoint"),
+            errs.iter()
+                .any(|e| e.field == "observability.otlp_endpoint"),
             "expected observability.otlp_endpoint error, got: {errs:?}"
         );
     }
@@ -1570,5 +1652,122 @@ mod tests {
         cfg.harness.harnesses = harnesses;
         cfg.harness.default = Some("codex".to_owned());
         validate(&cfg).expect("valid harness entry config should pass");
+    }
+
+    // -----------------------------------------------------------------------
+    // Watcher validation  (PRD-08 §7, deliverable 6.6)
+    // -----------------------------------------------------------------------
+
+    fn make_valid_watcher() -> WatcherConfig {
+        WatcherConfig {
+            name: "test-watcher".to_owned(),
+            agent_id: "agent-watcher-1".to_owned(),
+            schedule: WatcherSchedule::Interval { every_secs: 300 },
+            cedar_policy: "watcher-read-only".to_owned(),
+            enabled: true,
+            read_only: true,
+            timeout_secs: 120,
+        }
+    }
+
+    #[test]
+    fn valid_watcher_config_passes_validation() {
+        let mut cfg = Config::default();
+        cfg.watchers.push(make_valid_watcher());
+        validate(&cfg).expect("valid watcher config should pass");
+    }
+
+    #[test]
+    fn watcher_empty_name_rejected() {
+        let mut cfg = Config::default();
+        let mut w = make_valid_watcher();
+        w.name = String::new();
+        cfg.watchers.push(w);
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| e.field.contains("name")));
+    }
+
+    #[test]
+    fn watcher_empty_agent_id_rejected() {
+        let mut cfg = Config::default();
+        let mut w = make_valid_watcher();
+        w.agent_id = String::new();
+        cfg.watchers.push(w);
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| e.field.contains("agent_id")));
+    }
+
+    #[test]
+    fn watcher_empty_cedar_policy_rejected() {
+        let mut cfg = Config::default();
+        let mut w = make_valid_watcher();
+        w.cedar_policy = String::new();
+        cfg.watchers.push(w);
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| e.field.contains("cedar_policy")));
+    }
+
+    #[test]
+    fn watcher_duplicate_names_rejected() {
+        let mut cfg = Config::default();
+        cfg.watchers.push(make_valid_watcher());
+        cfg.watchers.push(make_valid_watcher());
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("duplicate")));
+    }
+
+    #[test]
+    fn watcher_zero_interval_rejected() {
+        let mut cfg = Config::default();
+        let mut w = make_valid_watcher();
+        w.schedule = WatcherSchedule::Interval { every_secs: 0 };
+        cfg.watchers.push(w);
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| e.field.contains("every_secs")));
+    }
+
+    #[test]
+    fn watcher_empty_cron_expr_rejected() {
+        let mut cfg = Config::default();
+        let mut w = make_valid_watcher();
+        w.schedule = WatcherSchedule::Cron {
+            expr: String::new(),
+        };
+        cfg.watchers.push(w);
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| e.field.contains("expr")));
+    }
+
+    #[test]
+    fn watcher_invalid_cron_field_count_rejected() {
+        let mut cfg = Config::default();
+        let mut w = make_valid_watcher();
+        w.schedule = WatcherSchedule::Cron {
+            expr: "* * *".to_owned(),
+        };
+        cfg.watchers.push(w);
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("5 fields")));
+    }
+
+    #[test]
+    fn watcher_valid_cron_passes() {
+        let mut cfg = Config::default();
+        let mut w = make_valid_watcher();
+        w.schedule = WatcherSchedule::Cron {
+            expr: "*/5 * * * *".to_owned(),
+        };
+        cfg.watchers.push(w);
+        validate(&cfg).expect("valid cron watcher should pass");
+    }
+
+    #[test]
+    fn watcher_zero_timeout_rejected() {
+        let mut cfg = Config::default();
+        let mut w = make_valid_watcher();
+        w.timeout_secs = 0;
+        cfg.watchers.push(w);
+        let errs = validate(&cfg).unwrap_err();
+        assert!(errs.iter().any(|e| e.field.contains("timeout_secs")));
     }
 }

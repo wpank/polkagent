@@ -88,7 +88,7 @@ pub use error::MetadataError;
 pub use pin::PinStore;
 pub use service::MetadataService;
 pub use types::{
-    CallInfo, ChainId, MetadataDrift, MetadataHash, MetadataSnapshot, MetadataVersion,
-    PalletInfo, PinnedMetadata,
+    CallInfo, ChainId, MetadataDrift, MetadataHash, MetadataSnapshot, MetadataVersion, PalletInfo,
+    PinnedMetadata,
 };
 pub use validation::validate_network;

@@ -1,0 +1,64 @@
+All done. Here's a summary of everything that was implemented:
+
+---
+
+## Summary of Changes
+
+### 1. `MetadataDriftDetected` Event (PRD-05 §4.4)
+
+**`crates/polkagent-core/src/event.rs`** — Added `MetadataDriftDetected` variant to `EventKind`:
+- Fields: `chain_id`, `pinned_hash`, `current_hash`
+- Durable durability
+
+**`crates/polkagent-event/src/types.rs`** — Added `MetadataDriftDetected` to the `EventType` catalog:
+- `as_str()` → `"metadata_drift_detected"`
+- `from_kind()` mapping from `EventKind::MetadataDriftDetected`
+- Default durability: `Durable`
+
+**`crates/polkagent-telemetry/src/jsonl.rs`** — Added match arm for `MetadataDriftDetected`
+
+### 2. `MetadataDriftWatcher` Background Service
+
+**`crates/polkagent-service/src/metadata_watcher.rs`** (new file) — Background watcher that:
+- Polls `MetadataService::check_drift()` on configured chain IDs at a configurable interval
+- Publishes `MetadataDriftDetected` events to the `EventBus` when drift is found
+- Follows the `WebhookDispatcher` pattern: `new()` → `start()` → `shutdown()`
+- Uses `tokio::select!` with `watch::channel` for clean shutdown
+- Is **detect-and-propose only** — never auto-merges metadata
+- Includes `check_drift_all()` utility for on-demand checks (used by doctor)
+- 6 unit tests covering: drift detection, event publishing, start/shutdown lifecycle
+
+### 3. Wired into `AppService` and Startup
+
+**`crates/polkagent-service/src/app.rs`**:
+- `AppServiceBuilder::with_metadata_watcher()` builder method
+- `metadata_watcher` field on `AppService` (Mutex-wrapped optional)
+- `AppService::start_metadata_watcher()` — starts the watcher if configured
+- Updated `Debug` impl to include `has_metadata_watcher`
+
+**`crates/polkagent-service/src/lib.rs`**:
+- Registered `metadata_watcher` module
+- Re-exported `MetadataDriftWatcher`
+
+**`crates/polkagent-service/Cargo.toml`** — Added `polkagent-metadata` dependency
+
+### 4. `polkagent doctor` Metadata Drift Check
+
+**`crates/polkagent-cli/src/commands/doctor.rs`** — Added `check_metadata_drift()`:
+- Checks well-known chains (polkadot, kusama) for drift
+- Reports `OK` when no drift, `WARN` per chain with drift details
+- Appears in the system checks section alongside database/config/signer checks
+
+**`crates/polkagent-cli/Cargo.toml`** — Added `polkagent-metadata` dependency
+
+### 5. TUI Audit Tab Drift Alerts
+
+**`crates/polkagent-cli/src/tui/db.rs`** — Updated severity classification to tag events with `kind` containing `"drift"` as `"warn"` severity (amber ▲ in the audit log)
+
+**`crates/polkagent-cli/src/commands/run_printer.rs`** — Added match arm for `MetadataDriftDetected` to render drift warnings in CLI run output
+
+### Verification
+
+- `cargo check --workspace` ✅ — clean build
+- `cargo test -p polkagent-service -- metadata_watcher` ✅ — all 6 new tests pass
+- `cargo test -p polkagent-core -p polkagent-event -p polkagent-telemetry` ✅ — all 89 tests pass

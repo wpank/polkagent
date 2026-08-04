@@ -290,10 +290,7 @@ mod tests {
 
     #[test]
     fn codex_apply_patch_maps_to_apply_patch() {
-        assert_eq!(
-            canonical_of_codex("codex_apply_patch"),
-            Some("apply_patch")
-        );
+        assert_eq!(canonical_of_codex("codex_apply_patch"), Some("apply_patch"));
     }
 
     // -- Copilot -> canonical -----------------------------------------------

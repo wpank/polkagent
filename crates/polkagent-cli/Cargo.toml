@@ -28,13 +28,23 @@ polkagent-executor-anthropic = { path = "../polkagent-executor-anthropic" }
 polkagent-executor-fake   = { path = "../polkagent-executor-fake" }
 polkagent-executor-local  = { path = "../polkagent-executor-local" }
 polkagent-executor-openai = { path = "../polkagent-executor-openai" }
+polkagent-executor-gemini = { path = "../polkagent-executor-gemini" }
+polkagent-executor-openrouter = { path = "../polkagent-executor-openrouter" }
 polkagent-executor-trait  = { path = "../polkagent-executor-trait" }
 polkagent-api             = { path = "../polkagent-api" }
 polkagent-identity        = { path = "../polkagent-identity" }
 polkagent-event           = { path = "../polkagent-event" }
 polkagent-service         = { path = "../polkagent-service" }
+polkagent-codec           = { path = "../polkagent-codec" }
+polkagent-metadata        = { path = "../polkagent-metadata" }
+polkagent-card            = { path = "../polkagent-card" }
 polkagent-chain-trait     = { path = "../polkagent-chain-trait" }
+polkagent-chain-subxt     = { path = "../polkagent-chain-subxt" }
 polkagent-chain-fake      = { path = "../polkagent-chain-fake" }
+polkagent-kit             = { path = "../polkagent-kit" }
+polkagent-tool            = { path = "../polkagent-tool" }
+polkagent-tool-governance = { path = "../polkagent-tool-governance" }
+polkagent-tool-treasury   = { path = "../polkagent-tool-treasury" }
 polkagent-harness-trait   = { path = "../polkagent-harness-trait" }
 polkagent-harness-codex   = { path = "../polkagent-harness-codex" }
 polkagent-harness-cursor  = { path = "../polkagent-harness-cursor" }
@@ -47,7 +57,8 @@ clap           = { workspace = true }
 clap_complete  = "4"
 
 # Async
-tokio = { workspace = true }
+tokio       = { workspace = true }
+async-trait = { workspace = true }
 
 # TUI
 ratatui   = { workspace = true }
@@ -71,6 +82,10 @@ chrono = { workspace = true }
 
 # Config parsing
 toml = { workspace = true }
+
+# Crypto (for Substrate storage key computation)
+blake2 = { workspace = true }
+twox-hash = { workspace = true }
 
 # IDs
 uuid = { workspace = true }

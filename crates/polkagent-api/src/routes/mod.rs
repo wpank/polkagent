@@ -76,6 +76,10 @@
 //!   POST   /conversations/:id/messages
 //!   DELETE /conversations/:id
 //!
+//!   POST   /registry/listings
+//!   GET    /registry/listings/:id
+//!   GET    /registry/search
+//!
 //!   GET    /system/info
 //!
 //! /openapi.json                     (no version prefix)
@@ -83,6 +87,13 @@
 //!
 //! /ws/v1alpha1                      (WebSocket, no version prefix in path)
 //!   GET    /ws/v1alpha1
+//!
+//! /v1/compat/pca                    (C1 bridge, no version prefix)
+//!   GET    /v1/compat/pca/health
+//!   GET    /v1/compat/pca/inbound
+//!   POST   /v1/compat/pca/inbound/ack
+//!   POST   /v1/compat/pca/inbound/renew
+//!   POST   /v1/compat/pca/send
 //!
 //! /health
 //!   GET    /health/live
@@ -93,6 +104,7 @@
 pub mod agents;
 pub mod artifacts;
 pub mod audit;
+pub mod bridge;
 pub mod conversations;
 pub mod effects;
 pub mod events;
@@ -104,6 +116,7 @@ pub mod models;
 pub mod openapi;
 pub mod payments;
 pub mod providers;
+pub mod registry;
 pub mod runs;
 pub mod skills;
 pub mod system;
@@ -150,20 +163,21 @@ pub fn register(state: AppState) -> Router {
     // -----------------------------------------------------------------------
     // Prometheus metrics (no version prefix — scrapeable by collectors)
     // -----------------------------------------------------------------------
-    let metrics_route = Router::new()
-        .route("/metrics", get(metrics::prometheus_metrics));
+    let metrics_route = Router::new().route("/metrics", get(metrics::prometheus_metrics));
 
     // -----------------------------------------------------------------------
     // OpenAPI spec route (no version prefix, no auth required)
     // -----------------------------------------------------------------------
-    let openapi_route = Router::new()
-        .route("/openapi.json", get(openapi::serve_openapi));
+    let openapi_route = Router::new().route("/openapi.json", get(openapi::serve_openapi));
 
     // -----------------------------------------------------------------------
     // Artifact content route with a larger body limit (10 MiB).
     // -----------------------------------------------------------------------
     let artifact_content_route = Router::new()
-        .route("/artifacts/{id}/content", get(artifacts::get_artifact_content))
+        .route(
+            "/artifacts/{id}/content",
+            get(artifacts::get_artifact_content),
+        )
         .layer(DefaultBodyLimit::max(BODY_LIMIT_ARTIFACT));
 
     // -----------------------------------------------------------------------
@@ -171,7 +185,10 @@ pub fn register(state: AppState) -> Router {
     // -----------------------------------------------------------------------
     let api_routes = Router::new()
         // Agents CRUD
-        .route("/agents", post(agents::create_agent).get(agents::list_agents))
+        .route(
+            "/agents",
+            post(agents::create_agent).get(agents::list_agents),
+        )
         .route(
             "/agents/{id}",
             get(agents::get_agent).delete(agents::delete_agent),
@@ -197,7 +214,10 @@ pub fn register(state: AppState) -> Router {
         .route("/effects/{id}/deny", post(effects::deny_effect))
         // Artifacts (content served from the higher-limit sub-router)
         .route("/artifacts/{id}", get(artifacts::get_artifact))
-        .route("/artifacts/{id}/provenance", get(artifacts::get_artifact_provenance))
+        .route(
+            "/artifacts/{id}/provenance",
+            get(artifacts::get_artifact_provenance),
+        )
         .merge(artifact_content_route)
         // Events (REST + WebSocket)
         .route("/events", get(events_rest::list_events))
@@ -206,7 +226,10 @@ pub fn register(state: AppState) -> Router {
         // Providers
         .route("/providers", get(providers::list_providers))
         .route("/providers/{id}", get(providers::get_provider))
-        .route("/providers/{provider_id}/models", get(models::list_provider_models))
+        .route(
+            "/providers/{provider_id}/models",
+            get(models::list_provider_models),
+        )
         // Models
         .route("/models", get(models::list_all_models))
         .route("/models/{model_id}", get(models::get_model))
@@ -214,8 +237,14 @@ pub fn register(state: AppState) -> Router {
         .route("/skills", get(skills::list_skills))
         .route("/skills/install", post(skills::install_skill))
         .route("/skills/{skill_id}", get(skills::get_skill))
-        .route("/skills/{skill_id}/uninstall", post(skills::uninstall_skill))
-        .route("/skills/{skill_id}/config", put(skills::update_skill_config))
+        .route(
+            "/skills/{skill_id}/uninstall",
+            post(skills::uninstall_skill),
+        )
+        .route(
+            "/skills/{skill_id}/config",
+            put(skills::update_skill_config),
+        )
         // Tools
         .route("/tools", get(tools::list_tools))
         .route("/tools/{tool_id}", get(tools::get_tool))
@@ -224,7 +253,10 @@ pub fn register(state: AppState) -> Router {
         .route("/payments/balance", get(payments::get_balance))
         .route("/payments/usage", get(payments::get_usage))
         .route("/payments/receipts", get(payments::list_receipts))
-        .route("/payments/receipts/{receipt_id}", get(payments::get_receipt))
+        .route(
+            "/payments/receipts/{receipt_id}",
+            get(payments::get_receipt),
+        )
         // Memory
         .route("/memory/query", post(memory::query_memory))
         .route("/memory/stats", get(memory::memory_stats))
@@ -247,6 +279,10 @@ pub fn register(state: AppState) -> Router {
             "/conversations/{id}/messages",
             post(conversations::add_message),
         )
+        // Registry (PRD-12 §5.5 — agent-service listings)
+        .route("/registry/listings", post(registry::create_listing))
+        .route("/registry/listings/{id}", get(registry::get_listing))
+        .route("/registry/search", get(registry::search_listings))
         // System
         .route("/system/info", get(system::system_info))
         // Apply default 1 MiB body limit to all routes in this sub-router.
@@ -256,14 +292,27 @@ pub fn register(state: AppState) -> Router {
     // WebSocket v1alpha1 route (no version prefix in the path segment; the
     // `v1alpha1` is part of the path literal per PRD-14 §4).
     // -----------------------------------------------------------------------
-    let ws_route = Router::new()
-        .route("/ws/v1alpha1", get(ws::ws_handler));
+    let ws_route = Router::new().route("/ws/v1alpha1", get(ws::ws_handler));
+
+    // -----------------------------------------------------------------------
+    // PCA C1 bridge compatibility routes (PRD-06 §12, §20.4).
+    //
+    // These are mounted at `/v1/compat/pca/` without the v1alpha1 prefix so
+    // that existing PCA tooling can interact without changes.
+    // -----------------------------------------------------------------------
+    let bridge_routes = Router::new()
+        .route("/v1/compat/pca/health", get(bridge::bridge_health))
+        .route("/v1/compat/pca/inbound", get(bridge::bridge_inbound))
+        .route("/v1/compat/pca/inbound/ack", post(bridge::bridge_ack))
+        .route("/v1/compat/pca/inbound/renew", post(bridge::bridge_renew))
+        .route("/v1/compat/pca/send", post(bridge::bridge_send));
 
     Router::new()
         .merge(health_routes)
         .merge(metrics_route)
         .merge(openapi_route)
         .merge(ws_route)
+        .merge(bridge_routes)
         .nest("/api/v1alpha1", api_routes)
         .with_state(state)
 }

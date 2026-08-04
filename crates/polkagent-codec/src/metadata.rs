@@ -635,15 +635,13 @@ pub fn parse_metadata(bytes: &[u8]) -> Result<RuntimeMetadata> {
 /// - A configurable list of pallets (each with a name, index, no storage/calls/events)
 /// - An empty extrinsic block
 #[doc(hidden)]
-pub fn build_minimal_metadata_v14(
-    pallets: &[(&str, u8)],
-) -> Vec<u8> {
+pub fn build_minimal_metadata_v14(pallets: &[(&str, u8)]) -> Vec<u8> {
     use crate::scale::ScaleEncoder;
 
     let mut enc = ScaleEncoder::new();
 
     // Magic
-    enc.encode_bytes(b"");  // We build manually below.
+    enc.encode_bytes(b""); // We build manually below.
     let _ = enc; // discard
 
     let mut buf: Vec<u8> = Vec::new();
@@ -664,13 +662,13 @@ pub fn build_minimal_metadata_v14(
     let mut enc4 = ScaleEncoder::new();
     enc4.encode_compact_u32(pallets.len() as u32);
     for (name, idx) in pallets {
-        enc4.encode_string(name);          // name
-        enc4.encode_u8(0x00);              // storage: None
-        enc4.encode_u8(0x00);              // calls: None
-        enc4.encode_u8(0x00);              // events: None
-        enc4.encode_compact_u32(0);        // constants: []
-        enc4.encode_u8(0x00);              // errors: None
-        enc4.encode_u8(*idx);              // index
+        enc4.encode_string(name); // name
+        enc4.encode_u8(0x00); // storage: None
+        enc4.encode_u8(0x00); // calls: None
+        enc4.encode_u8(0x00); // events: None
+        enc4.encode_compact_u32(0); // constants: []
+        enc4.encode_u8(0x00); // errors: None
+        enc4.encode_u8(*idx); // index
     }
     buf.extend(enc4.finish());
 

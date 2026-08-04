@@ -125,10 +125,7 @@ impl ExportConfig {
     ///
     /// Returns `(clauses, params)` where each clause is a string like
     /// `"created_at >= ?N"` and each param is the corresponding string value.
-    pub fn sql_filters(
-        &self,
-        param_offset: usize,
-    ) -> Result<(Vec<String>, Vec<String>)> {
+    pub fn sql_filters(&self, param_offset: usize) -> Result<(Vec<String>, Vec<String>)> {
         let mut clauses = Vec::new();
         let mut params = Vec::new();
         let mut idx = param_offset;
@@ -298,12 +295,7 @@ impl StreamingWriter {
                 let fields: Vec<String> = self
                     .columns
                     .iter()
-                    .map(|col| {
-                        value
-                            .get(col)
-                            .map(value_to_csv_cell)
-                            .unwrap_or_default()
-                    })
+                    .map(|col| value.get(col).map(value_to_csv_cell).unwrap_or_default())
                     .collect();
                 let line = fields
                     .iter()
@@ -526,19 +518,25 @@ fn export_runs(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     );
 
     let mut stmt = reader.prepare(&sql)?;
-    let row_iter = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok(RunRow {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                state: row.get(2)?,
-                params_json: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        })?;
+    let row_iter = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(RunRow {
+            id: row.get(0)?,
+            agent_id: row.get(1)?,
+            state: row.get(2)?,
+            params_json: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })?;
 
-    let columns = &["id", "agent_id", "state", "params_json", "created_at", "updated_at"];
+    let columns = &[
+        "id",
+        "agent_id",
+        "state",
+        "params_json",
+        "created_at",
+        "updated_at",
+    ];
     let mut out = open_output(&cfg.output)?;
     let mut writer = StreamingWriter::new(cfg.format, columns);
     writer.begin(&mut out)?;
@@ -571,18 +569,17 @@ fn export_effects(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     );
 
     let mut stmt = reader.prepare(&sql)?;
-    let row_iter = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok(EffectRow {
-                id: row.get(0)?,
-                run_id: row.get(1)?,
-                turn_id: row.get(2)?,
-                kind: row.get(3)?,
-                claimed_by: row.get(4)?,
-                params_json: row.get(5)?,
-                created_at: row.get(6)?,
-            })
-        })?;
+    let row_iter = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(EffectRow {
+            id: row.get(0)?,
+            run_id: row.get(1)?,
+            turn_id: row.get(2)?,
+            kind: row.get(3)?,
+            claimed_by: row.get(4)?,
+            params_json: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    })?;
 
     let columns = &[
         "id",
@@ -606,11 +603,7 @@ fn export_effects(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-fn export_artifacts(
-    cfg: &ExportConfig,
-    include_bodies: bool,
-    pool: &SqlitePool,
-) -> Result<()> {
+fn export_artifacts(cfg: &ExportConfig, include_bodies: bool, pool: &SqlitePool) -> Result<()> {
     let reader = pool
         .reader()
         .map_err(|e| anyhow::anyhow!("opening database reader: {e}"))?;
@@ -630,38 +623,31 @@ fn export_artifacts(
     );
 
     let mut stmt = reader.prepare(&sql)?;
-    let row_iter = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            if include_bodies {
-                Ok(ArtifactRow {
-                    id: row.get(0)?,
-                    run_id: row.get(1)?,
-                    kind: row.get(2)?,
-                    digest_hex: row.get(3)?,
-                    size_bytes: row.get(4)?,
-                    body: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            } else {
-                Ok(ArtifactRow {
-                    id: row.get(0)?,
-                    run_id: row.get(1)?,
-                    kind: row.get(2)?,
-                    digest_hex: row.get(3)?,
-                    size_bytes: row.get(4)?,
-                    body: None,
-                    created_at: row.get(5)?,
-                })
-            }
-        })?;
+    let row_iter = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        if include_bodies {
+            Ok(ArtifactRow {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                kind: row.get(2)?,
+                digest_hex: row.get(3)?,
+                size_bytes: row.get(4)?,
+                body: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        } else {
+            Ok(ArtifactRow {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                kind: row.get(2)?,
+                digest_hex: row.get(3)?,
+                size_bytes: row.get(4)?,
+                body: None,
+                created_at: row.get(5)?,
+            })
+        }
+    })?;
 
-    let mut columns: Vec<&str> = vec![
-        "id",
-        "run_id",
-        "kind",
-        "digest_hex",
-        "size_bytes",
-    ];
+    let mut columns: Vec<&str> = vec!["id", "run_id", "kind", "digest_hex", "size_bytes"];
     if include_bodies {
         columns.push("body");
     }
@@ -699,16 +685,15 @@ fn export_events(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     );
 
     let mut stmt = reader.prepare(&sql)?;
-    let row_iter = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok(EventRow {
-                sequence: row.get(0)?,
-                run_id: row.get(1)?,
-                kind: row.get(2)?,
-                data_json: row.get(3)?,
-                timestamp: row.get(4)?,
-            })
-        })?;
+    let row_iter = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(EventRow {
+            sequence: row.get(0)?,
+            run_id: row.get(1)?,
+            kind: row.get(2)?,
+            data_json: row.get(3)?,
+            timestamp: row.get(4)?,
+        })
+    })?;
 
     // Events default to JSONL format when no explicit format is given, but we
     // respect the user's choice.
@@ -745,17 +730,16 @@ fn export_audit(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     );
 
     let mut stmt = reader.prepare(&sql)?;
-    let row_iter = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok(AuditRow {
-                id: row.get(0)?,
-                actor: row.get::<_, String>(1)?,
-                action: row.get(2)?,
-                target: String::new(),
-                detail: row.get(3)?,
-                timestamp: row.get(4)?,
-            })
-        })?;
+    let row_iter = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(AuditRow {
+            id: row.get(0)?,
+            actor: row.get::<_, String>(1)?,
+            action: row.get(2)?,
+            target: String::new(),
+            detail: row.get(3)?,
+            timestamp: row.get(4)?,
+        })
+    })?;
 
     let columns = &["id", "actor", "action", "target", "detail", "timestamp"];
     let mut out = open_output(&cfg.output)?;
@@ -773,8 +757,7 @@ fn export_audit(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
 
 fn export_config(output_path: &Option<PathBuf>) -> Result<()> {
     let config = polkagent_config::Config::default();
-    let toml_str =
-        toml::to_string_pretty(&config).context("serialising config to TOML")?;
+    let toml_str = toml::to_string_pretty(&config).context("serialising config to TOML")?;
 
     let mut out = open_output(output_path)?;
     out.write_all(toml_str.as_bytes())?;
@@ -887,10 +870,7 @@ mod tests {
 
     #[test]
     fn csv_cell_bool() {
-        assert_eq!(
-            value_to_csv_cell(&serde_json::Value::Bool(true)),
-            "true"
-        );
+        assert_eq!(value_to_csv_cell(&serde_json::Value::Bool(true)), "true");
     }
 
     #[test]
@@ -984,16 +964,14 @@ mod tests {
 
     #[test]
     fn to_csv_header_and_rows() {
-        let records = vec![
-            AuditRow {
-                id: "1".into(),
-                actor: "system".into(),
-                action: "create".into(),
-                target: "agent".into(),
-                detail: "created agent".into(),
-                timestamp: "2024-01-01T00:00:00Z".into(),
-            },
-        ];
+        let records = vec![AuditRow {
+            id: "1".into(),
+            actor: "system".into(),
+            action: "create".into(),
+            target: "agent".into(),
+            detail: "created agent".into(),
+            timestamp: "2024-01-01T00:00:00Z".into(),
+        }];
         let csv = to_csv(&records, &["id", "actor", "action"]).unwrap();
         let lines: Vec<&str> = csv.trim().lines().collect();
         assert_eq!(lines.len(), 2); // header + 1 row
@@ -1030,10 +1008,22 @@ mod tests {
             name: String,
         }
 
-        w.write_record(&mut buf, &R { id: 1, name: "a".into() })
-            .unwrap();
-        w.write_record(&mut buf, &R { id: 2, name: "b".into() })
-            .unwrap();
+        w.write_record(
+            &mut buf,
+            &R {
+                id: 1,
+                name: "a".into(),
+            },
+        )
+        .unwrap();
+        w.write_record(
+            &mut buf,
+            &R {
+                id: 2,
+                name: "b".into(),
+            },
+        )
+        .unwrap();
         w.end(&mut buf).unwrap();
 
         let output = String::from_utf8(buf).unwrap();

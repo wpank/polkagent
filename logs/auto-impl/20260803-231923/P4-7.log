@@ -1,0 +1,46 @@
+All done. Here's a summary of what was implemented:
+
+## Changes Made
+
+### 1. `polkagent-harness-trait/src/lib.rs` — Trait extensions
+
+- **`SessionSnapshot` struct** — Serializable session state containing `session_id`, `harness_id`, `process_pid`, `started_at`, `working_directory`, `turn_count`, and `backend_state` (opaque `HashMap<String, serde_json::Value>` for harness-specific data like thread IDs, message history, etc.)
+
+- **3 persistence helpers**:
+  - `persist_session_state()` — writes to `.polkagent/state/{session_id}.json`
+  - `load_session_state()` — reads from `.polkagent/state/{session_id}.json`
+  - `remove_session_state()` — cleans up state file
+
+- **4 new `Harness` trait methods** (all with default implementations so no breaking changes):
+  - `save_session_state(session_id)` → captures & persists session snapshot
+  - `resume_session(session_id)` → re-attaches to live process or re-launches with context
+  - `cancel_session(session_id)` → SIGTERM + wait + cleanup (defaults to `end_session`)
+  - `health_interval()` → configurable polling interval (defaults to `None`)
+
+### 2. `polkagent-harness-claude` — Claude Code implementation
+- `save_session_state`: captures PID, message history, working dir
+- `resume_session`: checks PID liveness via `kill(pid, 0)`, re-launches if dead
+- `cancel_session`: sends SIGTERM, polls for 5s exit, then delegates to `end_session`
+- `health_interval`: 30s
+- Added `nix` dependency to `Cargo.toml`
+
+### 3. `polkagent-harness-codex` — Codex implementation
+- `save_session_state`: captures PID, `thread_id`, `initialized` flag, message history
+- `resume_session`: same PID check + re-launch pattern
+- `cancel_session`: SIGTERM + poll + cleanup
+- `health_interval`: 30s
+
+### 4. `polkagent-harness-acp` — ACP implementation (covers cursor, goose, kiro)
+- `save_session_state`: captures `session_key` in backend state
+- `resume_session`: loads session key, reconnects ACP client, re-registers session
+- `cancel_session`: calls ACP `cancel()` on the session key, then ends session
+- `health_interval`: 30s
+
+### 5. `polkagent-harness-copilot` — Copilot implementation
+- `save_session_state`: captures messages and responses history
+- `resume_session`: one-shot harness, starts new session with saved context
+- `cancel_session`: cleanup + end session (no subprocess to signal)
+
+### Verification
+- `cargo check --workspace` ✅ — clean build
+- All 349 tests pass across all 8 harness crates ✅ — zero regressions

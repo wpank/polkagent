@@ -143,8 +143,7 @@ impl FallbackChain {
     /// Mark that a side effect has begun. After this, `next_route` will
     /// always return `None` -- no fallback is safe.
     pub fn mark_side_effect(&self) {
-        self.side_effect_started
-            .store(true, Ordering::Release);
+        self.side_effect_started.store(true, Ordering::Release);
     }
 
     /// Return whether a side effect has started.
@@ -408,7 +407,10 @@ mod tests {
             vec![FallbackEntry::new(ModelRoute::new("fb-1"))],
         );
         assert!(chain
-            .next_route(0, &RetryClass::RetryAfter(std::time::Duration::from_secs(5)))
+            .next_route(
+                0,
+                &RetryClass::RetryAfter(std::time::Duration::from_secs(5))
+            )
             .is_none());
     }
 }

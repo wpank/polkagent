@@ -60,16 +60,37 @@ enum Mode {
 ///
 /// `ExecutorError` is not `Clone` so we store a factory closure instead.
 enum ExecutorErrorKind {
-    Transport { message: String, retryable: bool },
-    Authentication { message: String },
-    RateLimit { retry_after_secs: Option<u64> },
-    ContextWindowExceeded { tokens_requested: u32, tokens_allowed: u32 },
-    InvalidResponse { message: String },
-    Timeout { elapsed_ms: u64 },
+    Transport {
+        message: String,
+        retryable: bool,
+    },
+    Authentication {
+        message: String,
+    },
+    RateLimit {
+        retry_after_secs: Option<u64>,
+    },
+    ContextWindowExceeded {
+        tokens_requested: u32,
+        tokens_allowed: u32,
+    },
+    InvalidResponse {
+        message: String,
+    },
+    Timeout {
+        elapsed_ms: u64,
+    },
     Cancelled,
-    Internal { message: String },
-    ContentPolicy { message: String },
-    ModelNotFound { model: String, message: String },
+    Internal {
+        message: String,
+    },
+    ContentPolicy {
+        message: String,
+    },
+    ModelNotFound {
+        model: String,
+        message: String,
+    },
 }
 
 impl ExecutorErrorKind {
@@ -79,30 +100,36 @@ impl ExecutorErrorKind {
                 message: message.clone(),
                 retryable: *retryable,
             },
-            Self::Authentication { message } => {
-                ExecutorError::Authentication { message: message.clone() }
-            }
-            Self::RateLimit { retry_after_secs } => {
-                ExecutorError::RateLimit { retry_after_secs: *retry_after_secs }
-            }
-            Self::ContextWindowExceeded { tokens_requested, tokens_allowed } => {
-                ExecutorError::ContextWindowExceeded {
-                    tokens_requested: *tokens_requested,
-                    tokens_allowed: *tokens_allowed,
-                }
-            }
-            Self::InvalidResponse { message } => {
-                ExecutorError::InvalidResponse { message: message.clone() }
-            }
-            Self::Timeout { elapsed_ms } => ExecutorError::Timeout { elapsed_ms: *elapsed_ms },
+            Self::Authentication { message } => ExecutorError::Authentication {
+                message: message.clone(),
+            },
+            Self::RateLimit { retry_after_secs } => ExecutorError::RateLimit {
+                retry_after_secs: *retry_after_secs,
+            },
+            Self::ContextWindowExceeded {
+                tokens_requested,
+                tokens_allowed,
+            } => ExecutorError::ContextWindowExceeded {
+                tokens_requested: *tokens_requested,
+                tokens_allowed: *tokens_allowed,
+            },
+            Self::InvalidResponse { message } => ExecutorError::InvalidResponse {
+                message: message.clone(),
+            },
+            Self::Timeout { elapsed_ms } => ExecutorError::Timeout {
+                elapsed_ms: *elapsed_ms,
+            },
             Self::Cancelled => ExecutorError::Cancelled,
-            Self::Internal { message } => ExecutorError::Internal { message: message.clone() },
-            Self::ContentPolicy { message } => {
-                ExecutorError::ContentPolicy { message: message.clone() }
-            }
-            Self::ModelNotFound { model, message } => {
-                ExecutorError::ModelNotFound { model: model.clone(), message: message.clone() }
-            }
+            Self::Internal { message } => ExecutorError::Internal {
+                message: message.clone(),
+            },
+            Self::ContentPolicy { message } => ExecutorError::ContentPolicy {
+                message: message.clone(),
+            },
+            Self::ModelNotFound { model, message } => ExecutorError::ModelNotFound {
+                model: model.clone(),
+                message: message.clone(),
+            },
         }
     }
 }
@@ -159,7 +186,10 @@ impl FakeExecutor {
     /// Panics if `responses` is empty.
     #[must_use]
     pub fn with_responses(responses: Vec<InferenceResponse>) -> Arc<Self> {
-        assert!(!responses.is_empty(), "FakeExecutor::with_responses requires at least one response");
+        assert!(
+            !responses.is_empty(),
+            "FakeExecutor::with_responses requires at least one response"
+        );
         Arc::new(Self {
             mode: Mode::Cycling(responses),
             call_count: AtomicU64::new(0),
@@ -196,9 +226,13 @@ impl FakeExecutor {
             ExecutorError::RateLimit { retry_after_secs } => {
                 ExecutorErrorKind::RateLimit { retry_after_secs }
             }
-            ExecutorError::ContextWindowExceeded { tokens_requested, tokens_allowed } => {
-                ExecutorErrorKind::ContextWindowExceeded { tokens_requested, tokens_allowed }
-            }
+            ExecutorError::ContextWindowExceeded {
+                tokens_requested,
+                tokens_allowed,
+            } => ExecutorErrorKind::ContextWindowExceeded {
+                tokens_requested,
+                tokens_allowed,
+            },
             ExecutorError::InvalidResponse { message } => {
                 ExecutorErrorKind::InvalidResponse { message }
             }
@@ -256,7 +290,11 @@ impl FakeExecutor {
                 text: text.clone(),
                 tool_calls: vec![],
                 stop_reason: "end_turn".into(),
-                usage: TokenUsage { input_tokens: 10, output_tokens: 5, ..Default::default() },
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Default::default()
+                },
                 provider_request_id: Some(format!("fake-{call_index}")),
             }),
             Mode::Cycling(responses) => {
@@ -267,7 +305,11 @@ impl FakeExecutor {
                 text: String::new(),
                 tool_calls: calls.clone(),
                 stop_reason: "tool_use".into(),
-                usage: TokenUsage { input_tokens: 10, output_tokens: 5, ..Default::default() },
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Default::default()
+                },
                 provider_request_id: Some(format!("fake-{call_index}")),
             }),
             Mode::Failing(kind) => Err(kind.to_error()),
@@ -325,7 +367,9 @@ impl ModelExecutor for FakeExecutor {
             .text
             .chars()
             .map(|ch| {
-                Ok(StreamEvent::TextDelta { delta: ch.to_string() })
+                Ok(StreamEvent::TextDelta {
+                    delta: ch.to_string(),
+                })
             })
             .collect();
 
@@ -358,7 +402,7 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use polkagent_core::{RunId, StepId};
-    use polkagent_executor_trait::{InferenceMessage, MessageRole, ContentBlock};
+    use polkagent_executor_trait::{ContentBlock, InferenceMessage, MessageRole};
 
     fn minimal_request() -> InferenceRequest {
         InferenceRequest {
@@ -366,7 +410,9 @@ mod tests {
             step_id: StepId::new(),
             messages: vec![InferenceMessage {
                 role: MessageRole::User,
-                content: vec![ContentBlock::Text { text: "hello".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }],
             }],
             system: None,
             tools: vec![],
@@ -380,7 +426,10 @@ mod tests {
     async fn new_returns_fake_assistant_text() {
         let executor = FakeExecutor::new();
         let req = minimal_request();
-        let resp = executor.complete(req).await.expect("complete should succeed");
+        let resp = executor
+            .complete(req)
+            .await
+            .expect("complete should succeed");
         assert_eq!(resp.text, "I am a fake assistant");
         assert_eq!(resp.stop_reason, "end_turn");
         assert!(resp.tool_calls.is_empty());
@@ -404,14 +453,23 @@ mod tests {
         };
         let executor = FakeExecutor::with_responses(vec![r1, r2]);
 
-        let resp1 = executor.complete(minimal_request()).await.expect("first call");
+        let resp1 = executor
+            .complete(minimal_request())
+            .await
+            .expect("first call");
         assert_eq!(resp1.text, "first");
 
-        let resp2 = executor.complete(minimal_request()).await.expect("second call");
+        let resp2 = executor
+            .complete(minimal_request())
+            .await
+            .expect("second call");
         assert_eq!(resp2.text, "second");
 
         // Should cycle back to first.
-        let resp3 = executor.complete(minimal_request()).await.expect("third call");
+        let resp3 = executor
+            .complete(minimal_request())
+            .await
+            .expect("third call");
         assert_eq!(resp3.text, "first");
     }
 
@@ -423,7 +481,10 @@ mod tests {
             arguments_json: r#"{"path":"/tmp/test"}"#.into(),
         };
         let executor = FakeExecutor::with_tool_calls(vec![call.clone()]);
-        let resp = executor.complete(minimal_request()).await.expect("complete");
+        let resp = executor
+            .complete(minimal_request())
+            .await
+            .expect("complete");
         assert!(resp.text.is_empty());
         assert_eq!(resp.stop_reason, "tool_use");
         assert_eq!(resp.tool_calls.len(), 1);
@@ -432,8 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn failing_returns_error_on_complete() {
-        let executor =
-            FakeExecutor::failing(ExecutorError::Cancelled);
+        let executor = FakeExecutor::failing(ExecutorError::Cancelled);
         let result = executor.complete(minimal_request()).await;
         assert!(matches!(result, Err(ExecutorError::Cancelled)));
     }
@@ -507,10 +567,13 @@ mod tests {
         let stream_result = executor.stream(minimal_request()).await.expect("stream ok");
         let events: Vec<_> = stream_result.collect().await;
 
-        let has_tool_complete = events.iter().any(|e| {
-            matches!(e, Ok(StreamEvent::ToolCallComplete { .. }))
-        });
-        assert!(has_tool_complete, "stream should contain a ToolCallComplete event");
+        let has_tool_complete = events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::ToolCallComplete { .. })));
+        assert!(
+            has_tool_complete,
+            "stream should contain a ToolCallComplete event"
+        );
     }
 
     #[tokio::test]
@@ -524,8 +587,16 @@ mod tests {
         let executor = FakeExecutor::failing(ExecutorError::RateLimit {
             retry_after_secs: Some(30),
         });
-        let err = executor.complete(minimal_request()).await.expect_err("must fail");
-        assert!(matches!(err, ExecutorError::RateLimit { retry_after_secs: Some(30) }));
+        let err = executor
+            .complete(minimal_request())
+            .await
+            .expect_err("must fail");
+        assert!(matches!(
+            err,
+            ExecutorError::RateLimit {
+                retry_after_secs: Some(30)
+            }
+        ));
         assert!(err.is_retryable());
     }
 
@@ -546,9 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_responses_panics_on_empty() {
-        let result = std::panic::catch_unwind(|| {
-            FakeExecutor::with_responses(vec![])
-        });
+        let result = std::panic::catch_unwind(|| FakeExecutor::with_responses(vec![]));
         assert!(result.is_err(), "should panic on empty response list");
     }
 }

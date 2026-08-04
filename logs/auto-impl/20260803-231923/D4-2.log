@@ -1,0 +1,14 @@
+All 173 unit tests, 120 integration tests, and 3 doc-tests pass.
+
+Here's a summary of what was done:
+
+### 1. ws.rs — Pong timeout logic (fixed)
+
+Renamed `last_ping_sent` → `ping_sent_at` and changed its semantics:
+
+- **Before:** `last_ping_sent` was set to `Some(Instant::now())` when a ping was sent, but **cleared to `None`** when a pong was received. This meant the timeout check could never fire after a late pong cleared the timestamp, and the field conflated two concerns (ping timing + pong receipt tracking).
+- **After:** `ping_sent_at` is set when a ping is sent and **never cleared on pong receipt**. Only `waiting_for_pong` is cleared on pong, keeping the two concerns separate. The timeout check now always has a valid timestamp to measure against when `waiting_for_pong` is true. The dead `else` branch ("Ping was sent but pong already cleared it") was also removed since it's no longer reachable.
+
+### 2. runs.rs — `start_agent` lookup check (already present)
+
+The code at lines 370-375 already verifies the agent exists via `state.agents.get(id).await.ok_or_else(|| ApiError::AgentNotFound(...))` before returning a response. No change was needed — the integration test `agent_start_returns_200_with_lifecycle_response` confirms this works correctly.

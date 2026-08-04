@@ -10,7 +10,7 @@ use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
 use polkagent_cli::tui::{
     app::Tab,
-    input::{InputMode, TuiAction, key_to_action},
+    input::{key_to_action, InputMode, TuiAction},
     state::{ApprovalItem, AuditEvent, ConfirmDialog, MemoryEntry, ScrollState, TuiState},
     theme::Theme,
     views::audit::AuditFilter,
@@ -361,7 +361,7 @@ fn test_any_key_no_panic() {
                 let result = key_to_action(event, mode);
                 // Ensure the result is either None or a valid TuiAction.
                 match result {
-                    None => {} // fine
+                    None => {}          // fine
                     Some(_action) => {} // fine
                 }
             }
@@ -377,14 +377,32 @@ fn test_any_key_no_panic() {
 fn test_default_state() {
     let state = TuiState::default();
 
-    assert!(state.agents.is_empty(), "Default state should have no agents");
+    assert!(
+        state.agents.is_empty(),
+        "Default state should have no agents"
+    );
     assert!(state.runs.is_empty(), "Default state should have no runs");
-    assert!(!state.health.db_ok, "Default health should report db_ok=false");
-    assert!(state.selected_run.is_none(), "No run should be selected initially");
+    assert!(
+        !state.health.db_ok,
+        "Default health should report db_ok=false"
+    );
+    assert!(
+        state.selected_run.is_none(),
+        "No run should be selected initially"
+    );
     assert!(!state.dirty, "Default state should not be dirty");
-    assert!(state.last_refresh.is_none(), "No refresh should have occurred");
-    assert!(state.last_error.is_none(), "No error should be present initially");
-    assert_eq!(state.agents_scroll.offset, 0, "Scroll offset should start at 0");
+    assert!(
+        state.last_refresh.is_none(),
+        "No refresh should have occurred"
+    );
+    assert!(
+        state.last_error.is_none(),
+        "No error should be present initially"
+    );
+    assert_eq!(
+        state.agents_scroll.offset, 0,
+        "Scroll offset should start at 0"
+    );
     assert!(
         state.agents_scroll.selected.is_none(),
         "No item should be selected in agents scroll"
@@ -410,7 +428,9 @@ fn test_scroll_bounds() {
     for _ in 0..20 {
         scroll.down(total_items, visible);
     }
-    let selected = scroll.selected.expect("selected should be Some after scrolling");
+    let selected = scroll
+        .selected
+        .expect("selected should be Some after scrolling");
     assert!(
         selected < total_items,
         "Selected ({selected}) should not exceed total items ({total_items})"
@@ -425,11 +445,7 @@ fn test_scroll_bounds() {
     for _ in 0..20 {
         scroll.up();
     }
-    assert_eq!(
-        scroll.selected,
-        Some(0),
-        "Scrolling up should return to 0"
-    );
+    assert_eq!(scroll.selected, Some(0), "Scrolling up should return to 0");
     assert_eq!(scroll.offset, 0, "Offset should return to 0");
 
     // Edge case: scrolling with zero items.
@@ -471,11 +487,19 @@ fn test_tab_navigation() {
     tab = tab.next(); // Audit
     assert_eq!(tab, Tab::Audit);
     tab = tab.next(); // Dashboard (wrap)
-    assert_eq!(tab, Tab::Dashboard, "next() should wrap from Audit to Dashboard");
+    assert_eq!(
+        tab,
+        Tab::Dashboard,
+        "next() should wrap from Audit to Dashboard"
+    );
 
     // Go backward through all tabs.
     tab = tab.prev(); // Audit
-    assert_eq!(tab, Tab::Audit, "prev() should wrap from Dashboard to Audit");
+    assert_eq!(
+        tab,
+        Tab::Audit,
+        "prev() should wrap from Dashboard to Audit"
+    );
     tab = tab.prev(); // Memory
     assert_eq!(tab, Tab::Memory);
     tab = tab.prev(); // Approvals
@@ -776,7 +800,10 @@ fn test_memory_entry_no_panic_minimal() {
     let entries = vec![make_memory_entry("x", "episodic", 0.5, "test")];
     let text = render_memory_view(20, 5, entries);
     // Just check it rendered something.
-    assert!(!text.trim().is_empty(), "Minimal memory view should render something");
+    assert!(
+        !text.trim().is_empty(),
+        "Minimal memory view should render something"
+    );
 }
 
 // =========================================================================
@@ -795,7 +822,12 @@ fn make_audit_event(id: &str, severity: &str, kind: &str, message: &str) -> Audi
     }
 }
 
-fn render_audit_view(width: u16, height: u16, events: Vec<AuditEvent>, filter: AuditFilter) -> String {
+fn render_audit_view(
+    width: u16,
+    height: u16,
+    events: Vec<AuditEvent>,
+    filter: AuditFilter,
+) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("test terminal");
     let theme = Theme::dark();
@@ -873,7 +905,10 @@ fn test_audit_view_filter_none_no_crash() {
     // Switching filter to None should not crash.
     let events = vec![make_audit_event("d1", "info", "Test", "Test event")];
     let text = render_audit_view(80, 20, events, AuditFilter::None);
-    assert!(!text.trim().is_empty(), "Audit view with None filter should render something");
+    assert!(
+        !text.trim().is_empty(),
+        "Audit view with None filter should render something"
+    );
 }
 
 #[test]
@@ -962,7 +997,10 @@ fn test_system_view_keybindings_shown() {
 fn test_system_view_narrow_no_panic() {
     // Very narrow terminal should not panic.
     let text = render_system_view(40, 20);
-    assert!(!text.trim().is_empty(), "Narrow system view should render something");
+    assert!(
+        !text.trim().is_empty(),
+        "Narrow system view should render something"
+    );
 }
 
 // =========================================================================
@@ -980,7 +1018,12 @@ fn make_approval_item(effect_id: &str, kind: &str) -> ApprovalItem {
     }
 }
 
-fn render_approvals_view(width: u16, height: u16, items: Vec<ApprovalItem>, confirm: ConfirmDialog) -> String {
+fn render_approvals_view(
+    width: u16,
+    height: u16,
+    items: Vec<ApprovalItem>,
+    confirm: ConfirmDialog,
+) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("test terminal");
     let theme = Theme::dark();
@@ -1090,21 +1133,31 @@ fn test_approvals_keybinding_deny_produces_action() {
 fn test_tab_navigation_includes_memory_and_audit() {
     // Tab::ALL should now include Memory and Audit.
     let all = Tab::ALL;
-    assert_eq!(all.len(), 8, "Tab::ALL should contain 8 tabs (including Memory and Audit)");
+    assert_eq!(
+        all.len(),
+        8,
+        "Tab::ALL should contain 8 tabs (including Memory and Audit)"
+    );
     assert!(all.contains(&Tab::Memory), "Tab::ALL should include Memory");
     assert!(all.contains(&Tab::Audit), "Tab::ALL should include Audit");
 }
 
 #[test]
 fn test_tab_next_audit_wraps_to_dashboard() {
-    assert_eq!(Tab::Audit.next(), Tab::Dashboard,
-        "next() on Audit should wrap to Dashboard");
+    assert_eq!(
+        Tab::Audit.next(),
+        Tab::Dashboard,
+        "next() on Audit should wrap to Dashboard"
+    );
 }
 
 #[test]
 fn test_tab_prev_dashboard_goes_to_audit() {
-    assert_eq!(Tab::Dashboard.prev(), Tab::Audit,
-        "prev() on Dashboard should go to Audit");
+    assert_eq!(
+        Tab::Dashboard.prev(),
+        Tab::Audit,
+        "prev() on Dashboard should go to Audit"
+    );
 }
 
 #[test]

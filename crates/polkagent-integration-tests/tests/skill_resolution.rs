@@ -83,11 +83,20 @@ default_chain = "kusama"
     let manifest = SkillManifest::from_toml(toml).expect("should parse");
     assert_eq!(manifest.skill.name, "governance-researcher");
     assert_eq!(manifest.skill.description, "Research OpenGov proposals");
-    assert_eq!(manifest.capabilities.required_grants, vec!["chain.query", "memory.read"]);
-    assert_eq!(manifest.capabilities.tools, vec!["chain_query", "search_memory"]);
+    assert_eq!(
+        manifest.capabilities.required_grants,
+        vec!["chain.query", "memory.read"]
+    );
+    assert_eq!(
+        manifest.capabilities.tools,
+        vec!["chain_query", "search_memory"]
+    );
     assert_eq!(manifest.prompts.system, "You are a governance assistant.");
     assert_eq!(
-        manifest.config.get("default_chain").and_then(|v| v.as_str()),
+        manifest
+            .config
+            .get("default_chain")
+            .and_then(|v| v.as_str()),
         Some("kusama")
     );
 }
@@ -131,7 +140,10 @@ version = "1.0.0"
     let result = SkillManifest::from_toml(toml);
     assert!(result.is_err(), "empty skill name must fail validation");
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("must not be empty"), "error must mention empty name: {msg}");
+    assert!(
+        msg.contains("must not be empty"),
+        "error must mention empty name: {msg}"
+    );
 }
 
 #[test]
@@ -142,9 +154,15 @@ name = "My Skill!"
 version = "1.0.0"
 "#;
     let result = SkillManifest::from_toml(toml);
-    assert!(result.is_err(), "uppercase / special chars in name must fail");
+    assert!(
+        result.is_err(),
+        "uppercase / special chars in name must fail"
+    );
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("lowercase ASCII"), "error must mention character restriction: {msg}");
+    assert!(
+        msg.contains("lowercase ASCII"),
+        "error must mention character restriction: {msg}"
+    );
 }
 
 #[test]
@@ -177,7 +195,10 @@ fn parse_invalid_toml_fails() {
     let result = SkillManifest::from_toml("{{{{ not valid toml");
     assert!(result.is_err(), "invalid TOML must fail");
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("parse"), "error must mention parse failure: {msg}");
+    assert!(
+        msg.contains("parse"),
+        "error must mention parse failure: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +281,10 @@ fn resolve_two_independent_skills_lexicographic_order() {
     let b = make_manifest("beta", "2.0.0", &[]);
 
     let order = resolve(&[b, a]).expect("resolve"); // note: reversed input
-    assert_eq!(order[0].name, "alpha", "alpha must come before beta lexicographically");
+    assert_eq!(
+        order[0].name, "alpha",
+        "alpha must come before beta lexicographically"
+    );
 }
 
 #[test]
@@ -272,7 +296,11 @@ fn resolve_linear_chain_produces_dependency_first_order() {
 
     let order = resolve(&[c, a, b]).expect("resolve");
     let names: Vec<&str> = order.iter().map(|id| id.name.as_str()).collect();
-    assert_eq!(names, vec!["a", "b", "c"], "must resolve in dependency-first order");
+    assert_eq!(
+        names,
+        vec!["a", "b", "c"],
+        "must resolve in dependency-first order"
+    );
 }
 
 #[test]
@@ -396,7 +424,10 @@ fn resolve_self_dependency_cycle_detected() {
     let a = make_manifest("a", "1.0.0", &[("a", "^1.0")]);
 
     let result = resolve(&[a]);
-    assert!(result.is_err(), "self-dependency must be detected as a cycle");
+    assert!(
+        result.is_err(),
+        "self-dependency must be detected as a cycle"
+    );
 }
 
 #[test]

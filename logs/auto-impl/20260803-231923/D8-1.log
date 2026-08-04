@@ -1,0 +1,15 @@
+All 5 items checked. Here's the summary:
+
+### Results
+
+| # | File | Status | Action |
+|---|------|--------|--------|
+| 1 | `commands/export.rs` & `commands/inspect.rs` | **Already wired** — declared in `commands/mod.rs` and dispatched in `main.rs` (lines 95–96, 148–149) | **Skipped** |
+| 2 | `tui/widgets/tab_bar.rs` | **Already absent** — file doesn't exist in the widgets directory, not in `widgets/mod.rs` | **Skipped** |
+| 3 | `tui/widgets/error_digest.rs` | **Already absent** — file doesn't exist in the widgets directory, not in `widgets/mod.rs` | **Skipped** |
+| 4 | `output.rs` | `OutputFormat` is **actively used** by `cli.rs` for `--format` flag parsing. `format_output()` and helpers are unused but marked `#[allow(dead_code)]` with a clear TODO to wire into handlers. | **Kept** (conservative — intended infrastructure) |
+| 5 | `exit_codes.rs` | All 7 constants unused but marked `#[allow(dead_code)]` with a comment explaining they're "reserved for future use" with stable numeric assignments. | **Kept** (conservative — stable numeric assignments, zero warning noise) |
+
+**`cargo check -p polkagent-cli`**: Clean — no warnings, no errors.
+
+All the dead code identified in this task either was already cleaned up in a prior task (items 1–3) or is deliberately marked `#[allow(dead_code)]` with clear "future use" documentation and produces no compiler warnings (items 4–5). No changes were needed.

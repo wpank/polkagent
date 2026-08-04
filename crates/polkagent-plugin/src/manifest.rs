@@ -91,6 +91,95 @@ pub struct PluginManifest {
     /// Values are semver requirement strings (e.g. `">=0.1.0"`, `"^1.0"`).
     #[serde(default)]
     pub dependencies: HashMap<String, String>,
+
+    /// Supply-chain provenance and signing information.
+    #[serde(default)]
+    pub provenance: ProvenanceSection,
+}
+
+/// The `[provenance]` section of the manifest.
+///
+/// Records supply-chain signing, SLSA provenance, and trust classification.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProvenanceSection {
+    /// Cosign v3 keyless signature bundle (base64-encoded).
+    #[serde(default)]
+    pub cosign_bundle: Option<String>,
+
+    /// The expected signer identity for cosign verification
+    /// (e.g. a GitHub Actions workflow URI).
+    #[serde(default)]
+    pub signer_identity: Option<String>,
+
+    /// Rekor transparency-log entry index (if signed via Sigstore).
+    #[serde(default)]
+    pub rekor_log_index: Option<u64>,
+
+    /// SLSA provenance attestation (in-toto, base64-encoded JSON).
+    #[serde(default)]
+    pub slsa_provenance: Option<String>,
+
+    /// SLSA Build Level claimed by the publisher (0-3).
+    #[serde(default)]
+    pub slsa_build_level: Option<u8>,
+
+    /// Content digest of the package archive (hex-encoded blake3).
+    #[serde(default)]
+    pub content_digest: Option<String>,
+}
+
+/// Trust tier classification for a package.
+///
+/// See PRD-12 §4.7.1 for the full trust tier model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustTier {
+    /// No signature. Displayed with prominent warnings.
+    Unsigned,
+    /// Valid cosign v3 keyless signature + Rekor entry + in-toto attestation.
+    Signed,
+    /// Signed + verified publisher identity + SLSA Build L2 provenance.
+    Verified,
+    /// Verified plus explicit inclusion in a curated collection.
+    Curated,
+}
+
+impl fmt::Display for TrustTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsigned => write!(f, "unsigned"),
+            Self::Signed => write!(f, "signed"),
+            Self::Verified => write!(f, "verified"),
+            Self::Curated => write!(f, "curated"),
+        }
+    }
+}
+
+/// Sandbox tier classification for a package.
+///
+/// See PRD-12 §8.2 for sandbox tier selection logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxTier {
+    /// No executable code. Content loaded into agent context.
+    ContextOnly,
+    /// Separate OS process with restricted capabilities.
+    Process,
+    /// WebAssembly module with fuel, memory, and host-call restrictions.
+    Wasm,
+    /// Container or microVM with full resource isolation.
+    Container,
+}
+
+impl fmt::Display for SandboxTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ContextOnly => write!(f, "context-only"),
+            Self::Process => write!(f, "process"),
+            Self::Wasm => write!(f, "wasm"),
+            Self::Container => write!(f, "container"),
+        }
+    }
 }
 
 /// The `[plugin]` section of the manifest.
@@ -165,6 +254,42 @@ impl PluginManifest {
     /// Parse the optional capabilities into a [`CapabilitySet`].
     pub fn optional_capabilities(&self) -> Result<CapabilitySet, PluginError> {
         CapabilitySet::parse_strings(&self.capabilities.optional)
+    }
+
+    /// Determine the trust tier of this package based on its provenance data.
+    pub fn trust_tier(&self) -> TrustTier {
+        let prov = &self.provenance;
+
+        // Must have a cosign signature to be Signed or above.
+        if prov.cosign_bundle.is_none() {
+            return TrustTier::Unsigned;
+        }
+
+        // Must have SLSA provenance at Build Level 2+ to be Verified.
+        let has_slsa_l2 = prov.slsa_provenance.is_some() && prov.slsa_build_level.unwrap_or(0) >= 2;
+
+        if has_slsa_l2 {
+            TrustTier::Verified
+        } else {
+            TrustTier::Signed
+        }
+    }
+
+    /// Determine the sandbox tier for this package based on its trust tier.
+    ///
+    /// See PRD-12 §8.2: skills get `ContextOnly`, tools get a tier based
+    /// on trust.
+    pub fn sandbox_tier(&self) -> SandboxTier {
+        match self.trust_tier() {
+            TrustTier::Curated | TrustTier::Verified => SandboxTier::Process,
+            TrustTier::Signed => SandboxTier::Wasm,
+            TrustTier::Unsigned => SandboxTier::Container,
+        }
+    }
+
+    /// Check whether this manifest has a cosign signature.
+    pub fn is_signed(&self) -> bool {
+        self.provenance.cosign_bundle.is_some()
     }
 
     /// Validate the manifest for semantic correctness.
@@ -408,5 +533,106 @@ bad-dep = "not a semver range"
         let c = PluginId::new("x", Version::new(2, 0, 0));
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn minimal_manifest_has_default_provenance() {
+        let manifest = PluginManifest::from_toml(MINIMAL_MANIFEST).expect("should parse");
+        assert!(manifest.provenance.cosign_bundle.is_none());
+        assert!(manifest.provenance.slsa_provenance.is_none());
+        assert!(manifest.provenance.slsa_build_level.is_none());
+        assert!(manifest.provenance.content_digest.is_none());
+    }
+
+    #[test]
+    fn trust_tier_unsigned_when_no_signature() {
+        let manifest = PluginManifest::from_toml(MINIMAL_MANIFEST).expect("should parse");
+        assert_eq!(manifest.trust_tier(), TrustTier::Unsigned);
+        assert!(!manifest.is_signed());
+    }
+
+    #[test]
+    fn trust_tier_signed_with_cosign_bundle() {
+        let toml = r#"
+[plugin]
+name = "signed-pkg"
+version = "1.0.0"
+
+[provenance]
+cosign_bundle = "eyJhbGciOi..."
+signer_identity = "https://github.com/example/repo/.github/workflows/publish.yml@refs/heads/main"
+"#;
+        let manifest = PluginManifest::from_toml(toml).expect("should parse");
+        assert_eq!(manifest.trust_tier(), TrustTier::Signed);
+        assert!(manifest.is_signed());
+    }
+
+    #[test]
+    fn trust_tier_verified_with_slsa_l2() {
+        let toml = r#"
+[plugin]
+name = "verified-pkg"
+version = "1.0.0"
+
+[provenance]
+cosign_bundle = "eyJhbGciOi..."
+slsa_provenance = "eyJ2ZXJzaW9uIjoi..."
+slsa_build_level = 2
+"#;
+        let manifest = PluginManifest::from_toml(toml).expect("should parse");
+        assert_eq!(manifest.trust_tier(), TrustTier::Verified);
+    }
+
+    #[test]
+    fn sandbox_tier_based_on_trust() {
+        let unsigned = PluginManifest::from_toml(MINIMAL_MANIFEST).expect("should parse");
+        assert_eq!(unsigned.sandbox_tier(), SandboxTier::Container);
+
+        let signed_toml = r#"
+[plugin]
+name = "signed-pkg"
+version = "1.0.0"
+
+[provenance]
+cosign_bundle = "eyJhbGciOi..."
+"#;
+        let signed = PluginManifest::from_toml(signed_toml).expect("should parse");
+        assert_eq!(signed.sandbox_tier(), SandboxTier::Wasm);
+
+        let verified_toml = r#"
+[plugin]
+name = "verified-pkg"
+version = "1.0.0"
+
+[provenance]
+cosign_bundle = "eyJhbGciOi..."
+slsa_provenance = "eyJ2ZXJzaW9uIjoi..."
+slsa_build_level = 2
+"#;
+        let verified = PluginManifest::from_toml(verified_toml).expect("should parse");
+        assert_eq!(verified.sandbox_tier(), SandboxTier::Process);
+    }
+
+    #[test]
+    fn trust_tier_display() {
+        assert_eq!(TrustTier::Unsigned.to_string(), "unsigned");
+        assert_eq!(TrustTier::Signed.to_string(), "signed");
+        assert_eq!(TrustTier::Verified.to_string(), "verified");
+        assert_eq!(TrustTier::Curated.to_string(), "curated");
+    }
+
+    #[test]
+    fn sandbox_tier_display() {
+        assert_eq!(SandboxTier::ContextOnly.to_string(), "context-only");
+        assert_eq!(SandboxTier::Process.to_string(), "process");
+        assert_eq!(SandboxTier::Wasm.to_string(), "wasm");
+        assert_eq!(SandboxTier::Container.to_string(), "container");
+    }
+
+    #[test]
+    fn trust_tier_ordering() {
+        assert!(TrustTier::Unsigned < TrustTier::Signed);
+        assert!(TrustTier::Signed < TrustTier::Verified);
+        assert!(TrustTier::Verified < TrustTier::Curated);
     }
 }

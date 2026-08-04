@@ -795,12 +795,13 @@ mod tests {
         dlq.enqueue(letter_with_age("old-2", Duration::hours(3)))
             .await
             .expect("e2");
-        dlq.enqueue(sample_letter("fresh"))
-            .await
-            .expect("e3");
+        dlq.enqueue(sample_letter("fresh")).await.expect("e3");
 
         // Purge entries older than 2 hours.
-        let removed = dlq.purge_older_than(Duration::hours(2)).await.expect("purge");
+        let removed = dlq
+            .purge_older_than(Duration::hours(2))
+            .await
+            .expect("purge");
         assert_eq!(removed, 2);
         assert_eq!(dlq.count().await.expect("count"), 1);
     }

@@ -64,9 +64,7 @@ pub async fn query_memory(
 ///
 /// Returns 501 Not Implemented when no memory store is configured.
 #[instrument(skip(state))]
-pub async fn memory_stats(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn memory_stats(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let store = state
         .memory_store
         .as_ref()

@@ -166,9 +166,7 @@ mod tests {
         assert_eq!(result.output["chain"], "kusama");
         assert_eq!(result.output["total_entries"], 4);
 
-        let entries = result.output["entries"]
-            .as_array()
-            .expect("entries array");
+        let entries = result.output["entries"].as_array().expect("entries array");
         assert_eq!(entries.len(), 4);
 
         // Verify all four sources are present.
@@ -212,9 +210,7 @@ mod tests {
 
         assert_eq!(result.output["chain"], "polkadot");
 
-        let entries = result.output["entries"]
-            .as_array()
-            .expect("entries array");
+        let entries = result.output["entries"].as_array().expect("entries array");
         // All entries should use DOT symbol.
         for entry in entries {
             assert_eq!(entry["asset"], "DOT");

@@ -103,12 +103,7 @@ pub trait SecretStore: Send + Sync {
     /// Store or update a secret.
     ///
     /// Read-only stores return [`SecretError::ReadOnly`].
-    async fn set(
-        &self,
-        id: SecretId,
-        value: SecretValue,
-        metadata: SecretMetadata,
-    ) -> Result<()>;
+    async fn set(&self, id: SecretId, value: SecretValue, metadata: SecretMetadata) -> Result<()>;
 
     /// Delete a secret by ID.
     ///

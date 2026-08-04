@@ -102,10 +102,7 @@ pub fn render(
         } else {
             theme.bone
         };
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(color),
-        ));
+        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);

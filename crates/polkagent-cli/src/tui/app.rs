@@ -20,20 +20,20 @@ use anyhow::Result;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     widgets::Block,
+    Frame, Terminal,
 };
 
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::{
-    input::{InputMode, TuiAction, key_to_action},
+    input::{key_to_action, InputMode, TuiAction},
     state::TuiState,
     theme::Theme,
     views,
@@ -101,13 +101,13 @@ impl Tab {
     pub fn label(self) -> &'static str {
         match self {
             Self::Dashboard => "DASHBOARD",
-            Self::Agents    => "AGENTS",
-            Self::Runs      => "RUNS",
-            Self::System    => "SYSTEM",
-            Self::Timeline  => "TIMELINE",
+            Self::Agents => "AGENTS",
+            Self::Runs => "RUNS",
+            Self::System => "SYSTEM",
+            Self::Timeline => "TIMELINE",
             Self::Approvals => "APPROVALS",
-            Self::Memory    => "MEMORY",
-            Self::Audit     => "AUDIT",
+            Self::Memory => "MEMORY",
+            Self::Audit => "AUDIT",
             Self::RunDetail => "RUN DETAIL",
         }
     }
@@ -116,13 +116,13 @@ impl Tab {
     pub fn fkey_label(self) -> &'static str {
         match self {
             Self::Dashboard => "[F1]",
-            Self::Agents    => "[F2]",
-            Self::Runs      => "[F3]",
-            Self::System    => "[F4]",
-            Self::Timeline  => "[F5]",
+            Self::Agents => "[F2]",
+            Self::Runs => "[F3]",
+            Self::System => "[F4]",
+            Self::Timeline => "[F5]",
             Self::Approvals => "[F6]",
-            Self::Memory    => "[F7]",
-            Self::Audit     => "[F8]",
+            Self::Memory => "[F7]",
+            Self::Audit => "[F8]",
             Self::RunDetail => "[--]",
         }
     }
@@ -132,13 +132,13 @@ impl Tab {
     pub fn next(self) -> Self {
         match self {
             Self::Dashboard => Self::Agents,
-            Self::Agents    => Self::Runs,
-            Self::Runs      => Self::System,
-            Self::System    => Self::Timeline,
-            Self::Timeline  => Self::Approvals,
+            Self::Agents => Self::Runs,
+            Self::Runs => Self::System,
+            Self::System => Self::Timeline,
+            Self::Timeline => Self::Approvals,
             Self::Approvals => Self::Memory,
-            Self::Memory    => Self::Audit,
-            Self::Audit     => Self::Dashboard,
+            Self::Memory => Self::Audit,
+            Self::Audit => Self::Dashboard,
             Self::RunDetail => Self::System,
         }
     }
@@ -148,13 +148,13 @@ impl Tab {
     pub fn prev(self) -> Self {
         match self {
             Self::Dashboard => Self::Audit,
-            Self::Agents    => Self::Dashboard,
-            Self::Runs      => Self::Agents,
-            Self::System    => Self::Runs,
-            Self::Timeline  => Self::System,
+            Self::Agents => Self::Dashboard,
+            Self::Runs => Self::Agents,
+            Self::System => Self::Runs,
+            Self::Timeline => Self::System,
             Self::Approvals => Self::Timeline,
-            Self::Memory    => Self::Approvals,
-            Self::Audit     => Self::Memory,
+            Self::Memory => Self::Approvals,
+            Self::Audit => Self::Memory,
             Self::RunDetail => Self::Runs,
         }
     }
@@ -250,7 +250,11 @@ impl App {
             // 3. Render (throttled to effective ~10 fps, or ~5 fps when idle).
             self.frame_counter = self.frame_counter.wrapping_add(1);
             let idle = self.last_input.elapsed().as_secs() > 5;
-            let divisor = if idle { FLUSH_DIVISOR_IDLE } else { FLUSH_DIVISOR };
+            let divisor = if idle {
+                FLUSH_DIVISOR_IDLE
+            } else {
+                FLUSH_DIVISOR
+            };
             if self.frame_counter % divisor == 0 || self.tui_state.dirty {
                 terminal.draw(|frame| self.render(frame))?;
                 self.tui_state.dirty = false;
@@ -293,39 +297,36 @@ impl App {
                 self.tui_state.mark_dirty();
             }
 
-            TuiAction::NavigateUp => {
-                match self.active_tab {
-                    Tab::Agents => {
-                        self.tui_state.agents_scroll.up();
-                        self.tui_state.mark_dirty();
-                    }
-                    Tab::Runs => {
-                        self.tui_state.runs_scroll.up();
-                        self.tui_state.mark_dirty();
-                    }
-                    Tab::Timeline => {
-                        self.tui_state.timeline_scroll.up();
-                        self.tui_state.mark_dirty();
-                    }
-                    Tab::Approvals => {
-                        self.tui_state.approvals_scroll.up();
-                        self.tui_state.mark_dirty();
-                    }
-                    Tab::Memory => {
-                        self.tui_state.memory_scroll.up();
-                        self.tui_state.mark_dirty();
-                    }
-                    Tab::Audit => {
-                        self.tui_state.audit_scroll.up();
-                        self.tui_state.mark_dirty();
-                    }
-                    _ => {}
+            TuiAction::NavigateUp => match self.active_tab {
+                Tab::Agents => {
+                    self.tui_state.agents_scroll.up();
+                    self.tui_state.mark_dirty();
                 }
-            }
+                Tab::Runs => {
+                    self.tui_state.runs_scroll.up();
+                    self.tui_state.mark_dirty();
+                }
+                Tab::Timeline => {
+                    self.tui_state.timeline_scroll.up();
+                    self.tui_state.mark_dirty();
+                }
+                Tab::Approvals => {
+                    self.tui_state.approvals_scroll.up();
+                    self.tui_state.mark_dirty();
+                }
+                Tab::Memory => {
+                    self.tui_state.memory_scroll.up();
+                    self.tui_state.mark_dirty();
+                }
+                Tab::Audit => {
+                    self.tui_state.audit_scroll.up();
+                    self.tui_state.mark_dirty();
+                }
+                _ => {}
+            },
 
             TuiAction::NavigateDown => {
-                // conservative estimate; actual visible rows depend on terminal height
-                let visible = 15usize;
+                let visible = self.visible_rows();
                 match self.active_tab {
                     Tab::Agents => {
                         let total = self.tui_state.agents.len();
@@ -364,12 +365,12 @@ impl App {
             TuiAction::ScrollUp(n) => {
                 for _ in 0..n {
                     match self.active_tab {
-                        Tab::Agents    => self.tui_state.agents_scroll.up(),
-                        Tab::Runs      => self.tui_state.runs_scroll.up(),
-                        Tab::Timeline  => self.tui_state.timeline_scroll.up(),
+                        Tab::Agents => self.tui_state.agents_scroll.up(),
+                        Tab::Runs => self.tui_state.runs_scroll.up(),
+                        Tab::Timeline => self.tui_state.timeline_scroll.up(),
                         Tab::Approvals => self.tui_state.approvals_scroll.up(),
-                        Tab::Memory    => self.tui_state.memory_scroll.up(),
-                        Tab::Audit     => self.tui_state.audit_scroll.up(),
+                        Tab::Memory => self.tui_state.memory_scroll.up(),
+                        Tab::Audit => self.tui_state.audit_scroll.up(),
                         _ => {}
                     }
                 }
@@ -377,8 +378,7 @@ impl App {
             }
 
             TuiAction::ScrollDown(n) => {
-                // conservative estimate; actual visible rows depend on terminal height
-                let visible = 15usize;
+                let visible = self.visible_rows();
                 for _ in 0..n {
                     match self.active_tab {
                         Tab::Agents => {
@@ -496,7 +496,10 @@ impl App {
                     }
                     Tab::Approvals => {
                         // Cancel any open confirmation dialog first.
-                        if !matches!(self.tui_state.confirm_dialog, crate::tui::state::ConfirmDialog::None) {
+                        if !matches!(
+                            self.tui_state.confirm_dialog,
+                            crate::tui::state::ConfirmDialog::None
+                        ) {
                             self.tui_state.confirm_dialog = crate::tui::state::ConfirmDialog::None;
                         } else if self.tui_state.approvals_scroll.selected.is_some() {
                             self.tui_state.approvals_scroll.selected = None;
@@ -506,7 +509,11 @@ impl App {
                         self.tui_state.mark_dirty();
                     }
                     Tab::Memory => {
-                        if self.tui_state.memory_scroll.selected.is_some() {
+                        if self.input_mode == InputMode::Insert {
+                            self.input_mode = InputMode::Normal;
+                            self.tui_state.memory_search_query.clear();
+                            self.refresh_memory();
+                        } else if self.tui_state.memory_scroll.selected.is_some() {
                             self.tui_state.memory_scroll.selected = None;
                         } else {
                             self.active_tab = Tab::Dashboard;
@@ -601,21 +608,20 @@ impl App {
             }
 
             TuiAction::ScrollToBottom => {
+                let visible = self.visible_rows();
                 match self.active_tab {
                     Tab::Audit => {
                         let total = self.tui_state.audit_log.len();
                         if total > 0 {
                             self.tui_state.audit_scroll.selected = Some(total - 1);
-                            // conservative estimate; actual visible rows depend on terminal height
-                            self.tui_state.audit_scroll.offset = total.saturating_sub(15);
+                            self.tui_state.audit_scroll.offset = total.saturating_sub(visible);
                         }
                     }
                     Tab::Timeline => {
                         let total = self.tui_state.run_events.len();
                         if total > 0 {
                             self.tui_state.timeline_scroll.selected = Some(total - 1);
-                            // conservative estimate; actual visible rows depend on terminal height
-                            self.tui_state.timeline_scroll.offset = total.saturating_sub(15);
+                            self.tui_state.timeline_scroll.offset = total.saturating_sub(visible);
                         }
                     }
                     _ => {}
@@ -685,10 +691,30 @@ impl App {
                 self.tui_state.mark_dirty();
             }
 
+            TuiAction::SearchInput(c) => {
+                self.tui_state.memory_search_query.push(c);
+                self.refresh_memory();
+                self.tui_state.memory_scroll.offset = 0;
+                self.tui_state.memory_scroll.selected = None;
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SearchBackspace => {
+                self.tui_state.memory_search_query.pop();
+                self.refresh_memory();
+                self.tui_state.memory_scroll.offset = 0;
+                self.tui_state.memory_scroll.selected = None;
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SearchSubmit => {
+                self.input_mode = InputMode::Normal;
+                self.tui_state.mark_dirty();
+            }
+
             TuiAction::TogglePanel => {
                 if self.active_tab == Tab::RunDetail {
-                    self.tui_state.detail_panel_index =
-                        (self.tui_state.detail_panel_index + 1) % 2;
+                    self.tui_state.detail_panel_index = (self.tui_state.detail_panel_index + 1) % 2;
                     self.tui_state.mark_dirty();
                 }
             }
@@ -759,15 +785,13 @@ impl App {
                     match db.run_detail(run_id) {
                         Ok(detail) => self.tui_state.run_detail = detail,
                         Err(e) => {
-                            self.tui_state.last_error =
-                                Some(format!("run_detail: {e}"));
+                            self.tui_state.last_error = Some(format!("run_detail: {e}"));
                         }
                     }
                     match db.run_events(run_id, 500) {
                         Ok(events) => self.tui_state.run_events = events,
                         Err(e) => {
-                            self.tui_state.last_error =
-                                Some(format!("run_events: {e}"));
+                            self.tui_state.last_error = Some(format!("run_events: {e}"));
                         }
                     }
                 }
@@ -892,7 +916,9 @@ impl App {
             match db.approve_effect(effect_id) {
                 Ok(()) => {
                     // Remove from the local pending list immediately.
-                    self.tui_state.pending_approvals.retain(|a| a.effect_id != effect_id);
+                    self.tui_state
+                        .pending_approvals
+                        .retain(|a| a.effect_id != effect_id);
                     self.tui_state.last_error = None;
                 }
                 Err(e) => {
@@ -909,7 +935,9 @@ impl App {
         if let Ok(db) = TuiDb::from_pool(&self.pool) {
             match db.deny_effect(effect_id) {
                 Ok(()) => {
-                    self.tui_state.pending_approvals.retain(|a| a.effect_id != effect_id);
+                    self.tui_state
+                        .pending_approvals
+                        .retain(|a| a.effect_id != effect_id);
                     self.tui_state.last_error = None;
                 }
                 Err(e) => {
@@ -934,6 +962,18 @@ impl App {
                 }
             }
         }
+    }
+
+    // ── Layout helpers ──────────────────────────────────────────────────────
+
+    /// Estimate the number of visible data rows in the main content area.
+    ///
+    /// Uses the current terminal height minus chrome (header, tab bar, status
+    /// bar, block borders, table header).
+    fn visible_rows(&self) -> usize {
+        let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
+        // 3 chrome rows (header + tab_bar + status_bar) + 2 border + 1 table header
+        h.saturating_sub(6)
     }
 
     // ── Render pipeline ─────────────────────────────────────────────────────
@@ -1007,13 +1047,13 @@ impl App {
 
         let tabs = [
             (Tab::Dashboard, "F1 Dashboard"),
-            (Tab::Agents,    "F2 Agents"),
-            (Tab::Runs,      "F3 Runs"),
-            (Tab::System,    "F4 System"),
-            (Tab::Timeline,  "F5 Timeline"),
+            (Tab::Agents, "F2 Agents"),
+            (Tab::Runs, "F3 Runs"),
+            (Tab::System, "F4 System"),
+            (Tab::Timeline, "F5 Timeline"),
             (Tab::Approvals, "F6 Approvals"),
-            (Tab::Memory,    "F7 Memory"),
-            (Tab::Audit,     "F8 Audit"),
+            (Tab::Memory, "F7 Memory"),
+            (Tab::Audit, "F8 Audit"),
         ];
 
         let mut spans = Vec::with_capacity(tabs.len() * 2);
@@ -1040,10 +1080,10 @@ impl App {
 
 /// Computed layout regions for the TUI frame.
 struct TuiLayout {
-    header:  Rect,
+    header: Rect,
     tab_bar: Rect,
-    main:    Rect,
-    status:  Rect,
+    main: Rect,
+    status: Rect,
 }
 
 fn compute_layout(area: Rect) -> TuiLayout {
@@ -1058,10 +1098,10 @@ fn compute_layout(area: Rect) -> TuiLayout {
         .split(area);
 
     TuiLayout {
-        header:  rows[0],
+        header: rows[0],
         tab_bar: rows[1],
-        main:    rows[2],
-        status:  rows[3],
+        main: rows[2],
+        status: rows[3],
     }
 }
 

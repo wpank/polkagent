@@ -75,10 +75,7 @@ impl CachedMetadataService {
     /// The snapshot is registered with the inner service and also
     /// written into the cache so subsequent `get_snapshot` calls can
     /// be served from cache.
-    pub async fn register_snapshot(
-        &self,
-        snapshot: MetadataSnapshot,
-    ) -> Option<MetadataDrift> {
+    pub async fn register_snapshot(&self, snapshot: MetadataSnapshot) -> Option<MetadataDrift> {
         let key = cache_key(&snapshot.chain_id, snapshot.spec_version);
 
         // Serialize the snapshot into the cache.
