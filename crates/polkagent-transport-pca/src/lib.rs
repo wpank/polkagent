@@ -38,6 +38,9 @@
 //! | [`dedup`] | Deduplication store for at-least-once delivery |
 //! | [`device_channels`] | Per-device channel subscription tracking |
 //! | [`persistence`] | Crash-safe state persistence |
+//! | [`group`] | C2: End-to-end encrypted group messaging |
+//! | [`sync`] | C3: Cross-device sync and app-layer ACK |
+//! | [`statement`] | C3: Statement store / bulletin CID anchoring |
 //! | [`error`] | PCA-specific error types |
 
 #![forbid(unsafe_code)]
@@ -60,9 +63,12 @@ pub mod crypto;
 pub mod dedup;
 pub mod device_channels;
 pub mod error;
+pub mod group;
 pub mod outbound;
 pub mod persistence;
 pub mod session;
+pub mod statement;
+pub mod sync;
 
 use std::sync::Arc;
 

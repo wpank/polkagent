@@ -1,17 +1,15 @@
-   Compiling polkagent-signer-kms v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-kms)
+   Compiling polkagent-transport-pca v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-transport-pca)
    Compiling polkagent-service v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-service)
-   Compiling polkagent-identity v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-identity)
-   Compiling polkagent-harness-copilot v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-copilot)
-   Compiling polkagent-harness-codex v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-codex)
-   Compiling polkagent-fault v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-fault)
-   Compiling polkagent-signer-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-fake)
-   Compiling polkagent-harness-acp v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-acp)
-   Compiling polkagent-harness-claude v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-claude)
-   Compiling polkagent-signer-proxy v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-signer-proxy)
-   Compiling polkagent-skill v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-skill)
    Compiling polkagent-tool v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-tool)
-   Compiling polkagent-executor-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-executor-fake)
-   Compiling polkagent-test-fixtures v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-test-fixtures)
+   Compiling polkagent-outbox v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-outbox)
+   Compiling polkagent-memory v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-memory)
+   Compiling polkagent-action-governance v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-action-governance)
+   Compiling polkagent-chain-fake v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-chain-fake)
+   Compiling polkagent-artifact v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-artifact)
+   Compiling polkagent-plugin v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-plugin)
+   Compiling polkagent-rate-limit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-rate-limit)
+   Compiling polkagent-skill v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-skill)
+   Compiling polkagent-kit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-kit)
 error[E0046]: not all trait items implemented, missing: `forget`
    --> crates/polkagent-tool/src/builtin/chain_knowledge.rs:226:5
     |
@@ -28,7 +26,6 @@ error[E0046]: not all trait items implemented, missing: `forget`
     |
     = help: implement the missing item: `fn forget<'life0: 'async_trait, 'life1: 'async_trait, 'async_trait>(&'life0 self, _: &'life1 str) -> Pin<Box<(dyn Future<Output = Result<usize, MemoryError>> + Send + 'async_trait)>> { todo!() }`
 
-   Compiling polkagent-harness-trait v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-harness-trait)
 error[E0046]: not all trait items implemented, missing: `forget`
     --> crates/polkagent-service/src/app.rs:1764:5
      |
@@ -37,10 +34,7 @@ error[E0046]: not all trait items implemented, missing: `forget`
      |
      = help: implement the missing item: `fn forget<'life0: 'async_trait, 'life1: 'async_trait, 'async_trait>(&'life0 self, _: &'life1 str) -> Pin<Box<(dyn futures::Future<Output = Result<usize, MemoryError>> + std::marker::Send + 'async_trait)>> { todo!() }`
 
-   Compiling polkagent-retry v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-retry)
-   Compiling polkagent-rate-limit v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-rate-limit)
-   Compiling polkagent-action-transfer v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-action-transfer)
-   Compiling polkagent-context v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-context)
+   Compiling polkagent-core v0.1.0 (/Users/will/dev/par/polkagent/crates/polkagent-core)
 For more information about this error, try `rustc --explain E0046`.
 error: could not compile `polkagent-tool` (lib test) due to 2 previous errors
 warning: build failed, waiting for other jobs to finish...
