@@ -59,6 +59,8 @@ pub mod provider;
 pub mod router;
 pub mod scheduled;
 pub mod webhook;
+#[cfg(feature = "watcher")]
+pub mod watcher_agent;
 
 // ---------------------------------------------------------------------------
 // Convenience re-exports
@@ -80,4 +82,6 @@ pub use router::{
 };
 pub use metadata_watcher::MetadataDriftWatcher;
 pub use scheduled::ScheduledTaskManager;
+#[cfg(feature = "watcher")]
+pub use watcher_agent::WatcherAgentManager;
 pub use webhook::WebhookDispatcher;

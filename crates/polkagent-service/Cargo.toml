@@ -58,6 +58,9 @@ parking_lot = { workspace = true }
 # Errors
 thiserror = { workspace = true }
 
+[features]
+watcher = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 futures = { workspace = true }

@@ -59,6 +59,7 @@ pub fn apply_env_overrides(config: &mut Config) {
     apply_harness_overrides(config);
     apply_artifact_overrides(config);
     apply_observability_overrides(config);
+    apply_watcher_overrides(config);
     check_api_key_env_vars();
 }
 
@@ -485,6 +486,23 @@ fn apply_observability_overrides(config: &mut Config) {
             "applying env override"
         );
         config.observability.service_name = name;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Watchers  (PRD-08 §7)
+// ---------------------------------------------------------------------------
+
+fn apply_watcher_overrides(config: &mut Config) {
+    // A global kill-switch: POLKAGENT_WATCHER_ENABLED=false disables all
+    // configured watchers without removing them from the config file.
+    if let Some(enabled) = env_parse::<bool>("POLKAGENT_WATCHER_ENABLED") {
+        if !enabled {
+            debug!(variable = "POLKAGENT_WATCHER_ENABLED", "disabling all watchers via env override");
+            for w in &mut config.watchers {
+                w.enabled = false;
+            }
+        }
     }
 }
 

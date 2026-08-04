@@ -59,7 +59,8 @@ pub use schema::{
     DatabaseBackend, DatabaseConfig, ExecutionConfig, HarnessConfig, HarnessEntryConfig, LogConfig,
     LogFormat, MemoryConfig, MetaConfig, ModelOverrideConfig, ObservabilityConfig, PolicyConfig,
     PostgresConfig, ProviderConfig, RateLimitConfig, SecurityConfig, ServerConfig, SkillsConfig,
-    SqliteConfig, TlsConfig, TuiConfig, TuiTheme, CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
+    SqliteConfig, TlsConfig, TuiConfig, TuiTheme, WatcherConfig, WatcherSchedule,
+    CURRENT_SCHEMA_VERSION, DEFAULT_CONFIG_TEMPLATE,
 };
 pub use validate::ValidationError;
 pub use watch::{AtomicConfig, ConfigDiff, ConfigSnapshot, ConfigWatcher, ReloadPolicy, WatchEvent, WatchEventKind, WatchError};

@@ -1873,6 +1873,10 @@ mod tests {
         ) -> MemoryResult<Vec<Episode>> {
             Ok(vec![])
         }
+
+        async fn forget(&self, _artifact_id: &str) -> MemoryResult<usize> {
+            Ok(0)
+        }
     }
 
     // ── Fake PaymentStore ────────────────────────────────────────────────
