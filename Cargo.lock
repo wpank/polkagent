@@ -2856,6 +2856,8 @@ dependencies = [
  "polkagent-test-fixtures",
  "polkagent-tool",
  "polkagent-transport-fake",
+ "polkagent-transport-pca",
+ "polkagent-transport-trait",
  "proptest",
  "serde",
  "serde_json",

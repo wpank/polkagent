@@ -31,6 +31,8 @@ polkagent-memory = { path = "../polkagent-memory" }
 polkagent-metadata = { path = "../polkagent-metadata" }
 polkagent-fault = { path = "../polkagent-fault" }
 polkagent-transport-fake = { path = "../polkagent-transport-fake" }
+polkagent-transport-pca = { path = "../polkagent-transport-pca" }
+polkagent-transport-trait = { path = "../polkagent-transport-trait" }
 # IT-04: Outbox delivery tests
 polkagent-outbox = { path = "../polkagent-outbox" }
 # IT-06: Executor streaming tests (already have polkagent-executor-fake above)
