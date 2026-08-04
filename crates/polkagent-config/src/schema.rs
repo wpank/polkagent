@@ -68,6 +68,8 @@ pub struct Config {
     pub artifacts: ArtifactConfig,
     /// OpenTelemetry observability settings.
     pub observability: ObservabilityConfig,
+    /// Cloud control plane settings (regions, data residency).
+    pub cloud: CloudConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -843,6 +845,66 @@ impl Default for ObservabilityConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Cloud
+// ---------------------------------------------------------------------------
+
+/// Geographic region for data residency enforcement.
+///
+/// Jobs submitted by tenants in a given region may only be routed to workers
+/// operating in the same region unless `allow_cross_region` is enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DataRegion {
+    /// European Union
+    Eu,
+    /// United States
+    Us,
+    /// Asia-Pacific
+    Ap,
+    /// Australia
+    Au,
+    /// Canada
+    Ca,
+}
+
+impl std::fmt::Display for DataRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DataRegion::Eu => write!(f, "eu"),
+            DataRegion::Us => write!(f, "us"),
+            DataRegion::Ap => write!(f, "ap"),
+            DataRegion::Au => write!(f, "au"),
+            DataRegion::Ca => write!(f, "ca"),
+        }
+    }
+}
+
+/// Cloud control-plane settings.
+///
+/// Configures the data region for this deployment and whether cross-region
+/// data movement is permitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudConfig {
+    /// The data region for this deployment. When set, the control plane will
+    /// only assign jobs to workers in the same region. Default: `None` (region
+    /// enforcement disabled).
+    pub region: Option<DataRegion>,
+    /// When `true`, the control plane may route jobs to workers in a different
+    /// region. Requires explicit operator intent. Default: `false`.
+    pub allow_cross_region: bool,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            region: None,
+            allow_cross_region: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Template
 // ---------------------------------------------------------------------------
 
@@ -1060,6 +1122,14 @@ otlp_protocol = "grpc"     # grpc | http/protobuf
 metrics_enabled = true
 traces_enabled = true
 service_name = "polkagent"
+
+# ─── Cloud ──────────────────────────────────────────────────────────────────
+# Data residency: restrict job routing to a specific geographic region.
+# Override: POLKAGENT_CLOUD_REGION=eu
+
+[cloud]
+# region = "eu"            # eu | us | ap | au | ca
+allow_cross_region = false
 "#;
 
 // ---------------------------------------------------------------------------

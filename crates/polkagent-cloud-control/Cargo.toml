@@ -11,6 +11,7 @@ description = "Cloud control plane: job queue, worker registration, and job assi
 # Internal
 polkagent-core = { path = "../polkagent-core" }
 polkagent-config = { path = "../polkagent-config" }
+polkagent-grant = { path = "../polkagent-grant" }
 
 # Async
 tokio = { workspace = true }

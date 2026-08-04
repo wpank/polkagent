@@ -26,7 +26,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use polkagent_config::schema::DataRegion;
 use polkagent_core::{RunId, WorkerId};
+use polkagent_grant::policy::{
+    Condition, ContextAttribute, Effect, EvaluationContext, PolicyDecision, PolicyRule, PolicySet,
+    evaluate,
+};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -61,6 +66,13 @@ pub enum ControlError {
     QueueFull {
         /// Maximum queue capacity.
         capacity: usize,
+    },
+
+    /// A job cannot be routed because no workers exist in the required region.
+    #[error("data residency violation: job region {job_region} has no eligible workers (cross-region routing disabled)")]
+    RegionViolation {
+        /// The region the job requires.
+        job_region: DataRegion,
     },
 }
 
@@ -120,6 +132,10 @@ pub struct Job {
     pub payload: String,
     /// Required worker capability (if any).
     pub required_capability: Option<String>,
+    /// Data-residency region of the submitting tenant. When set, the job may
+    /// only be assigned to a worker in the same region unless cross-region
+    /// routing is explicitly allowed.
+    pub region: Option<DataRegion>,
     /// Job priority.
     pub priority: JobPriority,
     /// Current status.
@@ -139,6 +155,7 @@ impl Job {
             run_id,
             payload: payload.into(),
             required_capability: None,
+            region: None,
             priority: JobPriority::default(),
             status: JobStatus::Pending,
             created_at: now,
@@ -174,6 +191,8 @@ pub struct WorkerRecord {
     pub name: String,
     /// Set of capabilities this worker advertises.
     pub capabilities: Vec<String>,
+    /// Data-residency region where this worker is deployed.
+    pub region: Option<DataRegion>,
     /// Maximum number of concurrent jobs.
     pub max_concurrent_jobs: u32,
     /// Number of currently assigned jobs.
@@ -199,6 +218,7 @@ impl WorkerRecord {
             id,
             name: name.into(),
             capabilities,
+            region: None,
             max_concurrent_jobs,
             active_jobs: 0,
             status: WorkerStatus::Active,
@@ -237,6 +257,9 @@ pub struct ControlPlaneConfig {
     pub max_queue_size: usize,
     /// Duration after which a worker without a heartbeat is marked stale.
     pub heartbeat_timeout: Duration,
+    /// When `true`, jobs may be assigned to workers in a different region than
+    /// the job's declared region. Default: `false`.
+    pub allow_cross_region: bool,
 }
 
 impl Default for ControlPlaneConfig {
@@ -244,8 +267,60 @@ impl Default for ControlPlaneConfig {
         Self {
             max_queue_size: 10_000,
             heartbeat_timeout: Duration::from_secs(30),
+            allow_cross_region: false,
         }
     }
+}
+
+/// Build the Cedar-style policy set that enforces data-residency constraints.
+///
+/// The returned [`PolicySet`] contains two rules:
+/// 1. A deny rule that fires when the job region does not match the worker
+///    region (cross-region routing blocked).
+/// 2. An allow rule that permits all `cloud.assign_job` actions (baseline
+///    permission so that same-region assignments succeed).
+///
+/// Deny-overrides semantics ensure the deny rule wins when regions differ.
+#[must_use]
+pub fn data_residency_policy(worker_region: DataRegion) -> PolicySet {
+    PolicySet::new(vec![
+        // Deny when the job's region differs from the worker's region.
+        PolicyRule {
+            id: "deny-cross-region-routing".to_owned(),
+            effect: Effect::Deny,
+            action_patterns: vec!["cloud.assign_job".to_owned()],
+            resource_patterns: vec!["**".to_owned()],
+            conditions: Default::default(),
+            abac_condition: Some(Condition::Not {
+                inner: Box::new(Condition::Equals {
+                    attr: "job.region".to_owned(),
+                    value: worker_region.to_string(),
+                }),
+            }),
+        },
+        // Allow baseline — only reached when the deny rule above did not fire.
+        PolicyRule {
+            id: "allow-same-region-routing".to_owned(),
+            effect: Effect::Allow,
+            action_patterns: vec!["cloud.assign_job".to_owned()],
+            resource_patterns: vec!["**".to_owned()],
+            conditions: Default::default(),
+            abac_condition: None,
+        },
+    ])
+}
+
+/// Evaluate the data-residency policy for a specific job→worker assignment.
+///
+/// Returns `true` when the assignment is permitted, `false` when the policy
+/// denies it.
+fn check_residency_policy(job_region: DataRegion, worker_region: DataRegion) -> bool {
+    let policy = data_residency_policy(worker_region);
+    let ctx = EvaluationContext::default()
+        .with_attribute("job.region", ContextAttribute::String(job_region.to_string()));
+
+    let decision = evaluate(&policy, "cloud.assign_job", "job", &ctx);
+    matches!(decision, PolicyDecision::Allow)
 }
 
 /// The cloud control plane.
@@ -446,7 +521,9 @@ impl ControlPlane {
     /// 1. Pick the highest-priority pending job.
     /// 2. Find active workers with capacity.
     /// 3. If the job requires a capability, filter to capable workers.
-    /// 4. Among remaining candidates, pick the one with the most free slots
+    /// 4. If the job has a region and cross-region routing is disabled, filter
+    ///    to workers in the same region (enforced via Cedar policy).
+    /// 5. Among remaining candidates, pick the one with the most free slots
     ///    (least loaded).
     pub async fn assign_next(&self) -> Result<(Job, WorkerId)> {
         let mut inner = self.inner.lock().await;
@@ -455,6 +532,8 @@ impl ControlPlane {
         let pending: Vec<_> = inner.pending_jobs.drain(..).collect();
         let mut sorted = pending;
         sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
+
+        let allow_cross = inner.config.allow_cross_region;
 
         for job in &sorted {
             // Find eligible workers.
@@ -466,6 +545,21 @@ impl ControlPlane {
 
             if let Some(ref cap) = job.required_capability {
                 candidates.retain(|w| w.has_capability(cap));
+            }
+
+            // Region-aware filtering: when cross-region routing is disabled
+            // and the job declares a region, only workers in the same region
+            // are eligible.  The check is delegated to the Cedar-style policy
+            // evaluator so that the constraint is expressed as a formal policy
+            // rule rather than ad-hoc code.
+            if let Some(job_region) = job.region {
+                if !allow_cross {
+                    candidates.retain(|w| {
+                        w.region
+                            .map(|wr| check_residency_policy(job_region, wr))
+                            .unwrap_or(false)
+                    });
+                }
             }
 
             // Pick least-loaded (most free slots).
@@ -502,6 +596,18 @@ impl ControlPlane {
         // No assignment was possible — put all jobs back.
         for job in sorted {
             inner.pending_jobs.push_back(job);
+        }
+
+        // Distinguish "no workers at all" from "region violation".
+        if let Some(first_job) = inner.pending_jobs.front() {
+            if let Some(job_region) = first_job.region {
+                if !allow_cross {
+                    let any_in_region = inner.workers.values().any(|w| w.region == Some(job_region));
+                    if !any_in_region {
+                        return Err(ControlError::RegionViolation { job_region });
+                    }
+                }
+            }
         }
 
         Err(ControlError::NoWorkersAvailable)
@@ -756,5 +862,122 @@ mod tests {
         // High-priority job should be assigned first.
         let (assigned, _) = cp.assign_next().await.ok().unwrap();
         assert_eq!(assigned.id, "high");
+    }
+
+    // --- Data residency tests ------------------------------------------------
+
+    fn make_regional_worker(name: &str, max_jobs: u32, region: DataRegion) -> WorkerRecord {
+        let mut w = make_worker(name, max_jobs, vec![]);
+        w.region = Some(region);
+        w
+    }
+
+    fn make_regional_job(id: &str, region: DataRegion) -> Job {
+        let mut j = make_job(id);
+        j.region = Some(region);
+        j
+    }
+
+    #[tokio::test]
+    async fn eu_job_cannot_route_to_us_worker() {
+        let cp = ControlPlane::with_defaults(); // cross-region disabled by default
+        let us_worker = make_regional_worker("us-worker", 4, DataRegion::Us);
+        cp.register_worker(us_worker).await.ok();
+
+        let eu_job = make_regional_job("eu-job-1", DataRegion::Eu);
+        cp.enqueue(eu_job).await.ok();
+
+        let result = cp.assign_next().await;
+        assert!(
+            matches!(result, Err(ControlError::RegionViolation { job_region }) if job_region == DataRegion::Eu),
+            "EU job must not be assigned to a US worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn eu_job_routes_to_eu_worker() {
+        let cp = ControlPlane::with_defaults();
+        let eu_worker = make_regional_worker("eu-worker", 4, DataRegion::Eu);
+        let eu_wid = eu_worker.id;
+        cp.register_worker(eu_worker).await.ok();
+
+        let eu_job = make_regional_job("eu-job-2", DataRegion::Eu);
+        cp.enqueue(eu_job).await.ok();
+
+        let (assigned, worker_id) = cp.assign_next().await.ok().unwrap();
+        assert_eq!(assigned.id, "eu-job-2");
+        assert_eq!(worker_id, eu_wid);
+    }
+
+    #[tokio::test]
+    async fn cross_region_override_allows_routing() {
+        let cp = ControlPlane::new(ControlPlaneConfig {
+            allow_cross_region: true,
+            ..Default::default()
+        });
+        let us_worker = make_regional_worker("us-worker", 4, DataRegion::Us);
+        let us_wid = us_worker.id;
+        cp.register_worker(us_worker).await.ok();
+
+        let eu_job = make_regional_job("eu-job-3", DataRegion::Eu);
+        cp.enqueue(eu_job).await.ok();
+
+        let (assigned, worker_id) = cp.assign_next().await.ok().unwrap();
+        assert_eq!(assigned.id, "eu-job-3");
+        assert_eq!(worker_id, us_wid, "cross-region override should allow assignment");
+    }
+
+    #[tokio::test]
+    async fn regionless_job_can_route_to_any_worker() {
+        let cp = ControlPlane::with_defaults();
+        let eu_worker = make_regional_worker("eu-worker", 4, DataRegion::Eu);
+        let eu_wid = eu_worker.id;
+        cp.register_worker(eu_worker).await.ok();
+
+        // Job without a region should still be assignable.
+        let job = make_job("no-region-job");
+        cp.enqueue(job).await.ok();
+
+        let (assigned, worker_id) = cp.assign_next().await.ok().unwrap();
+        assert_eq!(assigned.id, "no-region-job");
+        assert_eq!(worker_id, eu_wid);
+    }
+
+    #[tokio::test]
+    async fn residency_policy_denies_mismatched_regions() {
+        assert!(
+            !check_residency_policy(DataRegion::Eu, DataRegion::Us),
+            "EU→US must be denied"
+        );
+        assert!(
+            check_residency_policy(DataRegion::Eu, DataRegion::Eu),
+            "EU→EU must be allowed"
+        );
+        assert!(
+            !check_residency_policy(DataRegion::Ap, DataRegion::Ca),
+            "AP→CA must be denied"
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_regions_picks_correct_worker() {
+        let cp = ControlPlane::with_defaults();
+        let eu_worker = make_regional_worker("eu-node", 4, DataRegion::Eu);
+        let us_worker = make_regional_worker("us-node", 4, DataRegion::Us);
+        let eu_wid = eu_worker.id;
+        let us_wid = us_worker.id;
+
+        cp.register_worker(eu_worker).await.ok();
+        cp.register_worker(us_worker).await.ok();
+
+        let eu_job = make_regional_job("j-eu", DataRegion::Eu);
+        cp.enqueue(eu_job).await.ok();
+        let (_, wid) = cp.assign_next().await.ok().unwrap();
+        assert_eq!(wid, eu_wid, "EU job must go to EU worker");
+
+        let us_job = make_regional_job("j-us", DataRegion::Us);
+        cp.enqueue(us_job).await.ok();
+        let (_, wid) = cp.assign_next().await.ok().unwrap();
+        assert_eq!(wid, us_wid, "US job must go to US worker");
     }
 }

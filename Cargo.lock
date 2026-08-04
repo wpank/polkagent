@@ -2399,6 +2399,7 @@ dependencies = [
  "chrono",
  "polkagent-config",
  "polkagent-core",
+ "polkagent-grant",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
