@@ -1,7 +1,7 @@
 # Polkagent Diagnostic Findings & Implementation Checklist
 
 **Date:** 2026-08-03
-**Updated:** 2026-08-03 (post-fix)
+**Updated:** 2026-08-04 (post-D0–P6 verification)
 **Method:** 6 parallel exploration agents + live CLI/DB testing + 15 parallel fix agents
 **Scope:** Full codebase audit — TUI, CLI, API, run lifecycle, effect pipeline, memory, eval, config, providers
 
@@ -11,21 +11,21 @@
 
 A comprehensive audit of the polkagent codebase (74 crates) uncovered **70+ issues** across 9 subsystems.
 
-### Fix Status (2026-08-03)
+### Fix Status (updated 2026-08-04)
 
-**15 parallel fix agents** applied corrections across **33 files** (+636/-320 lines). All **6,702 tests pass**.
+Initial pass: **15 parallel fix agents** applied corrections across **33 files** (+636/-320 lines). Subsequent tasks D0–P6 fixed 20 additional items. **84/107 findings resolved (79%)**.
 
 | Category | Found | Fixed | Remaining |
 |----------|-------|-------|-----------|
-| SQL Schema Mismatches | 17 | 12 | 5 (event_store.rs, store.rs EffectStore) |
-| Run Lifecycle | 12 | 7 | 5 (token persistence, TimeoutEnforcer wiring) |
-| TUI Rendering | 19 | 12 | 7 (minor layout/UX) |
-| CLI Commands | 10 | 8 | 2 (export/inspect wiring) |
+| SQL Schema Mismatches | 17 | 17 | 0 |
+| Run Lifecycle | 12 | 9 | 3 (TimeoutEnforcer, per-run timeout persistence, completed_at gap) |
+| TUI Rendering | 19 | 16 | 3 (ScrollToBottom hardcode, FTS SQL injection, global a/d keys) |
+| CLI Commands | 10 | 8 | 2 (output.rs dead, exit_codes dead) |
 | REST/WS API | 14 | 7 | 7 (lower priority) |
-| Effect Pipeline | 10 | 6 | 4 (store-level schema) |
-| Config & Providers | 12 | 5 | 7 (lower priority) |
+| Effect Pipeline | 10 | 9 | 1 (idempotency O(N) scan) |
+| Config & Providers | 12 | 10 | 2 (config merge, find_project_config boundary) |
 | Memory System | 7 | 3 | 4 (lower priority) |
-| Eval Framework | 6 | 4 | 2 (lower priority) |
+| Eval Framework | 6 | 5 | 1 (zero-check score inflation or min_delta noise) |
 
 **Key fixes applied:**
 - `polkagent logs` command now works (was crashing with `no such column: event_type`)
@@ -500,97 +500,97 @@ The `run_events` table uses `kind`, `data_json`, `timestamp` — but queries use
 
 ## 11. Implementation Checklist
 
-### Phase 0: Schema Fix Sprint (P0 — unblocks everything)
+### Phase 0: Schema Fix Sprint (P0 — unblocks everything) ✅ COMPLETE
 
-- [ ] **Fix `run_events` column names** in `tui/db.rs` (lines 500, 570) — rename `event_type`→`kind`, `payload_json`→`data_json`, `created_at`→`timestamp`
-- [ ] **Fix `run_events` column names** in `commands/logs.rs` (lines 127, 135, 145, 153)
-- [ ] **Fix `run_events` column names** in `commands/inbox.rs` (lines 209, 286)
-- [ ] **Fix `run_events` column names** in `commands/export.rs` (line 692)
-- [ ] **Fix test schema** in `tui/db.rs` (lines 954–961) to match production schema
-- [ ] **Fix `effect_intents`** missing `state`/`retry_class` — add columns via migration or remove from queries in `store.rs`
-- [ ] **Fix `effect_attempts`** missing `worker_id`/`payload_json` in `store.rs`
-- [ ] **Fix `effect_outcomes`** missing `attempt_id`/`run_id`/`consumed` in `store.rs`
-- [ ] **Add missing `skills` table** migration or make `skill.rs` commands handle missing table gracefully
-- [ ] **Verify**: `cargo test` passes after all schema fixes
+- [x] **Fix `run_events` column names** in `tui/db.rs` (lines 500, 570) — rename `event_type`→`kind`, `payload_json`→`data_json`, `created_at`→`timestamp`
+- [x] **Fix `run_events` column names** in `commands/logs.rs` (lines 127, 135, 145, 153)
+- [x] **Fix `run_events` column names** in `commands/inbox.rs` (lines 209, 286)
+- [x] **Fix `run_events` column names** in `commands/export.rs` (line 692)
+- [x] **Fix test schema** in `tui/db.rs` (lines 954–961) to match production schema
+- [x] **Fix `effect_intents`** missing `state`/`retry_class` — add columns via migration or remove from queries in `store.rs`
+- [x] **Fix `effect_attempts`** missing `worker_id`/`payload_json` in `store.rs`
+- [x] **Fix `effect_outcomes`** missing `attempt_id`/`run_id`/`consumed` in `store.rs`
+- [x] **Add missing `skills` table** migration or make `skill.rs` commands handle missing table gracefully
+- [x] **Verify**: `cargo test` passes after all schema fixes
 
-### Phase 1: Run Lifecycle Fixes (P0)
+### Phase 1: Run Lifecycle Fixes (P0) — 7/8 DONE
 
-- [ ] **Fix event sequence numbering** in `manager.rs:386` — query `max_sequence` before emitting
-- [ ] **Add startup reaper** in `lifecycle.rs` — scan for runs in `running`/`queued`/`completing` and transition to `Failed`
-- [ ] **Fix orchestrator error path** in `app.rs:827–873` — call `run_manager.fail_run` on error, add panic handler
-- [ ] **Fix timeout state** in `orchestrator.rs:574–584` — use `TimedOut` state instead of `Failed`
-- [ ] **Persist token usage** — add `input_tokens`/`output_tokens` columns to `runs` table; write turn data in orchestrator
+- [x] **Fix event sequence numbering** in `manager.rs:386` — query `max_sequence` before emitting
+- [x] **Add startup reaper** in `lifecycle.rs` — scan for runs in `running`/`queued`/`completing` and transition to `Failed`
+- [x] **Fix orchestrator error path** in `app.rs:827–873` — call `run_manager.fail_run` on error, add panic handler
+- [x] **Fix timeout state** in `orchestrator.rs:574–584` — use `TimedOut` state instead of `Failed`
+- [x] **Persist token usage** — turn data written via `RunManager::record_turn` → `store.insert_turn`
 - [ ] **Wire up `TimeoutEnforcer`** or remove it to reduce dead code
-- [ ] **Fix CLI timeout** in `run.rs:239–247` — use `TimedOut` not `Cancelled`
-- [ ] **Fix duplicate events** in `app.rs:832–854` — remove the second event emission
+- [x] **Fix CLI timeout** in `run.rs:239–247` — use `TimedOut` not `Cancelled`
+- [x] **Fix duplicate events** in `app.rs:832–854` — remove the second event emission
 
-### Phase 2: TUI Critical Fixes (P0)
+### Phase 2: TUI Critical Fixes (P0) — 6/7 DONE
 
-- [ ] **Wire `recompute_widget_data()`** — call it at the end of `refresh_data()` in `app.rs`
-- [ ] **Wire `recent_error_count()` and `budget_status()`** — call them in `refresh_data()`, populate `error_count` and `budget_remaining`
-- [ ] **Fix TUI approve/deny** in `db.rs:612–648` — insert `effect_outcomes` row instead of setting `claimed_by`
-- [ ] **Implement memory search** — add `TuiAction::StartSearch`, wire `'/'` key, mutate `memory_search_query`
+- [x] **Wire `recompute_widget_data()`** — call it at the end of `refresh_data()` in `app.rs`
+- [x] **Wire `recent_error_count()` and `budget_status()`** — call them in `refresh_data()`, populate `error_count` and `budget_remaining`
+- [x] **Fix TUI approve/deny** in `db.rs:612–648` — insert `effect_outcomes` row instead of setting `claimed_by`
+- [x] **Implement memory search** — add `TuiAction::Search`, wire `'/'` key, mutate `memory_search_query`
 - [ ] **Fix audit severity** — derive from event `kind` instead of hardcoding `"info"`
-- [ ] **Fix scroll visible count** — compute from actual terminal height, not hardcoded 20
-- [ ] **Fix footer overlap** — use `inner.y + inner.height - 1` instead of `area.y + area.height - 1`
+- [x] **Fix scroll visible count** — compute from actual terminal height via `inner.height.saturating_sub(1)`
+- [x] **Fix footer overlap** — use `inner.y + inner.height.saturating_sub(1)` with bounds check
 
-### Phase 3: CLI Command Fixes (P1)
+### Phase 3: CLI Command Fixes (P1) — 3/6 DONE
 
-- [ ] **Wire `export.rs` and `inspect.rs`** into `commands/mod.rs` and `cli.rs`, or delete them
-- [ ] **Fix `memory.rs` runtime** — use `Runtime::new()` instead of `Handle::current()`
-- [ ] **Fix `run.rs load_config()`** — replace with `ConfigLoader::new().load()`
+- [x] **Wire `export.rs` and `inspect.rs`** into `commands/mod.rs` and `cli.rs`
+- [x] **Fix `memory.rs` runtime** — uses `tokio_handle()` instead of `Handle::current()`
+- [x] **Fix `run.rs load_config()`** — now uses `ConfigLoader::new().load()`
 - [ ] **Fix `output.rs`** — wire `format_output()` into command handlers or remove dead code
 - [ ] **Fix `exit_codes.rs`** — use constants in error paths or remove
 - [ ] **Add `--json` flag** to `polkagent doctor`, `polkagent status`, `polkagent agent list` for machine-readable output
 
-### Phase 4: API Fixes (P1)
+### Phase 4: API Fixes (P1) — 5/6 DONE
 
-- [ ] **Fix route ordering** — register `/events/stream` before `/events/{id}` in `routes/mod.rs`
-- [ ] **Wire health check handlers** — replace inline closures with `health::readiness` and `health::startup`
-- [ ] **Fix metrics** — don't call `runs_completed()` on create; track actual completion
-- [ ] **Fix WebSocket pong timeout** — track `ping_sent_at`, not `last_pong`
-- [ ] **Fix `start_agent`** — verify agent exists before returning 200
+- [x] **Fix route ordering** — `/events/stream` now registered before `/events/{id}` in `routes/mod.rs`
+- [x] **Wire health check handlers** — real `liveness()`, `readiness()`, `startup()` handlers wired
+- [x] **Fix metrics** — `runs_started()` called on create; `runs_completed()` only on actual completion
+- [x] **Fix WebSocket pong timeout** — now tracks `ping_sent_at` with proper elapsed check
+- [x] **Fix `start_agent`** — returns `ApiError::AgentNotFound` if agent doesn't exist
 - [ ] **Document `/ws/v1alpha1`** in openapi.yaml or consolidate with `/events/stream`
 
-### Phase 5: Effect Pipeline Fixes (P1)
+### Phase 5: Effect Pipeline Fixes (P1) — 6/7 DONE
 
-- [ ] **Fix inbox approve/deny** — insert `effect_outcomes` row, not just `claimed_by` update
-- [ ] **Fix inbox column names** — use `kind`/`data_json`/`timestamp` in run_events INSERT
-- [ ] **Implement recovery reaper** — background task that calls `recover_all` and applies actions
-- [ ] **Fix `propose_intent`** — persist `turn_id` column
-- [ ] **Fix `claim_intent`** — respect `EffectPriority` in ORDER BY
-- [ ] **Compute BLAKE3 digest** on `record_outcome` or remove field + documentation
+- [x] **Fix inbox approve/deny** — now inserts `effect_outcomes` row with correct schema
+- [x] **Fix inbox column names** — uses `kind`/`data_json`/`timestamp` in run_events INSERT
+- [x] **Implement recovery reaper** — `recover_all` calls `apply_recovery_actions()` automatically
+- [x] **Fix `propose_intent`** — `turn_id` column persisted in INSERT
+- [x] **Fix `claim_intent`** — orders by `priority DESC, created_at ASC`
+- [x] **Compute BLAKE3 digest** — `blake3::hash(&result_bytes)` computed on `record_outcome`
 - [ ] **Use indexed idempotency lookup** — `WHERE idempotency_key = ?1` instead of full-run scan
 
-### Phase 6: Config & Provider Fixes (P2)
+### Phase 6: Config & Provider Fixes (P2) ✅ COMPLETE
 
-- [ ] **Fix empty API key** in `synthesize_providers_from_env` — check `is_ok_and(|v| !v.is_empty())`
-- [ ] **Fix Anthropic default model** — use slug from BuiltInModelCatalog
-- [ ] **Fix Gemini routing** — either implement GeminiExecutor or log a clear warning
-- [ ] **Fix TUI config detection** — use same paths as `ConfigLoader`
-- [ ] **Fix `tool_format` validator** — use ToolFormat enum serialization names
+- [x] **Fix empty API key** in `synthesize_providers_from_env` — now checks `is_ok_and(|v| !v.is_empty())`
+- [x] **Fix Anthropic default model** — uses `pc.default_model.clone()` from config, no hardcoded slug
+- [x] **Fix Gemini routing** — now uses dedicated `GeminiExecutor::new()`, not silently routed to OpenAI
+- [x] **Fix TUI config detection** — calls `polkagent_config::loader::{global_config_path(), find_project_config()}`
+- [x] **Fix `tool_format` validator** — allowlist matches ToolFormat enum: `anthropic_blocks`, `open_ai_json`, `gemini_native`, `re_act_text`
 
-### Phase 7: Memory & Eval Fixes (P2)
+### Phase 7: Memory & Eval Fixes (P2) ✅ COMPLETE
 
-- [ ] **Fix cross-agent search** — add `Option<AgentId>` to `MemoryQuery` for all-agent search
-- [ ] **Fix eval report underflow** — use `saturating_sub` or separate error-case counting
-- [ ] **Fix refusal detection** — normalize Unicode apostrophes before matching
-- [ ] **Fix eval stdout/stderr mixing** — send both markdown and summary to stdout
+- [x] **Fix cross-agent search** — accepts `None` for agent_id to search all agents
+- [x] **Fix eval report underflow** — uses `saturating_sub` for `failed` count
+- [x] **Fix refusal detection** — normalizes U+2019 and U+2018 Unicode apostrophes before matching
+- [x] **Fix eval stdout/stderr mixing** — both markdown and summary sent to stdout via `println!()`
 
-### Phase 8: Dead Code Cleanup (P3)
+### Phase 8: Dead Code Cleanup (P3) — 2/5 DONE
 
-- [ ] **Delete or wire** `tab_bar.rs`, `error_digest.rs` widgets
-- [ ] **Delete or wire** `export.rs`, `inspect.rs` commands
+- [x] **Delete or wire** `tab_bar.rs`, `error_digest.rs` widgets — both deleted
+- [x] **Delete or wire** `export.rs`, `inspect.rs` commands — both wired into `mod.rs` and `cli.rs`
 - [ ] **Remove stale `#[allow(dead_code)]`** annotations where code is now used
 - [ ] **Remove or wire** unused theme helper methods
 - [ ] **Clean up** `Tab::next()`/`Tab::prev()`/`Tab::ALL` if navigation stays F-key-based
 
-### Phase 9: Claude Diagnostic Workflow (P2)
+### Phase 9: Claude Diagnostic Workflow (P2) — 1/6 DONE
 
 - [ ] **Add `polkagent debug dump` command** — dumps DB state, config, run status as JSON
 - [ ] **Add `--json` output** to all major CLI commands for machine-readable feedback
 - [ ] **Add headless TUI render mode** — render TUI to string buffer for snapshot testing
-- [ ] **Add TUI snapshot tests** using ratatui `TestBackend`
+- [x] **Add TUI snapshot tests** using ratatui `TestBackend` — 19 snapshot tests exist in Phase 2d
 - [ ] **Add `polkagent doctor --fix`** — auto-fix common issues (reset zombie runs, clear stale claims)
 - [ ] **Document diagnostic workflow** for Claude Code in CLAUDE.md
 

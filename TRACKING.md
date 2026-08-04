@@ -17,17 +17,17 @@
 | **Phase 6: Experimental** | 0/0 AC, 0/6 deliverables | 0/6 | **0%** |
 | **Infrastructure Crates** | 11/11 crates | 11/11 | **100%** |
 | **Build Infrastructure** | 10/10 items | 10/10 | **100%** |
-| **Diagnostic Fixes** | 64/107 findings | 64/107 | **60%** |
-| **PRD Acceptance Criteria (suite)** | ~48/75 per-PRD criteria | ~48/75 | **~64%** |
+| **Diagnostic Fixes** | 84/107 findings | 84/107 | **79%** |
+| **PRD Acceptance Criteria (suite)** | ~51/75 per-PRD criteria | ~51/75 | **~68%** |
 | | | | |
-| **Overall weighted progress** | | | **~45%** |
+| **Overall weighted progress** | | | **~50%** |
 
 ### How to read the overall number
 
 - Phases 1-3 represent the **self-hosted read-only product** (~60% of total scope) and are ~85% done by crate count
 - Phases 4-6 represent **write operations, cloud, marketplace, experimental** (~40% of scope) and are 0% done
-- The diagnostic audit found 107 bugs; 64 are fixed, 43 remain
-- The "45%" reflects that the crate/code work is heavily front-loaded but critical wiring (chain adapter, real tool execution) is still stubbed
+- The diagnostic audit found 107 bugs; 84 are fixed, 23 remain
+- The "50%" reflects that the crate/code work is heavily front-loaded; chain/explain commands and effect pipeline are now wired, but real-chain integration testing is still pending
 
 ---
 
@@ -326,55 +326,49 @@ All pending: AC-P5-001 through AC-P5-007
 
 ---
 
-## Diagnostic Findings — 60% Fixed
+## Diagnostic Findings — 79% Fixed
 
-Source: `prd/DIAGNOSTIC-FINDINGS.md` (2026-08-03 audit)
+Source: `prd/DIAGNOSTIC-FINDINGS.md` (2026-08-03 audit, updated 2026-08-04)
 
 ### By Category
 
 | Category | Found | Fixed | Remaining | % Fixed |
 |----------|-------|-------|-----------|---------|
-| SQL Schema Mismatches | 17 | 12 | 5 | 71% |
-| Run Lifecycle | 12 | 7 | 5 | 58% |
-| TUI Rendering | 19 | 12 | 7 | 63% |
+| SQL Schema Mismatches | 17 | 17 | 0 | 100% |
+| Run Lifecycle | 12 | 9 | 3 | 75% |
+| TUI Rendering | 19 | 16 | 3 | 84% |
 | CLI Commands | 10 | 8 | 2 | 80% |
 | REST/WS API | 14 | 7 | 7 | 50% |
-| Effect Pipeline | 10 | 6 | 4 | 60% |
-| Config & Providers | 12 | 5 | 7 | 42% |
+| Effect Pipeline | 10 | 9 | 1 | 90% |
+| Config & Providers | 12 | 10 | 2 | 83% |
 | Memory System | 7 | 3 | 4 | 43% |
-| Eval Framework | 6 | 4 | 2 | 67% |
-| **Total** | **107** | **64** | **43** | **60%** |
+| Eval Framework | 6 | 5 | 1 | 83% |
+| **Total** | **107** | **84** | **23** | **79%** |
 
 ### Remaining P0/Critical Issues
 
 | ID | Issue | File | Impact |
 |----|-------|------|--------|
-| 1.1 | `run_events` column names still wrong in 5 files | `event_store.rs`, `store.rs` | Events silently fail |
-| 2.5 | Token usage never persisted to DB | `orchestrator.rs` | All token counts show 0 |
-| 2.6 | AwaitingApproval state loses payload after reload | `manager.rs` | Approval routing breaks after restart |
 | 2.7 | TimeoutEnforcer is dead code, never instantiated | `timeout.rs` | No wall-clock enforcement |
+
+> Items 1.1, 2.5, 2.6 fixed in tasks D0–P6: SQL columns corrected, token usage now persisted via `insert_turn`, AwaitingApproval state properly restored.
 
 ### Remaining P1 Issues (selected)
 
 | ID | Issue | Impact |
 |----|-------|--------|
-| 3.6 | Scroll hardcoded to 20 rows — broken on short terminals | UX broken on small screens |
+| 3.8 | ScrollToBottom/ScrollToTop hardcode visible row count | UX inconsistency on some terminals |
 | 3.9 | SQL injection risk in memory FTS query | Security vulnerability |
-| 4.4 | `explain` command is permanent stub | Feature non-functional |
-| 4.5 | All 4 `chain` subcommands are stubs | Feature non-functional |
-| 4.6 | `inspect` handlers are always-error stubs | Feature non-functional |
-| 4.7 | `skill` commands query non-existent `skills` table | Commands crash |
-| 5.3 | Metrics double-count runs | Metrics inaccurate |
-| 5.4 | WebSocket pong timeout inverted | Connection management broken |
-| 7.2 | Empty API key accepted for providers | Silent auth failure |
-| 7.4 | Gemini silently routed to OpenAI executor | Wrong model used |
+| 3.11 | `'a'`/`'d'` keys fire globally, not just on Approvals tab | Input handling bug |
 
-### Dead Code (16 items)
+> Items fixed in D0–P6: 3.6 (scroll uses terminal height), 4.4 (explain fully implemented), 4.5 (all 4 chain subcommands implemented), 4.6 (inspect wired), 4.7 (skills table created on demand), 5.3 (metrics fixed), 5.4 (pong timeout fixed), 7.2 (empty API key rejected), 7.4 (Gemini uses own executor).
 
-- 2 entire unregistered modules (`export.rs`, `inspect.rs`)
-- 3 unused widgets
-- 8 dead TUI methods
-- 3 dead CLI utilities
+### Dead Code (8 items, down from 16)
+
+- ~~2 entire unregistered modules~~ — `export.rs` and `inspect.rs` now wired into CLI
+- ~~3 unused widgets~~ — `tab_bar.rs` and `error_digest.rs` deleted; remaining widgets used
+- 4 dead TUI methods (down from 8; `recompute_widget_data`, `recent_error_count`, `budget_status` now called)
+- 2 dead CLI utilities (`format_output()` still unwired, exit code constants still unused)
 
 ---
 
@@ -386,20 +380,20 @@ Each PRD defines 5 acceptance criteria in PRD-00 §18. Assessment based on imple
 |-----|-------|-------------|-------|---|-------|
 | PRD-01 | Vision, Principles, Personas | 5 | 5 | 100% | Design doc, review-verified |
 | PRD-02 | Vocabulary, Architecture | 5 | 5 | 100% | Crate layout matches, no circular deps |
-| PRD-03 | Execution Model | 4 | 5 | 80% | Crash recovery specified but has bugs (§2.2, 2.3) |
+| PRD-03 | Execution Model | 4 | 5 | 80% | Crash recovery working (§2.2, 2.3 fixed); TimeoutEnforcer still dead code |
 | PRD-04 | Providers, Models, Tools | 4 | 5 | 80% | Harness lifecycle incomplete (no resume) |
-| PRD-05 | Polkadot Integrations | 2 | 5 | 40% | Chain adapter exists but not wired; JAM experimental |
+| PRD-05 | Polkadot Integrations | 3 | 5 | 60% | Chain subcommands implemented; explain command works; JAM experimental |
 | PRD-06 | PCA Compatibility | 2 | 5 | 40% | Transport exists; C0 integration test not run |
 | PRD-07 | Identity, Security | 4 | 5 | 80% | Key isolation enforced; grant resolution works; threat model incomplete |
 | PRD-08 | Payments, Autonomy | 2 | 5 | 40% | EBS pipeline built; payment domain exists; no real-value tests |
 | PRD-09 | Memory, Groups, Evals | 4 | 5 | 80% | Memory+groups built; provenance not tracked |
-| PRD-10 | Data, Observability | 4 | 5 | 80% | Artifacts, events, telemetry done; BLAKE3 digest always zeros |
+| PRD-10 | Data, Observability | 5 | 5 | 100% | Artifacts, events, telemetry done; BLAKE3 digest now computed |
 | PRD-11 | Deployment, Cloud | 1 | 5 | 20% | Docker files exist; no cloud control/worker/billing |
 | PRD-12 | Marketplace, Extensions | 1 | 5 | 20% | Plugin crate exists; no marketplace/registry |
 | PRD-13 | UX, Surfaces | 3 | 5 | 60% | CLI+TUI done; no web surface; accessibility untested |
 | PRD-14 | APIs, Schemas, Config | 4 | 5 | 80% | REST+WS API done; config done; migration tool done |
 | PRD-15 | Testing, Roadmap | 4 | 5 | 80% | Testing pyramid complete; CI gates present; security review pending |
-| | | **~49** | **75** | **~65%** | |
+| | | **~51** | **75** | **~68%** | |
 
 ---
 
@@ -473,15 +467,15 @@ From PRD-00 §14 vs what exists:
 - Pass chain client to `AppService` for tool execution
 - **Impact:** Unblocks `polkagent chain balance`, all governance/treasury tools hit real chains
 
-### 2. Fix remaining P0 diagnostic issues (4 items)
+### 2. Fix remaining P0 diagnostic issue (1 item)
 
-- Token persistence, approval state reload, timeout enforcer, remaining SQL schema fixes
-- **Impact:** Runs actually track costs, survive restarts, enforce timeouts
+- TimeoutEnforcer dead code — runs have no wall-clock enforcement beyond per-run `Instant` deadline
+- **Impact:** Runs blocked in approval/effect states can wait indefinitely
 
-### 3. Create `skills` table migration
+### 3. ~~Create `skills` table migration~~ — DONE
 
-- The `polkagent skill` commands all query a table that doesn't exist
-- **Impact:** Skill management becomes functional
+- `skill.rs` now calls `ensure_skills_table()` with `CREATE TABLE IF NOT EXISTS`
+- Skill management is functional
 
 ### 4. Web surface (Agent Studio)
 

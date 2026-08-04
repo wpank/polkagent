@@ -1,0 +1,48 @@
+Here's a summary of what was updated:
+
+## Changes Made
+
+### TRACKING.md
+
+**Executive Summary table:**
+- Diagnostic Fixes: **64/107 (60%) → 84/107 (79%)**
+- PRD Acceptance Criteria: **~48/75 (~64%) → ~51/75 (~68%)**
+- Overall weighted progress: **~45% → ~50%**
+
+**Diagnostic category table updated with new counts:**
+
+| Category | Before | After |
+|----------|--------|-------|
+| SQL Schema | 12/17 (71%) | **17/17 (100%)** — event_store.rs and store.rs EffectStore all fixed |
+| Run Lifecycle | 7/12 (58%) | **9/12 (75%)** — token persistence + AwaitingApproval state now fixed |
+| TUI Rendering | 12/19 (63%) | **16/19 (84%)** — scroll, footer, dashboard health fixed |
+| CLI Commands | 8/10 (80%) | 8/10 (80%) — composition changed: export/inspect/explain/chain now work; output/exit_codes remain dead |
+| Effect Pipeline | 6/10 (60%) | **9/10 (90%)** — turn_id, priority, BLAKE3 digest all implemented |
+| Config & Providers | 5/12 (42%) | **10/12 (83%)** — all 5 Phase 6 checklist items done |
+| Eval Framework | 4/6 (67%) | **5/6 (83%)** — Unicode apostrophe + stdout/stderr fixed |
+
+**Remaining P0 issues: 4 → 1** (only TimeoutEnforcer remains)
+
+**Remaining P1 issues: 10 → 3** (only ScrollToBottom hardcode, SQL injection risk, global a/d keys)
+
+**Dead code: 16 → 8** (export/inspect wired, widgets deleted, TUI methods now called)
+
+**PRD table:** PRD-05 raised from 2→3/5 (chain/explain implemented), PRD-10 raised from 4→5/5 (BLAKE3 digest computed), PRD-03 notes updated
+
+### prd/DIAGNOSTIC-FINDINGS.md
+
+**Header:** Updated date and fix status summary to reflect 84/107 (79%)
+
+**Category table:** All 9 category counts updated with specific remaining items noted
+
+**Implementation checklist** — 55 items across 10 phases, checked off based on verified code:
+- Phase 0: **10/10** ✅ COMPLETE
+- Phase 1: **7/8** (TimeoutEnforcer remains)
+- Phase 2: **6/7** (audit severity remains)
+- Phase 3: **3/6** (output, exit_codes, --json remain)
+- Phase 4: **5/6** (WS docs remain)
+- Phase 5: **6/7** (idempotency lookup remains)
+- Phase 6: **5/5** ✅ COMPLETE
+- Phase 7: **4/4** ✅ COMPLETE
+- Phase 8: **2/5** (dead code annotations, theme, Tab methods remain)
+- Phase 9: **1/6** (TUI snapshot tests exist)
