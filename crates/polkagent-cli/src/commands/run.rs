@@ -21,7 +21,8 @@ use polkagent_executor_fake::FakeExecutor;
 use polkagent_executor_local::LocalExecutor;
 use polkagent_executor_gemini::GeminiExecutor;
 use polkagent_executor_openai::OpenAiExecutor;
-use polkagent_executor_trait::ModelExecutor;
+use polkagent_executor_openrouter::OpenRouterExecutor;
+use polkagent_executor_trait::{ExecutorError, ModelExecutor};
 use polkagent_chain_trait::ChainClient;
 use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
@@ -344,6 +345,86 @@ fn load_config() -> Config {
 }
 
 // ---------------------------------------------------------------------------
+// Fallback executor
+// ---------------------------------------------------------------------------
+
+use async_trait::async_trait;
+use polkagent_executor_trait::{InferenceRequest, InferenceResponse, StreamEvent};
+
+struct FallbackExecutor {
+    primary: Arc<dyn ModelExecutor>,
+    fallbacks: Vec<Arc<dyn ModelExecutor>>,
+}
+
+impl FallbackExecutor {
+    fn new(primary: Arc<dyn ModelExecutor>, fallbacks: Vec<Arc<dyn ModelExecutor>>) -> Arc<Self> {
+        Arc::new(Self { primary, fallbacks })
+    }
+}
+
+#[async_trait]
+impl ModelExecutor for FallbackExecutor {
+    async fn complete(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<InferenceResponse, ExecutorError> {
+        match self.primary.complete(request.clone()).await {
+            Ok(resp) => return Ok(resp),
+            Err(e) if !self.fallbacks.is_empty() => {
+                tracing::warn!(error = %e, "primary executor failed, trying fallback chain");
+                for (i, fallback) in self.fallbacks.iter().enumerate() {
+                    match fallback.complete(request.clone()).await {
+                        Ok(resp) => return Ok(resp),
+                        Err(e2) => {
+                            tracing::warn!(
+                                error = %e2,
+                                fallback_index = i,
+                                "fallback executor failed"
+                            );
+                        }
+                    }
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn stream(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<
+        Box<dyn futures::Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
+        ExecutorError,
+    > {
+        match self.primary.stream(request.clone()).await {
+            Ok(s) => return Ok(s),
+            Err(e) if !self.fallbacks.is_empty() => {
+                tracing::warn!(error = %e, "primary executor stream failed, trying fallback chain");
+                for (i, fallback) in self.fallbacks.iter().enumerate() {
+                    match fallback.stream(request.clone()).await {
+                        Ok(s) => return Ok(s),
+                        Err(e2) => {
+                            tracing::warn!(
+                                error = %e2,
+                                fallback_index = i,
+                                "fallback executor stream failed"
+                            );
+                        }
+                    }
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn health(&self) -> Result<(), ExecutorError> {
+        self.primary.health().await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Provider registry construction
 // ---------------------------------------------------------------------------
 
@@ -409,6 +490,9 @@ fn executor_from_provider_config(
         "gemini" => {
             Some(GeminiExecutor::new(api_key, pc.default_model.clone()))
         }
+        "openrouter" => {
+            Some(OpenRouterExecutor::new(api_key, pc.default_model.clone()))
+        }
         _ => None,
     }
 }
@@ -430,15 +514,51 @@ fn resolve_provider(
     config: &Config,
     registry: &ProviderRegistry,
 ) -> (Arc<dyn ModelExecutor>, Option<String>) {
+    let (primary, primary_id, note) =
+        resolve_primary_provider(provider_flag, model_override, config, registry);
+
+    // Build fallback chain from remaining registered providers.
+    let fallbacks = collect_fallback_executors(registry, primary_id.as_deref());
+    if fallbacks.is_empty() {
+        return (primary, note);
+    }
+
+    let fallback_ids: Vec<String> = registry
+        .list_providers()
+        .iter()
+        .filter(|p| primary_id.as_deref() != Some(p.id.as_str()))
+        .map(|p| p.id.clone())
+        .collect();
+    let mut note_text = note.unwrap_or_default();
+    if !fallback_ids.is_empty() {
+        use std::fmt::Write;
+        write!(
+            note_text,
+            " Fallback chain: {}.",
+            fallback_ids.join(" → ")
+        )
+        .ok();
+    }
+
+    let executor = FallbackExecutor::new(primary, fallbacks);
+    (executor, Some(note_text))
+}
+
+fn resolve_primary_provider(
+    provider_flag: Option<&str>,
+    model_override: Option<&str>,
+    config: &Config,
+    registry: &ProviderRegistry,
+) -> (Arc<dyn ModelExecutor>, Option<String>, Option<String>) {
     // 1. CLI flag — look up in the registry.
     if let Some(provider_id) = provider_flag {
         if let Ok(executor) = registry.get_executor(provider_id) {
             let note = format!("Using provider '{provider_id}' (from --provider flag).");
-            return (executor, Some(note));
+            return (executor, Some(provider_id.to_owned()), Some(note));
         }
         // Provider flag given but not in registry — try env-based matching.
-        if let Some(result) = try_provider_by_name(provider_id, model_override) {
-            return result;
+        if let Some((executor, note)) = try_provider_by_name(provider_id, model_override) {
+            return (executor, Some(provider_id.to_owned()), note);
         }
         eprintln!(
             "Warning: provider '{provider_id}' not found in config and no matching \
@@ -453,7 +573,7 @@ fn resolve_provider(
                 let note = format!(
                     "Using provider '{default_id}' (from config default_provider)."
                 );
-                return (executor, Some(note));
+                return (executor, Some(default_id.clone()), Some(note));
             }
             eprintln!(
                 "Warning: configured default_provider '{default_id}' not found in registry."
@@ -469,19 +589,32 @@ fn resolve_provider(
                 "Using provider '{}' (auto-detected from environment).",
                 first.id
             );
-            return (executor, Some(note));
+            return (executor, Some(first.id.clone()), Some(note));
         }
     }
 
     // 4. Fallback — fake executor.
     let note = Some(
-        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY) and no local \
-         model configured (OLLAMA_URL / OLLAMA_MODEL). Using the fake \
-         executor \u{2014} responses will be simulated. Set an API key or \
-         local model environment variable to use a real model."
+        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / \
+         OPENROUTER_API_KEY) and no local model configured (OLLAMA_URL / \
+         OLLAMA_MODEL). Using the fake executor \u{2014} responses will be \
+         simulated. Set an API key or local model environment variable to \
+         use a real model."
             .to_string(),
     );
-    (FakeExecutor::new(), note)
+    (FakeExecutor::new(), None, note)
+}
+
+fn collect_fallback_executors(
+    registry: &ProviderRegistry,
+    primary_id: Option<&str>,
+) -> Vec<Arc<dyn ModelExecutor>> {
+    registry
+        .list_providers()
+        .iter()
+        .filter(|p| primary_id != Some(p.id.as_str()))
+        .filter_map(|p| registry.get_executor(&p.id).ok())
+        .collect()
 }
 
 /// Try to build an executor by matching a provider name to well-known types.
@@ -510,6 +643,21 @@ fn try_provider_by_name(
             let model = model_override.unwrap_or("llama3.2").to_string();
             let executor = LocalExecutor::custom(url.clone(), model.clone());
             Some((executor, Some(format!("Using local executor at {url} (model: {model})."))))
+        }
+        "gemini" => {
+            let api_key = std::env::var("GEMINI_API_KEY")
+                .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+                .ok()
+                .filter(|k| !k.is_empty())?;
+            let model = model_override.unwrap_or("gemini-2.5-flash").to_string();
+            let executor = GeminiExecutor::new(api_key, model.clone());
+            Some((executor, Some(format!("Using Gemini executor (model: {model})."))))
+        }
+        "openrouter" => {
+            let api_key = std::env::var("OPENROUTER_API_KEY").ok().filter(|k| !k.is_empty())?;
+            let model = model_override.unwrap_or("anthropic/claude-sonnet-4-6").to_string();
+            let executor = OpenRouterExecutor::new(api_key, model.clone());
+            Some((executor, Some(format!("Using OpenRouter executor (model: {model})."))))
         }
         _ => None,
     }
@@ -582,10 +730,11 @@ fn detect_executor(
 
     // 5. Fallback — fake executor
     let note = Some(
-        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY) and no local \
-         model configured (OLLAMA_URL / OLLAMA_MODEL). Using the fake \
-         executor \u{2014} responses will be simulated. Set an API key or \
-         local model environment variable to use a real model."
+        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / \
+         OPENROUTER_API_KEY) and no local model configured (OLLAMA_URL / \
+         OLLAMA_MODEL). Using the fake executor \u{2014} responses will be \
+         simulated. Set an API key or local model environment variable to \
+         use a real model."
             .to_string(),
     );
     (FakeExecutor::new(), note)

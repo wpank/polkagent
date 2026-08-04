@@ -1,0 +1,26 @@
+All done. Here's a summary of all changes made:
+
+---
+
+## Summary of Changes
+
+### 1. `crates/polkagent-cli/Cargo.toml`
+- Added `polkagent-executor-openrouter` as a dependency (Gemini was already present)
+- Added `async-trait` dependency (needed for `FallbackExecutor` implementing `ModelExecutor`)
+
+### 2. `crates/polkagent-cli/src/commands/run.rs`
+- **Import**: Added `OpenRouterExecutor` import and `ExecutorError`, `InferenceRequest`, `InferenceResponse`, `StreamEvent` from the trait crate
+- **`executor_from_provider_config`**: Added `"openrouter"` match arm → `OpenRouterExecutor::new(…)`
+- **`try_provider_by_name`**: Added `"gemini"` arm (checks `GEMINI_API_KEY` / `GOOGLE_API_KEY`) and `"openrouter"` arm (checks `OPENROUTER_API_KEY`)
+- **`FallbackExecutor`**: New struct implementing `ModelExecutor` that wraps a primary executor + a list of fallback executors. On `complete` or `stream` failure, it tries each fallback in order with warning logs
+- **`resolve_provider`**: Refactored into `resolve_primary_provider` + `collect_fallback_executors`. After resolving the primary, it gathers all other registered executors as fallbacks and wraps them in `FallbackExecutor`. The user-facing note shows the fallback chain (e.g. "Fallback chain: openai → gemini")
+- **Fallback note messages**: Updated to mention `GEMINI_API_KEY` / `OPENROUTER_API_KEY`
+
+### 3. `crates/polkagent-config/src/model_registry.rs`
+- **`ENV_PROVIDER_SPECS`**: Changed OpenRouter's `provider_type` from `"openai_compatible"` to `"openrouter"` so it routes to `OpenRouterExecutor` (not `OpenAiExecutor`). Also fixed `default_model` to `"anthropic/claude-sonnet-4-6"` (OpenRouter uses qualified model slugs)
+- **`BuiltInModelCatalog`**: Added `openrouter/auto` model descriptor (meta-routing entry for OpenRouter's auto-select feature)
+- **Tests**: Updated model count from 13→14 and added `"openrouter/auto"` to expected slug list
+
+### Build verification
+- `cargo check -p polkagent-cli` ✅
+- `cargo test -p polkagent-cli -p polkagent-config` — all 8 test suites pass, 0 failures ✅

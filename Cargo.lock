@@ -2297,6 +2297,7 @@ name = "polkagent-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "blake2",
  "chrono",
  "clap",
@@ -2319,6 +2320,7 @@ dependencies = [
  "polkagent-executor-gemini",
  "polkagent-executor-local",
  "polkagent-executor-openai",
+ "polkagent-executor-openrouter",
  "polkagent-executor-trait",
  "polkagent-harness-acp",
  "polkagent-harness-claude",
