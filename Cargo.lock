@@ -2366,6 +2366,7 @@ dependencies = [
  "polkagent-harness-cursor",
  "polkagent-harness-trait",
  "polkagent-identity",
+ "polkagent-kit",
  "polkagent-memory",
  "polkagent-metadata",
  "polkagent-service",
@@ -2906,6 +2907,19 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "polkagent-kit"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

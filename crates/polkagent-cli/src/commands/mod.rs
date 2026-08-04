@@ -12,6 +12,7 @@ pub mod explain;
 pub mod inbox;
 pub mod init;
 pub mod inspect;
+pub mod kit;
 pub mod logs;
 pub mod memory;
 pub mod network;

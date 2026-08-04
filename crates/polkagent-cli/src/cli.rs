@@ -73,6 +73,10 @@ pub enum Commands {
     #[command(subcommand)]
     Skill(SkillCmd),
 
+    /// Manage product kits (install, uninstall, list).
+    #[command(subcommand)]
+    Kit(KitCmd),
+
     /// Launch the interactive terminal UI.
     Tui(TuiCmd),
 
@@ -422,6 +426,52 @@ pub struct SkillShowCmd {
     #[arg(value_name = "NAME")]
     pub name: String,
 
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// kit
+// ---------------------------------------------------------------------------
+
+/// Product kit management subcommands.
+#[derive(Debug, Subcommand)]
+pub enum KitCmd {
+    /// Install a product kit from a local path.
+    Install(KitInstallCmd),
+
+    /// Uninstall a product kit by name.
+    Uninstall(KitUninstallCmd),
+
+    /// List all installed product kits.
+    List(KitListCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct KitInstallCmd {
+    /// Local path to the kit directory or kit.toml manifest file.
+    #[arg(value_name = "PATH")]
+    pub path: std::path::PathBuf,
+
+    /// Emit structured JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct KitUninstallCmd {
+    /// Name of the kit to uninstall.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Skip confirmation prompt.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct KitListCmd {
     /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,

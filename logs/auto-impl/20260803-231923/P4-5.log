@@ -1,0 +1,39 @@
+All done. Here's a summary of what was implemented:
+
+## Summary
+
+### New crate: `polkagent-kit` (PRD-12 §10 — Product Kit manifest & lifecycle)
+
+**`crates/polkagent-kit/src/manifest.rs`** — Kit manifest TOML format with sections:
+- `[kit]` — metadata: name, version, description, authors, license  
+- `[capabilities]` — required_grants list (checked against Cedar-style grants)
+- `[skills]` — skill entries with `version` (semver requirement) and `role` (primary/required/optional/context)
+- `[defaults]` — target_networks, auto_activate
+- `[policy]` — chain_write, data_classification
+- `[ux]` — display_name, short_description, category
+- `KitId` — name@version identifier, matching the existing `SkillId`/`PluginId` pattern
+- Full validation: kebab-case names, semver versions, semver requirement parsing, must have ≥1 skill
+
+**`crates/polkagent-kit/src/manager.rs`** — Install/uninstall lifecycle:
+- `validate_kit()` — reads `kit.toml`, validates capabilities against grants, checks required skills against installed skills
+- `prepare_install()` — builds an `InstalledKit` record from a validated manifest
+- `skills_to_unregister()` — returns non-optional skill names to remove on uninstall
+
+**`crates/polkagent-kit/src/error.rs`** — `KitError` enum with `ManifestParse`, `ManifestInvalid`, `InvalidVersion`, `CapabilityDenied`, `NotInstalled`, etc.
+
+### CLI commands added to `polkagent-cli`:
+
+- **`polkagent kit install <path>`** — parses `kit.toml`, validates capabilities & skill availability, persists to `kits` SQLite table (supports `--json`)
+- **`polkagent kit uninstall <name>`** — removes kit + its registered skills from SQLite (supports `--yes` to skip prompt)
+- **`polkagent kit list`** — lists all installed kits with name, version, skill count, description (supports `--json`)
+
+### Files modified:
+- `Cargo.toml` — added `crates/polkagent-kit` to workspace members
+- `crates/polkagent-cli/Cargo.toml` — added `polkagent-kit` dependency
+- `crates/polkagent-cli/src/cli.rs` — added `Kit(KitCmd)` variant + `KitCmd`/`KitInstallCmd`/`KitUninstallCmd`/`KitListCmd` structs
+- `crates/polkagent-cli/src/commands/mod.rs` — added `pub mod kit`
+- `crates/polkagent-cli/src/main.rs` — wired `Commands::Kit` dispatch
+
+### Verification:
+- `cargo check --workspace` — ✅ clean
+- `cargo test -p polkagent-kit` — ✅ 20/20 tests pass

@@ -147,6 +147,10 @@ async fn main() -> Result<()> {
             commands::skill::run(cmd, &pool)?;
         }
 
+        Some(Commands::Kit(cmd)) => {
+            commands::kit::run(cmd, &pool)?;
+        }
+
         Some(Commands::Export(cmd)) => {
             commands::export::run(cmd, &pool)?;
         }
