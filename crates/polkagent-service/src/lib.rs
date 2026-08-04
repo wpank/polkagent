@@ -15,6 +15,7 @@
 //! | [`router`] | [`DefaultModelRouter`]: health-aware model routing with pluggable policies |
 //! | [`plugins`] | [`ServicePluginManager`]: plugin lifecycle management and capability validation |
 //! | [`scheduled`] | [`ScheduledTaskManager`]: scheduled/recurring agent runs |
+//! | [`metadata_watcher`] | [`MetadataDriftWatcher`]: periodic metadata drift detection |
 //! | [`error`] | [`ServiceError`]: unified error type |
 //!
 //! # Quick start
@@ -51,6 +52,7 @@ pub mod error;
 pub mod explain;
 pub mod harness;
 pub mod lifecycle;
+pub mod metadata_watcher;
 pub mod negotiate;
 pub mod plugins;
 pub mod provider;
@@ -76,5 +78,6 @@ pub use router::{
     DefaultModelRouter, ModelRouter, ProviderHealthInfo, RouteDecision, RouteError, RouteReason,
     RouteRequest, RoutingPolicy, SelectedRoute,
 };
+pub use metadata_watcher::MetadataDriftWatcher;
 pub use scheduled::ScheduledTaskManager;
 pub use webhook::WebhookDispatcher;

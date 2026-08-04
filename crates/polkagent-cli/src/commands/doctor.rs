@@ -167,6 +167,7 @@ pub fn run(cmd: &DoctorCmd) -> Result<()> {
     system_checks.push(check_signer());
     system_checks.push(check_chain_rpc());
     system_checks.push(check_daemon());
+    system_checks.extend(check_metadata_drift(&config));
 
     // Provider checks.
     let provider_checks = check_providers(&config);
@@ -806,6 +807,48 @@ fn check_daemon() -> Check {
                  Start the daemon with `polkagent-serve` or check POLKAGENT_API_BIND."
             ),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Metadata drift checks (PRD-05 §4.4)
+// ---------------------------------------------------------------------------
+
+fn check_metadata_drift(_config: &polkagent_config::schema::Config) -> Vec<Check> {
+    use polkagent_metadata::{ChainId, MetadataService};
+    use polkagent_service::metadata_watcher::check_drift_all;
+
+    let svc = MetadataService::new();
+
+    // Use well-known Polkadot ecosystem chains for drift detection.
+    let chain_ids: Vec<ChainId> = vec![
+        ChainId::new("polkadot"),
+        ChainId::new("kusama"),
+    ];
+
+    let drifts = check_drift_all(&svc, &chain_ids);
+
+    if drifts.is_empty() {
+        vec![Check {
+            name: "Metadata Drift".to_owned(),
+            status: CheckStatus::Ok,
+            message: format!(
+                "no metadata drift detected across {} chain(s)",
+                chain_ids.len()
+            ),
+        }]
+    } else {
+        drifts
+            .iter()
+            .map(|d| Check {
+                name: format!("Metadata Drift/{}", d.chain_id),
+                status: CheckStatus::Warn,
+                message: format!(
+                    "drift detected: pinned={} current={}",
+                    d.pinned_hash, d.current_hash
+                ),
+            })
+            .collect()
     }
 }
 

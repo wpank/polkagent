@@ -382,6 +382,12 @@ impl RunPrinter {
             EventKind::RunRetryQueued => {
                 let _ = self.styled_line(w, "  ↻ Retry queued", self.theme.warning, false);
             }
+            EventKind::MetadataDriftDetected { chain_id, pinned_hash, current_hash } => {
+                let msg = format!(
+                    "  ⚠ Metadata drift on {chain_id}: pinned={pinned_hash} current={current_hash}"
+                );
+                let _ = self.styled_line(w, &msg, self.theme.warning, false);
+            }
         }
 
         ControlFlow::Continue(())

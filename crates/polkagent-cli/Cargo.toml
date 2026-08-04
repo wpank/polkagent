@@ -36,6 +36,7 @@ polkagent-identity        = { path = "../polkagent-identity" }
 polkagent-event           = { path = "../polkagent-event" }
 polkagent-service         = { path = "../polkagent-service" }
 polkagent-codec           = { path = "../polkagent-codec" }
+polkagent-metadata        = { path = "../polkagent-metadata" }
 polkagent-card            = { path = "../polkagent-card" }
 polkagent-chain-trait     = { path = "../polkagent-chain-trait" }
 polkagent-chain-subxt     = { path = "../polkagent-chain-subxt" }

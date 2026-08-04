@@ -108,6 +108,9 @@ pub enum EventType {
     RetentionEnforced,
     SchemasMigrated,
     ConfigurationChanged,
+
+    // ── Metadata ────────────────────────────────────────────────────────
+    MetadataDriftDetected,
 }
 
 impl EventType {
@@ -156,6 +159,7 @@ impl EventType {
             Self::RetentionEnforced => "retention_enforced",
             Self::SchemasMigrated => "schemas_migrated",
             Self::ConfigurationChanged => "configuration_changed",
+            Self::MetadataDriftDetected => "metadata_drift_detected",
         }
     }
 
@@ -215,6 +219,7 @@ impl EventType {
             EventKind::ProgressUpdate { .. } => Self::ProgressUpdate,
             EventKind::ToolCallStarted { .. } => Self::ToolCallStarted,
             EventKind::ToolCallCompleted { .. } => Self::ToolCallCompleted,
+            EventKind::MetadataDriftDetected { .. } => Self::MetadataDriftDetected,
             _ => return None,
         };
         Some(t)

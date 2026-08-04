@@ -135,6 +135,7 @@ fn event_kind_label(kind: &polkagent_core::event::EventKind) -> &'static str {
         EventKind::DiagnosticLog { .. } => "diagnostic_log",
         EventKind::BudgetConsumed { .. } => "budget_consumed",
         EventKind::BudgetWarning { .. } => "budget_warning",
+        EventKind::MetadataDriftDetected { .. } => "metadata_drift_detected",
     }
 }
 

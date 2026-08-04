@@ -227,6 +227,17 @@ pub enum EventKind {
         /// Remaining amount (units depend on the resource kind).
         remaining_str: String,
     },
+
+    // --- Metadata (Durable) ---
+    /// Metadata drift was detected on a chain.
+    MetadataDriftDetected {
+        /// The chain where drift was detected.
+        chain_id: String,
+        /// The pinned (trusted) metadata hash.
+        pinned_hash: String,
+        /// The current on-chain metadata hash.
+        current_hash: String,
+    },
 }
 
 /// Severity level for diagnostic log events.

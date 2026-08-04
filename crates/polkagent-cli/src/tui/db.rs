@@ -526,7 +526,7 @@ impl TuiDb {
                 let kind_lower = kind.to_lowercase();
                 let severity = if kind_lower.contains("error") || kind_lower.contains("fail") {
                     "error"
-                } else if kind_lower.contains("warn") {
+                } else if kind_lower.contains("warn") || kind_lower.contains("drift") {
                     "warn"
                 } else {
                     "info"

@@ -170,6 +170,7 @@ pub struct AppServiceBuilder {
     webhook_dispatcher: Option<crate::webhook::WebhookDispatcher>,
     scheduler: Option<crate::scheduled::ScheduledTaskManager>,
     plugin_manager: Option<crate::plugins::ServicePluginManager>,
+    metadata_watcher: Option<crate::metadata_watcher::MetadataDriftWatcher>,
 }
 
 impl AppServiceBuilder {
@@ -348,6 +349,19 @@ impl AppServiceBuilder {
         self
     }
 
+    /// Set the metadata drift watcher.
+    ///
+    /// When configured, periodically checks for runtime metadata drift on
+    /// monitored chains and publishes `MetadataDriftDetected` events.
+    #[must_use]
+    pub fn with_metadata_watcher(
+        mut self,
+        watcher: crate::metadata_watcher::MetadataDriftWatcher,
+    ) -> Self {
+        self.metadata_watcher = Some(watcher);
+        self
+    }
+
     /// Build the [`AppService`], consuming the builder.
     ///
     /// # Errors
@@ -439,6 +453,7 @@ impl AppServiceBuilder {
             webhook_dispatcher: Mutex::new(self.webhook_dispatcher),
             scheduler: self.scheduler,
             plugin_manager: self.plugin_manager,
+            metadata_watcher: std::sync::Mutex::new(self.metadata_watcher),
         })
     }
 }
@@ -515,6 +530,9 @@ pub struct AppService {
     /// Plugin manager (optional). When present, enables plugin discovery,
     /// loading, capability validation, and enable/disable lifecycle.
     plugin_manager: Option<crate::plugins::ServicePluginManager>,
+    /// Metadata drift watcher (optional). When present, periodically checks
+    /// for runtime metadata drift and publishes events.
+    metadata_watcher: std::sync::Mutex<Option<crate::metadata_watcher::MetadataDriftWatcher>>,
 }
 
 impl std::fmt::Debug for AppService {
@@ -534,6 +552,7 @@ impl std::fmt::Debug for AppService {
             .field("provider_count", &self.provider_registry.len())
             .field("has_webhook_dispatcher", &self.webhook_dispatcher.lock().map(|g| g.is_some()).unwrap_or(false))
             .field("has_scheduler", &self.scheduler.is_some())
+            .field("has_metadata_watcher", &self.metadata_watcher.lock().map(|g| g.is_some()).unwrap_or(false))
             .finish()
     }
 }
@@ -718,6 +737,23 @@ impl AppService {
         if let Some(tx) = guard.take() {
             let _ = tx.send(true);
             info!("config watcher stop signal sent");
+        }
+    }
+
+    /// Start the metadata drift watcher, if one was configured via the builder.
+    ///
+    /// This is idempotent: calling it when no watcher is configured, or when
+    /// the watcher is already running, is a no-op.
+    pub fn start_metadata_watcher(&self) {
+        let mut guard = match self.metadata_watcher.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                warn!("metadata watcher lock poisoned: {e}");
+                return;
+            }
+        };
+        if let Some(ref mut watcher) = *guard {
+            watcher.start();
         }
     }
 
