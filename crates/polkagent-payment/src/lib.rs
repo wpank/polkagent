@@ -37,6 +37,9 @@
     clippy::missing_errors_doc,
     clippy::missing_panics_doc
 )]
+// Unit tests use assertion-oriented `expect`/`unwrap` calls so fixture failures
+// identify the exact payment transition or serialization boundary involved.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
 
 pub mod action;
 pub mod budget;

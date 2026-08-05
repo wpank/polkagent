@@ -828,11 +828,15 @@ mod tests {
 
         let evidence = &findings[0].evidence;
         assert_eq!(
-            evidence.get("value_planck").and_then(|v| v.as_u64()),
+            evidence
+                .get("value_planck")
+                .and_then(serde_json::Value::as_u64),
             Some(5000)
         );
         assert_eq!(
-            evidence.get("threshold_planck").and_then(|v| v.as_u64()),
+            evidence
+                .get("threshold_planck")
+                .and_then(serde_json::Value::as_u64),
             Some(1000)
         );
         assert_eq!(

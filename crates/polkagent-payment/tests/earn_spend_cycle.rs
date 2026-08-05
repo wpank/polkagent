@@ -8,6 +8,10 @@
 //!
 //! **Research prototype — not production-ready.**
 
+// This end-to-end assertion target uses `expect` to identify the exact ledger,
+// payment-header, or spend transition that violated the cycle contract.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use polkagent_payment::ledger::{Ledger, LedgerEntryKind, X402PaymentHeader};
 use polkagent_payment::types::AssetId;
 
