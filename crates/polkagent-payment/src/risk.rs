@@ -141,14 +141,12 @@ pub struct BatchHidingDetector;
 
 impl RiskGate for BatchHidingDetector {
     fn assess(&self, intent: &PaymentIntent) -> Vec<RiskFinding> {
-        let metadata = match &intent.metadata {
-            Some(m) => m,
-            None => return vec![],
+        let Some(metadata) = &intent.metadata else {
+            return vec![];
         };
 
-        let calls = match metadata.get("calls").and_then(|c| c.as_array()) {
-            Some(c) => c,
-            None => return vec![],
+        let Some(calls) = metadata.get("calls").and_then(|c| c.as_array()) else {
+            return vec![];
         };
 
         // A simple transfer should have at most 1 call. If there are more,
@@ -243,8 +241,7 @@ impl HomoglyphDetector {
                 let look_alike = Self::CONFUSABLE_PAIRS
                     .iter()
                     .find(|(confusable, _)| *confusable == ch)
-                    .map(|(_, ascii)| *ascii)
-                    .unwrap_or('?');
+                    .map_or('?', |(_, ascii)| *ascii);
                 found.push((pos, ch, look_alike));
             }
         }

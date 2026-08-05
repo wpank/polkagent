@@ -26,7 +26,7 @@ pub struct BalanceSummary {
 
 /// Persistence layer for payment-related data.
 ///
-/// Implementations may be backed by SQLite, PostgreSQL, or an in-memory store
+/// Implementations may be backed by `SQLite`, `PostgreSQL`, or an in-memory store
 /// for testing. All methods are async to accommodate network-backed stores.
 #[async_trait::async_trait]
 pub trait PaymentStore: Send + Sync {
@@ -258,7 +258,7 @@ impl PaymentStore for InMemoryPaymentStore {
     async fn list_receipts(&self) -> Result<Vec<PaymentReceipt>, PaymentError> {
         let state = self.lock()?;
         let mut receipts: Vec<PaymentReceipt> = state.receipts.values().cloned().collect();
-        receipts.sort_by(|a, b| b.confirmed_at.cmp(&a.confirmed_at));
+        receipts.sort_by_key(|receipt| std::cmp::Reverse(receipt.confirmed_at));
         Ok(receipts)
     }
 

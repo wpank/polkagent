@@ -401,27 +401,27 @@ impl NonceCheck {
 #[async_trait::async_trait]
 impl PreFlightCheck for NonceCheck {
     async fn check(&self, _intent: &PaymentIntent) -> Result<PreFlightResult, PaymentError> {
-        if self.tx_nonce < self.expected_nonce {
-            Ok(PreFlightResult::fail(
+        match self.tx_nonce.cmp(&self.expected_nonce) {
+            std::cmp::Ordering::Less => Ok(PreFlightResult::fail(
                 "stale_nonce",
                 format!(
                     "transaction nonce {} is behind expected {}",
                     self.tx_nonce, self.expected_nonce
                 ),
-            ))
-        } else if self.tx_nonce > self.expected_nonce {
-            let mut result = PreFlightResult::pass();
-            result.warnings.push(PreFlightWarning {
-                code: "future_nonce".into(),
-                message: format!(
-                    "transaction nonce {} is ahead of expected {}; may wait in pool",
-                    self.tx_nonce, self.expected_nonce
-                ),
-                severity: WarningSeverity::Medium,
-            });
-            Ok(result)
-        } else {
-            Ok(PreFlightResult::pass())
+            )),
+            std::cmp::Ordering::Equal => Ok(PreFlightResult::pass()),
+            std::cmp::Ordering::Greater => {
+                let mut result = PreFlightResult::pass();
+                result.warnings.push(PreFlightWarning {
+                    code: "future_nonce".into(),
+                    message: format!(
+                        "transaction nonce {} is ahead of expected {}; may wait in pool",
+                        self.tx_nonce, self.expected_nonce
+                    ),
+                    severity: WarningSeverity::Medium,
+                });
+                Ok(result)
+            }
         }
     }
 }
@@ -453,7 +453,9 @@ impl MetadataFreshnessCheck {
 #[async_trait::async_trait]
 impl PreFlightCheck for MetadataFreshnessCheck {
     async fn check(&self, _intent: &PaymentIntent) -> Result<PreFlightResult, PaymentError> {
-        if self.tx_spec_version != self.chain_spec_version {
+        if self.tx_spec_version == self.chain_spec_version {
+            Ok(PreFlightResult::pass())
+        } else {
             Ok(PreFlightResult::fail(
                 "stale_metadata",
                 format!(
@@ -461,8 +463,6 @@ impl PreFlightCheck for MetadataFreshnessCheck {
                     self.tx_spec_version, self.chain_spec_version
                 ),
             ))
-        } else {
-            Ok(PreFlightResult::pass())
         }
     }
 }

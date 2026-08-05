@@ -5,6 +5,14 @@
 
 use serde::{Deserialize, Serialize};
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "pricing is an approximate f64 calculation and real model token counts remain far below f64's exact integer range"
+)]
+fn token_count_as_f64(tokens: u64) -> f64 {
+    tokens as f64
+}
+
 // ---------------------------------------------------------------------------
 // PricingEntry
 // ---------------------------------------------------------------------------
@@ -66,8 +74,10 @@ impl CostEstimator {
         output_tokens: u64,
     ) -> f64 {
         if let Some(entry) = self.find_entry(provider, model) {
-            let input_cost = (input_tokens as f64) * entry.input_per_million / 1_000_000.0;
-            let output_cost = (output_tokens as f64) * entry.output_per_million / 1_000_000.0;
+            let input_cost =
+                token_count_as_f64(input_tokens) * entry.input_per_million / 1_000_000.0;
+            let output_cost =
+                token_count_as_f64(output_tokens) * entry.output_per_million / 1_000_000.0;
 
             input_cost + output_cost
         } else {

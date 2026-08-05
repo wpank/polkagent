@@ -9,6 +9,36 @@ use tracing::warn;
 use crate::error::PaymentError;
 use crate::types::{Amount, AssetId, CostRecord, UsageSummary};
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "validated USD estimates are intentionally quantized to six decimal places"
+)]
+fn micro_usd_from_estimate(estimated_usd: f64) -> Result<u128, PaymentError> {
+    let scaled = estimated_usd * 1_000_000.0;
+    if !scaled.is_finite() || scaled.is_sign_negative() {
+        return Err(PaymentError::validation(
+            "estimated_usd",
+            "cost must be a finite non-negative number",
+        ));
+    }
+    if scaled >= u128::MAX as f64 {
+        return Err(PaymentError::ArithmeticOverflow {
+            context: "converting estimated USD to micro-dollars".into(),
+        });
+    }
+    Ok(scaled as u128)
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "usage summaries expose an approximate f64 USD value by contract"
+)]
+fn micro_usd_as_f64(value: u128) -> f64 {
+    value as f64 / 1_000_000.0
+}
+
 // ---------------------------------------------------------------------------
 // BudgetConfig
 // ---------------------------------------------------------------------------
@@ -212,7 +242,7 @@ impl BudgetChecker {
 
         // Convert USD cost to a comparable Amount. We use a u128 representation
         // of micro-dollars (6 decimal places) for internal tracking.
-        let micro_usd = (cost_record.estimated_usd * 1_000_000.0) as u128;
+        let micro_usd = micro_usd_from_estimate(cost_record.estimated_usd)?;
         let cost_amount = Amount::new(micro_usd, AssetId::Native, 6);
 
         state.spent_today = state.spent_today.checked_add(&cost_amount).map_err(|_| {
@@ -247,7 +277,7 @@ impl BudgetChecker {
         let (tokens, usd) = match state {
             Some(s) => {
                 // Convert back from micro-dollars to USD.
-                let usd = s.spent_this_month.value as f64 / 1_000_000.0;
+                let usd = micro_usd_as_f64(s.spent_this_month.value);
                 (0u64, usd)
             }
             None => (0, 0.0),
@@ -436,6 +466,30 @@ mod tests {
         let state = checker.states.get("agent-1").expect("state should exist");
         // 0.0105 USD = 10_500 micro-dollars
         assert_eq!(state.spent_today.value, 10_500);
+    }
+
+    #[test]
+    fn record_spend_rejects_invalid_usd_estimates() {
+        for estimated_usd in [-1.0, f64::NAN, f64::INFINITY] {
+            let mut checker = BudgetChecker::new();
+            let cost = CostRecord {
+                run_id: "run-invalid".into(),
+                provider: "fixture".into(),
+                model: "fixture/model".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                estimated_usd,
+                recorded_at: Utc::now(),
+            };
+
+            let error = checker
+                .record_spend("agent-1", &cost)
+                .expect_err("invalid estimated USD must fail closed");
+            assert!(matches!(
+                error,
+                PaymentError::Validation { ref field, .. } if field == "estimated_usd"
+            ));
+        }
     }
 
     #[test]
