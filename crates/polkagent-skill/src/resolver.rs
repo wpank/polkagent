@@ -165,7 +165,7 @@ fn topological_sort(
         return Err(SkillError::CyclicDependency { cycle });
     }
 
-    debug!(order = ?result.iter().map(|id| id.to_string()).collect::<Vec<_>>(), "resolved skill order");
+    debug!(order = ?result.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(), "resolved skill order");
 
     Ok(result)
 }
@@ -180,7 +180,7 @@ fn find_cycle_description(manifests: &[SkillManifest], remaining: &[&str]) -> St
         let mut path = vec![start];
         let mut current = start;
 
-        for _ in 0..remaining.len() + 1 {
+        for _ in 0..=remaining.len() {
             // Find a dependency of `current` that is also in the remaining set.
             let manifest = manifests.iter().find(|m| m.skill.name == current);
 
@@ -215,6 +215,13 @@ fn find_cycle_description(manifests: &[SkillManifest], remaining: &[&str]) -> St
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify dependency-resolution
+// invariant failures.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test skill resolver assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 
@@ -238,8 +245,8 @@ mod tests {
                 authors: Vec::new(),
                 license: String::new(),
             },
-            capabilities: Default::default(),
-            prompts: Default::default(),
+            capabilities: crate::manifest::CapabilitiesSection::default(),
+            prompts: crate::manifest::PromptsSection::default(),
             config: HashMap::new(),
             dependencies,
         }

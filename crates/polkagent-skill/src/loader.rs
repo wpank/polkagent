@@ -162,6 +162,13 @@ impl SkillLoader {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify loader contract
+// failures at their source.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test skill loader assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

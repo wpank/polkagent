@@ -140,6 +140,13 @@ impl RewardPolicy {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify reward serialization
+// invariant failures.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test skill reward assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

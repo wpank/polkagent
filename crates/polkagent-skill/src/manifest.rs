@@ -236,6 +236,13 @@ impl SkillManifest {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify manifest parsing and
+// validation failures at their source.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test skill manifest assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

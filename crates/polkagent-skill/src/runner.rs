@@ -128,6 +128,13 @@ impl Default for SkillRunner {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify preparation contract
+// failures at their source.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test skill runner assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::manifest::SkillManifest;
@@ -231,7 +238,7 @@ system = "Hello world."
     fn prepared_skill_fields() {
         let manifest = SkillManifest::from_toml(MANIFEST_NO_TOOLS).expect("should parse");
         let registry = FakeRegistry::new(&[]);
-        let runner = SkillRunner::default();
+        let runner = SkillRunner;
 
         let prepared = runner
             .prepare(&manifest, &registry)

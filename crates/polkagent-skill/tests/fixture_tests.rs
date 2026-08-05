@@ -1,6 +1,14 @@
 //! Integration tests that load skill manifest fixture files from the workspace
 //! `fixtures/skills/` directory and verify all fields are parsed correctly.
 
+// Fixture-test assertions intentionally panic with focused path and parsing
+// diagnostics when the checked-in workspace layout or manifests drift.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "integration fixture assertions intentionally panic with focused diagnostics"
+)]
+
 use std::path::PathBuf;
 
 use polkagent_skill::manifest::SkillManifest;

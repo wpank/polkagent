@@ -271,7 +271,10 @@ impl FakeExecutor {
     /// Returns `None` if no calls have been made yet.
     #[must_use]
     pub fn last_request(&self) -> Option<InferenceRequest> {
-        self.last_request.lock().expect("mutex poisoned").clone()
+        self.last_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     // -----------------------------------------------------------------------
@@ -280,7 +283,10 @@ impl FakeExecutor {
 
     fn record(&self, request: &InferenceRequest) {
         self.call_count.fetch_add(1, Ordering::SeqCst);
-        let mut guard = self.last_request.lock().expect("mutex poisoned");
+        let mut guard = self
+            .last_request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Some(request.clone());
     }
 
@@ -298,7 +304,8 @@ impl FakeExecutor {
                 provider_request_id: Some(format!("fake-{call_index}")),
             }),
             Mode::Cycling(responses) => {
-                let idx = (call_index as usize) % responses.len();
+                let response_count = u64::try_from(responses.len()).unwrap_or(u64::MAX);
+                let idx = usize::try_from(call_index % response_count).unwrap_or_default();
                 Ok(responses[idx].clone())
             }
             Mode::ToolCalls(calls) => Ok(InferenceResponse {
@@ -398,6 +405,13 @@ impl ModelExecutor for FakeExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test assertions intentionally panic at the exact fake-executor contract
+// boundary that failed.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test fake executor assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use futures::StreamExt;
