@@ -38,7 +38,7 @@
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
 use polkagent_core::now;
@@ -150,7 +150,7 @@ impl FakeSigner {
     /// [`sign`]: Signer::sign
     #[must_use]
     pub fn last_request(&self) -> Option<CanonicalSignRequest> {
-        self.last_request.lock().expect("mutex poisoned").clone()
+        lock_recover(&self.last_request).clone()
     }
 
     // -----------------------------------------------------------------------
@@ -159,7 +159,7 @@ impl FakeSigner {
 
     fn record(&self, request: &CanonicalSignRequest) {
         self.sign_call_count.fetch_add(1, Ordering::SeqCst);
-        let mut guard = self.last_request.lock().expect("mutex poisoned");
+        let mut guard = lock_recover(&self.last_request);
         *guard = Some(request.clone());
     }
 
@@ -186,6 +186,13 @@ impl FakeSigner {
             signature,
         }
     }
+}
+
+/// Recover the protected fake state after a test thread poisons its mutex.
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Default for FakeSigner {
@@ -237,6 +244,8 @@ impl Signer for FakeSigner {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use polkagent_core::now;
@@ -262,13 +271,13 @@ mod tests {
         let req = valid_request(account);
         let payload = req.payload.clone();
 
-        let signed = signer.sign(req).await.expect("sign should succeed");
+        let signed_payload = signer.sign(req).await.expect("sign should succeed");
 
-        assert_eq!(signed.signature.len(), 64);
-        assert_eq!(signed.public_key.len(), 32);
+        assert_eq!(signed_payload.signature.len(), 64);
+        assert_eq!(signed_payload.public_key.len(), 32);
         // signed_extrinsic = payload || signature
         assert_eq!(
-            &signed.signed_extrinsic[..payload.len()],
+            &signed_payload.signed_extrinsic[..payload.len()],
             payload.as_slice()
         );
     }
@@ -391,12 +400,12 @@ mod tests {
         let account = AccountRef::from_bytes([0u8; 32]);
         let mut req = valid_request(account);
         req.payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let signed = signer.sign(req).await.expect("ok");
+        let signed_payload = signer.sign(req).await.expect("ok");
         // The first 4 bytes of the signature should mirror the payload.
-        assert_eq!(signed.signature[0], 0xDE);
-        assert_eq!(signed.signature[1], 0xAD);
-        assert_eq!(signed.signature[2], 0xBE);
-        assert_eq!(signed.signature[3], 0xEF);
+        assert_eq!(signed_payload.signature[0], 0xDE);
+        assert_eq!(signed_payload.signature[1], 0xAD);
+        assert_eq!(signed_payload.signature[2], 0xBE);
+        assert_eq!(signed_payload.signature[3], 0xEF);
     }
 
     #[test]

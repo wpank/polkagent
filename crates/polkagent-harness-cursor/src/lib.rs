@@ -52,19 +52,14 @@ use polkagent_harness_trait::{
 // ---------------------------------------------------------------------------
 
 /// Transport mode for communicating with Cursor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CursorTransport {
     /// Full ACP mode via `cursor agent acp`.
+    #[default]
     Acp,
     /// Simpler headless mode via `cursor agent -p "prompt" --output-format stream-json`.
     Headless,
-}
-
-impl Default for CursorTransport {
-    fn default() -> Self {
-        Self::Acp
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +67,7 @@ impl Default for CursorTransport {
 // ---------------------------------------------------------------------------
 
 /// Configuration specific to the Cursor harness.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CursorHarnessConfig {
     /// Transport mode for communicating with Cursor.
     pub transport: CursorTransport,
@@ -80,15 +75,6 @@ pub struct CursorHarnessConfig {
     ///
     /// If `None`, the binary is expected on `$PATH`.
     pub binary_path: Option<PathBuf>,
-}
-
-impl Default for CursorHarnessConfig {
-    fn default() -> Self {
-        Self {
-            transport: CursorTransport::default(),
-            binary_path: None,
-        }
-    }
 }
 
 impl CursorHarnessConfig {
@@ -111,12 +97,14 @@ pub struct CursorHarnessConfigBuilder {
 
 impl CursorHarnessConfigBuilder {
     /// Set the transport mode.
+    #[must_use]
     pub fn transport(mut self, transport: CursorTransport) -> Self {
         self.transport = Some(transport);
         self
     }
 
     /// Set the path to the `cursor` binary.
+    #[must_use]
     pub fn binary_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.binary_path = Some(path.into());
         self
@@ -140,18 +128,10 @@ impl CursorHarnessConfigBuilder {
 /// Implements [`AcpConfigurator`] so that an
 /// [`AcpHarness`](polkagent_harness_acp::AcpHarness) can be used as a
 /// fully-featured [`Harness`](polkagent_harness_trait::Harness) for Cursor.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CursorConfigurator {
     /// Cursor-specific configuration.
     pub config: CursorHarnessConfig,
-}
-
-impl Default for CursorConfigurator {
-    fn default() -> Self {
-        Self {
-            config: CursorHarnessConfig::default(),
-        }
-    }
 }
 
 impl CursorConfigurator {
@@ -166,8 +146,7 @@ impl CursorConfigurator {
             .executable_path
             .as_ref()
             .or(self.config.binary_path.as_ref())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "cursor".into())
+            .map_or_else(|| "cursor".into(), |p| p.display().to_string())
     }
 }
 
@@ -208,6 +187,8 @@ pub type CursorHarness = polkagent_harness_acp::AcpHarness<CursorConfigurator>;
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented serialization tests intentionally fail fast on invalid fixtures.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use polkagent_harness_acp::AcpHarness;

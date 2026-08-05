@@ -52,17 +52,12 @@ use polkagent_harness_trait::{
 // ---------------------------------------------------------------------------
 
 /// Transport mode for communicating with Kiro.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KiroTransport {
     /// Full ACP mode via `kiro-cli acp`.
+    #[default]
     Acp,
-}
-
-impl Default for KiroTransport {
-    fn default() -> Self {
-        Self::Acp
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +65,7 @@ impl Default for KiroTransport {
 // ---------------------------------------------------------------------------
 
 /// Configuration specific to the Kiro harness.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KiroHarnessConfig {
     /// Transport mode for communicating with Kiro.
     pub transport: KiroTransport,
@@ -78,15 +73,6 @@ pub struct KiroHarnessConfig {
     ///
     /// If `None`, the binary is expected on `$PATH`.
     pub binary_path: Option<PathBuf>,
-}
-
-impl Default for KiroHarnessConfig {
-    fn default() -> Self {
-        Self {
-            transport: KiroTransport::default(),
-            binary_path: None,
-        }
-    }
 }
 
 impl KiroHarnessConfig {
@@ -109,12 +95,14 @@ pub struct KiroHarnessConfigBuilder {
 
 impl KiroHarnessConfigBuilder {
     /// Set the transport mode.
+    #[must_use]
     pub fn transport(mut self, transport: KiroTransport) -> Self {
         self.transport = Some(transport);
         self
     }
 
     /// Set the path to the `kiro-cli` binary.
+    #[must_use]
     pub fn binary_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.binary_path = Some(path.into());
         self
@@ -138,18 +126,10 @@ impl KiroHarnessConfigBuilder {
 /// Implements [`AcpConfigurator`] so that an
 /// [`AcpHarness`](polkagent_harness_acp::AcpHarness) can be used as a
 /// fully-featured [`Harness`](polkagent_harness_trait::Harness) for Kiro.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct KiroConfigurator {
     /// Kiro-specific configuration.
     pub config: KiroHarnessConfig,
-}
-
-impl Default for KiroConfigurator {
-    fn default() -> Self {
-        Self {
-            config: KiroHarnessConfig::default(),
-        }
-    }
 }
 
 impl KiroConfigurator {
@@ -164,8 +144,7 @@ impl KiroConfigurator {
             .executable_path
             .as_ref()
             .or(self.config.binary_path.as_ref())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "kiro-cli".into())
+            .map_or_else(|| "kiro-cli".into(), |p| p.display().to_string())
     }
 }
 
@@ -206,6 +185,8 @@ pub type KiroHarness = polkagent_harness_acp::AcpHarness<KiroConfigurator>;
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented serialization tests intentionally fail fast on invalid fixtures.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use polkagent_harness_acp::AcpHarness;

@@ -37,7 +37,7 @@
 //!     body: MessageBody::Text { content: "hello agent".into() },
 //!     received_at: now(),
 //! };
-//! handle.inject_message(msg);
+//! assert!(handle.inject_message(msg));
 //!
 //! // The system under test can receive it.
 //! let received = transport.receive().await.expect("should receive");
@@ -58,7 +58,7 @@
 //! ```
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -88,13 +88,10 @@ impl FakeTransportHandle {
     /// The next call to [`Transport::receive`] on the paired [`FakeTransport`]
     /// will return this message.
     ///
-    /// # Panics
-    ///
-    /// Panics if the paired [`FakeTransport`] has been dropped.
-    pub fn inject_message(&self, msg: IncomingMessage) {
-        self.incoming_tx
-            .send(msg)
-            .expect("FakeTransport receiver dropped");
+    /// Returns `true` when the message was queued, or `false` if the paired
+    /// [`FakeTransport`] has already been dropped.
+    pub fn inject_message(&self, msg: IncomingMessage) -> bool {
+        self.incoming_tx.send(msg).is_ok()
     }
 
     /// Return and clear all outgoing messages that have been sent through the
@@ -102,7 +99,7 @@ impl FakeTransportHandle {
     ///
     /// Messages are returned in the order they were sent.
     pub fn drain_sent(&self) -> Vec<OutgoingMessage> {
-        let mut guard = self.sent.lock().expect("mutex poisoned");
+        let mut guard = lock_recover(&self.sent);
         std::mem::take(&mut *guard)
     }
 
@@ -112,7 +109,7 @@ impl FakeTransportHandle {
     /// [`drain_sent`]: FakeTransportHandle::drain_sent
     #[must_use]
     pub fn sent_count(&self) -> usize {
-        self.sent.lock().expect("mutex poisoned").len()
+        lock_recover(&self.sent).len()
     }
 }
 
@@ -229,8 +226,8 @@ impl FakeTransport {
     ///
     /// [`send`]: Transport::send
     pub fn set_send_delay(&self, delay: Duration) {
-        self.send_delay_ms
-            .store(delay.as_millis() as u64, Ordering::SeqCst);
+        let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+        self.send_delay_ms.store(delay_ms, Ordering::SeqCst);
     }
 
     /// Inject an error to be returned by the next [`send`] call.
@@ -253,7 +250,7 @@ impl FakeTransport {
             TransportError::RateLimit { retry_after } => SendErrorKind::RateLimit { retry_after },
             TransportError::Internal { message } => SendErrorKind::Internal { message },
         };
-        let mut guard = self.next_send_error.lock().expect("mutex poisoned");
+        let mut guard = lock_recover(&self.next_send_error);
         *guard = Some(kind);
     }
 
@@ -290,7 +287,7 @@ impl FakeTransport {
     /// future — even if it is dropped before an `.await` — can cause
     /// `future cannot be sent between threads safely` errors.
     fn take_next_send_error(&self) -> Option<SendErrorKind> {
-        self.next_send_error.lock().expect("mutex poisoned").take()
+        lock_recover(&self.next_send_error).take()
     }
 
     /// Push an outgoing message into the sent accumulator.
@@ -298,8 +295,15 @@ impl FakeTransport {
     /// Same rationale as [`take_next_send_error`]: keeps the
     /// `std::sync::MutexGuard` out of the async state machine.
     fn push_sent(&self, message: OutgoingMessage) {
-        self.sent.lock().expect("mutex poisoned").push(message);
+        lock_recover(&self.sent).push(message);
     }
+}
+
+/// Recover the protected fake state after a test thread poisons its mutex.
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[async_trait]
@@ -370,6 +374,8 @@ impl Transport for FakeTransport {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use polkagent_core::now;
@@ -410,19 +416,30 @@ mod tests {
     #[tokio::test]
     async fn inject_message_is_received_by_transport() {
         let (transport, handle) = FakeTransport::new();
-        handle.inject_message(make_message("d-001"));
+        assert!(handle.inject_message(make_message("d-001")));
         let received = transport.receive().await.expect("receive ok");
         assert_eq!(received.delivery_id, DeliveryId::new("d-001"));
+    }
+
+    #[test]
+    fn inject_message_reports_dropped_receiver() {
+        let (transport, handle) = FakeTransport::new();
+        drop(transport);
+        assert!(!handle.inject_message(make_message("d-dropped")));
+    }
+
+    #[test]
+    fn oversized_send_delay_saturates() {
+        let (transport, _handle) = FakeTransport::new();
+        transport.set_send_delay(Duration::MAX);
+        assert_eq!(transport.send_delay_ms.load(Ordering::SeqCst), u64::MAX);
     }
 
     #[tokio::test]
     async fn send_is_accumulated_in_handle() {
         let (transport, handle) = FakeTransport::new();
         let conv = ConversationId::new();
-        transport
-            .send(make_outgoing(conv.clone()))
-            .await
-            .expect("send ok");
+        transport.send(make_outgoing(conv)).await.expect("send ok");
         transport.send(make_outgoing(conv)).await.expect("send ok");
         assert_eq!(handle.sent_count(), 2);
     }
@@ -506,7 +523,7 @@ mod tests {
         let conv = ConversationId::new();
         // First send should fail.
         let err = transport
-            .send(make_outgoing(conv.clone()))
+            .send(make_outgoing(conv))
             .await
             .expect_err("must fail");
         assert!(matches!(err, TransportError::Internal { .. }));

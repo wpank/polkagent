@@ -1,9 +1,9 @@
-//! OpenCode harness adapter for the Polkagent platform.
+//! `OpenCode` harness adapter for the Polkagent platform.
 //!
 //! This crate provides [`OpenCodeConfigurator`] -- an implementation of the
 //! [`AcpConfigurator`] trait that configures the shared
 //! [`AcpHarness`](polkagent_harness_acp::AcpHarness) for
-//! the OpenCode CLI (`opencode acp`).
+//! the `OpenCode` CLI (`opencode acp`).
 //!
 //! # Usage
 //!
@@ -51,7 +51,7 @@ use polkagent_harness_trait::{
 // OpenCodeTransport
 // ---------------------------------------------------------------------------
 
-/// Transport mode for communicating with OpenCode.
+/// Transport mode for communicating with `OpenCode`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OpenCodeTransport {
@@ -64,10 +64,10 @@ pub enum OpenCodeTransport {
 // OpenCodeHarnessConfig
 // ---------------------------------------------------------------------------
 
-/// Configuration specific to the OpenCode harness.
+/// Configuration specific to the `OpenCode` harness.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenCodeHarnessConfig {
-    /// Transport mode for communicating with OpenCode.
+    /// Transport mode for communicating with `OpenCode`.
     pub transport: OpenCodeTransport,
     /// Path to the `opencode` binary.
     ///
@@ -95,12 +95,14 @@ pub struct OpenCodeHarnessConfigBuilder {
 
 impl OpenCodeHarnessConfigBuilder {
     /// Set the transport mode.
+    #[must_use]
     pub fn transport(mut self, transport: OpenCodeTransport) -> Self {
         self.transport = Some(transport);
         self
     }
 
     /// Set the path to the `opencode` binary.
+    #[must_use]
     pub fn binary_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.binary_path = Some(path.into());
         self
@@ -119,11 +121,11 @@ impl OpenCodeHarnessConfigBuilder {
 // OpenCodeConfigurator
 // ---------------------------------------------------------------------------
 
-/// ACP configurator for the OpenCode CLI.
+/// ACP configurator for the `OpenCode` CLI.
 ///
 /// Implements [`AcpConfigurator`] so that an
 /// [`AcpHarness`](polkagent_harness_acp::AcpHarness) can be used as a
-/// fully-featured [`Harness`](polkagent_harness_trait::Harness) for OpenCode.
+/// fully-featured [`Harness`](polkagent_harness_trait::Harness) for `OpenCode`.
 #[derive(Debug, Clone, Default)]
 pub struct OpenCodeConfigurator {
     /// OpenCode-specific configuration.
@@ -175,7 +177,7 @@ impl AcpConfigurator for OpenCodeConfigurator {
     }
 }
 
-/// Convenience type alias for an OpenCode harness.
+/// Convenience type alias for an `OpenCode` harness.
 pub type OpenCodeHarness = polkagent_harness_acp::AcpHarness<OpenCodeConfigurator>;
 
 // ---------------------------------------------------------------------------
@@ -183,6 +185,8 @@ pub type OpenCodeHarness = polkagent_harness_acp::AcpHarness<OpenCodeConfigurato
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented serialization tests intentionally fail fast on invalid fixtures.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use polkagent_harness_acp::AcpHarness;
