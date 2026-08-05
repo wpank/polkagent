@@ -7,11 +7,18 @@
 [![CI](https://github.com/nicovince/polkagent/actions/workflows/ci.yml/badge.svg)](https://github.com/nicovince/polkagent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.89+-orange.svg)](https://www.rust-lang.org)
-[![Crates](https://img.shields.io/badge/crates-91-brightgreen)](Cargo.toml)
+[![Crates](https://img.shields.io/badge/crates-88-brightgreen)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/tests-7%2C400%2B-brightgreen)](#testing)
 [![Fuzz Targets](https://img.shields.io/badge/fuzz_targets-10-blue)](#testing)
 
 A Rust-first, Polkadot-native platform for building, running, and operating AI agents that understand on-chain governance, treasury, and staking &mdash; with evidence-bearing safety, configurable autonomy, and crash-safe execution.
+
+> **Implementation readiness:** Polkagent has broad component coverage and
+> bounded executable slices for one-shot/TUI/ACP runs, local packages, PCA TCP,
+> and single-instance containers. Shared durable runtime composition, real
+> tool/effect/policy execution, API recovery, and complete Zed support remain
+> active work. See [the evidence-backed status](prd/STATUS.md) before relying on
+> a production-readiness claim.
 
 [Quick Start](#quick-start) &bull; [Features](#features) &bull; [Documentation](#documentation) &bull; [Architecture](#architecture) &bull; [Contributing](#contributing)
 
@@ -51,8 +58,12 @@ polkagent agent create my-agent \
 # Run a query
 polkagent run -a my-agent -p "Summarize referendum 1234 and list the top 10 voters"
 
-# Or launch the interactive TUI
-polkagent tui
+# Or launch the interactive TUI directly in its Console
+polkagent tui --tab console
+# Press p to compose for an active agent; Enter starts; x cancels.
+
+# Or expose Polkagent to an ACP editor such as Zed
+polkagent acp --agent my-agent
 ```
 
 ### Docker
@@ -153,7 +164,8 @@ Grant policies use deny-by-default, deny-overrides-allow ABAC with budget enforc
 
 ### ROSEDUST Terminal UI
 
-An interactive dashboard with 8 tabs for real-time monitoring and control:
+An interactive dashboard with 9 tabs for monitoring and a bounded actionable
+single-run Console:
 
 | Key | Tab | Description |
 |-----|-----|-------------|
@@ -165,12 +177,13 @@ An interactive dashboard with 8 tabs for real-time monitoring and control:
 | `F6` | **Approvals** | Effect queue with approve/deny actions and action cards |
 | `F7` | **Memory** | Full-text memory browser with search and delete |
 | `F8` | **Audit** | System audit log with severity filtering |
+| `F9` | **Console** | Select an active agent, prompt, project live output/usage, and cancel one run |
 
-Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, `q` to quit.
+Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, and `q` to quit. In the Console, `p` opens the prompt composer, `Enter` submits, and `x` requests cancellation. Durable multi-turn chat, history/slash commands, restart resume, and simultaneous orchestration are not implemented yet.
 
 ### Coding Harness Integrations
 
-Use Polkagent as a backend for your favorite coding agent:
+Use downstream coding harnesses from Polkagent:
 
 | Harness | Protocol | Status |
 |---------|----------|--------|
@@ -184,6 +197,16 @@ Use Polkagent as a backend for your favorite coding agent:
 | **Bridge** | HTTP/WebSocket (any remote agent) | Tier-1 |
 
 All harnesses share 11 canonical tools (read, write, edit, glob, grep, bash, web_fetch, web_search, task, notebook_edit, apply_patch) mapped to each backend's native format.
+
+### ACP Editor Integration
+
+`polkagent acp` is the separate inbound ACP v1 stdio adapter for Zed and other
+ACP clients. The executable protocol slice supports session creation, prompts,
+cancellation, agent selection, and `/help`, `/status`, `/agents`, and `/agent`.
+The official SDK subprocess test proves handshake, command discovery, and one
+real `AppService` run; manual Zed interoperability, durable session load/resume,
+structured tools/permissions, MCP passthrough, and rich editor UX remain open.
+See [ACP and Zed setup](docs/acp-zed.md).
 
 ### Agent Memory
 
@@ -202,9 +225,14 @@ polkagent memory export <AGENT_ID> backup.json
 polkagent memory sweep --dry-run
 ```
 
-### REST API & WebSocket Streaming
+### REST API & WebSocket Surface
 
-Full HTTP API at `/api/v1alpha1` with 49 endpoints covering agents, runs, effects, artifacts, events, providers, skills, tools, payments, memory, audit, conversations, and registry.
+The HTTP schema at `/api/v1alpha1` defines routes for agents, runs, effects,
+artifacts, events, providers, skills, tools, payments, memory, audit,
+conversations, and registry. The current `serve` composition still uses
+in-memory agents/runs and leaves optional dependencies unwired, so this is not
+yet a durable production control plane and some routes intentionally return
+`501 Not Implemented`.
 
 ```bash
 # Start the API server
@@ -373,7 +401,9 @@ curl -X POST http://localhost:9090/api/v1alpha1/runs \
 | `skill` | Install, update, remove, list, show skills |
 | `kit` | Manage skill bundles |
 | `tui` | Launch the ROSEDUST interactive terminal |
+| `acp` | Start the ACP v1 stdio agent server for editor integrations |
 | `serve` | Start the REST + WebSocket API server |
+| `package` | Install, inspect, update, roll back, and uninstall local packages |
 | `inbox` | List, approve, deny pending effects |
 | `inspect` | Inspect runs, effects, artifacts, agents, policies, database |
 | `export` | Export runs, effects, artifacts, events, config (JSON/CSV/JSONL) |
@@ -396,7 +426,7 @@ See [docs/cli.md](docs/cli.md) for the full reference with all flags and subcomm
 
 ## Architecture
 
-Polkagent is a 91-crate Cargo workspace following hexagonal (ports and adapters) architecture. Domain logic lives in pure crates with no I/O. External systems are accessed through trait-based ports with swappable adapters.
+Polkagent is an 88-crate Cargo workspace following hexagonal (ports and adapters) architecture. Domain logic lives in pure crates with no I/O. External systems are accessed through trait-based ports with swappable adapters.
 
 ```mermaid
 graph TB
