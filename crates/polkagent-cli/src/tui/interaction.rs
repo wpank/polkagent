@@ -26,6 +26,11 @@ use polkagent_runtime::{
 use polkagent_store_sqlite::SqlitePool;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::commands::interaction_agents::{
+    active_agent_by_id, list_active_agent_targets, registered_agent_by_id,
+    resolve_active_agent_target,
+};
+
 /// Keep a runaway streaming response from growing the terminal process
 /// forever. Durable lifecycle/events remain available through the run views.
 const MAX_OUTPUT_BYTES: usize = 128 * 1024;
@@ -38,9 +43,11 @@ const MAX_SESSION_SELECTOR_SCAN: u32 = 1_000;
 const MAX_SESSION_TITLE_BYTES: usize = 256;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
-const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 5] = [
+const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 7] = [
     CommandName::Help,
     CommandName::Status,
+    CommandName::Agents,
+    CommandName::Agent,
     CommandName::New,
     CommandName::Resume,
     CommandName::Model,
@@ -149,6 +156,12 @@ pub struct ConsoleConversationSelection {
     pub conversation_id: String,
     pub model: Option<String>,
     pub turns: Vec<ConsoleRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleAgentSelection {
+    pub agent_id: String,
+    pub agent_name: String,
 }
 
 /// Result of inserting one bracketed-paste payload into the composer.
@@ -864,6 +877,7 @@ impl InteractionState {
                 result,
                 selection,
                 model_update,
+                agent_update,
             } => {
                 if self.agent_id.as_deref() != Some(agent_id.as_str())
                     || self.conversation_id != conversation_id
@@ -884,6 +898,10 @@ impl InteractionState {
                     );
                 } else if let ConsoleModelUpdate::Selected(model) = model_update {
                     self.selected_model = model;
+                }
+                if let Some(agent) = agent_update {
+                    self.agent_id = Some(agent.agent_id);
+                    self.agent_name = Some(agent.agent_name);
                 }
             }
             ControllerEvent::CommandFailed {
@@ -1094,10 +1112,6 @@ fn validate_console_command(command: &InteractionCommand) -> Result<(), String> 
             "/{} is not supported in the Console",
             command.as_str()
         )),
-        InteractionCommand::Agents | InteractionCommand::Agent { .. } => Err(
-            "agent selection commands are unavailable in the Console; choose an active agent in F2"
-                .to_owned(),
-        ),
         InteractionCommand::Runs | InteractionCommand::Inspect { .. } => Err(
             "run inspection commands are unavailable in the Console; use F3 Runs and F5 Timeline"
                 .to_owned(),
@@ -1277,6 +1291,7 @@ pub enum ControllerEvent {
         result: ConsoleCommandResult,
         selection: Option<ConsoleConversationSelection>,
         model_update: ConsoleModelUpdate,
+        agent_update: Option<ConsoleAgentSelection>,
     },
     CommandFailed {
         agent_id: String,
@@ -1528,6 +1543,10 @@ impl RunController {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the async command boundary keeps validation, execution, and correlated completion together"
+    )]
     pub fn execute_command(&mut self, request: ConsoleCommandRequest) -> Result<(), &'static str> {
         if self.active {
             return Err("a Console action is already active");
@@ -1543,7 +1562,7 @@ impl RunController {
             let ConsoleCommandRequest {
                 request_id,
                 agent_id,
-                agent_name,
+                agent_name: _,
                 conversation_id,
                 line,
                 invocation,
@@ -1586,8 +1605,47 @@ impl RunController {
                 }
             };
             let service: Arc<dyn InteractionService> = polkagent_runtime.interactions().clone();
+            if matches!(&invocation.command, InteractionCommand::Agent { .. }) {
+                let Some(selected) = conversation_id else {
+                    send_command_failure(
+                        &event_tx,
+                        agent_id,
+                        selected_conversation_id,
+                        request_id,
+                        line,
+                        "/agent requires a selected durable Console conversation".to_owned(),
+                    );
+                    return;
+                };
+                match service.list_turns(selected).await {
+                    Ok(turns) if turns.iter().any(|turn| !turn.state.is_terminal()) => {
+                        send_command_failure(
+                            &event_tx,
+                            agent_id,
+                            selected_conversation_id,
+                            request_id,
+                            line,
+                            "cannot change agents while this durable conversation has active work; cancel or wait for it to finish".to_owned(),
+                        );
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        send_command_failure(
+                            &event_tx,
+                            agent_id,
+                            selected_conversation_id,
+                            request_id,
+                            line,
+                            format!("checking durable active work before changing agents: {error}"),
+                        );
+                        return;
+                    }
+                }
+            }
             let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(TuiCommandRuntime {
                 service: Arc::clone(&service),
+                pool: polkagent_runtime.pool().clone(),
                 agent_id: typed_agent_id,
             });
             let executor = match ServiceCommandExecutor::new(
@@ -1639,7 +1697,6 @@ impl RunController {
                     project_console_command_output(
                         &polkagent_runtime,
                         typed_agent_id,
-                        &agent_name,
                         output,
                     )
                     .await
@@ -1662,6 +1719,7 @@ impl RunController {
                         result,
                         selection: outcome.selection,
                         model_update: outcome.model_update,
+                        agent_update: outcome.agent_update,
                     });
                 }
                 Err(error) => {
@@ -1958,12 +2016,16 @@ struct ProjectedConsoleCommand {
     lines: Vec<String>,
     selection: Option<ConsoleConversationSelection>,
     model_update: ConsoleModelUpdate,
+    agent_update: Option<ConsoleAgentSelection>,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive projection keeps supported and refused command outputs explicit"
+)]
 async fn project_console_command_output(
     runtime: &PolkagentRuntime,
     agent_id: AgentId,
-    agent_name: &str,
     output: CommandOutput,
 ) -> Result<ProjectedConsoleCommand, String> {
     match output {
@@ -1985,7 +2047,7 @@ async fn project_console_command_output(
                 .collect::<Vec<_>>();
             lines.push("x — cancel the exact current turn (not a slash command)".to_owned());
             lines.push(
-                "Agent/provider/harness/autonomy, approval, group, and run-inspection commands are unavailable in Console."
+                "Provider/harness/autonomy, approval, group, and run-inspection commands are unavailable in Console."
                     .to_owned(),
             );
             Ok(ProjectedConsoleCommand {
@@ -1993,52 +2055,114 @@ async fn project_console_command_output(
                 lines,
                 selection: None,
                 model_update: ConsoleModelUpdate::Unchanged,
+                agent_update: None,
             })
         }
         CommandOutput::Status {
             interaction,
             active_turns,
             pending_approvals: _,
-        } => Ok(ProjectedConsoleCommand {
-            title: "Durable Console status".to_owned(),
-            lines: vec![
-                format!("conversation: {}", interaction.conversation_id),
-                format!(
-                    "target: {}",
-                    display_interaction_target(&interaction.config.target)
-                ),
-                format!("state: {:?}", interaction.state),
-                format!("turns: {}", interaction.turn_count),
-                format!("active turns: {}", active_turns.len()),
-                "pending approvals: visibility unavailable in Console".to_owned(),
-                format!(
-                    "model: {} (durable conversation selection)",
-                    interaction
-                        .config
-                        .model
-                        .as_deref()
-                        .unwrap_or("runtime/agent default")
-                ),
-                format!(
-                    "provider: {} (selection unavailable in Console)",
-                    interaction
-                        .config
-                        .provider
-                        .as_deref()
-                        .unwrap_or("runtime default")
-                ),
-            ],
-            selection: None,
-            model_update: ConsoleModelUpdate::Selected(interaction.config.model),
-        }),
+        } => {
+            let target = match interaction.config.target {
+                InteractionTarget::Agent(target_id) => {
+                    active_agent_by_id(runtime.pool(), target_id).map_or_else(
+                        |_| display_interaction_target(&interaction.config.target),
+                        |target| format!("{} ({})", target.name, target.agent_id),
+                    )
+                }
+                _ => display_interaction_target(&interaction.config.target),
+            };
+            Ok(ProjectedConsoleCommand {
+                title: "Durable Console status".to_owned(),
+                lines: vec![
+                    format!("conversation: {}", interaction.conversation_id),
+                    format!("target: {target}"),
+                    format!("state: {:?}", interaction.state),
+                    format!("turns: {}", interaction.turn_count),
+                    format!("active turns: {}", active_turns.len()),
+                    "pending approvals: visibility unavailable in Console".to_owned(),
+                    format!(
+                        "model: {} (durable conversation selection)",
+                        interaction
+                            .config
+                            .model
+                            .as_deref()
+                            .unwrap_or("runtime/agent default")
+                    ),
+                    format!(
+                        "provider: {} (selection unavailable in Console)",
+                        interaction
+                            .config
+                            .provider
+                            .as_deref()
+                            .unwrap_or("runtime default")
+                    ),
+                ],
+                selection: None,
+                model_update: ConsoleModelUpdate::Selected(interaction.config.model),
+                agent_update: None,
+            })
+        }
+        CommandOutput::Agents { agents } => {
+            let mut lines = if agents.is_empty() {
+                vec!["no active agents".to_owned()]
+            } else {
+                agents
+                    .into_iter()
+                    .map(|agent| {
+                        let selected = if agent.agent_id == agent_id { "*" } else { " " };
+                        format!(
+                            "{selected} {} ({}) [{}]",
+                            agent.name, agent.agent_id, agent.state
+                        )
+                    })
+                    .collect()
+            };
+            lines.push(
+                "readiness: not projected; lifecycle is from the durable registry".to_owned(),
+            );
+            Ok(ProjectedConsoleCommand {
+                title: "Active durable agents".to_owned(),
+                lines,
+                selection: None,
+                model_update: ConsoleModelUpdate::Unchanged,
+                agent_update: None,
+            })
+        }
+        CommandOutput::TargetChanged { target } => {
+            let target_id = match target {
+                InteractionTarget::Agent(target_id) => target_id,
+                InteractionTarget::Group(_) | InteractionTarget::Auto => {
+                    return Err("Console received a non-agent target".to_owned());
+                }
+            };
+            let target = registered_agent_by_id(runtime.pool(), target_id)
+                .map_err(|error| format!("resolving persisted Console target: {error}"))?;
+            Ok(ProjectedConsoleCommand {
+                title: "Updated durable Console target".to_owned(),
+                lines: vec![
+                    format!("agent: {} ({})", target.name, target.agent_id),
+                    "scope: selected conversation (persisted)".to_owned(),
+                ],
+                selection: None,
+                model_update: ConsoleModelUpdate::Unchanged,
+                agent_update: Some(ConsoleAgentSelection {
+                    agent_id: target.agent_id.to_string(),
+                    agent_name: target.name,
+                }),
+            })
+        }
         CommandOutput::InteractionCreated { interaction } => {
-            validate_console_target(&interaction, agent_id).map_err(|error| error.to_string())?;
+            let target_id =
+                console_target_agent_id(&interaction).map_err(|error| error.to_string())?;
+            let target = active_agent_by_id(runtime.pool(), target_id)
+                .map_err(|error| format!("resolving created Console target: {error}"))?;
             let (_, turns) = load_interaction_history(runtime, &interaction).await?;
             Ok(ProjectedConsoleCommand {
                 title: "Created durable interaction".to_owned(),
                 lines: vec![
                     format!("conversation: {}", interaction.conversation_id),
-                    format!("agent: {agent_name}"),
+                    format!("agent: {}", target.name),
                     format!(
                         "title: {}",
                         interaction.title.as_deref().unwrap_or("untitled")
@@ -2050,16 +2174,23 @@ async fn project_console_command_output(
                     turns,
                 }),
                 model_update: ConsoleModelUpdate::Unchanged,
+                agent_update: Some(ConsoleAgentSelection {
+                    agent_id: target.agent_id.to_string(),
+                    agent_name: target.name,
+                }),
             })
         }
         CommandOutput::InteractionResumed { interaction } => {
-            validate_console_target(&interaction, agent_id).map_err(|error| error.to_string())?;
+            let target_id =
+                console_target_agent_id(&interaction).map_err(|error| error.to_string())?;
+            let target = active_agent_by_id(runtime.pool(), target_id)
+                .map_err(|error| format!("resolving resumed Console target: {error}"))?;
             let (_, turns) = load_interaction_history(runtime, &interaction).await?;
             Ok(ProjectedConsoleCommand {
                 title: "Resumed durable interaction".to_owned(),
                 lines: vec![
                     format!("conversation: {}", interaction.conversation_id),
-                    format!("agent: {agent_name}"),
+                    format!("agent: {}", target.name),
                     format!("restored turns: {}", turns.len()),
                 ],
                 selection: Some(ConsoleConversationSelection {
@@ -2068,6 +2199,10 @@ async fn project_console_command_output(
                     turns,
                 }),
                 model_update: ConsoleModelUpdate::Unchanged,
+                agent_update: Some(ConsoleAgentSelection {
+                    agent_id: target.agent_id.to_string(),
+                    agent_name: target.name,
+                }),
             })
         }
         CommandOutput::Model { model, changed } => Ok(ProjectedConsoleCommand {
@@ -2089,10 +2224,9 @@ async fn project_console_command_output(
             ],
             selection: None,
             model_update: ConsoleModelUpdate::Selected(model),
+            agent_update: None,
         }),
-        CommandOutput::Agents { .. }
-        | CommandOutput::TargetChanged { .. }
-        | CommandOutput::Runs { .. }
+        CommandOutput::Runs { .. }
         | CommandOutput::RunInspected { .. }
         | CommandOutput::CancellationRequested { .. }
         | CommandOutput::ApprovalResolved { .. } => {
@@ -2111,6 +2245,7 @@ fn display_interaction_target(target: &InteractionTarget) -> String {
 
 struct TuiCommandRuntime {
     service: Arc<dyn InteractionService>,
+    pool: SqlitePool,
     agent_id: AgentId,
 }
 
@@ -2123,11 +2258,11 @@ impl InteractionCommandRuntime for TuiCommandRuntime {
     }
 
     async fn list_agents(&self) -> Result<Vec<AgentTargetView>, InteractionError> {
-        Err(tui_command_unsupported("agent discovery"))
+        list_active_agent_targets(&self.pool)
     }
 
-    async fn resolve_agent(&self, _selector: &str) -> Result<AgentTargetView, InteractionError> {
-        Err(tui_command_unsupported("agent selection"))
+    async fn resolve_agent(&self, selector: &str) -> Result<AgentTargetView, InteractionError> {
+        resolve_active_agent_target(&self.pool, selector)
     }
 
     async fn list_runs(
@@ -2249,15 +2384,23 @@ fn validate_console_target(
     interaction: &InteractionSummary,
     agent_id: AgentId,
 ) -> Result<(), InteractionError> {
-    match interaction.config.target {
-        InteractionTarget::Agent(target) if target == agent_id => Ok(()),
-        InteractionTarget::Agent(target) => Err(InteractionError::new(
+    let target = console_target_agent_id(interaction)?;
+    if target == agent_id {
+        Ok(())
+    } else {
+        Err(InteractionError::new(
             InteractionErrorCode::Conflict,
             format!(
                 "conversation {} targets agent {target}, not selected agent {agent_id}",
                 interaction.conversation_id
             ),
-        )),
+        ))
+    }
+}
+
+fn console_target_agent_id(interaction: &InteractionSummary) -> Result<AgentId, InteractionError> {
+    match interaction.config.target {
+        InteractionTarget::Agent(target) => Ok(target),
         InteractionTarget::Group(_) => Err(InteractionError::new(
             InteractionErrorCode::Unsupported,
             "Console does not support group interactions",
@@ -2916,7 +3059,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["help", "status", "new", "resume", "model"]
+            vec!["help", "status", "agents", "agent", "new", "resume", "model"]
         );
         assert_eq!(menu.selected, 0);
 
@@ -3024,6 +3167,7 @@ mod tests {
             },
             selection: None,
             model_update: ConsoleModelUpdate::Selected(Some("fake/model-a".to_owned())),
+            agent_update: None,
         };
 
         state.conversation_id = Some(second_id);
@@ -3072,6 +3216,7 @@ mod tests {
                 turns: Vec::new(),
             }),
             model_update: ConsoleModelUpdate::Unchanged,
+            agent_update: None,
         });
         assert_ne!(state.conversation_id.as_deref(), Some("stale-conversation"));
 
@@ -3092,6 +3237,7 @@ mod tests {
                 turns: Vec::new(),
             }),
             model_update: ConsoleModelUpdate::Unchanged,
+            agent_update: None,
         });
         assert_eq!(state.conversation_id.as_deref(), Some(selected_id.as_str()));
         assert_eq!(state.selected_model.as_deref(), Some("fake/model-a"));
@@ -3100,6 +3246,70 @@ mod tests {
             Some(ConsoleCommandStatus::Completed)
         );
         assert!(state.run.is_none());
+    }
+
+    #[test]
+    fn agent_command_reducer_preserves_session_state_and_rejects_stale_completion() {
+        let mut state = InteractionState::default();
+        state.select_agent("old-agent", "Old Agent");
+        state.conversation_id = Some("selected-conversation".to_owned());
+        state.selected_model = Some("fake/selected".to_owned());
+        state.transcript.push(ConsoleRun {
+            conversation_id: Some("selected-conversation".to_owned()),
+            turn_id: Some("old-turn".to_owned()),
+            run_id: Some("old-run".to_owned()),
+            prompt: "retained prompt".to_owned(),
+            output: "retained output".to_owned(),
+            status: ConsoleRunStatus::Completed,
+            detail: "completed".to_owned(),
+            input_tokens: 1,
+            output_tokens: 2,
+        });
+        type_prompt(&mut state, "/agent new-agent");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("agent command")
+        else {
+            panic!("agent command rejected")
+        };
+        let event = ControllerEvent::CommandCompleted {
+            agent_id: request.agent_id.clone(),
+            conversation_id: request.conversation_id.clone(),
+            request_id: request.request_id.clone(),
+            result: ConsoleCommandResult {
+                request_id: request.request_id.clone(),
+                line: request.line.clone(),
+                status: ConsoleCommandStatus::Completed,
+                title: "Updated durable Console target".to_owned(),
+                lines: vec!["agent: New Agent (new-agent)".to_owned()],
+            },
+            selection: None,
+            model_update: ConsoleModelUpdate::Unchanged,
+            agent_update: Some(ConsoleAgentSelection {
+                agent_id: "new-agent".to_owned(),
+                agent_name: "New Agent".to_owned(),
+            }),
+        };
+
+        let mut stale_event = event.clone();
+        if let ControllerEvent::CommandCompleted {
+            conversation_id, ..
+        } = &mut stale_event
+        {
+            *conversation_id = Some("other-conversation".to_owned());
+        }
+        state.apply(stale_event);
+        assert_eq!(state.agent_id.as_deref(), Some("old-agent"));
+
+        state.apply(event);
+        assert_eq!(state.agent_id.as_deref(), Some("new-agent"));
+        assert_eq!(state.agent_name.as_deref(), Some("New Agent"));
+        assert_eq!(
+            state.conversation_id.as_deref(),
+            Some("selected-conversation")
+        );
+        assert_eq!(state.selected_model.as_deref(), Some("fake/selected"));
+        assert_eq!(state.transcript.len(), 1);
+        assert_eq!(state.transcript[0].prompt, "retained prompt");
     }
 
     #[test]
@@ -3334,6 +3544,11 @@ provider = "fake"
         let agent = store
             .create_agent("command-agent", None, &spec.to_string())
             .expect("create active agent");
+        let mut second_spec = spec.clone();
+        second_spec["name"] = serde_json::Value::String("second-command-agent".to_owned());
+        let second_agent = store
+            .create_agent("second-command-agent", None, &second_spec.to_string())
+            .expect("create second active agent");
         let mut options =
             tui_runtime_options(&seed_pool, Some(&config_path)).expect("TUI runtime options");
         options.workdir = temp.path().to_path_buf();
@@ -3395,12 +3610,117 @@ provider = "fake"
             Some("Updated durable Console model")
         );
 
+        type_prompt(&mut state, "/agents");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("agents command")
+        else {
+            panic!("agents command rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute agents command");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+        let agents = state.command_result.as_ref().expect("agents result");
+        assert!(agents
+            .lines
+            .iter()
+            .any(|line| line.contains("* command-agent")));
+        assert!(agents
+            .lines
+            .iter()
+            .any(|line| line.contains("second-command-agent")));
+        assert!(agents
+            .lines
+            .iter()
+            .any(|line| line.contains("readiness: not projected")));
+
+        let agent_specs_before = {
+            let connection = runtime.pool().writer();
+            connection
+                .query_row(
+                    "SELECT group_concat(spec_json, '\n') FROM (SELECT spec_json FROM agents ORDER BY id)",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("snapshot TUI agent specs")
+        };
+        type_prompt(&mut state, "/agent second-command-agent");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("agent command")
+        else {
+            panic!("agent command rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute agent command");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+        assert_eq!(state.agent_id.as_deref(), Some(second_agent.id.as_str()));
+        assert_eq!(state.agent_name.as_deref(), Some("second-command-agent"));
+        assert_eq!(
+            state.conversation_id.as_deref(),
+            Some(conversation_id.as_str())
+        );
+        assert_eq!(state.selected_model.as_deref(), Some("fake/model-a"));
+        assert!(state.transcript.is_empty());
+        assert!(state.run.is_none());
+        let (target_id, turn_count, run_count, event_count, agent_specs_after) = {
+            let connection = runtime.pool().writer();
+            let config_json: String = connection
+                .query_row(
+                    "SELECT config_json FROM interaction_sessions WHERE conversation_id = ?1",
+                    [&conversation_id],
+                    |row| row.get(0),
+                )
+                .expect("load TUI target config");
+            let config: serde_json::Value =
+                serde_json::from_str(&config_json).expect("decode TUI target config");
+            let counts = connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM interaction_turns),
+                            (SELECT COUNT(*) FROM runs),
+                            (SELECT COUNT(*) FROM interaction_events)",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .expect("count command-only TUI work");
+            let specs = connection
+                .query_row(
+                    "SELECT group_concat(spec_json, '\n') FROM (SELECT spec_json FROM agents ORDER BY id)",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("reload TUI agent specs");
+            (
+                config["target"]["id"].as_str().unwrap().to_owned(),
+                counts.0,
+                counts.1,
+                counts.2,
+                specs,
+            )
+        };
+        assert_eq!(target_id, second_agent.id);
+        assert_eq!((turn_count, run_count, event_count), (0, 0, 0));
+        assert_eq!(agent_specs_after, agent_specs_before);
+
         type_prompt(&mut state, "prompt in explicitly selected session");
         let prompt = state.submit().expect("prompt after new command");
         assert_eq!(
             prompt.conversation_id.as_deref(),
             Some(conversation_id.as_str())
         );
+        assert_eq!(prompt.agent_id, second_agent.id);
         controller.start(prompt).expect("start selected prompt");
         let (_, events) = wait_for_controller_terminal(&mut controller).await;
         for event in events {
@@ -3436,6 +3756,8 @@ provider = "fake"
             resumed.conversation_id.as_deref(),
             Some(conversation_id.as_str())
         );
+        assert_eq!(resumed.agent_id.as_deref(), Some(second_agent.id.as_str()));
+        assert_eq!(resumed.agent_name.as_deref(), Some("second-command-agent"));
         assert_eq!(resumed.selected_model.as_deref(), Some("fake/model-a"));
         assert_eq!(
             resumed.run.as_ref().map(|run| run.prompt.as_str()),
@@ -3487,6 +3809,8 @@ provider = "fake"
         assert!(help.lines.iter().any(|line| line.starts_with("/new")));
         assert!(help.lines.iter().any(|line| line.starts_with("/resume")));
         assert!(help.lines.iter().any(|line| line.starts_with("/model")));
+        assert!(help.lines.iter().any(|line| line.starts_with("/agents")));
+        assert!(help.lines.iter().any(|line| line.starts_with("/agent ")));
         assert!(help.lines.iter().any(|line| line.starts_with("x —")));
         let turns = restarted
             .interactions()

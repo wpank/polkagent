@@ -1026,26 +1026,32 @@ impl App {
     /// Select the highlighted active agent, retain the console target when it
     /// is still active, or fall back to the first active agent.
     fn ensure_console_agent(&mut self) -> bool {
-        let selected = self
-            .tui_state
-            .agents_scroll
-            .selected
-            .and_then(|index| self.tui_state.agents.get(index))
-            .filter(|agent| agent.state == "active")
-            .or_else(|| {
-                let current = self.tui_state.interaction.agent_id.as_deref();
-                self.tui_state
-                    .agents
-                    .iter()
-                    .find(|agent| Some(agent.id.as_str()) == current && agent.state == "active")
-            })
-            .or_else(|| {
-                self.tui_state
-                    .agents
-                    .iter()
-                    .find(|agent| agent.state == "active")
-            })
-            .map(|agent| (agent.id.clone(), agent.name.clone()));
+        let current = || {
+            let current = self.tui_state.interaction.agent_id.as_deref();
+            self.tui_state
+                .agents
+                .iter()
+                .find(|agent| Some(agent.id.as_str()) == current && agent.state == "active")
+        };
+        let highlighted = || {
+            self.tui_state
+                .agents_scroll
+                .selected
+                .and_then(|index| self.tui_state.agents.get(index))
+                .filter(|agent| agent.state == "active")
+        };
+        let selected = if self.active_tab == Tab::Agents {
+            highlighted().or_else(current)
+        } else {
+            current().or_else(highlighted)
+        }
+        .or_else(|| {
+            self.tui_state
+                .agents
+                .iter()
+                .find(|agent| agent.state == "active")
+        })
+        .map(|agent| (agent.id.clone(), agent.name.clone()));
 
         if let Some((id, name)) = selected {
             let changed = self.tui_state.interaction.agent_id.as_deref() != Some(id.as_str());

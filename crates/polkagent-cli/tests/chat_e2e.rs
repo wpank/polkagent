@@ -9,6 +9,10 @@ use std::process::{Command, Output, Stdio};
 use polkagent_store_sqlite::{migrations, SqlitePool, SqliteRunStore};
 
 fn seed_agent(database_path: &Path, name: &str, model: &str) {
+    let _ = seed_agent_id(database_path, name, model);
+}
+
+fn seed_agent_id(database_path: &Path, name: &str, model: &str) -> String {
     let pool = SqlitePool::open(database_path).expect("open chat database");
     migrations::migrate(&pool.writer()).expect("migrate chat database");
     let store = SqliteRunStore::new(pool);
@@ -24,7 +28,8 @@ fn seed_agent(database_path: &Path, name: &str, model: &str) {
     });
     store
         .create_agent(name, None, &spec.to_string())
-        .expect("create active chat agent");
+        .expect("create active chat agent")
+        .id
 }
 
 fn chat_command(database_path: &Path, log_path: &Path, config_path: &Path) -> Command {
@@ -292,12 +297,178 @@ fn chat_help_does_not_claim_unsupported_commands() {
     let output = run_with_stdin(command, "/help\n");
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for command in ["/help", "/status", "/cancel", "/new", "/resume", "/model"] {
+    for command in [
+        "/help", "/status", "/agents", "/agent", "/cancel", "/new", "/resume", "/model",
+    ] {
         assert!(stdout.contains(command), "missing {command}: {stdout}");
     }
-    for command in ["  /agent ", "  /approve", "  /runs"] {
+    for command in ["  /approve", "  /runs"] {
         assert!(!stdout.contains(command), "advertised {command}: {stdout}");
     }
+}
+
+#[test]
+fn agent_commands_list_persist_resume_and_drive_the_next_process_without_creating_work() {
+    let temp = tempfile::tempdir().expect("chat tempdir");
+    let database_path = temp.path().join("chat.db");
+    let log_path = temp.path().join("chat.jsonl");
+    let config_path = temp.path().join("polkagent.toml");
+    std::fs::write(&config_path, "").expect("write isolated config");
+    let first_id = seed_agent_id(&database_path, "first-agent", "fake/first");
+    let second_id = seed_agent_id(&database_path, "second-agent", "fake/second");
+
+    let mut list = chat_command(&database_path, &log_path, &config_path);
+    list.args(["chat", "--agent", "first-agent"]);
+    let list = run_with_stdin(list, "/agents\n");
+    assert_success(&list);
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(list_stdout.contains("* first-agent"), "{list_stdout}");
+    assert!(list_stdout.contains("second-agent"), "{list_stdout}");
+    assert!(list_stdout.contains("[active]"), "{list_stdout}");
+    assert!(
+        list_stdout.contains("readiness: not projected"),
+        "{list_stdout}"
+    );
+    let conversation_id = session_id(&String::from_utf8_lossy(&list.stderr)).to_owned();
+
+    let connection = rusqlite::Connection::open(&database_path).expect("open agent command DB");
+    let specs_before: String = connection
+        .query_row(
+            "SELECT group_concat(spec_json, '\n') FROM (SELECT spec_json FROM agents ORDER BY id)",
+            [],
+            |row| row.get(0),
+        )
+        .expect("snapshot agent specs");
+
+    let mut select = chat_command(&database_path, &log_path, &config_path);
+    select.args([
+        "chat",
+        "--agent",
+        "first-agent",
+        "--resume",
+        &conversation_id,
+    ]);
+    let select = run_with_stdin(select, "/agent second-agent\n");
+    assert_success(&select);
+    let select_stdout = String::from_utf8_lossy(&select.stdout);
+    assert!(
+        select_stdout.contains(&format!("target: second-agent ({second_id})")),
+        "{select_stdout}"
+    );
+
+    let (config_json, turns, runs, events): (String, i64, i64, i64) = connection
+        .query_row(
+            "SELECT config_json,
+                    (SELECT COUNT(*) FROM interaction_turns),
+                    (SELECT COUNT(*) FROM runs),
+                    (SELECT COUNT(*) FROM interaction_events)
+             FROM interaction_sessions WHERE conversation_id = ?1",
+            [&conversation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("load selected durable target and zero-work counts");
+    let config: serde_json::Value = serde_json::from_str(&config_json).expect("decode config");
+    assert_eq!(config["target"]["id"], second_id);
+    assert_eq!((turns, runs, events), (0, 0, 0));
+    let specs_after: String = connection
+        .query_row(
+            "SELECT group_concat(spec_json, '\n') FROM (SELECT spec_json FROM agents ORDER BY id)",
+            [],
+            |row| row.get(0),
+        )
+        .expect("reload agent specs");
+    assert_eq!(
+        specs_after, specs_before,
+        "/agent must not mutate AgentSpec rows"
+    );
+
+    let mut status = chat_command(&database_path, &log_path, &config_path);
+    status.args([
+        "chat",
+        "--agent",
+        "first-agent",
+        "--resume",
+        &conversation_id,
+    ]);
+    let status = run_with_stdin(status, "/status\n");
+    assert_success(&status);
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status_stdout.contains(&format!("target: second-agent ({second_id})")),
+        "{status_stdout}"
+    );
+    let status_stderr = String::from_utf8_lossy(&status.stderr);
+    assert!(
+        status_stderr.contains(&format!("chat agent: second-agent ({second_id})")),
+        "{status_stderr}"
+    );
+
+    let mut prompt = chat_command(&database_path, &log_path, &config_path);
+    prompt.args([
+        "chat",
+        "--agent",
+        "first-agent",
+        "--resume",
+        &conversation_id,
+    ]);
+    let prompt = run_with_stdin(prompt, "use the persisted target\n");
+    assert_success(&prompt);
+    let run_agent_id: String = connection
+        .query_row(
+            "SELECT agent_id FROM runs WHERE conversation_id = ?1",
+            [&conversation_id],
+            |row| row.get(0),
+        )
+        .expect("load run target after restart");
+    assert_eq!(run_agent_id, second_id);
+    assert_ne!(run_agent_id, first_id);
+}
+
+#[test]
+fn agent_command_rejects_unknown_inactive_and_ambiguous_targets_without_work() {
+    let temp = tempfile::tempdir().expect("chat tempdir");
+    let database_path = temp.path().join("chat.db");
+    let log_path = temp.path().join("chat.jsonl");
+    let config_path = temp.path().join("polkagent.toml");
+    std::fs::write(&config_path, "").expect("write isolated config");
+    let first_id = seed_agent_id(&database_path, "first-agent", "fake/first");
+    let inactive_id = seed_agent_id(&database_path, "inactive-agent", "fake/inactive");
+    seed_agent(&database_path, &first_id, "fake/ambiguous");
+    let pool = SqlitePool::open(&database_path).expect("open refusal database");
+    SqliteRunStore::new(pool)
+        .update_agent_state(&inactive_id, "paused")
+        .expect("pause inactive fixture");
+
+    for (selector, code) in [
+        ("missing-agent", "not_found"),
+        ("inactive-agent", "not_found"),
+        (first_id.as_str(), "conflict"),
+    ] {
+        let mut command = chat_command(&database_path, &log_path, &config_path);
+        command.args(["chat", "--agent", "first-agent"]);
+        let output = run_with_stdin(command, &format!("/agent {selector}\n"));
+        assert!(
+            !output.status.success(),
+            "{selector} unexpectedly succeeded"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(code),
+            "missing {code} for {selector}: {stderr}"
+        );
+    }
+
+    let connection = rusqlite::Connection::open(&database_path).expect("open refusal DB");
+    let counts: (i64, i64, i64) = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM interaction_turns),
+                    (SELECT COUNT(*) FROM runs),
+                    (SELECT COUNT(*) FROM interaction_events)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("count refusal work rows");
+    assert_eq!(counts, (0, 0, 0));
 }
 
 #[test]

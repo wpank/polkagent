@@ -19,14 +19,20 @@ use polkagent_interaction::{
 use polkagent_runtime::{
     AdapterPolicy, PolkagentRuntime, RuntimeFactory, RuntimeOptions, WarningCode,
 };
-use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
+use polkagent_store_sqlite::SqlitePool;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader, Lines, Stdin};
 
 use crate::cli::ChatCmd;
+use crate::commands::interaction_agents::{
+    active_agent_by_id, list_active_agent_targets, registered_agent_by_id,
+    resolve_active_agent_target,
+};
 
-const SUPPORTED_COMMANDS: [CommandName; 6] = [
+const SUPPORTED_COMMANDS: [CommandName; 8] = [
     CommandName::Help,
     CommandName::Status,
+    CommandName::Agents,
+    CommandName::Agent,
     CommandName::Cancel,
     CommandName::New,
     CommandName::Resume,
@@ -37,21 +43,13 @@ const SUPPORTED_COMMANDS: [CommandName; 6] = [
 #[allow(clippy::too_many_lines)]
 pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -> Result<()> {
     let runtime = build_runtime(pool, config_path).await?;
-    let agent = resolve_active_agent(&runtime, &cmd.agent)?;
     report_runtime(&runtime);
 
     let service: Arc<dyn InteractionService> = runtime.interactions().clone();
     let registry = CommandRegistry::mvp();
-    let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(ChatCommandRuntime {
-        service: Arc::clone(&service),
-        agent_id: agent.agent_id,
-    });
-    let executor =
-        ServiceCommandExecutor::new(registry.clone(), Arc::clone(&service), command_runtime)
-            .context("composing terminal slash commands")?;
     let client_context = terminal_client_context(&runtime)?;
 
-    let interaction = if let Some(raw_id) = &cmd.resume {
+    let (interaction, agent) = if let Some(raw_id) = &cmd.resume {
         let conversation_id = raw_id
             .parse::<ConversationId>()
             .with_context(|| format!("invalid conversation ID supplied to --resume: {raw_id}"))?;
@@ -59,10 +57,14 @@ pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -
             .load_interaction(conversation_id)
             .await
             .context("loading durable chat interaction")?;
-        validate_agent_target(&interaction, agent.agent_id)?;
-        interaction
+        let agent_id = interaction_agent_id(&interaction)?;
+        let agent = active_agent_by_id(runtime.pool(), agent_id)
+            .context("resolving the durable chat target from the retained runtime registry")?;
+        (interaction, agent)
     } else {
-        service
+        let agent = resolve_active_agent_target(runtime.pool(), &cmd.agent)
+            .context("resolving the initial terminal chat agent")?;
+        let interaction = service
             .new_interaction(CreateInteractionRequest {
                 title: cmd
                     .title
@@ -72,11 +74,22 @@ pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -
                 client_context: client_context.clone(),
             })
             .await
-            .context("creating durable chat interaction")?
+            .context("creating durable chat interaction")?;
+        (interaction, agent)
     };
+
+    let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(ChatCommandRuntime {
+        service: Arc::clone(&service),
+        pool: runtime.pool().clone(),
+        agent_id: agent.agent_id,
+    });
+    let executor =
+        ServiceCommandExecutor::new(registry.clone(), Arc::clone(&service), command_runtime)
+            .context("composing terminal slash commands")?;
 
     let mut session = ChatSession {
         service,
+        pool: runtime.pool().clone(),
         registry,
         executor,
         client_context,
@@ -130,45 +143,15 @@ fn report_runtime(runtime: &PolkagentRuntime) {
     }
 }
 
-struct SelectedAgent {
-    agent_id: AgentId,
-    name: String,
-}
-
-fn resolve_active_agent(runtime: &PolkagentRuntime, selector: &str) -> Result<SelectedAgent> {
-    let row = SqliteRunStore::new(runtime.pool().clone())
-        .get_agent_by_name_or_id(selector)
-        .with_context(|| format!("active agent not found: {selector}"))?;
-    if row.state != "active" {
-        anyhow::bail!(
-            "agent '{}' is in state '{}' and cannot accept terminal prompts",
-            row.name,
-            row.state
-        );
-    }
-    let agent_id = row
-        .id
-        .parse::<AgentId>()
-        .with_context(|| format!("invalid stored agent ID: {}", row.id))?;
-    Ok(SelectedAgent {
-        agent_id,
-        name: row.name,
-    })
-}
-
 fn terminal_client_context(runtime: &PolkagentRuntime) -> Result<ClientContext> {
     let mut context = ClientContext::new(runtime.workdir().to_path_buf())?;
     context.client_name = Some("terminal".to_owned());
     Ok(context)
 }
 
-fn validate_agent_target(interaction: &InteractionSummary, agent_id: AgentId) -> Result<()> {
-    match &interaction.config.target {
-        InteractionTarget::Agent(target) if *target == agent_id => Ok(()),
-        InteractionTarget::Agent(target) => anyhow::bail!(
-            "conversation {} targets agent {target}, not selected agent {agent_id}",
-            interaction.conversation_id
-        ),
+fn interaction_agent_id(interaction: &InteractionSummary) -> Result<AgentId> {
+    match interaction.config.target {
+        InteractionTarget::Agent(agent_id) => Ok(agent_id),
         InteractionTarget::Group(_) => {
             anyhow::bail!("terminal chat does not support group interactions")
         }
@@ -180,6 +163,7 @@ fn validate_agent_target(interaction: &InteractionSummary, agent_id: AgentId) ->
 
 struct ChatSession {
     service: Arc<dyn InteractionService>,
+    pool: SqlitePool,
     registry: CommandRegistry,
     executor: ServiceCommandExecutor,
     client_context: ClientContext,
@@ -385,6 +369,9 @@ impl ChatSession {
             anyhow::bail!("expected a slash command");
         };
         refuse_unsupported_command(&invocation.command)?;
+        if matches!(invocation.command, InteractionCommand::Agent { .. }) {
+            self.ensure_agent_switch_is_idle(has_active_turn).await?;
+        }
         let output = self
             .executor
             .execute(CommandRequest {
@@ -401,6 +388,48 @@ impl ChatSession {
         self.apply_command_output(output).await
     }
 
+    async fn ensure_agent_switch_is_idle(&self, has_active_turn: bool) -> Result<()> {
+        if has_active_turn
+            || self
+                .service
+                .list_turns(self.conversation_id)
+                .await
+                .context("checking durable active work before changing agents")?
+                .into_iter()
+                .any(|turn| !turn.state.is_terminal())
+        {
+            anyhow::bail!(
+                "cannot change agents while this durable conversation has active work; cancel or wait for it to finish"
+            );
+        }
+        Ok(())
+    }
+
+    fn select_agent(&mut self, agent: AgentTargetView) -> Result<()> {
+        self.agent_id = agent.agent_id;
+        self.agent_name = agent.name;
+        let runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(ChatCommandRuntime {
+            service: Arc::clone(&self.service),
+            pool: self.pool.clone(),
+            agent_id: self.agent_id,
+        });
+        self.executor =
+            ServiceCommandExecutor::new(self.registry.clone(), Arc::clone(&self.service), runtime)
+                .context("recomposing terminal slash commands for the selected agent")?;
+        Ok(())
+    }
+
+    fn select_interaction_target(&mut self, interaction: &InteractionSummary) -> Result<()> {
+        let agent_id = interaction_agent_id(interaction)?;
+        let agent = active_agent_by_id(&self.pool, agent_id)
+            .context("resolving the interaction's active agent target")?;
+        self.select_agent(agent)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive surface projection keeps every typed shared-command result auditable"
+    )]
     async fn apply_command_output(&mut self, output: CommandOutput) -> Result<()> {
         match output {
             CommandOutput::Help { commands } => {
@@ -426,6 +455,13 @@ impl ChatSession {
                             None,
                             "Show durable session, target, turn, and active-work status",
                         ),
+                        CommandName::Agents => {
+                            (None, "List active durable agent targets (lifecycle only)")
+                        }
+                        CommandName::Agent => (
+                            Some("<name-or-id>"),
+                            "Persist this conversation's agent target",
+                        ),
                         CommandName::Cancel => (
                             Some("[all]"),
                             "Cancel the current durable turn (or all active turns)",
@@ -440,7 +476,7 @@ impl ChatSession {
                     println!("  /{}{hint} — {description}", command.name);
                 }
                 println!(
-                    "Agent/provider/harness/autonomy, approval, run-inspection, and group commands are not available in terminal chat."
+                    "Provider/harness/autonomy, approval, run-inspection, and group commands are not available in terminal chat."
                 );
             }
             CommandOutput::Status {
@@ -449,7 +485,13 @@ impl ChatSession {
                 pending_approvals: _,
             } => {
                 println!("session: {}", interaction.conversation_id);
-                println!("target: {}", display_target(&interaction.config.target));
+                let target = match interaction.config.target {
+                    InteractionTarget::Agent(agent_id) if agent_id == self.agent_id => {
+                        format!("{} ({agent_id})", self.agent_name)
+                    }
+                    _ => display_target(&interaction.config.target),
+                };
+                println!("target: {target}");
                 println!("state: {:?}", interaction.state);
                 println!("turns: {}", interaction.turn_count);
                 println!("active turns: {}", active_turns.len());
@@ -478,13 +520,47 @@ impl ChatSession {
                     run_ids.len()
                 );
             }
+            CommandOutput::Agents { agents } => {
+                if agents.is_empty() {
+                    println!("no active agents");
+                } else {
+                    println!("active agents:");
+                    for agent in agents {
+                        let selected = if agent.agent_id == self.agent_id {
+                            "*"
+                        } else {
+                            " "
+                        };
+                        println!(
+                            "  {selected} {} ({}) [{}]",
+                            agent.name, agent.agent_id, agent.state
+                        );
+                    }
+                }
+                println!("readiness: not projected; lifecycle is from the durable registry");
+            }
+            CommandOutput::TargetChanged { target } => {
+                let agent_id = match target {
+                    InteractionTarget::Agent(agent_id) => agent_id,
+                    InteractionTarget::Group(_) | InteractionTarget::Auto => {
+                        anyhow::bail!("terminal chat received a non-agent target")
+                    }
+                };
+                let agent = registered_agent_by_id(&self.pool, agent_id)
+                    .context("resolving the persisted terminal chat target")?;
+                self.select_agent(agent)?;
+                println!("target: {} ({})", self.agent_name, self.agent_id);
+                println!("conversation: {}", self.conversation_id);
+                println!("persistence: updated for this durable conversation");
+                self.announce_session();
+            }
             CommandOutput::InteractionCreated { interaction } => {
-                validate_agent_target(&interaction, self.agent_id)?;
+                self.select_interaction_target(&interaction)?;
                 self.conversation_id = interaction.conversation_id;
                 self.announce_session();
             }
             CommandOutput::InteractionResumed { interaction } => {
-                validate_agent_target(&interaction, self.agent_id)?;
+                self.select_interaction_target(&interaction)?;
                 self.conversation_id = interaction.conversation_id;
                 self.announce_session();
                 self.render_transcript().await?;
@@ -590,9 +666,6 @@ fn refuse_unsupported_command(command: &InteractionCommand) -> Result<()> {
         } if !SUPPORTED_COMMANDS.contains(name) => {
             anyhow::bail!("/{} is not supported by terminal chat", name.as_str())
         }
-        InteractionCommand::Agents | InteractionCommand::Agent { .. } => anyhow::bail!(
-            "terminal chat does not change agents; start a new process with --agent <name-or-id>"
-        ),
         InteractionCommand::Runs | InteractionCommand::Inspect { .. } => anyhow::bail!(
             "terminal chat does not expose run inspection; use the top-level inspect commands"
         ),
@@ -749,6 +822,7 @@ impl TurnRenderer {
 
 struct ChatCommandRuntime {
     service: Arc<dyn InteractionService>,
+    pool: SqlitePool,
     agent_id: AgentId,
 }
 
@@ -761,11 +835,11 @@ impl InteractionCommandRuntime for ChatCommandRuntime {
     }
 
     async fn list_agents(&self) -> Result<Vec<AgentTargetView>, InteractionError> {
-        Err(chat_unsupported("agent discovery"))
+        list_active_agent_targets(&self.pool)
     }
 
-    async fn resolve_agent(&self, _selector: &str) -> Result<AgentTargetView, InteractionError> {
-        Err(chat_unsupported("agent selection"))
+    async fn resolve_agent(&self, selector: &str) -> Result<AgentTargetView, InteractionError> {
+        resolve_active_agent_target(&self.pool, selector)
     }
 
     async fn list_runs(
@@ -831,7 +905,7 @@ mod tests {
     };
     use polkagent_runtime::DurableInteractionService;
     use polkagent_service::AppService;
-    use polkagent_store_sqlite::migrations;
+    use polkagent_store_sqlite::{migrations, SqliteRunStore};
 
     use super::*;
     use crate::cli::{Cli, Commands};
@@ -1057,12 +1131,14 @@ mod tests {
 
     fn chat_session(
         service: Arc<dyn InteractionService>,
+        pool: &SqlitePool,
         agent_id: AgentId,
         conversation_id: ConversationId,
     ) -> ChatSession {
         let registry = CommandRegistry::mvp();
         let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(ChatCommandRuntime {
             service: Arc::clone(&service),
+            pool: pool.clone(),
             agent_id,
         });
         let executor =
@@ -1070,6 +1146,7 @@ mod tests {
                 .expect("compose chat command executor");
         ChatSession {
             service,
+            pool: pool.clone(),
             registry,
             executor,
             client_context: ClientContext::new(PathBuf::from("/tmp/chat-model-test"))
@@ -1129,7 +1206,11 @@ mod tests {
         assert!(refuse_unregistered_configuration_command("/provider openai").is_err());
         assert!(refuse_unregistered_configuration_command("/autonomy autonomous").is_err());
         assert!(refuse_unregistered_configuration_command("/harness codex").is_err());
-        assert!(refuse_unsupported_command(&InteractionCommand::Agents).is_err());
+        assert!(refuse_unsupported_command(&InteractionCommand::Agents).is_ok());
+        assert!(refuse_unsupported_command(&InteractionCommand::Agent {
+            selector: "alice".to_owned(),
+        })
+        .is_ok());
         assert!(refuse_unsupported_command(&InteractionCommand::Model { model: None }).is_ok());
         assert!(refuse_unsupported_command(&InteractionCommand::Status).is_ok());
     }
@@ -1165,8 +1246,9 @@ mod tests {
 
         let first_service: Arc<dyn InteractionService> = service.clone();
         let second_service: Arc<dyn InteractionService> = service.clone();
-        let mut first_session = chat_session(first_service, agent_id, first.conversation_id);
-        let mut second_session = chat_session(second_service, agent_id, second.conversation_id);
+        let mut first_session = chat_session(first_service, &pool, agent_id, first.conversation_id);
+        let mut second_session =
+            chat_session(second_service, &pool, agent_id, second.conversation_id);
         first_session
             .execute_command_line("/model model-a", false)
             .await
@@ -1236,8 +1318,9 @@ mod tests {
 
         let first_service: Arc<dyn InteractionService> = restarted.clone();
         let second_service: Arc<dyn InteractionService> = restarted.clone();
-        let mut first_session = chat_session(first_service, agent_id, first.conversation_id);
-        let mut second_session = chat_session(second_service, agent_id, second.conversation_id);
+        let mut first_session = chat_session(first_service, &pool, agent_id, first.conversation_id);
+        let mut second_session =
+            chat_session(second_service, &pool, agent_id, second.conversation_id);
         first_session
             .execute_command_line("/model", false)
             .await
@@ -1308,7 +1391,7 @@ mod tests {
             .await
             .expect("create harness interaction");
         let erased: Arc<dyn InteractionService> = service.clone();
-        let mut session = chat_session(erased, agent_id, interaction.conversation_id);
+        let mut session = chat_session(erased, &pool, agent_id, interaction.conversation_id);
         let error = session
             .execute_command_line("/model model-a", false)
             .await

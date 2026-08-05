@@ -19,8 +19,11 @@ The command creates a durable interaction and writes its ID to stderr as
 polkagent chat --agent research-agent --resume <conversation-id>
 ```
 
-Resume verifies that the interaction still targets the selected agent and
-prints its persisted user/assistant transcript before accepting more input.
+For a new interaction, `--agent` chooses the initial active target. On resume,
+the durable interaction target is authoritative: a target previously selected
+with `/agent` is restored even when the process was started with a different
+`--agent` value. Chat prints the persisted user/assistant transcript before
+accepting more input.
 Transcript reads go through the surface-neutral interaction service as bounded,
 ordinal pages. Each item is correlated to its durable turn and exact user and
 optional assistant message identity; broken, mismatched, or rich-content
@@ -49,19 +52,24 @@ supported commands execute through its shared service executor:
 
 - `/help [command]` — show the truthful terminal command surface.
 - `/status` — show the durable session, target, turn count, and active work.
+- `/agents` — list active targets from the retained runtime registry. The list
+  reports durable lifecycle only; exact per-agent provider/model readiness is
+  not currently projected and is not guessed.
+- `/agent <name-or-id>` — validate an exact active name or UUID and persist it
+  as this conversation's target. Unknown, inactive, and ambiguous selectors
+  fail closed. A conversation with non-terminal durable work cannot switch.
 - `/cancel [all]` (alias `/stop`) — cancel the active turn or all active turns
   in the selected interaction.
-- `/new [title]` — create and select another durable interaction for the same
-  startup agent.
-- `/resume <conversation-id>` — select a compatible durable interaction and
-  print its persisted transcript.
+- `/new [title]` — create and select another durable interaction for the
+  currently selected agent.
+- `/resume <conversation-id>` — select a durable single-agent interaction,
+  adopt its persisted target, and print its transcript.
 - `/model [model-id]` — show the current effective conversation model, or
   validate and persist a same-provider model for this conversation. The
   selection survives process restart and resume without changing the agent.
 
 The following capabilities are explicitly unavailable rather than simulated:
 
-- Agent changes (`/agent`, `/agents`): restart with `--agent <name-or-id>`.
 - Provider, harness, or autonomy changes: configure the runtime or agent and
   restart. `/provider`, `/harness`, and `/autonomy` return an error.
 - Approvals (`/approve`, `/deny`): use the durable `polkagent inbox` commands.
@@ -79,6 +87,14 @@ selection is scoped to the selected durable conversation, does not mutate the
 shared agent specification, and never creates a transcript turn. `/model`
 without an argument reports the persisted selection (or the runtime/agent
 default when no override exists).
+
+Agent selection follows the same rule: the shared command executor calls the
+interaction service's typed target-configuration path. It never mutates a
+shared `AgentSpec`, never opens a second registry, and never creates a prompt
+turn, run, or interaction event. The service remains authoritative for target
+and model compatibility, so a target change can still be refused when the
+conversation's persisted model is invalid for that agent. Successful target
+selection survives process restart because it is stored on the conversation.
 
 ## Pipes and output contract
 

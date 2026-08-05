@@ -14,6 +14,7 @@ pub mod export;
 pub mod inbox;
 pub mod init;
 pub mod inspect;
+pub(crate) mod interaction_agents;
 pub mod kit;
 pub mod logs;
 pub mod memory;

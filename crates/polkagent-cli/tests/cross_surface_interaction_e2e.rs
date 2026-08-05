@@ -120,6 +120,11 @@ fn chat_command(database_path: &Path, config_path: &Path, log_path: &Path) -> Co
         .arg(config_path)
         .arg("--log-file")
         .arg(log_path)
+        .current_dir(
+            config_path
+                .parent()
+                .expect("cross-surface config has a working directory"),
+        )
         .env("NO_COLOR", "1")
         .env("POLKAGENT_DATABASE_SQLITE_PATH", database_path)
         .env_remove("POLKAGENT_CONFIG")
@@ -328,7 +333,12 @@ fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_interaction_conforms_across_http_chat_acp_and_tui_restarts() {
     let temporary = tempfile::tempdir().expect("cross-surface tempdir");
-    let workdir = temporary.path();
+    // macOS reports /private/var from getcwd even when tempfile yielded the
+    // lexical /var symlink. Use the subprocess-visible lexical identity for
+    // the durable origin shared by every surface in this fixture.
+    let subprocess_workdir =
+        std::fs::canonicalize(temporary.path()).expect("resolve subprocess working directory");
+    let workdir = subprocess_workdir.as_path();
     let database_path = workdir.join("cross-surface.db");
     let config_path = workdir.join("polkagent.toml");
     let chat_log_path = workdir.join("chat.jsonl");

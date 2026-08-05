@@ -389,8 +389,10 @@ durable multi-turn surface:
 | `F5` | Inspect its timeline |
 | `/help [command]` | Show the executable Console command subset |
 | `/status` | Show structured durable interaction status |
+| `/agents` | List active durable agent targets (lifecycle only) |
+| `/agent <name-or-id>` | Persist the selected conversation's active target |
 | `/new [title]` | Create and select a new durable single-agent interaction |
-| `/resume <conversation-id>` | Select a same-agent interaction and reload its transcript |
+| `/resume <conversation-id>` | Select an interaction, target, and transcript |
 | `/model [model-id]` | Show or persist the selected conversation's effective model |
 
 The Console creates one durable interaction for the selected agent and keeps
@@ -402,19 +404,30 @@ history remains unsupported. The Console consumes typed interaction events,
 shows correlated
 conversation/turn/run IDs, reloads history after restart, and keeps one active
 turn at a time so cancellation has an exact target. The slash picker advertises
-only `/help`, `/status`, `/new`, `/resume`, and `/model`; those commands use the
-shared registry and service executor, render structured success/error output,
-and are never sent to the model. `/new` and `/resume` switch the selected
-durable conversation before the next prompt. `/model` without an argument
+only `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, and `/model`;
+those commands use the shared registry and service executor, render structured
+success/error output, and are never sent to the model. `/agents` reads active
+targets from the retained runtime registry and deliberately reports lifecycle,
+not unproven per-agent readiness. `/agent <name-or-id>` requires an exact,
+unambiguous active target and persists it through the interaction service's
+typed target-config path. It is refused while the conversation has
+non-terminal durable work. A successful change preserves the selected
+conversation, transcript, model, and composer state; it does not mutate the
+shared agent specification or create a prompt turn, run, or interaction event.
+Async results are correlated to the initiating request, prior agent, and
+conversation before the target and header update, so stale completions cannot
+retarget the Console. `/new` uses the currently selected agent. `/resume`
+adopts the loaded interaction's persisted active target and transcript, so an
+agent selection survives restart. `/model` without an argument
 shows the effective conversation model; `/model <model-id>` validates and
 persists a same-provider selection for that conversation without changing the
 shared agent specification. Unknown, cross-provider, and harness-backed
 dynamic selections fail with typed errors. Async model results are correlated
 to the initiating request, agent, and conversation before updating the session
 header. `/cancel` is not accepted because the composer is closed while a turn
-is active; `x` remains the exact current-turn cancellation path. Agent,
-provider, autonomy, harness, group orchestration, approval, and run-inspection
-commands are explicitly refused in the Console. Approval events are displayed
+is active; `x` remains the exact current-turn cancellation path. Provider,
+autonomy, harness, group orchestration, approval, and run-inspection commands
+are explicitly refused in the Console. Approval events are displayed
 as unavailable rather than mutating
 effect rows directly. The separate legacy Approvals tab retains its existing
 direct approve/deny behavior. Transcript reloads use the interaction service's
