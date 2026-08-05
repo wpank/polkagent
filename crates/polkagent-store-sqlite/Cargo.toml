@@ -10,6 +10,7 @@ description = "SQLite storage adapter for Polkagent with WAL mode and forward-on
 [dependencies]
 # Internal
 polkagent-core = { path = "../polkagent-core" }
+polkagent-interaction = { path = "../polkagent-interaction" }
 polkagent-artifact = { path = "../polkagent-artifact" }
 polkagent-conversation = { path = "../polkagent-conversation" }
 polkagent-payment = { path = "../polkagent-payment" }

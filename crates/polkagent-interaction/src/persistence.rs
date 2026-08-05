@@ -98,6 +98,8 @@ impl NewInteractionTurn {
 pub struct StoredInteractionTurn {
     /// Stable turn summary and run correlation.
     pub summary: TurnSummary,
+    /// Linked runs with stable orchestration roles and ordering.
+    pub runs: Vec<InteractionRunLink>,
     /// Resolved target used to start the turn.
     pub target: InteractionTarget,
     /// Resolved turn configuration.

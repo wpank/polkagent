@@ -67,6 +67,7 @@ pub mod artifact_store_impl;
 pub mod conversation_store_impl;
 pub mod error;
 pub mod event_store;
+pub mod interaction_store_impl;
 // NOTE: group_store_impl and feed_store_impl are temporarily disabled.
 // Their serde type graphs exceed rustc's trait-solver recursion limit
 // when compiled alongside the other store modules. They will be moved
@@ -81,6 +82,7 @@ pub mod store;
 
 // Re-export the most commonly used types at the crate root.
 pub use error::{StoreError, StoreResult};
+pub use interaction_store_impl::SqliteInteractionStore;
 pub use pool::SqlitePool;
 pub use store::{
     AgentRow, ArtifactRow, EffectAttemptRow, EffectIntentRow, EffectOutcomeRow, RunEventRow,
