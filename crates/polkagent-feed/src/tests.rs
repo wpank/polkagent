@@ -1,16 +1,19 @@
 //! Integration tests for `polkagent-feed`.
 //!
 //! Tests are grouped by area:
-//!   - Trigger condition evaluation (Always, JsonPath, Threshold, And/Or/Not)
+//!   - Trigger condition evaluation (`Always`, `JsonPath`, `Threshold`, `And`/`Or`/`Not`)
 //!   - Cooldown mechanics
 //!   - Recipe instantiation
 //!   - Cursor mechanics
 //!   - Feed processing engine
-//!   - FeedStore CRUD (via MemoryStore)
+//!   - `FeedStore` CRUD (via `MemoryStore`)
 //!   - Idempotent processing
-//!   - EventFilter matching
-//!   - FeedSource / schedule handling
+//!   - `EventFilter` matching
+//!   - `FeedSource` / schedule handling
 //!   - Multiple triggers on the same feed
+
+// Assertion-oriented integration tests intentionally fail fast on fixture errors.
+#![allow(clippy::expect_used)]
 
 #[cfg(test)]
 mod trigger_condition {
@@ -18,6 +21,7 @@ mod trigger_condition {
 
     use crate::trigger::{CompOp, TriggerCondition};
 
+    #[allow(clippy::needless_pass_by_value)] // Keeps compact `json!` call sites readable.
     fn eval(cond: &TriggerCondition, payload: serde_json::Value) -> bool {
         cond.evaluate(&payload)
     }
@@ -336,6 +340,20 @@ mod cooldown {
     }
 
     #[test]
+    fn maximum_cooldown_does_not_wrap() {
+        let now = Utc::now();
+        let trigger = make_trigger(Some(u64::MAX), Some(now - Duration::seconds(1)));
+        assert!(trigger.is_in_cooldown(now));
+    }
+
+    #[test]
+    fn future_last_fired_timestamp_remains_in_cooldown() {
+        let now = Utc::now();
+        let trigger = make_trigger(Some(60), Some(now + Duration::seconds(1)));
+        assert!(trigger.is_in_cooldown(now));
+    }
+
+    #[test]
     fn cooldown_expired_fires_again() {
         // Last fired 120 seconds ago; cooldown is 60 seconds.
         let last = Utc::now() - Duration::seconds(120);
@@ -435,7 +453,7 @@ mod recipe {
         params.insert("message".to_string(), json!("hourly ping"));
 
         let result = instantiate_recipe(&recipe, &params);
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
 
         let (feed, trigger) = result.expect("ok");
         assert!(matches!(
@@ -580,7 +598,7 @@ mod recipe {
 
     #[test]
     fn param_type_validate_number() {
-        assert!(ParamType::Number.validate(&json!(3.14)));
+        assert!(ParamType::Number.validate(&json!(3.125)));
         assert!(!ParamType::Number.validate(&json!("pi")));
     }
 
@@ -1518,7 +1536,7 @@ mod durable {
         }
 
         let gaps = store.detect_gaps(&feed.id, 5).await.expect("gaps");
-        assert!(gaps.is_empty(), "expected no gaps, got: {:?}", gaps);
+        assert!(gaps.is_empty(), "expected no gaps, got: {gaps:?}");
     }
 
     #[tokio::test]
@@ -1598,6 +1616,19 @@ mod durable {
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].from_sequence, 6);
         assert_eq!(gaps[0].to_sequence, 6);
+    }
+
+    #[tokio::test]
+    async fn detect_gaps_handles_maximum_sequence_without_overflow() {
+        let store = make_store();
+        let feed = store.create_feed(make_feed()).await.expect("create");
+        store
+            .record_sequence(&feed.id, u64::MAX)
+            .await
+            .expect("record");
+
+        let gaps = store.detect_gaps(&feed.id, u64::MAX).await.expect("gaps");
+        assert!(gaps.is_empty());
     }
 
     // -----------------------------------------------------------------------

@@ -285,7 +285,7 @@ struct DurableInner {
     /// Named cursors keyed by feed id.
     cursors: HashMap<FeedId, FeedCursor>,
 
-    /// Dedup records keyed by dedup_key.
+    /// Dedup records keyed by `dedup_key`.
     dedup_records: HashMap<String, TriggerDedup>,
 
     /// Observed sequence numbers per feed.
@@ -495,7 +495,9 @@ impl DurableFeedStore for InMemoryDurableFeedStore {
         sorted.sort_unstable();
         sorted.dedup();
 
-        let max_observed = *sorted.last().unwrap();
+        let Some(max_observed) = sorted.last().copied() else {
+            return Ok(Vec::new());
+        };
         if max_observed < expected_sequence {
             // No observed sequences reach the expected position yet.
             return Ok(Vec::new());
@@ -513,7 +515,7 @@ impl DurableFeedStore for InMemoryDurableFeedStore {
                 // Gap from `current` to `seq - 1`.
                 gaps.push(Gap::new(*feed_id, current, seq - 1));
             }
-            current = seq + 1;
+            current = seq.saturating_add(1);
         }
 
         Ok(gaps)

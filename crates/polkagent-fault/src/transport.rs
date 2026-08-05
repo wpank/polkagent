@@ -132,6 +132,8 @@ impl<T: Transport> Transport for FaultTransport<T> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented tests intentionally fail fast on fixture and runtime errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::FaultSchedule;

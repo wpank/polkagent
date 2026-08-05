@@ -37,7 +37,7 @@ impl std::fmt::Debug for FaultStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FaultStore")
             .field("injector", &self.injector)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -223,6 +223,8 @@ async fn apply_store_fault_read(fault: Option<Fault>) -> Result<(), StoreError> 
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// The in-memory test double and assertions intentionally fail fast on poisoned fixtures.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::types::FaultSchedule;

@@ -111,6 +111,8 @@ fn apply_signer_fault_pre(fault: Fault) -> Result<(), SignerError> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented tests intentionally fail fast on fixture and runtime errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::{Corruption, FaultSchedule};

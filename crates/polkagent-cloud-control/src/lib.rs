@@ -18,6 +18,7 @@
     clippy::missing_panics_doc
 )]
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -84,22 +85,19 @@ pub type Result<T> = std::result::Result<T, ControlError>;
 // ---------------------------------------------------------------------------
 
 /// Priority level for a queued job.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub enum JobPriority {
     /// Lowest priority — processed after all higher-priority jobs.
     Low = 0,
     /// Default priority.
+    #[default]
     Normal = 1,
     /// Elevated priority — scheduled before Normal/Low.
     High = 2,
     /// Highest priority — processed as soon as capacity is available.
     Critical = 3,
-}
-
-impl Default for JobPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 /// Current status of a job in the queue.
@@ -290,7 +288,7 @@ pub fn data_residency_policy(worker_region: DataRegion) -> PolicySet {
             effect: Effect::Deny,
             action_patterns: vec!["cloud.assign_job".to_owned()],
             resource_patterns: vec!["**".to_owned()],
-            conditions: Default::default(),
+            conditions: HashMap::default(),
             abac_condition: Some(Condition::Not {
                 inner: Box::new(Condition::Equals {
                     attr: "job.region".to_owned(),
@@ -304,7 +302,7 @@ pub fn data_residency_policy(worker_region: DataRegion) -> PolicySet {
             effect: Effect::Allow,
             action_patterns: vec!["cloud.assign_job".to_owned()],
             resource_patterns: vec!["**".to_owned()],
-            conditions: Default::default(),
+            conditions: HashMap::default(),
             abac_condition: None,
         },
     ])
@@ -465,9 +463,9 @@ impl ControlPlane {
             .all_jobs
             .get(job_id)
             .ok_or_else(|| ControlError::JobNotFound(job_id.to_owned()))
-            .and_then(|j| match &j.status {
-                JobStatus::Assigned { worker_id } => Ok(Some(*worker_id)),
-                _ => Ok(None),
+            .map(|job| match &job.status {
+                JobStatus::Assigned { worker_id } => Some(*worker_id),
+                _ => None,
             })?;
 
         if let Some(wid) = assigned_worker {
@@ -493,9 +491,9 @@ impl ControlPlane {
             .all_jobs
             .get(job_id)
             .ok_or_else(|| ControlError::JobNotFound(job_id.to_owned()))
-            .and_then(|j| match &j.status {
-                JobStatus::Assigned { worker_id } => Ok(Some(*worker_id)),
-                _ => Ok(None),
+            .map(|job| match &job.status {
+                JobStatus::Assigned { worker_id } => Some(*worker_id),
+                _ => None,
             })?;
 
         if let Some(wid) = assigned_worker {
@@ -533,7 +531,7 @@ impl ControlPlane {
         // Sort pending jobs by priority (highest first).
         let pending: Vec<_> = inner.pending_jobs.drain(..).collect();
         let mut sorted = pending;
-        sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
+        sorted.sort_by_key(|job| Reverse(job.priority));
 
         let allow_cross = inner.config.allow_cross_region;
 
@@ -557,15 +555,15 @@ impl ControlPlane {
             if let Some(job_region) = job.region {
                 if !allow_cross {
                     candidates.retain(|w| {
-                        w.region
-                            .map(|wr| check_residency_policy(job_region, wr))
-                            .unwrap_or(false)
+                        w.region.is_some_and(|worker_region| {
+                            check_residency_policy(job_region, worker_region)
+                        })
                     });
                 }
             }
 
             // Pick least-loaded (most free slots).
-            candidates.sort_by(|a, b| b.free_slots().cmp(&a.free_slots()));
+            candidates.sort_by_key(|worker| Reverse(worker.free_slots()));
 
             if let Some(best) = candidates.first() {
                 let worker_id = best.id;
@@ -591,7 +589,7 @@ impl ControlPlane {
                     .all_jobs
                     .get(&job_id)
                     .cloned()
-                    .ok_or_else(|| ControlError::JobNotFound(job_id))?;
+                    .ok_or(ControlError::JobNotFound(job_id))?;
 
                 return Ok((assigned, worker_id));
             }
@@ -624,6 +622,8 @@ impl ControlPlane {
 // ===========================================================================
 
 #[cfg(test)]
+// Assertion-oriented unit tests intentionally unwrap fixture lookups and assignments.
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use polkagent_core::RunId;
@@ -738,18 +738,18 @@ mod tests {
     #[tokio::test]
     async fn assign_next_filters_by_capability() {
         let cp = ControlPlane::with_defaults();
-        let w_gpu = make_worker("gpu-node", 4, vec!["gpu"]);
-        let w_cpu = make_worker("cpu-node", 4, vec!["cpu"]);
+        let gpu_worker = make_worker("gpu-node", 4, vec!["gpu"]);
+        let cpu_worker = make_worker("cpu-node", 4, vec!["cpu"]);
 
-        cp.register_worker(w_gpu.clone()).await.ok();
-        cp.register_worker(w_cpu).await.ok();
+        cp.register_worker(gpu_worker.clone()).await.ok();
+        cp.register_worker(cpu_worker).await.ok();
 
         let mut job = make_job("gpu-job");
         job.required_capability = Some("gpu".into());
         cp.enqueue(job).await.ok();
 
         let (_, worker_id) = cp.assign_next().await.ok().unwrap();
-        assert_eq!(worker_id, w_gpu.id);
+        assert_eq!(worker_id, gpu_worker.id);
     }
 
     #[tokio::test]

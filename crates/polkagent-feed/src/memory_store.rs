@@ -166,7 +166,7 @@ impl FeedStore for MemoryStore {
 
     async fn mark_processed(&self, item_id: uuid::Uuid) -> Result<()> {
         let mut guard = self.inner.lock().await;
-        for item in guard.items.iter_mut() {
+        for item in &mut guard.items {
             if item.id == item_id {
                 item.processed = true;
                 return Ok(());

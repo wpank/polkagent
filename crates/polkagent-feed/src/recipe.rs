@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::BuildHasher;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -184,9 +185,9 @@ pub struct Recipe {
 /// Returns [`FeedError::InvalidRecipeParams`] if:
 /// - A required parameter has no value and no default.
 /// - A supplied value does not match the declared [`ParamType`].
-pub fn instantiate_recipe(
+pub fn instantiate_recipe<S: BuildHasher>(
     recipe: &Recipe,
-    params: &HashMap<String, serde_json::Value>,
+    params: &HashMap<String, serde_json::Value, S>,
 ) -> Result<(Feed, Trigger)> {
     // Resolve all parameter values.
     let resolved = resolve_params(recipe, params)?;
@@ -196,7 +197,7 @@ pub fn instantiate_recipe(
     let agent_id = polkagent_core::AgentId::new();
 
     // Clone and substitute the feed source.
-    let source = substitute_source(&recipe.source, &resolved)?;
+    let source = substitute_source(&recipe.source, &resolved);
 
     // Build a name for the feed from the recipe name plus any substitution.
     let feed_name = substitute_str(&recipe.name, &resolved);
@@ -207,7 +208,7 @@ pub fn instantiate_recipe(
     let feed_id: FeedId = feed.id;
 
     // Clone and substitute the trigger action.
-    let action = substitute_action(&recipe.action, &resolved)?;
+    let action = substitute_action(&recipe.action, &resolved);
     let condition = recipe.trigger.clone();
 
     let trigger = Trigger::new(
@@ -229,9 +230,9 @@ pub fn instantiate_recipe(
 
 /// Build a map of parameter name → resolved JSON value, applying defaults and
 /// validating types.
-fn resolve_params(
+fn resolve_params<S: BuildHasher>(
     recipe: &Recipe,
-    supplied: &HashMap<String, serde_json::Value>,
+    supplied: &HashMap<String, serde_json::Value, S>,
 ) -> Result<HashMap<String, serde_json::Value>> {
     let mut resolved: HashMap<String, serde_json::Value> = HashMap::new();
 
@@ -267,7 +268,7 @@ fn parse_default(default_str: &str, param_type: ParamType) -> serde_json::Value 
         ParamType::Number => default_str
             .parse::<f64>()
             .ok()
-            .and_then(|f| serde_json::Number::from_f64(f))
+            .and_then(serde_json::Number::from_f64)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::String(default_str.to_string())),
         ParamType::Bool => match default_str {
@@ -299,8 +300,8 @@ fn substitute_str(s: &str, params: &HashMap<String, serde_json::Value>) -> Strin
 fn substitute_source(
     source: &FeedSource,
     params: &HashMap<String, serde_json::Value>,
-) -> Result<FeedSource> {
-    Ok(match source {
+) -> FeedSource {
+    match source {
         FeedSource::Schedule { cron } => FeedSource::Schedule {
             cron: substitute_str(cron, params),
         },
@@ -318,15 +319,15 @@ fn substitute_source(
             query: substitute_str(query, params),
             interval_secs: *interval_secs,
         },
-    })
+    }
 }
 
 /// Perform placeholder substitution on a [`TriggerAction`].
 fn substitute_action(
     action: &TriggerAction,
     params: &HashMap<String, serde_json::Value>,
-) -> Result<TriggerAction> {
-    Ok(match action {
+) -> TriggerAction {
+    match action {
         TriggerAction::StartRun {
             prompt_template,
             agent_id,
@@ -342,5 +343,5 @@ fn substitute_action(
             channel: substitute_str(channel, params),
             message: substitute_str(message, params),
         },
-    })
+    }
 }

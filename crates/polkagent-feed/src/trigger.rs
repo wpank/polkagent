@@ -289,7 +289,7 @@ fn tc_from_value(value: &serde_json::Value) -> std::result::Result<TriggerCondit
                 .map_err(|e| format!("threshold: bad op: {e}"))?;
             let val = obj
                 .get("value")
-                .and_then(|v| v.as_f64())
+                .and_then(serde_json::Value::as_f64)
                 .ok_or_else(|| "threshold: missing or non-numeric \"value\"".to_string())?;
             Ok(TriggerCondition::Threshold {
                 field,
@@ -340,14 +340,13 @@ impl TriggerCondition {
         match self {
             Self::Always => true,
 
-            Self::JsonPath { path, expected } => resolve_json_pointer(payload, path)
-                .map(|v| v == expected)
-                .unwrap_or(false),
+            Self::JsonPath { path, expected } => {
+                resolve_json_pointer(payload, path).is_some_and(|v| v == expected)
+            }
 
             Self::Threshold { field, op, value } => resolve_json_pointer(payload, field)
-                .and_then(|v| v.as_f64())
-                .map(|f| op.evaluate(f, *value))
-                .unwrap_or(false),
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|f| op.evaluate(f, *value)),
 
             Self::And(conditions) => conditions.iter().all(|c| c.evaluate(payload)),
 
@@ -493,7 +492,7 @@ impl Trigger {
         match (self.cooldown_secs, self.last_fired_at) {
             (Some(secs), Some(last)) => {
                 let elapsed = now.signed_duration_since(last).num_seconds();
-                elapsed < secs as i64
+                elapsed < 0 || u64::try_from(elapsed).is_ok_and(|elapsed| elapsed < secs)
             }
             _ => false,
         }

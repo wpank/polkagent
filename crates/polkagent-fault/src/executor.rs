@@ -149,6 +149,8 @@ async fn apply_executor_fault(fault: Fault) -> Result<(), ExecutorError> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented tests intentionally fail fast on fixture and runtime errors.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::types::{Corruption, FaultSchedule};

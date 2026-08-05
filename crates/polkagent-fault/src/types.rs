@@ -126,7 +126,7 @@ pub enum FaultSchedule {
     /// Fire according to a boolean pattern that repeats.
     ///
     /// The `i`-th evaluation fires if `pattern[i % pattern.len()]` is `true`.
-    /// Panics at construction time if the pattern is empty.
+    /// An empty pattern never fires.
     Pattern(Vec<bool>),
 }
 
@@ -180,10 +180,16 @@ impl FaultPoint {
 
             FaultSchedule::Probability(p) => {
                 let clamped = p.clamp(0.0, 1.0);
+                if clamped.is_nan() || clamped <= 0.0 {
+                    return false;
+                }
+                if clamped >= 1.0 {
+                    return true;
+                }
                 // Use a simple LCG mixing the counter to get a deterministic
                 // pseudo-random value without pulling in an extra dependency.
                 let mixed = lcg_next(call_index as u64);
-                let threshold = (clamped * u64::MAX as f64) as u64;
+                let threshold = probability_threshold(clamped);
                 mixed < threshold
             }
 
@@ -212,6 +218,35 @@ fn lcg_next(seed: u64) -> u64 {
         .wrapping_add(1_442_695_040_888_963_407)
 }
 
+/// Convert a probability to the historical `p * 2^64` threshold directly
+/// from its IEEE-754 representation, avoiding lossy numeric casts.
+fn probability_threshold(probability: f64) -> u64 {
+    if probability.is_nan() || probability <= 0.0 {
+        return 0;
+    }
+    if probability >= 1.0 {
+        return u64::MAX;
+    }
+
+    let bits = probability.to_bits();
+    let exponent_bits = u16::try_from((bits >> 52) & 0x7ff).unwrap_or_default();
+    if exponent_bits == 0 {
+        return 0;
+    }
+
+    let significand = (bits & ((1_u64 << 52) - 1)) | (1_u64 << 52);
+    let scale_shift = i32::from(exponent_bits) - 1023 + 12;
+    if scale_shift >= 0 {
+        significand
+            .checked_shl(u32::try_from(scale_shift).unwrap_or(u32::MAX))
+            .unwrap_or(u64::MAX)
+    } else {
+        significand
+            .checked_shr(scale_shift.unsigned_abs())
+            .unwrap_or(0)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -219,6 +254,15 @@ fn lcg_next(seed: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probability_threshold_handles_boundaries_and_exact_fractions() {
+        assert_eq!(probability_threshold(f64::NAN), 0);
+        assert_eq!(probability_threshold(0.0), 0);
+        assert_eq!(probability_threshold(0.25), 1_u64 << 62);
+        assert_eq!(probability_threshold(0.5), 1_u64 << 63);
+        assert_eq!(probability_threshold(1.0), u64::MAX);
+    }
 
     // -----------------------------------------------------------------------
     // Corruption::apply tests
@@ -331,11 +375,11 @@ mod tests {
     #[test]
     fn schedule_probability_fires_roughly_at_expected_rate() {
         let fp = FaultPoint::new(Fault::Crash, FaultSchedule::Probability(0.5));
-        let trials = 10_000;
+        let trials: usize = 10_000;
         let fired: usize = (0..trials).filter(|_| fp.should_fire()).count();
         // Allow ±15% tolerance around 50%.
-        let lower = (trials as f64 * 0.35) as usize;
-        let upper = (trials as f64 * 0.65) as usize;
+        let lower = trials * 35 / 100;
+        let upper = trials * 65 / 100;
         assert!(
             fired >= lower && fired <= upper,
             "expected roughly 50% fire rate, got {fired}/{trials}"
