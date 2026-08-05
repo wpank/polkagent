@@ -101,7 +101,7 @@ startup still has a wiring gap.
   as evidence, and no bytes are yet signed, submitted, matched, or reconciled.
 - `scripts/container-smoke.sh` builds the locked canonical image and verifies
   Compose boot, non-root configuration, `/health/{live,ready,startup}`, and
-  SQLite creation. The CI job runs independently of the stale Rust 1.80 matrix.
+  SQLite creation. The CI job runs independently of the Rust 1.89 MSRV matrix.
 
 ## Completion gate for future status updates
 

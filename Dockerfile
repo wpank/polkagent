@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # Stage 1: Build with a toolchain compatible with the locked dependency graph.
-# The workspace's historical 1.80 MSRV declaration is tracked separately; the
-# current lock includes crates requiring Rust 1.89, so the image must not use
-# Cargo 1.80 and fail before compilation starts.
+# The workspace MSRV is 1.89. Release images use a deliberately pinned newer
+# compiler and also validate the exact MSRV independently in CI.
 FROM rust:1.91-bookworm AS builder
 WORKDIR /build
 COPY . .

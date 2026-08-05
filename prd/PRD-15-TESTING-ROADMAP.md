@@ -3323,7 +3323,7 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   SCCACHE_GHA_ENABLED: "true"
-  RUST_TOOLCHAIN_VERSION: "1.80.0"   # pinned; updated via rust-toolchain.toml
+  RUST_TOOLCHAIN_VERSION: "1.89.0"   # workspace MSRV; update deliberately
 
 jobs:
   build-and-test:
@@ -3332,7 +3332,7 @@ jobs:
       matrix:
         include:
           - rust: stable          # MSRV minimum check uses matrix variant below
-          - rust: "1.75.0"       # MSRV
+          - rust: "1.89.0"       # MSRV
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.5

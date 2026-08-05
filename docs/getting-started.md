@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust 1.80+ (MSRV)
+- Rust 1.89+ (MSRV)
 - Optional: Docker (for containerized deployment)
 
 ```mermaid
@@ -171,7 +171,7 @@ Set at least one provider API key environment variable (e.g., `export ANTHROPIC_
 Use the `--port` flag to choose a different port (`polkagent serve --port 9091`), or find and kill the existing process using that port.
 
 **Build errors** — compilation failures during `cargo install`
-Ensure Rust 1.80+ is installed. Run `rustup update` to get the latest toolchain, then verify with `rustc --version`.
+Ensure Rust 1.89+ is installed. Run `rustup update` to get the latest toolchain, then verify with `rustc --version`.
 
 **Database locked** — agent commands hang or return lock errors
 Increase `busy_timeout_ms` in your configuration, or ensure no other polkagent process is running against the same data directory.

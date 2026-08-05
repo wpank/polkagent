@@ -19,7 +19,7 @@ jobs:
         include:
           - toolchain: stable
             msrv: false
-          - toolchain: "1.80"
+          - toolchain: "1.89"
             msrv: true
     steps:
       - uses: actions/checkout@v4

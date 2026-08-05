@@ -7,7 +7,7 @@ covers the development setup, workflow, and conventions used in the project.
 
 ### Prerequisites
 
-- **Rust 1.80+** (the workspace MSRV). Install via [rustup](https://rustup.rs/).
+- **Rust 1.89+** (the workspace MSRV). Install via [rustup](https://rustup.rs/).
 - **SQLite 3** development headers (usually bundled; the `rusqlite` dependency
   uses the `bundled` feature).
 - **Git** for version control.

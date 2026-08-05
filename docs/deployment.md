@@ -65,9 +65,8 @@ It runs as the unprivileged `polkagent` user, writes SQLite state to
 for compatibility with existing build commands and has the same runtime
 contract. New deployments should use `Dockerfile`. Builds use Rust 1.91 and
 `cargo build --locked`; this is compatible with the current dependency lock.
-The older workspace-wide Rust 1.80 MSRV declaration is not validated by this
-container slice and currently conflicts with dependencies that require newer
-Rust.
+The workspace-wide Rust 1.89 MSRV is validated independently by the CI
+workspace matrix.
 
 ### Docker Compose
 

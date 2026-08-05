@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/nicovince/polkagent/actions/workflows/ci.yml/badge.svg)](https://github.com/nicovince/polkagent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.80+-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.89+-orange.svg)](https://www.rust-lang.org)
 [![Crates](https://img.shields.io/badge/crates-91-brightgreen)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/tests-7%2C400%2B-brightgreen)](#testing)
 [![Fuzz Targets](https://img.shields.io/badge/fuzz_targets-10-blue)](#testing)
