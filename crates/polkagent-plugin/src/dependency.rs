@@ -83,7 +83,7 @@ impl DependencyResolver {
         }
 
         // Topological sort with cycle detection (Kahn's algorithm).
-        self.topological_sort(manifests, &index)
+        Self::topological_sort(manifests, &index)
     }
 
     /// Check whether a specific version satisfies a version requirement
@@ -104,7 +104,6 @@ impl DependencyResolver {
     // -----------------------------------------------------------------------
 
     fn topological_sort(
-        &self,
         manifests: &[PluginManifest],
         index: &HashMap<&str, (&PluginManifest, PluginId)>,
     ) -> Result<Vec<PluginId>, PluginError> {
@@ -172,7 +171,7 @@ impl DependencyResolver {
         }
 
         debug!(
-            order = ?result.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+            order = ?result.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "resolved plugin order"
         );
 
@@ -188,7 +187,7 @@ impl DependencyResolver {
             let mut path = vec![start];
             let mut current = start;
 
-            for _ in 0..remaining.len() + 1 {
+            for _ in 0..=remaining.len() {
                 let manifest = manifests.iter().find(|m| m.plugin.name == current);
 
                 if let Some(m) = manifest {

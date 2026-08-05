@@ -136,13 +136,6 @@ impl CapabilitySet {
         }
     }
 
-    /// Create a capability set from an iterator of capabilities.
-    pub fn from_iter(iter: impl IntoIterator<Item = PluginCapability>) -> Self {
-        Self {
-            inner: iter.into_iter().collect(),
-        }
-    }
-
     /// Parse a set of capability strings (e.g. from a TOML manifest).
     ///
     /// # Errors
@@ -181,6 +174,7 @@ impl CapabilitySet {
     /// Return the intersection of two capability sets.
     ///
     /// The result contains only capabilities present in both sets.
+    #[must_use]
     pub fn intersection(&self, other: &Self) -> Self {
         Self {
             inner: self.inner.intersection(&other.inner).copied().collect(),
@@ -190,6 +184,7 @@ impl CapabilitySet {
     /// Return the union of two capability sets.
     ///
     /// The result contains all capabilities present in either set.
+    #[must_use]
     pub fn union(&self, other: &Self) -> Self {
         Self {
             inner: self.inner.union(&other.inner).copied().collect(),
@@ -213,13 +208,22 @@ impl CapabilitySet {
 
     /// Return the capabilities as a sorted vector of strings.
     pub fn to_strings(&self) -> Vec<String> {
-        self.inner.iter().map(|c| c.to_string()).collect()
+        self.inner.iter().map(ToString::to_string).collect()
     }
 
     /// Return capabilities in `self` that are missing from `other`.
+    #[must_use]
     pub fn difference(&self, other: &Self) -> Self {
         Self {
             inner: self.inner.difference(&other.inner).copied().collect(),
+        }
+    }
+}
+
+impl FromIterator<PluginCapability> for CapabilitySet {
+    fn from_iter<I: IntoIterator<Item = PluginCapability>>(iter: I) -> Self {
+        Self {
+            inner: iter.into_iter().collect(),
         }
     }
 }

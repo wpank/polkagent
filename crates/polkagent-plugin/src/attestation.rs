@@ -44,7 +44,6 @@ impl SlsaBuildLevel {
             0 => Self::None,
             1 => Self::L1,
             2 => Self::L2,
-            3 => Self::L3,
             _ => Self::L3,
         }
     }

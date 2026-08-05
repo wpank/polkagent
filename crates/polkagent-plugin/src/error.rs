@@ -12,7 +12,7 @@ use thiserror::Error;
 pub enum PluginError {
     /// A plugin manifest file could not be parsed as valid TOML or fails
     /// semantic validation (missing fields, invalid names, bad versions).
-    #[error("invalid plugin manifest{}: {reason}", skill_display(.plugin_name))]
+    #[error("invalid plugin manifest{}: {reason}", skill_display(.plugin_name.as_ref()))]
     ManifestInvalid {
         /// The plugin name (if available).
         plugin_name: Option<String>,
@@ -52,7 +52,7 @@ pub enum PluginError {
 
     /// A plugin could not be loaded from disk (I/O errors, missing files,
     /// corrupt data).
-    #[error("failed to load plugin{}: {reason}", path_display(.path))]
+    #[error("failed to load plugin{}: {reason}", path_display(.path.as_ref()))]
     LoadFailed {
         /// The filesystem path involved (if any).
         path: Option<PathBuf>,
@@ -139,7 +139,7 @@ pub enum PluginError {
 }
 
 /// Helper for optional plugin name display.
-fn skill_display(name: &Option<String>) -> String {
+fn skill_display(name: Option<&String>) -> String {
     match name {
         Some(n) => format!(" for '{n}'"),
         None => String::new(),
@@ -147,7 +147,7 @@ fn skill_display(name: &Option<String>) -> String {
 }
 
 /// Helper for optional path display.
-fn path_display(path: &Option<PathBuf>) -> String {
+fn path_display(path: Option<&PathBuf>) -> String {
     match path {
         Some(p) => format!(" at '{}'", p.display()),
         None => String::new(),
@@ -180,7 +180,7 @@ impl PluginError {
     }
 
     /// Construct a [`PluginError::LoadFailed`] from an I/O error.
-    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    pub fn io(path: impl Into<PathBuf>, source: &std::io::Error) -> Self {
         let path = path.into();
         Self::LoadFailed {
             path: Some(path),
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn io_error_display() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file gone");
-        let err = PluginError::io("/bad/path", io_err);
+        let err = PluginError::io("/bad/path", &io_err);
         let msg = err.to_string();
         assert!(msg.contains("/bad/path"));
         assert!(msg.contains("file gone"));

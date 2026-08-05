@@ -64,7 +64,7 @@ impl PluginLoader {
         debug!(path = %manifest_path.display(), "loading plugin manifest");
 
         let content = std::fs::read_to_string(&manifest_path)
-            .map_err(|e| PluginError::io(&manifest_path, e))?;
+            .map_err(|e| PluginError::io(&manifest_path, &e))?;
 
         Self::load_from_toml(&content)
     }

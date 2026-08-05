@@ -17,7 +17,7 @@
 //! | [`sandbox`] | [`PluginSandbox`] capability checker + [`WasmtimeSandbox`] WASM host-call gating. |
 //! | [`verification`] | [`PackageVerifier`] cosign v3 keyless signature verification. |
 //! | [`attestation`] | [`AttestationChecker`] SLSA Build L2 provenance attestation. |
-//! | [`lifecycle`] | [`PluginLifecycle`] trait with init/start/stop/health_check hooks. |
+//! | [`lifecycle`] | [`PluginLifecycle`] trait with `init`/`start`/`stop`/`health_check` hooks. |
 //! | [`dependency`] | [`DependencyResolver`] for topological sort and version compat checks. |
 //! | [`error`] | [`PluginError`] enum covering all failure modes. |
 //!
@@ -178,16 +178,17 @@ impl PluginManager {
         let order = self.resolver.resolve(&manifests)?;
 
         // Register and sandbox each plugin.
-        for manifest in &manifests {
+        for manifest in manifests {
             let caps = manifest.required_capabilities()?;
-            self.registry.register(manifest.clone());
-            self.sandbox.grant(&manifest.plugin.name, caps.clone());
+            let plugin_name = manifest.plugin.name.clone();
+            let tier = manifest.sandbox_tier();
+            self.registry.register(manifest);
+            self.sandbox.grant(&plugin_name, caps.clone());
 
             // Set up Wasmtime sandbox for WASM-tier plugins.
-            let tier = manifest.sandbox_tier();
             if tier == SandboxTier::Wasm {
                 let config = SandboxConfig::new(tier, caps);
-                self.wasm_sandbox.register(&manifest.plugin.name, config);
+                self.wasm_sandbox.register(plugin_name, config);
             }
         }
 

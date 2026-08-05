@@ -265,39 +265,36 @@ impl WasmtimeSandbox {
         required_capability: PluginCapability,
     ) -> Result<(), PluginError> {
         let configs = self.configs.read();
-        match configs.get(plugin_name) {
-            Some(config) => {
-                if config.granted_capabilities.contains(required_capability) {
-                    debug!(
-                        plugin = %plugin_name,
-                        capability = %required_capability,
-                        "host call allowed"
-                    );
-                    Ok(())
-                } else {
-                    warn!(
-                        plugin = %plugin_name,
-                        capability = %required_capability,
-                        "host call denied: capability not granted"
-                    );
-                    Err(PluginError::SandboxDenied {
-                        plugin_name: plugin_name.to_string(),
-                        operation: format!(
-                            "host call requiring {required_capability} is not in granted capabilities"
-                        ),
-                    })
-                }
-            }
-            None => {
+        if let Some(config) = configs.get(plugin_name) {
+            if config.granted_capabilities.contains(required_capability) {
+                debug!(
+                    plugin = %plugin_name,
+                    capability = %required_capability,
+                    "host call allowed"
+                );
+                Ok(())
+            } else {
                 warn!(
                     plugin = %plugin_name,
-                    "host call denied: plugin not registered in sandbox"
+                    capability = %required_capability,
+                    "host call denied: capability not granted"
                 );
                 Err(PluginError::SandboxDenied {
                     plugin_name: plugin_name.to_string(),
-                    operation: "plugin not registered in wasmtime sandbox".to_string(),
+                    operation: format!(
+                        "host call requiring {required_capability} is not in granted capabilities"
+                    ),
                 })
             }
+        } else {
+            warn!(
+                plugin = %plugin_name,
+                "host call denied: plugin not registered in sandbox"
+            );
+            Err(PluginError::SandboxDenied {
+                plugin_name: plugin_name.to_string(),
+                operation: "plugin not registered in wasmtime sandbox".to_string(),
+            })
         }
     }
 
