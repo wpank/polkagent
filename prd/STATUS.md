@@ -43,7 +43,7 @@ startup still has a wiring gap.
 | PCA compatibility | Crypto/queue/sync building blocks exist | Not a real network integration | Current transport E2E manually shuttles messages in process. |
 | Security | Grants, tests, redaction, signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, and unused policy runtime. |
 | Payments | Intent/store/budget components exist | Not value-moving | Store/runtime integration, real signature/settlement, and failure reconciliation remain. |
-| Marketplace/plugins | Local/in-memory components exist | Not an install/run ecosystem | No canonical package lifecycle, durable registry, actual WASM sandbox execution, or trust pipeline. |
+| Marketplace/plugins | Durable local plugin/kit lifecycle plus listing components | Install/update/rollback/uninstall library exists; no user surface or execution | Manifest/lock format remains split; no CLI/API runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
 | Deployment/cloud | Docker/cloud/Postgres artifacts exist | Not operationally proven | Current container command/port drift; no deployment smoke, HA, or production control/worker path. |
 
 ## PRD implementation posture
@@ -61,7 +61,7 @@ startup still has a wiring gap.
 | 09 Memory/groups/evals | Strong components | Mostly missing | No orchestration proof | Active P1 |
 | 10 Observability | Strong components | Partial | No recovery/replay proof | Active P1 |
 | 11 Deployment/cloud | Scaffolding/components | Missing/broken smoke path | No | Active P2 |
-| 12 Marketplace/extensions | Scaffolding/components | Missing | No | Active P2 |
+| 12 Marketplace/extensions | Durable local lifecycle/components | Library only; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | CLI/TUI exist | Partial | Interactive experience missing | Active P0/P1 + PRD-19 |
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
 | 15 Testing | Broad green suite | Production paths under-tested | Live/client/ops gates missing | Active cross-cutting |
@@ -78,6 +78,10 @@ startup still has a wiring gap.
 - `crates/polkagent-run/src/orchestrator.rs` sends an empty tool list and does
   not drive the configured effect pipeline/grant resolver through real tool
   calls and approvals.
+- `crates/polkagent-marketplace/src/local.rs` now persists immutable plugin/kit
+  versions and restart-safe selection/history with integrity checks. It
+  explicitly records signature bundles as unverified claims because no
+  cryptographic verifier or runtime sandbox is connected yet.
 - `crates/polkagent-cli/src/tui/app.rs` owns a database pool and polls it; it
   does not own the application/interaction runtime or a live event receiver.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent

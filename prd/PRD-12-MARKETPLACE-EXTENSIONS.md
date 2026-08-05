@@ -8,8 +8,8 @@
 
 **Status:** definitive PRD
 **Owner:** unassigned
-**Last updated:** 2026-07-30
-**Implementation status:** design direction; no production implementation exists
+**Last updated:** 2026-08-05
+**Implementation status:** partial local lifecycle library; no CLI/runtime execution, cryptographic trust verification, public registry, or commercial path
 **Depends on:** PRD-02 (Vocabulary/Architecture), PRD-03 (Execution Model), PRD-04 (Providers/Tools/Skills), PRD-07 (Identity/Security), PRD-08 (Payments), PRD-11 (Cloud/Self-Hosting)
 **Depended on by:** PRD-13 (UX), PRD-15 (Testing/Assurance)
 
