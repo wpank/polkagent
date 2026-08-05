@@ -90,14 +90,15 @@ pub fn decode_ss58(address: &str) -> Result<(u16, [u8; 32]), IdentityError> {
 ///   remaining bits.
 fn encode_prefix(prefix: u16) -> Vec<u8> {
     if prefix < 64 {
-        vec![prefix as u8]
+        vec![prefix.to_le_bytes()[0]]
     } else {
         // Two-byte encoding per SS58 spec:
         // first  = ((prefix & 0b0000_0000_1111_1100) >> 2) | 0b0100_0000
         // second = (prefix >> 8) | ((prefix & 0b0000_0000_0000_0011) << 6)
-        let first = ((prefix & 0xFC) >> 2) | 0x40;
-        let second = (prefix >> 8) | ((prefix & 0x03) << 6);
-        vec![first as u8, second as u8]
+        let [low, high] = prefix.to_le_bytes();
+        let first = ((low & 0xFC) >> 2) | 0x40;
+        let second = high | ((low & 0x03) << 6);
+        vec![first, second]
     }
 }
 
@@ -144,6 +145,12 @@ fn compute_checksum(prefix_bytes: &[u8], account: &[u8; 32]) -> [u8; 2] {
 }
 
 #[cfg(test)]
+// Round-trip fixtures use expect to make an unexpected codec rejection fail
+// at the operation under test with a direct diagnostic.
+#[allow(
+    clippy::expect_used,
+    reason = "unit-test codec assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

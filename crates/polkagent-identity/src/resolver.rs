@@ -377,7 +377,7 @@ impl<R> fmt::Debug for CachedIdentityResolver<R> {
             .field("ttl", &self.ttl)
             .field("identity_cache_len", &self.identity_cache_len())
             .field("sub_cache_len", &self.sub_cache_len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -451,6 +451,12 @@ impl<T: IdentityResolver> IdentityResolver for Arc<T> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Resolver tests use expect to assert successful fixture resolution; the
+// messages identify which asynchronous contract failed.
+#[allow(
+    clippy::expect_used,
+    reason = "unit-test resolver assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 

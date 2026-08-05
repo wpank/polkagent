@@ -167,6 +167,12 @@ impl MockDidVerifier {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// DID fixtures use expect to assert serialization round trips; each message
+// identifies the failed boundary.
+#[allow(
+    clippy::expect_used,
+    reason = "unit-test DID assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

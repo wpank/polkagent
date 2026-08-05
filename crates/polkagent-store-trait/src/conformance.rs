@@ -25,6 +25,13 @@
 //!
 //! This keeps the conformance module free of adapter-specific setup details.
 
+// Conformance helpers are assertion functions: a failed prerequisite should
+// stop immediately with the operation-specific message supplied at each site.
+#![allow(
+    clippy::expect_used,
+    reason = "conformance assertions intentionally panic with operation-specific diagnostics"
+)]
+
 use std::time::Duration;
 
 use chrono::Utc;
@@ -511,7 +518,7 @@ pub async fn test_event_store_duplicate_terminal_rejected(store: &dyn EventStore
     );
 }
 
-/// Conformance: `read_from_cursor()` returns events with global_sequence > cursor.
+/// Conformance: `read_from_cursor()` returns events with `global_sequence` > cursor.
 pub async fn test_event_store_cursor_pagination(store: &dyn EventStore) {
     let run_id = uuid::Uuid::now_v7().to_string();
 
@@ -715,21 +722,21 @@ pub async fn test_artifact_store_list_for_run(store: &dyn ArtifactStore) {
     let run_a = RunId::new();
     let run_b = RunId::new();
 
-    let id_a1 = ArtifactId::new();
-    let id_a2 = ArtifactId::new();
-    let id_b1 = ArtifactId::new();
+    let run_a_artifact_one_id = ArtifactId::new();
+    let run_a_artifact_two_id = ArtifactId::new();
+    let run_b_artifact_id = ArtifactId::new();
 
-    let digest_a1 = format!("{:064x}", 0xaaaa_u64);
-    let digest_a2 = format!("{:064x}", 0xbbbb_u64);
-    let digest_b1 = format!("{:064x}", 0xcccc_u64);
+    let run_a_digest_one = format!("{:064x}", 0xaaaa_u64);
+    let run_a_digest_two = format!("{:064x}", 0xbbbb_u64);
+    let run_b_digest = format!("{:064x}", 0xcccc_u64);
 
     store
         .store(
-            id_a1,
+            run_a_artifact_one_id,
             Some(run_a),
             "test",
             "blake3",
-            &digest_a1,
+            &run_a_digest_one,
             "public",
             b"body-a1",
         )
@@ -737,11 +744,11 @@ pub async fn test_artifact_store_list_for_run(store: &dyn ArtifactStore) {
         .expect("store a1");
     store
         .store(
-            id_a2,
+            run_a_artifact_two_id,
             Some(run_a),
             "test",
             "blake3",
-            &digest_a2,
+            &run_a_digest_two,
             "public",
             b"body-a2",
         )
@@ -749,11 +756,11 @@ pub async fn test_artifact_store_list_for_run(store: &dyn ArtifactStore) {
         .expect("store a2");
     store
         .store(
-            id_b1,
+            run_b_artifact_id,
             Some(run_b),
             "test",
             "blake3",
-            &digest_b1,
+            &run_b_digest,
             "public",
             b"body-b1",
         )

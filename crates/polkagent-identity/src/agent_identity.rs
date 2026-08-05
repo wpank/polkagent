@@ -138,6 +138,12 @@ impl AgentCard {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Identity fixtures use expect to assert cryptographic and serialization
+// round trips; each message identifies the failed boundary.
+#[allow(
+    clippy::expect_used,
+    reason = "unit-test identity assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};
     use polkagent_core::AgentId;
@@ -146,7 +152,7 @@ mod tests {
     use super::*;
     use crate::types::{AccountId32, NetworkId};
 
-    /// Helper: create a card, sign it, return (card, signature_bytes, public_key_bytes).
+    /// Helper: create a card, sign it, return (`card`, `signature_bytes`, `public_key_bytes`).
     fn sign_card(card: &AgentCard) -> (Vec<u8>, [u8; 32]) {
         let signing_key = SigningKey::generate(&mut OsRng);
         let payload = card.to_bytes();

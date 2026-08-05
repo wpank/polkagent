@@ -236,7 +236,14 @@ impl ChainAccount {
 
 /// Encode bytes as a lowercase hex string (no `0x` prefix).
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(LOWER_HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(LOWER_HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +251,12 @@ fn hex_encode(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Round-trip fixtures use expect to make malformed output fail at the exact
+// encode/decode boundary with a direct diagnostic.
+#[allow(
+    clippy::expect_used,
+    reason = "unit-test round-trip assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

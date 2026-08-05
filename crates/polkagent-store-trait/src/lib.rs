@@ -2,7 +2,7 @@
 //!
 //! This crate defines the hexagonal architecture storage port boundaries.
 //! Each trait represents a distinct persistence contract. Implementations
-//! (SQLite, Postgres, in-memory) live in separate adapter crates.
+//! (`SQLite`, Postgres, in-memory) live in separate adapter crates.
 //!
 //! # Traits
 //!
@@ -241,7 +241,7 @@ pub struct ArtifactSummary {
 
 /// Durable storage for the effect pipeline.
 ///
-/// All write paths open their transactions with `BEGIN IMMEDIATE` (SQLite) or
+/// All write paths open their transactions with `BEGIN IMMEDIATE` (`SQLite`) or
 /// `SELECT ... FOR UPDATE` (Postgres) to serialise concurrent writers. The
 /// single-writer Tokio task pattern described in PRD-03 §13.4 reinforces this
 /// at the application layer.
@@ -448,6 +448,12 @@ pub trait RunStore: Send + Sync + 'static {
     ///
     /// Returns [`StoreError::Conflict`] if a turn with the same `turn_id`
     /// already exists.
+    // The persistence port mirrors the normalized turn schema so adapters do
+    // not need an intermediate allocation solely to cross this boundary.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "stable storage-port method maps one-to-one to the persisted turn schema"
+    )]
     async fn insert_turn(
         &self,
         turn_id: TurnId,
@@ -508,6 +514,12 @@ pub trait ArtifactStore: Send + Sync + 'static {
     ///
     /// Idempotent: a second call with the same `artifact_id` and matching
     /// digest must succeed silently.
+    // The persistence port exposes all content-addressing metadata alongside
+    // the body so implementations can validate the record atomically.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "stable storage-port method maps one-to-one to the persisted artifact schema"
+    )]
     async fn store(
         &self,
         artifact_id: ArtifactId,
@@ -571,6 +583,12 @@ pub trait ArtifactStore: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Serialization assertions should stop at the exact fixture invariant that
+// failed; each expect message identifies that boundary.
+#[allow(
+    clippy::expect_used,
+    reason = "unit-test serialization assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 
