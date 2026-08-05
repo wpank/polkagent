@@ -163,7 +163,9 @@ and exactly one terminal event. The runtime now composes a durable headless
 service for create/list/load/archive, target config, prompt, cancel, and
 subscribe with atomic transcripts, prepared-run causality, idempotent retry,
 lag backfill, paged turn-correlated transcript projection, and restart recovery.
-TUI, terminal chat, and HTTP consume it; ACP does not. Model-executor
+TUI, terminal chat, HTTP, and ACP consume it. ACP maps its protocol session ID
+exactly to the durable conversation UUID and uses the same prompt, cancel,
+target/model configuration, event, and load/resume lifecycle. Model-executor
 interactions receive bounded typed prior context; approval/tool projection and
 execution-scoped provider/harness/autonomy/max-turn/budget config remain, so
 this checkpoint is not FND-02 completion.
@@ -214,9 +216,10 @@ this checkpoint is not FND-02 completion.
   `/deny`, and `/model` against shared service/runtime ports.
 - [ ] Wire the shared command executor through every applicable surface.
   Terminal chat executes help/status/cancel/new/resume/model; the TUI executes
-  help/status/new/resume/model with structured results; ACP uses the registry for a
-  truthful ephemeral subset; HTTP exposes typed resource operations rather
-  than slash text. Broader cross-surface parity remains open.
+  help/status/new/resume/model with structured results; ACP executes a truthful
+  durable help/status/agents/agent/model/cancel subset; HTTP exposes typed
+  resource operations rather than slash text. Broader cross-surface parity
+  remains open.
 
 **Exit checks:** current headless tests create, contextually prompt, stream,
 retry, cancel, restart, load, and replay without CLI, Ratatui, Axum, or ACP
@@ -417,15 +420,23 @@ the stable execution event path; can run fully parallel to ACP-01.
   JSON-RPC frames only.
 - [x] Implement the bounded initialize/new/prompt/cancel lifecycle, agent-message
   updates, terminal/cancel stop reasons, and unknown/busy-session errors.
-- [ ] Add durable session list/load/import/resume and restart recovery.
+- [x] Map ACP session IDs exactly to durable conversation UUIDs and add
+  new/load/resume plus restart recovery through `InteractionService`.
+- [ ] Add session list/import when the pinned SDK and surface expose those
+  operations; neither is currently advertised.
 - [x] Advertise and handle `/help`, `/status`, `/agents`, and `/agent` through
   `available_commands_update`.
 - [x] Move ACP discovery/parsing/help/aliases onto the shared command registry,
-  including real current-prompt `/cancel`/`/stop`; registered durable commands
-  are refused explicitly when the ephemeral ACP backend cannot execute them.
+  including real current-prompt `/cancel`/`/stop`; registered commands outside
+  the adapter's durable subset are refused explicitly.
 - [x] Add native ACP configuration for active-agent and standard model
-  selection, backed by the same session state as `/agent` and `/model`; prove
-  concurrent sessions retain their chosen agent/model at the real run boundary.
+  selection, backed by the same durable interaction config as `/agent` and
+  `/model`; prove restart persistence and that concurrent sessions retain their
+  chosen agent/model at the real run boundary without shared-spec mutation.
+- [x] Map typed text/lifecycle/usage/checkpoint events through the durable
+  interaction stream, including exact terminal reconciliation and lag replay.
+- [ ] Map structured tool/approval/plan events once the runtime produces them
+  with stable effect identities.
 - [ ] Add durable command-executor routing plus truthful provider, target, and
   autonomy configuration after those settings can be isolated per execution.
 - [x] Validate absolute cwd and reject unsupported MCP servers/additional roots
@@ -438,6 +449,9 @@ the stable execution event path; can run fully parallel to ACP-01.
 - [x] Add an official-client cancellation/stop-reason test covering
   cancellation during an active provider request and the durable terminal run
   state/timestamp.
+- [x] Add an official-client new/prompt/same-turn-retry/restart/load/follow-up/
+  resume fixture proving exact conversation/turn/run IDs, persisted model
+  config, replay-on-load, no replay-on-resume, and no duplicate retry run.
 - [x] Prove successful-session stdout purity and fail-closed missing-explicit-
   config startup with empty stdout, a stderr diagnostic, and exit code 4.
 - [x] Prove provider/backend error redaction, backend panic containment,

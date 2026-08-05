@@ -9,12 +9,14 @@ server slices implemented
 **Scope:** current Polkagent checkout at `/Users/will/dev/par/polkagent`, compared with Roko at `/Users/will/dev/nunchi/roko/roko` and the current ACP v1/Zed documentation
 
 **Implementation status:** `polkagent-surface-acp` and protocol-safe
-`polkagent acp` dispatch implement an ACP v1 initialize/new/prompt/cancel slice,
-slash-command discovery, native session agent/model selection, and
-`AppService`-backed prompts. An
+`polkagent acp` dispatch implement an ACP v1 initialize/new/load/resume/prompt/
+cancel slice over the durable `InteractionService`, slash-command discovery,
+and persisted session agent/model selection. An
 official-SDK subprocess suite proves prompt/run, shared-registry command
 discovery, truthful refusal, active-request cancellation, durable terminal
-state, secret/panic containment, and protocol-stdout safety on that wire path.
+state, exact conversation/turn/run identity, same-turn retry without
+duplication, restart/load/follow-up/resume, secret/panic containment, and
+protocol-stdout safety on that wire path.
 The F9 Console supports selecting an active agent, Unicode-safe multiline
 editing, registry-derived slash discovery/completion, durable prompts and
 follow-ups through `InteractionService`, typed output/progress/usage,
@@ -25,8 +27,10 @@ help/status/cancel/new/resume handlers, checkpoint resubscribe, and SIGINT
   cancellation. The TUI now executes the truthful help/status/new/resume/model subset
 through the same registry and service executor, renders structured results, and
 switches/reloads exact durable conversations without creating model turns. ACP
-remains the other bounded adapter: durable editor
-sessions, structured tools/permissions, and manual Zed validation remain open.
+now maps its session ID exactly to the durable conversation UUID and uses the
+same prompt, cancel, config, replay, and restart lifecycle. Session list/import,
+structured tools/permissions, cwd provenance, and manual Zed validation remain
+open.
 
 FND-02 now includes shared IDs/config/requests/handles, structured events and
 projections, the service/store traits, a bounded durable/live replay hub, typed
@@ -39,7 +43,7 @@ and paginated restart recovery have headless tests. Only target configuration
 and execution-scoped model selection are executable today. Model precedence is
 prompt override, persisted interaction, then agent default; validation happens
 before activation and changes only the cloned prepared-run spec. TUI, terminal
-chat, and HTTP bind the service; ACP does not. Model-executor prompts include
+chat, HTTP, and ACP bind the service. Model-executor prompts include
 bounded typed prior completed turns; string-only harness history fails role-
 safely. Approval/tool projection and provider/harness/autonomy/max-turn/budget
 overrides remain open, so the full headless exit criterion is not closed.
@@ -100,9 +104,10 @@ Polkagent has a substantial monitoring TUI, a runnable one-shot `polkagent
 run`, an in-process execution service, streaming run events, conversation
 storage, an ACP **client** used to drive other coding agents, and a separate
 bounded ACP **agent server** for editors. These are valuable building blocks.
-The TUI, terminal chat, and HTTP API now use the durable `InteractionService`
-prompt/transcript lifecycle. ACP shares the production runtime composition but
-still owns an ephemeral editor session and starts runs directly.
+The TUI, terminal chat, HTTP API, and ACP now use the durable
+`InteractionService` prompt/transcript lifecycle. ACP restores exact sessions
+through load/resume after process restart rather than owning a parallel run
+bootstrap path.
 
 The delivered slices establish two distinct product surfaces that still need
 to be completed:
@@ -137,11 +142,11 @@ It remains design input rather than the completion contract.
 | Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/new`, `/resume`, and `/model` use the shared command executor, render structured results, and never become model turns; unavailable capabilities fail explicitly |
 | Approve/deny in the TUI | Partial and unsafe architecturally | It writes outcome rows directly through `TuiDb`, bypassing `AppService` |
 | See live run output in the TUI | Implemented for typed single-agent events | Controller projects bounded interaction events and resubscribes from a durable checkpoint after lag; structured tool/approval production remains absent |
-| Persist/resume human conversations | Implemented in TUI, chat, and HTTP; absent in ACP | TUI reloads/switches durable sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, and completed pairs feed the next model-executor call |
+| Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
 | Use Polkagent *from* Zed | Protocol slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK and an executable client fixture; rich editor acceptance is still open |
-| ACP slash commands/config selectors | Shared-registry subset plus native agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/model`, and current-prompt `/cancel` plus aliases are registry-derived; native selectors share that process-local session state, while durable commands and provider/target/autonomy settings remain unavailable |
+| ACP slash commands/config selectors | Durable shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/model`, and current-prompt `/cancel` plus aliases are registry-derived; native selectors write the same durable interaction config, while provider/autonomy settings remain unavailable |
 | REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, and checkpointed SSE use the exact runtime service; unsupported config tags fail without partial mutation or work creation, while 15 optional skill/memory/audit/registry routes remain unavailable |
 
 ## 1. What Polkagent actually has today
@@ -222,8 +227,9 @@ entry point.
 The TUI and terminal chat now retain one `PolkagentRuntime` and use its exact
 `InteractionService`; `serve` injects that same runtime-owned service into the
 versioned HTTP interaction routes. ACP also retains one factory-built runtime
-and proves abandoned-run recovery through its official-client subprocess
-fixture, but its editor sessions still call `AppService::start_run` directly.
+and routes exact durable editor sessions through its interaction service;
+official-client fixtures prove abandoned-run recovery and prompt/retry/load/
+follow-up/resume across process restart.
 
 ### 1.4 Useful session and streaming primitives exist but are incomplete
 
@@ -509,7 +515,8 @@ From Zed, a user should be able to:
 - see streamed text, tool calls, plans, usage, and approvals;
 - cancel a turn;
 - invoke useful slash commands;
-- load/import and resume previous sessions;
+- load and resume previous sessions, with list/import added when the protocol
+  surface supports them;
 - receive clear configuration/provider readiness errors in the thread.
 
 ## 5. Shared architecture
@@ -855,12 +862,14 @@ polling.
 - capability negotiation;
 - stdio transport startup with protocol-only stdout and stderr diagnostics.
 
-Remaining work is durable `InteractionService` mapping, structured events and
-permissions, durable session persistence/import, and provider/target/autonomy
-configuration. Native active-agent/model options and opt-in protocol-safe file
-diagnostics are implemented. It may depend on `polkagent-service`, the new
-interaction/command crate, and ACP SDK. Core/service crates must not depend on
-ACP types.
+Durable `InteractionService` mapping, exact session IDs, prompt/cancel,
+load/resume, typed text/lifecycle/usage/checkpoint events, and persisted native
+active-agent/model options are implemented. Remaining work is session
+list/import, structured tool/plan/permission events, original-cwd persistence
+and comparison, MCP/client capabilities, provider/autonomy configuration, and
+manual Zed evidence. Opt-in protocol-safe file diagnostics are implemented. It
+may depend on `polkagent-service`, the interaction/command crate, and ACP SDK.
+Core/service crates must not depend on ACP types.
 
 ### 7.2 CLI boot safety
 
@@ -1029,7 +1038,7 @@ available for inspection.
 - [x] Define the typed MVP command registry/parser and structured output contracts.
 - [x] Implement all MVP command handlers against shared service/runtime ports.
 - [ ] Wire the full handler set through terminal/TUI/API/ACP; ACP currently
-  exposes the truthful subset supported by its ephemeral session backend.
+  executes a truthful durable help/status/agents/agent/model/cancel subset.
 - [x] Add cancellation, caller-ID retry, transcript causality, lag/replay,
   multi-page, and restart/pre-activation crash service tests.
 - [ ] Carry real effect approval identity through service approve/deny and add
@@ -1112,15 +1121,19 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [x] Add official ACP Rust SDK and `polkagent-surface-acp` crate.
 - [x] Add protocol-safe early `polkagent acp` dispatch.
 - [x] Implement the bounded initialize/new/prompt/cancel slice.
-- [ ] Implement durable session list/load/import/resume for thread import and
-  restart recovery.
-- [ ] Map shared `InteractionEvent` envelopes to ACP session updates; the
-  current direct `AppService` event mapping is only the bounded one-run slice.
+- [x] Map ACP session IDs exactly to durable conversation UUIDs and implement
+  new/load/resume plus restart recovery through `InteractionService`.
+- [ ] Implement session list/import if supported by a future SDK/surface; the
+  pinned stable ACP v1 SDK exposes neither import nor Polkagent session list.
+- [x] Map shared text/lifecycle/usage/checkpoint `InteractionEvent` envelopes
+  to ACP session updates with lag replay and exact terminal reconciliation.
+- [ ] Map structured tool/approval/plan events once the runtime produces them
+  with stable effect identities.
 - [x] Advertise the initial MVP slash commands.
 - [x] Move discovery/parsing/help/aliases onto the shared registry and execute
-  the truthful ephemeral subset, including current-prompt cancellation.
+  the truthful durable subset, including current-prompt cancellation.
 - [x] Expose native active-agent/model config options and route `/agent` and
-  `/model` through the same process-local session state.
+  `/model` through the same persisted interaction configuration.
 - [ ] Expose target/autonomy/provider options only after execution-scoped
   semantics can be guaranteed.
 - [ ] Implement tool permission round-trip.
@@ -1128,6 +1141,9 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [x] Add an official-SDK subprocess protocol fixture.
 - [x] Add official-client active-run cancellation/stop-reason coverage and
   verify the reason-bearing durable terminal run state/timestamp.
+- [x] Add official-client new/prompt/same-turn-retry/restart/load/follow-up/
+  resume coverage proving exact conversation/turn/run identities, persisted
+  model config, replay-on-load, no replay-on-resume, and no duplicate retry run.
 - [x] Reuse one `RuntimeFactory` composition and prove abandoned-run recovery
   through an official-client restart fixture.
 - [x] Prove successful-session stdout purity and missing-explicit-config
@@ -1216,10 +1232,10 @@ Zed, not merely a single-agent chat wrapper.
 ### Risks
 
 - **Runtime duplication:** one-shot run, TUI, chat, ACP, and `serve` share the
-  production factory. TUI/chat/HTTP consume the headless interaction service;
-  ACP and the central tool/effect/policy loop still bypass it.
-- **Event loss:** TUI/chat/HTTP use durable interaction replay; ACP text/tool
-  updates remain process-local and structured tool production is incomplete.
+  production factory; TUI/chat/HTTP/ACP consume the headless interaction
+  service. The central tool/effect/policy loop remains incomplete.
+- **Event loss:** TUI/chat/HTTP/ACP use durable interaction replay; structured
+  tool/approval production and projection remain incomplete.
 - **Protocol drift:** ACP v2 is draft. Pin the official SDK, test v1, and isolate
   conversions in the adapter.
 - **SQLite concurrency:** Zed may spawn processes while TUI/API is open. Enable
@@ -1309,8 +1325,9 @@ External primary references:
 ## Final recommendation
 
 The terminal, TUI, HTTP, and ACP slices are shipped and intentionally bounded.
-`RuntimeFactory` plus the single-agent, model-selectable durable interaction/store/event/command
-service now exist. One-shot run, TUI, chat, ACP, and `serve` share that runtime;
-TUI/chat/HTTP also share the durable interaction lifecycle. Next migrate ACP,
-define role-safe harness history, expand truthful command coverage, and connect
-real tools/permissions before multi-agent orchestration.
+`RuntimeFactory` plus the single-agent, model-selectable durable interaction/
+store/event/command service now exist. One-shot run, TUI, chat, ACP, and `serve`
+share that runtime; TUI/chat/HTTP/ACP share the durable interaction lifecycle.
+Next connect real tools/permissions and approvals, complete manual Zed and
+cross-surface evidence, define role-safe harness history, and expand truthful
+command coverage before multi-agent orchestration.

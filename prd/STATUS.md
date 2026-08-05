@@ -85,11 +85,11 @@ dialect errors and 22 remaining style warnings.
 | REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool discovery, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, strict persisted target/model configuration, finite replay, and checkpointed SSE survive restart and match tested OpenAPI schemas; 15 optional skill/memory/audit/registry routes, two separately documented WebSocket transports, full shutdown, and cross-surface E2E remain. |
 | Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable single-agent, model-selectable line-mode session | Interactive/non-TTY prompt, multiline input, contextual model-executor follow-up, transcript resume, persisted conversation-scoped `/model`, lag replay, and SIGINT cancellation work; agent/provider/harness/autonomy changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
-| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio slice with shared-registry discovery, native agent/model selectors, and executable subprocess coverage | Executable protocol slice; editor interoperability and UX unverified | No durable list/load/import or shared conversations; provider/target/autonomy selectors, structured tools/permissions, MCP passthrough, and Zed tool/approval/restart smoke remain. |
+| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio adapter over the durable interaction service, with stable conversation IDs, new/load/resume, shared-registry commands, and persisted agent/model selectors | Restart-resumable protocol slice; editor interoperability and rich UX unverified | Session list/import are unsupported by the pinned SDK/surface; provider/autonomy selectors, structured tools/permissions, MCP passthrough, cwd-provenance checks, and manual Zed tool/approval/restart smoke remain. |
 | Providers/harnesses | Many adapters exist | Partially composed | Each adapter needs shared-runtime conformance and real failure/readiness evidence. |
 | Tools/skills | Registries and handlers exist | Not actionable in normal run loop | Orchestrator sends no tool schemas and synthesizes tool success instead of executing. |
 | Effects/approvals/policy | Strong domain libraries | Incomplete execution path | Effect pipeline and grant resolver are not used by the central orchestrator. |
-| Conversations/memory | `InteractionService` atomically persists user/assistant transcript, turn/run correlation, terminal state, replay, and bounded typed model context | Headless service, TUI, terminal chat, and HTTP API consume the durable lifecycle | ACP still uses an ephemeral session path; string-only harness history fails explicitly, approvals are unavailable, and general memory is not assembled into normal context. |
+| Conversations/memory | `InteractionService` atomically persists user/assistant transcript, turn/run correlation, terminal state, replay, and bounded typed model context | Headless service, TUI, terminal chat, HTTP API, and ACP consume the durable lifecycle | Cross-surface same-interaction conformance remains; string-only harness history fails explicitly, approvals are unavailable, and general memory is not assembled into normal context. |
 | Groups/feeds/evals | Significant libraries/tests | Mostly unsurfaced | No production caller creates durable child runs or evaluates the real composed runtime. |
 | Polkadot reads | RPC/metadata/codec components exist | Partially usable | Pinned live metadata and network behavior need real-path validation. |
 | Polkadot writes | Effect/signing/finality components exist | Not end-to-end proven | Real signer, exact bytes, transaction matching, finality, dry-run/XCM, and local-chain tests remain. |
@@ -119,7 +119,7 @@ dialect errors and 22 remaining style warnings.
 | 14 API/config | Shared-runtime durable core, interaction routes, and broad control-plane routes | Agent/run/artifact/tool/interaction reads and mutations plus checkpointed interaction SSE are composed; 15 optional skill/memory/audit/registry routes remain explicitly unavailable | HTTP interaction retry/cancel/replay/live reconnect/restart/auth/read-only proof, zero-drift ordinary HTTP parity, and an OpenAPI 3.1-valid schema exist; two WebSocket frame protocols are separately documented | Active P0/P1 |
 | 15 Testing | Broad passing check/test/rustdoc suite; mandatory and extended Clippy gates are locally green | Production paths remain under-tested | Hosted CI confirmation plus live/client/ops gates missing | Active cross-cutting |
 | 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
-| 19 Interactive/ACP | ACP server, durable terminal chat/TUI, shared runtime, headless interaction service, HTTP adapter, and command handlers implemented | TUI, chat, and API consume `InteractionService`; ACP reuses the runtime but still owns an ephemeral run/session mapping | Headless and surface tests prove transcript/correlation, typed contextual model-executor follow-up, retry/cancel/replay/restart; harness context, approvals/tools, full Zed, and cross-surface conformance remain | Active P0/P1 |
+| 19 Interactive/ACP | ACP server, durable terminal chat/TUI, shared runtime, headless interaction service, HTTP adapter, and command handlers implemented | TUI, chat, API, and ACP consume `InteractionService`; ACP maps its session ID exactly to the durable conversation UUID | Headless and surface tests prove transcript/correlation, typed contextual model-executor follow-up, retry/cancel/replay/restart/load/resume; harness context, approvals/tools, session list/import, full Zed, and cross-surface conformance remain | Active P0/P1 |
 
 ## Decisive implementation evidence
 
@@ -236,33 +236,37 @@ dialect errors and 22 remaining style warnings.
   prior records and appends the current user exactly once; failed/cancelled/
   timed-out partial pairs are excluded. String-only harness history fails with
   a typed unsupported error and a durable failed linked turn/run rather than
-  flattening roles. TUI, terminal chat, and HTTP bind to this service; ACP
-  migration remains open.
+  flattening roles. TUI, terminal chat, HTTP, and ACP bind to this service.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent
   harnesses, not a Polkagent ACP agent server.
 - `crates/polkagent-surface-acp` is the separate server-side adapter. The
   `acp_stdio_e2e` tests use the official Rust client to launch `polkagent acp`,
-  negotiate ACP v1, discover commands, execute `/help`, complete a real
-  `AppService` run, and cancel one while a provider request is active. They
-  assert `Cancelled`, the reason-bearing durable terminal run state/timestamp,
+  negotiate ACP v1, discover commands, execute `/help`, complete a durable
+  interaction turn, and cancel one while a provider request is active. The
+  adapter maps each ACP session ID exactly to its conversation UUID and routes
+  new/load/resume, prompt, cancel, agent selection, and model selection through
+  `InteractionService`. An official-client restart fixture proves persisted
+  transcript/config restoration, exact turn/run identities, same-turn retry
+  without duplication, transcript replay on load, no replay on resume, and a
+  successful follow-up after process replacement. It also asserts
+  `Cancelled`, the reason-bearing durable terminal run state/timestamp,
   JSON-only successful-session stdout, redacted provider failures and backend
   panics, a payload-suppressing ACP panic hook, and empty stdout for a missing
   explicit config startup failure. ACP uses the shared registry for truthful
   help/status/agent/model/cancel discovery and refuses registered commands it
-  cannot durably execute. Native session configuration advertises exactly an
-  active-agent selector and the standard model selector. A two-session race
-  fixture proves each concurrent real provider request retains its own chosen
-  agent/model; unsupported provider/target/autonomy settings are not
-  advertised. A bounded update channel forwards real runtime text before the
+  cannot execute. Native configuration advertises exactly an active-agent
+  selector and the standard model selector, both persisted per interaction.
+  A two-session race fixture proves each concurrent real provider request
+  retains its own chosen agent/model without mutating the shared AgentSpec;
+  unsupported provider/target/autonomy settings are not advertised. A bounded
+  checkpoint-aware update channel forwards typed interaction text before the
   terminal ACP response, reconciles the terminal prefix to prevent duplicate
   output, and emits truthful usage only when token counts and a model context
   window are known. Opt-in ACP JSONL diagnostics are bounded, pattern-redacted,
   restrictive-permission, no-follow opened, and proven not to contaminate
-  protocol stdout or record exercised prompt/response bodies. ACP now retains
-  one `PolkagentRuntime`; an official-client restart fixture proves startup
-  recovery on the same durable database. Selections are process-local because
-  session persistence, provider HTTP/SSE token streaming, permissions/tools,
-  and manual Zed evidence remain open.
+  protocol stdout or record exercised prompt/response bodies. Session
+  list/import, original-cwd persistence/comparison, provider HTTP/SSE token
+  streaming, permissions/tools, and manual Zed evidence remain open.
 - `crates/polkagent-transport-pca::network::TcpPcaTransport` now exercises
   encrypted OS-socket I/O across separate processes with a durable inbox,
   outbox, deduplication, reconnect retry, restart redelivery, and typed

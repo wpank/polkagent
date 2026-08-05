@@ -53,9 +53,14 @@ reports.
 
 - **EVD-07 / ACP client-protocol slices (2026-08-05):** the official ACP Rust
   client launches `polkagent acp` as a subprocess and proves initialization,
-  session creation, shared-registry command discovery/help/aliases, agent
-  selection, truthful refusal of unsupported durable commands, real prompt
-  streaming, and current-prompt cancellation with a durable cancelled run.
+  durable session creation, shared-registry command discovery/help/aliases,
+  persisted agent/model selection, truthful refusal of unsupported commands,
+  real prompt streaming, and current-prompt cancellation with a durable
+  cancelled run. ACP session IDs are the exact conversation UUIDs. An
+  official-client new/prompt/same-turn-retry/restart/load/follow-up/resume
+  fixture proves exact durable conversation/turn/run links, no duplicate retry
+  run, transcript replay on load, no replay on resume, persisted model config,
+  and continued use of the same interaction after subprocess replacement.
   Separate fixtures prove JSON-only protocol stdout, missing/unavailable
   startup failure before protocol output, provider/backend secret redaction,
   backend panic containment, ACP-scoped panic-payload suppression, and opt-in
@@ -71,9 +76,10 @@ reports.
   7+3/200k usage, then the ACP terminal response with exact non-duplicated text
   and JSON-only stdout. This is runtime-event progress, not evidence of
   provider HTTP/SSE token streaming.
-  EVD-07 remains open for a real Zed run, durable session load/import, tools,
-  permission round-trips, provider/target/autonomy options, MCP passthrough,
-  interaction restart, and editor-side ACP log inspection.
+  EVD-07 remains open for a real Zed run, session list/import, structured
+  tools and permission round-trips, provider/autonomy options, MCP passthrough,
+  original-cwd provenance checks, editor-side ACP log inspection, and provider
+  HTTP/SSE token-level streaming.
 
 - **EVD-11 / terminal interaction slices (2026-08-05):** the TUI lifecycle test
   runs the real integration binary inside a Unix PTY and proves ordered

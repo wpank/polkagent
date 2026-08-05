@@ -12,13 +12,13 @@ are locally green. Bounded product slices now exist for the TUI, ACP, local
 packages, PCA transport, and container lifecycle, but no PRD is complete
 end-to-end under the repository's completion rule. A production runtime,
 durable interaction/session/event service, and shared command handlers now
-exist. TUI, terminal chat, and HTTP now consume the interaction service; the
-dominant gaps are ACP migration, role-safe harness history, approval/tool
-projection, and the central tool/effect/policy path.
+exist. TUI, terminal chat, HTTP, and ACP now consume the interaction service;
+the dominant gaps are role-safe harness history, approval/tool projection, the
+central tool/effect/policy path, and cross-surface/manual-editor evidence.
 
-The next milestone is therefore not “add more crates.” It is consuming the
-shared runtime/interaction service across surfaces, followed by real
-tool/effect execution and durable actionable experiences.
+The next milestone is therefore not “add more crates.” It is real tool/effect
+execution and durable approval-capable experiences, followed by cross-surface
+and real-editor validation.
 
 Current execution truth lives in:
 
@@ -84,8 +84,9 @@ shared production runtime (implemented; run/TUI/chat/ACP/serve migrated)
                     |
                     +--> terminal chat + durable/actionable TUI
                          (single-agent session/model/restart/cancel slices exist)
-                    +--> complete ACP server + Zed support
-                         (bounded stdio protocol slice exists)
+                    +--> complete rich ACP + Zed support
+                         (durable stdio new/load/resume slice exists;
+                          tools/permissions/list/import/manual Zed remain)
                     +--> durable API control plane
                          (interaction/core HTTP slice exists)
                     +--> group/feed orchestration
