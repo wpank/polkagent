@@ -107,7 +107,7 @@ impl JudgeScore {
         score: u8,
         reasoning: impl Into<String>,
     ) -> Result<Self> {
-        if score < 1 || score > 5 {
+        if !(1..=5).contains(&score) {
             return Err(JudgeError::ScoreOutOfRange(score));
         }
         Ok(Self {
@@ -120,7 +120,7 @@ impl JudgeScore {
     /// Return the score normalised to the `[0.0, 1.0]` range.
     #[must_use]
     pub fn normalised(&self) -> f64 {
-        (self.score as f64 - 1.0) / 4.0
+        (f64::from(self.score) - 1.0) / 4.0
     }
 }
 
@@ -148,6 +148,13 @@ pub struct JudgeResponse {
     pub scores: Vec<JudgeScore>,
     /// Weighted aggregate score in `[0.0, 1.0]`.
     pub aggregate: f64,
+}
+
+#[derive(Deserialize)]
+struct RawScore {
+    criterion: String,
+    score: u8,
+    reasoning: String,
 }
 
 impl JudgeResponse {
@@ -240,7 +247,7 @@ impl ModelAsJudgeScorer {
             .join(",\n");
 
         let prompt = format!(
-            r#"You are an expert evaluator for an AI agent that interacts with blockchain infrastructure.
+            r"You are an expert evaluator for an AI agent that interacts with blockchain infrastructure.
 
 ## Task Description
 The agent was given the following task:
@@ -267,7 +274,7 @@ Respond with a JSON array containing one object per criterion, in the order list
 ]
 ```
 
-Respond with ONLY the JSON array. Do not include any other text."#,
+Respond with ONLY the JSON array. Do not include any other text.",
             prompt = case.input.prompt,
             actual_output = actual_output,
             criteria_block = criteria_block,
@@ -297,13 +304,6 @@ Respond with ONLY the JSON array. Do not include any other text."#,
                 "No JSON array found in judge response: {raw_response}"
             ))
         })?;
-
-        #[derive(Deserialize)]
-        struct RawScore {
-            criterion: String,
-            score: u8,
-            reasoning: String,
-        }
 
         let raw_scores: Vec<RawScore> = serde_json::from_str(&json_str).map_err(|e| {
             JudgeError::ParseResponse(format!("Failed to deserialise judge scores: {e}"))
@@ -368,6 +368,8 @@ fn extract_json_array(text: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::types::{EvalCategory, EvalInput, Expected};
@@ -604,14 +606,14 @@ Here is my evaluation:
 
     #[test]
     fn extract_json_array_finds_array() {
-        let text = r#"some text [1, 2, 3] more text"#;
+        let text = r"some text [1, 2, 3] more text";
         let result = extract_json_array(text);
         assert_eq!(result, Some("[1, 2, 3]".to_string()));
     }
 
     #[test]
     fn extract_json_array_nested() {
-        let text = r#"[[1, 2], [3, 4]]"#;
+        let text = r"[[1, 2], [3, 4]]";
         let result = extract_json_array(text);
         assert_eq!(result, Some("[[1, 2], [3, 4]]".to_string()));
     }

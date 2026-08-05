@@ -32,19 +32,14 @@ use crate::registry::{ToolContext, ToolRegistry, ToolResult};
 // ---------------------------------------------------------------------------
 
 /// Specifies how batch invocations are executed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BatchExecutionMode {
     /// Execute invocations one at a time, preserving order.
+    #[default]
     Sequential,
     /// Execute invocations concurrently with the given parallelism limit.
     Parallel(usize),
-}
-
-impl Default for BatchExecutionMode {
-    fn default() -> Self {
-        Self::Sequential
-    }
 }
 
 /// A single tool invocation within a batch.
@@ -206,7 +201,7 @@ impl BatchToolExecutor {
 
         // Map the batch processor result back to our domain types.
         match process_result {
-            Ok(batch_result) => self.build_result(&invocations, &batch_result, mode),
+            Ok(batch_result) => Self::build_result(&invocations, &batch_result, mode),
             Err(batch_err) => {
                 warn!(error = %batch_err, "batch processing infrastructure error");
                 // If the batch infrastructure itself fails, report all as failed.
@@ -236,7 +231,6 @@ impl BatchToolExecutor {
     /// Translate a [`BatchProcessorResult`] into a [`BatchToolResult`] using
     /// the original invocations for tool names and inputs.
     fn build_result(
-        &self,
         invocations: &[ToolInvocation],
         batch_result: &BatchProcessorResult,
         mode: BatchExecutionMode,
@@ -247,16 +241,25 @@ impl BatchToolExecutor {
             let item_result = batch_result.results.get(i);
 
             let (success, tool_result, error) = match item_result {
-                Some(ir) if ir.result.is_some() => {
-                    // Attempt to deserialize the ToolResult back from the
-                    // JSON value stored by the batch processor.
-                    let value = ir.result.as_ref().expect("checked above");
-                    match serde_json::from_value::<ToolResult>(value.clone()) {
-                        Ok(tr) => (true, Some(tr), None),
-                        Err(e) => (false, None, Some(format!("deserialization error: {e}"))),
-                    }
-                }
-                Some(ir) if ir.error.is_some() => (false, None, ir.error.clone()),
+                // Attempt to deserialize the ToolResult back from the JSON
+                // value stored by the batch processor.
+                Some(ir) => match ir.result.as_ref() {
+                    Some(value) => match serde_json::from_value::<ToolResult>(value.clone()) {
+                        Ok(tool_result) => (true, Some(tool_result), None),
+                        Err(error) => {
+                            (false, None, Some(format!("deserialization error: {error}")))
+                        }
+                    },
+                    None => (
+                        false,
+                        None,
+                        Some(
+                            ir.error
+                                .clone()
+                                .unwrap_or_else(|| "no result from batch processor".to_string()),
+                        ),
+                    ),
+                },
                 _ => (
                     false,
                     None,
@@ -305,6 +308,8 @@ impl std::fmt::Debug for BatchToolExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented tests intentionally fail fast when their fixtures violate invariants.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

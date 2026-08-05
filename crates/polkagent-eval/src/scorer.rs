@@ -5,6 +5,7 @@ use tracing::warn;
 
 use crate::report::CaseResult;
 use crate::types::{Expected, ExpectedOutcome};
+use crate::usize_to_f64;
 
 // ---------------------------------------------------------------------------
 // CheckResult
@@ -127,9 +128,7 @@ pub fn score_case(result: &CaseResult, expected: &Expected) -> Score {
             expected_call
                 .args_contain
                 .iter()
-                .all(|(key, expected_val)| {
-                    actual_args.get(key).map_or(false, |v| v == expected_val)
-                })
+                .all(|(key, expected_val)| actual_args.get(key) == Some(expected_val))
         });
         checks.push(CheckResult {
             name: format!("tool_call:{tool_name}"),
@@ -147,8 +146,7 @@ pub fn score_case(result: &CaseResult, expected: &Expected) -> Score {
         let normalized = result
             .model_output
             .to_lowercase()
-            .replace('\u{2019}', "'")
-            .replace('\u{2018}', "'");
+            .replace(['\u{2019}', '\u{2018}'], "'");
         let actual_outcome = if result.error.is_some() {
             ExpectedOutcome::Error
         } else if normalized.contains("i cannot")
@@ -193,7 +191,7 @@ pub fn aggregate_score(checks: Vec<CheckResult>) -> Score {
 
     let total = checks.len();
     let passed_count = checks.iter().filter(|c| c.passed).count();
-    let score = passed_count as f64 / total as f64;
+    let score = usize_to_f64(passed_count) / usize_to_f64(total);
     let all_passed = passed_count == total;
 
     let details = if all_passed {
@@ -218,7 +216,7 @@ pub fn mean_score(scores: &[f64]) -> f64 {
     if scores.is_empty() {
         return 0.0;
     }
-    scores.iter().sum::<f64>() / scores.len() as f64
+    scores.iter().sum::<f64>() / usize_to_f64(scores.len())
 }
 
 /// Compute a weighted mean score given parallel slices of scores and weights.

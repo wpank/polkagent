@@ -210,8 +210,7 @@ pub fn check_quorum(policy: &QuorumPolicy, votes: &[Vote], total_members: usize)
         QuorumPolicy::Threshold { fraction } => {
             // Custom fraction: ceil(total_members * fraction) approvals needed.
             let fraction = fraction.clamp(0.0, 1.0);
-            let threshold = f64::ceil(fraction * total_members as f64) as usize;
-            let threshold = threshold.max(1); // at least 1
+            let threshold = fractional_threshold(fraction, total_members);
 
             let max_possible_approvals = approve_count + uncast;
             if max_possible_approvals < threshold {
@@ -253,11 +252,41 @@ pub fn check_quorum(policy: &QuorumPolicy, votes: &[Vote], total_members: usize)
                 Some(VoteDecision::Deny) => {
                     QuorumResult::Failed("leader denied the decision".to_string())
                 }
-                Some(VoteDecision::Abstain) => QuorumResult::Pending { needed: 1 },
-                None => QuorumResult::Pending { needed: 1 },
+                Some(VoteDecision::Abstain) | None => QuorumResult::Pending { needed: 1 },
             }
         }
     }
+}
+
+/// Calculate `ceil(fraction * total)` directly from the finite `f64` bit
+/// representation, avoiding lossy float/integer casts. The caller clamps the
+/// fraction to `[0, 1]`; `NaN` and subnormal positive values require one vote.
+fn fractional_threshold(fraction: f64, total: usize) -> usize {
+    if !fraction.is_finite() || fraction <= 0.0 {
+        return 1;
+    }
+    if fraction >= 1.0 {
+        return total.max(1);
+    }
+
+    let bits = fraction.to_bits();
+    let exponent_bits = u16::try_from((bits >> 52) & 0x7ff).unwrap_or_default();
+    if exponent_bits == 0 {
+        return 1;
+    }
+
+    let significand = (bits & ((1_u64 << 52) - 1)) | (1_u64 << 52);
+    let unbiased_exponent = i32::from(exponent_bits) - 1023;
+    let denominator_shift = u32::try_from(52 - unbiased_exponent).unwrap_or(u32::MAX);
+    if denominator_shift >= 128 {
+        return 1;
+    }
+
+    let total = u128::try_from(total).unwrap_or(u128::MAX);
+    let numerator = total.saturating_mul(u128::from(significand));
+    let denominator = 1_u128 << denominator_shift;
+    let threshold = numerator.div_ceil(denominator);
+    usize::try_from(threshold).unwrap_or(usize::MAX).max(1)
 }
 
 // ---------------------------------------------------------------------------

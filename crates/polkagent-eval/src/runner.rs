@@ -157,7 +157,7 @@ async fn run_single_case(
 
     let exec_result = tokio::time::timeout(timeout_duration, executor.complete(request)).await;
 
-    let duration_ms = start.elapsed().as_millis() as u64;
+    let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     match exec_result {
         Err(_elapsed) => {
@@ -219,6 +219,8 @@ async fn run_single_case(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented tests intentionally unwrap fixtures; seconds preserve the workspace MSRV.
+#[allow(clippy::duration_suboptimal_units, clippy::unwrap_used)]
 mod tests {
     use std::sync::Arc;
 

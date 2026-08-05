@@ -3,7 +3,7 @@
 //! Different LLM backends use different naming conventions for tools:
 //!
 //! - **Anthropic**: `PascalCase` or `snake_case` (e.g. `Read`, `file_read`)
-//! - **OpenAI**: `snake_case` (e.g. `read_file`, `search_code`)
+//! - **`OpenAI`**: `snake_case` (e.g. `read_file`, `search_code`)
 //! - **MCP**: dotted namespaces (e.g. `mcp__server__tool`)
 //!
 //! [`ToolNameNormalizer`] maps these backend-specific names to canonical
@@ -23,7 +23,7 @@ use std::collections::HashMap;
 pub enum Backend {
     /// Anthropic Claude models.
     Anthropic,
-    /// OpenAI GPT models.
+    /// `OpenAI` GPT models.
     OpenAI,
     /// Model Context Protocol servers.
     Mcp,

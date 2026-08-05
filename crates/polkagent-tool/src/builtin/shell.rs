@@ -88,14 +88,10 @@ impl ToolHandler for ShellTool {
         let timeout = input
             .get("timeout_secs")
             .and_then(Value::as_u64)
-            .map(Duration::from_secs)
-            .unwrap_or(self.default_timeout);
+            .map_or(self.default_timeout, Duration::from_secs);
+        let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
 
-        debug!(
-            command = command_str,
-            timeout_ms = timeout.as_millis() as u64,
-            "executing shell command"
-        );
+        debug!(command = command_str, timeout_ms, "executing shell command");
 
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(command_str);
@@ -108,17 +104,13 @@ impl ToolHandler for ShellTool {
         let output = tokio::time::timeout(timeout, cmd.output())
             .await
             .map_err(|_| {
-                warn!(
-                    command = command_str,
-                    timeout_ms = timeout.as_millis() as u64,
-                    "shell command timed out"
-                );
+                warn!(command = command_str, timeout_ms, "shell command timed out");
                 ToolError::Timeout {
-                    elapsed_ms: timeout.as_millis() as u64,
+                    elapsed_ms: timeout_ms,
                 }
             })?
             .map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("failed to execute shell command: {}", e),
+                reason: format!("failed to execute shell command: {e}"),
             })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();

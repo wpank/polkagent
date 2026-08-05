@@ -1,5 +1,6 @@
 //! Corpus manifest: integrity verification and TOML loading for eval corpora.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -118,7 +119,11 @@ pub fn compute_corpus_digest(cases: &[EvalCase]) -> String {
 
 /// Encode a byte slice as a lowercase hexadecimal string.
 fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 /// Verify that the cases in a [`CorpusManifest`] match its recorded digest.
@@ -190,6 +195,8 @@ pub fn load_corpus_from_toml(path: &Path) -> Result<CorpusManifest> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::{EvalCategory, EvalInput, Expected};

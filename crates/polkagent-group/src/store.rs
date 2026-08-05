@@ -3,7 +3,7 @@
 //! [`GroupStore`] defines the interface that all group storage backends must
 //! implement. The in-memory implementation is provided in [`crate::memory_store`]
 //! for testing; production use-cases should implement this trait against a
-//! real database (e.g. SQLite via `polkagent-store-sqlite`).
+//! real database (e.g. `SQLite` via `polkagent-store-sqlite`).
 
 use async_trait::async_trait;
 

@@ -121,6 +121,8 @@ impl GroupStore for MemoryGroupStore {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::store::GroupStore;

@@ -1,12 +1,14 @@
 //! Report generation for evaluation runs.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::scorer::Score;
 use crate::types::EvalCategory;
+use crate::usize_to_f64;
 
 // ---------------------------------------------------------------------------
 // ToolCallRecord
@@ -85,7 +87,7 @@ impl EvalReport {
         let mean_score = if total_cases == 0 {
             0.0
         } else {
-            results.iter().map(|r| r.score.score).sum::<f64>() / total_cases as f64
+            results.iter().map(|r| r.score.score).sum::<f64>() / usize_to_f64(total_cases)
         };
 
         // Aggregate per-category scores.
@@ -97,7 +99,7 @@ impl EvalReport {
         }
         let category_scores: HashMap<EvalCategory, f64> = category_totals
             .into_iter()
-            .map(|(cat, (sum, count))| (cat, sum / count as f64))
+            .map(|(cat, (sum, count))| (cat, sum / usize_to_f64(count)))
             .collect();
 
         Self {
@@ -131,19 +133,20 @@ pub fn report_to_json(report: &EvalReport) -> serde_json::Value {
 pub fn report_to_markdown(report: &EvalReport) -> String {
     let mut md = String::new();
 
-    md.push_str(&format!("# Eval Report: {}\n\n", report.suite_name));
-    md.push_str(&format!(
-        "**Timestamp:** {}\n\n",
+    let _ = writeln!(md, "# Eval Report: {}\n", report.suite_name);
+    let _ = writeln!(
+        md,
+        "**Timestamp:** {}\n",
         report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
-    ));
+    );
     md.push_str("## Summary\n\n");
-    md.push_str(&format!("| Metric | Value |\n"));
+    md.push_str("| Metric | Value |\n");
     md.push_str("|--------|-------|\n");
-    md.push_str(&format!("| Total cases | {} |\n", report.total_cases));
-    md.push_str(&format!("| Passed | {} |\n", report.passed));
-    md.push_str(&format!("| Failed | {} |\n", report.failed));
-    md.push_str(&format!("| Skipped | {} |\n", report.skipped));
-    md.push_str(&format!("| Mean score | {:.3} |\n", report.mean_score));
+    let _ = writeln!(md, "| Total cases | {} |", report.total_cases);
+    let _ = writeln!(md, "| Passed | {} |", report.passed);
+    let _ = writeln!(md, "| Failed | {} |", report.failed);
+    let _ = writeln!(md, "| Skipped | {} |", report.skipped);
+    let _ = writeln!(md, "| Mean score | {:.3} |", report.mean_score);
     md.push('\n');
 
     if !report.category_scores.is_empty() {
@@ -153,7 +156,7 @@ pub fn report_to_markdown(report: &EvalReport) -> String {
         let mut categories: Vec<_> = report.category_scores.iter().collect();
         categories.sort_by_key(|(cat, _)| format!("{cat:?}"));
         for (cat, score) in &categories {
-            md.push_str(&format!("| {cat:?} | {score:.3} |\n"));
+            let _ = writeln!(md, "| {cat:?} | {score:.3} |");
         }
         md.push('\n');
     }
@@ -167,15 +170,16 @@ pub fn report_to_markdown(report: &EvalReport) -> String {
         } else {
             "FAIL"
         };
-        md.push_str(&format!(
-            "### [{status}] {} ({})\n\n",
+        let _ = writeln!(
+            md,
+            "### [{status}] {} ({})\n",
             result.case_name, result.case_id
-        ));
-        md.push_str(&format!("- **Score:** {:.3}\n", result.score.score));
-        md.push_str(&format!("- **Duration:** {}ms\n", result.duration_ms));
-        md.push_str(&format!("- **Details:** {}\n", result.score.details));
+        );
+        let _ = writeln!(md, "- **Score:** {:.3}", result.score.score);
+        let _ = writeln!(md, "- **Duration:** {}ms", result.duration_ms);
+        let _ = writeln!(md, "- **Details:** {}", result.score.details);
         if let Some(err) = &result.error {
-            md.push_str(&format!("- **Error:** {err}\n"));
+            let _ = writeln!(md, "- **Error:** {err}");
         }
         md.push('\n');
     }
@@ -194,7 +198,7 @@ pub fn report_summary(report: &EvalReport) -> String {
         if report.total_cases == 0 {
             0.0
         } else {
-            report.passed as f64 / report.total_cases as f64 * 100.0
+            usize_to_f64(report.passed) / usize_to_f64(report.total_cases) * 100.0
         },
         report.mean_score,
     )
@@ -205,6 +209,8 @@ pub fn report_summary(report: &EvalReport) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::scorer::Score;
@@ -313,7 +319,7 @@ mod tests {
         let report = EvalReport::from_results("suite", results);
         let json = report_to_json(&report);
         assert!(json["results"].is_array());
-        assert_eq!(json["results"].as_array().map(|a| a.len()), Some(1));
+        assert_eq!(json["results"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]

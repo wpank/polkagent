@@ -109,7 +109,7 @@ fn best_effort_canonicalize(raw_path: &str) -> Result<PathBuf, ToolError> {
         p.to_path_buf()
     } else {
         let cwd = std::env::current_dir().map_err(|e| ToolError::ExecutionFailed {
-            reason: format!("cannot determine current directory: {}", e),
+            reason: format!("cannot determine current directory: {e}"),
         })?;
         cwd.join(p)
     };
@@ -124,12 +124,9 @@ fn best_effort_canonicalize(raw_path: &str) -> Result<PathBuf, ToolError> {
 
     loop {
         if candidate.exists() {
-            match std::fs::canonicalize(&candidate) {
-                Ok(c) => {
-                    existing = Some(c);
-                    break;
-                }
-                Err(_) => {}
+            if let Ok(canonical) = std::fs::canonicalize(&candidate) {
+                existing = Some(canonical);
+                break;
             }
         }
         match candidate.file_name() {
@@ -172,7 +169,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
         match component {
             std::path::Component::ParentDir => {
                 // Pop the last component, but never pop past the root.
-                if components.last().map_or(false, |c| c != "..") {
+                if components.last().is_some_and(|c| c != "..") {
                     components.pop();
                 } else {
                     components.push(component.as_os_str().to_owned());
@@ -298,7 +295,7 @@ impl ToolHandler for WriteFileTool {
                     reason: "missing or invalid 'path' field".to_string(),
                 })?;
 
-        let content = input
+        let file_content = input
             .get("content")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidInput {
@@ -310,7 +307,7 @@ impl ToolHandler for WriteFileTool {
         // lexical normalization as a fallback.
         let canonical = validate_path(path, context)?;
 
-        debug!(path = %canonical.display(), bytes = content.len(), "writing file");
+        debug!(path = %canonical.display(), bytes = file_content.len(), "writing file");
 
         // Ensure parent directory exists.
         if let Some(parent) = canonical.parent() {
@@ -327,7 +324,7 @@ impl ToolHandler for WriteFileTool {
             }
         }
 
-        tokio::fs::write(&canonical, content)
+        tokio::fs::write(&canonical, file_content)
             .await
             .map_err(|e| ToolError::ExecutionFailed {
                 reason: format!("failed to write file '{}': {}", canonical.display(), e),
@@ -336,7 +333,7 @@ impl ToolHandler for WriteFileTool {
         Ok(ToolResult {
             output: serde_json::json!({
                 "path": canonical.to_string_lossy(),
-                "bytes_written": content.len(),
+                "bytes_written": file_content.len(),
             }),
             classification: DataClassification::Internal,
             artifacts: vec![],
@@ -459,7 +456,7 @@ mod tests {
         }
     }
 
-    /// Build a context with a custom SecurityConfig.
+    /// Build a context with a custom `SecurityConfig`.
     fn ctx_with_security(security_config: SecurityConfig) -> ToolContext {
         ToolContext {
             run_id: RunId::new(),
@@ -700,7 +697,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(ToolError::PermissionDenied { .. }) | Err(ToolError::ExecutionFailed { .. })
+                Err(ToolError::PermissionDenied { .. } | ToolError::ExecutionFailed { .. })
             ),
             "reading /etc/shadow must not succeed, got: {result:?}"
         );

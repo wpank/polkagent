@@ -258,15 +258,8 @@ impl GroupCoordinator {
     /// Returns [`GroupError::NotFound`] if the group does not exist.
     pub fn check_budget(&self, group_id: &GroupId, amount: f64) -> GroupResult<bool> {
         let group = self.get_group(group_id)?;
-        // Convert f64 to u64 safely: clamp negatives to 0, round.
-        let amount_u64 = if amount < 0.0 {
-            0
-        } else {
-            // Use saturating cast: f64::MAX > u64::MAX, so clamp.
-            if amount > u64::MAX as f64 {
-                return Ok(false);
-            }
-            amount as u64
+        let Some(amount_u64) = amount_to_units(amount) else {
+            return Ok(false);
         };
         Ok(group.budget.can_spend(amount_u64))
     }
@@ -290,12 +283,8 @@ impl GroupCoordinator {
         if !group.is_member(agent_id) {
             return Err(GroupError::NotMember(*agent_id, *group_id));
         }
-        let amount_u64 = if amount < 0.0 {
-            0
-        } else if amount > u64::MAX as f64 {
+        let Some(amount_u64) = amount_to_units(amount) else {
             return Ok(false);
-        } else {
-            amount as u64
         };
         Ok(group.budget.member_can_spend(agent_id, amount_u64))
     }
@@ -318,15 +307,11 @@ impl GroupCoordinator {
         agent_id: &AgentId,
         amount: f64,
     ) -> GroupResult<()> {
-        let amount_u64 = if amount < 0.0 {
-            0
-        } else if amount > u64::MAX as f64 {
+        let Some(amount_u64) = amount_to_units(amount) else {
             return Err(GroupError::BudgetExceeded(
                 *group_id,
-                format!("amount {amount} overflows u64"),
+                format!("amount {amount} is not representable as budget units"),
             ));
-        } else {
-            amount as u64
         };
 
         // Validate membership.
@@ -395,14 +380,58 @@ impl GroupCoordinator {
     }
 }
 
+/// Convert a floating-point budget amount using the coordinator's historical
+/// truncation semantics. Negative and `NaN` inputs remain zero; positive
+/// infinity and finite values beyond `u64` are rejected.
+fn amount_to_units(amount: f64) -> Option<u64> {
+    if amount.is_nan() || amount <= 0.0 {
+        return Some(0);
+    }
+    if !amount.is_finite() {
+        return None;
+    }
+
+    let bits = amount.to_bits();
+    let exponent_bits = u16::try_from((bits >> 52) & 0x7ff).ok()?;
+    let exponent = i32::from(exponent_bits) - 1023;
+    if exponent < 0 {
+        return Some(0);
+    }
+    if exponent > 63 {
+        return None;
+    }
+
+    let significand = (bits & ((1_u64 << 52) - 1)) | (1_u64 << 52);
+    if exponent >= 52 {
+        significand.checked_shl(u32::try_from(exponent - 52).ok()?)
+    } else {
+        Some(significand >> u32::try_from(52 - exponent).ok()?)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::{GrantSpec, GroupBudget, MemberRole, QuorumPolicy};
+
+    #[test]
+    fn amount_to_units_preserves_checked_truncation_semantics() {
+        assert_eq!(amount_to_units(-1.0), Some(0));
+        assert_eq!(amount_to_units(f64::NAN), Some(0));
+        assert_eq!(amount_to_units(12.9), Some(12));
+        assert_eq!(
+            amount_to_units(9_223_372_036_854_775_808.0),
+            Some(1_u64 << 63)
+        );
+        assert_eq!(amount_to_units(18_446_744_073_709_551_616.0), None);
+        assert_eq!(amount_to_units(f64::INFINITY), None);
+    }
 
     fn make_coordinator_with_group() -> (GroupCoordinator, GroupId, AgentId) {
         let mut coord = GroupCoordinator::new();

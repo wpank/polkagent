@@ -292,8 +292,7 @@ impl ExecutionResult {
     pub fn final_output(&self) -> &serde_json::Value {
         self.task_results
             .last()
-            .map(|r| &r.output)
-            .unwrap_or(&serde_json::Value::Null)
+            .map_or(&serde_json::Value::Null, |r| &r.output)
     }
 }
 
@@ -513,8 +512,7 @@ impl Executor for PipelineExecutor {
         let seed = plan
             .tasks
             .first()
-            .map(|t| t.input.clone())
-            .unwrap_or(serde_json::Value::Null);
+            .map_or(serde_json::Value::Null, |t| t.input.clone());
         let mut pipeline_value = seed;
 
         for task in &plan.tasks {
@@ -588,8 +586,7 @@ impl ConsensusExecutor {
         counts
             .into_values()
             .max_by_key(|(count, _)| *count)
-            .map(|(_, v)| v.clone())
-            .unwrap_or(serde_json::Value::Null)
+            .map_or(serde_json::Value::Null, |(_, v)| v.clone())
     }
 }
 
@@ -673,6 +670,8 @@ impl GroupExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -936,7 +935,7 @@ mod tests {
         let plan = sequential_plan(vec![task(1), task(2), task(3)]);
         let mut call = 0u32;
         let result = SequentialExecutor::new()
-            .execute(&plan, |t, _prev| {
+            .execute(&plan, |t, prev| {
                 call += 1;
                 if call == 1 {
                     // Task 1 succeeds with specific output.
@@ -952,7 +951,7 @@ mod tests {
                 } else {
                     // Task 3 still runs; prev should still be "output-1"
                     // (not updated because task 2 failed).
-                    TaskResult::success(t.id, t.agent_id, _prev.clone(), Duration::ZERO)
+                    TaskResult::success(t.id, t.agent_id, prev.clone(), Duration::ZERO)
                 }
             })
             .expect("execute ok");
@@ -1061,14 +1060,14 @@ mod tests {
         let plan = pipeline_plan(vec![task(1), task(2), task(3)]);
         let mut call = 0u32;
         let result = PipelineExecutor::new()
-            .execute(&plan, |t, _prev| {
+            .execute(&plan, |t, prev| {
                 call += 1;
                 if call == 1 {
                     // Task 1 fails; output is Null.
                     TaskResult::failure(t.id, t.agent_id, "fail", Duration::ZERO)
                 } else {
                     // Tasks 2 & 3 receive Null (the failure output).
-                    TaskResult::success(t.id, t.agent_id, _prev.clone(), Duration::ZERO)
+                    TaskResult::success(t.id, t.agent_id, prev.clone(), Duration::ZERO)
                 }
             })
             .expect("execute ok");

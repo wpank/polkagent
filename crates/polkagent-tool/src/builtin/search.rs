@@ -77,7 +77,10 @@ impl ToolHandler for SearchMemoryTool {
                     reason: "missing or invalid 'query' field".to_string(),
                 })?;
 
-        let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
+        let requested_limit = input.get("limit").and_then(Value::as_u64).unwrap_or(10);
+        let limit = usize::try_from(requested_limit).map_err(|_| ToolError::InvalidInput {
+            reason: format!("limit {requested_limit} exceeds the supported range"),
+        })?;
 
         let memory_types = input
             .get("memory_type")
@@ -107,7 +110,7 @@ impl ToolHandler for SearchMemoryTool {
             .search(&query)
             .await
             .map_err(|e| ToolError::ExecutionFailed {
-                reason: format!("memory search failed: {}", e),
+                reason: format!("memory search failed: {e}"),
             })?;
 
         let results: Vec<Value> = entries

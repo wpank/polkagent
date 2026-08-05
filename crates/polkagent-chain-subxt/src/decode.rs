@@ -20,7 +20,7 @@ use crate::error::SubxtError;
 /// Decode a hex string (with optional `0x` prefix) into bytes.
 pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, SubxtError> {
     let stripped = hex.strip_prefix("0x").unwrap_or(hex);
-    if stripped.len() % 2 != 0 {
+    if !stripped.len().is_multiple_of(2) {
         return Err(SubxtError::HexDecode {
             message: format!("odd-length hex string ({})", stripped.len()),
         });

@@ -76,7 +76,10 @@ impl ToolHandler for ChainKnowledgeTool {
                     reason: "missing or invalid 'query' field".to_string(),
                 })?;
 
-        let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
+        let requested_limit = input.get("limit").and_then(Value::as_u64).unwrap_or(5);
+        let limit = usize::try_from(requested_limit).map_err(|_| ToolError::InvalidInput {
+            reason: format!("limit {requested_limit} exceeds the supported range"),
+        })?;
 
         debug!(
             query = query_text,
@@ -127,6 +130,8 @@ impl ToolHandler for ChainKnowledgeTool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented tests intentionally fail fast when fixture setup or execution fails.
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use polkagent_memory::metadata_rag::{MetadataDocument, MetadataRagService};

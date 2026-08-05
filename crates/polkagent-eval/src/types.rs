@@ -87,7 +87,7 @@ pub enum ExpectedOutcome {
 // ---------------------------------------------------------------------------
 
 /// Specification of what a correct agent response looks like.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Expected {
     /// Strings that must be present in the model's output text.
     pub must_contain: Vec<String>,
@@ -99,18 +99,6 @@ pub struct Expected {
     pub expected_outcome: Option<ExpectedOutcome>,
     /// Name of a custom scorer function to apply, if any.
     pub custom_scorer: Option<String>,
-}
-
-impl Default for Expected {
-    fn default() -> Self {
-        Self {
-            must_contain: Vec::new(),
-            must_not_contain: Vec::new(),
-            expected_tool_calls: Vec::new(),
-            expected_outcome: None,
-            custom_scorer: None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +160,8 @@ impl EvalSuite {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented unit tests intentionally fail fast on fixture errors.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

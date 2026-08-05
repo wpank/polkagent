@@ -143,8 +143,8 @@ pub struct ToolContext {
     /// Security configuration governing filesystem access for this invocation.
     ///
     /// When `None`, file tools apply no path restrictions beyond the OS-level
-    /// permissions of the running process. When `Some`, denied_paths and
-    /// allowed_paths are enforced before any filesystem operation.
+    /// permissions of the running process. When `Some`, `denied_paths` and
+    /// `allowed_paths` are enforced before any filesystem operation.
     pub security_config: Option<SecurityConfig>,
 }
 
@@ -208,7 +208,7 @@ impl ToolRegistry {
 
     /// Look up a handler by name.
     pub fn get(&self, name: &str) -> Option<&dyn ToolHandler> {
-        self.handlers.get(name).map(|h| h.as_ref())
+        self.handlers.get(name).map(std::convert::AsRef::as_ref)
     }
 
     /// Return the specs of all registered tools.
@@ -260,8 +260,7 @@ impl ToolRegistry {
             if !has_grant {
                 return Err(ToolError::PermissionDenied {
                     reason: format!(
-                        "tool '{}' requires grant matching '{}' but none found in context",
-                        name, required
+                        "tool '{name}' requires grant matching '{required}' but none found in context"
                     ),
                 });
             }
