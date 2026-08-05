@@ -70,6 +70,16 @@ fn default_seed() -> u64 {
     42
 }
 
+/// Convert a counter to `f64` via exactly representable 32-bit halves.
+///
+/// Thompson sampling is inherently floating-point; this avoids an unchecked
+/// integer cast while preserving the intended rounded value for large counts.
+fn count_to_f64(value: u64) -> f64 {
+    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+}
+
 impl EvolutionarySelector {
     /// Create a new selector with the given success threshold.
     ///
@@ -156,8 +166,8 @@ impl EvolutionarySelector {
         keys.sort();
 
         for key in keys {
-            let alpha = *self.successes.get(key.as_str()).unwrap_or(&0) as f64 + 1.0;
-            let beta = *self.failures.get(key.as_str()).unwrap_or(&0) as f64 + 1.0;
+            let alpha = count_to_f64(*self.successes.get(key.as_str()).unwrap_or(&0)) + 1.0;
+            let beta = count_to_f64(*self.failures.get(key.as_str()).unwrap_or(&0)) + 1.0;
             let sample = rng.beta_sample(alpha, beta);
             if sample > best_sample {
                 best_sample = sample;
@@ -165,7 +175,7 @@ impl EvolutionarySelector {
             }
         }
 
-        best_label.and_then(|l| self.variants.get(l))
+        best_label.and_then(|label| self.variants.get(label))
     }
 
     /// Return the number of registered variants.
@@ -179,10 +189,10 @@ impl EvolutionarySelector {
     pub fn means(&self) -> HashMap<String, f64> {
         self.variants
             .keys()
-            .map(|k| {
-                let s = *self.successes.get(k).unwrap_or(&0) as f64 + 1.0;
-                let f = *self.failures.get(k).unwrap_or(&0) as f64 + 1.0;
-                (k.clone(), s / (s + f))
+            .map(|label| {
+                let successes = count_to_f64(*self.successes.get(label).unwrap_or(&0)) + 1.0;
+                let failures = count_to_f64(*self.failures.get(label).unwrap_or(&0)) + 1.0;
+                (label.clone(), successes / (successes + failures))
             })
             .collect()
     }
@@ -226,50 +236,54 @@ impl SimpleRng {
     }
 
     fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
+        count_to_f64(self.next_u64() >> 11) / 9_007_199_254_740_992.0
     }
 
     fn beta_sample(&mut self, alpha: f64, beta: f64) -> f64 {
-        let x = self.gamma_sample(alpha);
-        let y = self.gamma_sample(beta);
-        if x + y == 0.0 {
+        let alpha_sample = self.gamma_sample(alpha);
+        let beta_sample = self.gamma_sample(beta);
+        if alpha_sample + beta_sample == 0.0 {
             return 0.5;
         }
-        x / (x + y)
+        alpha_sample / (alpha_sample + beta_sample)
     }
 
     fn gamma_sample(&mut self, shape: f64) -> f64 {
         if shape < 1.0 {
             let boosted = self.gamma_sample(shape + 1.0);
-            let u = self.next_f64().max(1e-30);
-            return boosted * u.powf(1.0 / shape);
+            let uniform_sample = self.next_f64().max(1e-30);
+            return boosted * uniform_sample.powf(1.0 / shape);
         }
 
-        let d = shape - 1.0 / 3.0;
-        let c = 1.0 / (9.0 * d).sqrt();
+        let adjusted_shape = shape - 1.0 / 3.0;
+        let scale = 1.0 / (9.0 * adjusted_shape).sqrt();
 
         loop {
-            let x = self.standard_normal();
-            let v_base = 1.0 + c * x;
-            if v_base <= 0.0 {
+            let normal_sample = self.standard_normal();
+            let cube_base = 1.0 + scale * normal_sample;
+            if cube_base <= 0.0 {
                 continue;
             }
-            let v = v_base * v_base * v_base;
-            let u = self.next_f64().max(1e-30);
+            let cube = cube_base * cube_base * cube_base;
+            let uniform_sample = self.next_f64().max(1e-30);
 
-            if u < 1.0 - 0.0331 * (x * x) * (x * x) {
-                return d * v;
+            if uniform_sample
+                < 1.0 - 0.0331 * (normal_sample * normal_sample) * (normal_sample * normal_sample)
+            {
+                return adjusted_shape * cube;
             }
-            if u.ln() < 0.5 * x * x + d * (1.0 - v + v.ln()) {
-                return d * v;
+            if uniform_sample.ln()
+                < 0.5 * normal_sample * normal_sample + adjusted_shape * (1.0 - cube + cube.ln())
+            {
+                return adjusted_shape * cube;
             }
         }
     }
 
     fn standard_normal(&mut self) -> f64 {
-        let u1 = self.next_f64().max(1e-30);
-        let u2 = self.next_f64();
-        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        let radial_sample = self.next_f64().max(1e-30);
+        let angular_sample = self.next_f64();
+        (-2.0 * radial_sample.ln()).sqrt() * (2.0 * std::f64::consts::PI * angular_sample).cos()
     }
 }
 
@@ -279,6 +293,11 @@ impl SimpleRng {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "selector tests unwrap variants only after deterministic fixture registration"
+    )]
+
     use super::*;
     use crate::manifest::{CapabilitiesSection, PromptsSection, SkillManifest, SkillSection};
 
