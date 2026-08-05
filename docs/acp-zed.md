@@ -5,9 +5,10 @@ client, create an editor session, advertise slash commands, and route a normal
 prompt through Polkagent's existing `AppService` run orchestration.
 
 This is an executable protocol slice, not a claim of complete Zed support. The
-repository test launches the real binary through the official ACP Rust client.
-A manual Zed smoke test, durable thread import/resume, structured tool and
-permission updates, and session configuration are still open.
+repository tests launch the real binary through the official ACP Rust client,
+including cancellation while a provider request is active. A manual Zed smoke
+test, durable thread import/resume, structured tool and permission updates, and
+session configuration are still open.
 
 ## Prerequisites
 
@@ -77,8 +78,14 @@ Implemented and covered by executable protocol evidence:
 - text and resource-link prompts;
 - slash-command discovery and handling;
 - CLI early dispatch before telemetry so stdout belongs to ACP;
-- a subprocess test that performs initialization, command discovery, `/help`,
-  and a real `AppService` run through the fake executor.
+- subprocess stdout-line assertions that reject anything other than JSON-RPC;
+- fail-closed startup for a missing explicit config: exit code 4, an empty
+  stdout channel, and the diagnostic on stderr;
+- an official-client subprocess test that performs initialization, command
+  discovery, `/help`, and a real `AppService` run through the fake executor;
+- an official-client subprocess test that holds a real provider request open,
+  cancels it, receives `Cancelled`, and verifies the durable run state and
+  terminal timestamp in SQLite.
 
 Not implemented yet:
 
@@ -89,6 +96,7 @@ Not implemented yet:
 - additional workspace roots (rejected explicitly) and use of cwd as model or
   filesystem context beyond session metadata;
 - durable multi-turn conversation history and a shared `RuntimeFactory`;
+- ACP-safe file logging plus panic and secret-redaction evidence;
 - manual Zed validation, including approval, cancellation, restart, and logs.
 
 Supplied MCP servers and additional workspace roots are rejected instead of
@@ -96,9 +104,11 @@ being silently ignored.
 
 ## Troubleshooting and verification
 
-ACP owns stdout. Provider-selection notices and startup failures go to stderr;
-do not wrap the command in a script that prints banners to stdout. In Zed, use
-`dev: open acp logs` to inspect the subprocess exchange.
+ACP owns stdout. Provider-selection notices go to stderr, and the tested
+missing-explicit-config failure exits before writing stdout. Do not wrap the
+command in a script that prints banners to stdout. In Zed, use `dev: open acp
+logs` to inspect the subprocess exchange. Polkagent does not yet implement a
+separate ACP file log.
 
 Run the executable conformance slice locally:
 
@@ -108,4 +118,6 @@ cargo test -p polkagent-cli --test acp_stdio_e2e -- --nocapture
 
 For a manual smoke, verify in order: agent appears, session opens, slash-command
 completion is visible, `/status` responds, a normal prompt returns a message,
-and Zed's ACP log contains only JSON-RPC frames on the server's stdout channel.
+cancellation stops active work, and Zed's ACP log contains only JSON-RPC frames
+on the server's stdout channel. This manual matrix remains unverified in the
+repository status.

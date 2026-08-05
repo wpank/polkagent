@@ -978,8 +978,12 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [ ] Implement tool permission round-trip.
 - [x] Write the Zed custom-agent setup guide.
 - [x] Add an official-SDK subprocess protocol fixture.
-- [ ] Add official-client cancellation/stop-reason coverage.
-- [ ] Add protocol-safe file diagnostics and startup/panic/redaction proof.
+- [x] Add official-client active-run cancellation/stop-reason coverage and
+  verify the reason-bearing durable terminal run state/timestamp.
+- [x] Prove successful-session stdout purity and missing-explicit-config
+  startup failure with empty stdout, a stderr diagnostic, and exit code 4.
+- [ ] Add protocol-safe file diagnostics and broader startup/provider failure,
+  panic, and secret-redaction proof.
 - [ ] Validate manually with Zed ACP logs and the full acceptance matrix.
 
 **Exit:** Polkagent can be added as a Zed custom external agent and complete a
@@ -1022,13 +1026,17 @@ Zed, not merely a single-agent chat wrapper.
 
 ### ACP
 
-- Protocol stdout contains only JSON-RPC frames.
+- Protocol stdout contains only JSON-RPC frames. The official-client subprocess
+  fixtures assert JSON on every observed successful-session stdout line, and
+  the missing-explicit-config fixture asserts empty stdout.
 - Initialize negotiates current v1 capabilities correctly.
 - New session honors absolute cwd and supplied MCP servers.
 - Prompt streams before its terminal response.
 - Tool calls have stable IDs and legal status transitions.
 - Permission allow/deny/timeout/disconnect are all tested; default is deny.
-- Cancel terminates linked runs and returns a correct stop reason.
+- Cancel terminates linked runs and returns a correct stop reason. The bounded
+  official-client fixture proves this for one active run and its durable
+  terminal state; propagation across future grouped runs remains open.
 - List/load survive server restart and work with Zed thread import.
 - Dynamic command and config-option updates conform to ACP schema.
 - Unknown session, busy session, invalid config, and provider failure are distinct.

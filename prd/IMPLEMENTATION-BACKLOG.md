@@ -274,10 +274,13 @@ the stable execution event path; can run fully parallel to ACP-01.
   explicitly instead of ignoring them.
 - [ ] Add structured tool/plan/usage updates, permission round-trips, default
   deny on timeout/disconnect, client capabilities, and secret-safe logging proof.
-- [ ] Add an official-client cancellation/stop-reason test covering
-  cancellation during an active run.
-- [ ] Implement and prove ACP-safe file diagnostics, redaction, panic behavior,
-  and startup failures without contaminating stdout.
+- [x] Add an official-client cancellation/stop-reason test covering
+  cancellation during an active provider request and the durable terminal run
+  state/timestamp.
+- [x] Prove successful-session stdout purity and fail-closed missing-explicit-
+  config startup with empty stdout, a stderr diagnostic, and exit code 4.
+- [ ] Implement and prove ACP-safe file diagnostics, secret redaction, panic
+  behavior, and broader startup/provider failure behavior.
 - [x] Add an official-SDK subprocess fixture and a Zed custom-agent setup guide.
 - [ ] Complete the manual Zed smoke (tool, approval/deny, cancel, restart/import,
   and ACP-log inspection).

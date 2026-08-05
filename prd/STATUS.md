@@ -26,11 +26,15 @@ strong component baseline. The container smoke additionally proves that the
 locked canonical image builds, starts unprivileged, honours a bind-mounted
 read-only config, answers the three HTTP probes, drains HTTP on SIGTERM with a
 clean exit, and replaces the container on the same named volume while retaining
-a SQLite CLI marker. A focused official-SDK subprocess test also proves one ACP
-initialize/new/prompt session and a real `AppService` run. Focused TUI tests
-cover reducer/input/render behavior, while a shared-bootstrap fake run proves
-start, completion, and durable storage. They do not yet prove cancellation
-through the async controller or a real terminal event loop. These checks do not
+a SQLite CLI marker. A focused official-SDK subprocess suite also proves ACP
+initialize/new/prompt, a real `AppService` run, and cancellation while a
+provider request is active. The client receives the `Cancelled` stop reason,
+and SQLite retains the reason-bearing terminal state plus completion timestamp.
+The same suite checks that successful-session stdout lines are JSON and that a
+missing explicit config exits 4 with empty stdout and its diagnostic on stderr.
+Focused TUI tests cover reducer/input/render behavior, while a shared-bootstrap
+fake run proves start, completion, and durable storage. They do not yet prove
+TUI cancellation through a real terminal event loop. These checks do not
 prove durable API/run recovery, worker/effect draining, Postgres, backup/restore,
 auth, HA, a real chain action, a durable multi-turn interaction, or complete
 Zed/editor behavior.
@@ -89,7 +93,7 @@ startup still has a wiring gap.
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
 | 15 Testing | Broad passing check/test/rustdoc suite | Mandatory Clippy gate is red; production paths under-tested | Lint debt plus live/client/ops gates missing | Active cross-cutting |
 | 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
-| 19 Interactive/ACP | Initial ACP server and actionable TUI slices implemented | Both independently compose the one-shot `AppService` path; shared interaction/runtime factory remains missing | Official client proves ACP discovery and prompt/run; focused TUI reducer/render plus durable fake-run tests cover the bounded seam, but no async cancel, full Zed, or durable session E2E exists | Active P0/P1 |
+| 19 Interactive/ACP | Initial ACP server and actionable TUI slices implemented | Both independently compose the one-shot `AppService` path; shared interaction/runtime factory remains missing | Official client proves ACP discovery, prompt/run, and active-run cancellation with durable terminal state; focused TUI reducer/render plus durable fake-run tests cover the bounded seam, but no real-terminal TUI cancel, full Zed, or durable session E2E exists | Active P0/P1 |
 
 ## Decisive implementation evidence
 
@@ -117,10 +121,13 @@ startup still has a wiring gap.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent
   harnesses, not a Polkagent ACP agent server.
 - `crates/polkagent-surface-acp` is the separate server-side adapter. The
-  `acp_stdio_e2e` test uses the official Rust client to launch `polkagent acp`,
-  negotiate ACP v1, discover commands, execute `/help`, and complete a real
-  `AppService` run. Session persistence, permissions/tools, and manual Zed
-  evidence remain absent.
+  `acp_stdio_e2e` tests use the official Rust client to launch `polkagent acp`,
+  negotiate ACP v1, discover commands, execute `/help`, complete a real
+  `AppService` run, and cancel one while a provider request is active. They
+  assert `Cancelled`, the reason-bearing durable terminal run state/timestamp,
+  JSON-only successful-session stdout, and empty stdout for a missing explicit
+  config startup failure. Session persistence, permissions/tools, ACP file-log
+  and panic/redaction proof, and manual Zed evidence remain absent.
 - `crates/polkagent-transport-pca::network::TcpPcaTransport` now exercises
   encrypted OS-socket I/O across separate processes with a durable inbox,
   outbox, deduplication, reconnect retry, restart redelivery, and typed
