@@ -98,6 +98,13 @@ impl JamClient {
 }
 
 #[cfg(test)]
+// Client adapter tests intentionally panic at the exact backend contract
+// boundary that failed so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "JAM client test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

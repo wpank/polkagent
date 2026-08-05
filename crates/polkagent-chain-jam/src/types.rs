@@ -35,6 +35,12 @@ pub struct JamBlock {
 }
 
 #[cfg(test)]
+// Wire-type tests intentionally panic at serialization boundaries so malformed
+// round-trip fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "JAM wire-type assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

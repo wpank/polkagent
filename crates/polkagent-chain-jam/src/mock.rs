@@ -121,6 +121,13 @@ impl Default for MockJamBackend {
 }
 
 #[cfg(test)]
+// Mock backend tests intentionally panic at fixture and rejection boundaries so
+// broken deterministic chain state remains easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "JAM mock backend assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 
