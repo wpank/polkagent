@@ -18,6 +18,7 @@ use polkagent_core::{AgentId, AgentSpec, ArtifactId, BlobRef, RunId};
 use polkagent_event::{EventBus, EventRecorder};
 use polkagent_executor_fake::FakeExecutor;
 use polkagent_interaction::{InteractionService, InteractionStore};
+use polkagent_memory::{classification::Classification, MemoryEntry, MemoryId, MemoryType};
 use polkagent_runtime::{
     AdapterPolicy, ComponentState, DurableInteractionService, PolkagentRuntime, RuntimeFactory,
     RuntimeOptions,
@@ -43,10 +44,47 @@ async fn runtime_with_config(root: &std::path::Path, config: &str) -> PolkagentR
     RuntimeFactory::build(options).await.expect("build runtime")
 }
 
+async fn memory_runtime_at(root: &std::path::Path) -> PolkagentRuntime {
+    runtime_with_config(
+        root,
+        r#"
+[memory]
+enabled = true
+backend = "sqlite"
+"#,
+    )
+    .await
+}
+
 fn write_skill(root: &std::path::Path, directory: &str, manifest: &str) {
     let skill_directory = root.join("skills").join(directory);
     std::fs::create_dir_all(&skill_directory).expect("create skill directory");
     std::fs::write(skill_directory.join("skill.toml"), manifest).expect("write skill manifest");
+}
+
+fn memory_entry(
+    agent_id: AgentId,
+    memory_type: MemoryType,
+    content: &str,
+    created_at: chrono::DateTime<chrono::Utc>,
+    relevance_score: f64,
+) -> MemoryEntry {
+    MemoryEntry {
+        id: MemoryId::new(),
+        agent_id,
+        episode_id: None,
+        memory_type,
+        content: content.to_owned(),
+        embedding: None,
+        metadata: serde_json::json!({"source": "runtime-test"}),
+        provenance: None,
+        created_at,
+        accessed_at: created_at,
+        access_count: 0,
+        relevance_score,
+        confidence: 0.8,
+        classification: Classification::Internal,
+    }
 }
 
 fn test_server(runtime: &PolkagentRuntime) -> TestServer {
@@ -833,6 +871,180 @@ auto_load = false
 }
 
 #[tokio::test]
+async fn runtime_memory_reads_use_exact_durable_store_and_remain_non_mutating() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let runtime = memory_runtime_at(temp.path()).await;
+    assert_eq!(runtime.readiness().memory.state, ComponentState::Ready);
+    let agent_id = AgentId::new();
+    let now = chrono::Utc::now();
+    let semantic = memory_entry(
+        agent_id,
+        MemoryType::Semantic,
+        "durable rust memory",
+        now,
+        0.9,
+    );
+    let procedural = memory_entry(
+        agent_id,
+        MemoryType::Procedural,
+        "durable release procedure",
+        now + chrono::Duration::seconds(1),
+        0.4,
+    );
+    runtime
+        .app()
+        .store_memory(&agent_id, semantic.clone())
+        .await
+        .expect("store semantic memory through runtime service");
+    runtime
+        .app()
+        .store_memory(&agent_id, procedural.clone())
+        .await
+        .expect("store procedural memory through runtime service");
+
+    let server = test_server(&runtime);
+    let queried = server
+        .post("/api/v1alpha1/memory/query")
+        .json(&serde_json::json!({
+            "query": "durable",
+            "limit": 10,
+            "namespace": "semantic"
+        }))
+        .await;
+    queried.assert_status_ok();
+    let queried = queried.json::<serde_json::Value>();
+    assert_eq!(queried["data"].as_array().expect("query data").len(), 1);
+    assert_eq!(queried["data"][0]["id"], semantic.id.to_string());
+    assert_eq!(queried["data"][0]["content"], semantic.content);
+    assert_eq!(queried["data"][0]["score"], 0.9);
+    assert_eq!(queried["data"][0]["namespace"], "semantic");
+
+    let exact_path = format!("/api/v1alpha1/memory/entries/{}", semantic.id);
+    let exact = server.get(&exact_path).await;
+    exact.assert_status_ok();
+    let exact = exact.json::<serde_json::Value>();
+    assert_eq!(exact["data"], queried["data"][0]);
+    let inspected = runtime
+        .app()
+        .memory_store()
+        .expect("runtime memory store")
+        .peek_memory(semantic.id)
+        .await
+        .expect("inspect access metadata");
+    assert_eq!(inspected.access_count, 0);
+    assert_eq!(inspected.accessed_at, semantic.accessed_at);
+
+    assert_http_error(
+        &server
+            .post("/api/v1alpha1/memory/query")
+            .json(&serde_json::json!({
+                "query": "durable",
+                "namespace": "private-project"
+            }))
+            .await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "VALIDATION_ERROR",
+    );
+    assert_http_error(
+        &server
+            .get("/api/v1alpha1/memory/entries/not-a-memory-id")
+            .await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "VALIDATION_ERROR",
+    );
+    assert_http_error(
+        &server
+            .get(&format!("/api/v1alpha1/memory/entries/{}", MemoryId::new()))
+            .await,
+        StatusCode::NOT_FOUND,
+        "NOT_FOUND",
+    );
+    assert_http_error(
+        &server.get("/api/v1alpha1/memory/stats").await,
+        StatusCode::NOT_IMPLEMENTED,
+        "NOT_IMPLEMENTED",
+    );
+    assert_http_error(
+        &server
+            .post("/api/v1alpha1/memory/forget")
+            .json(&serde_json::json!({"entry_ids": [semantic.id.to_string()]}))
+            .await,
+        StatusCode::NOT_IMPLEMENTED,
+        "NOT_IMPLEMENTED",
+    );
+
+    drop(server);
+    drop(runtime);
+    let restarted = memory_runtime_at(temp.path()).await;
+    let restarted_server = test_server(&restarted);
+    let restarted_query = restarted_server
+        .post("/api/v1alpha1/memory/query")
+        .json(&serde_json::json!({
+            "query": "durable",
+            "limit": 10,
+            "namespace": "semantic"
+        }))
+        .await;
+    restarted_query.assert_status_ok();
+    assert_eq!(restarted_query.json::<serde_json::Value>(), queried);
+    let restarted_exact = restarted_server.get(&exact_path).await;
+    restarted_exact.assert_status_ok();
+    assert_eq!(restarted_exact.json::<serde_json::Value>(), exact);
+
+    let token = "memory-reader-token";
+    let mut protected_config = restarted.config().as_ref().clone();
+    protected_config.auth.enabled = true;
+    protected_config.auth.api_keys = vec![format!("{:x}", Sha256::digest(token.as_bytes()))];
+    protected_config.api.read_only = true;
+    let protected = TestServer::new(
+        ApiServer::from_state(app_state_from_runtime(&restarted, protected_config)).into_router(),
+    );
+    protected
+        .get(&exact_path)
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    protected
+        .get(&exact_path)
+        .authorization_bearer(token)
+        .await
+        .assert_status_ok();
+    protected
+        .post("/api/v1alpha1/memory/query")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({"query": "durable"}))
+        .await
+        .assert_status(StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn disabled_runtime_memory_exposes_truthful_empty_read_view() {
+    let disabled_root = tempfile::TempDir::new().expect("disabled tempdir");
+    let disabled = runtime_at(disabled_root.path()).await;
+    assert_eq!(disabled.readiness().memory.state, ComponentState::Disabled);
+    let disabled_state = app_state_from_runtime(&disabled, disabled.config().as_ref().clone());
+    assert!(disabled_state.memory_store.is_some());
+    assert!(!disabled_state.memory_stats_available);
+    assert!(!disabled_state.memory_store_mutable);
+    let disabled_server = TestServer::new(ApiServer::from_state(disabled_state).into_router());
+    let disabled_query = disabled_server
+        .post("/api/v1alpha1/memory/query")
+        .json(&serde_json::json!({"query": "anything"}))
+        .await;
+    disabled_query.assert_status_ok();
+    assert_eq!(
+        disabled_query.json::<serde_json::Value>()["data"],
+        serde_json::json!([])
+    );
+    assert_http_error(
+        &disabled_server
+            .get(&format!("/api/v1alpha1/memory/entries/{}", MemoryId::new()))
+            .await,
+        StatusCode::NOT_FOUND,
+        "NOT_FOUND",
+    );
+}
+
+#[tokio::test]
 async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let runtime = runtime_at(temp.path()).await;
@@ -846,7 +1058,9 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
     assert!(state.skill_registry.is_some());
     assert!(!state.skill_registry_mutable);
     assert!(state.tool_registry.is_some());
-    assert!(state.memory_store.is_none());
+    assert!(state.memory_store.is_some());
+    assert!(!state.memory_stats_available);
+    assert!(!state.memory_store_mutable);
     assert!(state.audit_store.is_none());
     assert!(state.service_registry_store.is_none());
     assert!(Arc::ptr_eq(
@@ -882,7 +1096,7 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
         "NOT_FOUND",
     );
 
-    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 13);
+    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 11);
     for route in RUNTIME_UNAVAILABLE_ROUTES {
         let path = route
             .path
@@ -897,7 +1111,6 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
                     "/api/v1alpha1/skills/install" => {
                         serde_json::json!({"path": "/missing-skill"})
                     }
-                    "/api/v1alpha1/memory/query" => serde_json::json!({"query": "missing"}),
                     "/api/v1alpha1/memory/forget" => {
                         serde_json::json!({"entry_ids": ["missing-entry"]})
                     }

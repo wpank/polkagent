@@ -320,6 +320,20 @@ impl MemoryStore for SqliteMemoryStore {
         .ok_or_else(|| MemoryError::NotFound(format!("memory {id}")))?
     }
 
+    async fn peek_memory(&self, id: MemoryId) -> MemoryResult<MemoryEntry> {
+        let conn = self.inner.conn.lock();
+        conn.query_row(
+            "SELECT id, agent_id, episode_id, memory_type, content, embedding,
+                    metadata, provenance, created_at, accessed_at, access_count,
+                    relevance_score, confidence, classification
+             FROM memories WHERE id = ?1",
+            params![id.to_string()],
+            row_to_memory,
+        )
+        .optional()?
+        .ok_or_else(|| MemoryError::NotFound(format!("memory {id}")))?
+    }
+
     async fn search(&self, query: &MemoryQuery) -> MemoryResult<Vec<MemoryEntry>> {
         let conn = self.inner.conn.lock();
 
@@ -925,6 +939,23 @@ mod tests {
         let store = SqliteMemoryStore::open_in_memory().unwrap();
         let result = store.get_memory(MemoryId::new()).await;
         assert!(matches!(result, Err(MemoryError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn peek_memory_does_not_update_access_metadata() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+        let entry = make_entry(agent, "read-only projection", MemoryType::Semantic);
+        let id = entry.id;
+
+        store.store_memory(&entry).await.unwrap();
+        let first = store.peek_memory(id).await.unwrap();
+        let second = store.peek_memory(id).await.unwrap();
+
+        assert_eq!(first.access_count, 0);
+        assert_eq!(second.access_count, 0);
+        assert_eq!(first.accessed_at, entry.accessed_at);
+        assert_eq!(second.accessed_at, entry.accessed_at);
     }
 
     #[tokio::test]

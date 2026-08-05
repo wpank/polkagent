@@ -206,6 +206,16 @@ semantics are composed.
 | `POST` | `/api/v1alpha1/memory/forget` | Forget a memory |
 | `GET` | `/api/v1alpha1/memory/entries/:entry_id` | Get memory entry |
 
+Runtime-composed servers query the exact durable SQLite memory store already
+owned by `AppService`; they do not open a second store. Query namespaces are
+the canonical memory types (`episodic`, `semantic`, and `procedural`). Exact
+entry lookup uses a non-mutating port, so it does not update access timestamps
+or counters. When memory is disabled, queries return an empty list and exact
+lookups return `404`. Aggregate statistics and deletion remain explicit `501
+Not Implemented` responses until global statistics and durable batch-deletion
+semantics are composed. The query is a `POST`, so server-wide read-only mode
+rejects it with `405`; the exact-entry `GET` remains available.
+
 ### Audit
 
 | Method | Path | Description |

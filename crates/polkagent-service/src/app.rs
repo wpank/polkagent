@@ -2259,6 +2259,10 @@ mod tests {
                 .ok_or_else(|| MemoryError::NotFound(id.to_string()))
         }
 
+        async fn peek_memory(&self, id: MemoryId) -> MemoryResult<MemoryEntry> {
+            self.get_memory(id).await
+        }
+
         async fn search(&self, query: &MemoryQuery) -> MemoryResult<Vec<MemoryEntry>> {
             let guard = self.entries.lock().expect("lock");
             let results: Vec<MemoryEntry> = guard

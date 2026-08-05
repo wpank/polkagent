@@ -230,6 +230,45 @@ fn skill_reads_and_mutation_boundary_are_explicit() {
 }
 
 #[test]
+fn memory_reads_and_remaining_runtime_boundary_are_explicit() {
+    let source: Value = serde_yaml::from_str(OPENAPI_SOURCE).expect("parse OpenAPI YAML");
+
+    let query = &source["paths"]["/api/v1alpha1/memory/query"]["post"];
+    assert!(query["description"]
+        .as_str()
+        .expect("memory query description")
+        .contains("exact durable memory store owned by the production runtime"));
+    assert!(query["responses"].get("200").is_some());
+    assert_eq!(
+        query["responses"]["422"]["$ref"],
+        "#/components/responses/ValidationError"
+    );
+
+    let get = &source["paths"]["/api/v1alpha1/memory/entries/{entry_id}"]["get"];
+    assert!(get["description"]
+        .as_str()
+        .expect("memory get description")
+        .contains("canonical non-mutating lookup port"));
+    for status in ["200", "404", "422", "501", "500"] {
+        assert!(
+            get["responses"].get(status).is_some(),
+            "memory get must document {status}"
+        );
+    }
+
+    for (path, method) in [
+        ("/api/v1alpha1/memory/stats", "get"),
+        ("/api/v1alpha1/memory/forget", "post"),
+    ] {
+        assert_eq!(
+            source["paths"][path][method]["responses"]["501"]["$ref"],
+            "#/components/responses/NotImplemented",
+            "{method} {path}"
+        );
+    }
+}
+
+#[test]
 fn openapi_31_forbids_legacy_nullable_everywhere() {
     assert!(
         !OPENAPI_SOURCE.contains("nullable:"),

@@ -120,6 +120,14 @@ impl MemoryStore for TenantAwareStore {
         Ok(entry)
     }
 
+    async fn peek_memory(&self, id: MemoryId) -> MemoryResult<MemoryEntry> {
+        let entry = self.inner.peek_memory(id).await?;
+        if entry.agent_id != self.scope.agent_id {
+            return Err(crate::error::MemoryError::NotFound(format!("memory {id}")));
+        }
+        Ok(entry)
+    }
+
     async fn search(&self, query: &MemoryQuery) -> MemoryResult<Vec<MemoryEntry>> {
         // If caller specifies a different agent, return empty (no cross-tenant).
         if let Some(agent_id) = query.agent_id {

@@ -219,6 +219,13 @@ mod tests {
             ))
         }
 
+        async fn peek_memory(
+            &self,
+            id: polkagent_memory::types::MemoryId,
+        ) -> polkagent_memory::MemoryResult<polkagent_memory::types::MemoryEntry> {
+            self.get_memory(id).await
+        }
+
         async fn search(
             &self,
             _query: &MemoryQuery,

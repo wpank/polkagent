@@ -2662,6 +2662,7 @@ dependencies = [
  "polkagent-executor-fake",
  "polkagent-interaction",
  "polkagent-marketplace",
+ "polkagent-memory",
  "polkagent-payment",
  "polkagent-rate-limit",
  "polkagent-runtime",

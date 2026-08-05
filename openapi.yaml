@@ -1372,9 +1372,12 @@ paths:
       summary: Search memory
       tags: [memory]
       description: |
-        Performs a semantic search over stored memories and returns ranked
-        results. Returns `501 Not Implemented` when no memory store is
-        configured.
+        Queries the exact durable memory store owned by the production runtime
+        and returns results in relevance order. `namespace`, when supplied,
+        selects `episodic`, `semantic`, or `procedural` memory. A runtime with
+        memory disabled returns an empty result. Custom API composition without
+        a memory store returns `501 Not Implemented`. Because this read uses
+        `POST`, server-wide read-only mode rejects it with `405` before routing.
       requestBody:
         required: true
         content:
@@ -1384,7 +1387,7 @@ paths:
             example:
               query: "OAuth token refresh flow"
               limit: 5
-              namespace: "code-context"
+              namespace: "semantic"
       responses:
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -1396,7 +1399,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MemoryQueryResponse"
-        "400":
+        "422":
           $ref: "#/components/responses/ValidationError"
         "501":
           $ref: "#/components/responses/NotImplemented"
@@ -1409,9 +1412,10 @@ paths:
       summary: Get memory statistics
       tags: [memory]
       description: |
-        Returns aggregate statistics (total entries, byte usage, namespace
-        count). Returns `501 Not Implemented` when no memory store is
-        configured.
+        Returns aggregate statistics when a custom API memory store implements
+        that contract. Production runtime composition returns `501 Not
+        Implemented` because the canonical memory store has no truthful global
+        byte-count and namespace-count port.
       responses:
         "200":
           description: Memory statistics.
@@ -1435,8 +1439,9 @@ paths:
       tags: [memory]
       description: |
         Deletes one or more memory entries by ID. Returns the count of
-        actually deleted entries. Returns `501 Not Implemented` when no
-        memory store is configured.
+        actually deleted entries. Production runtime composition returns `501
+        Not Implemented` until durable batch-deletion policy and mutation
+        semantics are composed.
       requestBody:
         required: true
         content:
@@ -1478,8 +1483,11 @@ paths:
       summary: Get a memory entry
       tags: [memory]
       description: |
-        Returns a single memory entry by its ID.
-        Returns `501 Not Implemented` when no memory store is configured.
+        Returns one entry through the canonical non-mutating lookup port of the
+        exact durable memory store owned by the production runtime. Observation
+        does not change access timestamps or counters. A runtime with memory
+        disabled returns `404`; custom API composition without a memory store
+        returns `501 Not Implemented`.
       responses:
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -1493,6 +1501,8 @@ paths:
                 $ref: "#/components/schemas/MemoryEntryResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":

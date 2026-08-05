@@ -23,7 +23,7 @@ use polkagent_store_sqlite::{SqliteApiArtifactStore, SqliteInteractionStore, Sql
 use polkagent_store_trait::RunStore;
 use rusqlite::OptionalExtension;
 
-use crate::dto::TurnSummary;
+use crate::dto::{MemoryResult as ApiMemoryResult, TurnSummary};
 use crate::run::{ListRunsParams, RunError, RunManagerTrait, RunRecord};
 use crate::state::{AgentStore, AgentStoreError, AppState, SkillRegistry, ToolRegistryStore};
 
@@ -47,10 +47,12 @@ pub struct UnavailableRuntimeRoute {
 /// Exact API boundary that remains unavailable in runtime-composed servers.
 ///
 /// Loaded skill definitions and tools have read-only adapters over the exact
-/// [`AppService`] instances owned by the runtime. Skill package mutations and
-/// memory ports remain unavailable. Audit and service-registry persistence are
-/// not composed by [`polkagent_runtime::RuntimeFactory`] at all. No in-memory
-/// substitutes are installed for these routes.
+/// [`AppService`] instances owned by the runtime. Memory query and exact lookup
+/// project the exact runtime-owned durable memory store. Skill package
+/// mutations, aggregate memory statistics, and memory deletion remain
+/// unavailable. Audit and service-registry persistence are not composed by
+/// [`polkagent_runtime::RuntimeFactory`] at all. No in-memory substitutes are
+/// installed for these routes.
 pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
     UnavailableRuntimeRoute {
         dependency: "skills",
@@ -72,27 +74,15 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
     },
     UnavailableRuntimeRoute {
         dependency: "memory",
-        method: "POST",
-        path: "/api/v1alpha1/memory/query",
-        reason: "the runtime memory store has no API MemoryStore adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "memory",
         method: "GET",
         path: "/api/v1alpha1/memory/stats",
-        reason: "the runtime memory store has no API MemoryStore adapter",
+        reason: "the canonical memory store has no global byte and namespace statistics port",
     },
     UnavailableRuntimeRoute {
         dependency: "memory",
         method: "POST",
         path: "/api/v1alpha1/memory/forget",
-        reason: "the runtime memory store has no API MemoryStore adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "memory",
-        method: "GET",
-        path: "/api/v1alpha1/memory/entries/{entry_id}",
-        reason: "the runtime memory store has no API MemoryStore adapter",
+        reason: "durable batch deletion policy and mutation semantics are not composed",
     },
     UnavailableRuntimeRoute {
         dependency: "audit",
@@ -153,6 +143,7 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
     let pool = Arc::new(runtime.pool().clone());
     let artifacts = Arc::new(SqliteApiArtifactStore::new(runtime.pool().clone()));
     let skills = Arc::new(RuntimeSkillRegistry::from_runtime(runtime));
+    let memory = Arc::new(RuntimeMemoryStore::from_runtime(runtime));
     let tools = Arc::new(RuntimeToolRegistryStore::from_runtime(runtime));
     let agents = Arc::new(RuntimeAgentStore::from_runtime(runtime));
     let runs = Arc::new(RuntimeRunManager::from_runtime(runtime));
@@ -171,11 +162,120 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
     .with_event_store(pool.clone())
     .with_artifact_store(artifacts)
     .with_read_only_skill_registry(skills)
+    .with_read_only_memory_store(memory)
     .with_tool_registry(tools)
     .with_payment_store(pool.clone())
     .with_conversation_store(pool)
     .with_interaction_service(interaction_service)
     .with_interaction_store(interaction_store)
+}
+
+/// Read-only API projection of the canonical memory store owned by
+/// [`AppService`].
+///
+/// The adapter retains the same store `Arc` selected by `RuntimeFactory` and
+/// uses the canonical non-mutating lookup port. When memory is disabled it
+/// exposes an empty query view and ordinary not-found lookups. Aggregate
+/// statistics and deletion deliberately fail closed because production does
+/// not yet compose those contracts.
+#[derive(Clone)]
+pub struct RuntimeMemoryStore {
+    store: Option<Arc<dyn polkagent_memory::MemoryStore + Send + Sync>>,
+}
+
+impl std::fmt::Debug for RuntimeMemoryStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeMemoryStore")
+            .field("enabled", &self.store.is_some())
+            .field("read_only", &true)
+            .finish()
+    }
+}
+
+impl RuntimeMemoryStore {
+    /// Build a read view over an explicitly supplied canonical memory store.
+    #[must_use]
+    pub fn new(store: Option<Arc<dyn polkagent_memory::MemoryStore + Send + Sync>>) -> Self {
+        Self { store }
+    }
+
+    /// Capture the exact memory store already owned by the shared runtime.
+    #[must_use]
+    pub fn from_runtime(runtime: &PolkagentRuntime) -> Self {
+        Self::new(runtime.app().memory_store().cloned())
+    }
+}
+
+fn project_memory(entry: polkagent_memory::MemoryEntry) -> ApiMemoryResult {
+    ApiMemoryResult {
+        id: entry.id.to_string(),
+        content: entry.content,
+        score: entry.relevance_score,
+        namespace: Some(entry.memory_type.to_string()),
+        created_at: entry.created_at.to_rfc3339(),
+    }
+}
+
+#[async_trait]
+impl crate::routes::memory::MemoryStore for RuntimeMemoryStore {
+    async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        namespace: Option<&str>,
+    ) -> Result<Vec<ApiMemoryResult>, String> {
+        let Some(store) = &self.store else {
+            return Ok(Vec::new());
+        };
+        let memory_types = namespace
+            .map(str::parse::<polkagent_memory::MemoryType>)
+            .transpose()
+            .map_err(|error| format!("invalid memory namespace: {error}"))?
+            .map(|memory_type| vec![memory_type]);
+        let query = polkagent_memory::MemoryQuery {
+            agent_id: None,
+            query_text: query.to_owned(),
+            memory_types,
+            limit,
+            min_relevance: None,
+            since: None,
+            episode_id: None,
+        };
+        store
+            .search(&query)
+            .await
+            .map(|entries| entries.into_iter().map(project_memory).collect())
+            .map_err(|error| {
+                tracing::warn!(error = %error, "runtime memory query failed");
+                "runtime memory query failed".to_owned()
+            })
+    }
+
+    async fn stats(&self) -> Result<crate::routes::memory::MemoryStats, String> {
+        Err("aggregate runtime memory statistics are not composed".to_owned())
+    }
+
+    async fn delete_entries(&self, _entry_ids: &[String]) -> Result<u32, String> {
+        Err("runtime memory store is read-only".to_owned())
+    }
+
+    async fn get_entry(&self, entry_id: &str) -> Result<Option<ApiMemoryResult>, String> {
+        let Some(store) = &self.store else {
+            return Ok(None);
+        };
+        let id = entry_id
+            .parse::<polkagent_memory::MemoryId>()
+            .map_err(|_| "invalid memory entry ID".to_owned())?;
+        match store.peek_memory(id).await {
+            Ok(entry) => Ok(Some(project_memory(entry))),
+            Err(polkagent_memory::MemoryError::NotFound(_)) => Ok(None),
+            Err(error) => {
+                tracing::warn!(error = %error, memory_id = %entry_id, "runtime memory lookup failed");
+                Err("runtime memory lookup failed".to_owned())
+            }
+        }
+    }
 }
 
 /// Read-only API projection of the validated skill definitions loaded into

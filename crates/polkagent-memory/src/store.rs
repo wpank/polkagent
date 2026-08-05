@@ -20,6 +20,13 @@ pub trait MemoryStore: Send + Sync {
     /// Retrieve a single memory by its identifier.
     async fn get_memory(&self, id: MemoryId) -> MemoryResult<MemoryEntry>;
 
+    /// Retrieve a single memory without updating access metadata.
+    ///
+    /// Read-only projections use this method so observation does not change
+    /// `accessed_at` or `access_count`. Interactive retrieval paths should use
+    /// [`Self::get_memory`] when access tracking is part of their semantics.
+    async fn peek_memory(&self, id: MemoryId) -> MemoryResult<MemoryEntry>;
+
     /// Search memories matching the given query.
     ///
     /// Uses FTS5 full-text search when available, falling back to SQL `LIKE`

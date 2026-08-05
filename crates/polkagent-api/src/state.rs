@@ -408,6 +408,10 @@ pub struct AppState {
     pub payment_store: Option<Arc<dyn PaymentStore>>,
     /// Memory store (optional — returns 501 when not configured).
     pub memory_store: Option<Arc<dyn crate::routes::memory::MemoryStore>>,
+    /// Whether aggregate memory statistics are supported by the configured store.
+    pub memory_stats_available: bool,
+    /// Whether destructive memory operations are supported by the configured store.
+    pub memory_store_mutable: bool,
     /// Audit log store (optional — returns 501 when not configured).
     pub audit_store: Option<Arc<dyn AuditStore>>,
     /// Conversation store (optional — returns 501 when not configured).
@@ -457,6 +461,8 @@ impl AppState {
             tool_registry: None,
             payment_store: None,
             memory_store: None,
+            memory_stats_available: false,
+            memory_store_mutable: false,
             audit_store: None,
             conversation_store: None,
             service_registry_store: None,
@@ -509,10 +515,24 @@ impl AppState {
         self
     }
 
-    /// Set the memory store.
+    /// Set a memory store that supports the complete API contract.
     #[must_use]
     pub fn with_memory_store(mut self, store: Arc<dyn crate::routes::memory::MemoryStore>) -> Self {
         self.memory_store = Some(store);
+        self.memory_stats_available = true;
+        self.memory_store_mutable = true;
+        self
+    }
+
+    /// Set an authoritative read-only memory projection.
+    #[must_use]
+    pub fn with_read_only_memory_store(
+        mut self,
+        store: Arc<dyn crate::routes::memory::MemoryStore>,
+    ) -> Self {
+        self.memory_store = Some(store);
+        self.memory_stats_available = false;
+        self.memory_store_mutable = false;
         self
     }
 

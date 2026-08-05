@@ -8,8 +8,9 @@
 //! | `GET` | `/memory/entries/:entry_id` | [`get_memory_entry`] |
 //!
 //! All endpoints return 501 Not Implemented when no memory store is configured
-//! via [`AppState::memory_store`]. When a store is configured the handlers
-//! delegate to its methods.
+//! via [`AppState::memory_store`]. Runtime composition exposes query and exact
+//! lookup over its authoritative store while leaving aggregate statistics and
+//! destructive operations unavailable until their production contracts exist.
 
 use axum::{
     extract::{Path, State},
@@ -40,6 +41,14 @@ pub async fn query_memory(
     State(state): State<AppState>,
     Json(body): Json<MemoryQueryRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    if let Some(namespace) = body.namespace.as_deref() {
+        if !matches!(namespace, "episodic" | "semantic" | "procedural") {
+            return Err(ApiError::ValidationError(format!(
+                "invalid memory namespace '{namespace}': expected episodic, semantic, or procedural"
+            )));
+        }
+    }
+
     let store = state
         .memory_store
         .as_ref()
@@ -69,6 +78,11 @@ pub async fn memory_stats(State(state): State<AppState>) -> Result<impl IntoResp
         .memory_store
         .as_ref()
         .ok_or_else(|| ApiError::NotImplemented("memory store not configured".to_owned()))?;
+    if !state.memory_stats_available {
+        return Err(ApiError::NotImplemented(
+            "aggregate runtime memory statistics are not composed".to_owned(),
+        ));
+    }
 
     let summary = backend
         .stats()
@@ -99,6 +113,11 @@ pub async fn forget_memory(
         .memory_store
         .as_ref()
         .ok_or_else(|| ApiError::NotImplemented("memory store not configured".to_owned()))?;
+    if !state.memory_store_mutable {
+        return Err(ApiError::NotImplemented(
+            "runtime memory store is read-only".to_owned(),
+        ));
+    }
 
     let deleted = store
         .delete_entries(&body.entry_ids)
@@ -128,6 +147,8 @@ pub async fn get_memory_entry(
         .memory_store
         .as_ref()
         .ok_or_else(|| ApiError::NotImplemented("memory store not configured".to_owned()))?;
+    uuid::Uuid::parse_str(&entry_id)
+        .map_err(|_| ApiError::ValidationError(format!("invalid memory entry ID: '{entry_id}'")))?;
 
     let entry = store
         .get_entry(&entry_id)
@@ -159,7 +180,8 @@ pub struct MemoryStats {
 ///
 /// All methods are async to support both in-memory and network-backed stores.
 /// Implementations must be `Send + Sync` so that `Arc<dyn MemoryStore>` can
-/// be shared across Axum handlers.
+/// be shared across Axum handlers. Capability flags on [`AppState`] prevent
+/// unavailable aggregate or mutation methods from being called.
 #[async_trait::async_trait]
 pub trait MemoryStore: Send + Sync {
     /// Search for memory entries matching a query.
