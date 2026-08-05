@@ -355,6 +355,10 @@ impl RunEvent {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "event tests intentionally panic when static serialization fixtures fail"
+)]
 mod tests {
     use super::*;
     use crate::ids::{EventId, RunId};
@@ -451,7 +455,7 @@ mod tests {
         let run_id = RunId::new();
         let evt = RunEvent::new_durable(
             EventId::new(),
-            run_id.clone(),
+            run_id,
             1,
             EventKind::RunCreated,
             make_correlation(run_id),
@@ -478,7 +482,7 @@ mod tests {
         let run_id = RunId::new();
         let evt = RunEvent::new_durable(
             EventId::new(),
-            run_id.clone(),
+            run_id,
             42,
             EventKind::RunCompleted {
                 output_artifact_id: Some(ArtifactId::new()),
@@ -499,10 +503,10 @@ mod tests {
     fn monotonic_sequence_invariant_can_be_checked() {
         // Demonstrate that sequence numbers are numeric and comparable.
         let run_id = RunId::new();
-        let correlation = make_correlation(run_id.clone());
+        let correlation = make_correlation(run_id);
         let evt1 = RunEvent::new_durable(
             EventId::new(),
-            run_id.clone(),
+            run_id,
             1,
             EventKind::RunCreated,
             correlation.clone(),
@@ -518,7 +522,7 @@ mod tests {
     fn event_correlation_default_has_only_run_id() {
         let run_id = RunId::new();
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
         assert_eq!(correlation.run_id, run_id);

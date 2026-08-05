@@ -405,6 +405,10 @@ pub struct ExternalRef {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "effect tests intentionally panic at serialization and state-transition fixture boundaries"
+)]
 mod tests {
     use super::*;
     use crate::ids::{RunId, StepId, TurnId};

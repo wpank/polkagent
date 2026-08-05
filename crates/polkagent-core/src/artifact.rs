@@ -238,6 +238,10 @@ impl Artifact {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "artifact tests intentionally panic when static serialization fixtures fail"
+)]
 mod tests {
     use super::*;
 

@@ -203,6 +203,10 @@ impl Turn {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "turn tests intentionally panic at message, step, and serialization fixture boundaries"
+)]
 mod tests {
     use super::*;
     use crate::ids::{RunId, TurnId};

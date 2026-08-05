@@ -77,6 +77,10 @@ impl std::fmt::Display for DurabilityClass {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "primitive-type tests intentionally panic when static serialization fixtures fail"
+)]
 mod tests {
     use super::*;
 

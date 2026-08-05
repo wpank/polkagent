@@ -253,6 +253,12 @@ impl UsageSummary {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::unwrap_used,
+    reason = "usage tests intentionally assert exact fixture values and panic at serialization boundaries"
+)]
 mod tests {
     use super::*;
     use crate::ids::{RunId, StepId, UsageRecordId};

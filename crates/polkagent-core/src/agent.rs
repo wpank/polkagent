@@ -438,6 +438,11 @@ impl AgentSpec {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "agent tests intentionally panic at serialization and validation fixture boundaries"
+)]
 mod tests {
     use super::*;
 

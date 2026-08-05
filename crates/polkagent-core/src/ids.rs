@@ -162,6 +162,11 @@ define_id!(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "identifier tests intentionally panic when static UUID and serialization fixtures fail"
+)]
 mod tests {
     use super::*;
 

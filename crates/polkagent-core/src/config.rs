@@ -106,6 +106,10 @@ impl std::fmt::Display for DataClassification {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "configuration tests intentionally panic when static serialization fixtures fail"
+)]
 mod tests {
     use super::*;
 

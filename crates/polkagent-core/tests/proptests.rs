@@ -367,8 +367,8 @@ proptest! {
         prop_assert_eq!(path1.cache_write_tokens, path2.cache_write_tokens);
     }
 
-    /// Accumulation never panics or overflows — it uses saturating
-    /// arithmetic, so the result is always <= u32::MAX.
+    /// Accumulation applies saturating addition independently to every token
+    /// counter, including inputs whose mathematical sum exceeds `u32::MAX`.
     #[test]
     fn token_usage_accumulate_no_overflow(
         a in arb_token_usage(),
@@ -377,11 +377,17 @@ proptest! {
         let mut result = a;
         result.accumulate(&b);
 
-        prop_assert!(result.input_tokens       <= u32::MAX);
-        prop_assert!(result.output_tokens      <= u32::MAX);
-        prop_assert!(result.total_tokens       <= u32::MAX);
-        prop_assert!(result.cache_read_tokens  <= u32::MAX);
-        prop_assert!(result.cache_write_tokens <= u32::MAX);
+        prop_assert_eq!(result.input_tokens, a.input_tokens.saturating_add(b.input_tokens));
+        prop_assert_eq!(result.output_tokens, a.output_tokens.saturating_add(b.output_tokens));
+        prop_assert_eq!(result.total_tokens, a.total_tokens.saturating_add(b.total_tokens));
+        prop_assert_eq!(
+            result.cache_read_tokens,
+            a.cache_read_tokens.saturating_add(b.cache_read_tokens)
+        );
+        prop_assert_eq!(
+            result.cache_write_tokens,
+            a.cache_write_tokens.saturating_add(b.cache_write_tokens)
+        );
     }
 
     /// Accumulating zero (Default) is identity: a + 0 == a.

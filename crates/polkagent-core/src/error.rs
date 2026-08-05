@@ -213,6 +213,10 @@ impl PolkagentError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "error tests intentionally unwrap rejection results to assert exact domain variants"
+)]
 mod tests {
     use super::*;
 
