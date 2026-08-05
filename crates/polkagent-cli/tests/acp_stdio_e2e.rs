@@ -60,6 +60,32 @@ struct DurablePromptIdentity {
     checkpoint: u64,
 }
 
+fn durable_work_counts(db_path: &std::path::Path, conversation_id: &str) -> (i64, i64, i64) {
+    let connection = rusqlite::Connection::open(db_path).expect("open durable work database");
+    let turns = connection
+        .query_row(
+            "SELECT COUNT(*) FROM interaction_turns WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .expect("count durable interaction turns");
+    let runs = connection
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .expect("count durable interaction runs");
+    let events = connection
+        .query_row(
+            "SELECT COUNT(*) FROM interaction_events WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| row.get(0),
+        )
+        .expect("count durable interaction events");
+    (turns, runs, events)
+}
+
 fn write_local_provider_config(path: &std::path::Path, id: &str, base_url: &str) {
     std::fs::write(
         path,
@@ -705,6 +731,231 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
             .lock()
             .expect("third observed lock")
             .stdout_lines,
+    );
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the official-client proof spans fresh, cross-workspace, exact-restart, and legacy ACP processes"
+)]
+async fn official_client_enforces_durable_workspace_origin_before_load_or_resume() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let workspace_alpha = temp.path().join("workspace-alpha");
+    let workspace_beta = temp.path().join("workspace-beta");
+    std::fs::create_dir(&workspace_alpha).expect("create alpha workspace");
+    std::fs::create_dir(&workspace_beta).expect("create beta workspace");
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    create_active_agent(binary, &db_path, "origin-acp", "fake/test");
+
+    let identity = Arc::new(Mutex::new(None::<String>));
+    let identity_by_client = Arc::clone(&identity);
+    let first_observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let first_agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args(["acp", "--agent", "origin-acp"])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            ),
+        Arc::clone(&first_observed),
+    );
+    let first_workspace = workspace_alpha.clone();
+    agent_client_protocol::Client
+        .connect_with(
+            first_agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(first_workspace))
+                    .block_task()
+                    .await?;
+                connection
+                    .send_request(PromptRequest::new(
+                        session.session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new(
+                            "Bind this session to workspace alpha.",
+                        ))],
+                    ))
+                    .block_task()
+                    .await?;
+                *identity_by_client.lock().expect("session identity lock") =
+                    Some(session.session_id.0.as_ref().to_owned());
+                Ok(())
+            },
+        )
+        .await
+        .expect("create origin-bound ACP session");
+    let session_id = identity
+        .lock()
+        .expect("session identity lock")
+        .clone()
+        .expect("durable ACP session identity");
+    let stored_origin: String = rusqlite::Connection::open(&db_path)
+        .expect("open origin database")
+        .query_row(
+            "SELECT origin_working_directory FROM interaction_sessions
+             WHERE conversation_id = ?1",
+            [&session_id],
+            |row| row.get(0),
+        )
+        .expect("load exact stored origin");
+    assert_eq!(stored_origin, workspace_alpha.to_string_lossy());
+    let before_attach_attempts = durable_work_counts(&db_path, &session_id);
+
+    let second_observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let second_agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args(["acp", "--agent", "origin-acp"])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            ),
+        Arc::clone(&second_observed),
+    );
+    let exact_session = agent_client_protocol::schema::v1::SessionId::new(session_id.clone());
+    let exact_workspace = workspace_alpha.clone();
+    let other_workspace = workspace_beta.clone();
+    let traversal_workspace = workspace_alpha.join("nested/../other");
+    agent_client_protocol::Client
+        .connect_with(
+            second_agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                for error in [
+                    connection
+                        .send_request(LoadSessionRequest::new(
+                            exact_session.clone(),
+                            other_workspace.clone(),
+                        ))
+                        .block_task()
+                        .await
+                        .expect_err("workspace beta must not cross-load alpha"),
+                    connection
+                        .send_request(ResumeSessionRequest::new(
+                            exact_session.clone(),
+                            other_workspace,
+                        ))
+                        .block_task()
+                        .await
+                        .expect_err("workspace beta must not cross-resume alpha"),
+                ] {
+                    assert_eq!(
+                        error.code,
+                        agent_client_protocol::Error::invalid_request().code
+                    );
+                }
+                let traversal = connection
+                    .send_request(LoadSessionRequest::new(
+                        exact_session.clone(),
+                        traversal_workspace,
+                    ))
+                    .block_task()
+                    .await
+                    .expect_err("traversal cwd must fail before backend replay");
+                assert_eq!(
+                    traversal.code,
+                    agent_client_protocol::Error::invalid_params().code
+                );
+                let relative = connection
+                    .send_request(ResumeSessionRequest::new(
+                        exact_session.clone(),
+                        std::path::PathBuf::from("relative/workspace"),
+                    ))
+                    .block_task()
+                    .await
+                    .expect_err("relative cwd must fail before backend replay");
+                assert_eq!(
+                    relative.code,
+                    agent_client_protocol::Error::invalid_params().code
+                );
+                connection
+                    .send_request(LoadSessionRequest::new(exact_session, exact_workspace))
+                    .block_task()
+                    .await?;
+                Ok(())
+            },
+        )
+        .await
+        .expect("exact workspace loads after rejected cross-workspace requests");
+    assert_eq!(
+        durable_work_counts(&db_path, &session_id),
+        before_attach_attempts,
+        "failed load/resume requests must not append events, turns, or runs"
+    );
+
+    {
+        let connection = rusqlite::Connection::open(&db_path).expect("open legacy fixture db");
+        connection
+            .execute_batch("DROP TRIGGER trg_interaction_origin_immutable;")
+            .expect("allow exact legacy fixture mutation");
+        connection
+            .execute(
+                "UPDATE interaction_sessions SET origin_working_directory = NULL
+                 WHERE conversation_id = ?1",
+                [&session_id],
+            )
+            .expect("model interaction created before cwd provenance");
+    }
+    let legacy_agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args(["acp", "--agent", "origin-acp"])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            ),
+        Arc::new(Mutex::new(ObservedUpdates::default())),
+    );
+    let legacy_session = agent_client_protocol::schema::v1::SessionId::new(session_id.clone());
+    agent_client_protocol::Client
+        .connect_with(
+            legacy_agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let load_error = connection
+                    .send_request(LoadSessionRequest::new(
+                        legacy_session.clone(),
+                        workspace_alpha.clone(),
+                    ))
+                    .block_task()
+                    .await
+                    .expect_err("legacy load must not claim an unproven cwd");
+                let resume_error = connection
+                    .send_request(ResumeSessionRequest::new(legacy_session, workspace_alpha))
+                    .block_task()
+                    .await
+                    .expect_err("legacy resume must not claim an unproven cwd");
+                for error in [load_error, resume_error] {
+                    assert_eq!(
+                        error.code,
+                        agent_client_protocol::Error::invalid_request().code
+                    );
+                    assert!(error
+                        .data
+                        .as_ref()
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(
+                            |detail| detail.contains("no durable working-directory provenance")
+                        ));
+                }
+                Ok(())
+            },
+        )
+        .await
+        .expect("legacy ACP load failed closed without terminating protocol");
+    assert_eq!(
+        durable_work_counts(&db_path, &session_id),
+        before_attach_attempts
     );
 }
 

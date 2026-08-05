@@ -70,6 +70,9 @@ const SCHEMA_V15: &str = include_str!("v15_artifact_projection.sql");
 /// V16: Protect exact effect outcome attempt/run lineage from mutation.
 const SCHEMA_V16: &str = include_str!("v16_effect_outcome_lineage.sql");
 
+/// V17: Preserve immutable interaction-origin working-directory provenance.
+const SCHEMA_V17: &str = include_str!("v17_interaction_origin.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -88,6 +91,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (14, "durable interaction sessions", SCHEMA_V14),
     (15, "complete artifact projection", SCHEMA_V15),
     (16, "immutable effect outcome lineage", SCHEMA_V16),
+    (17, "immutable interaction origin cwd", SCHEMA_V17),
 ];
 
 // ---------------------------------------------------------------------------
@@ -224,7 +228,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -233,7 +237,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -414,6 +418,90 @@ mod tests {
             )
             .expect("load v16 registration");
         assert_eq!(description, "immutable effect outcome lineage");
+        assert!(!checksum.is_empty());
+    }
+
+    #[test]
+    fn origin_migration_preserves_legacy_unknown_and_guards_new_rows() {
+        let conn = open_mem();
+        conn.execute_batch("CREATE TABLE conversations (id TEXT PRIMARY KEY);")
+            .expect("create referenced legacy conversation table");
+        conn.execute_batch(SCHEMA_V14)
+            .expect("apply legacy interaction session schema");
+        let legacy_id = uuid::Uuid::now_v7().to_string();
+        conn.execute("INSERT INTO conversations (id) VALUES (?1)", [&legacy_id])
+            .expect("seed legacy conversation");
+        conn.execute(
+            "INSERT INTO interaction_sessions
+                (conversation_id, config_json, state, created_at, updated_at)
+             VALUES (?1, '{}', 'active', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            [&legacy_id],
+        )
+        .expect("seed pre-provenance interaction");
+
+        conn.execute_batch(SCHEMA_V17)
+            .expect("apply interaction origin migration");
+        let legacy_origin: Option<String> = conn
+            .query_row(
+                "SELECT origin_working_directory FROM interaction_sessions
+                 WHERE conversation_id = ?1",
+                [&legacy_id],
+                |row| row.get(0),
+            )
+            .expect("read legacy origin");
+        assert_eq!(legacy_origin, None, "migration must not invent provenance");
+
+        let new_id = uuid::Uuid::now_v7().to_string();
+        conn.execute("INSERT INTO conversations (id) VALUES (?1)", [&new_id])
+            .expect("seed current conversation");
+        conn.execute(
+            "INSERT INTO interaction_sessions
+                (conversation_id, config_json, state, created_at, updated_at,
+                 origin_working_directory)
+             VALUES (?1, '{}', 'active', '2024-01-01T00:00:00Z',
+                     '2024-01-01T00:00:00Z', '/workspace/exact')",
+            [&new_id],
+        )
+        .expect("new interaction records exact origin");
+
+        let missing_id = uuid::Uuid::now_v7().to_string();
+        conn.execute("INSERT INTO conversations (id) VALUES (?1)", [&missing_id])
+            .expect("seed missing-origin conversation");
+        let missing_origin_error = conn
+            .execute(
+                "INSERT INTO interaction_sessions
+                    (conversation_id, config_json, state, created_at, updated_at)
+                 VALUES (?1, '{}', 'active', '2024-01-01T00:00:00Z',
+                         '2024-01-01T00:00:00Z')",
+                [&missing_id],
+            )
+            .expect_err("new interaction without provenance must fail");
+        assert!(missing_origin_error
+            .to_string()
+            .contains("origin working directory"));
+
+        let mutation_error = conn
+            .execute(
+                "UPDATE interaction_sessions SET origin_working_directory = '/workspace/other'
+                 WHERE conversation_id = ?1",
+                [&new_id],
+            )
+            .expect_err("durable interaction origin must be immutable");
+        assert!(mutation_error.to_string().contains("immutable"));
+    }
+
+    #[test]
+    fn interaction_origin_migration_is_registered_with_a_nonempty_checksum() {
+        let conn = open_mem();
+        migrate(&conn).expect("migrate");
+        let (description, checksum): (String, String) = conn
+            .query_row(
+                "SELECT description, checksum FROM schema_migrations WHERE version = 17",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load v17 registration");
+        assert_eq!(description, "immutable interaction origin cwd");
         assert!(!checksum.is_empty());
     }
 

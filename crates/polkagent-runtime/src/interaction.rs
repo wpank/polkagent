@@ -979,11 +979,8 @@ impl InteractionService for DurableInteractionService {
     ) -> Result<InteractionSummary, InteractionError> {
         request.config.validate()?;
         ensure_supported_config(&request.config)?;
-        if !request.client_context.working_directory.is_absolute() {
-            return Err(InteractionError::invalid_request(
-                "working_directory must be absolute",
-            ));
-        }
+        request.client_context.validate()?;
+        let origin_working_directory = request.client_context.working_directory.clone();
         let mut config = request.config;
         let agent_id = self.resolve_target(&config.target)?;
         config.target = InteractionTarget::Agent(agent_id);
@@ -1000,6 +997,7 @@ impl InteractionService for DurableInteractionService {
             .create_interaction(NewInteraction {
                 conversation_id,
                 config,
+                origin_working_directory,
                 created_at,
             })
             .await
@@ -1028,6 +1026,16 @@ impl InteractionService for DurableInteractionService {
         conversation_id: ConversationId,
     ) -> Result<InteractionSummary, InteractionError> {
         self.store.load_interaction(conversation_id).await
+    }
+
+    async fn verify_interaction_origin(
+        &self,
+        conversation_id: ConversationId,
+        working_directory: &std::path::Path,
+    ) -> Result<(), InteractionError> {
+        self.store
+            .verify_interaction_origin(conversation_id, working_directory)
+            .await
     }
 
     async fn list_turns(
@@ -1076,11 +1084,13 @@ impl InteractionService for DurableInteractionService {
         let _prompt_guard = self.prompt_lock.lock().await;
         request.validate()?;
         ensure_supported_overrides(&request.config_overrides)?;
-        if !request.client_context.working_directory.is_absolute() {
-            return Err(InteractionError::invalid_request(
-                "working_directory must be absolute",
-            ));
-        }
+        request.client_context.validate()?;
+        self.store
+            .verify_interaction_origin(
+                request.conversation_id,
+                &request.client_context.working_directory,
+            )
+            .await?;
         let prompt = prompt_text(&request.content)?;
         let interaction = self.store.load_interaction(request.conversation_id).await?;
         if interaction.state != InteractionState::Active {
@@ -1920,6 +1930,33 @@ mod tests {
         })
     }
 
+    fn durable_work_counts(pool: &SqlitePool, conversation_id: ConversationId) -> (i64, i64, i64) {
+        let writer = pool.writer();
+        let conversation_id = conversation_id.to_string();
+        let turns = writer
+            .query_row(
+                "SELECT COUNT(*) FROM interaction_turns WHERE conversation_id = ?1",
+                [&conversation_id],
+                |row| row.get(0),
+            )
+            .expect("count interaction turns");
+        let runs = writer
+            .query_row(
+                "SELECT COUNT(*) FROM runs WHERE conversation_id = ?1",
+                [&conversation_id],
+                |row| row.get(0),
+            )
+            .expect("count interaction runs");
+        let events = writer
+            .query_row(
+                "SELECT COUNT(*) FROM interaction_events WHERE conversation_id = ?1",
+                [&conversation_id],
+                |row| row.get(0),
+            )
+            .expect("count interaction events");
+        (turns, runs, events)
+    }
+
     async fn seed_interaction(
         pool: &SqlitePool,
         agent_id: AgentId,
@@ -1933,6 +1970,7 @@ mod tests {
             .create_interaction(NewInteraction {
                 conversation_id,
                 config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                origin_working_directory: std::path::PathBuf::from("/tmp"),
                 created_at: Utc::now(),
             })
             .await
@@ -3018,6 +3056,110 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one proof keeps origin creation, retry, restart, and before-work rejection counts exact"
+    )]
+    async fn durable_origin_matches_across_retry_and_restart_and_rejects_before_work() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let (app, service, _bus) = test_service(&pool, spec, true);
+        let origin = PathBuf::from("/workspace/alpha");
+        let interaction = service
+            .new_interaction(CreateInteractionRequest {
+                title: Some("origin proof".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                client_context: ClientContext::new(origin.clone()).expect("exact origin"),
+            })
+            .await
+            .expect("create origin-bound interaction");
+        let stored_origin: String = pool
+            .writer()
+            .query_row(
+                "SELECT origin_working_directory FROM interaction_sessions
+                 WHERE conversation_id = ?1",
+                [interaction.conversation_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("load persisted origin");
+        assert_eq!(stored_origin, "/workspace/alpha");
+
+        let first_turn_id = InteractionTurnId::new();
+        let mut first_request = prompt_request(
+            interaction.conversation_id,
+            first_turn_id,
+            "first exact-origin turn",
+        );
+        first_request.client_context =
+            ClientContext::new(origin.clone()).expect("exact prompt origin");
+        let mut first = service
+            .prompt(first_request.clone())
+            .await
+            .expect("exact origin starts work");
+        let first_handle = first.handle.clone();
+        let _ = wait_for_terminal(&mut first).await;
+        let retry = service
+            .prompt(first_request.clone())
+            .await
+            .expect("exact-origin retry returns durable winner");
+        assert_eq!(retry.handle, first_handle);
+
+        let before_rejections = durable_work_counts(&pool, interaction.conversation_id);
+        let mut mismatched_retry = first_request;
+        mismatched_retry.client_context =
+            ClientContext::new(PathBuf::from("/workspace/beta")).expect("other workspace");
+        let mismatch = service
+            .prompt(mismatched_retry)
+            .await
+            .expect_err("retry from another workspace must fail");
+        assert_eq!(mismatch.code, InteractionErrorCode::Conflict);
+
+        for invalid in [
+            PathBuf::from("relative/path"),
+            PathBuf::from("/workspace/alpha/../beta"),
+        ] {
+            let mut request = prompt_request(
+                interaction.conversation_id,
+                InteractionTurnId::new(),
+                "invalid-origin turn",
+            );
+            request.client_context.working_directory = invalid;
+            let error = service
+                .prompt(request)
+                .await
+                .expect_err("invalid lexical cwd must fail before durable work");
+            assert_eq!(error.code, InteractionErrorCode::InvalidRequest);
+        }
+        assert_eq!(
+            durable_work_counts(&pool, interaction.conversation_id),
+            before_rejections,
+            "mismatch, relative, and traversal cwd must not append events, turns, or runs"
+        );
+
+        let restarted = DurableInteractionService::new(Arc::clone(&app), pool.clone());
+        restarted
+            .verify_interaction_origin(interaction.conversation_id, &origin)
+            .await
+            .expect("restart verifies exact durable origin");
+        let second_turn_id = InteractionTurnId::new();
+        let mut second_request = prompt_request(
+            interaction.conversation_id,
+            second_turn_id,
+            "second exact-origin turn after restart",
+        );
+        second_request.client_context = ClientContext::new(origin).expect("restart origin");
+        let mut second = restarted
+            .prompt(second_request)
+            .await
+            .expect("restart accepts exact-origin prompt");
+        let _ = wait_for_terminal(&mut second).await;
+        let after_restart = durable_work_counts(&pool, interaction.conversation_id);
+        assert_eq!(after_restart.0, before_rejections.0 + 1);
+        assert_eq!(after_restart.1, before_rejections.1 + 1);
+        assert!(after_restart.2 > before_rejections.2);
+    }
+
+    #[tokio::test]
     async fn assistant_text_replays_more_than_one_store_page() {
         let pool = test_pool();
         let (agent_id, spec) = seed_agent(&pool);
@@ -3105,8 +3247,9 @@ mod tests {
                 transaction
                     .execute(
                         "INSERT INTO interaction_sessions
-                             (conversation_id, config_json, state, created_at, updated_at)
-                         VALUES (?1, ?2, 'active', ?3, ?3)",
+                             (conversation_id, config_json, state, created_at, updated_at,
+                              origin_working_directory)
+                         VALUES (?1, ?2, 'active', ?3, ?3, '/tmp')",
                         rusqlite::params![id.to_string(), &config_json, &timestamp],
                     )
                     .expect("seed interaction page");

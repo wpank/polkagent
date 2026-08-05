@@ -28,8 +28,8 @@ use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
 use futures::FutureExt as _;
 use polkagent_interaction::{
-    CancelTarget, CommandName, CommandRegistry, CommandSpec, InteractionCommand, ParsedLine,
-    ToolCallKind, ToolCallStatus, ToolCallView,
+    validate_working_directory, CancelTarget, CommandName, CommandRegistry, CommandSpec,
+    InteractionCommand, ParsedLine, ToolCallKind, ToolCallStatus, ToolCallView,
 };
 use tokio::sync::Mutex;
 
@@ -506,10 +506,7 @@ async fn create_editor_session(
     default_agent: Option<&str>,
     default_model: Option<&str>,
 ) -> Result<(SessionId, NewSessionResponse), agent_client_protocol::Error> {
-    if !request.cwd.is_absolute() {
-        return Err(agent_client_protocol::Error::invalid_params()
-            .data("session cwd must be an absolute path"));
-    }
+    validate_session_cwd(&request.cwd)?;
     if !request.mcp_servers.is_empty() {
         return Err(agent_client_protocol::Error::invalid_params()
             .data("session MCP servers are not supported by this Polkagent ACP slice yet"));
@@ -607,10 +604,7 @@ fn validate_session_roots(
     no_mcp_servers: bool,
     no_additional_directories: bool,
 ) -> Result<(), agent_client_protocol::Error> {
-    if !cwd.is_absolute() {
-        return Err(agent_client_protocol::Error::invalid_params()
-            .data("session cwd must be an absolute path"));
-    }
+    validate_session_cwd(cwd)?;
     if !no_mcp_servers {
         return Err(agent_client_protocol::Error::invalid_params()
             .data("session MCP servers are not supported by Polkagent ACP"));
@@ -620,6 +614,13 @@ fn validate_session_roots(
             .data("additional session directories are not supported by Polkagent ACP"));
     }
     Ok(())
+}
+
+fn validate_session_cwd(cwd: &Path) -> Result<(), agent_client_protocol::Error> {
+    validate_working_directory(cwd).map_err(|_| {
+        agent_client_protocol::Error::invalid_params()
+            .data("session cwd must be an absolute, lexically normalized UTF-8 path")
+    })
 }
 
 async fn discover_options(
@@ -1594,6 +1595,26 @@ mod tests {
         assert_eq!(wire["status"], "completed");
         assert!(wire.get("rawInput").is_none());
         assert!(wire.get("rawOutput").is_none());
+    }
+
+    #[test]
+    fn editor_session_roots_require_exact_lexical_cwd_and_no_expansion() {
+        assert!(validate_session_roots(Path::new("/workspace/alpha"), true, true).is_ok());
+        for invalid in [
+            Path::new("relative/workspace"),
+            Path::new("/workspace/alpha/../beta"),
+            Path::new("/workspace/./alpha"),
+            Path::new("/workspace//alpha"),
+        ] {
+            let error = validate_session_roots(invalid, true, true)
+                .expect_err("unstable cwd spelling must fail");
+            assert_eq!(
+                error.code,
+                agent_client_protocol::Error::invalid_params().code
+            );
+        }
+        assert!(validate_session_roots(Path::new("/workspace/alpha"), false, true).is_err());
+        assert!(validate_session_roots(Path::new("/workspace/alpha"), true, false).is_err());
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 //! Interaction targets, configuration, requests, and durable handles.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use polkagent_core::config::AutonomyLevel;
@@ -225,11 +225,7 @@ pub struct ClientContext {
 impl ClientContext {
     /// Construct context rooted at an absolute working directory.
     pub fn new(working_directory: PathBuf) -> Result<Self, InteractionError> {
-        if !working_directory.is_absolute() {
-            return Err(InteractionError::invalid_request(
-                "working_directory must be absolute",
-            ));
-        }
+        validate_working_directory(&working_directory)?;
         Ok(Self {
             working_directory,
             client_name: None,
@@ -237,6 +233,46 @@ impl ClientContext {
             capabilities: ClientCapabilities::default(),
         })
     }
+
+    /// Validate context that may have bypassed [`Self::new`] through decoding.
+    pub fn validate(&self) -> Result<(), InteractionError> {
+        validate_working_directory(&self.working_directory)
+    }
+}
+
+/// Validate the stable lexical identity used for a durable interaction origin.
+///
+/// This intentionally does not access the filesystem or call `canonicalize`:
+/// symlink resolution and filesystem existence must not silently change a
+/// session's identity. Callers must supply one absolute, UTF-8, lexically
+/// normalized path without `.` or `..` components.
+pub fn validate_working_directory(working_directory: &Path) -> Result<(), InteractionError> {
+    if !working_directory.is_absolute() {
+        return Err(InteractionError::invalid_request(
+            "working_directory must be absolute",
+        ));
+    }
+    if working_directory.to_str().is_none() {
+        return Err(InteractionError::invalid_request(
+            "working_directory must be valid UTF-8",
+        ));
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in working_directory.components() {
+        if matches!(component, Component::CurDir | Component::ParentDir) {
+            return Err(InteractionError::invalid_request(
+                "working_directory must not contain traversal components",
+            ));
+        }
+        normalized.push(component.as_os_str());
+    }
+    if normalized.as_os_str() != working_directory.as_os_str() {
+        return Err(InteractionError::invalid_request(
+            "working_directory must be lexically normalized",
+        ));
+    }
+    Ok(())
 }
 
 /// One surface-neutral prompt content block.
@@ -666,9 +702,13 @@ mod tests {
     }
 
     #[test]
-    fn client_context_requires_absolute_working_directory() {
+    fn client_context_requires_one_absolute_lexical_working_directory_identity() {
         assert!(ClientContext::new(PathBuf::from("relative/path")).is_err());
         assert!(ClientContext::new(PathBuf::from("/absolute/path")).is_ok());
+        assert!(ClientContext::new(PathBuf::from("/absolute/../other")).is_err());
+        assert!(ClientContext::new(PathBuf::from("/absolute/./path")).is_err());
+        assert!(ClientContext::new(PathBuf::from("/absolute//path")).is_err());
+        assert!(ClientContext::new(PathBuf::from("/absolute/path/")).is_err());
     }
 
     #[test]

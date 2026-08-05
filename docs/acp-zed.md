@@ -52,11 +52,14 @@ your Zed settings. Replace the command with the absolute path printed above:
 }
 ```
 
-The editor-provided absolute `session/new` working directory is authoritative
-for ACP session metadata; there is no separate `--workdir` flag. Runtime config
-discovery and relative config/database paths are rooted at the subprocess launch
-directory because the runtime must be ready before the editor sends
-`session/new`. You may omit `--agent`; the runtime resolves the new durable
+The editor-provided `session/new` working directory becomes the interaction's
+immutable durable origin; there is no separate `--workdir` flag. It must be an
+absolute, UTF-8, lexically normalized path with no `.` or `..` components.
+Polkagent compares the exact stored spelling without filesystem
+canonicalization, symlink resolution, or dependence on the subprocess launch
+directory. Runtime config discovery and relative config/database paths are
+still rooted at the subprocess launch directory because the runtime must be
+ready before the editor sends `session/new`. You may omit `--agent`; the runtime resolves the new durable
 interaction to an active agent, and clients can later change it through their
 native selector or `/agent <name-or-id>`. `--model` is an optional initial
 persisted override; it must be valid for the selected agent's executor and
@@ -182,13 +185,20 @@ Initialization advertises stable ACP v1 `loadSession` and
 - `session/resume` restores the same interaction and configuration without
   replaying earlier messages, as required by the ACP distinction.
 
-Both requests use the absolute cwd supplied by the reconnecting client for
-subsequent prompt context. Polkagent's current interaction schema does not
-persist the original client cwd, so the server cannot independently compare the
-new cwd with the value used at creation; ACP clients are responsible for the
-protocol requirement that it match. MCP servers and additional directories are
-still rejected. ACP v1 exposes no session-import method in the pinned SDK, and
-Polkagent does not advertise `session/list`.
+Both requests must supply the exact durable origin cwd. The shared interaction
+service verifies it before transcript replay, session attachment, turn lookup,
+or run creation; every later prompt verifies it again. Mismatch, relative, and
+traversal spellings fail closed, and one workspace cannot load a session
+created by another. MCP servers and additional directories remain rejected.
+
+Rows created before schema migration v17 retain `NULL` origin provenance: the
+migration deliberately does not infer a cwd from the database path or process
+launch directory. Those legacy interactions remain available to generic
+list/load/archive operations, but ACP `session/load`, `session/resume`, and new
+prompts fail closed because equality cannot be proven. There is no automatic
+legacy upgrade; a future explicit import/rebinding workflow must establish
+provenance under separate user authority. ACP v1 exposes no session-import
+method in the pinned SDK, and Polkagent does not advertise `session/list`.
 
 ## Current protocol boundary
 
@@ -206,7 +216,9 @@ Implemented and covered by executable protocol evidence:
 - native `polkagent.agent` and standard `model` select-option discovery and
   `session/set_config_option`, with validated durable changes and same-provider
   model refusal before execution;
-- absolute-cwd validation and protocol errors for unknown/busy sessions;
+- durable immutable origin-cwd persistence, exact verification on prompt,
+  load, and resume, lexical path validation, cross-workspace isolation, and a
+  fail-closed legacy-row policy;
 - text and resource-link prompts;
 - shared-registry slash-command discovery, aliases, detailed help, agent
   selection, status, and active-prompt cancellation;
@@ -243,6 +255,10 @@ Implemented and covered by executable protocol evidence:
   proves one conversation identity, exact durable turn/run correlations, no
   duplicate retry run, transcript replay on load, no replay on resume, and
   persisted model configuration.
+- an official-client multi-process cwd-provenance test that rejects
+  cross-workspace load/resume and relative/traversal roots before work, accepts
+  the exact restart origin, and rejects an unproven legacy row without adding
+  events, turns, or runs.
 
 Not implemented yet:
 
@@ -254,7 +270,8 @@ Not implemented yet:
 - client filesystem/terminal support and MCP-server passthrough;
 - additional workspace roots (rejected explicitly) and use of cwd as model or
   filesystem context beyond session metadata;
-- persistence and server-side comparison of the original session cwd during load/resume;
+- an explicit authorized import/rebinding workflow for pre-v17 interactions
+  whose original cwd cannot be proven automatically;
 - manual Zed validation, including approval, cancellation, restart, and logs.
 
 Supplied MCP servers and additional workspace roots are rejected instead of

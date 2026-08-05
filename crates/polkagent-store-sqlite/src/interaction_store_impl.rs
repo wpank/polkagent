@@ -1,5 +1,6 @@
 //! Durable [`InteractionStore`] implementation backed by [`SqlitePool`].
 
+use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -88,6 +89,13 @@ impl InteractionStore for SqliteInteractionStore {
         interaction: NewInteraction,
     ) -> Result<InteractionSummary, InteractionError> {
         interaction.validate()?;
+        let origin_working_directory = interaction
+            .origin_working_directory
+            .to_str()
+            .ok_or_else(|| {
+                InteractionError::invalid_request("working_directory must be valid UTF-8")
+            })?
+            .to_owned();
         let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || {
             let mut writer = pool.writer();
@@ -97,8 +105,11 @@ impl InteractionStore for SqliteInteractionStore {
             if let Some(existing) =
                 load_interaction_conn_optional(&transaction, interaction.conversation_id)?
             {
+                let existing_origin =
+                    load_interaction_origin_conn(&transaction, interaction.conversation_id)?;
                 if existing.config == interaction.config
                     && existing.created_at == interaction.created_at
+                    && existing_origin.as_deref() == Some(origin_working_directory.as_str())
                 {
                     return Ok(existing);
                 }
@@ -110,12 +121,14 @@ impl InteractionStore for SqliteInteractionStore {
             transaction
                 .execute(
                     "INSERT INTO interaction_sessions
-                         (conversation_id, config_json, state, created_at, updated_at)
-                     VALUES (?1, ?2, 'active', ?3, ?3)",
+                         (conversation_id, config_json, state, created_at, updated_at,
+                          origin_working_directory)
+                     VALUES (?1, ?2, 'active', ?3, ?3, ?4)",
                     rusqlite::params![
                         interaction.conversation_id.to_string(),
                         config_json,
                         interaction.created_at.to_rfc3339(),
+                        origin_working_directory,
                     ],
                 )
                 .map_err(|error| write_error("create interaction session", &error))?;
@@ -177,6 +190,35 @@ impl InteractionStore for SqliteInteractionStore {
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
             load_interaction_conn(&writer, conversation_id)
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn verify_interaction_origin(
+        &self,
+        conversation_id: ConversationId,
+        working_directory: &Path,
+    ) -> Result<(), InteractionError> {
+        polkagent_interaction::validate_working_directory(working_directory)?;
+        let candidate = working_directory
+            .to_str()
+            .ok_or_else(|| {
+                InteractionError::invalid_request("working_directory must be valid UTF-8")
+            })?
+            .to_owned();
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            match load_interaction_origin_conn(&writer, conversation_id)? {
+                Some(origin) if origin == candidate => Ok(()),
+                Some(_) => Err(conflict_error(
+                    "interaction working directory does not match its durable origin",
+                )),
+                None => Err(conflict_error(
+                    "interaction has no durable working-directory provenance",
+                )),
+            }
         })
         .await
         .map_err(join_error)?
@@ -501,6 +543,22 @@ fn load_interaction_conn_optional(
             })
         })
         .transpose()
+}
+
+fn load_interaction_origin_conn(
+    connection: &Connection,
+    conversation_id: ConversationId,
+) -> Result<Option<String>, InteractionError> {
+    connection
+        .query_row(
+            "SELECT origin_working_directory FROM interaction_sessions
+             WHERE conversation_id = ?1",
+            [conversation_id.to_string()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|error| backend_error("load interaction origin", &error))?
+        .ok_or_else(|| not_found_error("interaction was not found"))
 }
 
 fn conflict_or_not_found(
@@ -1388,6 +1446,8 @@ struct RawEvent {
     reason = "SQLite interaction tests use fixed fixtures whose setup failures must identify the broken boundary"
 )]
 mod tests {
+    use std::path::PathBuf;
+
     use polkagent_core::ids::AgentId;
     use polkagent_interaction::{
         InteractionConfig, InteractionEventId, InteractionTarget, RunRole, TurnResult, UsageView,
@@ -1483,6 +1543,7 @@ mod tests {
         let new_interaction = NewInteraction {
             conversation_id: fixture.conversation_id,
             config: InteractionConfig::new(target),
+            origin_working_directory: PathBuf::from("/workspace/exact"),
             created_at,
         };
         let created = fixture
@@ -1492,6 +1553,17 @@ mod tests {
             .expect("create interaction session");
         assert_eq!(created.state, InteractionState::Active);
         assert_eq!(created.turn_count, 0);
+        fixture
+            .store
+            .verify_interaction_origin(fixture.conversation_id, Path::new("/workspace/exact"))
+            .await
+            .expect("verify exact durable origin");
+        let mismatch = fixture
+            .store
+            .verify_interaction_origin(fixture.conversation_id, Path::new("/workspace/other"))
+            .await
+            .expect_err("different workspace must fail closed");
+        assert_eq!(mismatch.code, InteractionErrorCode::Conflict);
         assert_eq!(
             fixture
                 .store
@@ -1538,6 +1610,55 @@ mod tests {
             .await
             .expect_err("archived config update must fail");
         assert_eq!(error.code, InteractionErrorCode::Conflict);
+    }
+
+    #[tokio::test]
+    async fn legacy_interaction_remains_readable_but_cannot_claim_origin() {
+        let fixture = fixture();
+        let target = InteractionTarget::Agent(AgentId::new());
+        fixture
+            .store
+            .create_interaction(NewInteraction {
+                conversation_id: fixture.conversation_id,
+                config: InteractionConfig::new(target),
+                origin_working_directory: PathBuf::from("/workspace/original"),
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create interaction fixture");
+        {
+            let writer = fixture.store.pool().writer();
+            writer
+                .execute_batch("DROP TRIGGER trg_interaction_origin_immutable;")
+                .expect("allow test to model a pre-v17 row");
+            writer
+                .execute(
+                    "UPDATE interaction_sessions SET origin_working_directory = NULL
+                     WHERE conversation_id = ?1",
+                    [fixture.conversation_id.to_string()],
+                )
+                .expect("model legacy unknown provenance");
+        }
+
+        fixture
+            .store
+            .load_interaction(fixture.conversation_id)
+            .await
+            .expect("legacy interaction remains readable");
+        fixture
+            .store
+            .set_interaction_state(fixture.conversation_id, InteractionState::Archived)
+            .await
+            .expect("legacy interaction remains archivable");
+        let error = fixture
+            .store
+            .verify_interaction_origin(fixture.conversation_id, Path::new("/workspace/original"))
+            .await
+            .expect_err("unknown legacy provenance must not be treated as equal");
+        assert_eq!(error.code, InteractionErrorCode::Conflict);
+        assert!(error
+            .message
+            .contains("no durable working-directory provenance"));
     }
 
     #[tokio::test]

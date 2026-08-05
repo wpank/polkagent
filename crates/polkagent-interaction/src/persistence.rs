@@ -6,6 +6,7 @@
 //! sequences.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -16,8 +17,8 @@ use crate::error::InteractionError;
 use crate::event::{InteractionEvent, InteractionEventEnvelope, RunRole};
 use crate::ids::{InteractionEventId, InteractionTurnId};
 use crate::model::{
-    InteractionConfig, InteractionState, InteractionSummary, InteractionTarget,
-    ListInteractionsRequest, TranscriptRequest, TurnSummary,
+    validate_working_directory, InteractionConfig, InteractionState, InteractionSummary,
+    InteractionTarget, ListInteractionsRequest, TranscriptRequest, TurnSummary,
 };
 
 /// Safe durable defaults for a conversation-backed interaction.
@@ -27,6 +28,8 @@ pub struct NewInteraction {
     pub conversation_id: ConversationId,
     /// Initial surface-neutral configuration.
     pub config: InteractionConfig,
+    /// Exact validated working directory that originated this interaction.
+    pub origin_working_directory: PathBuf,
     /// Durable creation timestamp.
     pub created_at: DateTime<Utc>,
 }
@@ -34,7 +37,8 @@ pub struct NewInteraction {
 impl NewInteraction {
     /// Validate safe configuration before a store transaction begins.
     pub fn validate(&self) -> Result<(), InteractionError> {
-        self.config.validate()
+        self.config.validate()?;
+        validate_working_directory(&self.origin_working_directory)
     }
 }
 
@@ -230,6 +234,22 @@ pub trait InteractionStore: Send + Sync {
         &self,
         conversation_id: ConversationId,
     ) -> Result<InteractionSummary, InteractionError>;
+
+    /// Verify a caller's working directory against immutable durable origin.
+    ///
+    /// Pre-provenance rows must fail closed here. Generic list/load/archive
+    /// operations remain available because they do not claim workspace
+    /// equality and do not start or replay editor work.
+    async fn verify_interaction_origin(
+        &self,
+        _conversation_id: ConversationId,
+        _working_directory: &Path,
+    ) -> Result<(), InteractionError> {
+        Err(InteractionError::new(
+            crate::InteractionErrorCode::Unsupported,
+            "durable interaction working-directory provenance is unavailable",
+        ))
+    }
 
     /// Replace validated safe interaction defaults atomically.
     async fn update_interaction_config(

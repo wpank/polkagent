@@ -54,11 +54,12 @@ pub use executor::{InteractionCommandRuntime, ServiceCommandExecutor};
 pub use hub::InteractionEventHub;
 pub use ids::{InteractionEventId, InteractionTurnId, PlanEntryId, ToolCallId};
 pub use model::{
-    ApprovalDecision, ClientCapabilities, ClientCapability, ClientContext, ConfigOption,
-    ConfigOptionValue, ConfigUpdate, CreateInteractionRequest, InteractionConfig,
-    InteractionContent, InteractionOverrides, InteractionState, InteractionSummary,
-    InteractionTarget, InteractionTranscriptTurn, ListInteractionsRequest, OverrideValue,
-    PromptRequest, SubscriptionRequest, TranscriptRequest, TurnHandle, TurnState, TurnSummary,
+    validate_working_directory, ApprovalDecision, ClientCapabilities, ClientCapability,
+    ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate, CreateInteractionRequest,
+    InteractionConfig, InteractionContent, InteractionOverrides, InteractionState,
+    InteractionSummary, InteractionTarget, InteractionTranscriptTurn, ListInteractionsRequest,
+    OverrideValue, PromptRequest, SubscriptionRequest, TranscriptRequest, TurnHandle, TurnState,
+    TurnSummary,
 };
 pub use persistence::{
     InteractionRunLink, InteractionStore, NewAssistantMessage, NewInteraction, NewInteractionEvent,

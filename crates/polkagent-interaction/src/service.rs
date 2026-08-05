@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use polkagent_core::ids::{ApprovalId, ConversationId};
+use std::path::Path;
 use thiserror::Error;
 
 use crate::error::InteractionError;
@@ -102,6 +103,19 @@ pub trait InteractionService: Send + Sync {
         &self,
         conversation_id: ConversationId,
     ) -> Result<InteractionSummary, InteractionError>;
+
+    /// Verify that a caller is operating from the interaction's exact durable
+    /// origin before prompt execution or editor replay.
+    async fn verify_interaction_origin(
+        &self,
+        _conversation_id: ConversationId,
+        _working_directory: &Path,
+    ) -> Result<(), InteractionError> {
+        Err(InteractionError::new(
+            crate::InteractionErrorCode::Unsupported,
+            "durable interaction working-directory provenance is unavailable",
+        ))
+    }
 
     /// List durable turns for one interaction in ordinal order.
     async fn list_turns(

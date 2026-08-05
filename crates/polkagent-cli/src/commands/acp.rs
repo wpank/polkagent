@@ -612,10 +612,15 @@ impl AcpBackend for PolkagentAcpBackend {
     async fn load_session(
         &self,
         session_id: &str,
-        _cwd: &Path,
+        cwd: &Path,
         include_transcript: bool,
     ) -> Result<BackendSession, BackendError> {
         let conversation_id = parse_conversation_id(session_id).map_err(invalid_backend_error)?;
+        self.runtime
+            .interactions()
+            .verify_interaction_origin(conversation_id, cwd)
+            .await
+            .map_err(interaction_backend_error)?;
         let summary = self
             .runtime
             .interactions()
