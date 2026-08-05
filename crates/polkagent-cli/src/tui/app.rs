@@ -257,6 +257,9 @@ impl App {
 
         // Initial data load.
         self.refresh_data();
+        if self.active_tab == Tab::Console {
+            self.ensure_console_agent();
+        }
 
         loop {
             let frame_start = Instant::now();
@@ -925,7 +928,12 @@ impl App {
         if let Some((id, name)) = selected {
             let changed = self.tui_state.interaction.agent_id.as_deref() != Some(id.as_str());
             if changed {
-                self.tui_state.interaction.select_agent(id, name);
+                self.tui_state
+                    .interaction
+                    .select_agent(id.clone(), name.clone());
+                if let Err(error) = self.run_controller.load_history(id) {
+                    self.tui_state.last_error = Some(error.to_owned());
+                }
             }
             true
         } else {
@@ -940,6 +948,9 @@ impl App {
     fn drain_run_events(&mut self) {
         let mut refresh = false;
         while let Some(event) = self.run_controller.try_recv() {
+            if let ControllerEvent::HistoryFailed { reason, .. } = &event {
+                self.tui_state.last_error = Some(reason.clone());
+            }
             if let ControllerEvent::Started { run_id, .. } = &event {
                 self.tui_state.selected_run = Some(run_id.clone());
                 refresh = true;

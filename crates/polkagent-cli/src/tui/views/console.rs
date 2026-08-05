@@ -62,12 +62,21 @@ fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme
             };
             (run.status.label(), color)
         });
-    let run_id = state
-        .interaction
-        .run
-        .as_ref()
-        .and_then(|run| run.run_id.as_deref())
-        .map_or("--------", |id| &id[..8.min(id.len())]);
+    let conversation_id = short_id(state.interaction.conversation_id.as_deref());
+    let turn_id = short_id(
+        state
+            .interaction
+            .run
+            .as_ref()
+            .and_then(|run| run.turn_id.as_deref()),
+    );
+    let run_id = short_id(
+        state
+            .interaction
+            .run
+            .as_ref()
+            .and_then(|run| run.run_id.as_deref()),
+    );
 
     let block = Block::default()
         .title(Span::styled(
@@ -88,6 +97,10 @@ fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme
                 status,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
+            Span::styled("   Chat  ", Style::default().fg(theme.text_dim)),
+            Span::styled(conversation_id, Style::default().fg(theme.text_primary)),
+            Span::styled("   Turn  ", Style::default().fg(theme.text_dim)),
+            Span::styled(turn_id, Style::default().fg(theme.text_primary)),
             Span::styled("   Run  ", Style::default().fg(theme.text_dim)),
             Span::styled(run_id, Style::default().fg(theme.text_primary)),
         ])),
@@ -109,43 +122,13 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Th
     frame.render_widget(block, area);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if let Some(run) = &state.interaction.run {
-        lines.push(Line::from(vec![
-            Span::styled(" YOU  ", Style::default().fg(theme.rose_bright)),
-            Span::styled(run.prompt.clone(), Style::default().fg(theme.text_primary)),
-        ]));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " AGENT",
-            Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
-        )));
-        if run.output.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("   {}", run.detail),
-                Style::default().fg(theme.text_dim),
-            )));
-        } else {
-            lines.extend(run.output.lines().map(|line| {
-                Line::from(Span::styled(
-                    format!(" {line}"),
-                    Style::default().fg(theme.text_primary),
-                ))
-            }));
-            lines.push(Line::from(""));
-            let usage = if run.status == ConsoleRunStatus::Completed {
-                format!(
-                    " {} · {} input / {} output tokens",
-                    run.detail, run.input_tokens, run.output_tokens
-                )
-            } else {
-                format!(" {}", run.detail)
-            };
-            lines.push(Line::from(Span::styled(
-                usage,
-                Style::default().fg(theme.text_dim),
-            )));
-        }
-    } else {
+    let turns = state
+        .interaction
+        .transcript
+        .iter()
+        .chain(state.interaction.run.iter())
+        .collect::<Vec<_>>();
+    if turns.is_empty() {
         lines.push(Line::from(Span::styled(
             " Choose an active agent in F2, then press p to compose a prompt.",
             Style::default().fg(theme.text_dim),
@@ -154,6 +137,55 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Th
             " You can also press p here to use the first active agent.",
             Style::default().fg(theme.text_dim),
         )));
+    } else {
+        for (index, run) in turns.iter().enumerate() {
+            if index > 0 {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(vec![
+                Span::styled(" YOU  ", Style::default().fg(theme.rose_bright)),
+                Span::styled(run.prompt.clone(), Style::default().fg(theme.text_primary)),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " AGENT",
+                Style::default().fg(theme.bone).add_modifier(Modifier::BOLD),
+            )));
+            if run.output.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("   {}", run.detail),
+                    Style::default().fg(theme.text_dim),
+                )));
+            } else {
+                lines.extend(run.output.lines().map(|line| {
+                    Line::from(Span::styled(
+                        format!(" {line}"),
+                        Style::default().fg(theme.text_primary),
+                    ))
+                }));
+            }
+            let usage = if run.status == ConsoleRunStatus::Completed {
+                format!(
+                    " {} · {} input / {} output tokens · turn {} · run {}",
+                    run.detail,
+                    run.input_tokens,
+                    run.output_tokens,
+                    short_id(run.turn_id.as_deref()),
+                    short_id(run.run_id.as_deref())
+                )
+            } else {
+                format!(
+                    " {} · turn {} · run {}",
+                    run.detail,
+                    short_id(run.turn_id.as_deref()),
+                    short_id(run.run_id.as_deref())
+                )
+            };
+            lines.push(Line::from(Span::styled(
+                usage,
+                Style::default().fg(theme.text_dim),
+            )));
+        }
     }
 
     let height = usize::from(inner.height);
@@ -164,6 +196,10 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Th
             .scroll((scroll, 0)),
         inner,
     );
+}
+
+fn short_id(id: Option<&str>) -> &str {
+    id.map_or("--------", |id| &id[..8.min(id.len())])
 }
 
 fn render_composer(

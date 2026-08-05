@@ -1283,6 +1283,8 @@ fn test_console_renders_prompt_and_live_output() {
     state.interaction.prompt_buffer = "summarize proposals".to_owned();
     state.interaction.submit().unwrap();
     state.interaction.apply(ControllerEvent::Started {
+        conversation_id: "87654321-4321-4321-4321-cba987654321".to_owned(),
+        turn_id: "abcdefab-cdef-cdef-cdef-abcdefabcdef".to_owned(),
         run_id: "12345678-1234-1234-1234-123456789abc".to_owned(),
         agent_name: "Treasury Agent".to_owned(),
         notes: Vec::new(),

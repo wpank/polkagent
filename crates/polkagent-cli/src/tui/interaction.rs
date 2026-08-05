@@ -4,12 +4,22 @@
 //! owns the deterministic reducer and the bridge to the same process-wide
 //! production runtime used by `polkagent run`.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{mpsc, Arc, OnceLock};
 
-use polkagent_core::event::EventKind;
-use polkagent_core::AgentId;
-use polkagent_interaction::CommandRegistry;
+use polkagent_conversation::{
+    types::{Message, MessageContent, MessageRole},
+    ConversationStore,
+};
+use polkagent_core::{AgentId, ConversationId};
+use polkagent_interaction::{
+    ClientContext, CommandRegistry, CreateInteractionRequest, InteractionConfig,
+    InteractionContent, InteractionError, InteractionEvent, InteractionOverrides,
+    InteractionService, InteractionState as DurableInteractionState, InteractionSummary,
+    InteractionTarget, InteractionTurnId, ListInteractionsRequest,
+    PromptRequest as InteractionPromptRequest, StreamError, SubscriptionRequest, TurnState,
+};
 use polkagent_runtime::{
     AdapterPolicy, ComponentState, PolkagentRuntime, RuntimeOptions, RuntimeReadiness, WarningCode,
 };
@@ -18,8 +28,10 @@ use polkagent_store_sqlite::SqlitePool;
 /// Keep a runaway streaming response from growing the terminal process
 /// forever. Durable lifecycle/events remain available through the run views.
 const MAX_OUTPUT_BYTES: usize = 128 * 1024;
-/// Bound in-memory Console history until durable conversations own it.
+/// Bound composer recall even when a durable interaction has a longer transcript.
 const MAX_PROMPT_HISTORY: usize = 100;
+const INTERACTION_STREAM_CAPACITY: usize = 256;
+const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
 
 /// One canonical entry in the Console's shared slash-command picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +117,8 @@ impl ConsoleRunStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsoleRun {
+    pub conversation_id: Option<String>,
+    pub turn_id: Option<String>,
     pub run_id: Option<String>,
     pub prompt: String,
     pub output: String,
@@ -125,12 +139,21 @@ pub struct InteractionState {
     prompt_history_draft: Option<String>,
     slash_completion_selection: usize,
     slash_completion_dismissed: bool,
+    pub conversation_id: Option<String>,
+    pub transcript: Vec<ConsoleRun>,
     pub run: Option<ConsoleRun>,
 }
 
 impl InteractionState {
     pub fn select_agent(&mut self, agent_id: impl Into<String>, agent_name: impl Into<String>) {
-        self.agent_id = Some(agent_id.into());
+        let agent_id = agent_id.into();
+        if self.agent_id.as_deref() != Some(agent_id.as_str()) {
+            self.conversation_id = None;
+            self.transcript.clear();
+            self.run = None;
+            self.prompt_history.clear();
+        }
+        self.agent_id = Some(agent_id);
         self.agent_name = Some(agent_name.into());
         self.clear_prompt();
     }
@@ -361,7 +384,18 @@ impl InteractionState {
         let agent_name = self.agent_name.clone().unwrap_or_else(|| agent_id.clone());
         self.record_history(&prompt);
         self.clear_prompt();
+        if self
+            .run
+            .as_ref()
+            .is_some_and(|run| run.status.is_terminal())
+        {
+            if let Some(previous) = self.run.take() {
+                self.transcript.push(previous);
+            }
+        }
         self.run = Some(ConsoleRun {
+            conversation_id: self.conversation_id.clone(),
+            turn_id: None,
             run_id: None,
             prompt: prompt.clone(),
             output: String::new(),
@@ -472,16 +506,47 @@ impl InteractionState {
     }
 
     pub fn apply(&mut self, event: ControllerEvent) {
+        match event {
+            ControllerEvent::HistoryLoaded {
+                agent_id,
+                conversation_id,
+                mut turns,
+            } => {
+                if self.agent_id.as_deref() != Some(agent_id.as_str()) || self.run.is_some() {
+                    return;
+                }
+                self.conversation_id = conversation_id;
+                self.prompt_history = turns
+                    .iter()
+                    .map(|turn| turn.prompt.clone())
+                    .rev()
+                    .take(MAX_PROMPT_HISTORY)
+                    .collect::<Vec<_>>();
+                self.prompt_history.reverse();
+                self.run = turns.pop();
+                self.transcript = turns;
+            }
+            ControllerEvent::HistoryFailed { .. } => {}
+            event => self.apply_run_event(event),
+        }
+    }
+
+    fn apply_run_event(&mut self, event: ControllerEvent) {
         let Some(run) = &mut self.run else {
             return;
         };
         match event {
             ControllerEvent::Started {
+                conversation_id,
+                turn_id,
                 run_id,
                 agent_name,
                 notes,
             } => {
+                run.conversation_id = Some(conversation_id.clone());
+                run.turn_id = Some(turn_id);
                 run.run_id = Some(run_id);
+                self.conversation_id = Some(conversation_id);
                 run.status = ConsoleRunStatus::Running;
                 self.agent_name = Some(agent_name);
                 run.detail = if notes.is_empty() {
@@ -491,24 +556,24 @@ impl InteractionState {
                 };
             }
             ControllerEvent::Output(text) => {
-                run.output.push_str(&text);
-                if run.output.len() > MAX_OUTPUT_BYTES {
-                    let overflow = run.output.len() - MAX_OUTPUT_BYTES;
-                    let boundary = run
-                        .output
-                        .char_indices()
-                        .find_map(|(index, _)| (index >= overflow).then_some(index))
-                        .unwrap_or(overflow);
-                    run.output.drain(..boundary);
-                }
+                append_bounded_output(&mut run.output, &text);
             }
             ControllerEvent::Progress(detail) => run.detail = detail,
+            ControllerEvent::UsageUpdated {
+                input_tokens,
+                output_tokens,
+            } => {
+                run.input_tokens = input_tokens;
+                run.output_tokens = output_tokens;
+            }
             ControllerEvent::Completed {
+                text,
                 input_tokens,
                 output_tokens,
             } => {
                 run.status = ConsoleRunStatus::Completed;
                 "run completed".clone_into(&mut run.detail);
+                replace_bounded_output(&mut run.output, &text);
                 run.input_tokens = input_tokens;
                 run.output_tokens = output_tokens;
             }
@@ -524,8 +589,31 @@ impl InteractionState {
                 run.status = ConsoleRunStatus::TimedOut;
                 "run timed out".clone_into(&mut run.detail);
             }
+            ControllerEvent::HistoryLoaded { .. } | ControllerEvent::HistoryFailed { .. } => {}
         }
     }
+}
+
+fn append_bounded_output(output: &mut String, text: &str) {
+    output.push_str(text);
+    truncate_output(output);
+}
+
+fn truncate_output(output: &mut String) {
+    if output.len() <= MAX_OUTPUT_BYTES {
+        return;
+    }
+    let overflow = output.len() - MAX_OUTPUT_BYTES;
+    let boundary = output
+        .char_indices()
+        .find_map(|(index, _)| (index >= overflow).then_some(index))
+        .unwrap_or(overflow);
+    output.drain(..boundary);
+}
+
+fn replace_bounded_output(output: &mut String, text: &str) {
+    output.clear();
+    append_bounded_output(output, text);
 }
 
 fn command_registry() -> &'static CommandRegistry {
@@ -574,14 +662,30 @@ fn char_column_offset(line: &str, column: usize) -> usize {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerEvent {
+    HistoryLoaded {
+        agent_id: String,
+        conversation_id: Option<String>,
+        turns: Vec<ConsoleRun>,
+    },
+    HistoryFailed {
+        agent_id: String,
+        reason: String,
+    },
     Started {
+        conversation_id: String,
+        turn_id: String,
         run_id: String,
         agent_name: String,
         notes: Vec<String>,
     },
     Output(String),
     Progress(String),
+    UsageUpdated {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
     Completed {
+        text: String,
         input_tokens: u64,
         output_tokens: u64,
     },
@@ -649,112 +753,173 @@ impl RunController {
                     return;
                 }
             };
-            let mut events = polkagent_runtime.subscribe_events();
-            let service = Arc::clone(polkagent_runtime.app());
-            let notes = runtime_notes(polkagent_runtime.readiness());
-            let start = service.start_run(typed_agent_id, &request.prompt);
-            tokio::pin!(start);
-
-            let run_id = tokio::select! {
-                biased;
-                _ = &mut cancel_rx => {
-                    let _ = event_tx.send(ControllerEvent::Cancelled(
-                        "cancelled before the run started".to_owned(),
-                    ));
+            let service = Arc::clone(polkagent_runtime.interactions());
+            let interaction = match find_or_create_console_interaction(
+                service.as_ref(),
+                &polkagent_runtime,
+                typed_agent_id,
+                &request.agent_name,
+            )
+            .await
+            {
+                Ok(interaction) => interaction,
+                Err(error) => {
+                    let _ = event_tx.send(ControllerEvent::Failed(error.to_string()));
                     return;
                 }
-                result = &mut start => match result {
-                    Ok(run_id) => run_id,
-                    Err(error) => {
-                        let _ = event_tx.send(ControllerEvent::Failed(format!("{error:#}")));
-                        return;
+            };
+            let client_context = match tui_client_context(&polkagent_runtime) {
+                Ok(context) => context,
+                Err(error) => {
+                    let _ = event_tx.send(ControllerEvent::Failed(error.to_string()));
+                    return;
+                }
+            };
+            let turn_id = InteractionTurnId::new();
+            let prompt = service.prompt(InteractionPromptRequest {
+                turn_id: Some(turn_id),
+                conversation_id: interaction.conversation_id,
+                content: vec![InteractionContent::Text {
+                    text: request.prompt,
+                }],
+                config_overrides: InteractionOverrides::default(),
+                client_context,
+            });
+            tokio::pin!(prompt);
+            let mut cancellation_requested = false;
+            let started = loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut cancel_rx, if !cancellation_requested => {
+                        cancellation_requested = true;
+                        let _ = event_tx.send(ControllerEvent::Progress(
+                            "cancellation queued until the durable turn is ready".to_owned(),
+                        ));
+                    }
+                    result = &mut prompt => match result {
+                        Ok(started) => break started,
+                        Err(error) => {
+                            let _ = event_tx.send(ControllerEvent::Failed(error.to_string()));
+                            return;
+                        }
                     }
                 }
             };
+            let Some(run_id) = started.handle.run_ids.first().copied() else {
+                let _ = event_tx.send(ControllerEvent::Failed(
+                    "durable interaction turn has no linked run".to_owned(),
+                ));
+                return;
+            };
+            let mut events = started.events;
+            let mut notes = runtime_notes(polkagent_runtime.readiness());
+            notes.push("Conversation and turn history are durable.".to_owned());
 
             let _ = event_tx.send(ControllerEvent::Started {
+                conversation_id: interaction.conversation_id.to_string(),
+                turn_id: turn_id.to_string(),
                 run_id: run_id.to_string(),
                 agent_name: request.agent_name,
                 notes,
             });
 
-            let mut cancellation_requested = false;
+            if cancellation_requested {
+                request_turn_cancellation(service.as_ref(), turn_id, &event_tx).await;
+            }
             loop {
-                let event = tokio::select! {
+                let envelope = tokio::select! {
                     biased;
                     _ = &mut cancel_rx, if !cancellation_requested => {
                         cancellation_requested = true;
-                        match service.cancel_run(run_id).await {
-                            Ok(()) => {}
-                            Err(error) => {
-                                let _ = event_tx.send(ControllerEvent::Progress(format!(
-                                    "cancelling run: {error}"
-                                )));
-                            }
-                        }
+                        request_turn_cancellation(service.as_ref(), turn_id, &event_tx).await;
                         continue;
                     }
                     result = events.recv() => match result {
                         Ok(event) => event,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        Err(StreamError::Lagged { last_seen_sequence, resume_after_sequence }) => {
                             let _ = event_tx.send(ControllerEvent::Progress(format!(
-                                "live stream lagged; {count} event(s) skipped — durable timeline remains available"
+                                "interaction stream lagged at sequence {resume_after_sequence}; replaying durable events"
                             )));
+                            match service
+                                .subscribe(SubscriptionRequest {
+                                    conversation_id: interaction.conversation_id,
+                                    turn_id: Some(turn_id),
+                                    after_sequence: last_seen_sequence,
+                                    capacity: INTERACTION_STREAM_CAPACITY,
+                                })
+                                .await
+                            {
+                                Ok(replacement) => events = replacement,
+                                Err(error) => {
+                                    let _ = event_tx.send(ControllerEvent::Failed(format!(
+                                        "resubscribe to durable interaction events: {error}"
+                                    )));
+                                    return;
+                                }
+                            }
                             continue;
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        Err(StreamError::Backend(error)) => {
+                            let _ = event_tx.send(ControllerEvent::Failed(format!(
+                                "interaction event stream failed: {error}"
+                            )));
+                            return;
+                        }
+                        Err(StreamError::Closed) => {
                             let _ = event_tx.send(ControllerEvent::Failed(
-                                "run event stream closed before a terminal event".to_owned(),
+                                "interaction event stream closed before a terminal event".to_owned(),
                             ));
                             return;
                         }
                     }
                 };
 
-                if event.run_id != run_id {
-                    continue;
-                }
-                let projected = match event.kind {
-                    EventKind::StreamingToken { text } => Some(ControllerEvent::Output(text)),
-                    EventKind::RunCreated => Some(ControllerEvent::Progress("run created".to_owned())),
-                    EventKind::RunQueued => Some(ControllerEvent::Progress("run queued".to_owned())),
-                    EventKind::RunStarted => Some(ControllerEvent::Progress("agent working".to_owned())),
-                    EventKind::ProgressUpdate { message, percentage } => {
-                        let suffix = percentage.map_or_else(String::new, |p| format!(" ({p:.0}%)"));
-                        Some(ControllerEvent::Progress(format!("{message}{suffix}")))
-                    }
-                    EventKind::ToolCallStarted { tool_name } => Some(ControllerEvent::Progress(
-                        format!("tool {tool_name} started"),
-                    )),
-                    EventKind::ToolCallCompleted { tool_name } => Some(ControllerEvent::Progress(
-                        format!("tool {tool_name} completed"),
-                    )),
-                    EventKind::ApprovalRequested { request_id } => Some(ControllerEvent::Progress(
-                        format!("approval required: {request_id}"),
-                    )),
-                    EventKind::RunCompleted {
-                        input_tokens,
-                        output_tokens,
-                        ..
-                    } => Some(ControllerEvent::Completed {
-                        input_tokens,
-                        output_tokens,
-                    }),
-                    EventKind::RunFailed { reason } => Some(ControllerEvent::Failed(reason)),
-                    EventKind::RunCancelled { reason } => Some(ControllerEvent::Cancelled(reason)),
-                    EventKind::RunTimedOut => Some(ControllerEvent::TimedOut),
-                    _ => None,
-                };
-
-                if let Some(projected) = projected {
-                    let terminal = projected.is_terminal();
-                    if event_tx.send(projected).is_err() || terminal {
-                        return;
-                    }
+                let projected = project_interaction_event(envelope.event);
+                let terminal = projected.is_terminal();
+                if event_tx.send(projected).is_err() || terminal {
+                    return;
                 }
             }
         });
 
+        Ok(())
+    }
+
+    /// Load the durable TUI interaction for a selected agent without blocking
+    /// input or rendering. A stale result is ignored by the reducer.
+    pub fn load_history(&self, agent_id: String) -> Result<(), &'static str> {
+        let Some(task_runtime) = self.task_runtime.clone() else {
+            return Err("interactive run runtime is unavailable");
+        };
+        let polkagent_runtime = self.polkagent_runtime.clone();
+        let event_tx = self.event_tx.clone();
+        task_runtime.spawn(async move {
+            let typed_agent_id = match agent_id.parse::<AgentId>() {
+                Ok(agent_id) => agent_id,
+                Err(error) => {
+                    let _ = event_tx.send(ControllerEvent::HistoryFailed {
+                        agent_id,
+                        reason: format!("invalid selected agent ID: {error}"),
+                    });
+                    return;
+                }
+            };
+            match load_console_history(&polkagent_runtime, typed_agent_id).await {
+                Ok((conversation_id, turns)) => {
+                    let _ = event_tx.send(ControllerEvent::HistoryLoaded {
+                        agent_id,
+                        conversation_id: conversation_id.map(|id| id.to_string()),
+                        turns,
+                    });
+                }
+                Err(error) => {
+                    let _ = event_tx.send(ControllerEvent::HistoryFailed {
+                        agent_id,
+                        reason: error,
+                    });
+                }
+            }
+        });
         Ok(())
     }
 
@@ -775,6 +940,242 @@ impl RunController {
             }
             Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => None,
         }
+    }
+}
+
+fn tui_interaction_title(agent_name: &str) -> String {
+    format!("{TUI_INTERACTION_TITLE_PREFIX} · {agent_name}")
+}
+
+fn tui_client_context(
+    runtime: &PolkagentRuntime,
+) -> Result<ClientContext, polkagent_interaction::InteractionError> {
+    let mut context = ClientContext::new(runtime.workdir().to_path_buf())?;
+    context.client_name = Some("tui".to_owned());
+    Ok(context)
+}
+
+async fn find_console_interaction(
+    service: &impl InteractionService,
+    agent_id: AgentId,
+) -> Result<Option<InteractionSummary>, InteractionError> {
+    let mut offset = 0_u32;
+    loop {
+        let interactions = service
+            .list_interactions(ListInteractionsRequest {
+                limit: 1_000,
+                offset,
+                state: Some(DurableInteractionState::Active),
+            })
+            .await?;
+        let page_len = u32::try_from(interactions.len()).map_err(|_| {
+            InteractionError::invalid_request("TUI interaction page exceeds supported size")
+        })?;
+        if let Some(interaction) = interactions.into_iter().find(|interaction| {
+            interaction.title.as_deref().is_some_and(|title| {
+                title == TUI_INTERACTION_TITLE_PREFIX
+                    || title.starts_with(&format!("{TUI_INTERACTION_TITLE_PREFIX} · "))
+            }) && interaction.config.target == InteractionTarget::Agent(agent_id)
+        }) {
+            return Ok(Some(interaction));
+        }
+        if page_len < 1_000 {
+            return Ok(None);
+        }
+        offset = offset.checked_add(page_len).ok_or_else(|| {
+            InteractionError::invalid_request("TUI interaction pagination overflowed")
+        })?;
+    }
+}
+
+async fn find_or_create_console_interaction(
+    service: &impl InteractionService,
+    runtime: &PolkagentRuntime,
+    agent_id: AgentId,
+    agent_name: &str,
+) -> Result<InteractionSummary, InteractionError> {
+    if let Some(interaction) = find_console_interaction(service, agent_id).await? {
+        return Ok(interaction);
+    }
+    service
+        .new_interaction(CreateInteractionRequest {
+            title: Some(tui_interaction_title(agent_name)),
+            config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+            client_context: tui_client_context(runtime)?,
+        })
+        .await
+}
+
+async fn load_console_history(
+    runtime: &PolkagentRuntime,
+    agent_id: AgentId,
+) -> Result<(Option<ConversationId>, Vec<ConsoleRun>), String> {
+    let service = runtime.interactions();
+    let Some(interaction) = find_console_interaction(service.as_ref(), agent_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok((None, Vec::new()));
+    };
+    let summaries = service
+        .list_turns(interaction.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let conversation = ConversationStore::get(runtime.pool(), interaction.conversation_id)
+        .await
+        .map_err(|error| format!("load TUI interaction transcript: {error}"))?;
+    let message_limit = usize::try_from(conversation.message_count)
+        .map_err(|_| "TUI transcript message count exceeds this platform".to_owned())?;
+    // Temporary read-only projection until InteractionService exposes message
+    // bodies. Surfaces must never mutate ConversationStore behind the service.
+    let messages = if message_limit == 0 {
+        Vec::new()
+    } else {
+        ConversationStore::get_messages(
+            runtime.pool(),
+            interaction.conversation_id,
+            message_limit,
+            0,
+        )
+        .await
+        .map_err(|error| format!("load TUI interaction messages: {error}"))?
+    };
+    let mut transcript = pair_transcript_messages(messages)?;
+
+    let mut turns = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        let transcript_turn = transcript
+            .pop_front()
+            .ok_or_else(|| "durable TUI turn is missing its user transcript".to_owned())?;
+        let (mut output, output_tokens) = if summary.state == TurnState::Completed {
+            transcript_turn.assistant.ok_or_else(|| {
+                "completed durable TUI turn is missing its assistant transcript".to_owned()
+            })?
+        } else {
+            (String::new(), None)
+        };
+        truncate_output(&mut output);
+        let status = console_status(summary.state);
+        turns.push(ConsoleRun {
+            conversation_id: Some(interaction.conversation_id.to_string()),
+            turn_id: Some(summary.handle.turn_id.to_string()),
+            run_id: summary.handle.run_ids.first().map(ToString::to_string),
+            prompt: transcript_turn.prompt,
+            output,
+            detail: format!("restored durable {} turn", status.label()),
+            status,
+            input_tokens: u64::from(transcript_turn.input_tokens.unwrap_or(0)),
+            output_tokens: u64::from(output_tokens.unwrap_or(0)),
+        });
+    }
+    Ok((Some(interaction.conversation_id), turns))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TranscriptTurn {
+    prompt: String,
+    input_tokens: Option<u32>,
+    assistant: Option<(String, Option<u32>)>,
+}
+
+fn pair_transcript_messages(messages: Vec<Message>) -> Result<VecDeque<TranscriptTurn>, String> {
+    let mut turns = VecDeque::new();
+    for message in messages {
+        let MessageContent::Text { text } = message.content else {
+            if matches!(message.role, MessageRole::User | MessageRole::Assistant) {
+                return Err(
+                    "TUI interaction transcript contains unsupported rich content".to_owned(),
+                );
+            }
+            continue;
+        };
+        match message.role {
+            MessageRole::User => turns.push_back(TranscriptTurn {
+                prompt: text,
+                input_tokens: message.token_count,
+                assistant: None,
+            }),
+            MessageRole::Assistant => {
+                let turn = turns.back_mut().ok_or_else(|| {
+                    "TUI interaction transcript has an assistant before any user message".to_owned()
+                })?;
+                if turn.assistant.is_some() {
+                    return Err(
+                        "TUI interaction transcript has multiple assistants for one turn"
+                            .to_owned(),
+                    );
+                }
+                turn.assistant = Some((text, message.token_count));
+            }
+            MessageRole::System | MessageRole::Tool => {}
+        }
+    }
+    Ok(turns)
+}
+
+fn console_status(state: TurnState) -> ConsoleRunStatus {
+    match state {
+        TurnState::Pending => ConsoleRunStatus::Starting,
+        TurnState::Running | TurnState::AwaitingApproval => ConsoleRunStatus::Running,
+        TurnState::Completed => ConsoleRunStatus::Completed,
+        TurnState::Failed => ConsoleRunStatus::Failed,
+        TurnState::Cancelled => ConsoleRunStatus::Cancelled,
+        TurnState::TimedOut => ConsoleRunStatus::TimedOut,
+    }
+}
+
+async fn request_turn_cancellation(
+    service: &impl InteractionService,
+    turn_id: InteractionTurnId,
+    event_tx: &mpsc::Sender<ControllerEvent>,
+) {
+    let progress = match service.cancel_turn(turn_id).await {
+        Ok(()) => format!("cancellation requested for turn {turn_id}"),
+        Err(error) => format!("cancelling interaction turn {turn_id}: {error}"),
+    };
+    let _ = event_tx.send(ControllerEvent::Progress(progress));
+}
+
+fn project_interaction_event(event: InteractionEvent) -> ControllerEvent {
+    match event {
+        InteractionEvent::TurnStarted { .. } => {
+            ControllerEvent::Progress("durable turn started".to_owned())
+        }
+        InteractionEvent::AgentMessageDelta { text, .. } => ControllerEvent::Output(text),
+        InteractionEvent::ThoughtDelta { .. } => {
+            ControllerEvent::Progress("agent reasoning".to_owned())
+        }
+        InteractionEvent::ToolCallStarted { call } | InteractionEvent::ToolCallUpdated { call } => {
+            ControllerEvent::Progress(format!("tool {}: {:?}", call.title, call.status))
+        }
+        InteractionEvent::PlanUpdated { entries } => {
+            ControllerEvent::Progress(format!("plan updated: {} step(s)", entries.len()))
+        }
+        InteractionEvent::ApprovalRequested { request } => ControllerEvent::Progress(format!(
+            "approval {} is unavailable in Console; use an authorized approval surface",
+            request.approval_id
+        )),
+        InteractionEvent::ApprovalResolved {
+            approval_id,
+            decision,
+        } => ControllerEvent::Progress(format!("approval {approval_id} resolved: {decision:?}")),
+        InteractionEvent::UsageUpdated { usage } => ControllerEvent::UsageUpdated {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+        },
+        InteractionEvent::RunStateChanged { state, .. } => {
+            ControllerEvent::Progress(format!("run {state}"))
+        }
+        InteractionEvent::TurnCompleted { result } => ControllerEvent::Completed {
+            text: result.text,
+            input_tokens: result.usage.input_tokens,
+            output_tokens: result.usage.output_tokens,
+        },
+        InteractionEvent::TurnFailed { error } => ControllerEvent::Failed(error.to_string()),
+        InteractionEvent::TurnCancelled { reason } => ControllerEvent::Cancelled(
+            reason.unwrap_or_else(|| "interaction turn cancelled".to_owned()),
+        ),
+        InteractionEvent::TurnTimedOut => ControllerEvent::TimedOut,
     }
 }
 
@@ -828,7 +1229,6 @@ fn runtime_notes(readiness: &RuntimeReadiness) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
     use std::time::Duration;
 
     use polkagent_core::RunId;
@@ -840,6 +1240,43 @@ mod tests {
         for c in prompt.chars() {
             state.push_char(c);
         }
+    }
+
+    fn transcript_message(
+        conversation_id: ConversationId,
+        role: MessageRole,
+        text: &str,
+    ) -> Message {
+        Message {
+            id: uuid::Uuid::now_v7(),
+            conversation_id,
+            role,
+            content: MessageContent::Text {
+                text: text.to_owned(),
+            },
+            created_at: chrono::Utc::now(),
+            token_count: None,
+        }
+    }
+
+    #[test]
+    fn transcript_pairing_does_not_shift_completed_output_after_failed_turn() {
+        let conversation_id = ConversationId::new();
+        let paired = pair_transcript_messages(vec![
+            transcript_message(conversation_id, MessageRole::User, "fails"),
+            transcript_message(conversation_id, MessageRole::User, "succeeds"),
+            transcript_message(conversation_id, MessageRole::Assistant, "second answer"),
+        ])
+        .expect("pair durable transcript");
+
+        assert_eq!(paired.len(), 2);
+        assert_eq!(paired[0].prompt, "fails");
+        assert!(paired[0].assistant.is_none());
+        assert_eq!(paired[1].prompt, "succeeds");
+        assert_eq!(
+            paired[1].assistant.as_ref().map(|(text, _)| text.as_str()),
+            Some("second answer")
+        );
     }
 
     #[test]
@@ -868,6 +1305,8 @@ mod tests {
         );
 
         state.apply(ControllerEvent::Started {
+            conversation_id: "conversation-id".to_owned(),
+            turn_id: "turn-id".to_owned(),
             run_id: "run-id".to_owned(),
             agent_name: "Alice".to_owned(),
             notes: vec!["simulated provider".to_owned()],
@@ -875,6 +1314,7 @@ mod tests {
         state.apply(ControllerEvent::Output("hello ".to_owned()));
         state.apply(ControllerEvent::Output("world".to_owned()));
         state.apply(ControllerEvent::Completed {
+            text: "hello world".to_owned(),
             input_tokens: 9,
             output_tokens: 2,
         });
@@ -884,6 +1324,84 @@ mod tests {
         assert_eq!(run.output, "hello world");
         assert_eq!(run.status, ConsoleRunStatus::Completed);
         assert_eq!((run.input_tokens, run.output_tokens), (9, 2));
+    }
+
+    #[test]
+    fn reducer_bounds_terminal_output_on_utf8_boundaries() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        type_prompt(&mut state, "produce a large answer");
+        state.submit().expect("valid prompt");
+        let final_text = format!("{}tail", "界".repeat(MAX_OUTPUT_BYTES));
+
+        state.apply(ControllerEvent::Completed {
+            text: final_text,
+            input_tokens: 1,
+            output_tokens: 2,
+        });
+
+        let output = &state.run.as_ref().expect("completed run").output;
+        assert!(output.len() <= MAX_OUTPUT_BYTES);
+        let body = output.strip_suffix("tail").expect("preserve newest output");
+        assert!(body.chars().all(|character| character == '界'));
+    }
+
+    #[test]
+    fn reducer_restores_durable_transcript_and_composer_history() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        let restored = |ordinal: u8| ConsoleRun {
+            conversation_id: Some("conversation-id".to_owned()),
+            turn_id: Some(format!("turn-{ordinal}")),
+            run_id: Some(format!("run-{ordinal}")),
+            prompt: format!("prompt {ordinal}"),
+            output: format!("answer {ordinal}"),
+            status: ConsoleRunStatus::Completed,
+            detail: "restored durable completed turn".to_owned(),
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        state.apply(ControllerEvent::HistoryLoaded {
+            agent_id: "agent-id".to_owned(),
+            conversation_id: Some("conversation-id".to_owned()),
+            turns: vec![restored(1), restored(2)],
+        });
+
+        assert_eq!(state.conversation_id.as_deref(), Some("conversation-id"));
+        assert_eq!(state.transcript.len(), 1);
+        assert_eq!(
+            state.run.as_ref().map(|run| run.prompt.as_str()),
+            Some("prompt 2")
+        );
+        state.move_up();
+        assert_eq!(state.prompt_buffer, "prompt 2");
+        state.move_up();
+        assert_eq!(state.prompt_buffer, "prompt 1");
+    }
+
+    #[test]
+    fn reducer_ignores_history_that_arrives_after_a_prompt_finishes() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        type_prompt(&mut state, "new prompt");
+        state.submit().expect("valid prompt");
+        state.apply(ControllerEvent::Completed {
+            text: "new answer".to_owned(),
+            input_tokens: 1,
+            output_tokens: 2,
+        });
+
+        state.apply(ControllerEvent::HistoryLoaded {
+            agent_id: "agent-id".to_owned(),
+            conversation_id: Some("stale-conversation".to_owned()),
+            turns: Vec::new(),
+        });
+
+        assert_eq!(
+            state.run.as_ref().map(|run| run.output.as_str()),
+            Some("new answer")
+        );
+        assert_ne!(state.conversation_id.as_deref(), Some("stale-conversation"));
     }
 
     #[test]
@@ -1085,6 +1603,40 @@ mod tests {
         .expect("controller terminal event timeout")
     }
 
+    async fn wait_for_history(controller: &mut RunController) -> ControllerEvent {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(event) = controller.try_recv() {
+                    if matches!(
+                        event,
+                        ControllerEvent::HistoryLoaded { .. }
+                            | ControllerEvent::HistoryFailed { .. }
+                    ) {
+                        return event;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("controller history event timeout")
+    }
+
+    fn started_correlation(events: &[ControllerEvent]) -> (&str, &str, &str) {
+        events
+            .iter()
+            .find_map(|event| match event {
+                ControllerEvent::Started {
+                    conversation_id,
+                    turn_id,
+                    run_id,
+                    ..
+                } => Some((conversation_id.as_str(), turn_id.as_str(), run_id.as_str())),
+                _ => None,
+            })
+            .expect("controller started correlation")
+    }
+
     #[test]
     fn tui_runtime_options_preserve_config_and_durable_database_selection() {
         let temp = tempfile::TempDir::new().expect("tempdir");
@@ -1105,7 +1657,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn controller_reuses_runtime_service_bus_and_pool_across_prompts_and_cancel() {
+    #[allow(clippy::too_many_lines)]
+    async fn controller_reuses_durable_interaction_across_followup_restart_and_cancel() {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let database_path = temp.path().join("tui-runtime.db");
         let config_path = temp.path().join("selected.toml");
@@ -1145,6 +1698,7 @@ mod tests {
         drop(store);
         drop(seed_pool);
 
+        let restart_options = options.clone();
         let runtime = RuntimeFactory::build(options)
             .await
             .expect("build shared TUI runtime");
@@ -1157,7 +1711,6 @@ mod tests {
 
         let shared_service = Arc::clone(runtime.app());
         let runtime_writer = writer_pointer(runtime.pool());
-        let mut shared_events = runtime.subscribe_events();
         let mut controller = RunController::new(runtime.clone());
         assert!(Arc::ptr_eq(
             &shared_service,
@@ -1168,7 +1721,7 @@ mod tests {
             writer_pointer(controller.polkagent_runtime.pool())
         ));
 
-        let mut completed_run_ids = Vec::new();
+        let mut completed_correlations = Vec::new();
         for prompt in ["first shared prompt", "second shared prompt"] {
             controller
                 .start(PromptRequest {
@@ -1177,8 +1730,8 @@ mod tests {
                     prompt: prompt.to_owned(),
                 })
                 .expect("start sequential prompt");
-            let (run_id, observed) = wait_for_controller_terminal(&mut controller).await;
-            let run_id = run_id.expect("runtime-backed run started");
+            let (_, observed) = wait_for_controller_terminal(&mut controller).await;
+            let correlation = started_correlation(&observed);
             assert!(observed.iter().any(|event| matches!(
                 event,
                 ControllerEvent::Started { notes, .. }
@@ -1186,36 +1739,23 @@ mod tests {
             )));
             assert!(observed
                 .iter()
-                .any(|event| matches!(event, ControllerEvent::Completed { .. })));
-            completed_run_ids.push(run_id);
+                .any(|event| matches!(event, ControllerEvent::Output(text) if !text.is_empty())));
+            assert!(observed.iter().any(|event| matches!(
+                event,
+                ControllerEvent::Completed { text, .. } if text == "I am a fake assistant"
+            )));
+            completed_correlations.push((
+                correlation.0.to_owned(),
+                correlation.1.to_owned(),
+                correlation.2.to_owned(),
+            ));
         }
-        assert_ne!(completed_run_ids[0], completed_run_ids[1]);
-
-        let observed_bus_run_ids = tokio::time::timeout(Duration::from_secs(5), async {
-            let mut terminal_ids = BTreeSet::new();
-            while terminal_ids.len() < completed_run_ids.len() {
-                let event = shared_events.recv().await.expect("shared event bus");
-                if matches!(
-                    event.kind,
-                    EventKind::RunCompleted { .. }
-                        | EventKind::RunFailed { .. }
-                        | EventKind::RunCancelled { .. }
-                        | EventKind::RunTimedOut
-                ) {
-                    terminal_ids.insert(event.run_id.to_string());
-                }
-            }
-            terminal_ids
-        })
-        .await
-        .expect("shared bus terminal events timeout");
-        assert_eq!(
-            observed_bus_run_ids,
-            completed_run_ids.iter().cloned().collect()
-        );
+        assert_eq!(completed_correlations[0].0, completed_correlations[1].0);
+        assert_ne!(completed_correlations[0].1, completed_correlations[1].1);
+        assert_ne!(completed_correlations[0].2, completed_correlations[1].2);
 
         let durable_store = SqliteRunStore::new(runtime.pool().clone());
-        for run_id in &completed_run_ids {
+        for (_, _, run_id) in &completed_correlations {
             let run = durable_store.get_run(run_id).expect("durable Console run");
             assert_eq!(run.state, "completed");
             assert_eq!(run.agent_id, agent.id);
@@ -1228,19 +1768,88 @@ mod tests {
             "failed"
         );
 
+        drop(durable_store);
+        drop(controller);
+        drop(runtime);
+
+        let restarted = RuntimeFactory::build(restart_options)
+            .await
+            .expect("restart shared TUI runtime");
+        let mut controller = RunController::new(restarted.clone());
+        controller
+            .load_history(agent.id.clone())
+            .expect("load durable Console history");
+        let history = wait_for_history(&mut controller).await;
+        let ControllerEvent::HistoryLoaded {
+            conversation_id,
+            turns,
+            ..
+        } = history
+        else {
+            panic!("durable Console history failed to load: {history:?}");
+        };
+        assert_eq!(
+            conversation_id.as_deref(),
+            Some(completed_correlations[0].0.as_str())
+        );
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].prompt, "first shared prompt");
+        assert_eq!(turns[1].prompt, "second shared prompt");
+        assert!(turns
+            .iter()
+            .all(|turn| turn.output == "I am a fake assistant"));
+
         controller
             .start(PromptRequest {
-                agent_id: agent.id,
-                agent_name: agent.name,
-                prompt: "cancel before dispatch".to_owned(),
+                agent_id: agent.id.clone(),
+                agent_name: agent.name.clone(),
+                prompt: "follow up after restart".to_owned(),
+            })
+            .expect("start follow-up prompt");
+        let (_, follow_up) = wait_for_controller_terminal(&mut controller).await;
+        let follow_up_correlation = started_correlation(&follow_up);
+        assert_eq!(follow_up_correlation.0, completed_correlations[0].0);
+        assert!(follow_up.iter().any(|event| matches!(
+            event,
+            ControllerEvent::Completed { text, .. } if text == "I am a fake assistant"
+        )));
+
+        controller
+            .start(PromptRequest {
+                agent_id: agent.id.clone(),
+                agent_name: agent.name.clone(),
+                prompt: "cancel this durable turn".to_owned(),
             })
             .expect("start cancellable prompt");
         assert!(controller.cancel());
         let (cancelled_run_id, observed) = wait_for_controller_terminal(&mut controller).await;
-        assert!(cancelled_run_id.is_none());
-        assert!(observed.iter().any(|event| matches!(
-            event,
-            ControllerEvent::Cancelled(reason) if reason == "cancelled before the run started"
-        )));
+        let cancelled_run_id = cancelled_run_id.expect("cancelled turn has a durable run");
+        assert!(observed
+            .iter()
+            .any(|event| matches!(event, ControllerEvent::Cancelled(_))));
+        let cancelled = SqliteRunStore::new(restarted.pool().clone())
+            .get_run(&cancelled_run_id)
+            .expect("load cancelled durable Console run");
+        assert!(
+            cancelled.state.starts_with("cancelled"),
+            "unexpected durable cancellation state: {}",
+            cancelled.state
+        );
+        let interactions = restarted
+            .interactions()
+            .list_interactions(ListInteractionsRequest::default())
+            .await
+            .expect("list durable interactions");
+        assert_eq!(interactions.len(), 1);
+        assert_eq!(interactions[0].turn_count, 4);
+        let turns = restarted
+            .interactions()
+            .list_turns(interactions[0].conversation_id)
+            .await
+            .expect("list durable interaction turns");
+        assert_eq!(
+            turns.last().map(|turn| turn.state),
+            Some(TurnState::Cancelled)
+        );
     }
 }

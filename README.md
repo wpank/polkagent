@@ -164,8 +164,8 @@ Grant policies use deny-by-default, deny-overrides-allow ABAC with budget enforc
 
 ### ROSEDUST Terminal UI
 
-An interactive dashboard with 9 tabs for monitoring and a bounded actionable
-single-run Console:
+An interactive dashboard with 9 tabs for monitoring and a durable actionable
+multi-turn Console:
 
 | Key | Tab | Description |
 |-----|-----|-------------|
@@ -177,9 +177,9 @@ single-run Console:
 | `F6` | **Approvals** | Effect queue with approve/deny actions and action cards |
 | `F7` | **Memory** | Full-text memory browser with search and delete |
 | `F8` | **Audit** | System audit log with severity filtering |
-| `F9` | **Console** | Select an active agent, prompt, project live output/usage, and cancel one run |
+| `F9` | **Console** | Select an active agent, keep durable session/transcript history, stream typed updates, and cancel the active turn |
 
-Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, and `q` to quit. In the Console, `p` opens the prompt composer, `Enter` submits, and `x` requests cancellation. Durable multi-turn chat, history/slash commands, restart resume, and simultaneous orchestration are not implemented yet.
+Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, and `q` to quit. In the Console, `p` opens the prompt composer, `Enter` submits a durable turn, and `x` cancels that turn and its linked run. Follow-up prompts share the agent's durable TUI session, and transcript/composer history reloads after restart; prior turns are not yet assembled into the next model prompt, so model execution remains one-shot. Slash-command execution, approval decisions from the Console prompt path, and simultaneous group orchestration remain unavailable. The separate legacy Approvals tab retains its existing approve/deny actions.
 
 ### Coding Harness Integrations
 

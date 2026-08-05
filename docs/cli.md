@@ -358,22 +358,33 @@ polkagent tui --tab console
 
 Running `polkagent` with no subcommand also opens the TUI when stdout is an
 interactive terminal. The actionable Console is intentionally a bounded
-single-run surface:
+durable multi-turn surface:
 
 | Key | Action |
 |-----|--------|
 | `F9` or `9` | Open Console |
 | `p` | Select the highlighted/first active agent and compose a prompt |
-| `Enter` | Submit the prompt and start a durable run |
-| `x` | Request cancellation of the active Console run |
+| `Enter` | Submit the prompt as the next durable interaction turn |
+| `x` | Request cancellation of the active durable turn and its linked run |
 | `F3` | Inspect the selected durable run |
 | `F5` | Inspect its timeline |
 
-The Console projects live text, lifecycle/tool progress, errors, and final
-usage. It currently supports one single-line prompt/run at a time; durable
-multi-turn conversations, history, slash commands, simultaneous orchestration,
-restart resume, and service-routed approvals remain open. A root `--config`
-path is used consistently for the TUI database and its run/provider settings.
+The Console creates one durable interaction for the selected agent and keeps
+follow-up turns in that session. This is durable transcript and composer-history
+continuity, not contextual model follow-up: prior turns are not yet assembled
+into the next model prompt, so each model execution remains one-shot. The
+Console consumes typed interaction events, shows correlated
+conversation/turn/run IDs, reloads history after restart, and keeps one active
+turn at a time so cancellation has an exact target. The slash picker remains
+discovery/completion only. Model, provider, harness, group orchestration,
+command execution, and approval decisions from the Console prompt path are not
+yet available; approval events there are displayed as unavailable rather than
+mutating effect rows directly. The separate legacy Approvals tab retains its
+existing direct approve/deny behavior. A temporary read-only conversation
+projection supplies transcript message bodies until the interaction service
+exposes them; all Console prompt-path mutations still go through that service.
+A root `--config` path is used consistently for the TUI database and its
+run/provider settings.
 
 ---
 
