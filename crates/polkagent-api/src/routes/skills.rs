@@ -8,9 +8,13 @@
 //! | `POST` | `/skills/:skill_id/uninstall` | [`uninstall_skill`] |
 //! | `PUT` | `/skills/:skill_id/config` | [`update_skill_config`] |
 //!
-//! All endpoints return 501 Not Implemented when no [`crate::state::SkillRegistry`] has been
-//! configured in [`AppState`]. When a registry is configured, all endpoints
-//! delegate to the trait methods on [`crate::state::SkillRegistry`].
+//! Read endpoints return 501 Not Implemented when no
+//! [`crate::state::SkillRegistry`] has been configured in [`AppState`].
+//! Mutation endpoints additionally require an explicitly mutable registry;
+//! production runtime composition exposes only its authoritative immutable
+//! startup snapshot.
+
+use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
@@ -26,7 +30,7 @@ use crate::{
         API_VERSION,
     },
     error::ApiError,
-    state::AppState,
+    state::{AppState, SkillRegistry},
 };
 
 // ---------------------------------------------------------------------------
@@ -49,6 +53,19 @@ fn manifest_to_response(manifest: &polkagent_skill::SkillManifest) -> SkillRespo
         tools: manifest.capabilities.tools.clone(),
         active: true,
     }
+}
+
+fn mutable_registry(state: &AppState) -> Result<&Arc<dyn SkillRegistry>, ApiError> {
+    let registry = state
+        .skill_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::NotImplemented("skill registry not configured".to_owned()))?;
+    if !state.skill_registry_mutable {
+        return Err(ApiError::NotImplemented(
+            "runtime skill catalog is read-only".to_owned(),
+        ));
+    }
+    Ok(registry)
 }
 
 // ---------------------------------------------------------------------------
@@ -117,10 +134,7 @@ pub async fn install_skill(
     State(state): State<AppState>,
     Json(body): Json<InstallSkillRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let registry = state
-        .skill_registry
-        .as_ref()
-        .ok_or_else(|| ApiError::NotImplemented("skill registry not configured".to_owned()))?;
+    let registry = mutable_registry(&state)?;
 
     let manifest = registry
         .install_skill(&body.path)
@@ -143,10 +157,7 @@ pub async fn uninstall_skill(
     State(state): State<AppState>,
     Path(skill_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let registry = state
-        .skill_registry
-        .as_ref()
-        .ok_or_else(|| ApiError::NotImplemented("skill registry not configured".to_owned()))?;
+    let registry = mutable_registry(&state)?;
 
     let removed = registry
         .uninstall_skill(&skill_id)
@@ -175,10 +186,7 @@ pub async fn update_skill_config(
     Path(skill_id): Path<String>,
     Json(body): Json<UpdateSkillConfigRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let registry = state
-        .skill_registry
-        .as_ref()
-        .ok_or_else(|| ApiError::NotImplemented("skill registry not configured".to_owned()))?;
+    let registry = mutable_registry(&state)?;
 
     let manifest = registry
         .update_skill_config(&skill_id, body.config)

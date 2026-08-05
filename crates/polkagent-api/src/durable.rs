@@ -25,7 +25,7 @@ use rusqlite::OptionalExtension;
 
 use crate::dto::TurnSummary;
 use crate::run::{ListRunsParams, RunError, RunManagerTrait, RunRecord};
-use crate::state::{AgentStore, AgentStoreError, AppState, ToolRegistryStore};
+use crate::state::{AgentStore, AgentStoreError, AppState, SkillRegistry, ToolRegistryStore};
 
 /// One HTTP route that the shared runtime cannot currently back.
 ///
@@ -46,41 +46,29 @@ pub struct UnavailableRuntimeRoute {
 
 /// Exact API boundary that remains unavailable in runtime-composed servers.
 ///
-/// Skills and memory exist inside [`AppService`], but their runtime
-/// contracts do not implement the query/mutation ports owned by the API
-/// crate. Audit and service-registry persistence are not composed by
-/// [`polkagent_runtime::RuntimeFactory`] at all. No in-memory substitutes are
-/// installed for these routes.
+/// Loaded skill definitions and tools have read-only adapters over the exact
+/// [`AppService`] instances owned by the runtime. Skill package mutations and
+/// memory ports remain unavailable. Audit and service-registry persistence are
+/// not composed by [`polkagent_runtime::RuntimeFactory`] at all. No in-memory
+/// substitutes are installed for these routes.
 pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
-    UnavailableRuntimeRoute {
-        dependency: "skills",
-        method: "GET",
-        path: "/api/v1alpha1/skills",
-        reason: "the runtime skill runner has no API SkillRegistry adapter",
-    },
     UnavailableRuntimeRoute {
         dependency: "skills",
         method: "POST",
         path: "/api/v1alpha1/skills/install",
-        reason: "the runtime skill runner has no API SkillRegistry adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "skills",
-        method: "GET",
-        path: "/api/v1alpha1/skills/{skill_id}",
-        reason: "the runtime skill runner has no API SkillRegistry adapter",
+        reason: "package trust, installation, and runtime activation are not composed",
     },
     UnavailableRuntimeRoute {
         dependency: "skills",
         method: "POST",
         path: "/api/v1alpha1/skills/{skill_id}/uninstall",
-        reason: "the runtime skill runner has no API SkillRegistry adapter",
+        reason: "package deactivation and removal are not composed",
     },
     UnavailableRuntimeRoute {
         dependency: "skills",
         method: "PUT",
         path: "/api/v1alpha1/skills/{skill_id}/config",
-        reason: "the runtime skill runner has no API SkillRegistry adapter",
+        reason: "durable skill configuration and activation are not composed",
     },
     UnavailableRuntimeRoute {
         dependency: "memory",
@@ -148,13 +136,14 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
 ///
 /// The caller supplies a clone of the runtime config after applying
 /// surface-only overrides such as CORS. Agents and run lifecycle operations
-/// use the runtime's [`AppService`]; tools query that service's exact configured
-/// registry (or an empty read view when registration is disabled); effects,
-/// events, artifacts, conversations, and payments all use its single migrated
-/// `SQLite` pool; interaction mutations use the exact `Arc` returned by
-/// [`PolkagentRuntime::interactions`]. A separate `SqliteInteractionStore`
-/// provides only the finite read projection missing from the service contract.
-/// WebSocket streaming uses the runtime event bus.
+/// use the runtime's [`AppService`]; skills and tools query that service's
+/// immutable startup definitions and exact configured tool registry (or empty
+/// read views when disabled); effects, events, artifacts, conversations, and
+/// payments all use its single migrated `SQLite` pool; interaction mutations
+/// use the exact `Arc` returned by [`PolkagentRuntime::interactions`]. A
+/// separate `SqliteInteractionStore` provides only the finite read projection
+/// missing from the service contract. WebSocket streaming uses the runtime
+/// event bus.
 ///
 /// Optional stores without a truthful adapter are deliberately left unset;
 /// their exact `501` boundary is published in
@@ -163,6 +152,7 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
 pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> AppState {
     let pool = Arc::new(runtime.pool().clone());
     let artifacts = Arc::new(SqliteApiArtifactStore::new(runtime.pool().clone()));
+    let skills = Arc::new(RuntimeSkillRegistry::from_runtime(runtime));
     let tools = Arc::new(RuntimeToolRegistryStore::from_runtime(runtime));
     let agents = Arc::new(RuntimeAgentStore::from_runtime(runtime));
     let runs = Arc::new(RuntimeRunManager::from_runtime(runtime));
@@ -180,11 +170,78 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
     )
     .with_event_store(pool.clone())
     .with_artifact_store(artifacts)
+    .with_read_only_skill_registry(skills)
     .with_tool_registry(tools)
     .with_payment_store(pool.clone())
     .with_conversation_store(pool)
     .with_interaction_service(interaction_service)
     .with_interaction_store(interaction_store)
+}
+
+/// Read-only API projection of the validated skill definitions loaded into
+/// the runtime's [`AppService`].
+///
+/// The adapter retains the same service `Arc`; it neither reloads directories
+/// nor constructs a second registry. Mutation methods are unreachable through
+/// production [`AppState`] composition and fail closed if called directly.
+#[derive(Clone)]
+pub struct RuntimeSkillRegistry {
+    app: Arc<AppService>,
+}
+
+impl std::fmt::Debug for RuntimeSkillRegistry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeSkillRegistry")
+            .field("skill_count", &self.app.skill_manifests().len())
+            .field("read_only", &true)
+            .finish()
+    }
+}
+
+impl RuntimeSkillRegistry {
+    /// Build an adapter over an explicit shared application service.
+    #[must_use]
+    pub fn new(app: Arc<AppService>) -> Self {
+        Self { app }
+    }
+
+    /// Capture the exact service already owned by the shared runtime.
+    #[must_use]
+    pub fn from_runtime(runtime: &PolkagentRuntime) -> Self {
+        Self::new(Arc::clone(runtime.app()))
+    }
+}
+
+#[async_trait]
+impl SkillRegistry for RuntimeSkillRegistry {
+    async fn list_skills(&self) -> Vec<polkagent_skill::SkillManifest> {
+        self.app.skill_manifests().to_vec()
+    }
+
+    async fn get_skill(&self, name: &str) -> Option<polkagent_skill::SkillManifest> {
+        self.app
+            .skill_manifests()
+            .iter()
+            .find(|manifest| manifest.skill.name == name)
+            .cloned()
+    }
+
+    async fn install_skill(&self, _path: &str) -> Result<polkagent_skill::SkillManifest, String> {
+        Err("runtime skill catalog is read-only".to_owned())
+    }
+
+    async fn uninstall_skill(&self, _name: &str) -> Result<bool, String> {
+        Err("runtime skill catalog is read-only".to_owned())
+    }
+
+    async fn update_skill_config(
+        &self,
+        _name: &str,
+        _config: serde_json::Value,
+    ) -> Result<polkagent_skill::SkillManifest, String> {
+        Err("runtime skill catalog is read-only".to_owned())
+    }
 }
 
 /// Read-only API projection of the tool registry owned by [`AppService`].

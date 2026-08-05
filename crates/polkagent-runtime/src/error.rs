@@ -106,6 +106,15 @@ pub enum RuntimeError {
         message: String,
     },
 
+    /// A configured skill directory could not be resolved safely.
+    #[error("skill directory resolution failed for {path}: {message}")]
+    SkillDirectory {
+        /// Configured unresolved path.
+        path: PathBuf,
+        /// Safe resolution diagnostic.
+        message: String,
+    },
+
     /// Startup recovery failed.
     #[error("startup recovery failed: {message}")]
     Recovery {

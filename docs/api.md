@@ -173,6 +173,13 @@ sequenceDiagram
 | `POST` | `/api/v1alpha1/skills/:skill_id/uninstall` | Uninstall a skill |
 | `PUT` | `/api/v1alpha1/skills/:skill_id/config` | Update skill config |
 
+Runtime-composed servers expose `GET /skills` and `GET /skills/:skill_id` as
+read-only views over the validated definitions loaded with the process-wide
+skill runner. Lists are deterministic and are empty when skill loading is
+disabled. Install, uninstall, and configuration mutation remain explicit
+`501 Not Implemented` until package trust, activation, and durable mutation
+semantics are composed.
+
 ### Tools
 
 | Method | Path | Description |

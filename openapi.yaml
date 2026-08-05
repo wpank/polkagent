@@ -1027,8 +1027,10 @@ paths:
       summary: List skills
       tags: [skills]
       description: |
-        Returns all loaded skills from the skill registry.
-        Returns `501 Not Implemented` when no skill registry is configured.
+        Returns the authoritative, deterministically ordered startup snapshot
+        of validated skills loaded by the shared runtime. A runtime with skill
+        loading disabled returns an empty list. Custom API compositions without
+        any skill registry return `501 Not Implemented`.
       responses:
         "200":
           description: List of skills.
@@ -1042,8 +1044,6 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
-        "500":
-          $ref: "#/components/responses/InternalError"
 
   /api/v1alpha1/skills/install:
     post:
@@ -1066,18 +1066,16 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
-        "201":
+        "200":
           description: Skill installed.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SkillResponse"
-        "400":
+        "422":
           $ref: "#/components/responses/ValidationError"
         "501":
           $ref: "#/components/responses/NotImplemented"
-        "500":
-          $ref: "#/components/responses/InternalError"
 
   /api/v1alpha1/skills/{skill_id}:
     parameters:
@@ -1087,8 +1085,9 @@ paths:
       summary: Get a skill
       tags: [skills]
       description: |
-        Returns the manifest and status for a single skill by package name.
-        Returns `501 Not Implemented` when no skill registry is configured.
+        Returns one loaded definition from the shared runtime snapshot by
+        package name. Unknown names return `404 Not Found`; custom API
+        compositions without any skill registry return `501 Not Implemented`.
       responses:
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -1104,8 +1103,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "501":
           $ref: "#/components/responses/NotImplemented"
-        "500":
-          $ref: "#/components/responses/InternalError"
 
   /api/v1alpha1/skills/{skill_id}/uninstall:
     parameters:
@@ -1122,7 +1119,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
-        "200":
+        "204":
           description: Skill uninstalled.
         "404":
           $ref: "#/components/responses/NotFound"
@@ -1163,14 +1160,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SkillResponse"
-        "400":
+        "422":
           $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
         "501":
           $ref: "#/components/responses/NotImplemented"
-        "500":
-          $ref: "#/components/responses/InternalError"
 
   # ==========================================================================
   # Tools

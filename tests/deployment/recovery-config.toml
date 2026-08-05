@@ -6,6 +6,20 @@ bind_address = "127.0.0.1:19090"
 cors_origins = ["https://container-recovery.invalid"]
 read_only = false
 
+# One deterministic test-only API key hash. The plaintext is held only by the
+# smoke process and is never a production credential or container environment
+# variable. SHA-256 is the format required by the API authentication middleware.
+[auth]
+enabled = true
+api_keys = ["1194f17f37b2be30093aef8f8ccc1ae58974719c0deb0e03fad062d33a754ea0"]
+
+# Authentication, persistence, and restore are the subject of this fixture.
+# Rate limiting is disabled explicitly so repeated probes are deterministic.
+[server.rate_limit]
+enabled = false
+requests_per_second = 100
+burst = 200
+
 [execution]
 max_concurrent_runs = 37
 default_provider = "container-smoke-local"

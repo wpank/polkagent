@@ -193,6 +193,43 @@ fn middleware_and_health_schemas_match_runtime_shapes() {
 }
 
 #[test]
+fn skill_reads_and_mutation_boundary_are_explicit() {
+    let source: Value = serde_yaml::from_str(OPENAPI_SOURCE).expect("parse OpenAPI YAML");
+
+    let list = &source["paths"]["/api/v1alpha1/skills"]["get"];
+    assert!(list["description"]
+        .as_str()
+        .expect("skill list description")
+        .contains("authoritative, deterministically ordered startup snapshot"));
+    assert!(list["responses"].get("200").is_some());
+
+    let get = &source["paths"]["/api/v1alpha1/skills/{skill_id}"]["get"];
+    assert!(get["responses"].get("200").is_some());
+    assert_eq!(
+        get["responses"]["404"]["$ref"],
+        "#/components/responses/NotFound"
+    );
+
+    for (path, method, success) in [
+        ("/api/v1alpha1/skills/install", "post", "200"),
+        ("/api/v1alpha1/skills/{skill_id}/uninstall", "post", "204"),
+        ("/api/v1alpha1/skills/{skill_id}/config", "put", "200"),
+    ] {
+        assert!(
+            source["paths"][path][method]["responses"]
+                .get(success)
+                .is_some(),
+            "{method} {path} must document its actual success status"
+        );
+        assert_eq!(
+            source["paths"][path][method]["responses"]["501"]["$ref"],
+            "#/components/responses/NotImplemented",
+            "{method} {path}"
+        );
+    }
+}
+
+#[test]
 fn openapi_31_forbids_legacy_nullable_everywhere() {
     assert!(
         !OPENAPI_SOURCE.contains("nullable:"),

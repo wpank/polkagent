@@ -111,7 +111,23 @@ impl RuntimeFactory {
                 backend: format!("{:?}", config.database.backend).to_lowercase(),
             });
         }
+        config.skills.directories = config
+            .skills
+            .directories
+            .iter()
+            .map(|path| resolve_skill_directory(path, &workdir))
+            .collect::<Result<Vec<_>, _>>()?;
         validate_config(&config)?;
+
+        let skill_paths = if config.skills.auto_load {
+            config.skills.directories.clone()
+        } else {
+            Vec::new()
+        };
+        let unavailable_skill_directories = skill_paths
+            .iter()
+            .filter(|path| std::fs::read_dir(path).is_err())
+            .count();
 
         let database_path = resolve_database_path(&config.database.sqlite.path, &workdir)?;
         if database_path == Path::new(":memory:") {
@@ -144,6 +160,10 @@ impl RuntimeFactory {
             .with_provider_registry(provider.registry)
             .with_conversation_store(shared_pool.clone())
             .with_payment_store(shared_pool);
+
+        if !skill_paths.is_empty() {
+            builder = builder.with_discovered_skills(skill_paths.clone());
+        }
 
         if let Some(executor) = provider.executor {
             builder = builder.with_executor(executor);
@@ -270,6 +290,23 @@ impl RuntimeFactory {
 
         let operational =
             provider.readiness.state.is_operational() || harness.readiness.state.is_operational();
+        let loaded_skill_count = service.skill_manifests().len();
+        let skills_readiness = if config.skills.directories.is_empty() {
+            ComponentReadiness::disabled("no skill directories configured")
+        } else if !config.skills.auto_load {
+            ComponentReadiness::disabled(
+                "skill directories configured but automatic loading is disabled",
+            )
+        } else if unavailable_skill_directories > 0 {
+            ComponentReadiness::degraded(format!(
+                "loaded {loaded_skill_count} skill(s); {unavailable_skill_directories} configured directory path(s) are unavailable"
+            ))
+        } else {
+            ComponentReadiness::ready(format!(
+                "loaded {loaded_skill_count} validated skill(s) from {} configured directory path(s)",
+                skill_paths.len()
+            ))
+        };
         let readiness = RuntimeReadiness {
             operational,
             config_source,
@@ -286,13 +323,7 @@ impl RuntimeFactory {
             signer: ComponentReadiness::unavailable(
                 "no production signer selection API is available to the runtime factory",
             ),
-            skills: if config.skills.directories.is_empty() {
-                ComponentReadiness::disabled("no skill directories configured")
-            } else {
-                ComponentReadiness::unavailable(
-                    "configured skill directories are not loaded by the runtime factory yet",
-                )
-            },
+            skills: skills_readiness,
             policy_and_grants: ComponentReadiness::degraded(
                 "default in-memory policy/grant resolver only",
             ),
@@ -307,6 +338,7 @@ impl RuntimeFactory {
             rehydrated_agents,
             recovered_runs,
             recovered_interaction_turns,
+            loaded_skill_count,
             degraded = readiness.is_degraded(),
             "polkagent runtime ready"
         );
@@ -429,6 +461,25 @@ fn resolve_database_path(configured: &str, workdir: &Path) -> Result<PathBuf, Ru
     Ok(resolve_under_workdir(&expanded, workdir))
 }
 
+fn resolve_skill_directory(path: &Path, workdir: &Path) -> Result<PathBuf, RuntimeError> {
+    let expanded = if path == Path::new("~") {
+        dirs::home_dir().ok_or_else(|| RuntimeError::SkillDirectory {
+            path: path.to_path_buf(),
+            message: "home directory is unavailable for tilde expansion".to_owned(),
+        })?
+    } else if let Ok(rest) = path.strip_prefix("~") {
+        dirs::home_dir()
+            .ok_or_else(|| RuntimeError::SkillDirectory {
+                path: path.to_path_buf(),
+                message: "home directory is unavailable for tilde expansion".to_owned(),
+            })?
+            .join(rest)
+    } else {
+        path.to_path_buf()
+    };
+    Ok(resolve_under_workdir(&expanded, workdir))
+}
+
 fn resolve_under_workdir(path: &Path, workdir: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -525,6 +576,15 @@ mod tests {
         assert_eq!(
             resolve_under_workdir(Path::new("/data/store.db"), Path::new("/workspace")),
             PathBuf::from("/data/store.db")
+        );
+    }
+
+    #[test]
+    fn relative_skill_directories_resolve_under_workdir() {
+        assert_eq!(
+            resolve_skill_directory(Path::new("skills"), Path::new("/workspace"))
+                .expect("resolve skill directory"),
+            PathBuf::from("/workspace/skills")
         );
     }
 }

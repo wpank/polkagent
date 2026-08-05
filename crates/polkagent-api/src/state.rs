@@ -400,6 +400,8 @@ pub struct AppState {
     pub artifact_store: Option<Arc<dyn ArtifactStore>>,
     /// Skill registry (optional — returns 501 when not configured).
     pub skill_registry: Option<Arc<dyn SkillRegistry>>,
+    /// Whether skill package mutation is supported by the configured registry.
+    pub skill_registry_mutable: bool,
     /// Tool registry store (optional — returns 501 when not configured).
     pub tool_registry: Option<Arc<dyn ToolRegistryStore>>,
     /// Payment store (optional — returns 501 when not configured).
@@ -451,6 +453,7 @@ impl AppState {
             event_store: None,
             artifact_store: None,
             skill_registry: None,
+            skill_registry_mutable: false,
             tool_registry: None,
             payment_store: None,
             memory_store: None,
@@ -476,10 +479,19 @@ impl AppState {
         self
     }
 
-    /// Set the skill registry.
+    /// Set a skill registry that supports read and mutation operations.
     #[must_use]
     pub fn with_skill_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
         self.skill_registry = Some(registry);
+        self.skill_registry_mutable = true;
+        self
+    }
+
+    /// Set an authoritative read-only skill registry.
+    #[must_use]
+    pub fn with_read_only_skill_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
+        self.skill_registry = Some(registry);
+        self.skill_registry_mutable = false;
         self
     }
 

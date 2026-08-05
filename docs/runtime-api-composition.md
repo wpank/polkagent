@@ -17,6 +17,7 @@ in-memory agent or run stores.
 | `EffectStore` | Runtime `SqlitePool` | Durable |
 | `EventStore` | Runtime `SqlitePool` | Durable |
 | `ArtifactStore` | `SqliteApiArtifactStore` over the runtime pool | Durable metadata, verified BLAKE3 content, classification, and lineage |
+| `SkillRegistry` | Read-only projection of `AppService::skill_manifests()` | Exact immutable startup snapshot; deterministic list, or an empty view when loading is disabled |
 | `ToolRegistryStore` | Read-only projection of `AppService::tool_registry()` | Exact process-wide registry; deterministic list, or an empty view when chain-backed registration is disabled |
 | `PaymentStore` | Runtime `SqlitePool` | Durable |
 | `ConversationStore` | Runtime `SqlitePool` | Durable |
@@ -68,15 +69,18 @@ other surfaces onto that shared service is tracked separately.
 | `GET` | `/interactions/{id}/turns` | List durable turn projections |
 | `POST` | `/interactions/{id}/prompt` | Atomically persist and execute a text prompt; accepts a caller-generated `turn_id` for idempotency |
 | `POST` | `/interactions/{id}/turns/{turn_id}/cancel` | Cancel the path-scoped turn idempotently |
-| `PUT` | `/interactions/{id}/target` | Change only the supported agent target |
+| `GET` | `/interactions/{id}/config` | Read the exact persisted target and optional model override |
+| `PUT` | `/interactions/{id}/config` | Atomically replace the supported target or model option |
+| `PUT` | `/interactions/{id}/target` | Compatibility alias for changing the supported agent target |
 | `GET` | `/interactions/{id}/events` | Return a finite ordered page after a durable sequence checkpoint |
 | `GET` | `/interactions/{id}/events/stream` | Replay and follow the exact bounded service stream over checkpointed SSE |
 
 Prompt responses are `202 Accepted` once the turn and its initial event are
 durable. Retrying the same `turn_id` with the same prompt returns the same turn
-handle; reusing it for different input is `409 Conflict`. Model/provider
-overrides and approval/denial are deliberately absent because the runtime does
-not yet support those operations end to end.
+handle; reusing it for different input is `409 Conflict`. Interaction-scoped
+model selection is validated, persisted, survives restart, and feeds later
+model-executor turns. Provider, harness, autonomy, and approval/denial controls
+remain absent because the runtime does not support them end to end.
 
 Event replay accepts `after_sequence`, optional `turn_id`, and `limit` query
 parameters. Events are strictly ordered by the conversation sequence. The
@@ -115,11 +119,9 @@ is `polkagent_api::RUNTIME_UNAVAILABLE_ROUTES`.
 
 | Dependency | Method | Route | Missing boundary |
 |---|---|---|---|
-| Skills | `GET` | `/api/v1alpha1/skills` | Runtime skill runner has no API `SkillRegistry` adapter |
-| Skills | `POST` | `/api/v1alpha1/skills/install` | Same missing adapter |
-| Skills | `GET` | `/api/v1alpha1/skills/{skill_id}` | Same missing adapter |
-| Skills | `POST` | `/api/v1alpha1/skills/{skill_id}/uninstall` | Same missing adapter |
-| Skills | `PUT` | `/api/v1alpha1/skills/{skill_id}/config` | Same missing adapter |
+| Skills | `POST` | `/api/v1alpha1/skills/install` | Package trust, installation, and runtime activation are not composed |
+| Skills | `POST` | `/api/v1alpha1/skills/{skill_id}/uninstall` | Package deactivation and removal are not composed |
+| Skills | `PUT` | `/api/v1alpha1/skills/{skill_id}/config` | Durable skill configuration and activation are not composed |
 | Memory | `POST` | `/api/v1alpha1/memory/query` | Runtime memory store has no API `MemoryStore` adapter |
 | Memory | `GET` | `/api/v1alpha1/memory/stats` | Same missing adapter |
 | Memory | `POST` | `/api/v1alpha1/memory/forget` | Same missing adapter |
@@ -133,12 +135,12 @@ is `polkagent_api::RUNTIME_UNAVAILABLE_ROUTES`.
 
 ## Next implementation slices
 
-1. Add a read-only query adapter for the runtime skill runner; decide
-   separately whether install/config/uninstall belong in a production daemon.
-2. Define one memory port shared by the API and `polkagent-memory`, then add
+1. Define one memory port shared by the API and `polkagent-memory`, then add
    query, statistics, entry lookup, and deletion contract tests.
-3. Compose durable audit and service-registry stores in `RuntimeFactory` before
+2. Compose durable audit and service-registry stores in `RuntimeFactory` before
    enabling those routes.
+3. Define package trust, activation, and durable mutation semantics before
+   enabling skill install, uninstall, or configuration routes.
 4. Expose explicit runtime shutdown and await background-task termination
    after HTTP connection draining.
 
@@ -168,11 +170,21 @@ chain-backed tool registration is disabled, the same API routes truthfully
 return an empty list or `404` for a named lookup. These `GET` routes remain
 available in read-only mode and retain the normal API authentication boundary.
 
+Skill metadata follows the same ownership rule. When automatic loading is
+enabled, `AppService` discovers and validates configured directories once,
+composes its `SkillRunner`, and retains one immutable snapshot sorted by package
+name and version. The API adapter holds that same service `Arc`; it never
+re-reads configuration or constructs a second registry. Empty or disabled
+loading is a successful empty read view, unknown names are `404`, and runtime
+readiness distinguishes disabled, ready, and degraded directory states. Package
+and configuration mutations remain in the exact `501` inventory.
+
 The black-box test `durable_runtime_api` constructs the server through the same
 runtime composition helper used by `serve`, creates an agent and a run over
 HTTP, rebuilds the runtime on the same database, and verifies both projections
-after restart. It also verifies the composed optional stores and representative
-`501` responses.
+after restart. It also verifies the composed optional stores, skill snapshot
+ordering and restart stability, disabled and unknown skill reads, and every
+remaining `501` response.
 
 The deployment-level `scripts/container-smoke.sh` crosses the process and
 container boundary with that composition. It creates an HTTP agent plus a

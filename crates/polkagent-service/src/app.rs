@@ -7,7 +7,7 @@
 //! CLI, TUI) use to drive the platform.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -234,6 +234,7 @@ pub struct AppServiceBuilder {
     provider_registry: Option<ProviderRegistry>,
     memory_store: Option<Arc<dyn MemoryStore + Send + Sync>>,
     skill_runner: Option<Arc<polkagent_skill::SkillRunner>>,
+    skill_manifests: Vec<polkagent_skill::SkillManifest>,
     tool_registry: Option<Arc<polkagent_tool::ToolRegistry>>,
     conversation_store: Option<Arc<dyn polkagent_conversation::ConversationStore + Send + Sync>>,
     payment_store: Option<Arc<dyn PaymentStore + Send + Sync>>,
@@ -322,6 +323,23 @@ impl AppServiceBuilder {
     #[must_use]
     pub fn with_skill_runner(mut self, runner: Arc<polkagent_skill::SkillRunner>) -> Self {
         self.skill_runner = Some(runner);
+        self
+    }
+
+    /// Discover validated skill manifests and compose the runner that owns
+    /// their execution path.
+    ///
+    /// The resulting immutable manifest snapshot is sorted by package name
+    /// and version. It is the authoritative read view for upstream surfaces;
+    /// no second mutable registry is created.
+    #[must_use]
+    pub fn with_discovered_skills(mut self, search_paths: Vec<PathBuf>) -> Self {
+        let mut manifests = polkagent_skill::SkillLoader::new(search_paths).discover_skills();
+        manifests.sort_by(|left, right| {
+            (&left.skill.name, &left.skill.version).cmp(&(&right.skill.name, &right.skill.version))
+        });
+        self.skill_runner = Some(Arc::new(polkagent_skill::SkillRunner::new()));
+        self.skill_manifests = manifests;
         self
     }
 
@@ -508,6 +526,7 @@ impl AppServiceBuilder {
             agents: Arc::new(Mutex::new(HashMap::new())),
             memory_store: self.memory_store,
             skill_runner: self.skill_runner,
+            skill_manifests: self.skill_manifests.into(),
             tool_registry: self.tool_registry,
             conversation_store: self.conversation_store,
             payment_store: self.payment_store,
@@ -601,6 +620,8 @@ pub struct AppService {
     memory_store: Option<Arc<dyn MemoryStore + Send + Sync>>,
     /// Skill runner (optional).
     skill_runner: Option<Arc<polkagent_skill::SkillRunner>>,
+    /// Immutable validated definitions loaded with the skill runner.
+    skill_manifests: Arc<[polkagent_skill::SkillManifest]>,
     /// Tool registry (optional).
     tool_registry: Option<Arc<polkagent_tool::ToolRegistry>>,
     /// Conversation store (optional).
@@ -1766,6 +1787,13 @@ impl AppService {
     #[must_use]
     pub fn skill_runner(&self) -> Option<&Arc<polkagent_skill::SkillRunner>> {
         self.skill_runner.as_ref()
+    }
+
+    /// Return the deterministic immutable snapshot loaded with the skill
+    /// runner at startup.
+    #[must_use]
+    pub fn skill_manifests(&self) -> &[polkagent_skill::SkillManifest] {
+        &self.skill_manifests
     }
 
     /// Return a reference to the tool registry, if configured.

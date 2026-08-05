@@ -21,6 +21,7 @@ container_id=
 restore_container_id=
 restore_project_initialized=0
 backup_copy_container_id=
+credential_leak_detected=0
 backup_transfer_volume="${project_name}_backup-transfer"
 request_dir=$(mktemp -d /tmp/polkagent-container-smoke.XXXXXX)
 request_dir=$(CDPATH='' cd -- "$request_dir" && pwd -P)
@@ -33,6 +34,9 @@ agent_name=container-recovery-agent
 agent_model=container-smoke-local/container-smoke-model
 interaction_title="Container recovery interaction"
 prompt_text="prove durable container replacement without simulated model output"
+api_test_key=polkagent-container-auth-smoke-v1
+invalid_api_test_key=polkagent-container-auth-invalid-v1
+expected_api_test_key_hash=1194f17f37b2be30093aef8f8ccc1ae58974719c0deb0e03fad062d33a754ea0
 
 export COMPOSE_PROJECT_NAME="$project_name"
 export POLKAGENT_HTTP_PORT="$smoke_port"
@@ -56,6 +60,58 @@ sha256_digest() {
     fi
 }
 
+sha256_text() {
+    digest_text=$1
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$digest_text" | sha256sum | awk '{print $1}'
+    else
+        printf '%s' "$digest_text" | shasum -a 256 | awk '{print $1}'
+    fi
+}
+
+contains_test_credential() {
+    credential_file=$1
+    grep -a -F "$api_test_key" "$credential_file" >/dev/null 2>&1 || \
+        grep -a -F "$invalid_api_test_key" "$credential_file" >/dev/null 2>&1
+}
+
+record_credential_leak() {
+    credential_leak_detected=1
+    if [ -n "$artifact_dir" ]; then
+        echo "credential-bearing evidence was withheld" \
+            >"$artifact_dir/credential-evidence-withheld.txt"
+    fi
+}
+
+copy_secret_safe_file() {
+    safe_source=$1
+    safe_destination=$2
+    [ -f "$safe_source" ] || return 0
+    if contains_test_credential "$safe_source"; then
+        record_credential_leak
+        return 0
+    fi
+    cp "$safe_source" "$safe_destination"
+}
+
+emit_secret_safe_file() {
+    safe_source=$1
+    safe_label=$2
+    [ -f "$safe_source" ] || return 0
+    if contains_test_credential "$safe_source"; then
+        record_credential_leak
+        echo "$safe_label withheld because it contained test credential material" >&2
+        return 0
+    fi
+    cat "$safe_source" >&2
+}
+
+redact_test_credentials() {
+    sed \
+        -e "s/$api_test_key/[REDACTED_TEST_API_KEY]/g" \
+        -e "s/$invalid_api_test_key/[REDACTED_INVALID_API_KEY]/g"
+}
+
 fail() {
     if [ -n "$artifact_dir" ]; then
         echo "$*" >"$artifact_dir/failure.txt"
@@ -77,6 +133,7 @@ http_json() {
             --request "$request_method" \
             --header 'accept: application/json' \
             --header 'content-type: application/json' \
+            --header "x-api-key: $api_test_key" \
             --data "$request_body" \
             --output "$response_file" \
             --write-out '%{http_code}' \
@@ -87,6 +144,7 @@ http_json() {
         if ! response_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
             --request "$request_method" \
             --header 'accept: application/json' \
+            --header "x-api-key: $api_test_key" \
             --output "$response_file" \
             --write-out '%{http_code}' \
             "$base_url$request_path"); then
@@ -95,14 +153,55 @@ http_json() {
     fi
 
     if [ "$response_status" != "$expected_status" ]; then
-        response_excerpt=$(head -c 4000 "$response_file" | tr '\n' ' ')
+        response_excerpt=$(head -c 4000 "$response_file" | \
+            redact_test_credentials | tr '\n' ' ')
         fail "$request_method $request_path returned HTTP $response_status, expected $expected_status: $response_excerpt"
     fi
     if ! jq --exit-status . "$response_file" >/dev/null 2>&1; then
-        response_excerpt=$(head -c 4000 "$response_file" | tr '\n' ' ')
+        response_excerpt=$(head -c 4000 "$response_file" | \
+            redact_test_credentials | tr '\n' ' ')
         fail "$request_method $request_path returned non-JSON: $response_excerpt"
     fi
     cat "$response_file"
+}
+
+assert_unauthorized() {
+    auth_phase=$1
+    auth_label=$2
+    auth_path=$3
+
+    for credential_case in missing invalid; do
+        auth_response_file="$request_dir/$auth_phase-$auth_label-$credential_case.json"
+        if [ "$credential_case" = "invalid" ]; then
+            auth_expected_message="invalid API key"
+            if ! auth_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+                --request GET \
+                --header 'accept: application/json' \
+                --header "x-api-key: $invalid_api_test_key" \
+                --output "$auth_response_file" \
+                --write-out '%{http_code}' \
+                "$base_url$auth_path"); then
+                fail "invalid-credential GET $auth_path did not complete"
+            fi
+        else
+            auth_expected_message="missing credentials"
+            if ! auth_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+                --request GET \
+                --header 'accept: application/json' \
+                --output "$auth_response_file" \
+                --write-out '%{http_code}' \
+                "$base_url$auth_path"); then
+                fail "missing-credential GET $auth_path did not complete"
+            fi
+        fi
+
+        [ "$auth_status" = "401" ] || \
+            fail "$credential_case-credential GET $auth_path returned HTTP $auth_status, expected 401"
+        jq --exit-status --arg message "$auth_expected_message" \
+            '. == {"error": {"code": "UNAUTHORIZED", "message": $message}}' \
+            "$auth_response_file" >/dev/null || \
+            fail "$credential_case-credential GET $auth_path returned an unexpected 401 body"
+    done
 }
 
 compact_json() {
@@ -127,6 +226,8 @@ save_container_state() {
     state_label=$2
 
     [ -n "$artifact_dir" ] || return 0
+    state_file="$request_dir/$state_label-state.txt"
+    log_file="$request_dir/$state_label.log"
     docker inspect --format 'id={{.Id}}
 name={{.Name}}
 image={{.Image}}
@@ -137,40 +238,61 @@ oom_killed={{.State.OOMKilled}}
 error={{json .State.Error}}
 health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}
 {{range .Mounts}}mount={{.Type}}:{{.Destination}}:rw={{.RW}}
-{{end}}' "$state_container_id" >"$artifact_dir/$state_label-state.txt" 2>&1 || true
-    docker logs --timestamps "$state_container_id" >"$artifact_dir/$state_label.log" 2>&1 || true
+{{end}}' "$state_container_id" >"$state_file" 2>&1 || true
+    docker logs --timestamps "$state_container_id" >"$log_file" 2>&1 || true
+    copy_secret_safe_file "$state_file" "$artifact_dir/$state_label-state.txt"
+    copy_secret_safe_file "$log_file" "$artifact_dir/$state_label.log"
 }
 
 collect_failure_diagnostics() {
+    failure_diagnostic_dir="$request_dir/failure-diagnostics"
+    mkdir -p "$failure_diagnostic_dir"
+    compose ps --all >"$failure_diagnostic_dir/compose-ps.txt" 2>&1 || true
+    compose logs --timestamps --no-color --tail 300 \
+        >"$failure_diagnostic_dir/compose.log" 2>&1 || true
+
     echo "container smoke diagnostics (project $project_name):" >&2
-    compose ps --all >&2 || true
-    compose logs --timestamps --no-color --tail 300 >&2 || true
+    emit_secret_safe_file "$failure_diagnostic_dir/compose-ps.txt" "Compose state"
+    emit_secret_safe_file "$failure_diagnostic_dir/compose.log" "Compose logs"
     if [ "$restore_project_initialized" = "1" ]; then
+        restore_compose ps --all >"$failure_diagnostic_dir/restore-compose-ps.txt" 2>&1 || true
+        restore_compose logs --timestamps --no-color --tail 300 \
+            >"$failure_diagnostic_dir/restore-compose.log" 2>&1 || true
         echo "restore smoke diagnostics (project $restore_project_name):" >&2
-        restore_compose ps --all >&2 || true
-        restore_compose logs --timestamps --no-color --tail 300 >&2 || true
+        emit_secret_safe_file "$failure_diagnostic_dir/restore-compose-ps.txt" "Restore Compose state"
+        emit_secret_safe_file "$failure_diagnostic_dir/restore-compose.log" "Restore Compose logs"
     fi
 
     if [ -n "$artifact_dir" ]; then
-        compose ps --all >"$artifact_dir/compose-ps-failure.txt" 2>&1 || true
-        compose logs --timestamps --no-color --tail 300 >"$artifact_dir/compose-failure.log" 2>&1 || true
+        copy_secret_safe_file "$failure_diagnostic_dir/compose-ps.txt" \
+            "$artifact_dir/compose-ps-failure.txt"
+        copy_secret_safe_file "$failure_diagnostic_dir/compose.log" \
+            "$artifact_dir/compose-failure.log"
         if [ -n "$container_id" ]; then
             save_container_state "$container_id" failure-container
         fi
         if [ "$restore_project_initialized" = "1" ]; then
-            restore_compose ps --all >"$artifact_dir/restore-compose-ps-failure.txt" 2>&1 || true
-            restore_compose logs --timestamps --no-color --tail 300 \
-                >"$artifact_dir/restore-compose-failure.log" 2>&1 || true
+            copy_secret_safe_file "$failure_diagnostic_dir/restore-compose-ps.txt" \
+                "$artifact_dir/restore-compose-ps-failure.txt"
+            copy_secret_safe_file "$failure_diagnostic_dir/restore-compose.log" \
+                "$artifact_dir/restore-compose-failure.log"
             if [ -n "$restore_container_id" ]; then
                 save_container_state "$restore_container_id" failure-restore-container
             fi
         fi
         mkdir -p "$artifact_dir/http"
-        cp "$request_dir"/*.json "$artifact_dir/http/" 2>/dev/null || true
+        for diagnostic_file in "$request_dir"/*.json \
+            "$request_dir"/*-metrics-valid.txt "$request_dir"/*.headers; do
+            [ -f "$diagnostic_file" ] || continue
+            copy_secret_safe_file "$diagnostic_file" \
+                "$artifact_dir/http/${diagnostic_file##*/}"
+        done
         if [ -s "$backup_archive" ]; then
             mkdir -p "$artifact_dir/backup"
-            cp "$backup_archive" "$backup_checksum_file" "$backup_manifest" \
-                "$artifact_dir/backup/" 2>/dev/null || true
+            for backup_evidence in "$backup_archive" "$backup_checksum_file" "$backup_manifest"; do
+                copy_secret_safe_file "$backup_evidence" \
+                    "$artifact_dir/backup/${backup_evidence##*/}"
+            done
         fi
     fi
 }
@@ -225,33 +347,70 @@ cleanup() {
 }
 
 assert_http_contract() {
+    contract_phase=$1
+
     for endpoint in live ready startup; do
-        response=$(curl --fail --silent --show-error --max-time 10 --connect-timeout 3 \
+        health_file="$request_dir/$contract_phase-public-health-$endpoint.json"
+        health_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+            --output "$health_file" --write-out '%{http_code}' \
             "$base_url/health/$endpoint")
-        case "$response" in
+        [ "$health_status" = "200" ] || \
+            fail "public /health/$endpoint returned HTTP $health_status without credentials"
+        health_response=$(cat "$health_file")
+        case "$health_response" in
             *'"status":"ok"'*) ;;
-            *) fail "/health/$endpoint did not report status=ok: $response" ;;
+            *) fail "/health/$endpoint did not report status=ok: $health_response" ;;
         esac
     done
 
-    system_info=$(curl --fail --silent --show-error --max-time 10 --connect-timeout 3 \
+    openapi_file="$request_dir/$contract_phase-public-openapi.json"
+    openapi_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+        --output "$openapi_file" --write-out '%{http_code}' "$base_url/openapi.json")
+    [ "$openapi_status" = "200" ] || \
+        fail "public /openapi.json returned HTTP $openapi_status without credentials"
+    jq --exit-status '.openapi == "3.1.0"' "$openapi_file" >/dev/null || \
+        fail "public /openapi.json did not return the OpenAPI 3.1 contract"
+
+    pca_health_file="$request_dir/$contract_phase-public-pca-health.json"
+    pca_health_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+        --output "$pca_health_file" --write-out '%{http_code}' \
+        "$base_url/v1/compat/pca/health")
+    [ "$pca_health_status" = "200" ] || \
+        fail "public PCA health returned HTTP $pca_health_status without credentials"
+    jq --exit-status \
+        '.identity.bot_id == "polkagent" and .transport.connected == true and .transport.protocol == "polkagent-c1"' \
+        "$pca_health_file" >/dev/null || fail "public PCA health returned an unexpected projection"
+
+    assert_unauthorized "$contract_phase" protected-system "/api/v1alpha1/system/info"
+    assert_unauthorized "$contract_phase" protected-metrics /metrics
+    assert_unauthorized "$contract_phase" protected-pca-inbound "/v1/compat/pca/inbound"
+    assert_unauthorized "$contract_phase" protected-api-agents "/api/v1alpha1/agents"
+
+    system_info_file="$request_dir/$contract_phase-protected-system-valid.json"
+    system_info_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+        --header "x-api-key: $api_test_key" \
+        --output "$system_info_file" --write-out '%{http_code}' \
         "$base_url/api/v1alpha1/system/info")
+    [ "$system_info_status" = "200" ] || \
+        fail "valid-key system info returned HTTP $system_info_status"
+    system_info=$(cat "$system_info_file")
     case "$system_info" in
         *'"bind_address":"127.0.0.1:19090"'*) ;;
-        *) fail "bind-mounted config sentinel is absent from system info: $system_info" ;;
+        *) fail "bind-mounted config sentinel is absent from system info" ;;
     esac
     case "$system_info" in
         *'"database_backend":"sqlite"'*) ;;
-        *) fail "system info did not report the SQLite backend: $system_info" ;;
+        *) fail "system info did not report the SQLite backend" ;;
     esac
     case "$system_info" in
         *'"max_concurrent_runs":37'*) ;;
-        *) fail "bind-mounted execution limit is absent from system info: $system_info" ;;
+        *) fail "bind-mounted execution limit is absent from system info" ;;
     esac
 
     cors_headers=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
         --dump-header - --output /dev/null \
         --header 'Origin: https://container-recovery.invalid' \
+        --header "x-api-key: $api_test_key" \
         "$base_url/api/v1alpha1/system/info" | tr -d '\r')
     case "$cors_headers" in
         *'access-control-allow-origin: https://container-recovery.invalid'*) ;;
@@ -260,7 +419,41 @@ assert_http_contract() {
 
     case "$system_info" in
         *'container-smoke-placeholder'*) fail "safe system info leaked the provider token sentinel" ;;
+        *"$api_test_key"*) fail "safe system info leaked the deterministic API test key" ;;
     esac
+
+    metrics_body_file="$request_dir/$contract_phase-protected-metrics-valid.txt"
+    metrics_headers_file="$request_dir/$contract_phase-protected-metrics-valid.headers"
+    metrics_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+        --header "x-api-key: $api_test_key" \
+        --dump-header "$metrics_headers_file" \
+        --output "$metrics_body_file" --write-out '%{http_code}' \
+        "$base_url/metrics")
+    [ "$metrics_status" = "200" ] || \
+        fail "valid-key metrics returned HTTP $metrics_status"
+    tr -d '\r' <"$metrics_headers_file" | tr '[:upper:]' '[:lower:]' | \
+        grep -F 'content-type: text/plain; version=0.0.4; charset=utf-8' >/dev/null || \
+        fail "valid-key metrics did not return the Prometheus content type"
+
+    pca_inbound_file="$request_dir/$contract_phase-protected-pca-inbound-valid.json"
+    pca_inbound_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+        --header "x-api-key: $api_test_key" \
+        --output "$pca_inbound_file" --write-out '%{http_code}' \
+        "$base_url/v1/compat/pca/inbound")
+    [ "$pca_inbound_status" = "200" ] || \
+        fail "valid-key PCA inbound returned HTTP $pca_inbound_status"
+    jq --exit-status '.deliveries == []' "$pca_inbound_file" >/dev/null || \
+        fail "valid-key PCA inbound returned an unexpected projection"
+
+    agents_file="$request_dir/$contract_phase-protected-api-agents-valid.json"
+    agents_status=$(curl --silent --show-error --max-time 10 --connect-timeout 3 \
+        --header "x-api-key: $api_test_key" \
+        --output "$agents_file" --write-out '%{http_code}' \
+        "$base_url/api/v1alpha1/agents")
+    [ "$agents_status" = "200" ] || \
+        fail "valid-key agent API returned HTTP $agents_status"
+    jq --exit-status '.data | type == "array"' "$agents_file" >/dev/null || \
+        fail "valid-key agent API returned an unexpected list projection"
 }
 
 if [ -n "$artifact_dir" ]; then
@@ -270,13 +463,15 @@ fi
 trap cleanup 0
 trap 'exit 130' 1 2 15
 
-for required_command in docker curl jq sqlite3 tar awk; do
+for required_command in docker curl jq sqlite3 tar awk grep; do
     command -v "$required_command" >/dev/null 2>&1 || \
         fail "required command is unavailable: $required_command"
 done
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
     fail "required SHA-256 command is unavailable: install sha256sum or shasum"
 fi
+[ "$(sha256_text "$api_test_key")" = "$expected_api_test_key_hash" ] || \
+    fail "deterministic API test key does not match the configured hash"
 
 mkdir -m 0777 "$backup_dir"
 mkdir -m 0700 "$integrity_dir"
@@ -288,7 +483,7 @@ compose up --detach --build --wait --wait-timeout 180
 container_id=$(compose ps --quiet polkagent)
 [ -n "$container_id" ] || fail "Compose did not return a polkagent container id"
 
-assert_http_contract
+assert_http_contract initial
 
 container_user=$(docker inspect --format '{{.Config.User}}' "$container_id")
 if [ -z "$container_user" ] || [ "$container_user" = "0" ] || [ "$container_user" = "root" ]; then
@@ -431,7 +626,7 @@ container_id=$(compose ps --quiet polkagent)
 volume_after=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "$container_id")
 [ "$volume_after" = "$volume_before" ] || fail "replacement container used volume $volume_after, expected $volume_before"
 
-assert_http_contract
+assert_http_contract replacement
 
 agent_after_json=$(http_json 200 GET "/api/v1alpha1/agents/$agent_id" replacement-agent)
 interaction_after_json=$(http_json 200 GET \
@@ -588,7 +783,7 @@ restore_runtime_gid=$(restore_compose exec --no-TTY polkagent id -g | tr -d '\r'
 [ "$restore_runtime_uid:$restore_runtime_gid" = "$runtime_uid:$runtime_gid" ] || \
     fail "restored runtime user changed from $runtime_uid:$runtime_gid to $restore_runtime_uid:$restore_runtime_gid"
 restore_compose exec --no-TTY polkagent test -s /data/polkagent.db
-assert_http_contract
+assert_http_contract restored
 
 restored_agent_json=$(http_json 200 GET "/api/v1alpha1/agents/$agent_id" restored-agent)
 restored_interaction_json=$(http_json 200 GET \
@@ -621,41 +816,81 @@ backup_restore_seconds=$((restore_finished_at - restore_started_at))
 backup_total_seconds=$((restore_finished_at - backup_started_at))
 smoke_total_seconds=$((restore_finished_at - smoke_started_at))
 
+summary_pending="$request_dir/summary.txt"
+{
+    echo "result=passed"
+    echo "project=$project_name"
+    echo "restore_project=$restore_project_name"
+    echo "first_container=$first_container_id"
+    echo "replacement_container=$container_id"
+    echo "restore_container=$restore_container_id"
+    echo "persistent_volume=$volume_after"
+    echo "restored_volume=$restore_volume"
+    echo "runtime_user=$container_user"
+    echo "runtime_uid=$runtime_uid"
+    echo "runtime_gid=$runtime_gid"
+    echo "config_mount=$config_mount"
+    echo "agent_id=$agent_id"
+    echo "conversation_id=$conversation_id"
+    echo "turn_id=$turn_id"
+    echo "run_id=$run_id"
+    echo "terminal_state=$turn_state"
+    echo "backup_sha256=$backup_checksum"
+    echo "backup_bytes=$backup_bytes"
+    echo "sqlite_integrity=$integrity_output"
+    echo "backup_capture_seconds=$backup_capture_seconds"
+    echo "backup_restore_seconds=$backup_restore_seconds"
+    echo "backup_total_seconds=$backup_total_seconds"
+    echo "smoke_total_seconds=$smoke_total_seconds"
+    echo "auth_enabled=true"
+    echo "rate_limiting_enabled=false"
+    echo "public_unauthenticated_paths_proven=5"
+    echo "protected_missing_invalid_valid_paths_proven=4"
+    echo "artifact_secret_scan=passed"
+    echo "execution_backend=real-local-provider-intentionally-unreachable"
+    echo "successful_model_output_proven=false"
+    echo "online_backup_proven=false"
+} >"$summary_pending"
+
+credential_scan_log="$request_dir/credential-scan-logs.txt"
+{
+    printf '%s\n' "$shutdown_logs"
+    printf '%s\n' "$backup_source_logs"
+    docker logs "$restore_container_id" 2>&1
+} >"$credential_scan_log"
+
+if grep -R -a -F "$api_test_key" "$request_dir" >/dev/null 2>&1 || \
+    grep -R -a -F "$invalid_api_test_key" "$request_dir" >/dev/null 2>&1; then
+    record_credential_leak
+    fail "deterministic API test key leaked into response, backup, summary, or log evidence"
+fi
+if [ "$credential_leak_detected" != "0" ]; then
+    fail "deterministic API test key was withheld from smoke evidence"
+fi
+rm "$credential_scan_log"
+
 if [ -n "$artifact_dir" ]; then
-    {
-        echo "result=passed"
-        echo "project=$project_name"
-        echo "restore_project=$restore_project_name"
-        echo "first_container=$first_container_id"
-        echo "replacement_container=$container_id"
-        echo "restore_container=$restore_container_id"
-        echo "persistent_volume=$volume_after"
-        echo "restored_volume=$restore_volume"
-        echo "runtime_user=$container_user"
-        echo "runtime_uid=$runtime_uid"
-        echo "runtime_gid=$runtime_gid"
-        echo "config_mount=$config_mount"
-        echo "agent_id=$agent_id"
-        echo "conversation_id=$conversation_id"
-        echo "turn_id=$turn_id"
-        echo "run_id=$run_id"
-        echo "terminal_state=$turn_state"
-        echo "backup_sha256=$backup_checksum"
-        echo "backup_bytes=$backup_bytes"
-        echo "sqlite_integrity=$integrity_output"
-        echo "backup_capture_seconds=$backup_capture_seconds"
-        echo "backup_restore_seconds=$backup_restore_seconds"
-        echo "backup_total_seconds=$backup_total_seconds"
-        echo "smoke_total_seconds=$smoke_total_seconds"
-        echo "execution_backend=real-local-provider-intentionally-unreachable"
-        echo "successful_model_output_proven=false"
-        echo "online_backup_proven=false"
-    } >"$artifact_dir/summary.txt"
     mkdir -p "$artifact_dir/http"
     cp "$request_dir"/*.json "$artifact_dir/http/"
+    cp "$request_dir"/*-metrics-valid.txt "$request_dir"/*.headers "$artifact_dir/http/"
     mkdir -p "$artifact_dir/backup"
     cp "$backup_archive" "$backup_checksum_file" "$backup_manifest" \
         "$backup_dir/sqlite-integrity.txt" "$artifact_dir/backup/"
+    cp "$summary_pending" "$artifact_dir/summary.txt"
+fi
+
+if [ -n "$artifact_dir" ] && { \
+    grep -R -a -F "$api_test_key" "$artifact_dir" >/dev/null 2>&1 || \
+    grep -R -a -F "$invalid_api_test_key" "$artifact_dir" >/dev/null 2>&1; \
+}; then
+    record_credential_leak
+    {
+        grep -R -a -l -F "$api_test_key" "$artifact_dir" 2>/dev/null || true
+        grep -R -a -l -F "$invalid_api_test_key" "$artifact_dir" 2>/dev/null || true
+    } | while IFS= read -r credential_artifact; do
+        [ -n "$credential_artifact" ] && rm -f -- "$credential_artifact"
+    done
+    fail "deterministic API test key leaked into uploaded smoke artifacts"
 fi
 
 echo "container recovery and offline backup/restore smoke passed"
@@ -668,8 +903,10 @@ echo "  retained volume: $volume_after"
 echo "  durable IDs: agent=$agent_id conversation=$conversation_id turn=$turn_id run=$run_id"
 echo "  terminal state: $turn_state (real local provider, intentionally unreachable)"
 echo "  exact restart projections: agent, interaction config, turn, run, transcript"
+echo "  auth: 5 public paths without credentials; 4 protected paths exact-401 missing/invalid and 200 with valid key"
+echo "  auth evidence: initial, replacement, restored; rate limiting disabled; artifact secret scan passed"
 echo "  offline backup: $backup_bytes bytes, sha256=$backup_checksum, integrity=$integrity_output"
 echo "  restored project/volume: $restore_project_name / $restore_volume"
 echo "  exact restore projections: agent, interaction config, turn, run, transcript"
 echo "  timings: capture=${backup_capture_seconds}s restore=${backup_restore_seconds}s backup-total=${backup_total_seconds}s smoke-total=${smoke_total_seconds}s"
-echo "  not proven: successful model output, online/encrypted backup, run/worker/effect drain, Postgres, auth, HA, upgrade/rollback"
+echo "  not proven: successful model output, TLS/key rotation/revocation, online/encrypted backup, run/worker/effect drain, Postgres, HA, upgrade/rollback"

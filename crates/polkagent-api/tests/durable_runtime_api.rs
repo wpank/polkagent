@@ -19,7 +19,8 @@ use polkagent_event::{EventBus, EventRecorder};
 use polkagent_executor_fake::FakeExecutor;
 use polkagent_interaction::{InteractionService, InteractionStore};
 use polkagent_runtime::{
-    AdapterPolicy, DurableInteractionService, PolkagentRuntime, RuntimeFactory, RuntimeOptions,
+    AdapterPolicy, ComponentState, DurableInteractionService, PolkagentRuntime, RuntimeFactory,
+    RuntimeOptions,
 };
 use polkagent_service::AppService;
 use polkagent_store_sqlite::{migrations, SqliteInteractionStore, SqlitePool};
@@ -27,8 +28,12 @@ use polkagent_store_trait::{ArtifactStore, RunStatus, RunStore};
 use sha2::{Digest, Sha256};
 
 async fn runtime_at(root: &std::path::Path) -> PolkagentRuntime {
+    runtime_with_config(root, "").await
+}
+
+async fn runtime_with_config(root: &std::path::Path, config: &str) -> PolkagentRuntime {
     let config_path = root.join("polkagent.toml");
-    std::fs::write(&config_path, "").expect("write empty config");
+    std::fs::write(&config_path, config).expect("write runtime config");
     let mut options = RuntimeOptions::new(root);
     options.config_path = Some(config_path);
     options.database_path = Some(root.join("api.db"));
@@ -36,6 +41,12 @@ async fn runtime_at(root: &std::path::Path) -> PolkagentRuntime {
     options.adapter_policy = AdapterPolicy::AllowSimulated;
     options.discover_environment_providers = false;
     RuntimeFactory::build(options).await.expect("build runtime")
+}
+
+fn write_skill(root: &std::path::Path, directory: &str, manifest: &str) {
+    let skill_directory = root.join("skills").join(directory);
+    std::fs::create_dir_all(&skill_directory).expect("create skill directory");
+    std::fs::write(skill_directory.join("skill.toml"), manifest).expect("write skill manifest");
 }
 
 fn test_server(runtime: &PolkagentRuntime) -> TestServer {
@@ -655,6 +666,173 @@ async fn durable_run_state_grammar_survives_projection_restart_and_sanitizes_cor
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one black-box scenario proves the loaded catalog, refusal boundary, and restart snapshot together"
+)]
+async fn runtime_skill_catalog_is_authoritative_read_only_and_restart_stable() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    write_skill(
+        temp.path(),
+        "zeta-directory",
+        r#"
+[skill]
+name = "zeta-skill"
+version = "2.0.0"
+description = "Loaded second after deterministic sorting"
+
+[capabilities]
+tools = ["polkagent.zeta"]
+"#,
+    );
+    write_skill(
+        temp.path(),
+        "alpha-directory",
+        r#"
+[skill]
+name = "alpha-skill"
+version = "1.2.3"
+description = "Loaded first after deterministic sorting"
+
+[capabilities]
+required_grants = ["memory.read"]
+tools = ["polkagent.alpha"]
+"#,
+    );
+    let config = r#"
+[skills]
+directories = ["skills"]
+auto_load = true
+"#;
+
+    let runtime = runtime_with_config(temp.path(), config).await;
+    assert_eq!(runtime.readiness().skills.state, ComponentState::Ready);
+    assert!(runtime.readiness().skills.detail.contains("loaded 2"));
+    assert!(runtime.app().skill_runner().is_some());
+    assert_eq!(
+        runtime
+            .app()
+            .skill_manifests()
+            .iter()
+            .map(|manifest| manifest.skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha-skill", "zeta-skill"]
+    );
+
+    let server = test_server(&runtime);
+    let listed = server.get("/api/v1alpha1/skills").await;
+    listed.assert_status_ok();
+    let first_snapshot = listed.json::<serde_json::Value>();
+    assert_eq!(
+        first_snapshot,
+        serde_json::json!({
+            "version": "v1alpha1",
+            "data": [
+                {
+                    "version": "v1alpha1",
+                    "id": "alpha-skill@1.2.3",
+                    "name": "alpha-skill",
+                    "skill_version": "1.2.3",
+                    "description": "Loaded first after deterministic sorting",
+                    "required_grants": ["memory.read"],
+                    "tools": ["polkagent.alpha"],
+                    "active": true
+                },
+                {
+                    "version": "v1alpha1",
+                    "id": "zeta-skill@2.0.0",
+                    "name": "zeta-skill",
+                    "skill_version": "2.0.0",
+                    "description": "Loaded second after deterministic sorting",
+                    "required_grants": [],
+                    "tools": ["polkagent.zeta"],
+                    "active": true
+                }
+            ]
+        })
+    );
+
+    let alpha = server.get("/api/v1alpha1/skills/alpha-skill").await;
+    alpha.assert_status_ok();
+    assert_eq!(alpha.json::<serde_json::Value>(), first_snapshot["data"][0]);
+
+    let missing = server.get("/api/v1alpha1/skills/missing-skill").await;
+    assert_http_error(&missing, StatusCode::NOT_FOUND, "NOT_FOUND");
+    assert_eq!(
+        missing.json::<serde_json::Value>()["error"]["message"],
+        "not found: skill 'missing-skill'"
+    );
+
+    let mutation_responses = [
+        server
+            .post("/api/v1alpha1/skills/install")
+            .json(&serde_json::json!({"path": "/untrusted/package"}))
+            .await,
+        server
+            .post("/api/v1alpha1/skills/alpha-skill/uninstall")
+            .await,
+        server
+            .put("/api/v1alpha1/skills/alpha-skill/config")
+            .json(&serde_json::json!({"config": {"mode": "changed"}}))
+            .await,
+    ];
+    for response in mutation_responses {
+        assert_http_error(&response, StatusCode::NOT_IMPLEMENTED, "NOT_IMPLEMENTED");
+        assert_eq!(
+            response.json::<serde_json::Value>()["error"]["message"],
+            "not implemented: runtime skill catalog is read-only"
+        );
+    }
+
+    let mut read_only_config = runtime.config().as_ref().clone();
+    read_only_config.api.read_only = true;
+    let read_only = TestServer::new(
+        ApiServer::from_state(app_state_from_runtime(&runtime, read_only_config)).into_router(),
+    );
+    assert_eq!(
+        read_only
+            .get("/api/v1alpha1/skills")
+            .await
+            .json::<serde_json::Value>(),
+        first_snapshot
+    );
+
+    drop(read_only);
+    drop(server);
+    drop(runtime);
+    let restarted = runtime_with_config(temp.path(), config).await;
+    assert_eq!(restarted.readiness().skills.state, ComponentState::Ready);
+    assert_eq!(
+        test_server(&restarted)
+            .get("/api/v1alpha1/skills")
+            .await
+            .json::<serde_json::Value>(),
+        first_snapshot
+    );
+
+    drop(restarted);
+    let disabled = runtime_with_config(
+        temp.path(),
+        r#"
+[skills]
+directories = ["skills"]
+auto_load = false
+"#,
+    )
+    .await;
+    assert_eq!(disabled.readiness().skills.state, ComponentState::Disabled);
+    assert!(disabled.app().skill_runner().is_none());
+    assert!(disabled.app().skill_manifests().is_empty());
+    assert_eq!(
+        test_server(&disabled)
+            .get("/api/v1alpha1/skills")
+            .await
+            .json::<serde_json::Value>()["data"],
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test]
 async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let runtime = runtime_at(temp.path()).await;
@@ -665,7 +843,8 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
     assert!(state.payment_store.is_some());
     assert!(state.conversation_store.is_some());
     assert!(state.artifact_store.is_some());
-    assert!(state.skill_registry.is_none());
+    assert!(state.skill_registry.is_some());
+    assert!(!state.skill_registry_mutable);
     assert!(state.tool_registry.is_some());
     assert!(state.memory_store.is_none());
     assert!(state.audit_store.is_none());
@@ -689,8 +868,21 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
         .get("/api/v1alpha1/conversations?agent_id=00000000-0000-0000-0000-000000000000")
         .await
         .assert_status_ok();
+    let disabled_skills = server.get("/api/v1alpha1/skills").await;
+    disabled_skills.assert_status_ok();
+    assert_eq!(
+        disabled_skills.json::<serde_json::Value>()["data"],
+        serde_json::json!([])
+    );
+    assert_eq!(runtime.readiness().skills.state, ComponentState::Disabled);
+    assert!(runtime.app().skill_runner().is_none());
+    assert_http_error(
+        &server.get("/api/v1alpha1/skills/missing-skill").await,
+        StatusCode::NOT_FOUND,
+        "NOT_FOUND",
+    );
 
-    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 15);
+    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 13);
     for route in RUNTIME_UNAVAILABLE_ROUTES {
         let path = route
             .path

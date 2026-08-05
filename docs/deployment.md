@@ -118,6 +118,16 @@ read-only config file; the smoke checks its CORS allow-list, execution-limit
 sentinel, and local-provider registration without exposing the placeholder
 provider token through system information.
 
+That override enables API-key authentication with one deterministic,
+test-only SHA-256 key hash and explicitly disables rate limiting so the probe
+count is stable. In each of the initial, replacement, and restored processes,
+the smoke proves that the three health endpoints, `/openapi.json`, and PCA
+health are public without credentials. It proves the protected boundary on
+system information, `/metrics`, PCA inbound, and a representative API route:
+missing and invalid credentials must return the exact `401` error contracts,
+while the valid test key must succeed. Every other protected recovery request
+also carries that key.
+
 The API remains mutable for the recovery proof. Through real HTTP routes, the
 smoke creates an agent and targeted interaction, persists its model
 configuration, and submits a prompt. The configured local provider points to a
@@ -148,6 +158,12 @@ The host needs Docker Compose, `curl`, `jq`, `sqlite3`, `tar`, and either
 `POLKAGENT_SMOKE_ARTIFACT_DIR` to retain a summary, the verified volume archive
 and manifest, HTTP JSON projections, selected container state, and logs. CI
 does this automatically and uploads the directory even when the smoke fails.
+Before evidence is copied, the script scans responses, metrics, headers,
+container logs, the backup archive, and the pending summary for both raw test
+credentials. Diagnostic files are likewise checked before they are printed or
+retained; credential-bearing evidence is withheld and fails the smoke. The
+uploaded artifact is scanned again as a final guard. Only the test key hash is
+present in the committed fixture.
 Set `POLKAGENT_SMOKE_KEEP=1` only for local diagnosis; both isolated Compose
 project names and the exact temporary backup path are printed for explicit
 cleanup.
@@ -155,7 +171,8 @@ cleanup.
 This is deliberately a single-instance lifecycle smoke. It does **not** prove
 successful model output or a reachable production execution backend. It also
 does not prove an online backup, encrypted/export bundle, scheduled retention,
-PostgreSQL backup/restore, auth, worker/run/effect draining, HA,
+PostgreSQL backup/restore, TLS termination, key rotation/revocation,
+multi-principal authorization, worker/run/effect draining, HA,
 upgrade/rollback, resource pressure, or crash recovery are production-ready.
 
 ### Offline SQLite backup/restore runbook

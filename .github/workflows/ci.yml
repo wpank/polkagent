@@ -73,7 +73,7 @@ jobs:
         run: cargo test --workspace --tests -- --ignored
 
   container-smoke:
-    name: Container recovery and offline backup/restore smoke
+    name: Authenticated container recovery and offline backup/restore smoke
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
@@ -91,14 +91,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends sqlite3
 
-      - name: Validate API recovery and offline SQLite restore
+      - name: Validate authenticated API recovery and offline SQLite restore
         run: ./scripts/container-smoke.sh
 
       - name: Upload container smoke diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: container-smoke-recovery-backup
+          name: container-smoke-auth-recovery-backup
           path: ${{ env.POLKAGENT_SMOKE_ARTIFACT_DIR }}
           if-no-files-found: warn
           retention-days: 7
