@@ -827,22 +827,16 @@ mod effect_store {
             .expect("before");
         assert_eq!(before.len(), 1);
 
-        // mark_outcomes_consumed is a no-op (no `consumed` column in the
-        // production schema), but must succeed without error.
+        // Marking the exact outcome consumed must succeed.
         EffectStore::mark_outcomes_consumed(&pool, &[outcome_id])
             .await
             .expect("mark consumed");
 
-        // Outcomes are still present since consumption is not tracked at the
-        // database level.
+        // Consumed outcomes no longer appear in the unconsumed projection.
         let after = EffectStore::unconsumed_outcomes(&pool, run_id)
             .await
             .expect("after");
-        assert_eq!(
-            after.len(),
-            1,
-            "outcome should still be present (mark_consumed is a no-op)"
-        );
+        assert!(after.is_empty(), "consumed outcome should be absent");
     }
 
     #[tokio::test]
