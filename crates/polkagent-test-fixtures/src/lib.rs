@@ -484,6 +484,12 @@ impl Default for OutgoingMessageBuilder {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Fixture validation tests intentionally panic at the exact malformed fixture
+// boundary so invalid shared test data remains easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "fixture validation assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 
