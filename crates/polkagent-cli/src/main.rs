@@ -22,7 +22,7 @@
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
-use std::io::IsTerminal as _;
+use std::io::{IsTerminal as _, Write as _};
 
 use polkagent_store_sqlite::SqlitePool;
 use polkagent_telemetry::{LogFormat, MetricRecorder, TelemetryConfig, TelemetryGuard};
@@ -36,6 +36,54 @@ mod tui;
 
 use cli::{Cli, Commands};
 use output::OutputFormat;
+
+const ACP_PANIC_DIAGNOSTIC: &str =
+    "Error: Polkagent ACP encountered an internal panic; sensitive details were suppressed";
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
+
+struct AcpPanicHookGuard {
+    previous: Option<PanicHook>,
+}
+
+impl AcpPanicHookGuard {
+    fn install_and_probe() -> Self {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {
+            let _ = writeln!(std::io::stderr().lock(), "{ACP_PANIC_DIAGNOSTIC}");
+        }));
+        let guard = Self {
+            previous: Some(previous),
+        };
+        run_acp_panic_probe();
+        guard
+    }
+}
+
+impl Drop for AcpPanicHookGuard {
+    fn drop(&mut self) {
+        // `set_hook` itself panics during unwinding. An ACP process whose main
+        // task is unwinding will exit, so preserving the generic hook is safer
+        // than risking a second panic. Normal disconnect restores the caller's
+        // hook so library tests and non-ACP code keep their prior behavior.
+        if std::thread::panicking() {
+            return;
+        }
+        if let Some(previous) = self.previous.take() {
+            std::panic::set_hook(previous);
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn run_acp_panic_probe() {
+    if let Ok(payload) = std::env::var("POLKAGENT_INTERNAL_ACP_PANIC_PROBE") {
+        assert!(payload.is_empty(), "{payload}");
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn run_acp_panic_probe() {}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -57,6 +105,11 @@ async fn main() {
 /// anyhow error-printing behaviour.
 async fn run_main() -> (i32, Option<anyhow::Error>) {
     let cli = Cli::parse();
+    // ACP runs before telemetry and owns stdout. Install its fixed, payload-
+    // suppressing panic hook for the entire ACP-only path; every other command
+    // retains the process's existing hook.
+    let _hook =
+        matches!(&cli.command, Some(Commands::Acp(_))).then(AcpPanicHookGuard::install_and_probe);
 
     // Honour `--no-color` / `NO_COLOR` globally before any output.
     // Propagate --no-color into the NO_COLOR env var so that the Theme and
@@ -114,9 +167,7 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
     let _metrics = MetricRecorder::new();
 
     // Collect global flags for passing to handlers.
-    let format = cli.format;
-    let dry_run = cli.dry_run;
-    let yes = cli.yes;
+    let (format, dry_run, yes) = (cli.format, cli.dry_run, cli.yes);
 
     // Commands that do not require database access.
     let (cmd_name, result) = match &cli.command {

@@ -34,6 +34,63 @@ struct FailingProvider {
     task: tokio::task::JoinHandle<()>,
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn acp_panic_hook_suppresses_payload_and_keeps_stdout_empty() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    let raw_secret = "sk-acpPanicHookFixture123";
+
+    let output = Command::new(binary)
+        .arg("acp")
+        .env("POLKAGENT_DATABASE_SQLITE_PATH", &db_path)
+        .env("POLKAGENT_INTERNAL_ACP_PANIC_PROBE", raw_secret)
+        .output()
+        .expect("run the debug-only ACP panic probe");
+
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "ACP panic contaminated protocol stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(
+        "Polkagent ACP encountered an internal panic; sensitive details were suppressed"
+    ));
+    assert!(
+        !stderr.contains(raw_secret),
+        "panic payload leaked: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked at") && !stderr.contains("main.rs"),
+        "default panic location leaked: {stderr}"
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn acp_panic_probe_is_ignored_by_non_acp_commands() {
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    let output = Command::new(binary)
+        .arg("version")
+        .env(
+            "POLKAGENT_INTERNAL_ACP_PANIC_PROBE",
+            "sk-nonAcpHookIsolationFixture123",
+        )
+        .output()
+        .expect("run a non-ACP command with the debug probe variable");
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with("polkagent "));
+    assert!(
+        output.stderr.is_empty(),
+        "non-ACP command unexpectedly used the ACP panic hook: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[tokio::test]
 async fn official_client_drives_editor_commands_and_a_real_run() {
     let temp = tempfile::tempdir().expect("temporary directory");
