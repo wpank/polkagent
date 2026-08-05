@@ -338,6 +338,11 @@ impl CloudWorker {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "worker tests unwrap controlled queue fixtures after exercising the expected lifecycle"
+    )]
+
     use super::*;
     use polkagent_cloud_control::{ControlPlane, Job, JobStatus};
     use polkagent_core::RunId;
