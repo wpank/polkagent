@@ -21,6 +21,7 @@ use polkagent_config::Config;
 use polkagent_conversation::ConversationStore;
 use polkagent_core::{agent::AgentSpec, AgentId};
 use polkagent_event::EventBus;
+use polkagent_interaction::{InteractionService, InteractionStore};
 use polkagent_marketplace::ServiceRegistryStore;
 use polkagent_payment::PaymentStore;
 use polkagent_skill::manifest::SkillManifest;
@@ -411,6 +412,12 @@ pub struct AppState {
     pub conversation_store: Option<Arc<dyn ConversationStore>>,
     /// Service registry store (optional — returns 501 when not configured).
     pub service_registry_store: Option<Arc<dyn ServiceRegistryStore>>,
+    /// Headless interaction service used for agent execution endpoints.
+    pub interaction_service: Option<Arc<dyn InteractionService>>,
+    /// Read-only durable interaction event projection used for finite HTTP
+    /// replay until `InteractionService` owns a paged replay method.
+    /// Mutation handlers must never use this store directly.
+    pub interaction_store: Option<Arc<dyn InteractionStore>>,
 }
 
 impl AppState {
@@ -450,6 +457,8 @@ impl AppState {
             audit_store: None,
             conversation_store: None,
             service_registry_store: None,
+            interaction_service: None,
+            interaction_store: None,
         }
     }
 
@@ -513,6 +522,20 @@ impl AppState {
     #[must_use]
     pub fn with_service_registry_store(mut self, store: Arc<dyn ServiceRegistryStore>) -> Self {
         self.service_registry_store = Some(store);
+        self
+    }
+
+    /// Set the headless interaction execution service.
+    #[must_use]
+    pub fn with_interaction_service(mut self, service: Arc<dyn InteractionService>) -> Self {
+        self.interaction_service = Some(service);
+        self
+    }
+
+    /// Set the read-only durable interaction event projection.
+    #[must_use]
+    pub fn with_interaction_store(mut self, store: Arc<dyn InteractionStore>) -> Self {
+        self.interaction_store = Some(store);
         self
     }
 

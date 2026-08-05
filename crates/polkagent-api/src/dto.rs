@@ -11,12 +11,16 @@
 //!   "meta": { "page_size": 50 } }
 //! ```
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use polkagent_core::agent::{AgentSpec, AgentState, ModelPreference, ResourceLimits};
 use polkagent_core::run::RunState;
 use polkagent_core::{AgentId, RunId};
+use polkagent_interaction::{
+    InteractionConfig, InteractionEventEnvelope, InteractionState, InteractionSummary,
+    InteractionTarget, InteractionTurnId, TurnHandle, TurnSummary as InteractionTurnSummary,
+};
 use polkagent_marketplace::types::{ServiceAvailability, ServicePricing};
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +30,150 @@ use serde::{Deserialize, Serialize};
 
 /// API version string present in every response.
 pub const API_VERSION: &str = "v1alpha1";
+
+// ---------------------------------------------------------------------------
+// Interactions — requests and responses
+// ---------------------------------------------------------------------------
+
+/// Request for `POST /interactions`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateHttpInteractionRequest {
+    /// Optional presentation title.
+    pub title: Option<String>,
+    /// Agent or automatic execution target.
+    pub target: InteractionTarget,
+    /// Absolute project directory supplied to the runtime.
+    pub working_directory: PathBuf,
+    /// Optional safe client name for correlation.
+    pub client_name: Option<String>,
+    /// Optional client-local session identity.
+    pub client_session_id: Option<String>,
+}
+
+/// Query for `GET /interactions`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ListHttpInteractionsQuery {
+    /// Page size; defaults to 50 and is capped at 100.
+    pub limit: Option<u32>,
+    /// Stable numeric offset into the durable recency ordering.
+    pub offset: Option<u32>,
+    /// Optional interaction lifecycle filter.
+    pub state: Option<InteractionState>,
+}
+
+/// Request for `POST /interactions/{id}/prompt`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PromptHttpInteractionRequest {
+    /// Optional caller-generated idempotency identity.
+    pub turn_id: Option<InteractionTurnId>,
+    /// Non-empty user prompt text.
+    pub prompt: String,
+    /// Absolute project directory supplied to the runtime.
+    pub working_directory: PathBuf,
+    /// Optional safe client name for correlation.
+    pub client_name: Option<String>,
+    /// Optional client-local session identity.
+    pub client_session_id: Option<String>,
+}
+
+/// Request for `PUT /interactions/{id}/target`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateHttpInteractionTargetRequest {
+    /// New agent or automatic execution target.
+    pub target: InteractionTarget,
+}
+
+/// Query for finite durable interaction event replay.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ReplayInteractionEventsQuery {
+    /// Return events strictly after this durable sequence.
+    pub after_sequence: Option<u64>,
+    /// Restrict replay to one turn while preserving conversation sequences.
+    pub turn_id: Option<InteractionTurnId>,
+    /// Maximum events returned; defaults to 100 and is capped at 999.
+    pub limit: Option<u32>,
+}
+
+/// Versioned projection for one interaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpInteractionResponse {
+    /// API version.
+    pub version: String,
+    /// Durable interaction projection.
+    pub interaction: InteractionSummary,
+}
+
+/// Versioned interaction list response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListHttpInteractionsResponse {
+    /// API version.
+    pub version: String,
+    /// Page of durable interactions.
+    pub data: Vec<InteractionSummary>,
+    /// Pagination cursor metadata.
+    pub cursor: CursorInfo,
+    /// Page metadata.
+    pub meta: PageMeta,
+}
+
+/// Versioned turn-list response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListHttpInteractionTurnsResponse {
+    /// API version.
+    pub version: String,
+    /// Turns in ordinal order.
+    pub data: Vec<InteractionTurnSummary>,
+}
+
+/// Versioned response returned immediately after prompt durability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptHttpInteractionResponse {
+    /// API version.
+    pub version: String,
+    /// Stable turn/run correlation.
+    pub handle: TurnHandle,
+}
+
+/// Versioned response after cancellation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelHttpInteractionTurnResponse {
+    /// API version.
+    pub version: String,
+    /// Current durable turn projection.
+    pub turn: InteractionTurnSummary,
+}
+
+/// Versioned response after a target update.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateHttpInteractionTargetResponse {
+    /// API version.
+    pub version: String,
+    /// Effective durable interaction configuration.
+    pub config: InteractionConfig,
+}
+
+/// Sequence checkpoint returned by finite durable event replay.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct InteractionReplayCheckpoint {
+    /// Last sequence in this response, or the requested starting sequence.
+    pub next_after_sequence: u64,
+    /// Whether another durable page is immediately available.
+    pub has_more: bool,
+}
+
+/// Versioned finite durable event replay response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayInteractionEventsResponse {
+    /// API version.
+    pub version: String,
+    /// Ordered durable interaction events.
+    pub data: Vec<InteractionEventEnvelope>,
+    /// Cursor for the next replay request.
+    pub checkpoint: InteractionReplayCheckpoint,
+}
 
 // ---------------------------------------------------------------------------
 // Agents — requests

@@ -2659,6 +2659,7 @@ dependencies = [
  "polkagent-conversation",
  "polkagent-core",
  "polkagent-event",
+ "polkagent-interaction",
  "polkagent-marketplace",
  "polkagent-payment",
  "polkagent-rate-limit",

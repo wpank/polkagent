@@ -28,6 +28,8 @@ pub enum ErrorCode {
     ValidationError,
     InternalError,
     NotImplemented,
+    PermissionDenied,
+    Unavailable,
 }
 
 impl ErrorCode {
@@ -40,6 +42,8 @@ impl ErrorCode {
             Self::ValidationError => "VALIDATION_ERROR",
             Self::InternalError => "INTERNAL_ERROR",
             Self::NotImplemented => "NOT_IMPLEMENTED",
+            Self::PermissionDenied => "PERMISSION_DENIED",
+            Self::Unavailable => "UNAVAILABLE",
         }
     }
 
@@ -50,6 +54,8 @@ impl ErrorCode {
             Self::ValidationError => StatusCode::UNPROCESSABLE_ENTITY,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
+            Self::PermissionDenied => StatusCode::FORBIDDEN,
+            Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 }
@@ -92,6 +98,14 @@ pub enum ApiError {
     /// The endpoint exists but is not yet implemented.
     #[error("not implemented: {0}")]
     NotImplemented(String),
+
+    /// The authenticated caller lacks authority for the requested operation.
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+
+    /// A composed dependency is temporarily unavailable.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
 }
 
 impl ApiError {
@@ -104,6 +118,8 @@ impl ApiError {
             Self::ValidationError(_) => ErrorCode::ValidationError,
             Self::InternalError(_) => ErrorCode::InternalError,
             Self::NotImplemented(_) => ErrorCode::NotImplemented,
+            Self::PermissionDenied(_) => ErrorCode::PermissionDenied,
+            Self::Unavailable(_) => ErrorCode::Unavailable,
         }
     }
 }
@@ -166,6 +182,28 @@ impl From<crate::state::AgentStoreError> for ApiError {
             AgentStoreError::Internal(message) => {
                 tracing::warn!(error = %message, "durable agent store operation failed");
                 Self::InternalError("agent store operation failed".to_owned())
+            }
+        }
+    }
+}
+
+impl From<polkagent_interaction::InteractionError> for ApiError {
+    fn from(error: polkagent_interaction::InteractionError) -> Self {
+        use polkagent_interaction::InteractionErrorCode;
+        match error.code {
+            InteractionErrorCode::InvalidRequest | InteractionErrorCode::InvalidConfig => {
+                Self::ValidationError(error.message)
+            }
+            InteractionErrorCode::NotFound => Self::NotFound(error.message),
+            InteractionErrorCode::Conflict | InteractionErrorCode::Busy => {
+                Self::InvalidState(error.message)
+            }
+            InteractionErrorCode::PermissionDenied => Self::PermissionDenied(error.message),
+            InteractionErrorCode::Unsupported => Self::NotImplemented(error.message),
+            InteractionErrorCode::Unavailable => Self::Unavailable(error.message),
+            InteractionErrorCode::Internal => {
+                tracing::warn!(error = %error, "interaction service operation failed");
+                Self::InternalError("interaction service operation failed".to_owned())
             }
         }
     }

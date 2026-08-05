@@ -76,6 +76,16 @@
 //!   POST   /conversations/:id/messages
 //!   DELETE /conversations/:id
 //!
+//!   POST   /interactions
+//!   GET    /interactions
+//!   GET    /interactions/:id
+//!   DELETE /interactions/:id
+//!   GET    /interactions/:id/turns
+//!   POST   /interactions/:id/prompt
+//!   POST   /interactions/:id/turns/:turn_id/cancel
+//!   PUT    /interactions/:id/target
+//!   GET    /interactions/:id/events
+//!
 //!   POST   /registry/listings
 //!   GET    /registry/listings/:id
 //!   GET    /registry/search
@@ -110,6 +120,7 @@ pub mod effects;
 pub mod events;
 pub mod events_rest;
 pub mod health;
+pub mod interactions;
 pub mod memory;
 pub mod metrics;
 pub mod models;
@@ -277,6 +288,35 @@ pub fn register(state: AppState) -> Router {
         .route(
             "/conversations/{id}/messages",
             post(conversations::add_message),
+        )
+        // Durable agent interactions (execution + replay)
+        .route(
+            "/interactions",
+            post(interactions::create_interaction).get(interactions::list_interactions),
+        )
+        .route(
+            "/interactions/{id}",
+            get(interactions::get_interaction).delete(interactions::archive_interaction),
+        )
+        .route(
+            "/interactions/{id}/turns",
+            get(interactions::list_interaction_turns),
+        )
+        .route(
+            "/interactions/{id}/prompt",
+            post(interactions::prompt_interaction),
+        )
+        .route(
+            "/interactions/{id}/turns/{turn_id}/cancel",
+            post(interactions::cancel_interaction_turn),
+        )
+        .route(
+            "/interactions/{id}/target",
+            put(interactions::update_interaction_target),
+        )
+        .route(
+            "/interactions/{id}/events",
+            get(interactions::replay_interaction_events),
         )
         // Registry (PRD-12 §5.5 — agent-service listings)
         .route("/registry/listings", post(registry::create_listing))

@@ -1,4 +1,9 @@
-//! Conversation management endpoints.
+//! Low-level conversation transcript endpoints.
+//!
+//! These compatibility routes create and mutate transcript records only. They
+//! do not call the runtime [`polkagent_interaction::InteractionService`], start
+//! an agent run, or emit durable interaction events. Clients that want agent
+//! execution must use the versioned `/interactions` surface.
 //!
 //! | Method | Path | Handler |
 //! |---|---|---|
@@ -196,7 +201,11 @@ pub async fn get_conversation(
 // POST /conversations/:id/messages
 // ---------------------------------------------------------------------------
 
-/// Add a message to a conversation.
+/// Append a transcript message without initiating agent execution.
+///
+/// This is a low-level compatibility operation. Use
+/// `POST /interactions/{id}/prompt` for a durable user prompt that actually
+/// starts the configured agent and produces replayable interaction events.
 ///
 /// Returns 501 Not Implemented when no conversation store is configured.
 /// Returns 404 if the conversation does not exist.

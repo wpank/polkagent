@@ -20,6 +20,8 @@ in-memory agent or run stores.
 | `ToolRegistryStore` | Read-only projection of `AppService::tool_registry()` | Exact process-wide registry; deterministic list, or an empty view when chain-backed registration is disabled |
 | `PaymentStore` | Runtime `SqlitePool` | Durable |
 | `ConversationStore` | Runtime `SqlitePool` | Durable |
+| `InteractionService` | The exact `Arc` returned by `PolkagentRuntime::interactions()` | Durable prompts, turns, transcripts, correlation, cancellation, and recovery use the process-wide runtime |
+| `InteractionStore` | `SqliteInteractionStore` over the runtime pool | Durable ordered event replay survives HTTP-server restart |
 | `EventBus` | Runtime event bus | Process-local live stream paired with the durable event recorder |
 
 The API config starts as a clone of the runtime's resolved config. The
@@ -34,6 +36,48 @@ or discovered harness must be usable. It does not silently install a fake
 executor. On SIGINT or SIGTERM, Axum drains active HTTP connections while the
 runtime remains alive. `AppService` still lacks an explicit shutdown handle for
 its timeout-enforcer task; runtime readiness reports that upstream limitation.
+
+## Durable interaction HTTP surface
+
+The agent-execution API is exposed under `/api/v1alpha1/interactions`. It uses
+the exact `InteractionService` instance exposed by the runtime rather than
+reconstructing a service or mutating conversation rows directly. Migration of
+other surfaces onto that shared service is tracked separately.
+
+| Method | Route | Contract |
+|---|---|---|
+| `POST` | `/interactions` | Create a durable interaction for an agent target |
+| `GET` | `/interactions` | List durable interaction projections |
+| `GET` | `/interactions/{id}` | Load one interaction |
+| `DELETE` | `/interactions/{id}` | Archive an interaction after all work is terminal |
+| `GET` | `/interactions/{id}/turns` | List durable turn projections |
+| `POST` | `/interactions/{id}/prompt` | Atomically persist and execute a text prompt; accepts a caller-generated `turn_id` for idempotency |
+| `POST` | `/interactions/{id}/turns/{turn_id}/cancel` | Cancel the path-scoped turn idempotently |
+| `PUT` | `/interactions/{id}/target` | Change only the supported agent target |
+| `GET` | `/interactions/{id}/events` | Return a finite ordered page after a durable sequence checkpoint |
+
+Prompt responses are `202 Accepted` once the turn and its initial event are
+durable. Retrying the same `turn_id` with the same prompt returns the same turn
+handle; reusing it for different input is `409 Conflict`. Model/provider
+overrides and approval/denial are deliberately absent because the runtime does
+not yet support those operations end to end.
+
+Event replay accepts `after_sequence`, optional `turn_id`, and `limit` query
+parameters. Events are strictly ordered by the conversation sequence. The
+response checkpoint's `next_after_sequence` is safe to send on the next
+request, including when a turn filter skips unrelated events; `has_more`
+indicates that another matching event is already durable.
+
+Live interaction streaming remains open. The existing `/events/stream` and
+`/ws/v1alpha1` transports speak run-event protocols and cannot currently
+preserve the interaction sequence checkpoint. Until a checkpoint-aware
+streaming protocol is implemented, clients poll the finite JSON replay route
+and resume from its returned checkpoint.
+
+The `/conversations` API is a low-level transcript compatibility surface.
+In particular, `POST /conversations/{id}/messages` appends a record only: it
+does not invoke the interaction service, start an agent, or produce interaction
+events. New execution clients use `/interactions/{id}/prompt`.
 
 ## Explicit 501 boundary
 

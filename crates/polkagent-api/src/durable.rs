@@ -19,7 +19,7 @@ use polkagent_core::run::RunState;
 use polkagent_core::{AgentId, EffectId, RunId};
 use polkagent_runtime::PolkagentRuntime;
 use polkagent_service::{AppService, ServiceError};
-use polkagent_store_sqlite::{SqliteApiArtifactStore, SqlitePool};
+use polkagent_store_sqlite::{SqliteApiArtifactStore, SqliteInteractionStore, SqlitePool};
 use polkagent_store_trait::RunStore;
 use rusqlite::OptionalExtension;
 
@@ -150,7 +150,10 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
 /// surface-only overrides such as CORS. Agents and run lifecycle operations
 /// use the runtime's [`AppService`]; tools query that service's exact configured
 /// registry (or an empty read view when registration is disabled); effects,
-/// events, artifacts, conversations, and payments all use its single migrated `SQLite` pool;
+/// events, artifacts, conversations, and payments all use its single migrated
+/// `SQLite` pool; interaction mutations use the exact `Arc` returned by
+/// [`PolkagentRuntime::interactions`]. A separate `SqliteInteractionStore`
+/// provides only the finite read projection missing from the service contract.
 /// WebSocket streaming uses the runtime event bus.
 ///
 /// Optional stores without a truthful adapter are deliberately left unset;
@@ -163,6 +166,10 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
     let tools = Arc::new(RuntimeToolRegistryStore::from_runtime(runtime));
     let agents = Arc::new(RuntimeAgentStore::from_runtime(runtime));
     let runs = Arc::new(RuntimeRunManager::from_runtime(runtime));
+    let interaction_service: Arc<dyn polkagent_interaction::InteractionService> =
+        runtime.interactions().clone();
+    let interaction_store: Arc<dyn polkagent_interaction::InteractionStore> =
+        Arc::new(SqliteInteractionStore::new(runtime.pool().clone()));
 
     AppState::new(
         config,
@@ -176,6 +183,8 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
     .with_tool_registry(tools)
     .with_payment_store(pool.clone())
     .with_conversation_store(pool)
+    .with_interaction_service(interaction_service)
+    .with_interaction_store(interaction_store)
 }
 
 /// Read-only API projection of the tool registry owned by [`AppService`].

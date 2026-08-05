@@ -26,6 +26,7 @@ graph LR
         MM["/memory"]
         AU["/audit"]
         CV["/conversations"]
+        IN["/interactions"]
         SY["/system"]
     end
 
@@ -213,8 +214,31 @@ sequenceDiagram
 | `POST` | `/api/v1alpha1/conversations` | Create conversation |
 | `GET` | `/api/v1alpha1/conversations` | List conversations |
 | `GET` | `/api/v1alpha1/conversations/:id` | Get conversation |
-| `POST` | `/api/v1alpha1/conversations/:id/messages` | Add message |
+| `POST` | `/api/v1alpha1/conversations/:id/messages` | Append a transcript record without executing an agent |
 | `DELETE` | `/api/v1alpha1/conversations/:id` | Delete conversation |
+
+The conversation routes are a low-level transcript compatibility API. Use the
+interaction routes below when a prompt must initiate agent work.
+
+### Durable interactions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1alpha1/interactions` | Create an agent interaction |
+| `GET` | `/api/v1alpha1/interactions` | List interactions |
+| `GET` | `/api/v1alpha1/interactions/:id` | Get an interaction |
+| `DELETE` | `/api/v1alpha1/interactions/:id` | Archive a terminal interaction |
+| `GET` | `/api/v1alpha1/interactions/:id/turns` | List durable turns |
+| `POST` | `/api/v1alpha1/interactions/:id/prompt` | Start an idempotent prompt turn |
+| `POST` | `/api/v1alpha1/interactions/:id/turns/:turn_id/cancel` | Cancel a turn |
+| `PUT` | `/api/v1alpha1/interactions/:id/target` | Change the agent target |
+| `GET` | `/api/v1alpha1/interactions/:id/events` | Replay events after a durable sequence |
+
+Callers may supply `turn_id` when prompting. A retry with identical input
+returns the original handle, while reuse with different input returns `409`.
+For replay, send `after_sequence` and persist the returned
+`checkpoint.next_after_sequence`; optional `turn_id` and `limit` parameters
+filter and page the ordered durable history.
 
 ### System
 
@@ -239,6 +263,11 @@ These endpoints are served without the `/api/v1alpha1` prefix.
 ## WebSocket event streaming
 
 Connect to `/api/v1alpha1/events/stream` to receive real-time events. The stream delivers run lifecycle events including `RunStarted`, `TurnCompleted`, `EffectResolved`, `TokensStreamed`, and others.
+
+This WebSocket is a run-event protocol, not a checkpointed interaction stream.
+Interaction clients currently poll
+`GET /api/v1alpha1/interactions/:id/events` so they can resume exactly after a
+durable sequence across disconnects and process restarts.
 
 ```mermaid
 stateDiagram-v2

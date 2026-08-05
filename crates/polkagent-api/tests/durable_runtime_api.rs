@@ -10,11 +10,18 @@ use std::{sync::Arc, time::Duration};
 use axum::http::StatusCode;
 use axum_test::TestServer;
 use polkagent_api::{
-    app_state_from_runtime, ApiServer, RuntimeArtifactStore, RuntimeToolRegistryStore,
-    RUNTIME_UNAVAILABLE_ROUTES,
+    app_state_from_runtime, ApiServer, AppState, InMemoryAgentStore, InMemoryRunManager,
+    RuntimeArtifactStore, RuntimeToolRegistryStore, RUNTIME_UNAVAILABLE_ROUTES,
 };
-use polkagent_core::{ArtifactId, BlobRef, RunId};
-use polkagent_runtime::{AdapterPolicy, PolkagentRuntime, RuntimeFactory, RuntimeOptions};
+use polkagent_config::Config;
+use polkagent_core::{AgentId, AgentSpec, ArtifactId, BlobRef, RunId};
+use polkagent_event::{EventBus, EventRecorder};
+use polkagent_interaction::{InteractionService, InteractionStore};
+use polkagent_runtime::{
+    AdapterPolicy, DurableInteractionService, PolkagentRuntime, RuntimeFactory, RuntimeOptions,
+};
+use polkagent_service::AppService;
+use polkagent_store_sqlite::{migrations, SqliteInteractionStore, SqlitePool};
 use polkagent_store_trait::ArtifactStore;
 use sha2::{Digest, Sha256};
 
@@ -34,6 +41,61 @@ fn test_server(runtime: &PolkagentRuntime) -> TestServer {
     let state = app_state_from_runtime(runtime, runtime.config().as_ref().clone());
     let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
+}
+
+fn cancellable_interaction_server() -> (TestServer, AgentId) {
+    let pool = SqlitePool::open_in_memory().expect("open SQLite fixture");
+    migrations::migrate(&pool.writer()).expect("migrate SQLite fixture");
+    let agent_id = AgentId::new();
+    let spec = AgentSpec::new(agent_id, "queued-http-agent", "fake/model");
+    let now = chrono::Utc::now().to_rfc3339();
+    pool.writer()
+        .execute(
+            "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at)
+             VALUES (?1, ?2, 'active', ?3, ?4, ?4)",
+            rusqlite::params![
+                agent_id.to_string(),
+                &spec.name,
+                serde_json::to_string(&spec).expect("encode agent"),
+                now
+            ],
+        )
+        .expect("seed durable agent");
+
+    let event_bus = EventBus::new(32);
+    let shared_pool = Arc::new(pool.clone());
+    let recorder = EventRecorder::new(shared_pool.clone(), event_bus.clone());
+    let app = Arc::new(
+        AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(shared_pool.clone())
+            .with_effect_store(shared_pool.clone())
+            .with_conversation_store(shared_pool.clone())
+            .with_payment_store(shared_pool.clone())
+            .with_event_bus(event_bus.clone())
+            .with_event_recorder(recorder)
+            .build()
+            .expect("build queued app service"),
+    );
+    app.create_agent(spec).expect("register live agent");
+    let interaction_service: Arc<dyn InteractionService> =
+        Arc::new(DurableInteractionService::new(app, pool.clone()));
+    let interaction_store: Arc<dyn InteractionStore> =
+        Arc::new(SqliteInteractionStore::new(pool.clone()));
+    let state = AppState::new(
+        Config::default(),
+        Arc::new(InMemoryAgentStore::new()),
+        Arc::new(InMemoryRunManager::new()),
+        shared_pool.clone(),
+        event_bus,
+    )
+    .with_conversation_store(shared_pool)
+    .with_interaction_service(interaction_service)
+    .with_interaction_store(interaction_store);
+    (
+        TestServer::new(ApiServer::from_state(state).into_router()),
+        agent_id,
+    )
 }
 
 async fn store_runtime_artifact(
@@ -177,6 +239,7 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
     let temp = tempfile::TempDir::new().expect("tempdir");
     let runtime = runtime_at(temp.path()).await;
     let state = app_state_from_runtime(&runtime, runtime.config().as_ref().clone());
+    let runtime_interactions: Arc<dyn InteractionService> = runtime.interactions().clone();
 
     assert!(state.event_store.is_some());
     assert!(state.payment_store.is_some());
@@ -187,6 +250,14 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
     assert!(state.memory_store.is_none());
     assert!(state.audit_store.is_none());
     assert!(state.service_registry_store.is_none());
+    assert!(Arc::ptr_eq(
+        state
+            .interaction_service
+            .as_ref()
+            .expect("interaction service"),
+        &runtime_interactions
+    ));
+    assert!(state.interaction_store.is_some());
 
     let server = TestServer::new(ApiServer::from_state(state).into_router());
     server.get("/api/v1alpha1/events").await.assert_status_ok();
@@ -252,6 +323,428 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
             && !route.method.is_empty()
             && !route.reason.is_empty()
     }));
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one black-box scenario keeps the restart and idempotency lifecycle contiguous"
+)]
+async fn durable_http_interactions_execute_retry_conflict_and_replay_after_restart() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let runtime = runtime_at(temp.path()).await;
+    let server = test_server(&runtime);
+    let created_agent = server
+        .post("/api/v1alpha1/agents")
+        .json(&serde_json::json!({
+            "name": "interaction-http-agent",
+            "model": "fake/default-model"
+        }))
+        .await;
+    created_agent.assert_status(StatusCode::CREATED);
+    let agent_id = created_agent.json::<serde_json::Value>()["id"]
+        .as_str()
+        .expect("agent id")
+        .to_owned();
+    let created = server
+        .post("/api/v1alpha1/interactions")
+        .json(&serde_json::json!({
+            "title": "HTTP agent session",
+            "target": {"kind": "agent", "id": agent_id},
+            "working_directory": temp.path(),
+            "client_name": "api-test"
+        }))
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let conversation_id = created.json::<serde_json::Value>()["interaction"]["conversation_id"]
+        .as_str()
+        .expect("interaction id")
+        .to_owned();
+    server
+        .get(&format!("/api/v1alpha1/interactions/{conversation_id}"))
+        .await
+        .assert_status_ok();
+    let target = server
+        .put(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/target"
+        ))
+        .json(&serde_json::json!({
+            "target": {"kind": "agent", "id": agent_id}
+        }))
+        .await;
+    target.assert_status_ok();
+    assert_eq!(
+        target.json::<serde_json::Value>()["config"]["target"]["id"],
+        agent_id
+    );
+    let unsupported_config = server
+        .post("/api/v1alpha1/interactions")
+        .json(&serde_json::json!({
+            "title": "unsupported provider override",
+            "target": {"kind": "agent", "id": agent_id},
+            "working_directory": temp.path(),
+            "model": "must-not-be-ignored"
+        }))
+        .await;
+    unsupported_config.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    server
+        .post(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/approve"
+        ))
+        .json(&serde_json::json!({"approval_id": uuid::Uuid::now_v7()}))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    let turn_id = uuid::Uuid::now_v7().to_string();
+    let prompt = serde_json::json!({
+        "turn_id": turn_id,
+        "prompt": "respond through the durable interaction API",
+        "working_directory": temp.path(),
+        "client_name": "api-test"
+    });
+    let started = server
+        .post(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/prompt"
+        ))
+        .json(&prompt)
+        .await;
+    started.assert_status(StatusCode::ACCEPTED);
+    let handle = started.json::<serde_json::Value>()["handle"].clone();
+    assert_eq!(handle["turn_id"], turn_id);
+
+    let replay = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let response = server
+                .get(&format!(
+                    "/api/v1alpha1/interactions/{conversation_id}/events?after_sequence=0&limit=100"
+                ))
+                .await;
+            response.assert_status_ok();
+            let body = response.json::<serde_json::Value>();
+            if body["data"]
+                .as_array()
+                .expect("event page")
+                .iter()
+                .any(|event| event["event"]["type"] == "turn_completed")
+            {
+                return body;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("interaction should complete");
+    let events = replay["data"].as_array().expect("events");
+    assert_eq!(events[0]["event"]["type"], "turn_started");
+    assert_eq!(events[0]["sequence"], 1);
+    assert_eq!(
+        events.last().expect("terminal event")["event"]["type"],
+        "turn_completed"
+    );
+    let first_sequence = events[0]["sequence"].as_u64().expect("first sequence");
+    let final_checkpoint = replay["checkpoint"]["next_after_sequence"]
+        .as_u64()
+        .expect("final checkpoint");
+    let first_page = server
+        .get(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/events?after_sequence=0&limit=1"
+        ))
+        .await;
+    first_page.assert_status_ok();
+    let first_page = first_page.json::<serde_json::Value>();
+    assert_eq!(first_page["data"].as_array().expect("first page").len(), 1);
+    assert_eq!(first_page["checkpoint"]["next_after_sequence"], 1);
+    assert_eq!(first_page["checkpoint"]["has_more"], true);
+
+    let transcript = server
+        .get(&format!("/api/v1alpha1/conversations/{conversation_id}"))
+        .await;
+    transcript.assert_status_ok();
+    let transcript = transcript.json::<serde_json::Value>();
+    assert_eq!(transcript["message_count"], 2);
+    assert_eq!(transcript["messages"][0]["role"], "user");
+    assert_eq!(
+        transcript["messages"][0]["content"],
+        "respond through the durable interaction API"
+    );
+    assert_eq!(transcript["messages"][1]["role"], "assistant");
+    assert!(!transcript["messages"][1]["content"]
+        .as_str()
+        .expect("assistant text")
+        .is_empty());
+
+    let retry = server
+        .post(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/prompt"
+        ))
+        .json(&prompt)
+        .await;
+    retry.assert_status(StatusCode::ACCEPTED);
+    assert_eq!(retry.json::<serde_json::Value>()["handle"], handle);
+    let conflict = server
+        .post(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/prompt"
+        ))
+        .json(&serde_json::json!({
+            "turn_id": turn_id,
+            "prompt": "different prompt",
+            "working_directory": temp.path()
+        }))
+        .await;
+    conflict.assert_status(StatusCode::CONFLICT);
+    assert_eq!(
+        conflict.json::<serde_json::Value>()["error"]["code"],
+        "INVALID_STATE"
+    );
+
+    let second_turn_id = uuid::Uuid::now_v7().to_string();
+    let second = server
+        .post(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/prompt"
+        ))
+        .json(&serde_json::json!({
+            "turn_id": second_turn_id,
+            "prompt": "verify turn-filtered replay",
+            "working_directory": temp.path()
+        }))
+        .await;
+    second.assert_status(StatusCode::ACCEPTED);
+    let second_replay = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let response = server
+                .get(&format!(
+                    "/api/v1alpha1/interactions/{conversation_id}/events?after_sequence=0&turn_id={second_turn_id}&limit=100"
+                ))
+                .await;
+            response.assert_status_ok();
+            let body = response.json::<serde_json::Value>();
+            if body["data"]
+                .as_array()
+                .expect("filtered events")
+                .iter()
+                .any(|event| event["event"]["type"] == "turn_completed")
+            {
+                return body;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("second interaction turn should complete");
+    let second_events = second_replay["data"].as_array().expect("second events");
+    assert!(second_events
+        .iter()
+        .all(|event| event["turn_id"] == second_turn_id));
+    assert!(
+        second_events[0]["sequence"]
+            .as_u64()
+            .expect("second sequence")
+            > final_checkpoint
+    );
+    let second_checkpoint = second_replay["checkpoint"]["next_after_sequence"]
+        .as_u64()
+        .expect("second checkpoint");
+    let filtered_page = server
+        .get(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/events?after_sequence=0&turn_id={second_turn_id}&limit=1"
+        ))
+        .await;
+    filtered_page.assert_status_ok();
+    let filtered_page = filtered_page.json::<serde_json::Value>();
+    assert_eq!(
+        filtered_page["data"]
+            .as_array()
+            .expect("filtered page")
+            .len(),
+        1
+    );
+    assert_eq!(filtered_page["checkpoint"]["has_more"], true);
+    assert!(
+        filtered_page["checkpoint"]["next_after_sequence"]
+            .as_u64()
+            .expect("filtered checkpoint")
+            > final_checkpoint
+    );
+
+    server
+        .get("/api/v1alpha1/interactions")
+        .await
+        .assert_status_ok();
+    let turns = server
+        .get(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/turns"
+        ))
+        .await;
+    turns.assert_status_ok();
+    assert_eq!(
+        turns.json::<serde_json::Value>()["data"]
+            .as_array()
+            .expect("turns")
+            .len(),
+        2
+    );
+    drop(server);
+    drop(runtime);
+
+    let restarted = runtime_at(temp.path()).await;
+    let restarted_server = test_server(&restarted);
+    let resumed = restarted_server
+        .get(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/events?after_sequence={first_sequence}&limit=100"
+        ))
+        .await;
+    resumed.assert_status_ok();
+    let resumed = resumed.json::<serde_json::Value>();
+    assert_eq!(
+        resumed["checkpoint"]["next_after_sequence"],
+        second_checkpoint
+    );
+    assert!(resumed["data"]
+        .as_array()
+        .expect("resumed events")
+        .iter()
+        .any(|event| event["event"]["type"] == "turn_completed"));
+    let restarted_transcript = restarted_server
+        .get(&format!("/api/v1alpha1/conversations/{conversation_id}"))
+        .await;
+    restarted_transcript.assert_status_ok();
+    assert_eq!(
+        restarted_transcript.json::<serde_json::Value>()["message_count"],
+        4
+    );
+
+    let token = "interaction-reader-token";
+    let mut protected_config = restarted.config().as_ref().clone();
+    protected_config.auth.enabled = true;
+    protected_config.auth.api_keys = vec![format!("{:x}", Sha256::digest(token.as_bytes()))];
+    protected_config.api.read_only = true;
+    let protected = TestServer::new(
+        ApiServer::from_state(app_state_from_runtime(&restarted, protected_config)).into_router(),
+    );
+    protected
+        .get("/api/v1alpha1/interactions")
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    protected
+        .get(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/events?after_sequence=0"
+        ))
+        .authorization_bearer(token)
+        .await
+        .assert_status_ok();
+    protected
+        .post("/api/v1alpha1/interactions")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({
+            "target": {"kind": "agent", "id": agent_id},
+            "working_directory": temp.path()
+        }))
+        .await
+        .assert_status(StatusCode::METHOD_NOT_ALLOWED);
+
+    restarted_server
+        .delete(&format!("/api/v1alpha1/interactions/{conversation_id}"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let archived_prompt = restarted_server
+        .post(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/prompt"
+        ))
+        .json(&serde_json::json!({
+            "prompt": "must not execute",
+            "working_directory": temp.path()
+        }))
+        .await;
+    archived_prompt.assert_status(StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn durable_http_interaction_cancellation_is_idempotent_and_replayable() {
+    let (server, agent_id) = cancellable_interaction_server();
+    let created = server
+        .post("/api/v1alpha1/interactions")
+        .json(&serde_json::json!({
+            "target": {"kind": "agent", "id": agent_id},
+            "working_directory": "/tmp"
+        }))
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let conversation_id = created.json::<serde_json::Value>()["interaction"]["conversation_id"]
+        .as_str()
+        .expect("interaction id")
+        .to_owned();
+    let started = server
+        .post(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/prompt"
+        ))
+        .json(&serde_json::json!({
+            "turn_id": uuid::Uuid::now_v7(),
+            "prompt": "remain queued until cancelled",
+            "working_directory": "/tmp"
+        }))
+        .await;
+    started.assert_status(StatusCode::ACCEPTED);
+    let turn_id = started.json::<serde_json::Value>()["handle"]["turn_id"]
+        .as_str()
+        .expect("turn id")
+        .to_owned();
+    let cancel_path =
+        format!("/api/v1alpha1/interactions/{conversation_id}/turns/{turn_id}/cancel");
+    let cancelled = server.post(&cancel_path).await;
+    cancelled.assert_status_ok();
+    assert_eq!(
+        cancelled.json::<serde_json::Value>()["turn"]["state"],
+        "cancelled"
+    );
+    let repeated = server.post(&cancel_path).await;
+    repeated.assert_status_ok();
+    assert_eq!(
+        repeated.json::<serde_json::Value>()["turn"]["state"],
+        "cancelled"
+    );
+
+    let replay = server
+        .get(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/events?after_sequence=0&turn_id={turn_id}"
+        ))
+        .await;
+    replay.assert_status_ok();
+    let replay = replay.json::<serde_json::Value>();
+    let cancellation_count = replay["data"]
+        .as_array()
+        .expect("cancel replay")
+        .iter()
+        .filter(|event| event["event"]["type"] == "turn_cancelled")
+        .count();
+    assert_eq!(cancellation_count, 1);
+    assert_eq!(replay["checkpoint"]["has_more"], false);
+
+    let transcript = server
+        .get(&format!("/api/v1alpha1/conversations/{conversation_id}"))
+        .await;
+    transcript.assert_status_ok();
+    let transcript = transcript.json::<serde_json::Value>();
+    assert_eq!(transcript["message_count"], 2);
+    assert_eq!(transcript["messages"][0]["role"], "user");
+    assert_eq!(transcript["messages"][1]["role"], "assistant");
+}
+
+#[tokio::test]
+async fn uncomposed_interaction_surface_reports_explicit_unavailability() {
+    let pool = Arc::new(SqlitePool::open_in_memory().expect("open SQLite fixture"));
+    let state = AppState::new(
+        Config::default(),
+        Arc::new(InMemoryAgentStore::new()),
+        Arc::new(InMemoryRunManager::new()),
+        pool,
+        EventBus::new(8),
+    );
+    let server = TestServer::new(ApiServer::from_state(state).into_router());
+    let unavailable = server.get("/api/v1alpha1/interactions").await;
+    unavailable.assert_status(StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(
+        unavailable.json::<serde_json::Value>()["error"]["code"],
+        "NOT_IMPLEMENTED"
+    );
 }
 
 #[tokio::test]
