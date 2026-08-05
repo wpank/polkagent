@@ -114,21 +114,33 @@ The script validates the Compose model, builds and starts the image, waits for
 the container healthcheck, probes `/health/live`, `/health/ready`, and
 `/health/startup` through the published port, and verifies that the configured
 user and running process UID are non-root. A test override bind-mounts a
-read-only config; the smoke checks its API read-only mode, CORS allow-list, and
-execution-limit sentinel. It creates a durable CLI agent marker in SQLite,
-sends `SIGTERM`, requires a clean drained exit, replaces the container without
-deleting the named volume, and verifies both the config and marker again. The
-isolated Compose project, volume, network, and local image are removed on exit.
+read-only config file; the smoke checks its CORS allow-list, execution-limit
+sentinel, and local-provider registration without exposing the placeholder
+provider token through system information.
 
-Set `POLKAGENT_SMOKE_ARTIFACT_DIR` to retain a summary, selected container
-state, and logs. CI does this automatically and uploads the directory even
-when the smoke fails. Set `POLKAGENT_SMOKE_KEEP=1` only for local diagnosis;
-the isolated Compose project name is printed so it can be removed explicitly.
+The API remains mutable for the recovery proof. Through real HTTP routes, the
+smoke creates an agent and targeted interaction, persists its model
+configuration, and submits a prompt. The configured local provider points to a
+bounded, intentionally unreachable loopback endpoint, so the honest expected
+outcome is a reason-bearing failed run and an empty assistant message, not
+simulated model output. The script records the exact agent, conversation, turn,
+and run IDs plus the agent, interaction/config, turn, run, and transcript
+projections. It sends `SIGTERM`, requires a clean drained exit, replaces the
+container without deleting the named volume, then retrieves those same IDs and
+requires every recorded JSON projection to be unchanged. The isolated Compose
+project, volume, network, and local image are removed on exit.
+
+The host needs Docker Compose, `curl`, and `jq`; CI also runs `sh -n` and
+ShellCheck first. Set `POLKAGENT_SMOKE_ARTIFACT_DIR` to retain a summary, the
+HTTP JSON projections, selected container state, and logs. CI does this
+automatically and uploads the directory even when the smoke fails. Set
+`POLKAGENT_SMOKE_KEEP=1` only for local diagnosis; the isolated Compose project
+name is printed so it can be removed explicitly.
 
 This is deliberately a single-instance lifecycle smoke. It does **not** prove
-that HTTP API agents/runs use durable stores (they currently do not), that
-PostgreSQL works, or that auth, worker/run draining, HA, backup/restore,
-upgrade/rollback, resource pressure, and crash recovery are production-ready.
+successful model output or a reachable production execution backend. It also
+does not prove PostgreSQL, auth, worker/run/effect draining, HA, backup/restore,
+upgrade/rollback, resource pressure, or crash recovery are production-ready.
 
 ### Development Compose
 

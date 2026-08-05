@@ -4,7 +4,24 @@
 [api]
 bind_address = "127.0.0.1:19090"
 cors_origins = ["https://container-recovery.invalid"]
-read_only = true
+read_only = false
 
 [execution]
 max_concurrent_runs = 37
+default_provider = "container-smoke-local"
+
+# This is a real in-process local-provider adapter, deliberately pointed at a
+# closed loopback port. The container image therefore has an honest execution
+# backend and can prove durable prompt failure/recovery without a fake model,
+# external network dependency, or production credential.
+[[providers]]
+id = "container-smoke-local"
+provider_type = "local"
+api_key_env = "POLKAGENT_SMOKE_LOCAL_TOKEN"
+base_url = "http://127.0.0.1:9/v1"
+default_model = "container-smoke-model"
+timeout_secs = 3
+max_retries = 0
+ttft_timeout_secs = 1
+connect_timeout_secs = 1
+max_concurrent = 1

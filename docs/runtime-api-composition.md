@@ -173,3 +173,14 @@ runtime composition helper used by `serve`, creates an agent and a run over
 HTTP, rebuilds the runtime on the same database, and verifies both projections
 after restart. It also verifies the composed optional stores and representative
 `501` responses.
+
+The deployment-level `scripts/container-smoke.sh` crosses the process and
+container boundary with that composition. It creates an HTTP agent plus a
+durable targeted interaction, persists the interaction model, submits a prompt
+to a real but intentionally unreachable local provider, and waits for the
+reason-bearing failed run. After a graceful stop and container replacement on
+the same named SQLite volume, it retrieves the exact agent, conversation, turn,
+and run IDs and requires the agent, interaction/config, turn, run, and
+transcript JSON projections to match their pre-replacement snapshots. This is
+terminal-failure recovery evidence; it intentionally makes no claim about
+successful model output or production-backend availability.

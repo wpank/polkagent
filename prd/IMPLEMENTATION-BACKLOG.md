@@ -604,10 +604,14 @@ separate files.
   unprivileged boot, all three HTTP probes, and SQLite file creation. This is
   single-instance boot evidence, not durable API or production-ops proof.
 - [x] Prove the bounded single-instance HTTP lifecycle: root config selection
-  reaches `serve`; a read-only bind-mounted config is honoured; SIGTERM drains
-  Axum and exits 0; a replacement container reuses the named volume; and a
-  durable CLI agent marker survives. CI uploads selected lifecycle diagnostics.
-  This does not prove durable HTTP API runs or daemon worker/effect recovery.
+  reaches `serve`; a read-only bind-mounted config file is honoured; SIGTERM
+  drains Axum and exits 0; and a replacement container reuses the named volume.
+  The smoke now creates an agent plus a configured interaction/prompt through
+  HTTP and proves the exact reason-bearing failed turn/run and empty transcript
+  output survive replacement under the same IDs. CI uploads selected lifecycle
+  and HTTP-projection diagnostics. The real local provider is intentionally
+  unreachable, so successful production-backend output and daemon
+  worker/run/effect recovery remain unproved.
 - [ ] Prove Postgres conformance and tenant isolation.
 - [ ] Define migrations, backup/restore, upgrade/rollback, resource limits,
   durable run/worker/effect draining, crash recovery, and release artifacts.

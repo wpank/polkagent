@@ -7,10 +7,12 @@
 > the dependency-ordered execution queue. Bounded OPS-01 slices now verify the
 > canonical single-instance image/Compose boot, non-root user, HTTP health,
 > read-only bind-mounted configuration, clean SIGTERM HTTP drain, container
-> replacement on the same named volume, and a restart-safe SQLite CLI marker
-> in CI. This is not durable API/run recovery: durable API composition,
-> worker/effect draining, Postgres, tenant isolation, backup/restore,
-> upgrade/rollback, release, and managed-cloud claims remain open.
+> replacement on the same named volume, and exact recovery of an HTTP-created
+> agent/configured interaction/reason-bearing failed turn and run under the same
+> IDs and JSON projections. The real local provider is intentionally
+> unreachable: successful production-backend output, worker/run/effect
+> draining, Postgres, tenant isolation, backup/restore, upgrade/rollback,
+> release, and managed-cloud claims remain open.
 
 **Status:** definitive PRD
 **Owner:** unassigned

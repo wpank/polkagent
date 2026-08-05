@@ -186,12 +186,18 @@ reports.
   waits for Docker readiness, probes live/ready/startup through the published
   port, and verifies a configured non-root user and process UID. It also proves
   that a read-only bind-mounted config reaches `serve`, SIGTERM drains the HTTP
-  server with exit 0, a newly created container retains the same named volume,
-  and a SQLite-backed CLI agent marker survives replacement. CI uploads a
-  summary, selected state, and container logs on success or failure. EVD-08
-  remains open for durable API run/agent recovery, worker/effect draining,
-  Postgres, backup/restore, upgrade/rollback, auth, tenant isolation, crash
-  boundaries, and resource-pressure evidence.
+  server with exit 0, and a newly created container retains the same named
+  volume. Through real HTTP routes it creates an agent, targeted durable
+  interaction and model config, submits a prompt to an intentionally
+  unreachable real local provider, records the exact conversation/turn/run IDs
+  and reason-bearing failed terminal state, then requires the same IDs and
+  exact agent, interaction/config, turn, run, and transcript projections after
+  replacement. The empty assistant output is asserted so this does not simulate
+  a successful model. CI uploads a summary, HTTP JSON, selected state, and
+  container logs on success or failure. EVD-08 remains open for successful
+  production-backend output, worker/run/effect draining, Postgres,
+  backup/restore, upgrade/rollback, auth, tenant isolation, crash boundaries,
+  and resource-pressure evidence.
 
 ## Evidence quality rules
 

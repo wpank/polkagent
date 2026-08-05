@@ -37,7 +37,10 @@ container smoke additionally proves that the
 locked canonical image builds, starts unprivileged, honours a bind-mounted
 read-only config, answers the three HTTP probes, drains HTTP on SIGTERM with a
 clean exit, and replaces the container on the same named volume while retaining
-a SQLite CLI marker. A focused official-SDK subprocess suite also proves ACP
+an HTTP-created agent, configured interaction, reason-bearing failed turn/run,
+and transcript under their exact IDs and JSON projections. The real local
+provider is intentionally unreachable, so no successful model output is
+simulated or claimed. A focused official-SDK subprocess suite also proves ACP
 initialize/new/prompt, a real `AppService` run, and cancellation while a
 provider request is active. The client receives the `Cancelled` stop reason,
 and SQLite retains the reason-bearing terminal state plus completion timestamp.
@@ -96,7 +99,7 @@ dialect errors and 22 remaining style warnings.
 | Security | Grants, tests, redaction, signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, and unused policy runtime. |
 | Payments | Intent/store/budget components exist | Not value-moving | Store/runtime integration, real signature/settlement, and failure reconciliation remain. |
 | Marketplace/plugins | Durable local plugin/kit lifecycle, operator CLI, and listing components | Local install/list/get/update/rollback/uninstall is actionable; package execution is missing | Manifest/lock format remains split; no API/runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
-| Deployment/cloud | Canonical image/Compose boot, mounted config, health, graceful HTTP stop, and same-volume replacement smoke pass | Bounded single-instance lifecycle only | Durable API/run recovery, worker/effect drain, Postgres/tenant isolation, backup/restore, auth, release, HA, and control/worker paths remain unproven. |
+| Deployment/cloud | Canonical image/Compose boot, mounted config, health, graceful HTTP stop, and same-volume HTTP interaction/run recovery smoke pass | Bounded single-instance SQLite lifecycle with intentionally failed provider execution | Successful production-backend output, worker/run/effect drain, Postgres/tenant isolation, backup/restore, auth, release, HA, and control/worker paths remain unproven. |
 
 ## PRD implementation posture
 
@@ -112,7 +115,7 @@ dialect errors and 22 remaining style warnings.
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Strong components | Mostly missing | No orchestration proof | Active P1 |
 | 10 Observability | Strong components | Partial | No recovery/replay proof | Active P1 |
-| 11 Deployment/cloud | Container boot/config/HTTP drain/same-volume replacement verified; broader scaffolding exists | Single-instance SQLite only | CLI marker persistence, not durable API/run recovery | Active P2 |
+| 11 Deployment/cloud | Container boot/config/HTTP drain/same-volume HTTP interaction/run replacement recovery verified; broader scaffolding exists | Single-instance SQLite only | Exact failed lifecycle persists; successful production-backend output and worker/run/effect recovery remain unproved | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | Durable terminal chat plus monitoring TUI with durable actionable Console | Partial | Target-only contextual model-executor follow-up/restart/cancel and a command subset are tested; harness context, approvals, broader commands, and orchestration remain | Active P0/P1 + PRD-19 |
 | 14 API/config | Shared-runtime durable core, interaction routes, and broad control-plane routes | Agent/run/artifact/tool/interaction reads and mutations plus checkpointed interaction SSE are composed; 15 optional skill/memory/audit/registry routes remain explicitly unavailable | HTTP interaction retry/cancel/replay/live reconnect/restart/auth/read-only proof, zero-drift ordinary HTTP parity, and an OpenAPI 3.1-valid schema exist; two WebSocket frame protocols are separately documented | Active P0/P1 |
@@ -296,12 +299,15 @@ dialect errors and 22 remaining style warnings.
   as evidence, and no bytes are yet signed, submitted, matched, or reconciled.
 - `scripts/container-smoke.sh` builds the locked canonical image and verifies
   Compose boot, non-root execution, `/health/{live,ready,startup}`, read-only
-  bind-mounted config behavior, clean SIGTERM HTTP drain, container replacement
-  on the same named volume, and restart-safe SQLite CLI marker lookup. The CI
-  job runs independently of the Rust 1.89 MSRV matrix and uploads selected
-  lifecycle state/log artifacts. Durable API interaction/run restart now has
-  local black-box coverage, but the container smoke still proves only the CLI
-  marker across replacement rather than an HTTP-created interaction lifecycle.
+  bind-mounted config-file behavior, clean SIGTERM HTTP drain, and container
+  replacement on the same named volume. It uses real HTTP routes to create an
+  agent, configured interaction, and prompt; records the exact conversation,
+  turn, and run IDs plus the reason-bearing failed state and empty assistant
+  output from an intentionally unreachable local provider; then requires the
+  exact agent, interaction/config, turn, run, and transcript projections after
+  replacement. The CI job runs independently of the Rust 1.89 MSRV matrix and
+  uploads selected lifecycle, log, and HTTP JSON artifacts. Successful
+  production-backend output and worker/run/effect recovery remain open.
 - CI checks the workspace on stable Rust and the declared Rust 1.89 MSRV, and
   enforces `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` on
   stable. Both the exact workspace Clippy command and the stronger local

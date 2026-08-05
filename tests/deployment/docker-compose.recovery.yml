@@ -2,6 +2,9 @@ services:
   polkagent:
     environment:
       POLKAGENT_CONFIG: /etc/polkagent/recovery-config.toml
+      # Non-secret placeholder required by the local provider constructor.
+      # The smoke endpoint is loopback-only and intentionally unreachable.
+      POLKAGENT_SMOKE_LOCAL_TOKEN: container-smoke-placeholder
     volumes:
       - type: bind
         source: ./tests/deployment/recovery-config.toml
