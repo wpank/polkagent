@@ -89,7 +89,7 @@ pub enum Tab {
 
 #[allow(dead_code)]
 impl Tab {
-    /// All tabs in display order (excludes pseudo-tabs like RunDetail).
+    /// All tabs in display order (excludes pseudo-tabs like `RunDetail`).
     pub const ALL: [Tab; 9] = [
         Tab::Dashboard,
         Tab::Agents,
@@ -103,6 +103,7 @@ impl Tab {
     ];
 
     /// Display name used in the header bar and status bar.
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Dashboard => "DASHBOARD",
@@ -119,6 +120,7 @@ impl Tab {
     }
 
     /// F-key indicator shown next to the tab name.
+    #[must_use]
     pub fn fkey_label(self) -> &'static str {
         match self {
             Self::Dashboard => "[F1]",
@@ -135,19 +137,19 @@ impl Tab {
     }
 
     /// Return the next tab in display order (wraps around).
-    /// RunDetail maps to its parent (Runs).
+    /// `RunDetail` maps to its parent (Runs).
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             Self::Dashboard => Self::Agents,
             Self::Agents => Self::Runs,
-            Self::Runs => Self::System,
+            Self::Runs | Self::RunDetail => Self::System,
             Self::System => Self::Timeline,
             Self::Timeline => Self::Approvals,
             Self::Approvals => Self::Memory,
             Self::Memory => Self::Audit,
             Self::Audit => Self::Console,
             Self::Console => Self::Dashboard,
-            Self::RunDetail => Self::System,
         }
     }
 
@@ -155,6 +157,7 @@ impl Tab {
     ///
     /// Accepted values match the flag's documented names (case-insensitive).
     /// Unknown names fall back to [`Tab::Dashboard`].
+    #[must_use]
     pub fn from_cli_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "agents" => Self::Agents,
@@ -170,19 +173,19 @@ impl Tab {
     }
 
     /// Return the previous tab in display order (wraps around).
-    /// RunDetail maps to its parent (Runs).
+    /// `RunDetail` maps to its parent (Runs).
+    #[must_use]
     pub fn prev(self) -> Self {
         match self {
             Self::Dashboard => Self::Console,
             Self::Agents => Self::Dashboard,
             Self::Runs => Self::Agents,
-            Self::System => Self::Runs,
+            Self::System | Self::RunDetail => Self::Runs,
             Self::Timeline => Self::System,
             Self::Approvals => Self::Timeline,
             Self::Memory => Self::Approvals,
             Self::Audit => Self::Memory,
             Self::Console => Self::Audit,
-            Self::RunDetail => Self::Runs,
         }
     }
 }
@@ -289,7 +292,7 @@ impl App {
             } else {
                 FLUSH_DIVISOR
             };
-            if self.frame_counter % divisor == 0 || self.tui_state.dirty {
+            if self.frame_counter.is_multiple_of(divisor) || self.tui_state.dirty {
                 terminal.draw(|frame| self.render(frame))?;
                 self.tui_state.dirty = false;
             }
@@ -308,6 +311,14 @@ impl App {
     // ── Action dispatch ─────────────────────────────────────────────────────
 
     /// Apply a [`TuiAction`] to `self`, mutating `TuiState` as needed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive TUI state-machine dispatcher keeps action ordering and shared dirty-state updates in one auditable boundary"
+    )]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the event loop transfers ownership of each short-lived action into the state-machine dispatch boundary"
+    )]
     pub fn apply_action(&mut self, action: TuiAction) {
         match action {
             TuiAction::NavigateTab(tab) => {
@@ -363,7 +374,7 @@ impl App {
             },
 
             TuiAction::NavigateDown => {
-                let visible = self.visible_rows();
+                let visible = Self::visible_rows();
                 match self.active_tab {
                     Tab::Agents => {
                         let total = self.tui_state.agents.len();
@@ -415,7 +426,7 @@ impl App {
             }
 
             TuiAction::ScrollDown(n) => {
-                let visible = self.visible_rows();
+                let visible = Self::visible_rows();
                 for _ in 0..n {
                     match self.active_tab {
                         Tab::Agents => {
@@ -613,7 +624,7 @@ impl App {
                                 }
                             }
                         }
-                        _ => {
+                        ConfirmDialog::ConfirmDeny(_) => {
                             // A deny dialog is open; cancel it, then set approve.
                             self.tui_state.confirm_dialog = ConfirmDialog::None;
                         }
@@ -641,7 +652,7 @@ impl App {
                                 }
                             }
                         }
-                        _ => {
+                        ConfirmDialog::ConfirmApprove(_) => {
                             // An approve dialog is open; cancel it, then set deny.
                             self.tui_state.confirm_dialog = ConfirmDialog::None;
                         }
@@ -651,7 +662,7 @@ impl App {
             }
 
             TuiAction::ScrollToBottom => {
-                let visible = self.visible_rows();
+                let visible = Self::visible_rows();
                 match self.active_tab {
                     Tab::Audit => {
                         let total = self.tui_state.audit_log.len();
@@ -1133,8 +1144,8 @@ impl App {
     ///
     /// Uses the current terminal height minus chrome (header, tab bar, status
     /// bar, block borders, table header).
-    fn visible_rows(&self) -> usize {
-        let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
+    fn visible_rows() -> usize {
+        let h = crossterm::terminal::size().map_or(24, |(_, h)| h) as usize;
         // 3 chrome rows (header + tab_bar + status_bar) + 2 border + 1 table header
         h.saturating_sub(6)
     }
