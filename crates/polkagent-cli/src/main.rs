@@ -132,12 +132,7 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
 
     // Resolve the config path: CLI flag takes priority over POLKAGENT_CONFIG
     // env var.  Both are optional; absence triggers auto-discovery.
-    let config_path: Option<std::path::PathBuf> = cli.config.clone().or_else(|| {
-        std::env::var("POLKAGENT_CONFIG")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(std::path::PathBuf::from)
-    });
+    let config_path = resolve_config_path(&cli);
 
     // ACP owns stdout as its JSON-RPC transport. Dispatch it before telemetry
     // or any shared command setup can emit human-readable output.
@@ -261,6 +256,10 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                         commands::run::run(cmd, &pool, config_path.as_deref(), dry_run).await,
                     )
                 }
+                Some(Commands::Chat(cmd)) => (
+                    "chat",
+                    commands::chat::run(cmd, &pool, config_path.as_deref()).await,
+                ),
                 Some(Commands::Agent(cmd)) => ("agent", commands::agent::run(cmd, &pool, format)),
                 Some(Commands::Skill(cmd)) => ("skill", commands::skill::run(cmd, &pool)),
                 Some(Commands::Kit(cmd)) => ("kit", commands::kit::run(cmd, &pool)),
@@ -298,6 +297,15 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
     finish_command(cmd_name, format, result)
 }
 
+fn resolve_config_path(cli: &Cli) -> Option<std::path::PathBuf> {
+    cli.config.clone().or_else(|| {
+        std::env::var("POLKAGENT_CONFIG")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Output formatting + exit code wiring
 // ---------------------------------------------------------------------------
@@ -314,6 +322,7 @@ fn finish_command(
             // When the user asked for JSON output via `--format`, emit a
             // success envelope so scripts can parse a consistent shape.
             if cmd_name != "package"
+                && cmd_name != "chat"
                 && matches!(format, OutputFormat::Json | OutputFormat::JsonPretty)
             {
                 let envelope = serde_json::json!({ "ok": true });

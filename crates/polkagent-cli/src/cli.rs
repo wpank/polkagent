@@ -66,6 +66,9 @@ pub enum Commands {
     /// Execute a run against an agent.
     Run(RunCmd),
 
+    /// Start a durable, interactive terminal chat with an agent.
+    Chat(ChatCmd),
+
     /// Start an ACP stdio server for editor integrations such as Zed.
     Acp(AcpCmd),
 
@@ -223,6 +226,26 @@ pub struct RunCmd {
     /// Cancel the run after this many seconds (0 = no limit, default: 300).
     #[arg(long, value_name = "SECS", default_value_t = 300)]
     pub timeout: u64,
+}
+
+// ---------------------------------------------------------------------------
+// chat
+// ---------------------------------------------------------------------------
+
+/// Start a durable terminal conversation with one active agent.
+#[derive(Debug, Args)]
+pub struct ChatCmd {
+    /// Active agent to prompt (name or UUID).
+    #[arg(long, short = 'a', value_name = "AGENT")]
+    pub agent: String,
+
+    /// Resume a durable conversation instead of creating a new one.
+    #[arg(long, value_name = "CONVERSATION_ID")]
+    pub resume: Option<String>,
+
+    /// Optional title for a newly created conversation.
+    #[arg(long, value_name = "TITLE", conflicts_with = "resume")]
+    pub title: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

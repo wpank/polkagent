@@ -4,6 +4,7 @@ pub mod acp;
 pub mod agent;
 pub mod auth;
 pub mod chain;
+pub mod chat;
 pub mod completions;
 pub mod config;
 pub mod doctor;
