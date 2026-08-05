@@ -27,5 +27,8 @@ optional = true
 workspace = true
 optional = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true

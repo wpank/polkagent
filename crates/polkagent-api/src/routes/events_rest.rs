@@ -10,7 +10,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use tracing::instrument;
+use polkagent_store_trait::event::EventStoreError;
+use tracing::{instrument, warn};
 
 use crate::{
     dto::{CursorInfo, EventResponse, ListEventsQuery, ListEventsResponse, PageMeta, API_VERSION},
@@ -89,8 +90,8 @@ pub async fn list_events(
 
 /// Get a single event by its ID.
 ///
-/// This performs a filtered query on the event store using the event's
-/// string ID. Returns 501 if no event store is configured.
+/// This uses the event store's exact ID lookup contract. Returns 501 if no
+/// event store is configured.
 /// Returns 404 if no event with the given ID exists.
 #[instrument(skip(state), fields(event_id = %id))]
 pub async fn get_event(
@@ -102,20 +103,27 @@ pub async fn get_event(
         .as_ref()
         .ok_or_else(|| ApiError::NotImplemented("event store not configured".to_owned()))?;
 
-    // Read from cursor 0 with a small limit and filter client-side by ID.
-    // A production implementation would add a `get_by_id` method to EventStore.
-    // For now, use read_from_cursor as a reasonable fallback.
-    let events = event_store
-        .read_from_cursor(0, 10_000)
-        .await
-        .map_err(|e| ApiError::InternalError(e.to_string()))?;
+    let event = match event_store.get_event_by_id(&id).await {
+        Ok(event) => event,
+        Err(EventStoreError::NotFound(_)) => {
+            return Err(ApiError::NotFound(format!("event {id}")));
+        }
+        Err(error) => {
+            let error_kind = match &error {
+                EventStoreError::DuplicateTerminalEvent { .. } => "duplicate_terminal_event",
+                EventStoreError::NonMonotonicSequence { .. } => "non_monotonic_sequence",
+                EventStoreError::NotFound(_) => "not_found",
+                EventStoreError::Conflict(_) => "conflict",
+                EventStoreError::Backend(_) => "backend",
+                EventStoreError::Serialisation(_) => "serialisation",
+            };
+            warn!(error_kind, "durable event ID lookup failed");
+            return Err(ApiError::InternalError("event lookup failed".to_owned()));
+        }
+    };
 
-    let event = events
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| ApiError::NotFound(format!("event {id}")))?;
-
-    let data = serde_json::to_value(&event).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    let data = serde_json::to_value(&event)
+        .map_err(|_| ApiError::InternalError("event response serialization failed".to_owned()))?;
 
     Ok(Json(EventResponse {
         version: API_VERSION.to_owned(),

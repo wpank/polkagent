@@ -97,6 +97,10 @@ impl EventStore for EventStoreWithRunSetup {
         self.pool.read_from_cursor(cursor, limit).await
     }
 
+    async fn get_event_by_id(&self, id: &str) -> Result<StoredEvent, EventStoreError> {
+        self.pool.get_event_by_id(id).await
+    }
+
     async fn read_run_events(
         &self,
         run_id: polkagent_core::RunId,
@@ -241,6 +245,12 @@ async fn event_store_duplicate_terminal_rejected() {
 async fn event_store_cursor_pagination() {
     let store = EventStoreWithRunSetup::new(setup_pool());
     conformance::test_event_store_cursor_pagination(&store).await;
+}
+
+#[tokio::test]
+async fn event_store_get_by_id() {
+    let store = EventStoreWithRunSetup::new(setup_pool());
+    conformance::test_event_store_get_by_id(&store).await;
 }
 
 #[tokio::test]

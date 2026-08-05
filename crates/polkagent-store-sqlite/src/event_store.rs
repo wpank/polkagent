@@ -28,7 +28,7 @@
 use async_trait::async_trait;
 use polkagent_core::RunId;
 use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::pool::SqlitePool;
 
@@ -287,6 +287,29 @@ impl EventStore for SqlitePool {
                 .map_err(map_rusqlite)?;
 
             Ok(rows)
+        })
+        .await
+        .map_err(map_join)?
+    }
+
+    async fn get_event_by_id(&self, id: &str) -> Result<StoredEvent, EventStoreError> {
+        let pool = self.clone();
+        let id = id.to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let event = writer
+                .query_row(
+                    &format!(
+                        "SELECT {RUN_EVENTS_COLS} FROM run_events \
+                         WHERE id = ?1 AND kind NOT LIKE 'diagnostic:%'"
+                    ),
+                    [&id],
+                    row_to_stored_event,
+                )
+                .optional()
+                .map_err(map_rusqlite)?;
+            event.ok_or_else(|| EventStoreError::NotFound(format!("event {id}")))
         })
         .await
         .map_err(map_join)?
@@ -679,6 +702,64 @@ mod tests {
 
         let page = pool.read_from_cursor(100_000, 10).await.expect("read");
         assert!(page.is_empty());
+    }
+
+    #[tokio::test]
+    async fn indexed_id_lookup_finds_event_after_ten_thousand_rows() {
+        let pool = setup_pool();
+        let run_id = uuid::Uuid::now_v7().to_string();
+        insert_dummy_run(&pool, &run_id);
+        let target_id = "target-after-ten-thousand";
+        {
+            let mut writer = pool.writer();
+            let transaction = writer.transaction().expect("begin bulk event insert");
+            {
+                let mut statement = transaction
+                    .prepare(
+                        "INSERT INTO run_events \
+                         (id, run_id, sequence, kind, data_json, timestamp, correlation_id, schema_version) \
+                         VALUES (?1, ?2, ?3, 'turn_started', '{}', '2024-01-01T00:00:00Z', 'lookup', 1)",
+                    )
+                    .expect("prepare bulk event insert");
+                for sequence in 1..=10_002_u64 {
+                    let id = if sequence == 10_002 {
+                        target_id.to_owned()
+                    } else {
+                        format!("earlier-{sequence}")
+                    };
+                    statement
+                        .execute(params![id, run_id, sequence])
+                        .expect("insert bulk event");
+                }
+            }
+            transaction.commit().expect("commit bulk event insert");
+        }
+
+        let found = pool
+            .get_event_by_id(target_id)
+            .await
+            .expect("indexed event lookup");
+        assert_eq!(found.id, target_id);
+        assert_eq!(found.global_sequence, 10_002);
+        let missing = pool
+            .get_event_by_id("missing-event")
+            .await
+            .expect_err("missing event must be typed not found");
+        assert!(matches!(missing, EventStoreError::NotFound(_)));
+
+        let plan: String = pool
+            .writer()
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM run_events \
+                 WHERE id = ?1 AND kind NOT LIKE 'diagnostic:%'",
+                [target_id],
+                |row| row.get(3),
+            )
+            .expect("explain indexed lookup");
+        assert!(
+            plan.contains("INDEX"),
+            "unexpected SQLite query plan: {plan}"
+        );
     }
 
     #[tokio::test]

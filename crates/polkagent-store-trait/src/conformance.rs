@@ -554,6 +554,37 @@ pub async fn test_event_store_cursor_pagination(store: &dyn EventStore) {
     }
 }
 
+/// Conformance: exact event-ID lookup returns the stored record and reports a
+/// typed not-found error for an absent ID.
+pub async fn test_event_store_get_by_id(store: &dyn EventStore) {
+    let run_id = uuid::Uuid::now_v7().to_string();
+    let first = store
+        .append_durable(make_event(&run_id, 1, "run_started"))
+        .await
+        .expect("append lookup prefix event");
+    let target = store
+        .append_durable(make_event(&run_id, 2, "turn_started"))
+        .await
+        .expect("append lookup target event");
+
+    let found = store
+        .get_event_by_id(&target.id)
+        .await
+        .expect("get_event_by_id() must find the exact event");
+    assert_eq!(found.id, target.id);
+    assert_eq!(found.global_sequence, target.global_sequence);
+    assert_ne!(found.id, first.id);
+
+    let error = store
+        .get_event_by_id("00000000-0000-0000-0000-000000000000")
+        .await
+        .expect_err("missing event ID must fail");
+    assert!(
+        matches!(error, EventStoreError::NotFound(_)),
+        "missing event ID must return EventStoreError::NotFound; got: {error:?}"
+    );
+}
+
 /// Conformance: `max_sequence()` returns the current maximum per-run sequence.
 pub async fn test_event_store_max_sequence(store: &dyn EventStore) {
     let run_id = uuid::Uuid::now_v7().to_string();

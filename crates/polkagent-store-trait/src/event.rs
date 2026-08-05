@@ -16,6 +16,15 @@ use polkagent_core::RunId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+const EVENT_ID_LOOKUP_PAGE_SIZE: usize = 1_000;
+
+fn invalid_event_page(message: &'static str) -> EventStoreError {
+    EventStoreError::Backend(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    )))
+}
+
 // ---------------------------------------------------------------------------
 // EventStoreError
 // ---------------------------------------------------------------------------
@@ -191,6 +200,44 @@ pub trait EventStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<StoredEvent>, EventStoreError>;
 
+    /// Load one durable event by its globally unique string ID.
+    ///
+    /// Adapters should override this with an indexed point lookup when their
+    /// schema supports one. The object-safe default scans bounded cursor pages
+    /// until it finds the event or reaches an empty page; it never applies a
+    /// fixed history cap. Malformed pages fail closed instead of looping or
+    /// silently skipping history.
+    async fn get_event_by_id(&self, id: &str) -> Result<StoredEvent, EventStoreError> {
+        let mut cursor = 0;
+        loop {
+            let page = self
+                .read_from_cursor(cursor, EVENT_ID_LOOKUP_PAGE_SIZE)
+                .await?;
+            if page.is_empty() {
+                return Err(EventStoreError::NotFound(format!("event {id}")));
+            }
+            if page.len() > EVENT_ID_LOOKUP_PAGE_SIZE {
+                return Err(invalid_event_page(
+                    "event cursor store exceeded the requested page size",
+                ));
+            }
+
+            let mut next_cursor = cursor;
+            for event in &page {
+                if event.global_sequence <= next_cursor {
+                    return Err(invalid_event_page(
+                        "event cursor store did not advance global sequence",
+                    ));
+                }
+                next_cursor = event.global_sequence;
+            }
+            if let Some(event) = page.into_iter().find(|event| event.id == id) {
+                return Ok(event);
+            }
+            cursor = next_cursor;
+        }
+    }
+
     /// Read all durable events for a specific run, ordered by `sequence`.
     ///
     /// Used for run-scoped replay and projection rebuild.
@@ -210,4 +257,196 @@ pub trait EventStore: Send + Sync {
     /// Used by the event recorder before writing a new terminal
     /// event (PRD-10 REQ-EVT-004).
     async fn has_terminal_event(&self, run_id: RunId) -> Result<bool, EventStoreError>;
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "event lookup contract tests fail at explicit fixture and cursor boundaries"
+)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    enum CursorBehavior {
+        Normal,
+        NonAdvancing,
+        Oversized,
+    }
+
+    struct CursorStore {
+        events: Vec<StoredEvent>,
+        reads: Mutex<Vec<(u64, usize)>>,
+        behavior: CursorBehavior,
+    }
+
+    impl CursorStore {
+        fn normal(events: Vec<StoredEvent>) -> Self {
+            Self {
+                events,
+                reads: Mutex::new(Vec::new()),
+                behavior: CursorBehavior::Normal,
+            }
+        }
+
+        fn malformed(behavior: CursorBehavior) -> Self {
+            Self {
+                events: Vec::new(),
+                reads: Mutex::new(Vec::new()),
+                behavior,
+            }
+        }
+
+        fn reads(&self) -> Vec<(u64, usize)> {
+            self.reads.lock().expect("read log lock").clone()
+        }
+    }
+
+    fn stored_event(global_sequence: u64, id: String) -> StoredEvent {
+        StoredEvent {
+            id,
+            event_type: "test_event".to_owned(),
+            sequence: global_sequence,
+            global_sequence,
+            run_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+            conversation_id: None,
+            correlation_id: "lookup-contract".to_owned(),
+            causation_id: None,
+            scope_id: "test".to_owned(),
+            timestamp: "2024-01-01T00:00:00Z".to_owned(),
+            durability: "durable".to_owned(),
+            payload: serde_json::Value::Null,
+            trace_id: None,
+            span_id: None,
+            schema_version: 1,
+        }
+    }
+
+    fn unsupported() -> EventStoreError {
+        EventStoreError::Backend(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "not used by event lookup contract fixture",
+        )))
+    }
+
+    #[async_trait]
+    impl EventStore for CursorStore {
+        async fn append_durable(
+            &self,
+            _event: StoredEvent,
+        ) -> Result<StoredEvent, EventStoreError> {
+            Err(unsupported())
+        }
+
+        async fn append_diagnostic(
+            &self,
+            _event: StoredEvent,
+            _expires_at: String,
+        ) -> Result<(), EventStoreError> {
+            Err(unsupported())
+        }
+
+        async fn read_from_cursor(
+            &self,
+            cursor: u64,
+            limit: usize,
+        ) -> Result<Vec<StoredEvent>, EventStoreError> {
+            self.reads
+                .lock()
+                .expect("read log lock")
+                .push((cursor, limit));
+            match self.behavior {
+                CursorBehavior::Normal => Ok(self
+                    .events
+                    .iter()
+                    .filter(|event| event.global_sequence > cursor)
+                    .take(limit)
+                    .cloned()
+                    .collect()),
+                CursorBehavior::NonAdvancing => {
+                    Ok(vec![stored_event(cursor, "non-advancing".to_owned())])
+                }
+                CursorBehavior::Oversized => Ok((1..=EVENT_ID_LOOKUP_PAGE_SIZE + 1)
+                    .map(|sequence| {
+                        stored_event(
+                            u64::try_from(sequence).expect("malformed sequence fits u64"),
+                            format!("oversized-{sequence}"),
+                        )
+                    })
+                    .collect()),
+            }
+        }
+
+        async fn read_run_events(
+            &self,
+            _run_id: RunId,
+        ) -> Result<Vec<StoredEvent>, EventStoreError> {
+            Err(unsupported())
+        }
+
+        async fn query(&self, _filter: EventFilter) -> Result<Vec<StoredEvent>, EventStoreError> {
+            Err(unsupported())
+        }
+
+        async fn max_sequence(&self, _run_id: RunId) -> Result<u64, EventStoreError> {
+            Err(unsupported())
+        }
+
+        async fn has_terminal_event(&self, _run_id: RunId) -> Result<bool, EventStoreError> {
+            Err(unsupported())
+        }
+    }
+
+    #[tokio::test]
+    async fn default_lookup_pages_past_ten_thousand_without_a_history_cap() {
+        let earlier = 10_001_u64;
+        let mut events = (1..=earlier)
+            .map(|sequence| stored_event(sequence, format!("earlier-{sequence}")))
+            .collect::<Vec<_>>();
+        events.push(stored_event(earlier + 1, "target".to_owned()));
+        let store = CursorStore::normal(events);
+        let object_safe_store: &dyn EventStore = &store;
+
+        let found = object_safe_store
+            .get_event_by_id("target")
+            .await
+            .expect("find event after ten thousand earlier events");
+        assert_eq!(found.global_sequence, earlier + 1);
+        let reads = store.reads();
+        assert_eq!(reads.len(), 11);
+        assert!(reads
+            .iter()
+            .all(|(_, limit)| *limit == EVENT_ID_LOOKUP_PAGE_SIZE));
+        assert_eq!(reads.last(), Some(&(10_000, EVENT_ID_LOOKUP_PAGE_SIZE)));
+    }
+
+    #[tokio::test]
+    async fn default_lookup_scans_to_an_empty_page_before_returning_not_found() {
+        let events = (1..=10_001_u64)
+            .map(|sequence| stored_event(sequence, format!("event-{sequence}")))
+            .collect();
+        let store = CursorStore::normal(events);
+
+        let error = store
+            .get_event_by_id("missing")
+            .await
+            .expect_err("missing event must be typed not found");
+        assert!(matches!(error, EventStoreError::NotFound(_)));
+        assert_eq!(store.reads().len(), 12);
+    }
+
+    #[tokio::test]
+    async fn default_lookup_rejects_non_advancing_and_oversized_pages() {
+        for behavior in [CursorBehavior::NonAdvancing, CursorBehavior::Oversized] {
+            let store = CursorStore::malformed(behavior);
+            let error = store
+                .get_event_by_id("missing")
+                .await
+                .expect_err("malformed cursor store must fail closed");
+            assert!(matches!(error, EventStoreError::Backend(_)));
+            assert_eq!(store.reads().len(), 1);
+        }
+    }
 }

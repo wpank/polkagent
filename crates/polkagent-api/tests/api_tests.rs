@@ -11,7 +11,10 @@
 )]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use axum_test::TestServer;
@@ -2085,6 +2088,8 @@ async fn resume_run_returns_404_for_nonexistent_run() {
 struct InMemoryEventStore {
     events: RwLock<Vec<StoredEvent>>,
     next_global_seq: RwLock<u64>,
+    cursor_reads: RwLock<Vec<(u64, usize)>>,
+    fail_cursor_reads: AtomicBool,
 }
 
 impl InMemoryEventStore {
@@ -2092,6 +2097,8 @@ impl InMemoryEventStore {
         Self {
             events: RwLock::new(Vec::new()),
             next_global_seq: RwLock::new(1),
+            cursor_reads: RwLock::new(Vec::new()),
+            fail_cursor_reads: AtomicBool::new(false),
         }
     }
 
@@ -2102,6 +2109,19 @@ impl InMemoryEventStore {
         *seq_guard += 1;
         drop(seq_guard);
         self.events.write().await.push(event);
+    }
+
+    async fn insert_batch(&self, mut events: Vec<StoredEvent>) {
+        let mut next_global_sequence = self.next_global_seq.write().await;
+        for event in &mut events {
+            event.global_sequence = *next_global_sequence;
+            *next_global_sequence += 1;
+        }
+        self.events.write().await.extend(events);
+    }
+
+    async fn cursor_reads(&self) -> Vec<(u64, usize)> {
+        self.cursor_reads.read().await.clone()
     }
 }
 
@@ -2130,6 +2150,12 @@ impl EventStore for InMemoryEventStore {
         cursor: u64,
         limit: usize,
     ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        self.cursor_reads.write().await.push((cursor, limit));
+        if self.fail_cursor_reads.load(Ordering::SeqCst) {
+            return Err(EventStoreError::Backend(Box::new(std::io::Error::other(
+                "PRIVATE_EVENT_STORE_BACKEND_DETAIL",
+            ))));
+        }
         let guard = self.events.read().await;
         let results: Vec<StoredEvent> = guard
             .iter()
@@ -2494,6 +2520,40 @@ async fn get_event_by_id_returns_single_event() {
 }
 
 #[tokio::test]
+async fn get_event_by_id_finds_target_after_more_than_ten_thousand_events() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let run_id = RunId::new();
+    let mut events = Vec::with_capacity(10_002);
+    for sequence in 1..=10_001_u64 {
+        events.push(make_stored_event(
+            &format!("earlier-{sequence}"),
+            run_id,
+            "turn_started",
+            sequence,
+        ));
+    }
+    events.push(make_stored_event(
+        "target-after-ten-thousand",
+        run_id,
+        "run_completed",
+        10_002,
+    ));
+    store.insert_batch(events).await;
+
+    let server = test_server_with_event_store(store.clone());
+    let response = server
+        .get("/api/v1alpha1/events/target-after-ten-thousand")
+        .await;
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], "target-after-ten-thousand");
+    let reads = store.cursor_reads().await;
+    assert_eq!(reads.len(), 11);
+    assert!(reads.iter().all(|(_, limit)| *limit == 1_000));
+    assert_eq!(reads.last(), Some(&(10_000, 1_000)));
+}
+
+#[tokio::test]
 async fn get_event_by_id_not_found_returns_404() {
     let store = Arc::new(InMemoryEventStore::new());
     let server = test_server_with_event_store(store);
@@ -2501,6 +2561,20 @@ async fn get_event_by_id_not_found_returns_404() {
     resp.assert_status(axum::http::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["error"]["code"], "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn get_event_by_id_does_not_expose_backend_details() {
+    let store = Arc::new(InMemoryEventStore::new());
+    store.fail_cursor_reads.store(true, Ordering::SeqCst);
+    let server = test_server_with_event_store(store);
+    let response = server.get("/api/v1alpha1/events/some-id").await;
+    response.assert_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(!message.contains("PRIVATE_EVENT_STORE_BACKEND_DETAIL"));
+    assert_eq!(message, "internal error: event lookup failed");
 }
 
 #[tokio::test]
