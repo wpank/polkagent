@@ -1,12 +1,12 @@
 //! `polkagent inspect` — Inspect runs, effects, artifacts, agents, and policies.
 //!
 //! A read-only diagnostic command that drills into individual entities stored
-//! in the local SQLite database or on disk (policy TOML files).  Each
+//! in the local `SQLite` database or on disk (policy TOML files).  Each
 //! subcommand fetches a single entity by ID/path, formats it for human
 //! consumption, and optionally emits structured JSON (`--json`).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -209,6 +209,8 @@ pub struct DbStats {
     pub table_row_counts: BTreeMap<String, u64>,
 }
 
+type ArtifactRow = (String, Option<String>, String, String, i64, String, String);
+
 // ---------------------------------------------------------------------------
 // Dispatcher
 // ---------------------------------------------------------------------------
@@ -233,7 +235,7 @@ pub async fn run(cmd: &InspectCmd) -> Result<()> {
 ///
 /// Accepts either a full 36-character UUID (exact match) or a shorter prefix
 /// string (prefix-match via LIKE, the same way `git log` handles short SHAs).
-/// Queries the local SQLite database directly without requiring the daemon.
+/// Queries the local `SQLite` database directly without requiring the daemon.
 pub async fn execute_inspect_run(run_id: &str, json_output: bool) -> Result<()> {
     if run_id.is_empty() {
         anyhow::bail!("run ID must not be empty");
@@ -242,13 +244,17 @@ pub async fn execute_inspect_run(run_id: &str, json_output: bool) -> Result<()> 
     let db_path = resolve_db_path();
     let expanded = expand_tilde(&db_path);
 
-    let info =
-        query_run(&expanded, run_id).with_context(|| format!("querying database at {expanded}"))?;
+    let run_id = run_id.to_owned();
+    let info = tokio::task::spawn_blocking(move || {
+        query_run(&expanded, &run_id).with_context(|| format!("querying database at {expanded}"))
+    })
+    .await
+    .context("joining inspect run query task")??;
 
     render_run(&info, json_output)
 }
 
-/// Query the SQLite database for a run by exact ID or ID prefix.
+/// Query the `SQLite` database for a run by exact ID or ID prefix.
 fn query_run(db_path: &str, run_id: &str) -> Result<RunInfo> {
     let conn =
         rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -304,7 +310,10 @@ fn query_run(db_path: &str, run_id: &str) -> Result<RunInfo> {
         );
     }
 
-    let (full_id, agent_id, state, created_at, updated_at) = rows.into_iter().next().unwrap();
+    let (full_id, agent_id, state, created_at, updated_at) = rows
+        .into_iter()
+        .next()
+        .context("run query returned no rows after its non-empty check")?;
 
     // Count turns for this run.
     let turns: u64 = conn
@@ -357,51 +366,9 @@ fn query_run(db_path: &str, run_id: &str) -> Result<RunInfo> {
 ///
 /// Returns `None` if either timestamp cannot be parsed.
 fn compute_elapsed_ms(from: &str, to: &str) -> Option<u64> {
-    // Parse ISO 8601 / RFC 3339 timestamps manually.
-    // We use a lightweight approach: parse via chrono if available, otherwise
-    // estimate from string difference.  Here we do a simple epoch-based diff
-    // using only the stdlib to avoid an extra dep.
-    let parse = |s: &str| -> Option<i64> {
-        // Expects format: YYYY-MM-DDTHH:MM:SS[.sss]Z or +00:00
-        // We truncate sub-second precision and use only the first 19 chars.
-        let s = s.trim_end_matches('Z').trim_end_matches("+00:00");
-        let s = if s.len() >= 19 { &s[..19] } else { return None };
-        // Parse components manually.
-        let year: i64 = s[0..4].parse().ok()?;
-        let month: i64 = s[5..7].parse().ok()?;
-        let day: i64 = s[8..10].parse().ok()?;
-        let hour: i64 = s[11..13].parse().ok()?;
-        let min: i64 = s[14..16].parse().ok()?;
-        let sec: i64 = s[17..19].parse().ok()?;
-        // Rough epoch seconds (ignores leap seconds, good enough for display).
-        let days = days_since_epoch(year, month, day);
-        Some(days * 86400 + hour * 3600 + min * 60 + sec)
-    };
-
-    let t_from = parse(from)?;
-    let t_to = parse(to)?;
-    let diff = t_to.saturating_sub(t_from);
-    if diff < 0 {
-        None
-    } else {
-        Some((diff as u64) * 1000)
-    }
-}
-
-/// Days since Unix epoch (1970-01-01) for a Gregorian calendar date.
-fn days_since_epoch(year: i64, month: i64, day: i64) -> i64 {
-    // Algorithm from https://en.wikipedia.org/wiki/Julian_day (simplified).
-    let y = if month <= 2 { year - 1 } else { year };
-    let m = if month <= 2 { month + 12 } else { month };
-    let a = y / 100;
-    let b = 2 - a + a / 4;
-    let jd = ((365.25 * (y + 4716) as f64) as i64)
-        + ((30.6001 * (m + 1) as f64) as i64)
-        + day as i64
-        + b
-        - 1524;
-    // Julian day 2440588 corresponds to 1970-01-01.
-    jd - 2_440_588
+    let from = chrono::DateTime::parse_from_rfc3339(from).ok()?;
+    let to = chrono::DateTime::parse_from_rfc3339(to).ok()?;
+    u64::try_from(to.signed_duration_since(from).num_milliseconds()).ok()
 }
 
 /// Render a `RunInfo` to stdout.
@@ -440,7 +407,7 @@ fn render_run(info: &RunInfo, json_output: bool) -> Result<()> {
 
 /// Inspect an effect by ID.
 ///
-/// Opens a read-only connection to the SQLite database and queries the
+/// Opens a read-only connection to the `SQLite` database and queries the
 /// `effect_intents`, `effect_attempts`, and `effect_outcomes` tables.
 /// Supports UUID prefix matching.
 pub async fn execute_inspect_effect(effect_id: &str, json_output: bool) -> Result<()> {
@@ -449,12 +416,15 @@ pub async fn execute_inspect_effect(effect_id: &str, json_output: bool) -> Resul
     let db_path = resolve_db_path();
     let expanded = expand_tilde(&db_path);
 
-    let info = query_effect(&expanded, effect_id)?;
+    let effect_id = effect_id.to_owned();
+    let info = tokio::task::spawn_blocking(move || query_effect(&expanded, &effect_id))
+        .await
+        .context("joining inspect effect query task")??;
 
     render_effect(&info, json_output)
 }
 
-/// Query an effect intent from the SQLite database by exact or prefix UUID match.
+/// Query an effect intent from the `SQLite` database by exact or prefix UUID match.
 fn query_effect(db_path: &str, effect_id: &str) -> Result<EffectInfo> {
     let conn =
         rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -580,7 +550,7 @@ fn render_effect(info: &EffectInfo, json_output: bool) -> Result<()> {
 
 /// Inspect an artifact by ID.
 ///
-/// Opens a read-only connection to the SQLite database and queries the
+/// Opens a read-only connection to the `SQLite` database and queries the
 /// `artifacts` and `artifact_lineage` tables.  Supports UUID prefix matching.
 pub async fn execute_inspect_artifact(artifact_id: &str, json_output: bool) -> Result<()> {
     if artifact_id.is_empty() {
@@ -590,12 +560,15 @@ pub async fn execute_inspect_artifact(artifact_id: &str, json_output: bool) -> R
     let db_path = resolve_db_path();
     let expanded = expand_tilde(&db_path);
 
-    let info = query_artifact(&expanded, artifact_id)?;
+    let artifact_id = artifact_id.to_owned();
+    let info = tokio::task::spawn_blocking(move || query_artifact(&expanded, &artifact_id))
+        .await
+        .context("joining inspect artifact query task")??;
 
     render_artifact(&info, json_output)
 }
 
-/// Query an artifact from the SQLite database by exact or prefix UUID match.
+/// Query an artifact from the `SQLite` database by exact or prefix UUID match.
 fn query_artifact(db_path: &str, artifact_id: &str) -> Result<ArtifactInfo> {
     let conn =
         rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -603,7 +576,7 @@ fn query_artifact(db_path: &str, artifact_id: &str) -> Result<ArtifactInfo> {
 
     // Try exact match first, then prefix match.
     let pattern = format!("{artifact_id}%");
-    let row: Option<(String, Option<String>, String, String, i64, String, String)> = conn
+    let row: Option<ArtifactRow> = conn
         .query_row(
             "SELECT id, run_id, kind, digest_hex, size_bytes, metadata_json, created_at \
              FROM artifacts \
@@ -650,7 +623,7 @@ fn query_artifact(db_path: &str, artifact_id: &str) -> Result<ArtifactInfo> {
         run_id: run_id.clone(),
         kind,
         digest: digest_hex,
-        size_bytes: size_bytes.max(0) as u64,
+        size_bytes: u64::try_from(size_bytes).unwrap_or_default(),
         metadata,
         created_at,
         lineage: ArtifactLineage {
@@ -705,7 +678,7 @@ fn render_artifact(info: &ArtifactInfo, json_output: bool) -> Result<()> {
 
 /// Inspect an agent by name or UUID.
 ///
-/// Opens a read-only connection to the SQLite database and queries the `agents`
+/// Opens a read-only connection to the `SQLite` database and queries the `agents`
 /// table.  Tries an exact match on `id`, then on `name`, then a UUID prefix
 /// match.  Parses `spec_json` to extract model, tools, capabilities, and
 /// autonomy level for display.
@@ -717,12 +690,15 @@ pub async fn execute_inspect_agent(agent_id: &str, json_output: bool) -> Result<
     let db_path = resolve_db_path();
     let expanded = expand_tilde(&db_path);
 
-    let info = query_agent(&expanded, agent_id)?;
+    let agent_id = agent_id.to_owned();
+    let info = tokio::task::spawn_blocking(move || query_agent(&expanded, &agent_id))
+        .await
+        .context("joining inspect agent query task")??;
 
     render_agent(&info, json_output)
 }
 
-/// Query an agent from the SQLite database by ID, name, or UUID prefix.
+/// Query an agent from the `SQLite` database by ID, name, or UUID prefix.
 fn query_agent(db_path: &str, agent_id: &str) -> Result<AgentInfo> {
     let conn =
         rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -873,17 +849,21 @@ fn render_agent(info: &AgentInfo, json_output: bool) -> Result<()> {
 /// The TOML file is expected to have optional top-level `name`, `version`, and
 /// `description` keys, plus a `[[rules]]` array-of-tables where each entry has
 /// `action`, `resource`, `effect`, and an optional `conditions` list.
-pub async fn execute_inspect_policy(path: &PathBuf, json_output: bool) -> Result<()> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading policy file: {}", path.display()))?;
-
-    let info = parse_policy_toml(&content, path)?;
+pub async fn execute_inspect_policy(path: &Path, json_output: bool) -> Result<()> {
+    let path = path.to_owned();
+    let info = tokio::task::spawn_blocking(move || {
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading policy file: {}", path.display()))?;
+        parse_policy_toml(&content, &path)
+    })
+    .await
+    .context("joining inspect policy read task")??;
 
     render_policy(&info, json_output)
 }
 
 /// Parse raw TOML content into a `PolicyInfo`.
-fn parse_policy_toml(content: &str, path: &PathBuf) -> Result<PolicyInfo> {
+fn parse_policy_toml(content: &str, path: &Path) -> Result<PolicyInfo> {
     let table: toml::Value =
         toml::from_str(content).with_context(|| "invalid TOML in policy file")?;
 
@@ -1020,28 +1000,30 @@ fn render_policy(info: &PolicyInfo, json_output: bool) -> Result<()> {
 /// Show database statistics.
 ///
 /// Reads table row counts, file sizes, and migration version directly from the
-/// SQLite database file.  Does not require the daemon to be running.
+/// `SQLite` database file.  Does not require the daemon to be running.
 pub async fn execute_inspect_db(json_output: bool) -> Result<()> {
     let db_path = resolve_db_path();
     let expanded = expand_tilde(&db_path);
 
-    let stats = gather_db_stats(&expanded)?;
+    let stats = tokio::task::spawn_blocking(move || gather_db_stats(&expanded))
+        .await
+        .context("joining inspect database statistics task")??;
 
     render_db_stats(&stats, json_output)
 }
 
-/// Gather database statistics from the SQLite file at `path`.
+/// Gather database statistics from the `SQLite` file at `path`.
 fn gather_db_stats(path: &str) -> Result<DbStats> {
     let conn =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("opening database at {path}"))?;
 
     // Database file size.
-    let db_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let db_size_bytes = std::fs::metadata(path).map_or(0, |m| m.len());
 
     // WAL file size.
     let wal_path = format!("{path}-wal");
-    let wal_size_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+    let wal_size_bytes = std::fs::metadata(&wal_path).map_or(0, |m| m.len());
 
     // Migration version (user_version pragma).
     let migration_version: u64 = conn
@@ -1075,7 +1057,7 @@ fn list_user_tables(conn: &rusqlite::Connection) -> Result<Vec<String>> {
 
     let names: Vec<String> = stmt
         .query_map([], |row| row.get(0))?
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     Ok(names)
@@ -1110,7 +1092,7 @@ fn render_db_stats(stats: &DbStats, json_output: bool) -> Result<()> {
         println!("    {:<30} Rows", "Name");
         println!("    {}", "-".repeat(40));
         for (name, count) in &stats.table_row_counts {
-            println!("    {:<30} {count}", name);
+            println!("    {name:<30} {count}");
         }
 
         let total: u64 = stats.table_row_counts.values().sum();
@@ -1159,14 +1141,23 @@ fn format_bytes(bytes: u64) -> String {
     const GIB: u64 = 1024 * MIB;
 
     if bytes >= GIB {
-        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+        format_scaled_bytes(bytes, GIB, "GiB")
     } else if bytes >= MIB {
-        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+        format_scaled_bytes(bytes, MIB, "MiB")
     } else if bytes >= KIB {
-        format!("{:.2} KiB", bytes as f64 / KIB as f64)
+        format_scaled_bytes(bytes, KIB, "KiB")
     } else {
         format!("{bytes} B")
     }
+}
+
+/// Format a byte count as a rounded, fixed two-decimal multiple of `unit`.
+fn format_scaled_bytes(bytes: u64, unit: u64, suffix: &str) -> String {
+    let unit = u128::from(unit);
+    let rounded_hundredths = (u128::from(bytes) * 100 + unit / 2) / unit;
+    let whole = rounded_hundredths / 100;
+    let fractional = rounded_hundredths % 100;
+    format!("{whole}.{fractional:02} {suffix}")
 }
 
 /// Resolve the database path using the same logic as `main.rs`.
@@ -1402,6 +1393,39 @@ mod tests {
         assert_eq!(format_bytes(1024 * 1024 * 1024), "1.00 GiB");
     }
 
+    #[test]
+    fn format_bytes_rounds_fractional_units() {
+        assert_eq!(format_bytes(1536), "1.50 KiB");
+        assert_eq!(format_bytes(1024 + 1023), "2.00 KiB");
+    }
+
+    // -- Timestamp duration tests -------------------------------------------
+
+    #[test]
+    fn compute_elapsed_ms_preserves_subsecond_precision() {
+        assert_eq!(
+            compute_elapsed_ms("2025-01-01T00:00:00.125Z", "2025-01-01T00:00:01.500Z"),
+            Some(1375)
+        );
+    }
+
+    #[test]
+    fn compute_elapsed_ms_honors_timezone_offsets() {
+        assert_eq!(
+            compute_elapsed_ms("2025-01-01T01:00:00+01:00", "2025-01-01T00:00:01Z"),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    fn compute_elapsed_ms_rejects_negative_or_invalid_ranges() {
+        assert_eq!(
+            compute_elapsed_ms("2025-01-01T00:00:01Z", "2025-01-01T00:00:00Z"),
+            None
+        );
+        assert_eq!(compute_elapsed_ms("not-a-time", "also-not-a-time"), None);
+    }
+
     // -- Policy TOML parsing tests --------------------------------------------
 
     #[test]
@@ -1595,7 +1619,7 @@ version = "0.1.0"
     // schema so that the query functions can actually open it and return a
     // proper "not found" error rather than a "cannot open database" error.
 
-    /// Create a temporary SQLite database with the minimal schema required by
+    /// Create a temporary `SQLite` database with the minimal schema required by
     /// the inspect helpers, write it to disk, and return its path.
     fn temp_db_with_schema() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().expect("tempdir");
