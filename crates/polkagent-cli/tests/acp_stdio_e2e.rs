@@ -1214,7 +1214,7 @@ async fn acp_restart_recovers_abandoned_run_through_shared_runtime() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("load recovered run");
-    assert_eq!(state, "failed");
+    assert_eq!(state, "failed:recovered after restart");
     assert!(
         completed_at.is_some(),
         "runtime startup recovery must persist a terminal timestamp"

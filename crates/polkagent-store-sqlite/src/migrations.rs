@@ -67,6 +67,9 @@ const SCHEMA_V14: &str = include_str!("v14_interaction_sessions.sql");
 /// V15: Preserve artifact digest algorithm and data classification.
 const SCHEMA_V15: &str = include_str!("v15_artifact_projection.sql");
 
+/// V16: Protect exact effect outcome attempt/run lineage from mutation.
+const SCHEMA_V16: &str = include_str!("v16_effect_outcome_lineage.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -84,6 +87,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (13, "durable interaction turns and events", SCHEMA_V13),
     (14, "durable interaction sessions", SCHEMA_V14),
     (15, "complete artifact projection", SCHEMA_V15),
+    (16, "immutable effect outcome lineage", SCHEMA_V16),
 ];
 
 // ---------------------------------------------------------------------------
@@ -220,7 +224,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -229,7 +233,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -349,6 +353,68 @@ mod tests {
             .expect("read migrated artifact");
         assert_eq!(algorithm, "blake3");
         assert_eq!(classification, "public");
+    }
+
+    #[test]
+    fn effect_outcome_lineage_is_immutable_but_consumption_can_advance() {
+        let conn = open_mem();
+        migrate(&conn).expect("migrate");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("isolate trigger from foreign-key fixtures");
+        let outcome_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO effect_outcomes
+                (id, intent_id, status, result_json, created_at,
+                 attempt_id, run_id, consumed)
+             VALUES (?1, ?2, 'success', '{\"variant\":\"success\"}',
+                     '2024-01-01T00:00:00Z', ?3, ?4, 0)",
+            rusqlite::params![
+                outcome_id,
+                uuid::Uuid::now_v7().to_string(),
+                uuid::Uuid::now_v7().to_string(),
+                uuid::Uuid::now_v7().to_string(),
+            ],
+        )
+        .expect("seed outcome");
+
+        conn.execute(
+            "UPDATE effect_outcomes SET consumed = 1 WHERE id = ?1",
+            [&outcome_id],
+        )
+        .expect("consumption is the sole mutable field");
+        let consumed: bool = conn
+            .query_row(
+                "SELECT consumed FROM effect_outcomes WHERE id = ?1",
+                [&outcome_id],
+                |row| row.get(0),
+            )
+            .expect("read consumed flag");
+        assert!(consumed);
+
+        for column in ["attempt_id", "run_id"] {
+            let error = conn
+                .execute(
+                    &format!("UPDATE effect_outcomes SET {column} = NULL WHERE id = ?1"),
+                    [&outcome_id],
+                )
+                .expect_err("exact outcome lineage must reject tampering");
+            assert!(error.to_string().contains("lineage are immutable"));
+        }
+    }
+
+    #[test]
+    fn lineage_migration_is_registered_with_a_nonempty_checksum() {
+        let conn = open_mem();
+        migrate(&conn).expect("migrate");
+        let (description, checksum): (String, String) = conn
+            .query_row(
+                "SELECT description, checksum FROM schema_migrations WHERE version = 16",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load v16 registration");
+        assert_eq!(description, "immutable effect outcome lineage");
+        assert!(!checksum.is_empty());
     }
 
     #[test]

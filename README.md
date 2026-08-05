@@ -212,8 +212,9 @@ All harnesses share 11 canonical tools (read, write, edit, glob, grep, bash, web
 ACP clients. The executable protocol slice supports session creation, prompts,
 cancellation, agent selection, and `/help`, `/status`, `/agents`, and `/agent`.
 The official SDK subprocess test proves handshake, command discovery, and one
-real `AppService` run; manual Zed interoperability, durable session load/resume,
-structured tools/permissions, MCP passthrough, and rich editor UX remain open.
+real `AppService` run. Durable session load/resume and native structured
+effect-backed tool updates are implemented; manual Zed interoperability,
+structured permissions, MCP passthrough, and rich editor UX remain open.
 See [ACP and Zed setup](docs/acp-zed.md).
 
 ### Agent Memory

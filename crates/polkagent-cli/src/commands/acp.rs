@@ -382,6 +382,18 @@ impl PolkagentAcpBackend {
                             .await
                             .context("forwarding runtime text update to ACP surface")?;
                     }
+                    InteractionEvent::ToolCallStarted { call } => {
+                        updates
+                            .send(BackendPromptUpdate::ToolCallStarted(call))
+                            .await
+                            .context("forwarding runtime tool start to ACP surface")?;
+                    }
+                    InteractionEvent::ToolCallUpdated { call } => {
+                        updates
+                            .send(BackendPromptUpdate::ToolCallUpdated(call))
+                            .await
+                            .context("forwarding runtime tool update to ACP surface")?;
+                    }
                     InteractionEvent::TurnCompleted { result } => {
                         if let Some(size) = context_window {
                             let used = result.usage.total_tokens();

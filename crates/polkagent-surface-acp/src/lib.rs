@@ -20,13 +20,16 @@ use agent_client_protocol::schema::v1::{
     ResumeSessionResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOption, SessionId, SessionNotification, SessionResumeCapabilities,
     SessionUpdate, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason,
-    TextContent, UnstructuredCommandInput, UsageUpdate,
+    TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallStatus as AcpToolCallStatus,
+    ToolCallUpdate as AcpToolCallUpdate, ToolCallUpdateFields, ToolKind as AcpToolKind,
+    UnstructuredCommandInput, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
 use futures::FutureExt as _;
 use polkagent_interaction::{
     CancelTarget, CommandName, CommandRegistry, CommandSpec, InteractionCommand, ParsedLine,
+    ToolCallKind, ToolCallStatus, ToolCallView,
 };
 use tokio::sync::Mutex;
 
@@ -154,7 +157,7 @@ pub struct BackendTranscriptTurn {
 }
 
 /// A progressive update emitted while a backend prompt is still running.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BackendPromptUpdate {
     /// Text appended to the final assistant response.
     TextDelta(String),
@@ -165,6 +168,10 @@ pub enum BackendPromptUpdate {
         /// Configured context-window size for the effective model.
         size: u64,
     },
+    /// First complete projection of one durable tool call.
+    ToolCallStarted(ToolCallView),
+    /// Replacement state for the same durable tool call identity.
+    ToolCallUpdated(ToolCallView),
 }
 
 /// The result of one backend prompt turn.
@@ -1020,9 +1027,75 @@ fn record_and_forward_update(
                 SessionUpdate::UsageUpdate(UsageUpdate::new(used, size)),
             ))
         }
+        BackendPromptUpdate::ToolCallStarted(call) => connection.send_notification(
+            SessionNotification::new(session_id.clone(), acp_tool_started(call)),
+        ),
+        BackendPromptUpdate::ToolCallUpdated(call) => connection.send_notification(
+            SessionNotification::new(session_id.clone(), acp_tool_updated(call)),
+        ),
     };
     if let Err(error) = result {
         *forwarding_error = Some(error);
+    }
+}
+
+fn acp_tool_started(call: ToolCallView) -> SessionUpdate {
+    let content = safe_tool_content(&call);
+    let mut projected = AcpToolCall::new(call.call_id.to_string(), call.title)
+        .kind(acp_tool_kind(call.kind))
+        .status(acp_tool_status(call.status));
+    if let Some(content) = content {
+        projected = projected.content(vec![content]);
+    }
+    // Raw input/output remain absent by construction: the interaction domain
+    // exposes only safety-policy summaries for durable registered tools.
+    SessionUpdate::ToolCall(projected)
+}
+
+fn acp_tool_updated(call: ToolCallView) -> SessionUpdate {
+    let content = safe_tool_content(&call);
+    let mut fields = ToolCallUpdateFields::new()
+        .title(call.title)
+        .kind(acp_tool_kind(call.kind))
+        .status(acp_tool_status(call.status));
+    if let Some(content) = content {
+        fields = fields.content(vec![content]);
+    }
+    SessionUpdate::ToolCallUpdate(AcpToolCallUpdate::new(call.call_id.to_string(), fields))
+}
+
+fn safe_tool_content(call: &ToolCallView) -> Option<ToolCallContent> {
+    let text = match (&call.summary, &call.error) {
+        (Some(summary), Some(error)) => Some(format!("{summary}. {error}")),
+        (Some(summary), None) => Some(summary.clone()),
+        (None, Some(error)) => Some(error.clone()),
+        (None, None) => None,
+    }?;
+    Some(ToolCallContent::from(ContentBlock::Text(TextContent::new(
+        text,
+    ))))
+}
+
+const fn acp_tool_kind(kind: ToolCallKind) -> AcpToolKind {
+    match kind {
+        ToolCallKind::Read => AcpToolKind::Read,
+        ToolCallKind::Write => AcpToolKind::Edit,
+        ToolCallKind::Execute => AcpToolKind::Execute,
+        ToolCallKind::Network => AcpToolKind::Fetch,
+        ToolCallKind::Chain | ToolCallKind::Other => AcpToolKind::Other,
+    }
+}
+
+const fn acp_tool_status(status: ToolCallStatus) -> AcpToolCallStatus {
+    match status {
+        ToolCallStatus::Pending | ToolCallStatus::AwaitingApproval => AcpToolCallStatus::Pending,
+        ToolCallStatus::InProgress => AcpToolCallStatus::InProgress,
+        ToolCallStatus::Succeeded => AcpToolCallStatus::Completed,
+        // ACP protocol v1 has no cancelled or unknown variants. Keep the safe
+        // detail in content and use its only non-success terminal state.
+        ToolCallStatus::Failed | ToolCallStatus::Cancelled | ToolCallStatus::Unknown => {
+            AcpToolCallStatus::Failed
+        }
     }
 }
 
@@ -1305,8 +1378,29 @@ fn backend_protocol_error(error: &BackendCallError) -> agent_client_protocol::Er
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "protocol fixtures fail fast at exact official SDK or synchronization boundaries"
+)]
 mod tests {
     use super::*;
+
+    fn tool_view(status: ToolCallStatus) -> ToolCallView {
+        ToolCallView {
+            call_id: polkagent_interaction::ToolCallId::new(),
+            run_id: polkagent_core::RunId::new(),
+            name: "test.observe".to_owned(),
+            title: "test.observe".to_owned(),
+            kind: ToolCallKind::Other,
+            status,
+            arguments: None,
+            summary: Some("Output withheld by interaction safety policy".to_owned()),
+            output: None,
+            locations: Vec::new(),
+            diff: None,
+            error: None,
+        }
+    }
 
     struct PanickingBackend;
 
@@ -1467,6 +1561,115 @@ mod tests {
                 target: CancelTarget::CurrentTurn
             }
         );
+    }
+
+    #[test]
+    fn official_schema_keeps_tool_identity_and_replacement_status_without_raw_payloads() {
+        let started = tool_view(ToolCallStatus::InProgress);
+        let call_id = started.call_id.to_string();
+        let SessionUpdate::ToolCall(projected_start) = acp_tool_started(started) else {
+            panic!("expected official ACP tool-call notification");
+        };
+        assert_eq!(projected_start.tool_call_id.0.as_ref(), call_id);
+        assert_eq!(projected_start.status, AcpToolCallStatus::InProgress);
+        assert!(projected_start.raw_input.is_none());
+        assert!(projected_start.raw_output.is_none());
+
+        let mut completed = tool_view(ToolCallStatus::Succeeded);
+        completed.call_id = call_id.parse().expect("reuse durable interaction ID");
+        let SessionUpdate::ToolCallUpdate(projected_update) = acp_tool_updated(completed) else {
+            panic!("expected official ACP tool-update notification");
+        };
+        assert_eq!(projected_update.tool_call_id.0.as_ref(), call_id);
+        assert_eq!(
+            projected_update.fields.status,
+            Some(AcpToolCallStatus::Completed)
+        );
+        assert!(projected_update.fields.raw_input.is_none());
+        assert!(projected_update.fields.raw_output.is_none());
+        let wire = serde_json::to_value(SessionUpdate::ToolCallUpdate(projected_update))
+            .expect("encode official ACP notification");
+        assert_eq!(wire["sessionUpdate"], "tool_call_update");
+        assert_eq!(wire["toolCallId"], call_id);
+        assert_eq!(wire["status"], "completed");
+        assert!(wire.get("rawInput").is_none());
+        assert!(wire.get("rawOutput").is_none());
+    }
+
+    #[tokio::test]
+    async fn official_client_receives_structured_tool_replacement_with_exact_identity() {
+        let started = tool_view(ToolCallStatus::InProgress);
+        let call_id = started.call_id.to_string();
+        let mut completed = tool_view(ToolCallStatus::Succeeded);
+        completed.call_id = started.call_id;
+        let notifications = [
+            SessionNotification::new(SessionId::new("tool-session"), acp_tool_started(started)),
+            SessionNotification::new(SessionId::new("tool-session"), acp_tool_updated(completed)),
+        ];
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_client = Arc::clone(&observed);
+        let completion = Arc::new(tokio::sync::Notify::new());
+        let completion_client = Arc::clone(&completion);
+        let (ack_tx, ack_rx) = futures::channel::oneshot::channel();
+        let ack_tx = Arc::new(std::sync::Mutex::new(Some(ack_tx)));
+        let ack_client = Arc::clone(&ack_tx);
+        let (client_transport, agent_transport) = agent_client_protocol::Channel::duplex();
+
+        let client = agent_client_protocol::Client
+            .builder()
+            .on_receive_notification(
+                async move |notification: SessionNotification, _connection| {
+                    let mut observed = observed_client.lock().expect("observation lock");
+                    if matches!(
+                        notification.update,
+                        SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_)
+                    ) {
+                        observed.push(notification.update);
+                    }
+                    if observed.len() == 2 {
+                        if let Some(ack) = ack_client.lock().expect("ack lock").take() {
+                            let _ = ack.send(());
+                        }
+                        completion_client.notify_one();
+                    }
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            .connect_with(client_transport, async move |_connection| {
+                completion.notified().await;
+                Ok(())
+            });
+        let agent = agent_client_protocol::Agent.builder().connect_with(
+            agent_transport,
+            async move |connection| {
+                for notification in notifications {
+                    connection.send_notification(notification)?;
+                }
+                ack_rx
+                    .await
+                    .map_err(|_| agent_client_protocol::Error::internal_error())?;
+                Ok(())
+            },
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            futures::try_join!(client, agent)
+        })
+        .await
+        .expect("official ACP client timed out")
+        .expect("official ACP connection failed");
+
+        let observed = observed.lock().expect("final observation lock");
+        let SessionUpdate::ToolCall(started) = &observed[0] else {
+            panic!("official client did not receive tool_call first");
+        };
+        let SessionUpdate::ToolCallUpdate(completed) = &observed[1] else {
+            panic!("official client did not receive tool_call_update second");
+        };
+        assert_eq!(started.tool_call_id.0.as_ref(), call_id);
+        assert_eq!(completed.tool_call_id.0.as_ref(), call_id);
+        assert_eq!(started.status, AcpToolCallStatus::InProgress);
+        assert_eq!(completed.fields.status, Some(AcpToolCallStatus::Completed));
     }
 
     #[test]

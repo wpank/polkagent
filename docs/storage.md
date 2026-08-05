@@ -291,6 +291,8 @@ Current schema versions:
 | 5 | Conversation store tables (`conversations`, `conversation_messages`) |
 | 6 | Group store tables (`groups`, `group_members`) |
 | 7 | Feed store tables (`feeds`, `feed_triggers`, `feed_recipes`, `feed_items`) |
+| 8–15 | Skill storage, intent priority, run lifecycle columns, unique agent names, durable interactions, and complete artifact projections |
+| 16 | NULL-safe immutability for effect-outcome `attempt_id` and `run_id` lineage |
 
 The `schema_migrations` table tracks applied versions:
 
@@ -633,7 +635,10 @@ The initial migration creates the following tables:
 - `steps` — discrete steps within a turn (tool calls, LLM completions, etc.); `kind` identifies the step type.
 - `effect_intents` — outbox for side-effectful operations; `idempotency_key` prevents duplicate execution.
 - `effect_attempts` — individual execution attempts for an intent; linked to a worker.
-- `effect_outcomes` — immutable results; `consumed` tracks whether the reducer has processed them.
+- `effect_outcomes` — immutable results with exact attempt/run lineage;
+  `consumed` is the sole mutable field and tracks reducer processing. V16
+  recreates the update trigger with NULL-safe checks so existing databases
+  cannot mutate either lineage ID.
 - `artifacts` — artifact metadata; body stored separately.
 - `artifact_bodies` — raw artifact bytes keyed by `artifact_id`.
 - `artifact_lineage` — provenance edges (child → parent).

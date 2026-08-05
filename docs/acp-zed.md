@@ -12,8 +12,7 @@ including cancellation while a provider request is active, official
 `session/load`/`session/resume` across subprocess restarts, idempotent turn
 retry, and durable agent/model isolation across concurrent sessions. Real typed
 interaction events are forwarded before the terminal prompt response. A manual
-Zed smoke test, session listing/import, and structured tool and permission
-updates are still open.
+Zed smoke test, session listing/import, and permission updates are still open.
 
 ## Prerequisites
 
@@ -110,6 +109,21 @@ silently skipping events. The current runtime orchestrator may emit one event
 containing a provider's complete response, so this does not claim HTTP/SSE
 token-level streaming from every provider adapter.
 
+Registered grantless tools use the same durable effect-backed interaction
+projection as terminal chat and the Console. ACP receives a native `tool_call`
+with `in_progress`, followed by `tool_call_update` with `completed` or `failed`.
+The ACP tool-call ID is the exact persisted effect-intent UUID and is unchanged
+across live delivery, checkpoint replay, and process restart. Arguments and raw
+output are deliberately absent; only canonical registry metadata and a safe
+policy/outcome summary cross the editor boundary. Refused, malformed,
+unallowlisted, and approval-required calls have no durable attempt and therefore
+cannot fabricate a tool update.
+
+The server negotiates the SDK's stable ACP v1 schema. That schema has no
+cancelled or unknown tool status, so those two interaction states use ACP's
+non-success terminal `failed` status while safe content retains the distinction.
+Polkagent does not invent a text-only pseudo-tool protocol.
+
 When the runtime terminal event reports nonzero real token counts and the
 effective model has a known configured or built-in context window, Polkagent
 also sends the stable ACP `usage_update`: `used` is input plus output tokens and
@@ -187,6 +201,8 @@ Implemented and covered by executable protocol evidence:
 - durable transcript replay on load and no replay on resume;
 - bounded forwarding of real runtime text deltas, exact terminal-text
   reconciliation, and conditional truthful ACP usage updates;
+- native ACP `tool_call` and replacement `tool_call_update` projections with
+  exact durable IDs, safe summaries, and no raw input/output fields;
 - native `polkagent.agent` and standard `model` select-option discovery and
   `session/set_config_option`, with validated durable changes and same-provider
   model refusal before execution;
@@ -232,7 +248,7 @@ Not implemented yet:
 
 - `session/list` and thread import (the pinned stable ACP v1 SDK has no import request);
 - dynamic provider, target, or autonomy configuration options;
-- structured tool calls, plans, and permission request/response;
+- structured plans and permission request/response;
 - provider HTTP/SSE token-level streaming where the runtime currently emits a
   complete response as one `StreamingToken` event;
 - client filesystem/terminal support and MCP-server passthrough;

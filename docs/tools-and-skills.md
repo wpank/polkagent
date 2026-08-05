@@ -88,6 +88,20 @@ outcome before returning the exact serialized `ToolResult` (or a typed tool
 error) to the model. Correlated `ToolCallStarted` and `ToolCallCompleted` events
 carry the run, turn, step, intent, and attempt IDs.
 
+The shared `InteractionService` does not trust those diagnostic notifications
+as a restart log. Before publishing a surface tool event, it re-reads the exact
+persisted intent and attempt; a terminal replacement additionally requires the
+immutable outcome linked to that attempt. The effect-intent UUID is reused as
+the stable `ToolCallId`, and interaction event IDs are deterministically derived
+from it, so checkpoint replay and restart backfill are idempotent. Terminal chat,
+the Console TUI, HTTP interaction streams, and ACP therefore observe the same
+identity and status.
+
+Surface projections never copy raw tool arguments, handler output, or
+human-authored handler error messages. They expose the canonical registry name,
+a safety-policy summary, and a bounded typed outcome classification. A refused
+call creates no effect attempt and consequently no tool projection.
+
 Unknown, unallowlisted, malformed, and grant-bearing calls do not invoke a
 handler. They are returned to the model as typed errors; they are never
 promoted to synthetic success. Grant-bearing tools are not advertised yet,

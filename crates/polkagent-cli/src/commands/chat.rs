@@ -14,7 +14,7 @@ use polkagent_interaction::{
     InteractionErrorCode, InteractionEvent, InteractionOverrides, InteractionService,
     InteractionSummary, InteractionTarget, ParsedLine, PromptRequest, RunDetailView,
     RunSummaryView, ServiceCommandExecutor, StartedTurn, StreamError, SubscriptionRequest,
-    TranscriptRequest, TurnHandle, UsageView,
+    ToolCallView, TranscriptRequest, TurnHandle, UsageView,
 };
 use polkagent_runtime::{
     AdapterPolicy, PolkagentRuntime, RuntimeFactory, RuntimeOptions, WarningCode,
@@ -559,6 +559,10 @@ fn is_cancel_line(line: &str) -> bool {
     matches!(line.split_whitespace().next(), Some("/cancel" | "/stop"))
 }
 
+fn terminal_tool_progress(call: &ToolCallView) -> String {
+    format!("[tool {}] {}: {:?}", call.call_id, call.title, call.status)
+}
+
 fn refuse_unregistered_configuration_command(line: &str) -> Result<()> {
     let command = line
         .split_whitespace()
@@ -660,7 +664,7 @@ impl TurnRenderer {
             }
             InteractionEvent::ToolCallStarted { call }
             | InteractionEvent::ToolCallUpdated { call } => {
-                eprintln!("[tool] {}: {:?}", call.title, call.status);
+                eprintln!("{}", terminal_tool_progress(&call));
             }
             InteractionEvent::PlanUpdated { entries } => {
                 eprintln!("[plan] {} item(s) updated", entries.len());
@@ -1328,5 +1332,28 @@ mod tests {
         assert!(is_cancel_line("/cancel"));
         assert!(is_cancel_line("  /stop all"));
         assert!(!is_cancel_line("/status"));
+    }
+
+    #[test]
+    fn terminal_tool_progress_preserves_durable_identity_and_status() {
+        let call_id = polkagent_interaction::ToolCallId::new();
+        let call = ToolCallView {
+            call_id,
+            run_id: RunId::new(),
+            name: "test.observe".to_owned(),
+            title: "test.observe".to_owned(),
+            kind: polkagent_interaction::ToolCallKind::Other,
+            status: polkagent_interaction::ToolCallStatus::Failed,
+            arguments: None,
+            summary: Some("failed safely".to_owned()),
+            output: None,
+            locations: Vec::new(),
+            diff: None,
+            error: Some("Tool execution failed (server_error)".to_owned()),
+        };
+        assert_eq!(
+            terminal_tool_progress(&call),
+            format!("[tool {call_id}] test.observe: Failed")
+        );
     }
 }

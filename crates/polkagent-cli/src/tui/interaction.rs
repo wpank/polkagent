@@ -2443,7 +2443,10 @@ fn project_interaction_event(event: InteractionEvent) -> ControllerEvent {
             ControllerEvent::Progress("agent reasoning".to_owned())
         }
         InteractionEvent::ToolCallStarted { call } | InteractionEvent::ToolCallUpdated { call } => {
-            ControllerEvent::Progress(format!("tool {}: {:?}", call.title, call.status))
+            ControllerEvent::Progress(format!(
+                "tool {} {}: {:?}",
+                call.call_id, call.title, call.status
+            ))
         }
         InteractionEvent::PlanUpdated { entries } => {
             ControllerEvent::Progress(format!("plan updated: {} step(s)", entries.len()))
@@ -2586,6 +2589,31 @@ mod tests {
         assert_eq!(run.output, "hello world");
         assert_eq!(run.status, ConsoleRunStatus::Completed);
         assert_eq!((run.input_tokens, run.output_tokens), (9, 2));
+    }
+
+    #[test]
+    fn tui_tool_progress_preserves_durable_identity_and_status() {
+        let call_id = polkagent_interaction::ToolCallId::new();
+        let event = InteractionEvent::ToolCallUpdated {
+            call: polkagent_interaction::ToolCallView {
+                call_id,
+                run_id: RunId::new(),
+                name: "test.observe".to_owned(),
+                title: "test.observe".to_owned(),
+                kind: polkagent_interaction::ToolCallKind::Other,
+                status: polkagent_interaction::ToolCallStatus::Succeeded,
+                arguments: None,
+                summary: Some("completed safely".to_owned()),
+                output: None,
+                locations: Vec::new(),
+                diff: None,
+                error: None,
+            },
+        };
+        assert_eq!(
+            project_interaction_event(event),
+            ControllerEvent::Progress(format!("tool {call_id} test.observe: Succeeded"))
+        );
     }
 
     #[test]
@@ -3766,7 +3794,7 @@ provider = "fake"
                 .get_run(&abandoned_run.to_string())
                 .expect("recovered run")
                 .state,
-            "failed"
+            "failed:recovered after restart"
         );
 
         drop(durable_store);

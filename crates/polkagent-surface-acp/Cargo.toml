@@ -19,5 +19,8 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 
+[dev-dependencies]
+polkagent-core = { path = "../polkagent-core" }
+
 [lints]
 workspace = true

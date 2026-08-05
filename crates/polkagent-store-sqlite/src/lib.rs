@@ -66,6 +66,7 @@
 pub mod api_artifact_store_impl;
 pub mod artifact_store_impl;
 pub mod conversation_store_impl;
+pub mod effect_projection;
 pub mod error;
 pub mod event_store;
 pub mod interaction_store_impl;
@@ -83,6 +84,9 @@ pub mod store;
 
 // Re-export the most commonly used types at the crate root.
 pub use api_artifact_store_impl::SqliteApiArtifactStore;
+pub use effect_projection::{
+    DurableToolAttempt, DurableToolCall, DurableToolCallOutcome, DurableToolOutcome,
+};
 pub use error::{StoreError, StoreResult};
 pub use interaction_store_impl::SqliteInteractionStore;
 pub use pool::SqlitePool;

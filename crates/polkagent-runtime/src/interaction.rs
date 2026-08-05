@@ -11,7 +11,7 @@ use polkagent_conversation::{
     ConversationStore,
 };
 use polkagent_core::event::{EventCorrelation, EventKind, RunEvent};
-use polkagent_core::{AgentId, ConversationId, EventId, RunId, RunState};
+use polkagent_core::{AgentId, ConversationId, EffectId, EventId, RunId, RunState};
 use polkagent_executor_trait::{
     ContentBlock, InferenceMessage, MessageRole as InferenceMessageRole,
 };
@@ -23,12 +23,13 @@ use polkagent_interaction::{
     InteractionTarget, InteractionTranscriptTurn, InteractionTurnId, ListInteractionsRequest,
     NewAssistantMessage, NewInteraction, NewInteractionEvent, NewInteractionTurn, OverrideValue,
     PromptRequest, RunRole, StartedTurn, StoredTranscriptMessage, StoredTranscriptRole,
-    StoredTranscriptTurn, SubscriptionRequest, TranscriptRequest, TurnResult, TurnState,
-    TurnSummary, UsageView,
+    StoredTranscriptTurn, SubscriptionRequest, ToolCallId, ToolCallKind, ToolCallStatus,
+    ToolCallView, TranscriptRequest, TurnResult, TurnState, TurnSummary, UsageView,
 };
 use polkagent_service::{AppService, ServiceError};
 use polkagent_store_sqlite::{
-    SqliteInteractionStore, SqlitePool, SqliteRunStore, StoreError as SqliteStoreError,
+    DurableToolCall, DurableToolOutcome, SqliteInteractionStore, SqlitePool, SqliteRunStore,
+    StoreError as SqliteStoreError,
 };
 use polkagent_store_trait::event::{EventStore, StoredEvent};
 use polkagent_store_trait::RunStore;
@@ -44,6 +45,8 @@ const ASSISTANT_MESSAGE_DISCRIMINATOR: u8 = 0x52;
 const INITIAL_EVENT_DISCRIMINATOR: u8 = 0x73;
 const TERMINAL_EVENT_DISCRIMINATOR: u8 = 0x94;
 const RUN_DISCRIMINATOR: u8 = 0xb5;
+const TOOL_STARTED_EVENT_DISCRIMINATOR: u8 = 0xd6;
+const TOOL_UPDATED_EVENT_DISCRIMINATOR: u8 = 0xf7;
 const PREPARED_RUN_RECOVERY_REASON: &str =
     "interaction run was interrupted before activation and cannot be resumed safely";
 const UNRECOVERABLE_OUTPUT_REASON: &str =
@@ -670,6 +673,14 @@ impl DurableInteractionService {
         event: RunEvent,
         output_complete: bool,
     ) -> Result<(), InteractionError> {
+        if matches!(
+            &event.kind,
+            EventKind::ToolCallStarted { .. } | EventKind::ToolCallCompleted { .. }
+        ) {
+            return self
+                .project_tool_run_event(conversation_id, turn_id, &event)
+                .await;
+        }
         let event_id = InteractionEventId::from_uuid(event.id.as_uuid());
         let projected = match event.kind {
             EventKind::StreamingToken { text } => Some(InteractionEvent::AgentMessageDelta {
@@ -796,6 +807,140 @@ impl DurableInteractionService {
         Ok(())
     }
 
+    async fn project_tool_run_event(
+        &self,
+        conversation_id: ConversationId,
+        turn_id: InteractionTurnId,
+        event: &RunEvent,
+    ) -> Result<(), InteractionError> {
+        let intent_id = event.correlation.effect_intent_id.ok_or_else(|| {
+            internal_error("tool run event has no durable effect intent correlation")
+        })?;
+        let attempt_id = event.correlation.effect_attempt_id.ok_or_else(|| {
+            internal_error("tool run event has no durable effect attempt correlation")
+        })?;
+        let calls = self
+            .pool
+            .durable_tool_calls(event.run_id)
+            .await
+            .map_err(|error| store_error("load durable tool projection", &error))?;
+        let call = calls
+            .iter()
+            .find(|call| call.intent_id == intent_id)
+            .ok_or_else(|| internal_error("tool run event intent is not durable"))?;
+        if !call
+            .attempts
+            .iter()
+            .any(|attempt| attempt.attempt_id == attempt_id)
+        {
+            return Err(internal_error(
+                "tool run event attempt is not durable for its intent",
+            ));
+        }
+        match &event.kind {
+            EventKind::ToolCallStarted { .. } => {
+                self.publish_tool_started(conversation_id, turn_id, call)
+                    .await?;
+            }
+            EventKind::ToolCallCompleted { .. } => {
+                let outcome = call.outcome.as_ref().ok_or_else(|| {
+                    internal_error("tool completion event has no durable effect outcome")
+                })?;
+                if outcome.attempt_id != attempt_id {
+                    return Err(internal_error(
+                        "tool completion outcome does not match its correlated attempt",
+                    ));
+                }
+                // A diagnostic start notification may have been dropped. The
+                // durable read model makes this idempotent and preserves order.
+                self.publish_tool_started(conversation_id, turn_id, call)
+                    .await?;
+                self.publish_tool_updated(conversation_id, turn_id, call)
+                    .await?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn publish_tool_started(
+        &self,
+        conversation_id: ConversationId,
+        turn_id: InteractionTurnId,
+        call: &DurableToolCall,
+    ) -> Result<(), InteractionError> {
+        let first_attempt = call
+            .attempts
+            .first()
+            .ok_or_else(|| internal_error("durable tool intent has no execution attempt"))?;
+        self.hub
+            .publish(NewInteractionEvent {
+                event_id: tool_event_id(call.intent_id, TOOL_STARTED_EVENT_DISCRIMINATOR),
+                conversation_id,
+                turn_id,
+                timestamp: first_attempt.started_at,
+                event: InteractionEvent::ToolCallStarted {
+                    call: tool_view(call, ToolCallStatus::InProgress),
+                },
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn publish_tool_updated(
+        &self,
+        conversation_id: ConversationId,
+        turn_id: InteractionTurnId,
+        call: &DurableToolCall,
+    ) -> Result<(), InteractionError> {
+        let outcome = call
+            .outcome
+            .as_ref()
+            .ok_or_else(|| internal_error("durable tool intent has no outcome"))?;
+        let status = match outcome.result {
+            DurableToolOutcome::Success => ToolCallStatus::Succeeded,
+            DurableToolOutcome::Failure { .. } | DurableToolOutcome::Timeout => {
+                ToolCallStatus::Failed
+            }
+            DurableToolOutcome::Cancelled => ToolCallStatus::Cancelled,
+            DurableToolOutcome::Unknown => ToolCallStatus::Unknown,
+        };
+        self.hub
+            .publish(NewInteractionEvent {
+                event_id: tool_event_id(call.intent_id, TOOL_UPDATED_EVENT_DISCRIMINATOR),
+                conversation_id,
+                turn_id,
+                timestamp: outcome.observed_at,
+                event: InteractionEvent::ToolCallUpdated {
+                    call: tool_view(call, status),
+                },
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn backfill_tool_calls(
+        &self,
+        conversation_id: ConversationId,
+        turn_id: InteractionTurnId,
+        run_id: RunId,
+    ) -> Result<(), InteractionError> {
+        let calls = self
+            .pool
+            .durable_tool_calls(run_id)
+            .await
+            .map_err(|error| store_error("backfill durable tool projections", &error))?;
+        for call in calls.iter().filter(|call| !call.attempts.is_empty()) {
+            self.publish_tool_started(conversation_id, turn_id, call)
+                .await?;
+            if call.outcome.is_some() {
+                self.publish_tool_updated(conversation_id, turn_id, call)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Rebuild durable lifecycle projections for one linked run. Returns
     /// `true` when a terminal event was found and projected.
     async fn backfill_run(
@@ -805,6 +950,11 @@ impl DurableInteractionService {
         run_id: RunId,
         output_complete: bool,
     ) -> Result<bool, InteractionError> {
+        // Tool diagnostics are not part of lifecycle EventStore replay. Rebuild
+        // them from the authoritative effect tables before a run terminal can
+        // close the interaction turn.
+        self.backfill_tool_calls(conversation_id, turn_id, run_id)
+            .await?;
         let stored = EventStore::read_run_events(&self.pool, run_id)
             .await
             .map_err(|error| store_error("replay linked run events", &error))?;
@@ -1219,6 +1369,60 @@ fn derived_uuid(turn_id: InteractionTurnId, discriminator: u8) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
+fn tool_event_id(intent_id: EffectId, discriminator: u8) -> InteractionEventId {
+    let mut bytes = *intent_id.as_uuid().as_bytes();
+    bytes[0] ^= discriminator;
+    bytes[15] ^= discriminator.rotate_left(1);
+    InteractionEventId::from_uuid(Uuid::from_bytes(bytes))
+}
+
+fn tool_view(call: &DurableToolCall, status: ToolCallStatus) -> ToolCallView {
+    let (summary, error) = match (
+        &status,
+        call.outcome.as_ref().map(|outcome| &outcome.result),
+    ) {
+        (ToolCallStatus::InProgress, _) => (
+            Some("Arguments withheld by interaction safety policy".to_owned()),
+            None,
+        ),
+        (ToolCallStatus::Succeeded, _) => (
+            Some("Completed; output withheld by interaction safety policy".to_owned()),
+            None,
+        ),
+        (ToolCallStatus::Failed, Some(DurableToolOutcome::Failure { error_class })) => (
+            Some("Failed; output withheld by interaction safety policy".to_owned()),
+            Some(format!("Tool execution failed ({error_class})")),
+        ),
+        (ToolCallStatus::Failed, Some(DurableToolOutcome::Timeout)) => (
+            Some("Timed out; output withheld by interaction safety policy".to_owned()),
+            Some("Tool execution timed out".to_owned()),
+        ),
+        (ToolCallStatus::Cancelled, _) => (
+            Some("Cancelled; output withheld by interaction safety policy".to_owned()),
+            Some("Tool execution was cancelled".to_owned()),
+        ),
+        (ToolCallStatus::Unknown, _) => (
+            Some("Outcome unknown; output withheld by interaction safety policy".to_owned()),
+            Some("Tool execution outcome is unknown".to_owned()),
+        ),
+        _ => (None, None),
+    };
+    ToolCallView {
+        call_id: ToolCallId::from_uuid(call.intent_id.as_uuid()),
+        run_id: call.run_id,
+        name: call.tool_name.clone(),
+        title: call.tool_name.clone(),
+        kind: ToolCallKind::Other,
+        status,
+        arguments: None,
+        summary,
+        output: None,
+        locations: Vec::new(),
+        diff: None,
+        error,
+    }
+}
+
 fn decode_stored_run_event(stored: StoredEvent) -> Result<RunEvent, InteractionError> {
     let run_id = stored
         .run_id
@@ -1337,7 +1541,10 @@ mod tests {
     use futures::Stream;
     use polkagent_config::Config;
     use polkagent_conversation::{types::Conversation, ConversationStore};
-    use polkagent_core::{AgentSpec, ApprovalId, EventId};
+    use polkagent_core::{
+        AgentSpec, ApprovalId, EffectAttemptId, EffectId, EffectOutcomeId, EventId, StepId, TurnId,
+        WorkerId,
+    };
     use polkagent_event::{EventBus, EventRecorder};
     use polkagent_executor_fake::FakeExecutor;
     use polkagent_executor_trait::{
@@ -1353,7 +1560,9 @@ mod tests {
         InteractionTurnId,
     };
     use polkagent_store_sqlite::migrations;
-    use polkagent_store_trait::{RunStatus, StoreError};
+    use polkagent_store_trait::{
+        EffectStore, RunStatus, StoreError, StoreRetryClass, StoredIntent, StoredOutcome,
+    };
 
     use super::*;
 
@@ -3065,6 +3274,255 @@ mod tests {
             )
             .expect("count cancellation terminals");
         assert_eq!(terminal_count, 1);
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the live/restart proof keeps exact effect, interaction, and redaction identities contiguous"
+    )]
+    async fn durable_tool_projection_keeps_identity_status_and_redaction_across_restart() {
+        let pool = test_pool();
+        let (agent_id, mut spec) = seed_agent(&pool);
+        spec.tools.push("test.fails".to_owned());
+        let (app, service, _bus) = test_service(&pool, spec, false);
+        let interaction = service
+            .new_interaction(CreateInteractionRequest {
+                title: None,
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                client_context: ClientContext::new(PathBuf::from("/tmp")).expect("client context"),
+            })
+            .await
+            .expect("create interaction");
+        let run_id = RunId::new();
+        RunStore::create_correlated(
+            &pool,
+            run_id,
+            &agent_id.to_string(),
+            Some(&interaction.conversation_id.to_string()),
+            RunStatus::new("running"),
+        )
+        .await
+        .expect("seed linked run");
+        let execution_turn_id = TurnId::new();
+        let step_id = StepId::new();
+        {
+            let writer = pool.writer();
+            writer
+                .execute(
+                    "INSERT INTO turns (id, run_id, sequence, role, started_at)
+                     VALUES (?1, ?2, 1, 'assistant', ?3)",
+                    rusqlite::params![
+                        execution_turn_id.to_string(),
+                        run_id.to_string(),
+                        Utc::now().to_rfc3339()
+                    ],
+                )
+                .expect("seed execution turn");
+            writer
+                .execute(
+                    "INSERT INTO steps (id, turn_id, sequence, kind, started_at)
+                     VALUES (?1, ?2, 1, 'tool_call', ?3)",
+                    rusqlite::params![
+                        step_id.to_string(),
+                        execution_turn_id.to_string(),
+                        Utc::now().to_rfc3339()
+                    ],
+                )
+                .expect("seed tool step");
+        }
+        let interaction_turn_id = InteractionTurnId::new();
+        service
+            .store
+            .create_turn(NewInteractionTurn {
+                turn_id: interaction_turn_id,
+                conversation_id: interaction.conversation_id,
+                ordinal: 1,
+                target: InteractionTarget::Agent(agent_id),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                user_message_id: Uuid::now_v7(),
+                user_message_text: "call a failing tool".to_owned(),
+                runs: vec![InteractionRunLink {
+                    run_id,
+                    role: RunRole::Primary,
+                    ordinal: 1,
+                }],
+                initial_event_id: InteractionEventId::new(),
+                started_at: Utc::now(),
+            })
+            .await
+            .expect("seed interaction turn");
+
+        let intent_id = EffectId::new();
+        EffectStore::propose_intent(
+            &pool,
+            StoredIntent {
+                id: intent_id,
+                run_id,
+                step_id,
+                state: "pending".to_owned(),
+                lease_owner: None,
+                lease_expires: None,
+                retry_class: StoreRetryClass::CheckBeforeRetry,
+                payload: serde_json::json!({
+                    "kind": "tool_call",
+                    "params": {
+                        "tool_call_id": "provider-only-id",
+                        "tool_name": "test.fails",
+                        "arguments": {"secret": "argument-secret"},
+                    },
+                }),
+                idempotency_key: format!("tool-{intent_id}"),
+                created_at: Utc::now(),
+            },
+        )
+        .await
+        .expect("persist tool intent");
+        let attempt_id = EffectAttemptId::new();
+        EffectStore::record_attempt_start(
+            &pool,
+            attempt_id,
+            intent_id,
+            WorkerId::new(),
+            serde_json::json!({"secret": "attempt-secret"}),
+        )
+        .await
+        .expect("persist tool attempt");
+
+        let mut started = RunEvent::new_ephemeral(
+            EventId::new(),
+            run_id,
+            0,
+            EventKind::ToolCallStarted {
+                tool_name: "test.fails".to_owned(),
+            },
+        );
+        started.correlation = EventCorrelation {
+            run_id,
+            turn_id: Some(execution_turn_id),
+            step_id: Some(step_id),
+            effect_intent_id: Some(intent_id),
+            effect_attempt_id: Some(attempt_id),
+        };
+        service
+            .project_run_event(
+                interaction.conversation_id,
+                interaction_turn_id,
+                started,
+                true,
+            )
+            .await
+            .expect("project live tool start");
+
+        EffectStore::record_outcome(
+            &pool,
+            StoredOutcome {
+                id: EffectOutcomeId::new(),
+                intent_id,
+                attempt_id,
+                run_id,
+                consumed: false,
+                payload: serde_json::json!({
+                    "variant": "failure",
+                    "error_class": "server_error",
+                    "message": "handler-secret",
+                    "retriable": false,
+                }),
+                observed_at: Utc::now(),
+            },
+        )
+        .await
+        .expect("persist tool outcome");
+        let mut completed = RunEvent::new_ephemeral(
+            EventId::new(),
+            run_id,
+            0,
+            EventKind::ToolCallCompleted {
+                tool_name: "test.fails".to_owned(),
+            },
+        );
+        completed.correlation = EventCorrelation {
+            run_id,
+            turn_id: Some(execution_turn_id),
+            step_id: Some(step_id),
+            effect_intent_id: Some(intent_id),
+            effect_attempt_id: Some(attempt_id),
+        };
+        service
+            .project_run_event(
+                interaction.conversation_id,
+                interaction_turn_id,
+                completed,
+                true,
+            )
+            .await
+            .expect("project live tool completion");
+
+        let restarted = DurableInteractionService::new(app, pool.clone());
+        restarted
+            .backfill_tool_calls(interaction.conversation_id, interaction_turn_id, run_id)
+            .await
+            .expect("idempotent restart projection");
+        let events = restarted
+            .store
+            .load_events(interaction.conversation_id, 0, 100)
+            .await
+            .expect("load durable interaction events");
+        let tools = events
+            .iter()
+            .filter_map(|envelope| match &envelope.event {
+                InteractionEvent::ToolCallStarted { call }
+                | InteractionEvent::ToolCallUpdated { call } => Some((envelope, call)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tools.len(), 2);
+        let expected_call_id = ToolCallId::from_uuid(intent_id.as_uuid());
+        assert_eq!(tools[0].1.call_id, expected_call_id);
+        assert_eq!(tools[1].1.call_id, expected_call_id);
+        assert_eq!(tools[0].1.status, ToolCallStatus::InProgress);
+        assert_eq!(tools[1].1.status, ToolCallStatus::Failed);
+        assert_eq!(
+            tools[0].0.event_id,
+            tool_event_id(intent_id, TOOL_STARTED_EVENT_DISCRIMINATOR)
+        );
+        assert_eq!(
+            tools[1].0.event_id,
+            tool_event_id(intent_id, TOOL_UPDATED_EVENT_DISCRIMINATOR)
+        );
+        assert!(tools.iter().all(|(_, call)| {
+            call.arguments.is_none() && call.output.is_none() && call.diff.is_none()
+        }));
+        let encoded = serde_json::to_string(&tools).expect("encode safe projection");
+        assert!(!encoded.contains("argument-secret"));
+        assert!(!encoded.contains("attempt-secret"));
+        assert!(!encoded.contains("handler-secret"));
+
+        // Refused/malformed model calls and slash commands never create an
+        // effect intent, so another backfill cannot fabricate a projection.
+        restarted
+            .backfill_tool_calls(
+                interaction.conversation_id,
+                interaction_turn_id,
+                RunId::new(),
+            )
+            .await
+            .expect("empty durable effect set");
+        assert_eq!(
+            restarted
+                .store
+                .load_events(interaction.conversation_id, 0, 100)
+                .await
+                .expect("reload events")
+                .iter()
+                .filter(|event| matches!(
+                    event.event,
+                    InteractionEvent::ToolCallStarted { .. }
+                        | InteractionEvent::ToolCallUpdated { .. }
+                ))
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]

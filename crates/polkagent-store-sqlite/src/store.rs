@@ -1919,9 +1919,12 @@ impl EffectStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             let attempt_str = attempt_id.to_string();
             let intent_str = intent_id.to_string();
-            // worker_id and payload are accepted by the trait but not stored
-            // in the production schema; we intentionally ignore them.
-            let _ = (worker_id, payload);
+            let worker_str = worker_id.to_string();
+            let payload_json = serde_json::to_string(&payload).map_err(|error| {
+                TraitStoreError::Serialisation {
+                    message: format!("effect attempt payload: {error}"),
+                }
+            })?;
             let now = now_rfc3339();
 
             let writer = pool.writer();
@@ -1939,9 +1942,16 @@ impl EffectStore for SqlitePool {
             writer
                 .execute(
                     "INSERT INTO effect_attempts \
-                     (id, intent_id, attempt_number, started_at) \
-                     VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![attempt_str, intent_str, attempt_number, now,],
+                     (id, intent_id, attempt_number, started_at, worker_id, payload_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        attempt_str,
+                        intent_str,
+                        attempt_number,
+                        now,
+                        worker_str,
+                        payload_json,
+                    ],
                 )
                 .map_err(|e| {
                     if StoreError::is_unique_violation(&e) {
@@ -1971,6 +1981,8 @@ impl EffectStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             let id_str = outcome.id.to_string();
             let intent_str = outcome.intent_id.to_string();
+            let attempt_str = outcome.attempt_id.to_string();
+            let run_str = outcome.run_id.to_string();
             let observed_at_str = outcome.observed_at.to_rfc3339();
             let payload_json = serde_json::to_string(&outcome.payload).map_err(|e| {
                 TraitStoreError::Serialisation {
@@ -1978,10 +1990,12 @@ impl EffectStore for SqlitePool {
                 }
             })?;
 
-            // Derive status from the payload (look for a "status" field).
+            // Persist the canonical outcome discriminator. Older callers used
+            // `status`; the durable effect payload uses tagged `variant`.
             let status = outcome
                 .payload
                 .get("status")
+                .or_else(|| outcome.payload.get("variant"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("unknown")
                 .to_string();
@@ -1990,17 +2004,38 @@ impl EffectStore for SqlitePool {
             writer.execute_batch("BEGIN IMMEDIATE").map_err(map_sqlite_err)?;
 
             let result = (|| -> Result<(), TraitStoreError> {
+                let lineage_exists = writer
+                    .query_row(
+                        "SELECT EXISTS(
+                             SELECT 1
+                             FROM effect_attempts a
+                             JOIN effect_intents i ON i.id = a.intent_id
+                             WHERE a.id = ?1 AND a.intent_id = ?2 AND i.run_id = ?3
+                         )",
+                        rusqlite::params![attempt_str, intent_str, run_str],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(map_sqlite_err)?;
+                if !lineage_exists {
+                    return Err(TraitStoreError::InvalidTransition {
+                        message: "effect outcome attempt, intent, and run lineage do not match"
+                            .to_owned(),
+                    });
+                }
                 writer
                     .execute(
                         "INSERT INTO effect_outcomes \
-                         (id, intent_id, status, result_json, created_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                         (id, intent_id, status, result_json, created_at, attempt_id, run_id, consumed) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                         rusqlite::params![
                             id_str,
                             intent_str,
                             status,
                             payload_json,
                             observed_at_str,
+                            attempt_str,
+                            run_str,
+                            i64::from(outcome.consumed),
                         ],
                     )
                     .map_err(|e| {
@@ -2053,15 +2088,15 @@ impl EffectStore for SqlitePool {
             let run_str = run_id.to_string();
             let writer = pool.writer();
 
-            // The production schema has no `consumed` column on effect_outcomes.
-            // We JOIN with effect_intents to obtain `run_id` (which lives on the
-            // intent, not the outcome) and return all outcomes for the given run.
+            // Legacy rows can have NULL `run_id`/`attempt_id`; fall back to the
+            // intent run and the sole attempt only when that link is exact.
             let mut stmt = writer
                 .prepare(
-                    "SELECT o.id, o.intent_id, o.result_json, o.created_at, i.run_id \
+                    "SELECT o.id, o.intent_id, o.attempt_id, o.result_json, o.created_at, \
+                            COALESCE(o.run_id, i.run_id), o.consumed \
                      FROM effect_outcomes o \
                      JOIN effect_intents i ON i.id = o.intent_id \
-                     WHERE i.run_id = ?1 \
+                     WHERE COALESCE(o.run_id, i.run_id) = ?1 AND o.consumed = 0 \
                      ORDER BY o.created_at ASC",
                 )
                 .map_err(map_sqlite_err)?;
@@ -2070,15 +2105,43 @@ impl EffectStore for SqlitePool {
                 .query_map([&run_str], |r| {
                     let id_s: String = r.get(0)?;
                     let intent_id_s: String = r.get(1)?;
-                    let result_json_s: String = r.get(2)?;
-                    let created_at_s: String = r.get(3)?;
-                    let run_id_s: String = r.get(4)?;
-                    Ok((id_s, intent_id_s, result_json_s, created_at_s, run_id_s))
+                    let attempt_id_s: Option<String> = r.get(2)?;
+                    let result_json_s: String = r.get(3)?;
+                    let created_at_s: String = r.get(4)?;
+                    let run_id_s: String = r.get(5)?;
+                    let consumed: bool = r.get(6)?;
+                    Ok((
+                        id_s,
+                        intent_id_s,
+                        attempt_id_s,
+                        result_json_s,
+                        created_at_s,
+                        run_id_s,
+                        consumed,
+                    ))
                 })
                 .map_err(map_sqlite_err)?
                 .map(|row_result| {
-                    let (id_s, intent_id_s, result_json_s, created_at_s, run_id_s) =
-                        row_result.map_err(map_sqlite_err)?;
+                    let (
+                        id_s,
+                        intent_id_s,
+                        attempt_id_s,
+                        result_json_s,
+                        created_at_s,
+                        run_id_s,
+                        consumed,
+                    ) = row_result.map_err(map_sqlite_err)?;
+                    let attempt_id_s = match attempt_id_s {
+                        Some(attempt_id) => attempt_id,
+                        None => writer
+                            .query_row(
+                                "SELECT id FROM effect_attempts WHERE intent_id = ?1 \
+                                 AND (SELECT COUNT(*) FROM effect_attempts WHERE intent_id = ?1) = 1",
+                                [&intent_id_s],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .map_err(map_sqlite_err)?,
+                    };
                     let payload: serde_json::Value =
                         serde_json::from_str(&result_json_s).map_err(|e| {
                             TraitStoreError::Serialisation {
@@ -2088,13 +2151,9 @@ impl EffectStore for SqlitePool {
                     Ok(StoredOutcome {
                         id: parse_id(&id_s, "EffectOutcomeId")?,
                         intent_id: parse_id(&intent_id_s, "EffectId")?,
-                        // attempt_id is not stored on effect_outcomes; generate
-                        // a placeholder so the struct can be constructed.
-                        attempt_id: EffectAttemptId::new(),
+                        attempt_id: parse_id(&attempt_id_s, "EffectAttemptId")?,
                         run_id: parse_id(&run_id_s, "RunId")?,
-                        // No `consumed` column in production schema; always
-                        // report false.
-                        consumed: false,
+                        consumed,
                         payload,
                         observed_at: parse_ts(&created_at_s)?,
                     })
@@ -2111,12 +2170,35 @@ impl EffectStore for SqlitePool {
 
     async fn mark_outcomes_consumed(
         &self,
-        _outcome_ids: &[EffectOutcomeId],
+        outcome_ids: &[EffectOutcomeId],
     ) -> Result<(), TraitStoreError> {
-        // No-op: the production `effect_outcomes` schema has no `consumed`
-        // column.  Consumption tracking, if needed, should be handled at a
-        // higher layer (e.g. in-memory bookkeeping within the reducer).
-        Ok(())
+        if outcome_ids.is_empty() {
+            return Ok(());
+        }
+        let pool = self.clone();
+        let ids = outcome_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        tokio::task::spawn_blocking(move || {
+            let placeholders = std::iter::repeat_n("?", ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let writer = pool.writer();
+            writer
+                .execute(
+                    &format!(
+                        "UPDATE effect_outcomes SET consumed = 1 WHERE id IN ({placeholders})"
+                    ),
+                    rusqlite::params_from_iter(ids.iter()),
+                )
+                .map_err(map_sqlite_err)?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {error}"),
+        })?
     }
 
     async fn update_intent_state(
@@ -2793,19 +2875,137 @@ mod effect_store_tests {
             .expect("unconsumed_outcomes");
         assert_eq!(outcomes.len(), 1);
         assert!(!outcomes[0].consumed);
+        assert_eq!(outcomes[0].attempt_id, attempt_id);
+        assert_eq!(outcomes[0].run_id, run_id);
 
-        // mark_outcomes_consumed is a no-op (no `consumed` column in schema),
-        // but it must still succeed without error.
         EffectStore::mark_outcomes_consumed(&pool, &[outcome_id])
             .await
             .expect("mark_outcomes_consumed");
 
-        // Outcomes are still returned since consumption is not tracked at the
-        // database level.
         let outcomes_after = EffectStore::unconsumed_outcomes(&pool, run_id)
             .await
             .expect("unconsumed after mark");
-        assert_eq!(outcomes_after.len(), 1);
+        assert!(outcomes_after.is_empty());
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the projection proof keeps every secret-bearing source and safe output assertion together"
+    )]
+    async fn durable_tool_projection_keeps_exact_lineage_without_raw_payloads() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+        let mut intent = make_intent(&scaffold);
+        intent.payload = serde_json::json!({
+            "kind": "tool_call",
+            "params": {
+                "tool_call_id": "provider-call-id",
+                "tool_name": "test.observe",
+                "arguments": {"secret": "must-not-project"},
+            },
+        });
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose tool intent");
+
+        let attempt_id = EffectAttemptId::new();
+        EffectStore::record_attempt_start(
+            &pool,
+            attempt_id,
+            intent_id,
+            WorkerId::new(),
+            serde_json::json!({"secret": "attempt-payload"}),
+        )
+        .await
+        .expect("record exact attempt");
+        EffectStore::record_outcome(
+            &pool,
+            StoredOutcome {
+                id: EffectOutcomeId::new(),
+                intent_id,
+                attempt_id,
+                run_id,
+                consumed: false,
+                payload: serde_json::json!({
+                    "variant": "failure",
+                    "error_class": "server_error",
+                    "message": "secret handler detail",
+                    "retriable": false,
+                }),
+                observed_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .expect("record exact outcome");
+
+        let calls = pool
+            .durable_tool_calls(run_id)
+            .await
+            .expect("load safe projection");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].intent_id, intent_id);
+        assert_eq!(calls[0].run_id, run_id);
+        assert_eq!(calls[0].tool_name, "test.observe");
+        assert_eq!(calls[0].attempts.len(), 1);
+        assert_eq!(calls[0].attempts[0].attempt_id, attempt_id);
+        let outcome = calls[0].outcome.as_ref().expect("terminal outcome");
+        assert_eq!(outcome.attempt_id, attempt_id);
+        assert_eq!(
+            outcome.result,
+            crate::DurableToolOutcome::Failure {
+                error_class: "server_error".to_owned()
+            }
+        );
+        let debug = format!("{calls:?}");
+        assert!(!debug.contains("must-not-project"));
+        assert!(!debug.contains("secret handler detail"));
+        assert!(!debug.contains("attempt-payload"));
+    }
+
+    #[tokio::test]
+    async fn record_outcome_rejects_cross_intent_attempt_lineage() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+        let first = make_intent(&scaffold);
+        let first_id = first.id;
+        EffectStore::propose_intent(&pool, first)
+            .await
+            .expect("propose first intent");
+        let second = make_intent(&scaffold);
+        let second_id = second.id;
+        EffectStore::propose_intent(&pool, second)
+            .await
+            .expect("propose second intent");
+        let attempt_id = EffectAttemptId::new();
+        EffectStore::record_attempt_start(
+            &pool,
+            attempt_id,
+            first_id,
+            WorkerId::new(),
+            serde_json::json!({}),
+        )
+        .await
+        .expect("record first attempt");
+
+        let error = EffectStore::record_outcome(
+            &pool,
+            StoredOutcome {
+                id: EffectOutcomeId::new(),
+                intent_id: second_id,
+                attempt_id,
+                run_id,
+                consumed: false,
+                payload: serde_json::json!({"variant": "success"}),
+                observed_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .expect_err("cross-intent outcome lineage must fail closed");
+        assert!(matches!(error, TraitStoreError::InvalidTransition { .. }));
     }
 
     // ------------------------------------------------------------------
