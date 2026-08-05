@@ -1,4 +1,4 @@
-//! Lightweight SQLite query helpers and chain polling for the TUI.
+//! Lightweight `SQLite` query helpers and chain polling for the TUI.
 //!
 //! The TUI reads from the same database as the daemon. All queries are
 //! read-only and use rusqlite directly (no async) since they run on the
@@ -64,8 +64,8 @@ impl TuiDb {
             .query_map([], |row| {
                 let spec_json: String = row.get(3)?;
                 let updated_at_str: String = row.get(4)?;
-                let total_runs: u32 = row.get::<_, i64>(5)? as u32;
-                let active_runs: u32 = row.get::<_, i64>(6)? as u32;
+                let total_runs: u32 = row.get(5)?;
+                let active_runs: u32 = row.get(6)?;
 
                 // Extract model from spec JSON — gracefully degrade if absent.
                 let model = extract_json_string(&spec_json, "model")
@@ -83,7 +83,7 @@ impl TuiDb {
                     updated_at,
                 })
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         Ok(summaries)
@@ -107,14 +107,14 @@ impl TuiDb {
         )?;
 
         let summaries = stmt
-            .query_map([limit as i64], |row| {
+            .query_map([limit], |row| {
                 let id: String = row.get(0)?;
                 let short_id = id[..8.min(id.len())].to_owned();
                 let created_at_str: String = row.get(4)?;
                 let completed_at_str: Option<String> = row.get(5)?;
-                let turn_count: u32 = row.get::<_, i64>(6)? as u32;
-                let input_tokens: u64 = row.get::<_, i64>(7)? as u64;
-                let output_tokens: u64 = row.get::<_, i64>(8)? as u64;
+                let turn_count: u32 = row.get(6)?;
+                let input_tokens: u64 = row.get(7)?;
+                let output_tokens: u64 = row.get(8)?;
 
                 let created_at = parse_datetime(&created_at_str).unwrap_or_else(Utc::now);
                 let completed_at = completed_at_str.as_deref().and_then(parse_datetime);
@@ -131,7 +131,7 @@ impl TuiDb {
                     output_tokens,
                 })
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         Ok(summaries)
@@ -161,9 +161,9 @@ impl TuiDb {
                 let created_at_str: String = row.get(3)?;
                 let updated_at_str: String = row.get(4)?;
                 let completed_at_str: Option<String> = row.get(5)?;
-                let turn_count: u32 = row.get::<_, i64>(6)? as u32;
-                let input_tokens: u64 = row.get::<_, i64>(7)? as u64;
-                let output_tokens: u64 = row.get::<_, i64>(8)? as u64;
+                let turn_count: u32 = row.get(6)?;
+                let input_tokens: u64 = row.get(7)?;
+                let output_tokens: u64 = row.get(8)?;
 
                 let created_at = parse_datetime(&created_at_str).unwrap_or_else(Utc::now);
                 let updated_at = parse_datetime(&updated_at_str).unwrap_or_else(Utc::now);
@@ -206,14 +206,7 @@ impl TuiDb {
                  LEFT JOIN effect_outcomes eo ON eo.intent_id = ei.id
                  WHERE ei.run_id = ?1",
                 [run_id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)? as u32,
-                        row.get::<_, i64>(1)? as u32,
-                        row.get::<_, i64>(2)? as u32,
-                        row.get::<_, i64>(3)? as u32,
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap_or((0, 0, 0, 0));
 
@@ -259,15 +252,15 @@ impl TuiDb {
                 let started_str: String = row.get(2)?;
                 let completed_str: Option<String> = row.get(3)?;
                 Ok(TurnSummary {
-                    sequence: row.get::<_, i64>(0)? as u32,
+                    sequence: row.get(0)?,
                     role: row.get(1)?,
                     started_at: parse_datetime(&started_str).unwrap_or_else(Utc::now),
                     completed_at: completed_str.as_deref().and_then(parse_datetime),
-                    input_tokens: row.get::<_, i64>(4)? as u64,
-                    output_tokens: row.get::<_, i64>(5)? as u64,
+                    input_tokens: row.get(4)?,
+                    output_tokens: row.get(5)?,
                 })
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         Ok(Some(detail))
@@ -286,7 +279,7 @@ impl TuiDb {
         )?;
 
         let events = stmt
-            .query_map(rusqlite::params![run_id, limit as i64], |row| {
+            .query_map(rusqlite::params![run_id, limit], |row| {
                 let ts_str: String = row.get(2)?;
                 let payload: String = row.get(3)?;
                 let event_type: String = row.get(1)?;
@@ -299,7 +292,7 @@ impl TuiDb {
                     payload,
                 })
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         Ok(events)
@@ -321,7 +314,7 @@ impl TuiDb {
         )?;
 
         let items = stmt
-            .query_map([limit as i64], |row| {
+            .query_map([limit], |row| {
                 let created_str: String = row.get(4)?;
                 Ok(ApprovalItem {
                     effect_id: row.get(0)?,
@@ -332,7 +325,7 @@ impl TuiDb {
                     state: row.get(5)?,
                 })
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         Ok(items)
@@ -349,7 +342,7 @@ impl TuiDb {
                         COUNT(*) FILTER (WHERE state = 'active')
                  FROM agents",
                 [],
-                |row| Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)? as u32)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap_or((0, 0));
 
@@ -360,7 +353,7 @@ impl TuiDb {
                         COUNT(*) FILTER (WHERE state NOT IN ('completed','failed','cancelled','timed_out'))
                  FROM runs",
                 [],
-                |row| Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)? as u32)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap_or((0, 0));
 
@@ -377,7 +370,7 @@ impl TuiDb {
 
     // ── Memory browser ───────────────────────────────────────────────────
 
-    /// Load memory entries from the memory SQLite database.
+    /// Load memory entries from the memory `SQLite` database.
     ///
     /// When `query` is `None` all recent entries are returned ordered by
     /// creation time descending. When a query is given, FTS/LIKE search is
@@ -389,13 +382,11 @@ impl TuiDb {
         let default_path = format!("{home}/.local/share/polkagent/memory.db");
         let mem_path = std::env::var("POLKAGENT_MEMORY_DB_PATH").unwrap_or(default_path);
 
-        let mem_conn =
-            Connection::open_with_flags(&mem_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY);
-
-        let conn = match mem_conn {
-            Ok(c) => c,
+        let Ok(conn) =
+            Connection::open_with_flags(&mem_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
             // If the memory DB doesn't exist yet return an empty list.
-            Err(_) => return Ok(vec![]),
+            return Ok(vec![]);
         };
 
         let (sql, has_query) = if query.is_some() {
@@ -421,23 +412,20 @@ impl TuiDb {
 
         let mut stmt = conn.prepare(&sql)?;
         let entries = if has_query {
-            stmt.query_map(
-                rusqlite::params![query.unwrap_or_default(), limit as i64],
-                |row| {
-                    let created_str: String = row.get(5)?;
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, f64>(4)?,
-                        created_str,
-                    ))
-                },
-            )?
+            stmt.query_map(rusqlite::params![query.unwrap_or_default(), limit], |row| {
+                let created_str: String = row.get(5)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, f64>(4)?,
+                    created_str,
+                ))
+            })?
             .collect::<Result<Vec<_>, _>>()?
         } else {
-            stmt.query_map(rusqlite::params![limit as i64], |row| {
+            stmt.query_map(rusqlite::params![limit], |row| {
                 let created_str: String = row.get(5)?;
                 Ok((
                     row.get::<_, String>(0)?,
@@ -462,8 +450,8 @@ impl TuiDb {
                         id,
                         memory_type,
                         agent_name,
-                        content,
                         relevance_score,
+                        content,
                         created_at,
                     })
                 },
@@ -491,7 +479,7 @@ impl TuiDb {
 
     // ── Audit log ────────────────────────────────────────────────────────
 
-    /// Load recent audit events from the run_events table.
+    /// Load recent audit events from the `run_events` table.
     pub fn audit_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, run_id, kind, data_json, timestamp
@@ -501,7 +489,7 @@ impl TuiDb {
         )?;
 
         let raw: Vec<(String, String, String, String, String)> = stmt
-            .query_map(rusqlite::params![limit as i64], |row| {
+            .query_map(rusqlite::params![limit], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -556,8 +544,8 @@ impl TuiDb {
         )?;
 
         let totals = stmt
-            .query_map([run_id], |row| row.get::<_, i64>(0).map(|v| v as u64))?
-            .filter_map(|r| r.ok())
+            .query_map([run_id], |row| row.get::<_, u64>(0))?
+            .filter_map(std::result::Result::ok)
             .collect();
 
         Ok(totals)
@@ -573,9 +561,9 @@ impl TuiDb {
             .query_row(
                 "SELECT COUNT(*) FROM run_events WHERE LOWER(kind) LIKE '%error%'",
                 [],
-                |row| row.get::<_, i64>(0),
+                |row| row.get::<_, u32>(0),
             )
-            .unwrap_or(0) as u32
+            .unwrap_or(0)
     }
 
     // ── Budget status ────────────────────────────────────────────────────
@@ -590,16 +578,16 @@ impl TuiDb {
         const DOLLARS_PER_TOKEN: f64 = 0.000_003;
         const DEFAULT_CEILING: f64 = 10.0;
 
-        let total_tokens: i64 = self
+        let total_tokens: f64 = self
             .conn
             .query_row(
-                "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns",
+                "SELECT TOTAL(input_tokens + output_tokens) FROM turns",
                 [],
                 |row| row.get(0),
             )
-            .unwrap_or(0);
+            .unwrap_or(0.0);
 
-        let spent = total_tokens as f64 * DOLLARS_PER_TOKEN;
+        let spent = total_tokens * DOLLARS_PER_TOKEN;
         (spent, DEFAULT_CEILING)
     }
 
@@ -678,7 +666,7 @@ fn event_description(event_type: &str, payload: &str) -> String {
     }
 }
 
-/// Convert a PascalCase or snake_case event type into a readable label.
+/// Convert a `PascalCase` or `snake_case` event type into a readable label.
 fn humanize_event_type(event_type: &str) -> String {
     // Simple approach: insert spaces before uppercase letters in PascalCase.
     let mut out = String::with_capacity(event_type.len() + 4);
@@ -750,6 +738,7 @@ impl ChainPoller {
     /// Create a new poller, reading the RPC URL from the environment.
     ///
     /// `POLKAGENT_CHAIN_RPC_URL` takes precedence over `POLKAGENT_RPC_URL`.
+    #[must_use]
     pub fn new() -> Self {
         let rpc_url = std::env::var("POLKAGENT_CHAIN_RPC_URL")
             .ok()
@@ -769,6 +758,7 @@ impl ChainPoller {
 
     /// Create a poller with a specific URL (useful for testing).
     #[cfg(test)]
+    #[must_use]
     pub fn with_url(url: Option<String>) -> Self {
         Self {
             rpc_url: url,
@@ -778,6 +768,7 @@ impl ChainPoller {
     }
 
     /// Returns `true` if enough time has elapsed since the last poll.
+    #[must_use]
     pub fn should_poll(&self) -> bool {
         if self.rpc_url.is_none() {
             return false;
@@ -800,19 +791,16 @@ impl ChainPoller {
             return;
         };
 
-        match self.fetch_chain_status(url) {
-            Ok(status) => {
-                state.chain_connected = true;
-                state.chain_name = status.chain_name;
-                state.node_version = status.node_version;
-                state.best_block = status.best_block;
-                state.finalized_block = status.finalized_block;
-                state.mark_dirty();
-            }
-            Err(_) => {
-                state.chain_connected = false;
-                state.mark_dirty();
-            }
+        if let Ok(status) = Self::fetch_chain_status(url) {
+            state.chain_connected = true;
+            state.chain_name = status.chain_name;
+            state.node_version = status.node_version;
+            state.best_block = status.best_block;
+            state.finalized_block = status.finalized_block;
+            state.mark_dirty();
+        } else {
+            state.chain_connected = false;
+            state.mark_dirty();
         }
 
         self.last_poll = Some(std::time::Instant::now());
@@ -825,18 +813,18 @@ impl ChainPoller {
     /// - `system_version` — node version
     /// - `chain_getHeader` — best block header (block number)
     /// - `chain_getFinalizedHead` + `chain_getHeader` — finalized block number
-    fn fetch_chain_status(&self, url: &str) -> Result<ChainStatus> {
-        let chain_name = self.rpc_call_string(url, "system_chain", "[]")?;
-        let node_version = self.rpc_call_string(url, "system_version", "[]")?;
+    fn fetch_chain_status(url: &str) -> Result<ChainStatus> {
+        let chain_name = Self::rpc_call_string(url, "system_chain", "[]")?;
+        let node_version = Self::rpc_call_string(url, "system_version", "[]")?;
 
         // Best block: chain_getHeader returns the latest header.
-        let best_header_json = self.rpc_call_raw(url, "chain_getHeader", "[]")?;
+        let best_header_json = Self::rpc_call_raw(url, "chain_getHeader", "[]")?;
         let best_block = parse_block_number_from_header(&best_header_json);
 
         // Finalized block: get hash, then header.
-        let finalized_hash = self.rpc_call_string(url, "chain_getFinalizedHead", "[]")?;
+        let finalized_hash = Self::rpc_call_string(url, "chain_getFinalizedHead", "[]")?;
         let fin_header_json =
-            self.rpc_call_raw(url, "chain_getHeader", &format!("[\"{finalized_hash}\"]"))?;
+            Self::rpc_call_raw(url, "chain_getHeader", &format!("[\"{finalized_hash}\"]"))?;
         let finalized_block = parse_block_number_from_header(&fin_header_json);
 
         Ok(ChainStatus {
@@ -848,8 +836,8 @@ impl ChainPoller {
     }
 
     /// Make a JSON-RPC call and return the `result` field as a string.
-    fn rpc_call_string(&self, url: &str, method: &str, params: &str) -> Result<String> {
-        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#,);
+    fn rpc_call_string(url: &str, method: &str, params: &str) -> Result<String> {
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
         let resp_body = ureq::post(url)
             .set("Content-Type", "application/json")
             .send_string(&body)
@@ -863,8 +851,8 @@ impl ChainPoller {
     }
 
     /// Make a JSON-RPC call and return the raw `result` value as a JSON string.
-    fn rpc_call_raw(&self, url: &str, method: &str, params: &str) -> Result<String> {
-        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#,);
+    fn rpc_call_raw(url: &str, method: &str, params: &str) -> Result<String> {
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
         let resp_body = ureq::post(url)
             .set("Content-Type", "application/json")
             .send_string(&body)
@@ -907,7 +895,7 @@ mod tests {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// Create an in-memory SQLite database with the minimal schema needed for
+    /// Create an in-memory `SQLite` database with the minimal schema needed for
     /// the TUI query helpers.
     fn in_memory_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -1154,7 +1142,7 @@ mod tests {
     fn test_parse_block_number_from_header_hex() {
         let header = r#"{"jsonrpc":"2.0","result":{"number":"0x157A3C0"},"id":1}"#;
         let block = parse_block_number_from_header(header);
-        assert_eq!(block, 0x157A3C0);
+        assert_eq!(block, 0x0157_A3C0);
     }
 
     #[test]
@@ -1197,11 +1185,12 @@ mod tests {
     #[test]
     fn test_chain_poller_poll_no_url_sets_not_connected() {
         let mut poller = ChainPoller::with_url(None);
-        let mut state = crate::tui::state::TuiState::default();
-
         // Pre-set some values to verify they get overwritten.
-        state.chain_connected = true;
-        state.chain_name = "Polkadot".to_owned();
+        let mut state = crate::tui::state::TuiState {
+            chain_connected: true,
+            chain_name: "Polkadot".to_owned(),
+            ..Default::default()
+        };
 
         poller.poll(&mut state);
 
@@ -1214,8 +1203,10 @@ mod tests {
         let mut poller = ChainPoller::with_url(
             Some("http://127.0.0.1:1".to_owned()), // unreachable port
         );
-        let mut state = crate::tui::state::TuiState::default();
-        state.chain_connected = true; // pre-set to true
+        let mut state = crate::tui::state::TuiState {
+            chain_connected: true, // pre-set to true
+            ..Default::default()
+        };
 
         poller.poll(&mut state);
 
