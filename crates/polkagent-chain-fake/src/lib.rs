@@ -515,6 +515,9 @@ fn hex_decode_32(hex: &str) -> Option<[u8; 32]> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Fixture assertions use `expect`/`unwrap` to report the exact fake-chain
+// operation or queued response that violated the adapter contract.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use polkagent_chain_trait::ChainProfileId;
