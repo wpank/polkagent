@@ -1,7 +1,14 @@
 //! Property-based tests for `polkagent-event`.
 //!
-//! These tests use `proptest` to verify invariants of EventType string
-//! round-trips, default durability consistency, and EventBus delivery.
+//! These tests use `proptest` to verify invariants of `EventType` string
+//! round-trips, default durability consistency, and `EventBus` delivery.
+
+// Property fixtures use expect to stop at the exact serialization, runtime,
+// or delivery invariant that failed for the generated case.
+#![allow(
+    clippy::expect_used,
+    reason = "property-test assertions intentionally panic with focused diagnostics"
+)]
 
 use proptest::prelude::*;
 
@@ -13,7 +20,7 @@ use polkagent_event::types::EventType;
 // Helpers
 // =========================================================================
 
-/// All EventType variants as a static list.
+/// All `EventType` variants as a static list.
 const ALL_EVENT_TYPES: &[EventType] = &[
     EventType::RunCreated,
     EventType::RunQueued,
@@ -58,7 +65,7 @@ const ALL_EVENT_TYPES: &[EventType] = &[
     EventType::ConfigurationChanged,
 ];
 
-/// Strategy for arbitrary EventType.
+/// Strategy for arbitrary `EventType`.
 fn arb_event_type() -> impl Strategy<Value = EventType> {
     prop::sample::select(ALL_EVENT_TYPES)
 }
@@ -73,7 +80,7 @@ fn make_event(
 
     RunEvent::new_durable(
         EventId::new(),
-        run_id.clone(),
+        run_id,
         sequence,
         EventKind::RunCreated,
         EventCorrelation {
@@ -225,7 +232,7 @@ proptest! {
 
             let run_id = polkagent_core::ids::RunId::new();
             for seq in 1..=event_count as u64 {
-                bus.publish(make_event(run_id.clone(), seq));
+                bus.publish(make_event(run_id, seq));
             }
 
             let mut last_seq = 0u64;

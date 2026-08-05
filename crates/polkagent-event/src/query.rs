@@ -11,7 +11,7 @@
 //! | [`latest_state`] | Derive the current [`RunState`] for a run by replaying its events |
 
 use polkagent_core::{
-    event::{EventKind, RunEvent},
+    event::{Durability, EventCorrelation, EventKind, RunEvent},
     run::RunState,
     RunId,
 };
@@ -86,7 +86,7 @@ pub async fn latest_state(
     run_id: RunId,
 ) -> Result<Option<RunState>, EventError> {
     let stored_events = store
-        .read_run_events(run_id.clone())
+        .read_run_events(run_id)
         .await
         .map_err(EventError::Store)?;
 
@@ -114,10 +114,9 @@ pub async fn latest_state(
             ))
         })?;
 
-        use polkagent_core::event::{Durability, EventCorrelation};
         let event = RunEvent {
             id: event_id,
-            run_id: stored_run_id.clone(),
+            run_id: stored_run_id,
             sequence: stored.sequence,
             kind,
             durability: Durability::Durable,
@@ -127,8 +126,7 @@ pub async fn latest_state(
             },
             causation_id: None,
             timestamp: chrono::DateTime::parse_from_rfc3339(&stored.timestamp)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
+                .map_or_else(|_| chrono::Utc::now(), |dt| dt.with_timezone(&chrono::Utc)),
         };
 
         proj.apply(&event)
@@ -146,6 +144,13 @@ pub async fn latest_state(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Query tests use expect/unwrap while exercising the in-memory fixture and
+// replay contract, with messages identifying each failed boundary.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test query assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{
@@ -190,12 +195,12 @@ mod tests {
             seqs.insert(event.run_id.clone(), event.sequence);
 
             let mut term = self.terminal.lock().expect("lock");
-            if LOCAL_TERMINAL.contains(&event.event_type.as_str()) {
-                if !term.insert(event.run_id.clone()) {
-                    return Err(EventStoreError::DuplicateTerminalEvent {
-                        run_id: event.run_id.clone(),
-                    });
-                }
+            if LOCAL_TERMINAL.contains(&event.event_type.as_str())
+                && !term.insert(event.run_id.clone())
+            {
+                return Err(EventStoreError::DuplicateTerminalEvent {
+                    run_id: event.run_id.clone(),
+                });
             }
 
             let mut durable = self.durable.lock().expect("lock");
@@ -246,7 +251,7 @@ mod tests {
                     filter
                         .run_id
                         .as_ref()
-                        .map_or(true, |rid| e.run_id == rid.to_string())
+                        .is_none_or(|rid| e.run_id == rid.to_string())
                 })
                 .cloned()
                 .collect())
@@ -323,7 +328,7 @@ mod tests {
         write_event(&store, &run_id, "run_started", 2).await;
 
         // cursor=0 means "all events since global_sequence > 0"
-        let events = events_for_run(&store, run_id.clone(), Some(0))
+        let events = events_for_run(&store, run_id, Some(0))
             .await
             .expect("query");
         assert_eq!(events.len(), 2);
@@ -389,7 +394,7 @@ mod tests {
             .await
             .expect("write created");
 
-        let state = latest_state(&store, run_id.clone()).await.expect("query");
+        let state = latest_state(&store, run_id).await.expect("query");
         assert_eq!(state, Some(RunState::Created));
 
         let event_id_2 = EventId::new();

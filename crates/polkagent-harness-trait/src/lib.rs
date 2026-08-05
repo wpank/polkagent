@@ -893,6 +893,13 @@ pub trait Harness: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Harness contract tests use expect/unwrap_err to identify the exact schema or
+// capability invariant that failed.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test harness assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 
@@ -1111,7 +1118,11 @@ mod tests {
         let _parse = HarnessError::ParseError {
             message: "bad json".into(),
         };
-        let _timeout = HarnessError::Timeout { elapsed_ms: 5000 };
+        let timeout = HarnessError::Timeout { elapsed_ms: 5000 };
+        assert!(matches!(
+            timeout,
+            HarnessError::Timeout { elapsed_ms: 5000 }
+        ));
         let _state = HarnessError::InvalidState {
             message: "not idle".into(),
         };

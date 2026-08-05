@@ -247,12 +247,9 @@ pub fn scrub_env_keys() -> Vec<String> {
 /// Falls back to signalling just the PID if the process group signal fails.
 #[allow(clippy::cast_possible_wrap)]
 pub async fn kill_tree(child: &mut Child) {
-    let pid = match child.id() {
-        Some(pid) => pid,
-        None => {
-            // Process already exited.
-            return;
-        }
+    let Some(pid) = child.id() else {
+        // Process already exited.
+        return;
     };
 
     kill_tree_with_timeouts(child, pid, Duration::from_secs(2), Duration::from_secs(5)).await;
@@ -364,6 +361,13 @@ where
 }
 
 #[cfg(test)]
+// Process-boundary tests use expect/unwrap_err to stop at the exact spawn,
+// I/O, or rejection invariant under test.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test process assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use polkagent_core::{
-    event::{EventKind, RunEvent},
+    event::{Durability, EventCorrelation, EventKind, RunEvent},
     run::RunState,
     RunId,
 };
@@ -150,7 +150,7 @@ impl ProjectionEngine {
                 break;
             }
 
-            let last_global_seq = batch.last().map(|e| e.global_sequence).unwrap_or(cursor);
+            let last_global_seq = batch.last().map_or(cursor, |e| e.global_sequence);
 
             for stored in &batch {
                 // Deserialise the event kind from the stored payload.
@@ -178,10 +178,9 @@ impl ProjectionEngine {
                     ))
                 })?;
 
-                use polkagent_core::event::{Durability, EventCorrelation};
                 let event = RunEvent {
                     id: event_id,
-                    run_id: run_id.clone(),
+                    run_id,
                     sequence: stored.sequence,
                     kind,
                     durability: Durability::Durable,
@@ -191,8 +190,7 @@ impl ProjectionEngine {
                     },
                     causation_id: None,
                     timestamp: chrono::DateTime::parse_from_rfc3339(&stored.timestamp)
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(|_| chrono::Utc::now()),
+                        .map_or_else(|_| chrono::Utc::now(), |dt| dt.with_timezone(&chrono::Utc)),
                 };
 
                 self.apply(&event)?;
@@ -216,7 +214,7 @@ impl ProjectionEngine {
         self.projections
             .iter()
             .find(|p| p.name() == name)
-            .map(|p| p.as_ref())
+            .map(std::convert::AsRef::as_ref)
     }
 
     /// Return a mutable reference to a registered projection by name.
@@ -265,7 +263,7 @@ impl RunStatusProjection {
         self.states.get(&run_id.to_string())
     }
 
-    /// Return an iterator over all (run_id, state) pairs in the projection.
+    /// Return an iterator over all (`run_id`, state) pairs in the projection.
     pub fn all_states(&self) -> impl Iterator<Item = (&str, &RunState)> {
         self.states.iter().map(|(k, v)| (k.as_str(), v))
     }
@@ -278,6 +276,10 @@ impl RunStatusProjection {
 }
 
 impl Projection for RunStatusProjection {
+    #[allow(
+        clippy::unnecessary_literal_bound,
+        reason = "Projection permits implementations whose names are owned by self"
+    )]
     fn name(&self) -> &str {
         "run_status"
     }
@@ -326,6 +328,13 @@ impl Projection for RunStatusProjection {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Projection tests use expect/unwrap to stop at the exact replay or lookup
+// invariant under test.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test projection assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{
@@ -336,7 +345,7 @@ mod tests {
 
     fn make_event(run_id: RunId, kind: EventKind) -> RunEvent {
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
         RunEvent {
@@ -363,7 +372,7 @@ mod tests {
     fn applies_run_created_event() {
         let mut proj = RunStatusProjection::new();
         let run_id = RunId::new();
-        let event = make_event(run_id.clone(), EventKind::RunCreated);
+        let event = make_event(run_id, EventKind::RunCreated);
         proj.apply(&event).expect("apply");
         assert_eq!(proj.state(&run_id), Some(&RunState::Created));
     }
@@ -372,9 +381,9 @@ mod tests {
     fn applies_run_started_event() {
         let mut proj = RunStatusProjection::new();
         let run_id = RunId::new();
-        proj.apply(&make_event(run_id.clone(), EventKind::RunCreated))
+        proj.apply(&make_event(run_id, EventKind::RunCreated))
             .expect("created");
-        proj.apply(&make_event(run_id.clone(), EventKind::RunStarted))
+        proj.apply(&make_event(run_id, EventKind::RunStarted))
             .expect("started");
         assert_eq!(proj.state(&run_id), Some(&RunState::Running));
     }
@@ -383,10 +392,10 @@ mod tests {
     fn applies_terminal_event_completed() {
         let mut proj = RunStatusProjection::new();
         let run_id = RunId::new();
-        proj.apply(&make_event(run_id.clone(), EventKind::RunCreated))
+        proj.apply(&make_event(run_id, EventKind::RunCreated))
             .unwrap();
         proj.apply(&make_event(
-            run_id.clone(),
+            run_id,
             EventKind::RunCompleted {
                 output_artifact_id: None,
                 input_tokens: 0,
@@ -401,10 +410,10 @@ mod tests {
     fn applies_terminal_event_failed() {
         let mut proj = RunStatusProjection::new();
         let run_id = RunId::new();
-        proj.apply(&make_event(run_id.clone(), EventKind::RunCreated))
+        proj.apply(&make_event(run_id, EventKind::RunCreated))
             .unwrap();
         proj.apply(&make_event(
-            run_id.clone(),
+            run_id,
             EventKind::RunFailed {
                 reason: "disk full".into(),
             },
@@ -417,9 +426,9 @@ mod tests {
     fn applies_terminal_event_timed_out() {
         let mut proj = RunStatusProjection::new();
         let run_id = RunId::new();
-        proj.apply(&make_event(run_id.clone(), EventKind::RunCreated))
+        proj.apply(&make_event(run_id, EventKind::RunCreated))
             .unwrap();
-        proj.apply(&make_event(run_id.clone(), EventKind::RunTimedOut))
+        proj.apply(&make_event(run_id, EventKind::RunTimedOut))
             .unwrap();
         assert_eq!(proj.state(&run_id), Some(&RunState::TimedOut));
     }
@@ -428,11 +437,11 @@ mod tests {
     fn unrelated_events_do_not_change_state() {
         let mut proj = RunStatusProjection::new();
         let run_id = RunId::new();
-        proj.apply(&make_event(run_id.clone(), EventKind::RunStarted))
+        proj.apply(&make_event(run_id, EventKind::RunStarted))
             .unwrap();
         // Streaming token should not change state.
         proj.apply(&make_event(
-            run_id.clone(),
+            run_id,
             EventKind::StreamingToken {
                 text: "hello".into(),
             },
@@ -445,7 +454,7 @@ mod tests {
     fn reset_clears_all_state() {
         let mut proj = RunStatusProjection::new();
         let run_id = RunId::new();
-        proj.apply(&make_event(run_id.clone(), EventKind::RunCreated))
+        proj.apply(&make_event(run_id, EventKind::RunCreated))
             .unwrap();
         assert_eq!(proj.run_count(), 1);
         proj.reset();
@@ -460,14 +469,14 @@ mod tests {
         let run_a = RunId::new();
         let run_b = RunId::new();
 
-        proj.apply(&make_event(run_a.clone(), EventKind::RunCreated))
+        proj.apply(&make_event(run_a, EventKind::RunCreated))
             .unwrap();
-        proj.apply(&make_event(run_b.clone(), EventKind::RunCreated))
+        proj.apply(&make_event(run_b, EventKind::RunCreated))
             .unwrap();
-        proj.apply(&make_event(run_a.clone(), EventKind::RunStarted))
+        proj.apply(&make_event(run_a, EventKind::RunStarted))
             .unwrap();
         proj.apply(&make_event(
-            run_b.clone(),
+            run_b,
             EventKind::RunCompleted {
                 output_artifact_id: None,
                 input_tokens: 0,
@@ -488,7 +497,7 @@ mod tests {
         engine.register(Box::new(RunStatusProjection::new()));
 
         let run_id = RunId::new();
-        let event = make_event(run_id.clone(), EventKind::RunCreated);
+        let event = make_event(run_id, EventKind::RunCreated);
         engine.apply(&event).expect("apply");
 
         let proj = engine.get("run_status").expect("projection registered");
@@ -510,6 +519,10 @@ mod tests {
             calls: usize,
         }
         impl Projection for CountingProjection {
+            #[allow(
+                clippy::unnecessary_literal_bound,
+                reason = "test implementation must satisfy the Projection trait signature"
+            )]
             fn name(&self) -> &str {
                 "counter"
             }

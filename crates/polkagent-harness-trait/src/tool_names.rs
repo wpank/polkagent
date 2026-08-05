@@ -211,6 +211,12 @@ pub fn all_canonical_tools() -> &'static [CanonicalTool] {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Serialization fixtures use expect so a failed tool-schema round trip points
+// directly at the broken boundary.
+#[allow(
+    clippy::expect_used,
+    reason = "unit-test serialization assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 
@@ -450,7 +456,7 @@ mod tests {
     fn all_canonical_tools_names_are_unique() {
         let names: Vec<&str> = all_canonical_tools().iter().map(|t| t.name).collect();
         let mut deduped = names.clone();
-        deduped.sort();
+        deduped.sort_unstable();
         deduped.dedup();
         assert_eq!(names.len(), deduped.len());
     }

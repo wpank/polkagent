@@ -162,6 +162,12 @@ impl EventReceiver {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Bus tests use expect so channel failures stop at the exact delivery
+// invariant being exercised.
+#[allow(
+    clippy::expect_used,
+    reason = "unit-test channel assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{
@@ -172,7 +178,7 @@ mod tests {
     fn make_event(run_id: RunId, sequence: u64) -> RunEvent {
         RunEvent::new_durable(
             EventId::new(),
-            run_id.clone(),
+            run_id,
             sequence,
             EventKind::RunCreated,
             EventCorrelation {
@@ -232,7 +238,7 @@ mod tests {
 
         let run_id = RunId::new();
         for i in 1..=4u64 {
-            bus.publish(make_event(run_id.clone(), i));
+            bus.publish(make_event(run_id, i));
         }
 
         // The first recv should return a Lagged error because the buffer
@@ -283,7 +289,7 @@ mod tests {
 
         let run_id = RunId::new();
         for seq in 1..=5u64 {
-            bus.publish(make_event(run_id.clone(), seq));
+            bus.publish(make_event(run_id, seq));
         }
 
         let mut last_seq = 0u64;

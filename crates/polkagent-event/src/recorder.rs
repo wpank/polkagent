@@ -48,7 +48,7 @@ impl std::fmt::Debug for EventRecorder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventRecorder")
             .field("bus_subscribers", &self.bus.subscriber_count())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -113,22 +113,20 @@ impl EventRecorder {
     // ── private helpers ───────────────────────────────────────────────────
 
     async fn record_durable(&self, event: &mut RunEvent) -> Result<(), EventError> {
-        let run_id = event.run_id.clone();
+        let run_id = event.run_id;
         let is_terminal = is_terminal_kind(&event.kind);
 
         // Invariant: at most one terminal event per run (PRD-10 REQ-EVT-004).
         if is_terminal {
-            let has_terminal = self.store.has_terminal_event(run_id.clone()).await?;
+            let has_terminal = self.store.has_terminal_event(run_id).await?;
             if has_terminal {
                 error!(%run_id, "duplicate terminal event rejected");
-                return Err(EventError::DuplicateTerminalEvent {
-                    run_id: run_id.clone(),
-                });
+                return Err(EventError::DuplicateTerminalEvent { run_id });
             }
         }
 
         // Assign the next monotonic sequence number.
-        let max_seq = self.store.max_sequence(run_id.clone()).await?;
+        let max_seq = self.store.max_sequence(run_id).await?;
         let next_seq = max_seq + 1;
         event.sequence = next_seq;
 
@@ -143,7 +141,10 @@ impl EventRecorder {
             run_id: event.run_id.to_string(),
             conversation_id: None,
             correlation_id: event.id.to_string(), // use event id as default
-            causation_id: event.causation_id.as_ref().map(|id| id.to_string()),
+            causation_id: event
+                .causation_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
             scope_id: String::new(), // populated by caller context when available
             timestamp: event.timestamp.to_rfc3339(),
             durability: "durable".to_string(),
@@ -164,7 +165,7 @@ impl EventRecorder {
                     current,
                     proposed,
                 } => EventError::NonMonotonicSequence {
-                    run_id: event.run_id.clone(),
+                    run_id: event.run_id,
                     current,
                     proposed,
                 },
@@ -193,7 +194,10 @@ impl EventRecorder {
             run_id: event.run_id.to_string(),
             conversation_id: None,
             correlation_id: event.id.to_string(),
-            causation_id: event.causation_id.as_ref().map(|id| id.to_string()),
+            causation_id: event
+                .causation_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
             scope_id: String::new(),
             timestamp: event.timestamp.to_rfc3339(),
             durability: "diagnostic".to_string(),
@@ -269,6 +273,13 @@ fn is_terminal_kind(kind: &EventKind) -> bool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Recorder tests use expect/unwrap while asserting persistence, ordering, and
+// broadcast invariants against an in-memory store.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test recorder assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::bus::EventBus;
@@ -289,9 +300,9 @@ mod tests {
     struct InMemoryStore {
         durable: Mutex<Vec<StoredEvent>>,
         diagnostic: Mutex<Vec<StoredEvent>>,
-        /// Tracks (run_id -> max sequence).
+        /// Tracks (`run_id` -> max sequence).
         sequences: Mutex<HashMap<String, u64>>,
-        /// Tracks run_ids that have terminal events.
+        /// Tracks `run_ids` that have terminal events.
         terminal: Mutex<std::collections::HashSet<String>>,
     }
 
@@ -314,12 +325,10 @@ mod tests {
 
             let mut term = self.terminal.lock().expect("lock");
             let is_terminal = TERMINAL_EVENT_TYPES.contains(&event.event_type.as_str());
-            if is_terminal {
-                if !term.insert(event.run_id.clone()) {
-                    return Err(EventStoreError::DuplicateTerminalEvent {
-                        run_id: event.run_id.clone(),
-                    });
-                }
+            if is_terminal && !term.insert(event.run_id.clone()) {
+                return Err(EventStoreError::DuplicateTerminalEvent {
+                    run_id: event.run_id.clone(),
+                });
             }
 
             let mut durable = self.durable.lock().expect("lock");
@@ -373,7 +382,7 @@ mod tests {
                     filter
                         .run_id
                         .as_ref()
-                        .map_or(true, |rid| e.run_id == rid.to_string())
+                        .is_none_or(|rid| e.run_id == rid.to_string())
                 })
                 .cloned()
                 .collect())
@@ -402,7 +411,7 @@ mod tests {
 
     fn run_event(run_id: RunId, kind: EventKind) -> RunEvent {
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
         RunEvent::new_durable(
@@ -421,11 +430,11 @@ mod tests {
         let (recorder, store) = make_durable_recorder();
         let run_id = RunId::new();
 
-        let e1 = run_event(run_id.clone(), EventKind::RunCreated);
+        let e1 = run_event(run_id, EventKind::RunCreated);
         let returned = recorder.record(e1).await.expect("record e1");
         assert_eq!(returned.sequence, 1);
 
-        let e2 = run_event(run_id.clone(), EventKind::RunQueued);
+        let e2 = run_event(run_id, EventKind::RunQueued);
         let returned2 = recorder.record(e2).await.expect("record e2");
         assert_eq!(returned2.sequence, 2);
 
@@ -445,7 +454,7 @@ mod tests {
 
         // First terminal event should succeed.
         let e1 = run_event(
-            run_id.clone(),
+            run_id,
             EventKind::RunCompleted {
                 output_artifact_id: None,
                 input_tokens: 0,
@@ -456,7 +465,7 @@ mod tests {
 
         // Second terminal event must be rejected.
         let e2 = run_event(
-            run_id.clone(),
+            run_id,
             EventKind::RunFailed {
                 reason: "oops".into(),
             },
@@ -476,7 +485,7 @@ mod tests {
         let recorder = EventRecorder::new(store, bus);
 
         let run_id = RunId::new();
-        let event = run_event(run_id.clone(), EventKind::RunCreated);
+        let event = run_event(run_id, EventKind::RunCreated);
         let event_id = event.id;
 
         recorder.record(event).await.expect("record");
@@ -494,7 +503,7 @@ mod tests {
 
         let run_id = RunId::new();
         let event = run_event(
-            run_id.clone(),
+            run_id,
             EventKind::StreamingToken {
                 text: "hello".into(),
             },
@@ -517,15 +526,15 @@ mod tests {
         let run_b = RunId::new();
 
         recorder
-            .record(run_event(run_a.clone(), EventKind::RunCreated))
+            .record(run_event(run_a, EventKind::RunCreated))
             .await
             .expect("a1");
         recorder
-            .record(run_event(run_b.clone(), EventKind::RunCreated))
+            .record(run_event(run_b, EventKind::RunCreated))
             .await
             .expect("b1");
         recorder
-            .record(run_event(run_a.clone(), EventKind::RunQueued))
+            .record(run_event(run_a, EventKind::RunQueued))
             .await
             .expect("a2");
 

@@ -1,11 +1,18 @@
-//! Criterion benchmarks for the EventBus publish/subscribe performance.
+//! Criterion benchmarks for the `EventBus` publish/subscribe performance.
 //!
 //! Covers:
 //! - `publish` with 1 subscriber
 //! - `publish` with 10 subscribers
-//! - Event recording to in-memory EventStore via EventRecorder
+//! - Event recording to in-memory `EventStore` via `EventRecorder`
 //!
 //! PRD-15 performance benchmarks.
+
+// Benchmark setup and execution should stop immediately when its local runtime,
+// fixture locks, or persistence operation fails.
+#![allow(
+    clippy::expect_used,
+    reason = "benchmark fixture assertions intentionally panic with focused diagnostics"
+)]
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -99,7 +106,7 @@ impl EventStore for InMemoryEventStore {
                 filter
                     .run_id
                     .as_ref()
-                    .map_or(true, |rid| e.run_id == rid.to_string())
+                    .is_none_or(|rid| e.run_id == rid.to_string())
             })
             .cloned()
             .collect())
@@ -123,7 +130,7 @@ impl EventStore for InMemoryEventStore {
 fn make_event(run_id: RunId, sequence: u64) -> RunEvent {
     RunEvent::new_durable(
         EventId::new(),
-        run_id.clone(),
+        run_id,
         sequence,
         EventKind::RunCreated,
         EventCorrelation {
@@ -148,7 +155,7 @@ fn bench_bus_publish(c: &mut Criterion) {
         let mut seq = 0u64;
         b.iter(|| {
             seq += 1;
-            let event = make_event(run_id.clone(), seq);
+            let event = make_event(run_id, seq);
             let n = bus.publish(event);
             criterion::black_box(n);
         });
@@ -163,7 +170,7 @@ fn bench_bus_publish(c: &mut Criterion) {
         let mut seq = 0u64;
         b.iter(|| {
             seq += 1;
-            let event = make_event(run_id.clone(), seq);
+            let event = make_event(run_id, seq);
             let n = bus.publish(event);
             criterion::black_box(n);
         });
@@ -179,17 +186,17 @@ fn bench_event_recording(c: &mut Criterion) {
         .expect("tokio runtime");
 
     let store = InMemoryEventStore::new_arc();
-    let store_dyn: Arc<dyn EventStore> = store;
+    let event_store: Arc<dyn EventStore> = store;
     let bus = EventBus::new(1024);
-    let recorder = EventRecorder::new(store_dyn, bus);
+    let recorder = EventRecorder::new(event_store, bus);
 
     c.bench_function("event_recorder_record_durable", |b| {
         let run_id = RunId::new();
         b.iter(|| {
             rt.block_on(async {
-                let event = make_event(run_id.clone(), 0 /* pre-assign */);
-                let recorded = recorder.record(event).await.expect("record");
-                criterion::black_box(recorded);
+                let event = make_event(run_id, 0 /* pre-assign */);
+                let persisted_event = recorder.record(event).await.expect("record");
+                criterion::black_box(persisted_event);
             });
         });
     });
@@ -201,12 +208,12 @@ fn bench_event_recording(c: &mut Criterion) {
                 let run_id = RunId::new();
                 let recorder2 = {
                     let store2 = InMemoryEventStore::new_arc();
-                    let store2_dyn: Arc<dyn EventStore> = store2;
-                    EventRecorder::new(store2_dyn, EventBus::new(512))
+                    let batch_event_store: Arc<dyn EventStore> = store2;
+                    EventRecorder::new(batch_event_store, EventBus::new(512))
                 };
 
                 for _ in 0..100 {
-                    let event = make_event(run_id.clone(), 0);
+                    let event = make_event(run_id, 0);
                     recorder2.record(event).await.expect("record");
                 }
                 criterion::black_box(run_id);

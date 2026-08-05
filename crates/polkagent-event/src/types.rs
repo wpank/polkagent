@@ -112,7 +112,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    /// Return the canonical snake_case string representation.
+    /// Return the canonical `snake_case` string representation.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -242,6 +242,12 @@ pub type EventPayload = serde_json::Value;
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Serialization assertions use unwrap so malformed enum output fails at the
+// exact round-trip boundary under test.
+#[allow(
+    clippy::unwrap_used,
+    reason = "unit-test serialization assertions intentionally panic at the round-trip boundary"
+)]
 mod tests {
     use super::*;
 
