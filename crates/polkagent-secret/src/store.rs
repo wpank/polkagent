@@ -126,6 +126,11 @@ pub trait SecretStore: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "trait default-method tests unwrap the intentional unsupported-operation error"
+    )]
+
     use super::*;
 
     #[test]

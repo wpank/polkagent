@@ -98,14 +98,14 @@ impl FileSecretStore {
     }
 
     /// Read and deserialize a secret file.
-    fn read_stored(&self, path: &Path) -> Result<StoredSecret> {
+    fn read_stored(path: &Path) -> Result<StoredSecret> {
         let content = std::fs::read_to_string(path)?;
         let stored: StoredSecret = serde_json::from_str(&content)?;
         Ok(stored)
     }
 
     /// Write a secret file with restricted permissions.
-    fn write_stored(&self, path: &Path, stored: &StoredSecret) -> Result<()> {
+    fn write_stored(path: &Path, stored: &StoredSecret) -> Result<()> {
         let content = serde_json::to_string_pretty(stored)?;
         std::fs::write(path, &content)?;
 
@@ -131,7 +131,7 @@ impl SecretStore for FileSecretStore {
             });
         }
 
-        let stored = self.read_stored(&path)?;
+        let stored = Self::read_stored(&path)?;
         debug!(secret_id = %id, "read secret from file");
         Ok(SecretValue::new(stored.value))
     }
@@ -142,7 +142,7 @@ impl SecretStore for FileSecretStore {
             value: value.inner().to_string(),
             metadata,
         };
-        self.write_stored(&path, &stored)?;
+        Self::write_stored(&path, &stored)?;
         debug!(secret_id = %id, path = %path.display(), "wrote secret to file");
         Ok(())
     }
@@ -170,7 +170,7 @@ impl SecretStore for FileSecretStore {
                 continue;
             }
 
-            match self.read_stored(&path) {
+            match Self::read_stored(&path) {
                 Ok(stored) => metas.push(stored.metadata),
                 Err(e) => {
                     warn!(path = %path.display(), error = %e, "skipping malformed secret file");
@@ -192,6 +192,12 @@ impl SecretStore for FileSecretStore {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "file-store tests use fail-fast assertions for temporary-directory fixtures"
+    )]
+
     use super::*;
     use crate::types::SecretSource;
 

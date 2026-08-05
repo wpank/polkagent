@@ -114,7 +114,12 @@ impl SecretStore for ChainSecretStore {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "chain-store tests use fail-fast assertions for controlled backend fixtures"
+)]
 mod tests {
     use super::*;
 

@@ -206,6 +206,11 @@ impl SecretAuditLog {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "audit tests use fail-fast assertions when constructing and querying controlled fixtures"
+    )]
+
     use super::*;
 
     fn temp_audit() -> (tempfile::TempDir, SecretAuditLog) {

@@ -138,7 +138,7 @@ pub fn detect_secrets(text: &str) -> Vec<SecretDetection> {
 /// Scan for `sk-ant-<non-whitespace>` patterns.
 fn detect_anthropic_keys(text: &str) -> Vec<SecretDetection> {
     let prefix = "sk-ant-";
-    find_prefix_matches(text, prefix, SecretKind::AnthropicApiKey, "sk-ant-")
+    find_prefix_matches(text, prefix, &SecretKind::AnthropicApiKey, "sk-ant-")
 }
 
 /// Scan for `sk-<non-whitespace>` patterns that are *not* `sk-ant-`.
@@ -228,7 +228,7 @@ fn detect_hex_private_keys(text: &str) -> Vec<SecretDetection> {
         if hex_start + HEX_LEN <= n
             && bytes[hex_start..hex_start + HEX_LEN]
                 .iter()
-                .all(|b| b.is_ascii_hexdigit())
+                .all(u8::is_ascii_hexdigit)
         {
             // Ensure the character before is a word boundary (not more hex).
             let before_ok = i == 0 || !bytes[i - 1].is_ascii_hexdigit();
@@ -254,15 +254,12 @@ fn detect_hex_private_keys(text: &str) -> Vec<SecretDetection> {
         i += 1;
     }
 
-    // Suppress the unused `matched` warning: it is read via to_owned() in the
-    // preview. Keep a reference to prevent the warning.
-    let _ = findings.len(); // trivial use to satisfy clippy
     findings
 }
 
 /// Scan for `password=<non-whitespace>` patterns.
 fn detect_passwords(text: &str) -> Vec<SecretDetection> {
-    find_prefix_matches(text, "password=", SecretKind::Password, "password=")
+    find_prefix_matches(text, "password=", &SecretKind::Password, "password=")
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +271,7 @@ fn detect_passwords(text: &str) -> Vec<SecretDetection> {
 fn find_prefix_matches(
     text: &str,
     prefix: &str,
-    kind: SecretKind,
+    kind: &SecretKind,
     display_prefix: &str,
 ) -> Vec<SecretDetection> {
     let mut findings = Vec::new();
@@ -309,8 +306,7 @@ fn token_end(s: &str) -> usize {
     s.char_indices()
         .take_while(|(_, c)| !c.is_whitespace())
         .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0)
+        .map_or(0, |(i, c)| i + c.len_utf8())
 }
 
 /// Build a redacted preview: keep `prefix_len` bytes visible, replace the
@@ -329,6 +325,11 @@ fn build_preview(matched: &str, prefix_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "scanner tests unwrap detections only after asserting the controlled fixture matched"
+    )]
+
     use super::*;
 
     // --- scrub_secrets ---

@@ -131,7 +131,12 @@ impl SecretStore for EnvSecretStore {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "environment-store tests use fail-fast assertions around isolated process fixtures"
+)]
 mod tests {
     use super::*;
 

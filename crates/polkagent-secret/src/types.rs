@@ -259,6 +259,12 @@ impl SecretMetadata {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "secret value-type tests use fail-fast assertions for deterministic serialization fixtures"
+    )]
+
     use super::*;
 
     #[test]
@@ -344,8 +350,7 @@ mod tests {
             let id = SecretId::new(*raw);
             assert!(
                 id.to_filename().is_some(),
-                "valid ID '{}' must produce a filename",
-                raw
+                "valid ID '{raw}' must produce a filename"
             );
         }
     }
