@@ -118,7 +118,7 @@ impl InteractionState {
         if let Some(run) = &mut self.run {
             if !run.status.is_terminal() {
                 run.status = ConsoleRunStatus::Cancelling;
-                run.detail = "cancellation requested".to_owned();
+                "cancellation requested".clone_into(&mut run.detail);
             }
         }
     }
@@ -160,7 +160,7 @@ impl InteractionState {
                 output_tokens,
             } => {
                 run.status = ConsoleRunStatus::Completed;
-                run.detail = "run completed".to_owned();
+                "run completed".clone_into(&mut run.detail);
                 run.input_tokens = input_tokens;
                 run.output_tokens = output_tokens;
             }
@@ -174,7 +174,7 @@ impl InteractionState {
             }
             ControllerEvent::TimedOut => {
                 run.status = ConsoleRunStatus::TimedOut;
-                run.detail = "run timed out".to_owned();
+                "run timed out".clone_into(&mut run.detail);
             }
         }
     }

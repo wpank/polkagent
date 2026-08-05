@@ -58,8 +58,7 @@ fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme
         .run
         .as_ref()
         .and_then(|run| run.run_id.as_deref())
-        .map(|id| &id[..8.min(id.len())])
-        .unwrap_or("--------");
+        .map_or("--------", |id| &id[..8.min(id.len())]);
 
     let block = Block::default()
         .title(Span::styled(
@@ -149,7 +148,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Th
     }
 
     let height = usize::from(inner.height);
-    let scroll = lines.len().saturating_sub(height) as u16;
+    let scroll = u16::try_from(lines.len().saturating_sub(height)).unwrap_or(u16::MAX);
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .wrap(Wrap { trim: false })
@@ -206,7 +205,9 @@ fn render_composer(
         let cursor_x = inner
             .x
             .saturating_add(2)
-            .saturating_add(state.interaction.prompt_buffer.chars().count() as u16)
+            .saturating_add(
+                u16::try_from(state.interaction.prompt_buffer.chars().count()).unwrap_or(u16::MAX),
+            )
             .min(inner.x.saturating_add(inner.width.saturating_sub(1)));
         frame.set_cursor_position((cursor_x, inner.y));
     }
