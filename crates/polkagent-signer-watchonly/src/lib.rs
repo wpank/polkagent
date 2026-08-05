@@ -95,6 +95,12 @@ impl Signer for WatchOnlySigner {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "watch-only signer tests use fail-fast assertions for deterministic capability fixtures"
+    )]
+
     use super::*;
     use polkagent_core::now;
     use polkagent_signer_trait::{ApprovalId, GrantDigest, MetadataDigest};
@@ -267,13 +273,12 @@ mod tests {
     // Trait object safety
     // -----------------------------------------------------------------------
 
-    #[allow(dead_code)]
-    fn _watch_only_is_object_safe(_s: &dyn Signer) {}
+    fn assert_object_safe(_signer: &dyn Signer) {}
 
     #[test]
     fn can_construct_as_dyn_signer() {
         let signer = WatchOnlySigner::new(test_accounts());
-        let _dyn_ref: &dyn Signer = &signer;
+        assert_object_safe(&signer);
     }
 
     #[test]
