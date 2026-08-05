@@ -581,27 +581,28 @@ async fn one_interaction_conforms_across_http_chat_acp_and_tui_restarts() {
         .expect("ACP identity observation lock")
         .clone()
         .expect("ACP follow-up identity");
-    let observed = observed.lock().expect("ACP observation lock");
-    assert_eq!(observed.user_messages, [CHAT_PROMPT]);
-    assert_eq!(
-        observed.agent_messages.first().map(String::as_str),
-        Some(ASSISTANT)
-    );
-    assert_eq!(
-        observed.agent_messages.last().map(String::as_str),
-        Some(ASSISTANT)
-    );
-    assert!(observed
-        .agent_messages
-        .iter()
-        .any(|message| message.contains(&format!("Session: {conversation_id}"))));
-    assert_eq!(
-        observed.usage_updates,
-        [(INPUT_TOKENS + OUTPUT_TOKENS, CONTEXT_WINDOW)]
-    );
-    assert!(observed.command_names.iter().any(|name| name == "status"));
-    assert_protocol_stdout(&observed.stdout_lines);
-    drop(observed);
+    {
+        let observed = observed.lock().expect("ACP observation lock");
+        assert_eq!(observed.user_messages, [CHAT_PROMPT]);
+        assert_eq!(
+            observed.agent_messages.first().map(String::as_str),
+            Some(ASSISTANT)
+        );
+        assert_eq!(
+            observed.agent_messages.last().map(String::as_str),
+            Some(ASSISTANT)
+        );
+        assert!(observed
+            .agent_messages
+            .iter()
+            .any(|message| message.contains(&format!("Session: {conversation_id}"))));
+        assert_eq!(
+            observed.usage_updates,
+            [(INPUT_TOKENS + OUTPUT_TOKENS, CONTEXT_WINDOW)]
+        );
+        assert!(observed.command_names.iter().any(|name| name == "status"));
+        assert_protocol_stdout(&observed.stdout_lines);
+    }
 
     // The TUI uses its actual asynchronous controller and session selector,
     // then projects the resulting state through a ratatui TestBackend.
