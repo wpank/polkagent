@@ -41,14 +41,24 @@ const BLOCKS: [char; 8] = [
 ///
 /// - `ratio < 0.4`  → jade (success)
 /// - `0.4 <= ratio < 0.8` → amber (warning)
-/// - `ratio >= 0.8` → rose (rose_bright)
+/// - `ratio >= 0.8` → rose (`rose_bright`)
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the finite clamped ratio is converted into at most u16::MAX * 8 display subcells"
+)]
 pub fn render(frame: &mut Frame, area: Rect, ratio: f64, theme: &Theme) {
-    let width = area.width as usize;
+    let width = usize::from(area.width);
     if width == 0 || area.height == 0 {
         return;
     }
 
-    let ratio = ratio.clamp(0.0, 1.0);
+    let ratio = if ratio.is_finite() {
+        ratio.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
 
     // Choose colour based on progress.
     let fill_color = if ratio >= 0.8 {
@@ -63,8 +73,8 @@ pub fn render(frame: &mut Frame, area: Rect, ratio: f64, theme: &Theme) {
     let empty_style = Style::default().fg(theme.text_phantom);
 
     // Total sub-cell units (8 per cell).
-    let total_units = width * 8;
-    let filled_units = (ratio * total_units as f64).round() as usize;
+    let total_units = width.saturating_mul(8);
+    let filled_units = ((ratio * total_units as f64).round() as usize).min(total_units);
 
     let full_cells = filled_units / 8;
     let partial_idx = filled_units % 8;
@@ -88,7 +98,7 @@ pub fn render(frame: &mut Frame, area: Rect, ratio: f64, theme: &Theme) {
     }
 
     // Empty remainder.
-    let filled_chars = full_cells + if partial_idx > 0 { 1 } else { 0 };
+    let filled_chars = full_cells + usize::from(partial_idx > 0);
     let empty_chars = width.saturating_sub(filled_chars);
     if empty_chars > 0 {
         spans.push(Span::styled("░".repeat(empty_chars), empty_style));

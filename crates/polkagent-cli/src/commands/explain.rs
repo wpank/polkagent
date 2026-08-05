@@ -27,7 +27,7 @@ pub fn run(cmd: &ExplainCmd) -> Result<()> {
         .context("SCALE decode failed — the hex data may not be a valid Substrate extrinsic")?;
 
     if cmd.json {
-        print_json(cmd, &decoded);
+        print_json(cmd, &decoded)?;
     } else {
         print_text(cmd, &decoded);
     }
@@ -44,7 +44,7 @@ fn parse_hex(hex: &str) -> Result<Vec<u8>, anyhow::Error> {
     if hex.is_empty() {
         bail!("empty hex string");
     }
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         bail!("hex string has odd length");
     }
     let mut out = Vec::with_capacity(hex.len() / 2);
@@ -104,7 +104,7 @@ fn format_field(field: &DecodedField) -> String {
 // JSON output
 // ---------------------------------------------------------------------------
 
-fn print_json(cmd: &ExplainCmd, decoded: &DecodedExtrinsic) {
+fn print_json(cmd: &ExplainCmd, decoded: &DecodedExtrinsic) -> Result<()> {
     let args_json: Vec<serde_json::Value> = decoded
         .args
         .iter()
@@ -130,8 +130,8 @@ fn print_json(cmd: &ExplainCmd, decoded: &DecodedExtrinsic) {
         "transfer_amount": extract_transfer_amount(decoded),
     });
 
-    // unwrap is safe: serde_json::json! always produces valid JSON
-    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +190,7 @@ fn print_text(cmd: &ExplainCmd, decoded: &DecodedExtrinsic) {
         let args_summary: String = decoded
             .args
             .iter()
-            .map(|f| format_field(f))
+            .map(format_field)
             .collect::<Vec<_>>()
             .join(", ");
         let truncated = if args_summary.len() > 120 {

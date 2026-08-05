@@ -7,7 +7,7 @@ use anyhow::Result;
 
 use crate::cli::DoctorCmd;
 
-/// Known harness entries: (name, binary, api_key_env, min_version).
+/// Known harness entries: (name, binary, `api_key_env`, `min_version`).
 ///
 /// `min_version` is a `(major, minor, patch)` tuple. When `None`, any version
 /// is accepted.
@@ -59,7 +59,7 @@ struct HarnessDef {
 
 /// Default provider definitions used when no config file is present.
 ///
-/// Tuple: (id, type, api_key_env, default_model, health_url).
+/// Tuple: (id, type, `api_key_env`, `default_model`, `health_url`).
 /// `health_url` is a base URL whose TCP reachability we probe.
 const DEFAULT_PROVIDERS: &[ProviderDef] = &[
     ProviderDef {
@@ -138,10 +138,9 @@ impl CheckStatus {
 
     fn glyph(self) -> &'static str {
         match self {
-            Self::Ok => "\u{25C9}",   // filled circle
-            Self::Fail => "\u{25A0}", // filled square
-            Self::Warn => "\u{25B3}", // triangle
-            Self::Skip => "\u{25A0}", // filled square
+            Self::Ok => "\u{25C9}",                // filled circle
+            Self::Fail | Self::Skip => "\u{25A0}", // filled square
+            Self::Warn => "\u{25B3}",              // triangle
         }
     }
 
@@ -164,13 +163,14 @@ pub fn run(cmd: &DoctorCmd, config_path: Option<&std::path::Path>) -> Result<()>
     let config = load_config(config_path);
 
     // System checks.
-    let mut system_checks: Vec<Check> = Vec::new();
-    system_checks.push(check_database());
-    system_checks.push(check_config());
-    system_checks.push(check_disk_space());
-    system_checks.push(check_signer());
-    system_checks.push(check_chain_rpc());
-    system_checks.push(check_daemon(&config));
+    let mut system_checks = vec![
+        check_database(),
+        check_config(),
+        check_disk_space(),
+        check_signer(),
+        check_chain_rpc(),
+        check_daemon(&config),
+    ];
     system_checks.extend(check_metadata_drift(&config));
 
     // Provider checks.
@@ -312,8 +312,7 @@ fn check_providers(config: &polkagent_config::schema::Config) -> Vec<Check> {
                 DEFAULT_PROVIDERS
                     .iter()
                     .find(|d| d.id == pc.id)
-                    .map(|d| d.base_url)
-                    .unwrap_or("")
+                    .map_or("", |d| d.base_url)
             } else {
                 &pc.base_url
             };
@@ -498,70 +497,66 @@ fn check_harnesses(config: &polkagent_config::schema::Config) -> Vec<Check> {
                     get_binary_version(binary_to_check)
                 };
 
-                match &version {
-                    Some(ver_str) => {
-                        if let Some(min) = def.min_version {
-                            if let Some(parsed) = parse_semver(ver_str) {
-                                if parsed >= min {
-                                    checks.push(Check {
-                                        name: format!("{}/version", def.name),
-                                        status: CheckStatus::Ok,
-                                        message: format!(
-                                            "{ver_str} (>= {}.{}.{})",
-                                            min.0, min.1, min.2,
-                                        ),
-                                    });
-                                } else {
-                                    checks.push(Check {
-                                        name: format!("{}/version", def.name),
-                                        status: CheckStatus::Warn,
-                                        message: format!(
-                                            "{ver_str} (< {}.{}.{} minimum)",
-                                            min.0, min.1, min.2,
-                                        ),
-                                    });
-                                }
-                            } else {
+                if let Some(ver_str) = &version {
+                    if let Some(min) = def.min_version {
+                        if let Some(parsed) = parse_semver(ver_str) {
+                            if parsed >= min {
                                 checks.push(Check {
                                     name: format!("{}/version", def.name),
                                     status: CheckStatus::Ok,
-                                    message: format!("{ver_str} (could not parse semver)"),
+                                    message: format!(
+                                        "{ver_str} (>= {}.{}.{})",
+                                        min.0, min.1, min.2,
+                                    ),
+                                });
+                            } else {
+                                checks.push(Check {
+                                    name: format!("{}/version", def.name),
+                                    status: CheckStatus::Warn,
+                                    message: format!(
+                                        "{ver_str} (< {}.{}.{} minimum)",
+                                        min.0, min.1, min.2,
+                                    ),
                                 });
                             }
                         } else {
                             checks.push(Check {
                                 name: format!("{}/version", def.name),
                                 status: CheckStatus::Ok,
-                                message: ver_str.clone(),
+                                message: format!("{ver_str} (could not parse semver)"),
                             });
                         }
+                    } else {
+                        checks.push(Check {
+                            name: format!("{}/version", def.name),
+                            status: CheckStatus::Ok,
+                            message: ver_str.clone(),
+                        });
                     }
-                    None => {
-                        if is_gh_copilot {
-                            // gh exists but copilot extension might not be installed.
-                            checks.push(Check {
-                                name: format!("{}/version", def.name),
-                                status: CheckStatus::Fail,
-                                message: "gh copilot extension not installed (run `gh extension install github/gh-copilot`)".to_owned(),
-                            });
-                            // Skip auth check for gh-copilot if extension missing.
-                            continue;
-                        } else {
-                            checks.push(Check {
-                                name: format!("{}/version", def.name),
-                                status: CheckStatus::Warn,
-                                message: "could not determine version".to_owned(),
-                            });
-                        }
+                } else {
+                    if is_gh_copilot {
+                        // gh exists but copilot extension might not be installed.
+                        checks.push(Check {
+                            name: format!("{}/version", def.name),
+                            status: CheckStatus::Fail,
+                            message: "gh copilot extension not installed (run `gh extension install github/gh-copilot`)".to_owned(),
+                        });
+                        // Skip auth check for gh-copilot if extension missing.
+                        continue;
                     }
+                    checks.push(Check {
+                        name: format!("{}/version", def.name),
+                        status: CheckStatus::Warn,
+                        message: "could not determine version".to_owned(),
+                    });
                 }
 
                 // (3) Auth validation.
                 if !def.api_key_env.is_empty() {
                     let auth_ok = std::env::var(def.api_key_env)
                         .ok()
-                        .filter(|k| !k.is_empty())
-                        .is_some();
+                        .as_ref()
+                        .is_some_and(|k| !k.is_empty());
                     if auth_ok {
                         checks.push(Check {
                             name: format!("{}/auth", def.name),
@@ -910,6 +905,7 @@ fn probe_tcp(url: &str) -> bool {
 
 fn probe_tcp_addr(addr: &str) -> bool {
     use std::net::TcpStream;
+    use std::net::ToSocketAddrs;
     use std::time::Duration;
 
     // Determine port from scheme context.
@@ -920,7 +916,6 @@ fn probe_tcp_addr(addr: &str) -> bool {
     };
 
     // Try DNS resolution first, then connect.
-    use std::net::ToSocketAddrs;
     if let Ok(mut addrs) = addr.to_socket_addrs() {
         if let Some(socket_addr) = addrs.next() {
             return TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3)).is_ok();
@@ -995,13 +990,7 @@ fn parse_semver(version_str: &str) -> Option<(u32, u32, u32)> {
     // Find the first sequence that looks like digits.digits.digits.
     let re_like = version_str
         .split(|c: char| !c.is_ascii_digit() && c != '.')
-        .find(|s| {
-            s.contains('.')
-                && s.chars()
-                    .next()
-                    .map(|c| c.is_ascii_digit())
-                    .unwrap_or(false)
-        })?;
+        .find(|s| s.contains('.') && s.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
 
     let mut parts = re_like.splitn(3, '.');
     let major: u32 = parts.next()?.parse().ok()?;
@@ -1010,7 +999,7 @@ fn parse_semver(version_str: &str) -> Option<(u32, u32, u32)> {
     let patch_str = parts.next().unwrap_or("0");
     let patch: u32 = patch_str
         .chars()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
         .collect::<String>()
         .parse()
         .unwrap_or(0);
@@ -1151,7 +1140,7 @@ mod tests {
         let checks = check_providers(&config);
         // Should produce checks for default providers (2 per provider) + local-ollama.
         assert!(
-            checks.len() >= DEFAULT_PROVIDERS.len() * 2 + 1,
+            checks.len() > DEFAULT_PROVIDERS.len() * 2,
             "expected at least {} provider checks, got {}",
             DEFAULT_PROVIDERS.len() * 2 + 1,
             checks.len()
@@ -1175,7 +1164,7 @@ mod tests {
         assert!((1, 0, 0) >= (1, 0, 0));
         assert!((1, 1, 0) >= (1, 0, 0));
         assert!((2, 0, 0) >= (1, 0, 0));
-        assert!(!((0, 9, 0) >= (1, 0, 0)));
+        assert!(((0, 9, 0) < (1, 0, 0)));
     }
 
     #[test]

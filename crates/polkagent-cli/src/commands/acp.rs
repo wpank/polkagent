@@ -181,15 +181,14 @@ impl PolkagentAcpBackend {
         };
 
         let result = if let Some(timeout) = self.prompt_timeout {
-            match tokio::time::timeout(timeout, wait_for_result).await {
-                Ok(result) => result,
-                Err(_) => {
-                    let _ = self.app.timeout_run(run_id).await;
-                    Err(anyhow::anyhow!(
-                        "editor prompt timed out after {} seconds",
-                        timeout.as_secs()
-                    ))
-                }
+            if let Ok(result) = tokio::time::timeout(timeout, wait_for_result).await {
+                result
+            } else {
+                let _ = self.app.timeout_run(run_id).await;
+                Err(anyhow::anyhow!(
+                    "editor prompt timed out after {} seconds",
+                    timeout.as_secs()
+                ))
             }
         } else {
             wait_for_result.await

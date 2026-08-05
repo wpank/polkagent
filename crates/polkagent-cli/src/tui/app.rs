@@ -941,12 +941,7 @@ impl App {
                 }
 
                 // System health.
-                match db.system_health(&db_path_display) {
-                    Ok(health) => self.tui_state.health = health,
-                    Err(e) => {
-                        self.tui_state.last_error = Some(format!("health: {e}"));
-                    }
-                }
+                self.tui_state.health = db.system_health(&db_path_display);
 
                 // Pending approvals (always refresh — visible on dashboard too).
                 match db.pending_effects(100) {
@@ -1050,13 +1045,13 @@ impl App {
     fn refresh_memory(&mut self) {
         use crate::tui::db::TuiDb;
 
-        if let Ok(db) = TuiDb::from_pool(&self.pool) {
+        if let Ok(_db) = TuiDb::from_pool(&self.pool) {
             let query = if self.tui_state.memory_search_query.is_empty() {
                 None
             } else {
                 Some(self.tui_state.memory_search_query.as_str())
             };
-            match db.memory_entries(query, 200) {
+            match TuiDb::memory_entries(query, 200) {
                 Ok(entries) => self.tui_state.memory_entries = entries,
                 Err(e) => {
                     self.tui_state.last_error = Some(format!("memory: {e}"));
@@ -1125,8 +1120,8 @@ impl App {
     fn execute_delete_memory(&mut self, entry_id: &str) {
         use crate::tui::db::TuiDb;
 
-        if let Ok(db) = TuiDb::from_pool(&self.pool) {
-            match db.delete_memory_entry(entry_id) {
+        if let Ok(_db) = TuiDb::from_pool(&self.pool) {
+            match TuiDb::delete_memory_entry(entry_id) {
                 Ok(()) => {
                     self.tui_state.memory_entries.retain(|m| m.id != entry_id);
                     self.tui_state.last_error = None;

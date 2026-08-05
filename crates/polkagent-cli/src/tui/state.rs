@@ -35,6 +35,7 @@ pub struct AgentSummary {
 
 impl AgentSummary {
     /// The Unicode glyph for this agent's state (PRD-13 Appendix B.2).
+    #[must_use]
     pub fn glyph(&self) -> &'static str {
         match self.state.as_str() {
             "active" => "◉",
@@ -46,6 +47,7 @@ impl AgentSummary {
     }
 
     /// Human-readable status label.
+    #[must_use]
     pub fn status_label(&self) -> &str {
         match self.state.as_str() {
             "active" => "Active",
@@ -88,9 +90,10 @@ pub struct RunSummary {
 
 impl RunSummary {
     /// Duration string for completed runs, or elapsed for active ones.
+    #[must_use]
     pub fn duration_display(&self, now: DateTime<Utc>) -> String {
         let end = self.completed_at.unwrap_or(now);
-        let secs = (end - self.created_at).num_seconds().max(0) as u64;
+        let secs = u64::try_from((end - self.created_at).num_seconds()).unwrap_or(0);
         if secs < 60 {
             format!("{secs}s")
         } else if secs < 3600 {
@@ -101,6 +104,7 @@ impl RunSummary {
     }
 
     /// State glyph.
+    #[must_use]
     pub fn state_glyph(&self) -> &'static str {
         match self.state.as_str() {
             "working" | "started" => "▶",
@@ -148,7 +152,7 @@ pub struct RunDetail {
     pub effects_failed: u32,
     /// Number of effects still pending (no outcome).
     pub effects_pending: u32,
-    /// Failure reason extracted from the terminal RunFailed / RunCancelled / RunTimedOut event.
+    /// Failure reason extracted from the terminal `RunFailed` / `RunCancelled` / `RunTimedOut` event.
     pub failure_reason: Option<String>,
     /// Per-turn summaries for the turn list panel.
     pub turns: Vec<TurnSummary>,
@@ -156,9 +160,10 @@ pub struct RunDetail {
 
 impl RunDetail {
     /// Duration string for completed runs, or elapsed for active ones.
+    #[must_use]
     pub fn duration_display(&self, now: DateTime<Utc>) -> String {
         let end = self.completed_at.unwrap_or(now);
-        let secs = (end - self.created_at).num_seconds().max(0) as u64;
+        let secs = u64::try_from((end - self.created_at).num_seconds()).unwrap_or(0);
         if secs < 60 {
             format!("{secs}s")
         } else if secs < 3600 {
@@ -169,6 +174,7 @@ impl RunDetail {
     }
 
     /// State glyph.
+    #[must_use]
     pub fn state_glyph(&self) -> &'static str {
         match self.state.as_str() {
             "working" | "started" => "▶",
@@ -292,9 +298,9 @@ pub enum ConfirmDialog {
     /// No dialog is active.
     #[default]
     None,
-    /// User pressed 'a' — confirm approval for the given effect_id.
+    /// User pressed 'a' — confirm approval for the given `effect_id`.
     ConfirmApprove(String),
-    /// User pressed 'd' — confirm denial for the given effect_id.
+    /// User pressed 'd' — confirm denial for the given `effect_id`.
     ConfirmDeny(String),
 }
 
@@ -487,7 +493,7 @@ pub struct TuiState {
 
     /// Total context window capacity for the active run's model.
     ///
-    /// A default of 200_000 is used when the model is unknown.
+    /// A default of `200_000` is used when the model is unknown.
     pub context_total: u64,
 
     /// Remaining spend budget as a fraction of total budget (0.0–1.0).
@@ -571,7 +577,7 @@ mod tests {
     fn make_run_detail(turns: Vec<TurnSummary>) -> RunDetail {
         let total_in: u64 = turns.iter().map(|t| t.input_tokens).sum();
         let total_out: u64 = turns.iter().map(|t| t.output_tokens).sum();
-        let turn_count = turns.len() as u32;
+        let turn_count = u32::try_from(turns.len()).unwrap_or(u32::MAX);
         RunDetail {
             id: "run-test-id-00000000".to_owned(),
             short_id: "run-test".to_owned(),

@@ -159,9 +159,7 @@ fn render_stats(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) 
     let memory_count = state.memory_entries.len().to_string();
 
     // Process memory usage (RSS via /proc/self/status or similar).
-    let rss = process_rss_kb()
-        .map(|kb| format_bytes(kb * 1024))
-        .unwrap_or_else(|| "unknown".into());
+    let rss = process_rss_kb().map_or_else(|| "unknown".into(), |kb| format_bytes(kb * 1024));
 
     // Budget remaining.
     let budget_pct = format!("{:.1}%", state.budget_remaining * 100.0);
@@ -219,10 +217,10 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
     frame.render_widget(block, area);
 
     let db_path = state.health.db_path.clone();
-    let last_refresh = state
-        .last_refresh
-        .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-        .unwrap_or_else(|| "(never)".into());
+    let last_refresh = state.last_refresh.map_or_else(
+        || "(never)".into(),
+        |t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+    );
     let err_display = state.last_error.clone().unwrap_or_else(|| "none".into());
     let err_color = if err_display == "none" {
         theme.success
@@ -282,7 +280,7 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
     let set_vars: Vec<String> = env_vars
         .iter()
         .filter(|v| std::env::var_os(v).is_some())
-        .map(|v| v.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
     if !set_vars.is_empty() {
@@ -353,7 +351,7 @@ fn render_balance_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme: 
     // Represent the budget as a DOT balance: 1 DOT = 10^10 plancks.
     // We use a notional "10 DOT budget" and scale by the remaining fraction.
     let total_plancks: u128 = 10 * 10_000_000_000; // 10 DOT in plancks
-    let free_plancks = (total_plancks as f64 * state.budget_remaining) as u128;
+    let free_plancks = scale_budget(total_plancks, state.budget_remaining);
     let spent_plancks = total_plancks.saturating_sub(free_plancks);
 
     let assets = vec![AssetBalance {
@@ -399,13 +397,32 @@ fn kv_line(
 /// Format a byte count for compact display.
 fn format_bytes(n: u64) -> String {
     if n >= 1_073_741_824 {
-        format!("{:.1} GiB", n as f64 / 1_073_741_824.0)
+        format_binary_unit(n, 1_073_741_824, "GiB")
     } else if n >= 1_048_576 {
-        format!("{:.1} MiB", n as f64 / 1_048_576.0)
+        format_binary_unit(n, 1_048_576, "MiB")
     } else if n >= 1024 {
-        format!("{:.1} KiB", n as f64 / 1024.0)
+        format_binary_unit(n, 1024, "KiB")
     } else {
         format!("{n} B")
+    }
+}
+
+fn format_binary_unit(value: u64, unit: u64, suffix: &str) -> String {
+    let tenths = (u128::from(value).saturating_mul(10) + u128::from(unit) / 2) / u128::from(unit);
+    format!("{}.{:01} {suffix}", tenths / 10, tenths % 10)
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the TUI budget is an approximate display value; the finite ratio is clamped before conversion"
+)]
+fn scale_budget(total: u128, remaining: f64) -> u128 {
+    if remaining.is_finite() {
+        (total as f64 * remaining.clamp(0.0, 1.0)).round() as u128
+    } else {
+        0
     }
 }
 

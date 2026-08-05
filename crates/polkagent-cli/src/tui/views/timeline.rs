@@ -3,9 +3,9 @@
 //! Chronological list of events for the selected run. Each event shows its
 //! timestamp, event type, and a brief description. Events are color-coded:
 //!
-//! - Lifecycle events (RunCreated, TurnStarted, ...) — rose
-//! - Effect events (EffectIntentCreated, ...) — jade (success)
-//! - Error events (RunFailed, EffectFailed, ...) — crimson (danger)
+//! - Lifecycle events (`RunCreated`, `TurnStarted`, ...) — rose
+//! - Effect events (`EffectIntentCreated`, ...) — jade (success)
+//! - Error events (`RunFailed`, `EffectFailed`, ...) — crimson (danger)
 //!
 //! Scrollable with j/k or arrow keys. Selecting an event shows its raw
 //! JSON payload in a side panel when width >= 100.
@@ -97,12 +97,7 @@ fn render_event_list(
     scroll: &ScrollState,
     theme: &Theme,
 ) {
-    let run_hint = if events.is_empty() { "" } else { "" };
-    let title = format!(
-        " EVENTS ({count}){hint} ",
-        count = events.len(),
-        hint = run_hint,
-    );
+    let title = format!(" EVENTS ({}) ", events.len());
     let block = styled_block(&title, theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -297,8 +292,7 @@ fn truncate(s: &str, max: usize) -> String {
         let split_byte = s
             .char_indices()
             .nth(max.saturating_sub(1))
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
+            .map_or(s.len(), |(i, _)| i);
         format!("{}…", &s[..split_byte])
     } else {
         s.to_owned()
@@ -327,8 +321,7 @@ fn format_payload(json: &str, max_width: usize) -> Vec<String> {
         let split_byte = remaining
             .char_indices()
             .nth(max_width)
-            .map(|(i, _)| i)
-            .unwrap_or(remaining.len());
+            .map_or(remaining.len(), |(i, _)| i);
         lines.push(remaining[..split_byte].to_owned());
         remaining = &remaining[split_byte..];
     }

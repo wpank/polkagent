@@ -48,9 +48,12 @@ const BRAILLE_LEVELS: [u32; 8] = [
     0x7F, // 7: dot 7,3,2,1,4,5,6
 ];
 
-/// Convert a normalised value `0.0..=1.0` to a single Braille character.
-fn value_to_braille(v: f64) -> char {
-    let level = (v.clamp(0.0, 1.0) * 7.0).round() as usize;
+/// Convert a value and non-zero limit to a single Braille character.
+fn value_to_braille(value: u64, limit: u64) -> char {
+    let scaled = u128::from(value.min(limit))
+        .saturating_mul(7)
+        .saturating_add(u128::from(limit) / 2);
+    let level = usize::try_from(scaled / u128::from(limit)).unwrap_or(7);
     let cp = BRAILLE_BASE + BRAILLE_LEVELS[level];
     char::from_u32(cp).unwrap_or(' ')
 }
@@ -65,6 +68,10 @@ fn value_to_braille(v: f64) -> char {
 /// `limit` is the maximum expected value (used to normalise heights).
 /// `warn_threshold` is a ratio (`0.0..=1.0`) above which the sparkline
 /// switches from `bone` to `amber`.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the float ratio is used only to compare a display threshold; braille height is computed exactly"
+)]
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -77,7 +84,7 @@ pub fn render(
         return;
     }
 
-    let width = area.width as usize;
+    let width = usize::from(area.width);
 
     // Take the last `width` data points (or pad with zeros on the left).
     let start = values.len().saturating_sub(width);
@@ -96,7 +103,7 @@ pub fn render(
 
     for &v in visible {
         let ratio = v as f64 / limit as f64;
-        let ch = value_to_braille(ratio);
+        let ch = value_to_braille(v, limit);
         let color = if ratio >= warn_threshold {
             theme.warning // amber
         } else {

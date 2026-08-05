@@ -20,7 +20,10 @@ use crate::cli::{ConfigCmd, ConfigGetCmd, ConfigPathCmd, ConfigShowCmd, ConfigVa
 pub fn run(cmd: &ConfigCmd) -> Result<()> {
     match cmd {
         ConfigCmd::Show(c) => show(c),
-        ConfigCmd::Validate(c) => validate(c),
+        ConfigCmd::Validate(c) => {
+            validate(c);
+            Ok(())
+        }
         ConfigCmd::Path(c) => path(c),
         ConfigCmd::Get(c) => get(c),
     }
@@ -95,13 +98,14 @@ fn print_human(cfg: &polkagent_config::schema::Config) {
 /// We intentionally do NOT redact `api_key_env` itself (it is an env-var name,
 /// not a secret).  If any future field holds a literal key it would be added
 /// here.
+#[must_use]
 pub fn redact_config(
     mut cfg: polkagent_config::schema::Config,
 ) -> polkagent_config::schema::Config {
     // auth.api_keys holds SHA-256 digests, not plaintext keys.  We still
     // redact them to avoid leaking digest information.
     for key in &mut cfg.auth.api_keys {
-        *key = REDACTED.to_owned();
+        REDACTED.clone_into(key);
     }
     // jwt_secret_env is an env-var name; replace with redacted marker to
     // avoid accidentally revealing internal env-var naming conventions.
@@ -110,7 +114,7 @@ pub fn redact_config(
     }
     // Postgres URL can embed credentials.
     if !cfg.database.postgres.url.is_empty() {
-        cfg.database.postgres.url = REDACTED.to_owned();
+        REDACTED.clone_into(&mut cfg.database.postgres.url);
     }
     cfg
 }
@@ -119,7 +123,7 @@ pub fn redact_config(
 // validate
 // ---------------------------------------------------------------------------
 
-fn validate(cmd: &ConfigValidateCmd) -> Result<()> {
+fn validate(cmd: &ConfigValidateCmd) {
     let override_path = cmd
         .path
         .as_deref()
@@ -150,8 +154,6 @@ fn validate(cmd: &ConfigValidateCmd) -> Result<()> {
             std::process::exit(1);
         }
     }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -265,8 +267,7 @@ fn toml_to_json(v: &toml::Value) -> serde_json::Value {
         toml::Value::String(s) => serde_json::Value::String(s.clone()),
         toml::Value::Integer(i) => serde_json::Value::Number((*i).into()),
         toml::Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
         toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
         toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
         toml::Value::Array(arr) => serde_json::Value::Array(arr.iter().map(toml_to_json).collect()),

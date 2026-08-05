@@ -1,7 +1,7 @@
 //! `polkagent skill` — skill management subcommands.
 //!
 //! Skills are standalone capability modules that extend agent behaviour.
-//! The registry is persisted in the main SQLite database under the `skills`
+//! The registry is persisted in the main `SQLite` database under the `skills`
 //! table.  When the table does not yet exist (e.g. on a fresh install), all
 //! commands degrade gracefully and advise the user to run `polkagent init`.
 

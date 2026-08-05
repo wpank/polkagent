@@ -159,6 +159,10 @@ pub struct ArtifactInfo {
 
 /// Lineage information for an artifact.
 #[derive(Debug, Serialize, Clone, PartialEq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names intentionally mirror the stable artifact-lineage JSON and database schema"
+)]
 pub struct ArtifactLineage {
     pub run_id: Option<String>,
     pub step_id: Option<String>,

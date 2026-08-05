@@ -86,6 +86,10 @@ pub(crate) async fn start_interactive_run(
 /// Builds an [`AppService`] inline (no daemon required), starts the run, then
 /// subscribes to the event bus and streams events to stdout until the run
 /// reaches a terminal state or the timeout expires.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the foreground run lifecycle is kept contiguous so setup, event streaming, timeout, and cleanup cannot diverge"
+)]
 pub async fn run(
     cmd: &RunCmd,
     pool: &SqlitePool,
@@ -652,10 +656,11 @@ fn executor_from_provider_config(
 /// 1. CLI flag: `--provider anthropic --model claude-opus-4-6`
 /// 2. Config `[execution] default_provider`
 /// 3. First registered provider in the registry (env + config)
-/// 4. Fallback: FakeExecutor with warning
+/// 4. Fallback: `FakeExecutor` with warning
+///
 /// Returns an error when `--provider` was given explicitly but the requested
 /// provider could not be found (e.g. the API key is not set). This prevents
-/// a silent fallback to the FakeExecutor when the user explicitly requested a
+/// a silent fallback to the `FakeExecutor` when the user explicitly requested a
 /// specific provider.
 pub(crate) fn resolve_provider(
     provider_flag: Option<&str>,
@@ -688,12 +693,14 @@ pub(crate) fn resolve_provider(
     Ok((executor, Some(note_text)))
 }
 
+type PrimaryProviderResolution = (Arc<dyn ModelExecutor>, Option<String>, Option<String>);
+
 fn resolve_primary_provider(
     provider_flag: Option<&str>,
     model_override: Option<&str>,
     config: &Config,
     registry: &ProviderRegistry,
-) -> Result<(Arc<dyn ModelExecutor>, Option<String>, Option<String>)> {
+) -> Result<PrimaryProviderResolution> {
     // Parse optional `provider/model` prefix from the --model flag.
     //
     // When the user passes `--model anthropic/claude-opus-4-6` (and no
@@ -1116,7 +1123,9 @@ mod tests {
         ];
 
         fn new() -> Self {
-            let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = ENV_MUTEX
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let vars: Vec<_> = Self::KEYS
                 .iter()
                 .map(|&k| (k, std::env::var(k).ok()))
@@ -1579,7 +1588,7 @@ mod tests {
     }
 
     /// When `--model openai/gpt-4o` is passed, the "openai" prefix should
-    /// select the OpenAI executor and the model should be "gpt-4o".
+    /// select the `OpenAI` executor and the model should be "gpt-4o".
     #[test]
     fn resolve_provider_model_prefix_selects_openai() {
         let _guard = EnvGuard::new();
@@ -1598,7 +1607,7 @@ mod tests {
     }
 
     /// When `--model ollama/mistral` is passed, the "ollama" prefix should
-    /// select the local executor (OLLAMA_URL must be set so the provider is
+    /// select the local executor (`OLLAMA_URL` must be set so the provider is
     /// registered in the registry).
     #[test]
     fn resolve_provider_model_prefix_selects_local_from_ollama_url() {

@@ -157,7 +157,7 @@ fn list_suites(cmd: &EvalListCmd) -> Result<()> {
     let read_dir =
         std::fs::read_dir(dir).with_context(|| format!("reading directory {}", dir.display()))?;
 
-    for entry in read_dir.filter_map(|e| e.ok()) {
+    for entry in read_dir.filter_map(std::result::Result::ok) {
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -441,7 +441,7 @@ mod tests {
                 assert!(cmd.json);
                 assert!(cmd.details);
             }
-            other => panic!("expected Eval::Run, got {:?}", other),
+            other => panic!("expected Eval::Run, got {other:?}"),
         }
     }
 
@@ -463,7 +463,7 @@ mod tests {
                 assert!(!cmd.json);
                 assert!(!cmd.details);
             }
-            other => panic!("expected Eval::Run, got {:?}", other),
+            other => panic!("expected Eval::Run, got {other:?}"),
         }
     }
 
@@ -488,7 +488,7 @@ mod tests {
                 assert_eq!(cmd.agent.as_deref(), Some("agent-42"));
                 assert!(cmd.details);
             }
-            other => panic!("expected Eval::Run, got {:?}", other),
+            other => panic!("expected Eval::Run, got {other:?}"),
         }
     }
 
@@ -593,7 +593,7 @@ mod tests {
         })
         .await;
 
-        assert!(result.is_ok(), "run_suite should succeed: {:?}", result);
+        assert!(result.is_ok(), "run_suite should succeed: {result:?}");
         assert!(output_path.exists(), "report file should have been created");
 
         // Verify the saved file is valid JSON and deserializes to an EvalReport.
@@ -616,7 +616,7 @@ mod tests {
                 assert_eq!(cmd.dir, std::path::PathBuf::from("/tmp/suites"));
                 assert!(cmd.json);
             }
-            other => panic!("expected Eval::List, got {:?}", other),
+            other => panic!("expected Eval::List, got {other:?}"),
         }
     }
 
@@ -644,7 +644,7 @@ mod tests {
                 assert!((cmd.min_delta - 0.05).abs() < f64::EPSILON);
                 assert!(cmd.json);
             }
-            other => panic!("expected Eval::Compare, got {:?}", other),
+            other => panic!("expected Eval::Compare, got {other:?}"),
         }
     }
 }

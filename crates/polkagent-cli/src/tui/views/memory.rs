@@ -76,9 +76,9 @@ pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
 
 fn render_search_bar(frame: &mut Frame, area: Rect, query: &str, theme: &Theme) {
     let display = if query.is_empty() {
-        format!(" / Search memory… ")
+        " / Search memory… ".to_string()
     } else {
-        format!(" / {} ", query)
+        format!(" / {query} ")
     };
 
     let hint_color = if query.is_empty() {
@@ -206,8 +206,7 @@ fn render_list(
                     .agent_name
                     .char_indices()
                     .nth(13)
-                    .map(|(i, _)| i)
-                    .unwrap_or(entry.agent_name.len());
+                    .map_or(entry.agent_name.len(), |(i, _)| i);
                 format!("{}…", &entry.agent_name[..split_byte])
             } else {
                 entry.agent_name.clone()
@@ -333,7 +332,8 @@ fn render_detail(frame: &mut Frame, area: Rect, entry: &MemoryEntry, theme: &The
 
     // Content — word-wrap to fit available width.
     let content_width = inner.width.saturating_sub(4) as usize;
-    let content_lines_available = inner.height.saturating_sub(lines.len() as u16) as usize;
+    let used_lines = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let content_lines_available = usize::from(inner.height.saturating_sub(used_lines));
     for line in entry.content.lines().take(content_lines_available.max(1)) {
         // Split each line at content_width using char boundaries (not byte indices)
         // to avoid panics on multi-byte UTF-8 characters.
@@ -351,8 +351,7 @@ fn render_detail(frame: &mut Frame, area: Rect, entry: &MemoryEntry, theme: &The
             let split_byte = remaining
                 .char_indices()
                 .nth(content_width)
-                .map(|(i, _)| i)
-                .unwrap_or(remaining.len());
+                .map_or(remaining.len(), |(i, _)| i);
             let chunk = &remaining[..split_byte];
             lines.push(Line::from(Span::styled(
                 format!("  {chunk}"),

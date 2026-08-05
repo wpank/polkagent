@@ -19,7 +19,7 @@ use clap_complete::Shell;
     long_about = None,
 )]
 pub struct Cli {
-    /// Disable colours and TUI effects (equivalent to NO_COLOR=1).
+    /// Disable colours and TUI effects (equivalent to `NO_COLOR=1`).
     #[arg(long, global = true)]
     pub no_color: bool,
 
@@ -149,7 +149,7 @@ pub enum Commands {
 
 /// Initialize a new .polkagent/ project directory.
 ///
-/// Creates `.polkagent/polkagent.toml` with defaults and a SQLite database
+/// Creates `.polkagent/polkagent.toml` with defaults and a `SQLite` database
 /// in the current working directory.
 #[derive(Debug, Args)]
 pub struct InitCmd {
@@ -168,6 +168,10 @@ pub struct InitCmd {
 
 /// Execute a single run against an agent and stream its output.
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent clap switches intentionally map to separate boolean command-line flags"
+)]
 pub struct RunCmd {
     /// Agent to invoke (name or UUID).
     #[arg(long, short = 'a', value_name = "AGENT")]
@@ -523,7 +527,7 @@ pub struct KitListCmd {
 /// Durable local extension-package management.
 #[derive(Debug, Args)]
 pub struct PackageArgs {
-    /// Package store root. Overrides POLKAGENT_PACKAGE_STORE and config-derived defaults.
+    /// Package store root. Overrides `POLKAGENT_PACKAGE_STORE` and config-derived defaults.
     #[arg(long, global = true, value_name = "PATH")]
     pub store: Option<std::path::PathBuf>,
 

@@ -32,7 +32,7 @@ use crate::cli::ServeCmd;
 
 /// Execute the `serve` subcommand.
 ///
-/// Opens the SQLite database, runs pending migrations, constructs the API
+/// Opens the `SQLite` database, runs pending migrations, constructs the API
 /// server with production-grade stores, binds to the configured address, and
 /// serves until a shutdown signal is received.
 pub async fn run(cmd: &ServeCmd, config_path: Option<&Path>) -> Result<()> {
@@ -119,7 +119,7 @@ pub async fn run(cmd: &ServeCmd, config_path: Option<&Path>) -> Result<()> {
 /// - `--read-only` sets `api.read_only = true`.
 fn apply_cli_overrides(config: &mut polkagent_config::Config, cmd: &ServeCmd) {
     if !cmd.cors_origins.is_empty() {
-        config.api.cors_origins = cmd.cors_origins.clone();
+        cmd.cors_origins.clone_into(&mut config.api.cors_origins);
     }
     if cmd.read_only {
         config.api.read_only = true;
@@ -157,12 +157,12 @@ fn build_bind_addr(cmd: &ServeCmd) -> String {
     format!("{}:{}", cmd.host, cmd.port)
 }
 
-/// Return the fully-resolved SQLite path from the active configuration.
+/// Return the fully-resolved `SQLite` path from the active configuration.
 fn resolve_db_path(config: &polkagent_config::Config) -> String {
     config.database.sqlite.path.clone()
 }
 
-/// Open (or create) the SQLite pool and run schema migrations.
+/// Open (or create) the `SQLite` pool and run schema migrations.
 fn open_pool(db_path: &str) -> Result<SqlitePool> {
     use polkagent_store_sqlite::migrations;
 
@@ -198,18 +198,20 @@ fn expand_tilde(path: &str) -> String {
 async fn shutdown_signal() {
     // Ctrl+C (SIGINT).
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "failed to install Ctrl+C handler");
+        }
     };
 
     // SIGTERM (e.g. `kill <pid>` or systemd stop).
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => tracing::error!(%error, "failed to install SIGTERM handler"),
+        }
     };
 
     #[cfg(not(unix))]

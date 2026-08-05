@@ -118,6 +118,7 @@ pub enum TuiAction {
 ///
 /// Returns `None` for key events that have no registered binding in the
 /// current `input_mode`.
+#[must_use]
 pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
     // Always handle quit / resize regardless of mode.
     match key.code {
@@ -155,29 +156,19 @@ pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
 fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
     match key.code {
         // ── Tab navigation (F1–F8) ──────────────────────────────────────
-        KeyCode::F(1) => Some(TuiAction::NavigateTab(Tab::Dashboard)),
-        KeyCode::F(2) => Some(TuiAction::NavigateTab(Tab::Agents)),
-        KeyCode::F(3) => Some(TuiAction::NavigateTab(Tab::Runs)),
-        KeyCode::F(4) => Some(TuiAction::NavigateTab(Tab::System)),
-        KeyCode::F(5) => Some(TuiAction::NavigateTab(Tab::Timeline)),
-        KeyCode::F(6) => Some(TuiAction::NavigateTab(Tab::Approvals)),
-        KeyCode::F(7) => Some(TuiAction::NavigateTab(Tab::Memory)),
-        KeyCode::F(8) => Some(TuiAction::NavigateTab(Tab::Audit)),
-        KeyCode::F(9) => Some(TuiAction::NavigateTab(Tab::Console)),
-
-        // ── Quick tab shortcuts ──────────────────────────────────────────
-        KeyCode::Char('1') => Some(TuiAction::NavigateTab(Tab::Dashboard)),
-        KeyCode::Char('2') => Some(TuiAction::NavigateTab(Tab::Agents)),
-        KeyCode::Char('3') => Some(TuiAction::NavigateTab(Tab::Runs)),
-        KeyCode::Char('4') => Some(TuiAction::NavigateTab(Tab::System)),
-        KeyCode::Char('5') => Some(TuiAction::NavigateTab(Tab::Timeline)),
-        KeyCode::Char('6') => Some(TuiAction::NavigateTab(Tab::Approvals)),
-        KeyCode::Char('7') => Some(TuiAction::NavigateTab(Tab::Memory)),
-        KeyCode::Char('8') => Some(TuiAction::NavigateTab(Tab::Audit)),
-        KeyCode::Char('9') => Some(TuiAction::NavigateTab(Tab::Console)),
+        // Numeric keys mirror the F-key tab shortcuts.
+        KeyCode::F(1) | KeyCode::Char('1') => Some(TuiAction::NavigateTab(Tab::Dashboard)),
+        KeyCode::F(2) | KeyCode::Char('2') => Some(TuiAction::NavigateTab(Tab::Agents)),
+        KeyCode::F(3) | KeyCode::Char('3') => Some(TuiAction::NavigateTab(Tab::Runs)),
+        KeyCode::F(4) | KeyCode::Char('4') => Some(TuiAction::NavigateTab(Tab::System)),
+        KeyCode::F(5) | KeyCode::Char('5') => Some(TuiAction::NavigateTab(Tab::Timeline)),
+        KeyCode::F(6) | KeyCode::Char('6') => Some(TuiAction::NavigateTab(Tab::Approvals)),
+        KeyCode::F(7) | KeyCode::Char('7') => Some(TuiAction::NavigateTab(Tab::Memory)),
+        KeyCode::F(8) | KeyCode::Char('8') => Some(TuiAction::NavigateTab(Tab::Audit)),
+        KeyCode::F(9) | KeyCode::Char('9') => Some(TuiAction::NavigateTab(Tab::Console)),
 
         // ── Quit ─────────────────────────────────────────────────────────
-        KeyCode::Char('q') | KeyCode::Char('Q') => Some(TuiAction::Quit),
+        KeyCode::Char('q' | 'Q') => Some(TuiAction::Quit),
 
         // ── Navigation ───────────────────────────────────────────────────
         KeyCode::Up | KeyCode::Char('k') => Some(TuiAction::NavigateUp),

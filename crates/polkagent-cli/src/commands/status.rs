@@ -1,7 +1,7 @@
 //! `polkagent status` — system-wide overview.
 //!
 //! Reports agent count, active runs, pending-effect queue depth, and memory
-//! usage.  All counts are read directly from SQLite so the daemon does not
+//! usage.  All counts are read directly from `SQLite` so the daemon does not
 //! need to be running.
 
 use anyhow::Result;

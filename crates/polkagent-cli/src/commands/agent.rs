@@ -198,8 +198,7 @@ fn list(cmd: &AgentListCmd, store: &SqliteRunStore, format: OutputFormat) -> Res
     let state_filter = match cmd.filter.as_str() {
         "active" => Some("active"),
         "idle" => Some("configured"),
-        "error" => None, // handled via post-filter below
-        _ => None,       // "all"
+        _ => None, // "error" is handled below; "all" has no store filter
     };
 
     let rows = store.list_agents(state_filter, false)?;
@@ -305,16 +304,22 @@ fn show(cmd: &AgentShowCmd, store: &SqliteRunStore, format: OutputFormat) -> Res
     if let Some(rl) = spec.get("resource_limits") {
         if !rl.is_null() {
             println!("  Resource limits:");
-            if let Some(t) = rl.get("max_turns").and_then(|v| v.as_u64()) {
+            if let Some(t) = rl.get("max_turns").and_then(serde_json::Value::as_u64) {
                 println!("    max_turns:               {t}");
             }
-            if let Some(s) = rl.get("timeout_secs").and_then(|v| v.as_u64()) {
+            if let Some(s) = rl.get("timeout_secs").and_then(serde_json::Value::as_u64) {
                 println!("    timeout_secs:            {s}");
             }
-            if let Some(tok) = rl.get("max_tokens_per_turn").and_then(|v| v.as_u64()) {
+            if let Some(tok) = rl
+                .get("max_tokens_per_turn")
+                .and_then(serde_json::Value::as_u64)
+            {
                 println!("    max_tokens_per_turn:     {tok}");
             }
-            if let Some(c) = rl.get("max_concurrent_effects").and_then(|v| v.as_u64()) {
+            if let Some(c) = rl
+                .get("max_concurrent_effects")
+                .and_then(serde_json::Value::as_u64)
+            {
                 println!("    max_concurrent_effects:  {c}");
             }
         }
@@ -328,7 +333,7 @@ fn show(cmd: &AgentShowCmd, store: &SqliteRunStore, format: OutputFormat) -> Res
             if let Some(m) = mp.get("model_id").and_then(|v| v.as_str()) {
                 println!("    model_id:      {m}");
             }
-            if let Some(t) = mp.get("temperature").and_then(|v| v.as_f64()) {
+            if let Some(t) = mp.get("temperature").and_then(serde_json::Value::as_f64) {
                 println!("    temperature:   {t}");
             }
         }
@@ -336,13 +341,13 @@ fn show(cmd: &AgentShowCmd, store: &SqliteRunStore, format: OutputFormat) -> Res
     if let Some(mc) = spec.get("memory_config") {
         if !mc.is_null() {
             println!("  Memory config:");
-            if let Some(e) = mc.get("enabled").and_then(|v| v.as_bool()) {
+            if let Some(e) = mc.get("enabled").and_then(serde_json::Value::as_bool) {
                 println!("    enabled:               {e}");
             }
-            if let Some(m) = mc.get("max_entries").and_then(|v| v.as_u64()) {
+            if let Some(m) = mc.get("max_entries").and_then(serde_json::Value::as_u64) {
                 println!("    max_entries:           {m}");
             }
-            if let Some(d) = mc.get("retention_days").and_then(|v| v.as_u64()) {
+            if let Some(d) = mc.get("retention_days").and_then(serde_json::Value::as_u64) {
                 println!("    retention_days:        {d}");
             }
             if let Some(cl) = mc.get("classification_default").and_then(|v| v.as_str()) {

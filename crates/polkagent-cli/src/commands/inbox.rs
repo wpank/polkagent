@@ -94,17 +94,19 @@ fn list(cmd: &InboxListCmd, pool: &SqlitePool) -> Result<()> {
 // show
 // ---------------------------------------------------------------------------
 
+type EffectRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
 fn show(cmd: &InboxShowCmd, pool: &SqlitePool) -> Result<()> {
     let reader = pool.reader()?;
-    let row: Option<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-    )> = reader
+    let row: Option<EffectRow> = reader
         .query_row(
             "SELECT id, run_id, kind, params_json, created_at, claimed_by, claimed_until
                  FROM effect_intents
@@ -122,8 +124,7 @@ fn show(cmd: &InboxShowCmd, pool: &SqlitePool) -> Result<()> {
                 ))
             },
         )
-        .map(Some)
-        .unwrap_or(None);
+        .ok();
 
     let Some((id, run_id, kind, params_json, created, claimed_by, claimed_until)) = row else {
         anyhow::bail!("Effect not found: {}", cmd.effect_id);
@@ -175,8 +176,7 @@ fn approve(cmd: &InboxApproveCmd, pool: &SqlitePool) -> Result<()> {
             rusqlite::params![cmd.effect_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
-        .map(Some)
-        .unwrap_or(None);
+        .ok();
     drop(reader);
 
     let Some((id, run_id, kind, params_json)) = effect else {
@@ -262,8 +262,7 @@ fn deny(cmd: &InboxDenyCmd, pool: &SqlitePool) -> Result<()> {
             rusqlite::params![cmd.effect_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
-        .map(Some)
-        .unwrap_or(None);
+        .ok();
     drop(reader);
 
     let Some((id, run_id, kind, params_json)) = effect else {

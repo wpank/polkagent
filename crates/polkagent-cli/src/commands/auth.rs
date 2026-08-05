@@ -36,6 +36,7 @@ pub fn run(cmd: &AuthCmd) -> Result<()> {
 ///
 /// If the key is too short to safely mask (fewer than 11 characters) the
 /// entire value is replaced with `"[REDACTED]"`.
+#[must_use]
 pub fn mask_key(key: &str) -> String {
     const MIN_LEN: usize = 11; // 6 prefix + "..." + 4 suffix requires at least 10 chars
     if key.len() < MIN_LEN {
@@ -143,7 +144,7 @@ fn login(cmd: &AuthLoginCmd) -> Result<()> {
         if cmd
             .provider
             .as_deref()
-            .map_or(false, |p| !p.eq_ignore_ascii_case(provider))
+            .is_some_and(|p| !p.eq_ignore_ascii_case(provider))
         {
             continue;
         }
@@ -261,9 +262,10 @@ fn whoami(cmd: &AuthWhoamiCmd) -> Result<()> {
                 // Check the credentials file as well.
                 match read_key_from_credentials(primary) {
                     Some(ref key) => {
-                        let creds = credentials_path()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|_| "~/.polkagent/credentials".to_owned());
+                        let creds = credentials_path().map_or_else(
+                            |_| "~/.polkagent/credentials".to_owned(),
+                            |p| p.display().to_string(),
+                        );
                         (mask_key(key), format!("file:{creds}"))
                     }
                     None => ("[not configured]".to_owned(), "none".to_owned()),
@@ -311,9 +313,10 @@ fn status(cmd: &AuthStatusCmd) -> Result<()> {
             Some((_, source)) => (true, source),
             None => match read_key_from_credentials(primary) {
                 Some(_) => {
-                    let creds = credentials_path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|_| "~/.polkagent/credentials".to_owned());
+                    let creds = credentials_path().map_or_else(
+                        |_| "~/.polkagent/credentials".to_owned(),
+                        |p| p.display().to_string(),
+                    );
                     (true, format!("file:{creds}"))
                 }
                 None => (false, "none".to_owned()),
@@ -327,9 +330,10 @@ fn status(cmd: &AuthStatusCmd) -> Result<()> {
         }));
     }
 
-    let creds_path = credentials_path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "~/.polkagent/credentials".to_owned());
+    let creds_path = credentials_path().map_or_else(
+        |_| "~/.polkagent/credentials".to_owned(),
+        |p| p.display().to_string(),
+    );
     let creds_exists = std::path::Path::new(&creds_path).exists();
 
     if cmd.json {
@@ -392,8 +396,7 @@ fn read_secret_from_stdin() -> Result<String> {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     };
     #[cfg(not(unix))]
     let echo_disabled = false;

@@ -24,14 +24,16 @@ use crate::tui::theme::Theme;
 
 /// Format a token count as a compact human-readable string.
 ///
-/// - Values < 1_000 → as-is (e.g. "842")
-/// - Values < 1_000_000 → e.g. "128.0k"
-/// - Values >= 1_000_000 → e.g. "1.2M"
+/// - Values < `1_000` → as-is (e.g. "842")
+/// - Values < `1_000_000` → e.g. "128.0k"
+/// - Values >= `1_000_000` → e.g. "1.2M"
 fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        let tenths = n.saturating_add(50_000) / 100_000;
+        format!("{}.{:01}M", tenths / 10, tenths % 10)
     } else if n >= 1_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
+        let tenths = n.saturating_add(50) / 100;
+        format!("{}.{:01}k", tenths / 10, tenths % 10)
     } else {
         n.to_string()
     }
@@ -46,21 +48,17 @@ fn format_tokens(n: u64) -> String {
 /// `used` and `total` are token counts. If `total` is 0 the gauge is
 /// rendered as empty.
 pub fn render(frame: &mut Frame, area: Rect, used: u64, total: u64, theme: &Theme) {
-    let width = area.width as usize;
+    let width = usize::from(area.width);
     if width == 0 || area.height == 0 {
         return;
     }
 
-    let ratio = if total > 0 {
-        (used as f64 / total as f64).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-
     // Choose colour by threshold.
-    let fill_color = if ratio > 0.80 {
+    let scaled_used = u128::from(used.min(total)).saturating_mul(100);
+    let scaled_total = u128::from(total).saturating_mul(100);
+    let fill_color = if total > 0 && scaled_used > scaled_total.saturating_mul(80) / 100 {
         theme.danger // crimson
-    } else if ratio >= 0.50 {
+    } else if total > 0 && scaled_used >= scaled_total.saturating_mul(50) / 100 {
         theme.warning // amber
     } else {
         theme.success // jade
@@ -71,7 +69,14 @@ pub fn render(frame: &mut Frame, area: Rect, used: u64, total: u64, theme: &Them
     let label_len = label.len();
 
     // Determine how many cells are filled vs empty.
-    let filled_count = ((ratio * width as f64).round() as usize).min(width);
+    let filled_count = if total == 0 {
+        0
+    } else {
+        let numerator = u128::from(used.min(total))
+            .saturating_mul(u128::from(area.width))
+            .saturating_add(u128::from(total) / 2);
+        usize::try_from(numerator / u128::from(total)).unwrap_or(width)
+    };
     let empty_count = width.saturating_sub(filled_count);
 
     // Render the bar as spans, overlaying the label in the centre.

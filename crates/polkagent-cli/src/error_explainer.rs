@@ -17,7 +17,8 @@ pub enum ErrorCategory {
 }
 
 impl ErrorCategory {
-    pub fn label(&self) -> &'static str {
+    #[must_use]
+    pub fn label(self) -> &'static str {
         match self {
             Self::Timeout => "Timeout",
             Self::ProviderError => "Provider Error",
@@ -40,6 +41,7 @@ pub struct ErrorExplanation {
 }
 
 impl ErrorExplanation {
+    #[must_use]
     pub fn next_step_summary(&self) -> &'static str {
         self.next_steps
             .first()
@@ -49,6 +51,7 @@ impl ErrorExplanation {
 }
 
 /// Classify a failure reason string and produce a structured explanation.
+#[must_use]
 pub fn explain(reason: &str) -> ErrorExplanation {
     let lower = reason.to_lowercase();
     let category = classify(&lower);

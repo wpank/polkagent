@@ -219,9 +219,11 @@ fn detail_row(label: &str, value: &str, theme: &Theme) -> Line<'static> {
 /// Format a token count for compact display.
 fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        let tenths = n.saturating_add(50_000) / 100_000;
+        format!("{}.{:01}M", tenths / 10, tenths % 10)
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+        let tenths = n.saturating_add(50) / 100;
+        format!("{}.{:01}K", tenths / 10, tenths % 10)
     } else {
         n.to_string()
     }

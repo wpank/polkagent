@@ -227,11 +227,11 @@ fn render_detail(frame: &mut Frame, area: Rect, item: &ApprovalItem, theme: &The
     let (pallet, call) = parse_kind_to_pallet_call(&item.kind);
 
     // Build a minimal params list from the effect metadata we have.
-    let short_eid = &item.effect_id[..8.min(item.effect_id.len())];
-    let short_rid = &item.run_id[..8.min(item.run_id.len())];
+    let short_effect = &item.effect_id[..8.min(item.effect_id.len())];
+    let short_run = &item.run_id[..8.min(item.run_id.len())];
     let params: Vec<(&str, &str)> = vec![
-        ("effect_id", short_eid),
-        ("run_id", short_rid),
+        ("effect_id", short_effect),
+        ("run_id", short_run),
         ("agent", &item.agent_name),
         ("state", &item.state),
     ];
@@ -243,7 +243,7 @@ fn render_detail(frame: &mut Frame, area: Rect, item: &ApprovalItem, theme: &The
     let narrative = format!(
         "Effect '{}' from agent '{}' is in state '{}'. \
          This action was submitted by run {} and requires your review before it is executed on-chain.",
-        item.kind, item.agent_name, item.state, short_rid,
+        item.kind, item.agent_name, item.state, short_run,
     );
 
     let card_data = ActionCardData {

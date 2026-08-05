@@ -1,3 +1,6 @@
+// End-to-end assertions unwrap controlled package fixtures and subprocess results.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -24,6 +27,10 @@ fn run(home: &Path, arguments: &[&str]) -> Output {
         .expect("run polkagent")
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "test call sites intentionally pass temporary subprocess outputs that are consumed after assertion"
+)]
 fn success_json(output: Output) -> Value {
     assert!(
         output.status.success(),

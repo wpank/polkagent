@@ -39,6 +39,7 @@ pub enum Denomination {
 
 impl Denomination {
     /// Number of decimal places for this denomination.
+    #[must_use]
     pub fn decimals(self) -> u8 {
         match self {
             Self::Dot => 10,
@@ -48,6 +49,7 @@ impl Denomination {
     }
 
     /// The ticker symbol.
+    #[must_use]
     pub fn symbol(self) -> &'static str {
         match self {
             Self::Dot => "DOT",
@@ -64,8 +66,9 @@ impl Denomination {
 /// For readability we display at most 4 fractional digits unless the value
 /// would round to zero, in which case we show enough to expose the first
 /// non-zero digit.
+#[must_use]
 pub fn format_balance(plancks: u128, denom: Denomination) -> String {
-    let decimals = denom.decimals() as u32;
+    let decimals = u32::from(denom.decimals());
     let divisor = 10u128.pow(decimals);
     let whole = plancks / divisor;
     let frac = plancks % divisor;

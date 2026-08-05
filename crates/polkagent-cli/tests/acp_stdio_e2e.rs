@@ -1,5 +1,8 @@
 //! Executable ACP proof through the real `polkagent acp` subprocess.
 
+// End-to-end assertions unwrap controlled process and protocol fixtures.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

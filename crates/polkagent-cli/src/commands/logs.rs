@@ -2,7 +2,7 @@
 //!
 //! Reads events from the `run_events` table.  When `--follow` is set the
 //! command polls the table every second and prints new events as they arrive.
-//! The daemon does not need to be running; events are read directly from SQLite.
+//! The daemon does not need to be running; events are read directly from `SQLite`.
 
 use anyhow::Result;
 
@@ -77,7 +77,7 @@ fn follow(cmd: &LogsCmd, pool: &SqlitePool) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Row type: (rowid, kind, run_id, data_json, timestamp).
+/// Row type: (rowid, kind, `run_id`, `data_json`, timestamp).
 type EventRow = (i64, String, String, String, String);
 
 fn fetch_events(
@@ -185,7 +185,7 @@ fn level_kind_filter(level: &str) -> Option<Vec<&'static str>> {
 /// We avoid parameterised limit/offset for the branch distinction and instead
 /// embed the limit directly since it is controlled by CLI input (not user data).
 ///
-/// The cursor (`after_rowid`) uses the SQLite implicit `rowid` column, which is
+/// The cursor (`after_rowid`) uses the `SQLite` implicit `rowid` column, which is
 /// a global monotonic integer across all rows in `run_events`.  This is correct
 /// for follow-mode polling: `sequence` is per-run and cannot be used as a
 /// global cursor because two different runs can share the same sequence number.

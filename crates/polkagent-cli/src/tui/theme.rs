@@ -111,6 +111,7 @@ pub struct Theme {
 
 impl Theme {
     /// Full ROSEDUST dark palette (default).
+    #[must_use]
     pub fn dark() -> Self {
         Self {
             bg_void: Color::Rgb(6, 6, 8),
@@ -158,6 +159,7 @@ impl Theme {
     ///
     /// Every colour field is set to `Color::Reset` so the terminal renders
     /// with its own defaults. All style helpers return unstyled styles.
+    #[must_use]
     pub fn no_color() -> Self {
         let r = Color::Reset;
         Self {
@@ -199,6 +201,7 @@ impl Theme {
     ///
     /// Returns [`Theme::no_color()`] when the `NO_COLOR` environment variable
     /// is set (any value), otherwise returns [`Theme::dark()`].
+    #[must_use]
     pub fn from_env() -> Self {
         if std::env::var_os("NO_COLOR").is_some() {
             Self::no_color()
@@ -210,16 +213,19 @@ impl Theme {
     // ── Style helpers ─────────────────────────────────────────────────────
 
     /// Border style for a focused panel.
+    #[must_use]
     pub fn focused_border(&self) -> Style {
         Style::default().fg(self.border_active)
     }
 
     /// Border style for an unfocused panel.
+    #[must_use]
     pub fn unfocused_border(&self) -> Style {
         Style::default().fg(self.border)
     }
 
     /// Tab label style for the active tab.
+    #[must_use]
     pub fn active_tab_style(&self) -> Style {
         Style::default()
             .fg(self.rose_bright)
@@ -227,11 +233,13 @@ impl Theme {
     }
 
     /// Tab label style for inactive tabs.
+    #[must_use]
     pub fn inactive_tab_style(&self) -> Style {
         Style::default().fg(self.text_dim)
     }
 
     /// Style for actively running items.
+    #[must_use]
     pub fn status_active(&self) -> Style {
         Style::default()
             .fg(self.success)
@@ -239,6 +247,7 @@ impl Theme {
     }
 
     /// Style for error state items.
+    #[must_use]
     pub fn status_error(&self) -> Style {
         Style::default()
             .fg(self.danger)
@@ -246,6 +255,7 @@ impl Theme {
     }
 
     /// Style for warning state items.
+    #[must_use]
     pub fn status_warning(&self) -> Style {
         Style::default()
             .fg(self.warning)
@@ -253,17 +263,18 @@ impl Theme {
     }
 
     /// Style for unknown / indeterminate state.
+    #[must_use]
     pub fn status_unknown(&self) -> Style {
         Style::default().fg(self.warning)
     }
 
     /// Map a canonical lifecycle state string to its ROSEDUST colour.
+    #[must_use]
     pub fn status_color(&self, state: &str) -> Color {
         match state {
             "finalized" | "succeeded" | "active" | "completed" => self.success,
             "working" | "signed" | "submitted" | "included" | "started" => self.rose,
-            "waiting_approval" | "pending" | "queued" | "created" => self.warning,
-            "unknown" => self.warning,
+            "waiting_approval" | "pending" | "queued" | "created" | "unknown" => self.warning,
             "failed" | "reverted" | "denied" | "expired" | "timed_out" => self.danger,
             "cancelled" | "stopped" | "idle" | "paused" | "deactivated" | "configured" => {
                 self.text_dim
@@ -277,6 +288,7 @@ impl Theme {
     /// - `>= 0.75` → success (jade)
     /// - `>= 0.4`  → warning (amber)
     /// - `< 0.4`   → danger (crimson)
+    #[must_use]
     pub fn progress_color(&self, ratio: f64) -> Color {
         if ratio >= 0.75 {
             self.success
@@ -288,26 +300,31 @@ impl Theme {
     }
 
     /// Title style (bone, bold) used for section headers.
+    #[must_use]
     pub fn title_style(&self) -> Style {
         Style::default().fg(self.bone).add_modifier(Modifier::BOLD)
     }
 
     /// Dimmed text style for timestamps and secondary labels.
+    #[must_use]
     pub fn dim_style(&self) -> Style {
         Style::default().fg(self.text_dim)
     }
 
     /// Primary text style for body content.
+    #[must_use]
     pub fn primary_style(&self) -> Style {
         Style::default().fg(self.text_primary)
     }
 
     /// Rose-coloured style for primary accents and active glyphs.
+    #[must_use]
     pub fn rose_style(&self) -> Style {
         Style::default().fg(self.rose)
     }
 
     /// Bright rose style for selected items and highlights.
+    #[must_use]
     pub fn rose_bright_style(&self) -> Style {
         Style::default()
             .fg(self.rose_bright)

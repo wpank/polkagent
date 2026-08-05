@@ -334,7 +334,7 @@ impl TuiDb {
     // ── System health ────────────────────────────────────────────────────
 
     /// Read aggregate counts for the system health panel.
-    pub fn system_health(&self, db_path: &str) -> Result<SystemHealth> {
+    pub fn system_health(&self, db_path: &str) -> SystemHealth {
         let (agent_count, active_agent_count): (u32, u32) = self
             .conn
             .query_row(
@@ -357,7 +357,7 @@ impl TuiDb {
             )
             .unwrap_or((0, 0));
 
-        Ok(SystemHealth {
+        SystemHealth {
             db_ok: true,
             db_path: db_path.to_owned(),
             agent_count,
@@ -365,7 +365,7 @@ impl TuiDb {
             total_run_count,
             active_run_count,
             sampled_at: Utc::now(),
-        })
+        }
     }
 
     // ── Memory browser ───────────────────────────────────────────────────
@@ -375,7 +375,7 @@ impl TuiDb {
     /// When `query` is `None` all recent entries are returned ordered by
     /// creation time descending. When a query is given, FTS/LIKE search is
     /// performed.
-    pub fn memory_entries(&self, query: Option<&str>, limit: usize) -> Result<Vec<TuiMemoryEntry>> {
+    pub fn memory_entries(query: Option<&str>, limit: usize) -> Result<Vec<TuiMemoryEntry>> {
         // The memory store lives in a separate database file; open it
         // read-only here.
         let home = std::env::var("HOME").unwrap_or_default();
@@ -462,7 +462,7 @@ impl TuiDb {
     }
 
     /// Delete a memory entry by its string ID.
-    pub fn delete_memory_entry(&self, entry_id: &str) -> Result<()> {
+    pub fn delete_memory_entry(entry_id: &str) -> Result<()> {
         let home = std::env::var("HOME").unwrap_or_default();
         let default_path = format!("{home}/.local/share/polkagent/memory.db");
         let mem_path = std::env::var("POLKAGENT_MEMORY_DB_PATH").unwrap_or(default_path);

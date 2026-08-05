@@ -1,8 +1,16 @@
 //! TUI widget and view unit tests for the polkagent-cli crate.
 //!
 //! Tests cover the ROSEDUST theme, input/key mapping, state management,
-//! widget rendering (using ratatui's TestBackend), and responsive layout
+//! widget rendering (using ratatui's `TestBackend`), and responsive layout
 //! breakpoints.
+
+// Render assertions unwrap controlled terminal fixtures for precise failures.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::field_reassign_with_default,
+    clippy::float_cmp
+)]
 
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -31,7 +39,7 @@ fn ctrl(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::CONTROL)
 }
 
-/// Extract all text from a TestBackend buffer as a single string.
+/// Extract all text from a `TestBackend` buffer as a single string.
 fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
     let buf = terminal.backend().buffer();
     let mut text = String::new();

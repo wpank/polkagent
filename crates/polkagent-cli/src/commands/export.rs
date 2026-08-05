@@ -125,7 +125,8 @@ impl ExportConfig {
     ///
     /// Returns `(clauses, params)` where each clause is a string like
     /// `"created_at >= ?N"` and each param is the corresponding string value.
-    pub fn sql_filters(&self, param_offset: usize) -> Result<(Vec<String>, Vec<String>)> {
+    #[must_use]
+    pub fn sql_filters(&self, param_offset: usize) -> (Vec<String>, Vec<String>) {
         let mut clauses = Vec::new();
         let mut params = Vec::new();
         let mut idx = param_offset;
@@ -151,10 +152,11 @@ impl ExportConfig {
             params.push(run_id.clone());
         }
 
-        Ok((clauses, params))
+        (clauses, params)
     }
 
     /// Return the SQL `LIMIT` clause string, or an empty string if no limit.
+    #[must_use]
     pub fn sql_limit(&self) -> String {
         match self.limit {
             Some(n) => format!(" LIMIT {n}"),
@@ -243,6 +245,7 @@ impl StreamingWriter {
     /// Create a new streaming writer.
     ///
     /// `columns` is used only for CSV output (header row).
+    #[must_use]
     pub fn new(format: Format, columns: &[&str]) -> Self {
         Self {
             format,
@@ -279,8 +282,7 @@ impl StreamingWriter {
                 if self.count > 0 {
                     w.write_all(b",\n")?;
                 }
-                let json = serde_json::to_string_pretty(record)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                let json = serde_json::to_string_pretty(record).map_err(io::Error::other)?;
                 // Indent each line by two spaces inside the array.
                 for (i, line) in json.lines().enumerate() {
                     if i > 0 {
@@ -290,8 +292,7 @@ impl StreamingWriter {
                 }
             }
             Format::Csv => {
-                let value = serde_json::to_value(record)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                let value = serde_json::to_value(record).map_err(io::Error::other)?;
                 let fields: Vec<String> = self
                     .columns
                     .iter()
@@ -305,8 +306,7 @@ impl StreamingWriter {
                 writeln!(w, "{line}")?;
             }
             Format::JsonLines => {
-                let json = serde_json::to_string(record)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                let json = serde_json::to_string(record).map_err(io::Error::other)?;
                 writeln!(w, "{json}")?;
             }
         }
@@ -328,6 +328,7 @@ impl StreamingWriter {
     }
 
     /// Return the number of records written so far.
+    #[must_use]
     pub fn count(&self) -> usize {
         self.count
     }
@@ -341,6 +342,7 @@ impl StreamingWriter {
 ///
 /// Fields containing commas, double-quotes, or newlines are wrapped in
 /// double-quotes, with any embedded double-quotes doubled.
+#[must_use]
 pub fn csv_escape_field(field: &str) -> String {
     if field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r') {
         let escaped = field.replace('"', "\"\"");
@@ -468,7 +470,7 @@ pub struct AuditRow {
 
 /// Open the output destination: a file if `--output` was specified, or a
 /// buffered stdout wrapper otherwise.
-fn open_output(path: &Option<PathBuf>) -> Result<Box<dyn Write>> {
+fn open_output(path: Option<&PathBuf>) -> Result<Box<dyn Write>> {
     match path {
         Some(p) => {
             let file = std::fs::File::create(p)
@@ -491,7 +493,7 @@ pub fn run(cmd: &ExportArgs, pool: &SqlitePool) -> Result<()> {
         ExportArgs::Artifacts(sub) => export_artifacts(&sub.config, sub.include_bodies, pool),
         ExportArgs::Events(sub) => export_events(&sub.config, pool),
         ExportArgs::Audit(sub) => export_audit(&sub.config, pool),
-        ExportArgs::Config(sub) => export_config(&sub.output),
+        ExportArgs::Config(sub) => export_config(sub.output.as_ref()),
     }
 }
 
@@ -504,7 +506,7 @@ fn export_runs(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
         .reader()
         .map_err(|e| anyhow::anyhow!("opening database reader: {e}"))?;
 
-    let (where_clauses, params) = cfg.sql_filters(0)?;
+    let (where_clauses, params) = cfg.sql_filters(0);
     let where_sql = if where_clauses.is_empty() {
         String::new()
     } else {
@@ -537,7 +539,7 @@ fn export_runs(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
         "created_at",
         "updated_at",
     ];
-    let mut out = open_output(&cfg.output)?;
+    let mut out = open_output(cfg.output.as_ref())?;
     let mut writer = StreamingWriter::new(cfg.format, columns);
     writer.begin(&mut out)?;
 
@@ -555,7 +557,7 @@ fn export_effects(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
         .reader()
         .map_err(|e| anyhow::anyhow!("opening database reader: {e}"))?;
 
-    let (where_clauses, params) = cfg.sql_filters(0)?;
+    let (where_clauses, params) = cfg.sql_filters(0);
     let where_sql = if where_clauses.is_empty() {
         String::new()
     } else {
@@ -590,7 +592,7 @@ fn export_effects(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
         "params_json",
         "created_at",
     ];
-    let mut out = open_output(&cfg.output)?;
+    let mut out = open_output(cfg.output.as_ref())?;
     let mut writer = StreamingWriter::new(cfg.format, columns);
     writer.begin(&mut out)?;
 
@@ -608,7 +610,7 @@ fn export_artifacts(cfg: &ExportConfig, include_bodies: bool, pool: &SqlitePool)
         .reader()
         .map_err(|e| anyhow::anyhow!("opening database reader: {e}"))?;
 
-    let (where_clauses, params) = cfg.sql_filters(0)?;
+    let (where_clauses, params) = cfg.sql_filters(0);
     let where_sql = if where_clauses.is_empty() {
         String::new()
     } else {
@@ -653,7 +655,7 @@ fn export_artifacts(cfg: &ExportConfig, include_bodies: bool, pool: &SqlitePool)
     }
     columns.push("created_at");
 
-    let mut out = open_output(&cfg.output)?;
+    let mut out = open_output(cfg.output.as_ref())?;
     let mut writer = StreamingWriter::new(cfg.format, &columns);
     writer.begin(&mut out)?;
 
@@ -671,7 +673,7 @@ fn export_events(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
         .reader()
         .map_err(|e| anyhow::anyhow!("opening database reader: {e}"))?;
 
-    let (where_clauses, params) = cfg.sql_filters(0)?;
+    let (where_clauses, params) = cfg.sql_filters(0);
     let where_sql = if where_clauses.is_empty() {
         String::new()
     } else {
@@ -698,7 +700,7 @@ fn export_events(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     // Events default to JSONL format when no explicit format is given, but we
     // respect the user's choice.
     let columns = &["sequence", "run_id", "kind", "data_json", "timestamp"];
-    let mut out = open_output(&cfg.output)?;
+    let mut out = open_output(cfg.output.as_ref())?;
     let mut writer = StreamingWriter::new(cfg.format, columns);
     writer.begin(&mut out)?;
 
@@ -716,7 +718,7 @@ fn export_audit(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
         .reader()
         .map_err(|e| anyhow::anyhow!("opening database reader: {e}"))?;
 
-    let (where_clauses, params) = cfg.sql_filters(0)?;
+    let (where_clauses, params) = cfg.sql_filters(0);
     let where_sql = if where_clauses.is_empty() {
         String::new()
     } else {
@@ -742,7 +744,7 @@ fn export_audit(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     })?;
 
     let columns = &["id", "actor", "action", "target", "detail", "timestamp"];
-    let mut out = open_output(&cfg.output)?;
+    let mut out = open_output(cfg.output.as_ref())?;
     let mut writer = StreamingWriter::new(cfg.format, columns);
     writer.begin(&mut out)?;
 
@@ -755,7 +757,7 @@ fn export_audit(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-fn export_config(output_path: &Option<PathBuf>) -> Result<()> {
+fn export_config(output_path: Option<&PathBuf>) -> Result<()> {
     // Load the fully-resolved config (defaults + config files + env overrides)
     // so that provider entries written to config files are included.  Using
     // Config::default() here would produce empty `providers = []` / `models =
@@ -1136,7 +1138,7 @@ mod tests {
             run_id: None,
             limit: None,
         };
-        let (clauses, params) = cfg.sql_filters(0).unwrap();
+        let (clauses, params) = cfg.sql_filters(0);
         assert!(clauses.is_empty());
         assert!(params.is_empty());
     }
@@ -1152,7 +1154,7 @@ mod tests {
             run_id: Some("run-1".into()),
             limit: None,
         };
-        let (clauses, params) = cfg.sql_filters(0).unwrap();
+        let (clauses, params) = cfg.sql_filters(0);
         assert_eq!(clauses.len(), 4);
         assert_eq!(params.len(), 4);
         assert!(clauses[0].contains("created_at >= ?1"));
@@ -1172,7 +1174,7 @@ mod tests {
             run_id: None,
             limit: None,
         };
-        let (clauses, _) = cfg.sql_filters(5).unwrap();
+        let (clauses, _) = cfg.sql_filters(5);
         assert_eq!(clauses.len(), 1);
         assert!(clauses[0].contains("?6"));
     }

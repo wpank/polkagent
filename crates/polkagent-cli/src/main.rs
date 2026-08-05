@@ -8,6 +8,17 @@
 
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions, clippy::missing_errors_doc)]
+// Assertion-oriented binary-unit tests unwrap controlled fixtures for precise failures.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::field_reassign_with_default,
+        clippy::float_cmp,
+        clippy::items_after_statements
+    )
+)]
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
@@ -129,7 +140,10 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
             ("doctor", commands::doctor::run(cmd, config_path.as_deref()))
         }
         Some(Commands::Memory(cmd)) => ("memory", commands::memory::run(cmd)),
-        Some(Commands::Completions(cmd)) => ("completions", commands::completions::run(cmd)),
+        Some(Commands::Completions(cmd)) => {
+            commands::completions::run(cmd);
+            ("completions", Ok(()))
+        }
         Some(Commands::Eval(cmd)) => ("eval", commands::eval::run(cmd).await),
         Some(Commands::Inspect(cmd)) => ("inspect", commands::inspect::run(cmd).await),
         Some(Commands::Auth(cmd)) => ("auth", commands::auth::run(cmd)),
@@ -334,7 +348,7 @@ fn classify_exit_code(err: &anyhow::Error) -> i32 {
 // Database pool setup
 // ---------------------------------------------------------------------------
 
-/// Open (or create) the SQLite database pool and run migrations.
+/// Open (or create) the `SQLite` database pool and run migrations.
 ///
 /// Ensures the parent directory exists so that brand-new databases created
 /// from the default path work out of the box.
@@ -421,10 +435,10 @@ struct ObsSettings {
 fn load_observability_config(config_override: Option<&std::path::Path>) -> ObsSettings {
     let cfg = try_load_config(config_override);
     ObsSettings {
-        service_name: cfg
-            .as_ref()
-            .map(|c| c.observability.service_name.clone())
-            .unwrap_or_else(|| "polkagent".to_owned()),
+        service_name: cfg.as_ref().map_or_else(
+            || "polkagent".to_owned(),
+            |c| c.observability.service_name.clone(),
+        ),
         otlp_endpoint: cfg
             .as_ref()
             .and_then(|c| c.observability.otlp_endpoint.clone()),
@@ -573,7 +587,7 @@ fn init_telemetry(
 // Database path resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve the SQLite database path.
+/// Resolve the `SQLite` database path.
 ///
 /// Resolution order:
 /// 1. `POLKAGENT_DATABASE_SQLITE_PATH` environment variable.

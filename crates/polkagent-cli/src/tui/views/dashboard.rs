@@ -442,7 +442,7 @@ fn render_activity_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme:
     ]));
 
     // Budget remaining
-    let budget_pct = (state.budget_remaining * 100.0).round() as u64;
+    let budget_pct = budget_percent(state.budget_remaining);
     let budget_color = if budget_pct > 50 {
         theme.success
     } else if budget_pct > 20 {
@@ -465,7 +465,12 @@ fn render_activity_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme:
     lines.push(Line::from(""));
 
     // Recent events header
-    if !state.run_events.is_empty() {
+    if state.run_events.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No recent events.",
+            Style::default().fg(theme.text_dim),
+        )));
+    } else {
         lines.push(Line::from(Span::styled(
             "  Recent events",
             Style::default().fg(theme.text_dim),
@@ -487,14 +492,22 @@ fn render_activity_panel(frame: &mut Frame, area: Rect, state: &TuiState, theme:
                 Span::styled(desc, Style::default().fg(theme.text_primary)),
             ]));
         }
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  No recent events.",
-            Style::default().fg(theme.text_dim),
-        )));
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the finite value is clamped to 0..=100 before conversion"
+)]
+fn budget_percent(remaining: f64) -> u64 {
+    if remaining.is_finite() {
+        (remaining.clamp(0.0, 1.0) * 100.0).round() as u64
+    } else {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +576,7 @@ fn render_widget_strip(frame: &mut Frame, area: Rect, state: &TuiState, theme: &
 
         let (turns_done, max_turns) = active_run_progress(state);
         let ratio = if max_turns > 0 {
-            (turns_done as f64 / max_turns as f64).clamp(0.0, 1.0)
+            (f64::from(turns_done) / f64::from(max_turns)).clamp(0.0, 1.0)
         } else {
             0.0
         };

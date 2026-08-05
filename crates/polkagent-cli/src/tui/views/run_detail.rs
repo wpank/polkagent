@@ -83,6 +83,10 @@ fn render_no_selection(frame: &mut Frame, area: Rect, theme: &Theme) {
 // Info panel (left)
 // ---------------------------------------------------------------------------
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the static run-detail panel layout is clearer as one ordered rendering recipe"
+)]
 fn render_info_panel(
     frame: &mut Frame,
     area: Rect,
@@ -125,10 +129,10 @@ fn render_info_panel(
         .updated_at
         .format("%Y-%m-%d %H:%M:%S UTC")
         .to_string();
-    let completed = detail
-        .completed_at
-        .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-        .unwrap_or_else(|| "--".into());
+    let completed = detail.completed_at.map_or_else(
+        || "--".into(),
+        |t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+    );
     let duration = detail.duration_display(now);
     let total_tokens = detail.input_tokens + detail.output_tokens;
 
@@ -331,13 +335,14 @@ fn render_turns_panel(
             _ => theme.text_primary,
         };
 
-        let elapsed = turn
-            .completed_at
-            .map(|end| {
-                let secs = (end - turn.started_at).num_milliseconds().max(0) as f64 / 1000.0;
-                format!("{secs:.1}s")
-            })
-            .unwrap_or_else(|| "...".into());
+        let elapsed = turn.completed_at.map_or_else(
+            || "...".into(),
+            |end| {
+                let millis = u64::try_from((end - turn.started_at).num_milliseconds()).unwrap_or(0);
+                let tenths = millis.saturating_add(50) / 100;
+                format!("{}.{:01}s", tenths / 10, tenths % 10)
+            },
+        );
 
         let in_tok = format_tokens(turn.input_tokens);
         let out_tok = format_tokens(turn.output_tokens);
@@ -353,17 +358,14 @@ fn render_turns_panel(
                 Style::default().fg(role_color),
             ),
             Span::styled(
-                format!(" {:<8}", in_tok),
+                format!(" {in_tok:<8}"),
                 Style::default().fg(theme.text_primary),
             ),
             Span::styled(
-                format!("{:<8}", out_tok),
+                format!("{out_tok:<8}"),
                 Style::default().fg(theme.text_primary),
             ),
-            Span::styled(
-                format!("{:>8}", elapsed),
-                Style::default().fg(theme.text_dim),
-            ),
+            Span::styled(format!("{elapsed:>8}"), Style::default().fg(theme.text_dim)),
             // Total tokens per turn in dim after the time column.
             Span::styled(
                 format!("  {}t", format_tokens(total_tok)),
@@ -428,10 +430,15 @@ fn kv_line(
 /// Format a token count for compact display.
 fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        format_decimal_unit(n, 100_000, "M")
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+        format_decimal_unit(n, 100, "K")
     } else {
         n.to_string()
     }
+}
+
+fn format_decimal_unit(value: u64, tenth_unit: u64, suffix: &str) -> String {
+    let tenths = value.saturating_add(tenth_unit / 2) / tenth_unit;
+    format!("{}.{:01}{suffix}", tenths / 10, tenths % 10)
 }

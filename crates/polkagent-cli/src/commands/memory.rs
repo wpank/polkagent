@@ -49,7 +49,7 @@ fn search(cmd: &MemorySearchCmd, _svc: &MemoryService, store: &SqliteMemoryStore
         Some(ref id_str) => Some(
             id_str
                 .parse()
-                .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+                .map_err(|e| anyhow::anyhow!("Invalid agent ID '{id_str}': {e}"))?,
         ),
         None => None,
     };
@@ -57,7 +57,7 @@ fn search(cmd: &MemorySearchCmd, _svc: &MemoryService, store: &SqliteMemoryStore
     let results = rt.block_on(async {
         let q = polkagent_memory::types::MemoryQuery {
             agent_id,
-            query_text: query.to_string(),
+            query_text: query.clone(),
             memory_types: None,
             limit,
             min_relevance: None,
@@ -122,7 +122,7 @@ fn list(cmd: &MemoryListCmd, store: &SqliteMemoryStore) -> Result<()> {
         Some(ref id_str) => Some(
             id_str
                 .parse()
-                .map_err(|e| anyhow::anyhow!("Invalid agent ID '{}': {e}", id_str))?,
+                .map_err(|e| anyhow::anyhow!("Invalid agent ID '{id_str}': {e}"))?,
         ),
         None => {
             anyhow::bail!(
@@ -236,72 +236,69 @@ fn stats(cmd: &MemoryStatsCmd, store: &SqliteMemoryStore) -> Result<()> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     );
 
-    match conn {
-        Ok(conn) => {
-            let total: i64 = conn
-                .query_row("SELECT count(*) FROM memories", [], |r| r.get(0))
-                .unwrap_or(0);
-            let episodic: i64 = conn
-                .query_row(
-                    "SELECT count(*) FROM memories WHERE memory_type = 'episodic'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            let semantic: i64 = conn
-                .query_row(
-                    "SELECT count(*) FROM memories WHERE memory_type = 'semantic'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            let procedural: i64 = conn
-                .query_row(
-                    "SELECT count(*) FROM memories WHERE memory_type = 'procedural'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            let episodes: i64 = conn
-                .query_row("SELECT count(*) FROM episodes", [], |r| r.get(0))
-                .unwrap_or(0);
+    if let Ok(conn) = conn {
+        let total: i64 = conn
+            .query_row("SELECT count(*) FROM memories", [], |r| r.get(0))
+            .unwrap_or(0);
+        let episodic: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM memories WHERE memory_type = 'episodic'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let semantic: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM memories WHERE memory_type = 'semantic'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let procedural: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM memories WHERE memory_type = 'procedural'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let episodes: i64 = conn
+            .query_row("SELECT count(*) FROM episodes", [], |r| r.get(0))
+            .unwrap_or(0);
 
-            if cmd.json {
-                let out = serde_json::json!({
-                    "total_memories": total,
-                    "episodic": episodic,
-                    "semantic": semantic,
-                    "procedural": procedural,
-                    "episodes": episodes,
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                println!("Memory Statistics");
-                println!("{}", "-".repeat(40));
-                println!("  Total memories:   {total}");
-                println!("    Episodic:       {episodic}");
-                println!("    Semantic:       {semantic}");
-                println!("    Procedural:     {procedural}");
-                println!("  Episodes:         {episodes}");
-            }
-
-            // Suppress unused warning.
-            let _ = store;
+        if cmd.json {
+            let out = serde_json::json!({
+                "total_memories": total,
+                "episodic": episodic,
+                "semantic": semantic,
+                "procedural": procedural,
+                "episodes": episodes,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else {
+            println!("Memory Statistics");
+            println!("{}", "-".repeat(40));
+            println!("  Total memories:   {total}");
+            println!("    Episodic:       {episodic}");
+            println!("    Semantic:       {semantic}");
+            println!("    Procedural:     {procedural}");
+            println!("  Episodes:         {episodes}");
         }
-        Err(_) => {
-            if cmd.json {
-                let out = serde_json::json!({
-                    "total_memories": 0,
-                    "message": "Memory store not initialized",
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                println!("Memory store not initialized.");
-                println!("Run `polkagent init` to create the database.");
-            }
 
-            let _ = store;
+        // Suppress unused warning.
+        let _ = store;
+    } else {
+        if cmd.json {
+            let out = serde_json::json!({
+                "total_memories": 0,
+                "message": "Memory store not initialized",
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else {
+            println!("Memory store not initialized.");
+            println!("Run `polkagent init` to create the database.");
         }
+
+        let _ = store;
     }
 
     Ok(())
@@ -325,7 +322,7 @@ fn export(cmd: &MemoryExportCmd, svc: &MemoryService) -> Result<()> {
 
     match result {
         Ok(count) => {
-            let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let file_size = std::fs::metadata(path).map_or(0, |m| m.len());
 
             if cmd.json {
                 let out = serde_json::json!({
@@ -340,7 +337,7 @@ fn export(cmd: &MemoryExportCmd, svc: &MemoryService) -> Result<()> {
                 println!("  Agent:    {agent_id}");
                 println!("  Output:   {}", path.display());
                 println!("  Records:  {count}");
-                println!("  Size:     {} bytes", file_size);
+                println!("  Size:     {file_size} bytes");
             }
 
             info!(
@@ -371,7 +368,7 @@ fn import(cmd: &MemoryImportCmd, svc: &MemoryService) -> Result<()> {
         anyhow::bail!("Input file does not exist: {}", path.display());
     }
 
-    let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let file_size = std::fs::metadata(path).map_or(0, |m| m.len());
 
     let result = rt.block_on(async { svc.import_agent_memory(path).await });
 
@@ -394,7 +391,7 @@ fn import(cmd: &MemoryImportCmd, svc: &MemoryService) -> Result<()> {
             } else {
                 println!("Import complete.");
                 println!("  Input:    {}", path.display());
-                println!("  Size:     {} bytes", file_size);
+                println!("  Size:     {file_size} bytes");
                 println!("  Imported: {}", import_result.imported_count);
                 println!("  Skipped:  {}", import_result.skipped_count);
                 if !import_result.errors.is_empty() {
@@ -444,7 +441,8 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
         // without actually deleting anything.
         let result = rt.block_on(async {
             // Count entries that would be deleted by age.
-            let cutoff = chrono::Utc::now() - chrono::Duration::days(policy.max_age_days as i64);
+            let max_age_days = i64::try_from(policy.max_age_days).unwrap_or(i64::MAX);
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days);
             let all_query = polkagent_memory::types::MemoryQuery {
                 agent_id: Some(agent_id),
                 query_text: String::new(),
@@ -470,11 +468,7 @@ fn sweep(cmd: &MemorySweepCmd, store: &SqliteMemoryStore) -> Result<()> {
 
             let remaining_after_rel = remaining_after_age.len() - by_relevance;
 
-            let by_count = if remaining_after_rel > policy.max_entries_per_agent {
-                remaining_after_rel - policy.max_entries_per_agent
-            } else {
-                0
-            };
+            let by_count = remaining_after_rel.saturating_sub(policy.max_entries_per_agent);
 
             Ok::<_, polkagent_memory::MemoryError>((by_age, by_relevance, by_count))
         });

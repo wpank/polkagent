@@ -34,6 +34,7 @@ pub enum RiskLevel {
 
 impl RiskLevel {
     /// Short label for display.
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Low => "LOW",
@@ -43,6 +44,7 @@ impl RiskLevel {
     }
 
     /// The glyph shown before the risk label.
+    #[must_use]
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Low => "●",
@@ -69,7 +71,7 @@ impl RiskLevel {
 pub struct ActionCardData<'a> {
     /// Pallet name (e.g. "Balances").
     pub pallet: &'a str,
-    /// Call name (e.g. "transfer_keep_alive").
+    /// Call name (e.g. `transfer_keep_alive`).
     pub call: &'a str,
     /// Key-value parameter pairs rendered in the canonical section.
     pub params: &'a [(&'a str, &'a str)],
@@ -100,7 +102,7 @@ pub fn render(frame: &mut Frame, area: Rect, data: &ActionCardData<'_>, theme: &
 
     // Vertical layout: canonical | narrative | risk + hash.
     // Reserve 1 row for the risk/hash footer.
-    let param_lines = data.params.len().max(1) as u16;
+    let param_lines = u16::try_from(data.params.len().max(1)).unwrap_or(u16::MAX);
     // Title (pallet::call) = 1, blank = 1, params, blank = 1.
     let canonical_height = 1 + 1 + param_lines + 1;
 

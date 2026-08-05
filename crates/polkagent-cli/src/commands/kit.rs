@@ -1,7 +1,7 @@
 //! `polkagent kit` — product kit management subcommands.
 //!
 //! Product kits bundle multiple skills into a single installable unit.
-//! The registry is persisted in the main SQLite database under the `kits`
+//! The registry is persisted in the main `SQLite` database under the `kits`
 //! table.
 
 use anyhow::Result;
@@ -304,9 +304,8 @@ fn list(cmd: &KitListCmd, pool: &SqlitePool) -> Result<()> {
 
 /// Read installed skill names from the skills table (best effort).
 fn read_installed_skill_names(pool: &SqlitePool) -> Vec<String> {
-    let reader = match pool.reader() {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
+    let Ok(reader) = pool.reader() else {
+        return Vec::new();
     };
 
     reader
