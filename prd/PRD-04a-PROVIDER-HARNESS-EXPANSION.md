@@ -1,5 +1,11 @@
 # PRD-04a — Provider, Executor, and Harness Expansion
 
+> **Implementation note (audited 2026-08-05):** This PRD remains normative,
+> but its embedded implementation statements and checklists are not current
+> status evidence. Use [STATUS.md](STATUS.md) and
+> [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
+> the dependency-ordered execution queue.
+
 **Status:** definitive PRD (draft)
 **Date:** 2026-08-01
 **Parent:** PRD-04 (Providers, Models, Harnesses, Tools and Skills)

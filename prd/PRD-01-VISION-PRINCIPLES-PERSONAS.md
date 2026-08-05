@@ -1,5 +1,11 @@
 # PRD-01: Vision, Principles, Personas and Product Pillars
 
+> **Implementation note (audited 2026-08-05):** This PRD remains normative,
+> but its embedded implementation statements and checklists are not current
+> status evidence. Use [STATUS.md](STATUS.md) and
+> [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
+> the dependency-ordered execution queue.
+
 **Status:** definitive
 **Version:** 1.0
 **Date:** 2026-07-30

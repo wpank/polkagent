@@ -1,5 +1,11 @@
 # PRD-15 — Testing, Security Assurance, Roadmap and Acceptance Criteria
 
+> **Implementation note (audited 2026-08-05):** This PRD remains normative,
+> but its embedded implementation statements and checklists are not current
+> status evidence. Use [STATUS.md](STATUS.md) and
+> [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
+> the dependency-ordered execution queue.
+
 **Status:** definitive PRD
 **Owner:** unassigned
 **Last updated:** 2026-07-30

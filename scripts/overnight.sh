@@ -934,15 +934,12 @@ If any tests fail, investigate the failures. If they are caused by changes made 
 
 Report what passed and what failed."
 
-task "V-2" "Update tracking documents" \
-"Read TRACKING.md and prd/DIAGNOSTIC-FINDINGS.md. Based on what was actually fixed across ALL previous tasks (D0 through P6), update:
+task "V-2" "Update roadmap evidence" \
+"Read prd/README.md, prd/STATUS.md, prd/IMPLEMENTATION-BACKLOG.md, and prd/EVIDENCE-BACKLOG.md. Based on what was actually fixed across ALL previous tasks (D0 through P6), update the relevant work-packet checklists and status evidence.
 
-1. TRACKING.md — mark completed items across all phases, update percentages for Phases 1-6
-2. prd/DIAGNOSTIC-FINDINGS.md — check off completed diagnostic items in the implementation checklist
+Do not use crate counts, test counts, or percentages as a substitute for end-to-end completion. Only upgrade maturity when production wiring, user/client execution, failure/restart behavior, and the packet's exit checks are verified. Record remaining fake, no-op, in-memory-only, unsupported, and 501 paths explicitly.
 
-Be accurate: only mark items as done if the corresponding code changes were actually made and verified. If a task was skipped or failed, leave it unchecked.
-
-Do NOT update PROGRESS.md (that is the definitive status tracker and should only be updated after manual review)."
+Do not edit TRACKING.md, PROGRESS.md, or prd/DIAGNOSTIC-FINDINGS.md; those are compatibility pointers to the new canonical documents."
 
 # ─── Computed totals ─────────────────────────────────────────────────────────
 
@@ -1029,8 +1026,10 @@ PROJECT STRUCTURE:
 - 71 Rust crates in crates/ directory
 - Config: .polkagent/polkagent.toml
 - Schema: crates/polkagent-store-sqlite/src/schema.sql
-- PRDs: prd/PRD-00 through PRD-18
-- Diagnostics: prd/DIAGNOSTIC-FINDINGS.md
+- Planning entry point: prd/README.md
+- Implementation truth: prd/STATUS.md
+- Work packets: prd/IMPLEMENTATION-BACKLOG.md
+- Evidence queue: prd/EVIDENCE-BACKLOG.md
 SYSPROMPT
 )"
 
@@ -1228,8 +1227,10 @@ If tasks failed, you can:
 
 ## PRD Coverage
 
-This run targeted ALL 18 PRDs across all 6 phases:
-- **Diagnostics:** DIAGNOSTIC-FINDINGS.md (43 remaining bugs + 3 additional critical fixes)
+This run used the historical phase task set. Reconcile its results against the current evidence-backed roadmap:
+- **Status:** prd/STATUS.md
+- **Implementation queue:** prd/IMPLEMENTATION-BACKLOG.md
+- **Evidence queue:** prd/EVIDENCE-BACKLOG.md
 - **Phase 2 gaps:** Chain adapter wiring, explain command, SQL injection fix
 - **Phase 3:** Builder tools, RAG, error explainer, identity display, PCA C0, executor wiring
 - **Phase 4:** Risk gates, multisig coordinator, XCM planner, drift watcher, product kits, harness lifecycle, provenanced memory

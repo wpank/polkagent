@@ -1,5 +1,11 @@
 # PRD-09 — Memory, Knowledge, Learning, Multi-Agent Groups and Evals
 
+> **Implementation note (audited 2026-08-05):** This PRD remains normative,
+> but its embedded implementation statements and checklists are not current
+> status evidence. Use [STATUS.md](STATUS.md) and
+> [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
+> the dependency-ordered execution queue.
+
 **Status:** definitive PRD
 **Audience:** engineers, product designers, and operators with no prior Polkagent,
 Roko, or `polkadot-chat-agents` context
