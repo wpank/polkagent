@@ -39,6 +39,11 @@ pub use tracker::{RunSnapshot, VitalityTracker};
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "round-trip tests use fail-fast assertions for deterministic serialization fixtures"
+    )]
+
     use super::*;
     use std::time::Duration;
 
