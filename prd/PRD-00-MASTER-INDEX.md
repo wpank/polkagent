@@ -57,7 +57,7 @@ percentage.
 | [PRD-11](PRD-11-DEPLOYMENT-CLOUD.md) | Deployment and cloud | Active; bounded single-instance container/config/shutdown/replacement persistence is proven, while durable API/run recovery and production operations remain. |
 | [PRD-12](PRD-12-MARKETPLACE-EXTENSIONS.md) | Extensions and marketplace | Active; durable local package lifecycle and operator CLI work, while activation, sandbox execution, cryptographic trust, and registry paths remain. |
 | [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; durable terminal chat and a restart-resumable TUI Console now provide bounded contextual model-executor follow-up, while harness context, approvals/orchestration, and studio/mobile surfaces remain. |
-| [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; shared-runtime durable interaction/core routes, checkpointed SSE, and zero-drift ordinary HTTP/OpenAPI parity exist, while optional-route composition remains. |
+| [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; shared-runtime durable interaction/core routes, checkpointed SSE, zero-drift ordinary HTTP parity, and an OpenAPI 3.1-valid nullability contract exist, while optional-route composition remains. |
 | [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; broad component coverage, stable/Rust-1.89 checks, strict rustdoc, and mandatory/extended Clippy gates pass locally; production/live/client conformance remains incomplete. |
 
 ## Active delivery PRDs
@@ -83,7 +83,7 @@ shared production runtime (implemented; run/TUI/chat/ACP/serve migrated)
              (prompt/transcript/cancel/replay and target/model config implemented)
                     |
                     +--> terminal chat + durable/actionable TUI
-                         (target-only session/restart/cancel slices exist)
+                         (single-agent session/model/restart/cancel slices exist)
                     +--> complete ACP server + Zed support
                          (bounded stdio protocol slice exists)
                     +--> durable API control plane

@@ -22,7 +22,7 @@ cancellation, and transcript/history reload after restart. Its terminal
 lifecycle is proven in a real Unix PTY. `polkagent chat` now provides a focused
 interactive/non-TTY adapter with explicit resume, multiline input, shared
 help/status/cancel/new/resume handlers, checkpoint resubscribe, and SIGINT
-cancellation. The TUI now executes the truthful help/status/new/resume subset
+  cancellation. The TUI now executes the truthful help/status/new/resume/model subset
 through the same registry and service executor, renders structured results, and
 switches/reloads exact durable conversations without creating model turns. ACP
 remains the other bounded adapter: durable editor
@@ -131,12 +131,12 @@ It remains design input rather than the completion contract.
 | User capability | Current status | Evidence / implication |
 |---|---|---|
 | Run `polkagent` with no arguments | Launches the monitoring TUI when stdout is a TTY | `polkagent-cli/src/main.rs` dispatches `None` to `launch_tui` |
-| Prompt Polkagent interactively | Implemented for target-only turns | `polkagent chat` and the F9 Console call the durable interaction service; model executors receive bounded typed completed history, while harness follow-up fails explicitly |
+| Prompt Polkagent interactively | Implemented for single-agent turns with per-conversation model selection | `polkagent chat` and the F9 Console call the durable interaction service; model executors receive bounded typed completed history, while harness follow-up fails explicitly |
 | Prompt from inside the TUI | Implemented for one run at a time | `p` selects an active agent and opens the Console composer |
 | Start or cancel a run from the TUI | Implemented for the bounded slice | `InteractionService::prompt` creates correlated conversation/turn/run state; `x` requests exact turn cancellation |
-| Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/new`, and `/resume` use the shared command executor, render structured results, and never become model turns; unavailable capabilities fail explicitly |
+| Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/new`, `/resume`, and `/model` use the shared command executor, render structured results, and never become model turns; unavailable capabilities fail explicitly |
 | Approve/deny in the TUI | Partial and unsafe architecturally | It writes outcome rows directly through `TuiDb`, bypassing `AppService` |
-| See live run output in the TUI | Implemented for typed target-only events | Controller projects bounded interaction events and resubscribes from a durable checkpoint after lag; structured tool/approval production remains absent |
+| See live run output in the TUI | Implemented for typed single-agent events | Controller projects bounded interaction events and resubscribes from a durable checkpoint after lag; structured tool/approval production remains absent |
 | Persist/resume human conversations | Implemented in TUI, chat, and HTTP; absent in ACP | TUI reloads/switches durable sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
@@ -202,7 +202,7 @@ gaps are:
 - `/` in normal mode invokes search, while `/` typed in the Console composer
   opens the shared-registry picker;
 - Command mode handles only Escape;
-- registry-derived completion/help and the truthful help/status/new/resume
+- registry-derived completion/help and the truthful help/status/new/resume/model
   subset execute, but word navigation and broader command parity remain open;
 - composer history and transcript reload durably, and `s` opens a bounded
   asynchronous same-agent session picker with stale-result guards;
@@ -1018,8 +1018,8 @@ available for inspection.
 
 - [x] Add interaction session/turn/run-link/event migrations and SQLite adapter.
 - [x] Define surface-neutral `InteractionService` traits and config/target types.
-- [x] Implement the target-only durable `InteractionService` against the
-  production runtime.
+- [x] Implement the single-agent durable `InteractionService` with persisted
+  target and model config against the production runtime.
 - [x] Prepare caller-identified correlated runs without events, link the turn,
   subscribe, and only then activate the earliest lifecycle event.
 - [x] Atomically persist user input before execution and assistant transcript
@@ -1051,14 +1051,16 @@ a role-safe harness/session context contract.
 
 ### Phase 2 — focused terminal chat (P0/P1)
 
-- [x] Add the target-only `polkagent chat` CLI surface over the retained runtime
-  and durable interaction service.
+- [x] Add the single-agent `polkagent chat` CLI surface over the retained
+  runtime and durable interaction service.
 - [x] Implement line-oriented multiline composition, durable transcript resume,
   typed streaming, checkpoint resubscribe, and Ctrl-C cancellation.
-- [x] Execute the truthful help/status/cancel/new/resume subset through shared
+- [x] Execute the truthful help/status/cancel/new/resume/model subset through shared
   slash-command handlers.
-- [ ] Add interactive editing/completion and execution-scoped model/provider/
-  agent selectors; unsupported configuration currently fails explicitly.
+- [x] Add persisted execution-scoped `/model` selection with same-provider
+  validation, restart/isolation proof, and no AgentSpec or transcript mutation.
+- [ ] Add richer interactive editing plus provider/agent selectors; unsupported
+  configuration currently fails explicitly.
 - [x] Test non-TTY stdout/stderr behavior, restart resume, refusal, and SIGINT
   cancellation. The surface does not enter raw/alternate-screen mode.
 
@@ -1078,6 +1080,9 @@ a role-safe harness/session context contract.
 - [x] Execute `/help`, `/status`, `/new`, and `/resume` through the shared
   command executor with structured pending/completed/failed output, stale-result
   guards, exact conversation switching, and no accidental model turn.
+- [x] Execute `/model [id]` through the same durable service path, render the
+  current selection in status/header, and prove conversation isolation,
+  restart, typed refusal, and stale-result guards without creating a turn.
 - [x] Add an explicit durable conversation selector. `s` asynchronously lists
   a bounded set of same-agent summaries, loads the exact selected transcript,
   excludes foreign-agent sessions, refuses during active work, and has restart
@@ -1247,8 +1252,8 @@ Zed, not merely a single-agent chat wrapper.
 | `polkagent-conversation` | Treat as durable transcript store under interaction service |
 | `polkagent-store-sqlite` | Session/turn/run-link/event persistence exists; connect it through the full interaction service and transcript transaction order |
 | `polkagent-cli/src/main.rs` | Early ACP dispatch, one-shot/TUI/chat/ACP/serve runtime convergence, and ACP-safe bounded diagnostics exist |
-| `polkagent-cli/src/commands/chat.rs` | Target-only durable line-mode chat exists; add richer editing/config only after execution semantics are truthful |
-| `polkagent-cli/src/tui/` | Durable prompt/cancel/history plus shared command discovery/completion exist; add command-result UI, async input, explicit session selection, and orchestration |
+| `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation model selection exists; add richer editing/config only after execution semantics are truthful |
+| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/model selection plus shared command execution exists; add async input, structured tool/approval projection, and orchestration |
 | `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime exists; add truthful adapters for the published optional-route 501 boundary |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
 | Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance exist; attach manual Zed and cross-surface acceptance evidence |
@@ -1304,7 +1309,7 @@ External primary references:
 ## Final recommendation
 
 The terminal, TUI, HTTP, and ACP slices are shipped and intentionally bounded.
-`RuntimeFactory` plus the target-only durable interaction/store/event/command
+`RuntimeFactory` plus the single-agent, model-selectable durable interaction/store/event/command
 service now exist. One-shot run, TUI, chat, ACP, and `serve` share that runtime;
 TUI/chat/HTTP also share the durable interaction lifecycle. Next migrate ACP,
 define role-safe harness history, expand truthful command coverage, and connect

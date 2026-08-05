@@ -93,6 +93,11 @@ reports.
   appends to it. Controller/reducer coverage enforces the 1,000-summary scan and
   50-row display bounds, active-work refusal, empty/error guidance, and stale
   list/load result guards; selection creates no model turn.
+  Durable `/model` fixtures drive two conversations through distinct real
+  captured executor model IDs, survive service and process restart, retain the
+  selected model in the TUI header/status, and reject unknown, cross-provider,
+  and unsupported harness changes. They also prove commands create no turns
+  and never mutate the shared AgentSpec.
   Separate terminal-chat subprocess tests prove exact non-TTY stdout, restart
   transcript resume, explicit configuration refusal, shared-command help, and
   SIGINT cancellation with durable terminal state. These are single-surface
@@ -134,6 +139,10 @@ reports.
   same-provider model and target validation, two-session isolation, restart,
   deprecated target-route compatibility, and refusal of unsupported tags and
   extra fields with no partial mutation or turn/run creation.
+  All 51 legacy OpenAPI `nullable` uses were converted to 3.1 primitive unions
+  or explicit `$ref`/null `anyOf` composition. A recursive contract test guards
+  the dialect and representative semantics; Redocly 2 moved from 51 errors and
+  22 warnings to zero errors and the same 22 style warnings.
 
 - **OBS-01 / event-ID lookup slice (2026-08-05):** store-trait, SQLite,
   conformance, and API tests find a target after 10,001 earlier events. The

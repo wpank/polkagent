@@ -71,14 +71,19 @@ The audit intentionally treats tests such as “returns 501 when store is not
 configured” as contract coverage and simultaneous evidence that production
 startup still has a wiring gap.
 
+The published schema now uses OpenAPI 3.1 null unions throughout. Recursive
+contract tests reject legacy `nullable`, preserve representative primitive and
+`$ref` null semantics, and keep router parity exact. Redocly 2 reports zero
+dialect errors and 22 remaining style warnings.
+
 ## Product-surface status
 
 | Surface/capability | Component state | Product state | Decisive gap |
 |---|---|---|---|
 | One-shot CLI run | Uses the shared `RuntimeFactory`; subprocess and durable-restart coverage pass | Partially usable | All primary executable surfaces now share the factory, but tools/effects/policy are not a real model loop. |
-| Monitoring TUI | Rich views plus a durable F9 Console, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, and a durable session selector | Actionable for one turn at a time and restart-resumable | Prompt/follow-up/live typed output/cancel, bounded contextual model-executor history, help/status/new/resume, and exact same-agent session switching run through shared services; broader commands, simultaneous orchestration, harness context, and service-routed approvals remain. |
+| Monitoring TUI | Rich views plus a durable F9 Console, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, and a durable session selector | Actionable for one turn at a time and restart-resumable | Prompt/follow-up/live typed output/cancel, bounded contextual model-executor history, help/status/new/resume/model, and exact same-agent session switching run through shared services; broader commands, simultaneous orchestration, harness context, and service-routed approvals remain. |
 | REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool discovery, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, strict persisted target/model configuration, finite replay, and checkpointed SSE survive restart and match tested OpenAPI schemas; 15 optional skill/memory/audit/registry routes, two separately documented WebSocket transports, full shutdown, and cross-surface E2E remain. |
-| Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable target-only line-mode session | Interactive/non-TTY prompt, multiline input, contextual model-executor follow-up, transcript resume, lag replay, and SIGINT cancellation work; model/provider/agent changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
+| Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable single-agent, model-selectable line-mode session | Interactive/non-TTY prompt, multiline input, contextual model-executor follow-up, transcript resume, persisted conversation-scoped `/model`, lag replay, and SIGINT cancellation work; agent/provider/harness/autonomy changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
 | Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio slice with shared-registry discovery, native agent/model selectors, and executable subprocess coverage | Executable protocol slice; editor interoperability and UX unverified | No durable list/load/import or shared conversations; provider/target/autonomy selectors, structured tools/permissions, MCP passthrough, and Zed tool/approval/restart smoke remain. |
 | Providers/harnesses | Many adapters exist | Partially composed | Each adapter needs shared-runtime conformance and real failure/readiness evidence. |
@@ -111,7 +116,7 @@ startup still has a wiring gap.
 | 11 Deployment/cloud | Container boot/config/HTTP drain/same-volume replacement verified; broader scaffolding exists | Single-instance SQLite only | CLI marker persistence, not durable API/run recovery | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | Durable terminal chat plus monitoring TUI with durable actionable Console | Partial | Target-only contextual model-executor follow-up/restart/cancel and a command subset are tested; harness context, approvals, broader commands, and orchestration remain | Active P0/P1 + PRD-19 |
-| 14 API/config | Shared-runtime durable core, interaction routes, and broad control-plane routes | Agent/run/artifact/tool/interaction reads and mutations plus checkpointed interaction SSE are composed; 15 optional skill/memory/audit/registry routes remain explicitly unavailable | HTTP interaction retry/cancel/replay/live reconnect/restart/auth/read-only proof and zero-drift ordinary HTTP/OpenAPI parity exist; two WebSocket frame protocols are separately documented | Active P0/P1 |
+| 14 API/config | Shared-runtime durable core, interaction routes, and broad control-plane routes | Agent/run/artifact/tool/interaction reads and mutations plus checkpointed interaction SSE are composed; 15 optional skill/memory/audit/registry routes remain explicitly unavailable | HTTP interaction retry/cancel/replay/live reconnect/restart/auth/read-only proof, zero-drift ordinary HTTP parity, and an OpenAPI 3.1-valid schema exist; two WebSocket frame protocols are separately documented | Active P0/P1 |
 | 15 Testing | Broad passing check/test/rustdoc suite; mandatory and extended Clippy gates are locally green | Production paths remain under-tested | Hosted CI confirmation plus live/client/ops gates missing | Active cross-cutting |
 | 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
 | 19 Interactive/ACP | ACP server, durable terminal chat/TUI, shared runtime, headless interaction service, HTTP adapter, and command handlers implemented | TUI, chat, and API consume `InteractionService`; ACP reuses the runtime but still owns an ephemeral run/session mapping | Headless and surface tests prove transcript/correlation, typed contextual model-executor follow-up, retry/cancel/replay/restart; harness context, approvals/tools, full Zed, and cross-surface conformance remain | Active P0/P1 |
@@ -155,14 +160,20 @@ startup still has a wiring gap.
   turn or command is active, guards stale list/load results, and has restart
   evidence that a foreign-agent session is excluded and the selected exact
   transcript receives the next prompt.
+  `/model [id]` uses the same service executor and persisted per-conversation
+  config; the header/status/result projection follows the selection and rejects
+  stale request, agent, or original-conversation results. Restart, two-session
+  isolation, unknown/cross-provider/harness refusal, unchanged shared AgentSpec,
+  and zero-command-turn coverage pass.
 - `crates/polkagent-cli/src/commands/chat.rs` implements retained-runtime
   interactive and non-TTY durable chat. It creates or resumes an interaction,
   accepts multiline input, streams typed updates with checkpoint resubscribe,
   and keeps assistant text on stdout while lifecycle/usage diagnostics use
-  stderr. Shared handlers execute the truthful help/status/cancel/new/resume
-  subset; unsupported configuration, approval, inspection, and group commands
+  stderr. Shared handlers execute the truthful help/status/cancel/new/resume/
+  model subset; unsupported configuration, approval, inspection, and group commands
   fail explicitly. Process tests prove clean output, restart transcript resume,
-  refusal, and SIGINT cancellation with durable terminal state.
+  persisted conversation-model selection, refusal, and SIGINT cancellation
+  with durable terminal state.
 - `crates/polkagent-api/src/durable.rs` provides strict SQLite-backed
   `RuntimeAgentStore` and `RuntimeRunManager` components over one
   `PolkagentRuntime`/`AppService`. They keep durable agents synchronized with
