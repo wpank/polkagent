@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::pool::PgPool;
 
-fn map_pg_err(e: sqlx::Error) -> StoreError {
-    match &e {
+fn map_pg_err(e: &sqlx::Error) -> StoreError {
+    match e {
         sqlx::Error::Database(db_err) => {
             if db_err.is_unique_violation() {
                 StoreError::Conflict {
@@ -44,13 +44,37 @@ fn parse_id<T: From<Uuid>>(s: &str, resource_type: &'static str) -> Result<T, St
         })
 }
 
-fn derive_state(claimed_by: &Option<String>) -> &str {
-    match claimed_by.as_deref() {
+fn derive_state(claimed_by: Option<&str>) -> &str {
+    match claimed_by {
         None => "pending",
         Some("resolved") => "resolved",
         Some("failed") => "failed",
         Some("permanently_failed") => "permanently_failed",
         Some(_) => "claimed",
+    }
+}
+
+fn priority_from_payload(payload: &serde_json::Value) -> Result<i32, StoreError> {
+    let Some(value) = payload.get("priority") else {
+        return Ok(1);
+    };
+
+    match value {
+        serde_json::Value::Number(number) => {
+            let value = number.as_i64().ok_or_else(|| StoreError::Serialisation {
+                message: format!("intent priority is not a signed integer: {number}"),
+            })?;
+            i32::try_from(value).map_err(|_| StoreError::Serialisation {
+                message: format!("intent priority {value} exceeds PostgreSQL INTEGER capacity"),
+            })
+        }
+        serde_json::Value::String(value) => Ok(match value.as_str() {
+            "low" => 0,
+            "high" => 2,
+            "critical" => 3,
+            _ => 1,
+        }),
+        _ => Ok(1),
     }
 }
 
@@ -65,7 +89,7 @@ fn row_to_intent(row: &sqlx::postgres::PgRow) -> Result<StoredIntent, StoreError
     let idempotency_key: String = row.get("idempotency_key");
     let created_at: chrono::DateTime<Utc> = row.get("created_at");
 
-    let state = derive_state(&claimed_by).to_string();
+    let state = derive_state(claimed_by.as_deref()).to_string();
 
     let lease_owner = claimed_by
         .as_deref()
@@ -133,21 +157,7 @@ impl EffectStore for PgPool {
                 message: format!("params: {e}"),
             })?;
 
-        let priority: i32 = intent
-            .payload
-            .get("priority")
-            .and_then(|v| match v {
-                serde_json::Value::Number(n) => n.as_i64().map(|n| n as i32),
-                serde_json::Value::String(s) => match s.as_str() {
-                    "low" => Some(0),
-                    "normal" => Some(1),
-                    "high" => Some(2),
-                    "critical" => Some(3),
-                    _ => Some(1),
-                },
-                _ => Some(1),
-            })
-            .unwrap_or(1);
+        let priority = priority_from_payload(&intent.payload)?;
 
         let mut tx = self
             .pool()
@@ -156,7 +166,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -185,7 +195,7 @@ impl EffectStore for PgPool {
                     id: id_str.clone(),
                 }
             } else {
-                map_pg_err(e)
+                map_pg_err(&e)
             }
         })?;
 
@@ -213,7 +223,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -235,7 +245,7 @@ impl EffectStore for PgPool {
         .bind(lease_until)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         let result = match maybe_row {
             Some(row) => Some(row_to_intent(&row)?),
@@ -269,7 +279,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -289,31 +299,27 @@ impl EffectStore for PgPool {
         .bind(now)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
-        let result = match maybe_row {
-            Some(row) => row_to_intent(&row)?,
-            None => {
-                let exists: bool =
-                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM effect_intents WHERE id = $1)")
-                        .bind(&id_str)
-                        .fetch_one(&mut *tx)
-                        .await
-                        .map_err(map_pg_err)?;
+        let Some(row) = maybe_row else {
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM effect_intents WHERE id = $1)")
+                    .bind(&id_str)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| map_pg_err(&e))?;
 
-                if !exists {
-                    return Err(StoreError::NotFound {
-                        resource_type: "EffectIntent",
-                        id: id_str,
-                    });
-                }
-                return Err(StoreError::InvalidTransition {
-                    message: format!(
-                        "intent {id_str} is not claimable (already claimed or resolved)"
-                    ),
+            if !exists {
+                return Err(StoreError::NotFound {
+                    resource_type: "EffectIntent",
+                    id: id_str,
                 });
             }
+            return Err(StoreError::InvalidTransition {
+                message: format!("intent {id_str} is not claimable (already claimed or resolved)"),
+            });
         };
+        let result = row_to_intent(&row)?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),
@@ -336,7 +342,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -351,7 +357,7 @@ impl EffectStore for PgPool {
         .bind(&worker_str)
         .execute(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),
@@ -369,7 +375,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -381,7 +387,7 @@ impl EffectStore for PgPool {
         .bind(&id_str)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(map_pg_err)?
+        .map_err(|e| map_pg_err(&e))?
         .ok_or_else(|| StoreError::NotFound {
             resource_type: "EffectIntent",
             id: id_str.clone(),
@@ -400,7 +406,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -412,7 +418,7 @@ impl EffectStore for PgPool {
         .bind(&run_str)
         .fetch_all(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         rows.iter().map(row_to_intent).collect()
     }
@@ -431,7 +437,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -444,7 +450,7 @@ impl EffectStore for PgPool {
         .bind(key)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         match maybe_row {
             Some(row) => Ok(Some(row_to_intent(&row)?)),
@@ -462,7 +468,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -477,7 +483,7 @@ impl EffectStore for PgPool {
         .bind(cutoff_dt)
         .fetch_all(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         rows.iter().map(row_to_intent).collect()
     }
@@ -503,7 +509,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -516,7 +522,7 @@ impl EffectStore for PgPool {
         .bind(&id_str)
         .execute(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound {
@@ -531,7 +537,7 @@ impl EffectStore for PgPool {
         .bind(&id_str)
         .fetch_one(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         let intent = row_to_intent(&row)?;
 
@@ -557,7 +563,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -574,7 +580,7 @@ impl EffectStore for PgPool {
         .bind(payload)
         .execute(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),
@@ -596,7 +602,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -623,7 +629,7 @@ impl EffectStore for PgPool {
                     id: id_str.clone(),
                 }
             } else {
-                map_pg_err(e)
+                map_pg_err(&e)
             }
         })?;
 
@@ -634,7 +640,7 @@ impl EffectStore for PgPool {
         .bind(&intent_id_str)
         .execute(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),
@@ -652,7 +658,7 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -667,7 +673,7 @@ impl EffectStore for PgPool {
         .bind(&run_str)
         .fetch_all(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         rows.iter()
             .map(|row| {
@@ -705,18 +711,18 @@ impl EffectStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
             })?;
 
-        let ids: Vec<String> = outcome_ids.iter().map(|id| id.to_string()).collect();
+        let ids: Vec<String> = outcome_ids.iter().map(ToString::to_string).collect();
         sqlx::query("UPDATE effect_outcomes SET consumed = TRUE WHERE id = ANY($1)")
             .bind(&ids)
             .execute(&mut *tx)
             .await
-            .map_err(map_pg_err)?;
+            .map_err(|e| map_pg_err(&e))?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),

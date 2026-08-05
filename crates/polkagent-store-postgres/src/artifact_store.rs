@@ -6,7 +6,7 @@ use sqlx::Row;
 
 use crate::pool::PgPool;
 
-fn map_pg_err(e: sqlx::Error) -> StoreError {
+fn map_pg_err(e: &sqlx::Error) -> StoreError {
     StoreError::Internal {
         message: format!("postgres error: {e}"),
     }
@@ -60,7 +60,9 @@ impl ArtifactStore for PgPool {
         let run_id_str = run_id.map(|r| r.to_string());
         let tenant = self.tenant_id().to_string();
         let now = Utc::now();
-        let size_bytes = body.len() as i64;
+        let size_bytes = i64::try_from(body.len()).map_err(|_| StoreError::Internal {
+            message: "artifact body length exceeds PostgreSQL BIGINT capacity".to_string(),
+        })?;
         let body = body.to_vec();
 
         let mut tx = self
@@ -70,7 +72,7 @@ impl ArtifactStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -93,7 +95,7 @@ impl ArtifactStore for PgPool {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         // Upsert body (content-addressed, deduped).
         sqlx::query(
@@ -105,7 +107,7 @@ impl ArtifactStore for PgPool {
         .bind(&body)
         .execute(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),
@@ -123,7 +125,7 @@ impl ArtifactStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -136,8 +138,8 @@ impl ArtifactStore for PgPool {
         .bind(&id_str)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(map_pg_err)?
-        .ok_or_else(|| StoreError::NotFound {
+        .map_err(|e| map_pg_err(&e))?
+        .ok_or(StoreError::NotFound {
             resource_type: "Artifact",
             id: id_str,
         })?;
@@ -155,7 +157,7 @@ impl ArtifactStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -167,7 +169,7 @@ impl ArtifactStore for PgPool {
                 .bind(&id_str)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(map_pg_err)?
+                .map_err(|e| map_pg_err(&e))?
                 .ok_or_else(|| StoreError::NotFound {
                     resource_type: "Artifact",
                     id: id_str.clone(),
@@ -179,7 +181,7 @@ impl ArtifactStore for PgPool {
                 .bind(&digest_hex)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(map_pg_err)?
+                .map_err(|e| map_pg_err(&e))?
                 .ok_or_else(|| StoreError::NotFound {
                     resource_type: "ArtifactBody",
                     id: id_str.clone(),
@@ -207,7 +209,7 @@ impl ArtifactStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -219,11 +221,10 @@ impl ArtifactStore for PgPool {
                 .bind(&id_str)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(map_pg_err)?;
+                .map_err(|e| map_pg_err(&e))?;
 
-        let digest_hex = match maybe_digest {
-            Some(d) => d,
-            None => return Ok(false),
+        let Some(digest_hex) = maybe_digest else {
+            return Ok(false);
         };
 
         // Fetch body.
@@ -232,7 +233,7 @@ impl ArtifactStore for PgPool {
                 .bind(&digest_hex)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(map_pg_err)?;
+                .map_err(|e| map_pg_err(&e))?;
 
         match maybe_body {
             Some(body) => {
@@ -253,7 +254,7 @@ impl ArtifactStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -268,7 +269,7 @@ impl ArtifactStore for PgPool {
         .bind(&run_str)
         .fetch_all(&mut *tx)
         .await
-        .map_err(map_pg_err)?;
+        .map_err(|e| map_pg_err(&e))?;
 
         rows.iter().map(row_to_summary).collect()
     }

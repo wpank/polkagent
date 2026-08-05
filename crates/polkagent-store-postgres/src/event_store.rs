@@ -20,23 +20,65 @@ fn map_pg_err(e: sqlx::Error) -> EventStoreError {
     EventStoreError::Backend(Box::new(e))
 }
 
+fn db_i64_to_u64(value: i64, field: &str) -> Result<u64, EventStoreError> {
+    u64::try_from(value).map_err(|_| {
+        EventStoreError::Serialisation(format!(
+            "negative PostgreSQL BIGINT for event {field}: {value}"
+        ))
+    })
+}
+
+fn db_i32_to_u32(value: i32, field: &str) -> Result<u32, EventStoreError> {
+    u32::try_from(value).map_err(|_| {
+        EventStoreError::Serialisation(format!(
+            "negative PostgreSQL INTEGER for event {field}: {value}"
+        ))
+    })
+}
+
+fn u64_to_db_i64(value: u64, field: &str) -> Result<i64, EventStoreError> {
+    i64::try_from(value).map_err(|_| {
+        EventStoreError::Serialisation(format!(
+            "event {field} {value} exceeds PostgreSQL BIGINT capacity"
+        ))
+    })
+}
+
+fn u32_to_db_i32(value: u32, field: &str) -> Result<i32, EventStoreError> {
+    i32::try_from(value).map_err(|_| {
+        EventStoreError::Serialisation(format!(
+            "event {field} {value} exceeds PostgreSQL INTEGER capacity"
+        ))
+    })
+}
+
+fn usize_to_db_i64(value: usize, field: &str) -> Result<i64, EventStoreError> {
+    i64::try_from(value).map_err(|_| {
+        EventStoreError::Serialisation(format!(
+            "event {field} {value} exceeds PostgreSQL BIGINT capacity"
+        ))
+    })
+}
+
 fn row_to_event(row: &sqlx::postgres::PgRow) -> Result<StoredEvent, EventStoreError> {
     let global_sequence: i64 = row.get("global_sequence");
+    let sequence: i64 = row.get("sequence");
+    let schema_version: i32 = row.get("schema_version");
     let data_json: serde_json::Value = row.get("data_json");
     let correlation_id: Option<String> = row.get("correlation_id");
 
     Ok(StoredEvent {
         id: row.get("id"),
         run_id: row.get("run_id"),
-        sequence: row.get::<i64, _>("sequence") as u64,
+        sequence: db_i64_to_u64(sequence, "sequence")?,
         event_type: row.get("kind"),
         payload: data_json,
         timestamp: row
             .get::<chrono::DateTime<chrono::Utc>, _>("timestamp")
             .to_rfc3339(),
         correlation_id: correlation_id.unwrap_or_default(),
-        schema_version: row.get::<i32, _>("schema_version") as u32,
-        global_sequence: global_sequence as u64,
+        schema_version: db_i32_to_u32(schema_version, "schema_version")?,
+        global_sequence: db_i64_to_u64(global_sequence, "global_sequence")?,
         conversation_id: None,
         causation_id: None,
         scope_id: String::new(),
@@ -53,9 +95,11 @@ const EVENT_COLS: &str =
 impl EventStore for PgPool {
     async fn append_durable(&self, event: StoredEvent) -> Result<StoredEvent, EventStoreError> {
         let tenant = self.tenant_id().to_string();
+        let sequence = u64_to_db_i64(event.sequence, "sequence")?;
+        let schema_version = u32_to_db_i32(event.schema_version, "schema_version")?;
 
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
-        self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
+        self.set_tenant(&mut tx).await.map_err(map_pg_err)?;
 
         // 1. Non-monotonic sequence check.
         let current_max: Option<i64> =
@@ -65,7 +109,7 @@ impl EventStore for PgPool {
                 .await
                 .map_err(map_pg_err)?;
 
-        let current_max = current_max.unwrap_or(0) as u64;
+        let current_max = db_i64_to_u64(current_max.unwrap_or(0), "sequence")?;
         if event.sequence <= current_max {
             return Err(EventStoreError::NonMonotonicSequence {
                 run_id: event.run_id.clone(),
@@ -109,12 +153,12 @@ impl EventStore for PgPool {
         .bind(&event.id)
         .bind(&tenant)
         .bind(&event.run_id)
-        .bind(event.sequence as i64)
+        .bind(sequence)
         .bind(&event.event_type)
         .bind(payload)
         .bind(ts)
         .bind(&event.correlation_id)
-        .bind(event.schema_version as i32)
+        .bind(schema_version)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
@@ -137,6 +181,8 @@ impl EventStore for PgPool {
         expires_at: String,
     ) -> Result<(), EventStoreError> {
         let tenant = self.tenant_id().to_string();
+        let sequence = u64_to_db_i64(event.sequence, "sequence")?;
+        let schema_version = u32_to_db_i32(event.schema_version, "schema_version")?;
 
         let ts = chrono::DateTime::parse_from_rfc3339(&event.timestamp)
             .map(|dt| dt.with_timezone(&chrono::Utc))
@@ -147,7 +193,7 @@ impl EventStore for PgPool {
             .map_err(|e| EventStoreError::Serialisation(format!("invalid expires_at: {e}")))?;
 
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
-        self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
+        self.set_tenant(&mut tx).await.map_err(map_pg_err)?;
 
         sqlx::query(
             "INSERT INTO diagnostic_events
@@ -157,12 +203,12 @@ impl EventStore for PgPool {
         .bind(&event.id)
         .bind(&tenant)
         .bind(&event.run_id)
-        .bind(event.sequence as i64)
+        .bind(sequence)
         .bind(&event.event_type)
         .bind(&event.payload)
         .bind(ts)
         .bind(&event.correlation_id)
-        .bind(event.schema_version as i32)
+        .bind(schema_version)
         .bind(expires)
         .execute(&mut *tx)
         .await
@@ -177,8 +223,10 @@ impl EventStore for PgPool {
         cursor: u64,
         limit: usize,
     ) -> Result<Vec<StoredEvent>, EventStoreError> {
+        let cursor = u64_to_db_i64(cursor, "cursor")?;
+        let limit = usize_to_db_i64(limit, "limit")?;
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
-        self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
+        self.set_tenant(&mut tx).await.map_err(map_pg_err)?;
 
         let rows = sqlx::query(&format!(
             "SELECT {EVENT_COLS} FROM durable_events
@@ -186,8 +234,8 @@ impl EventStore for PgPool {
              ORDER BY global_sequence ASC
              LIMIT $2"
         ))
-        .bind(cursor as i64)
-        .bind(limit as i64)
+        .bind(cursor)
+        .bind(limit)
         .fetch_all(&mut *tx)
         .await
         .map_err(map_pg_err)?;
@@ -199,7 +247,7 @@ impl EventStore for PgPool {
         let run_str = run_id.to_string();
 
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
-        self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
+        self.set_tenant(&mut tx).await.map_err(map_pg_err)?;
 
         let rows = sqlx::query(&format!(
             "SELECT {EVENT_COLS} FROM durable_events
@@ -220,7 +268,7 @@ impl EventStore for PgPool {
 
         // We will build up bind values with a dynamic query approach
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
-        self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
+        self.set_tenant(&mut tx).await.map_err(map_pg_err)?;
 
         let mut binds_run_id = None;
         let mut binds_event_types = Vec::new();
@@ -241,7 +289,7 @@ impl EventStore for PgPool {
 
         if let Some(since) = filter.since_global_sequence {
             conditions.push(format!("global_sequence >= ${param_idx}"));
-            binds_since = Some(since as i64);
+            binds_since = Some(u64_to_db_i64(since, "since_global_sequence")?);
             param_idx += 1;
         }
 
@@ -252,7 +300,7 @@ impl EventStore for PgPool {
         };
 
         let limit_clause = if let Some(limit) = filter.limit {
-            binds_limit = Some(limit as i64);
+            binds_limit = Some(usize_to_db_i64(limit, "limit")?);
             format!("LIMIT ${param_idx}")
         } else {
             String::new()
@@ -287,7 +335,7 @@ impl EventStore for PgPool {
         let run_str = run_id.to_string();
 
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
-        self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
+        self.set_tenant(&mut tx).await.map_err(map_pg_err)?;
 
         let max: Option<i64> =
             sqlx::query_scalar("SELECT MAX(sequence) FROM durable_events WHERE run_id = $1")
@@ -296,14 +344,14 @@ impl EventStore for PgPool {
                 .await
                 .map_err(map_pg_err)?;
 
-        Ok(max.unwrap_or(0) as u64)
+        db_i64_to_u64(max.unwrap_or(0), "sequence")
     }
 
     async fn has_terminal_event(&self, run_id: RunId) -> Result<bool, EventStoreError> {
         let run_str = run_id.to_string();
 
         let mut tx = self.pool().begin().await.map_err(map_pg_err)?;
-        self.set_tenant(&mut *tx).await.map_err(map_pg_err)?;
+        self.set_tenant(&mut tx).await.map_err(map_pg_err)?;
 
         let has: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM durable_events WHERE run_id = $1 AND kind = ANY($2))",

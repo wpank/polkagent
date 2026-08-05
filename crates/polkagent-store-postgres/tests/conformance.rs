@@ -1,11 +1,17 @@
-//! PRD-15 conformance tests for the PostgreSQL store adapter.
+//! PRD-15 conformance tests for the `PostgreSQL` store adapter.
 //!
-//! These tests require a live PostgreSQL instance. Set the
+//! These tests require a live `PostgreSQL` instance. Set the
 //! `TEST_DATABASE_URL` environment variable to run them:
 //!
-//!   TEST_DATABASE_URL=postgres://user:pass@localhost/polkagent_test cargo test -p polkagent-store-postgres
+//! ```text
+//! TEST_DATABASE_URL=postgres://user:pass@localhost/polkagent_test cargo test -p polkagent-store-postgres
+//! ```
 //!
 //! If `TEST_DATABASE_URL` is not set, these tests are skipped.
+
+// This assertion-oriented conformance target uses `expect` to identify the
+// exact live-database fixture step or shared store contract that failed.
+#![allow(clippy::expect_used)]
 
 use polkagent_core::ids::{RunId, StepId};
 use polkagent_store_postgres::PgPool;
@@ -15,9 +21,8 @@ use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, Sto
 const TEST_AGENT: &str = "conformance-agent";
 
 async fn maybe_pool() -> Option<PgPool> {
-    let url = match std::env::var("TEST_DATABASE_URL") {
-        Ok(u) => u,
-        Err(_) => return None,
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        return None;
     };
 
     let tenant = uuid::Uuid::now_v7().to_string();
@@ -26,7 +31,7 @@ async fn maybe_pool() -> Option<PgPool> {
 
     // Insert a test agent for FK constraints.
     let mut tx = pool.pool().begin().await.ok()?;
-    pool.set_tenant(&mut *tx).await.ok()?;
+    pool.set_tenant(&mut tx).await.ok()?;
     sqlx::query(
         "INSERT INTO agents (id, tenant_id, name, state, spec_json)
          VALUES ($1, $2, 'Conformance Agent', 'active', '{}')",
@@ -53,7 +58,7 @@ impl EventStoreWithRunSetup {
 
     async fn ensure_run_exists(&self, run_id: &str) {
         let mut tx = self.pool.pool().begin().await.expect("begin tx");
-        self.pool.set_tenant(&mut *tx).await.expect("set tenant");
+        self.pool.set_tenant(&mut tx).await.expect("set tenant");
         sqlx::query(
             "INSERT INTO runs (id, tenant_id, agent_id, state, params_json)
              VALUES ($1, $2, $3, 'created', '{}')
@@ -119,7 +124,7 @@ impl EventStore for EventStoreWithRunSetup {
 async fn insert_run_with_step(pool: &PgPool, run_id: RunId) -> StepId {
     let tenant = pool.tenant_id().to_string();
     let mut tx = pool.pool().begin().await.expect("begin tx");
-    pool.set_tenant(&mut *tx).await.expect("set tenant");
+    pool.set_tenant(&mut tx).await.expect("set tenant");
 
     sqlx::query(
         "INSERT INTO runs (id, tenant_id, agent_id, state, params_json)

@@ -3,7 +3,11 @@
 //! These tests verify that row-level security enforces tenant isolation:
 //! data written by tenant A must be invisible to tenant B.
 //!
-//! Requires a live PostgreSQL instance with `TEST_DATABASE_URL` set.
+//! Requires a live `PostgreSQL` instance with `TEST_DATABASE_URL` set.
+
+// This assertion-oriented integration target uses `expect` to identify the
+// exact live-database setup or tenant-isolation contract that failed.
+#![allow(clippy::expect_used)]
 
 use polkagent_core::ids::{ArtifactId, RunId};
 use polkagent_store_postgres::PgPool;
@@ -12,9 +16,8 @@ use polkagent_store_trait::{ArtifactStore, RunStatus, RunStore, StoreError};
 const AGENT_ID: &str = "cross-tenant-agent";
 
 async fn setup_tenants() -> Option<(PgPool, PgPool)> {
-    let url = match std::env::var("TEST_DATABASE_URL") {
-        Ok(u) => u,
-        Err(_) => return None,
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        return None;
     };
 
     let tenant_a = format!("tenant-a-{}", uuid::Uuid::now_v7());
@@ -28,7 +31,7 @@ async fn setup_tenants() -> Option<(PgPool, PgPool)> {
     // Insert agent for each tenant.
     for pool in [&pool_a, &pool_b] {
         let mut tx = pool.pool().begin().await.ok()?;
-        pool.set_tenant(&mut *tx).await.ok()?;
+        pool.set_tenant(&mut tx).await.ok()?;
         sqlx::query(
             "INSERT INTO agents (id, tenant_id, name, state, spec_json)
              VALUES ($1, $2, 'Cross-Tenant Agent', 'active', '{}')",

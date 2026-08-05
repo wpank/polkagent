@@ -10,8 +10,8 @@ fn parse_ts(dt: chrono::DateTime<Utc>) -> Timestamp {
     dt
 }
 
-fn map_pg_err(e: sqlx::Error) -> StoreError {
-    match &e {
+fn map_pg_err(e: &sqlx::Error) -> StoreError {
+    match e {
         sqlx::Error::Database(db_err) => {
             if db_err.is_unique_violation() {
                 StoreError::Conflict {
@@ -30,8 +30,8 @@ fn map_pg_err(e: sqlx::Error) -> StoreError {
     }
 }
 
-fn map_pg_err_with_id(e: sqlx::Error, id: &str) -> StoreError {
-    match &e {
+fn map_pg_err_with_id(e: &sqlx::Error, id: &str) -> StoreError {
+    match e {
         sqlx::Error::Database(db_err) => {
             if db_err.is_unique_violation() {
                 StoreError::Conflict {
@@ -69,7 +69,7 @@ impl RunStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -87,7 +87,7 @@ impl RunStore for PgPool {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(|e| map_pg_err_with_id(e, &id_str))?;
+        .map_err(|e| map_pg_err_with_id(&e, &id_str))?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),
@@ -105,7 +105,7 @@ impl RunStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -118,7 +118,7 @@ impl RunStore for PgPool {
         .bind(&id_str)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| map_pg_err(e))?
+        .map_err(|e| map_pg_err(&e))?
         .ok_or_else(|| StoreError::NotFound {
             resource_type: "Run",
             id: id_str.clone(),
@@ -171,7 +171,7 @@ impl RunStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -190,7 +190,7 @@ impl RunStore for PgPool {
         .bind(&id_str)
         .execute(&mut *tx)
         .await
-        .map_err(|e| map_pg_err(e))?;
+        .map_err(|e| map_pg_err(&e))?;
 
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound {
@@ -218,7 +218,7 @@ impl RunStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -232,11 +232,11 @@ impl RunStore for PgPool {
              LIMIT $2 OFFSET $3",
         )
         .bind(agent_id)
-        .bind(limit as i64)
-        .bind(offset as i64)
+        .bind(i64::from(limit))
+        .bind(i64::from(offset))
         .fetch_all(&mut *tx)
         .await
-        .map_err(|e| map_pg_err(e))?;
+        .map_err(|e| map_pg_err(&e))?;
 
         rows.iter()
             .map(|row| {
@@ -277,7 +277,7 @@ impl RunStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -291,11 +291,11 @@ impl RunStore for PgPool {
              LIMIT $2 OFFSET $3",
         )
         .bind(status.as_str())
-        .bind(limit as i64)
-        .bind(offset as i64)
+        .bind(i64::from(limit))
+        .bind(i64::from(offset))
         .fetch_all(&mut *tx)
         .await
-        .map_err(|e| map_pg_err(e))?;
+        .map_err(|e| map_pg_err(&e))?;
 
         rows.iter()
             .map(|row| {
@@ -352,6 +352,15 @@ impl RunStore for PgPool {
                     })
             })
             .transpose()?;
+        let sequence = i32::try_from(sequence).map_err(|_| StoreError::Internal {
+            message: "turn sequence exceeds PostgreSQL INTEGER capacity".to_string(),
+        })?;
+        let input_tokens = i32::try_from(input_tokens).map_err(|_| StoreError::Internal {
+            message: "turn input token count exceeds PostgreSQL INTEGER capacity".to_string(),
+        })?;
+        let output_tokens = i32::try_from(output_tokens).map_err(|_| StoreError::Internal {
+            message: "turn output token count exceeds PostgreSQL INTEGER capacity".to_string(),
+        })?;
 
         let mut tx = self
             .pool()
@@ -360,7 +369,7 @@ impl RunStore for PgPool {
             .map_err(|e| StoreError::ConnectionError {
                 message: format!("begin transaction: {e}"),
             })?;
-        self.set_tenant(&mut *tx)
+        self.set_tenant(&mut tx)
             .await
             .map_err(|e| StoreError::Internal {
                 message: format!("set tenant: {e}"),
@@ -373,15 +382,15 @@ impl RunStore for PgPool {
         .bind(&turn_id_str)
         .bind(&tenant)
         .bind(&run_id_str)
-        .bind(sequence as i32)
+        .bind(sequence)
         .bind(role)
         .bind(started_at_dt)
         .bind(completed_at_dt)
-        .bind(input_tokens as i32)
-        .bind(output_tokens as i32)
+        .bind(input_tokens)
+        .bind(output_tokens)
         .execute(&mut *tx)
         .await
-        .map_err(|e| map_pg_err_with_id(e, &turn_id_str))?;
+        .map_err(|e| map_pg_err_with_id(&e, &turn_id_str))?;
 
         tx.commit().await.map_err(|e| StoreError::Internal {
             message: format!("commit: {e}"),
