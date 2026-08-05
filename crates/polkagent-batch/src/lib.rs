@@ -76,6 +76,11 @@ pub use store::{BatchStore, StoredBatch};
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "batch tests intentionally panic at asynchronous processing, persistence, and rejection fixture boundaries"
+)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
