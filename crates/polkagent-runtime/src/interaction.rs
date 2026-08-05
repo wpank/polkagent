@@ -204,6 +204,16 @@ impl DurableInteractionService {
             .map_err(|_| internal_error("stored interaction agent identity is invalid"))
     }
 
+    fn resolve_model_config(
+        &self,
+        agent_id: AgentId,
+        requested: Option<&str>,
+    ) -> Result<Option<String>, InteractionError> {
+        self.app
+            .resolve_interaction_model(agent_id, requested)
+            .map_err(model_selection_error)
+    }
+
     async fn finish_turn(
         &self,
         turn_id: InteractionTurnId,
@@ -456,7 +466,12 @@ impl DurableInteractionService {
         let run_events = self.app.subscribe_events();
         let prepared = match self
             .app
-            .prepare_interaction_run(run_id, input.agent_id, input.conversation_id)
+            .prepare_interaction_run_with_model(
+                run_id,
+                input.agent_id,
+                input.conversation_id,
+                input.config.model.as_deref(),
+            )
             .await
         {
             Ok(prepared) => prepared,
@@ -817,7 +832,10 @@ impl InteractionService for DurableInteractionService {
                 "working_directory must be absolute",
             ));
         }
-        let agent_id = self.resolve_target(&request.config.target)?;
+        let mut config = request.config;
+        let agent_id = self.resolve_target(&config.target)?;
+        config.target = InteractionTarget::Agent(agent_id);
+        config.model = self.resolve_model_config(agent_id, config.model.as_deref())?;
         let conversation_id = ConversationId::new();
         let mut conversation = Conversation::new(conversation_id, agent_id);
         conversation.title = request.title;
@@ -825,9 +843,6 @@ impl InteractionService for DurableInteractionService {
         ConversationStore::create(&self.pool, conversation)
             .await
             .map_err(|error| conversation_error("create interaction transcript", &error))?;
-
-        let mut config = request.config;
-        config.target = InteractionTarget::Agent(agent_id);
         match self
             .store
             .create_interaction(NewInteraction {
@@ -922,9 +937,14 @@ impl InteractionService for DurableInteractionService {
                 "archived interactions cannot accept prompts",
             ));
         }
+        // Model precedence is prompt override > persisted interaction model >
+        // registered agent default. `apply_to` resolves the first two; a
+        // resulting `None` remains inheritance and is applied only to the
+        // cloned prepared-run spec.
         let mut config = request.config_overrides.apply_to(&interaction.config)?;
         let agent_id = self.resolve_target(&config.target)?;
         config.target = InteractionTarget::Agent(agent_id);
+        config.model = self.resolve_model_config(agent_id, config.model.as_deref())?;
 
         let turns = self.store.list_turns(request.conversation_id).await?;
         let turn_id = request.turn_id.unwrap_or_default();
@@ -991,11 +1011,18 @@ impl InteractionService for DurableInteractionService {
     ) -> Result<InteractionConfig, InteractionError> {
         update.validate()?;
         let mut config = self.store.load_interaction(conversation_id).await?.config;
-        let ConfigOptionValue::Target(target) = update.value else {
-            return Err(unsupported_config_error());
-        };
-        let agent_id = self.resolve_target(&target)?;
+        match update.value {
+            ConfigOptionValue::Target(target) => config.target = target,
+            ConfigOptionValue::Model(model) => config.model = model,
+            ConfigOptionValue::Provider(_)
+            | ConfigOptionValue::Harness(_)
+            | ConfigOptionValue::Autonomy(_)
+            | ConfigOptionValue::MaxTurns(_)
+            | ConfigOptionValue::Budget(_) => return Err(unsupported_config_error()),
+        }
+        let agent_id = self.resolve_target(&config.target)?;
         config.target = InteractionTarget::Agent(agent_id);
+        config.model = self.resolve_model_config(agent_id, config.model.as_deref())?;
         config.validate()?;
         Ok(self
             .store
@@ -1144,8 +1171,7 @@ fn prompt_text(content: &[InteractionContent]) -> Result<String, InteractionErro
 }
 
 fn ensure_supported_config(config: &InteractionConfig) -> Result<(), InteractionError> {
-    if config.model.is_some()
-        || config.provider.is_some()
+    if config.provider.is_some()
         || config.harness.is_some()
         || config.autonomy != polkagent_core::AutonomyLevel::default()
         || config.max_turns.is_some()
@@ -1157,8 +1183,7 @@ fn ensure_supported_config(config: &InteractionConfig) -> Result<(), Interaction
 }
 
 fn ensure_supported_overrides(overrides: &InteractionOverrides) -> Result<(), InteractionError> {
-    if !matches!(overrides.model, OverrideValue::Inherit)
-        || !matches!(overrides.provider, OverrideValue::Inherit)
+    if !matches!(overrides.provider, OverrideValue::Inherit)
         || !matches!(overrides.harness, OverrideValue::Inherit)
         || overrides.autonomy.is_some()
         || !matches!(overrides.max_turns, OverrideValue::Inherit)
@@ -1172,7 +1197,7 @@ fn ensure_supported_overrides(overrides: &InteractionOverrides) -> Result<(), In
 fn unsupported_config_error() -> InteractionError {
     InteractionError::new(
         InteractionErrorCode::Unsupported,
-        "the shared runtime currently composes only interaction target configuration",
+        "the shared runtime currently composes only interaction target and model configuration",
     )
 }
 
@@ -1259,6 +1284,20 @@ fn conversation_error(context: &str, error: &impl std::fmt::Display) -> Interact
     internal_error(&format!("{context}: durable transcript operation failed"))
 }
 
+fn model_selection_error(error: ServiceError) -> InteractionError {
+    match error {
+        ServiceError::Config { message } => InteractionError::invalid_request(message),
+        ServiceError::Unsupported { message } => {
+            InteractionError::new(InteractionErrorCode::Unsupported, message)
+        }
+        ServiceError::AgentNotFound { .. } => InteractionError::new(
+            InteractionErrorCode::NotFound,
+            "the selected interaction agent is unavailable",
+        ),
+        other => service_error("resolve interaction model", &other),
+    }
+}
+
 fn service_error(context: &str, error: &ServiceError) -> InteractionError {
     tracing::error!(%error, context, "interaction runtime operation failed");
     if let ServiceError::Unsupported { message } = error {
@@ -1281,6 +1320,7 @@ fn service_error(context: &str, error: &ServiceError) -> InteractionError {
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
 
     use futures::Stream;
     use polkagent_config::Config;
@@ -1288,7 +1328,10 @@ mod tests {
     use polkagent_core::{AgentSpec, ApprovalId, EventId};
     use polkagent_event::{EventBus, EventRecorder};
     use polkagent_executor_fake::FakeExecutor;
-    use polkagent_executor_trait::ModelExecutor;
+    use polkagent_executor_trait::{
+        ExecutorError, InferenceRequest, InferenceResponse, ModelExecutor, StreamEvent,
+        TokenUsage as ExecutorTokenUsage,
+    };
     use polkagent_harness_trait::{
         CancelMode, Harness, HarnessCapabilities, HarnessError, HarnessEvent, HarnessId,
         HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
@@ -1302,9 +1345,59 @@ mod tests {
 
     use super::*;
 
+    #[derive(Default)]
+    struct CapturingExecutor {
+        requests: Mutex<Vec<InferenceRequest>>,
+    }
+
+    impl CapturingExecutor {
+        fn new() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+
+        fn requests(&self) -> Vec<InferenceRequest> {
+            self.requests.lock().expect("capture lock").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ModelExecutor for CapturingExecutor {
+        async fn complete(
+            &self,
+            request: InferenceRequest,
+        ) -> Result<InferenceResponse, ExecutorError> {
+            self.requests.lock().expect("capture lock").push(request);
+            Ok(InferenceResponse {
+                text: "captured assistant".to_owned(),
+                tool_calls: Vec::new(),
+                stop_reason: "end_turn".to_owned(),
+                usage: ExecutorTokenUsage::default(),
+                provider_request_id: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<
+            Box<dyn Stream<Item = Result<StreamEvent, ExecutorError>> + Send + Unpin>,
+            ExecutorError,
+        > {
+            Err(ExecutorError::Internal {
+                message: "streaming is not used by interaction tests".to_owned(),
+            })
+        }
+
+        async fn health(&self) -> Result<(), ExecutorError> {
+            Ok(())
+        }
+    }
+
     struct NeverCalledHarness {
         id: HarnessId,
         calls: AtomicU64,
+        models: Vec<String>,
+        model_override: Option<String>,
     }
 
     impl NeverCalledHarness {
@@ -1312,6 +1405,17 @@ mod tests {
             Arc::new(Self {
                 id: HarnessId::new("never-called"),
                 calls: AtomicU64::new(0),
+                models: Vec::new(),
+                model_override: None,
+            })
+        }
+
+        fn with_model_evidence(models: Vec<String>, model_override: Option<String>) -> Arc<Self> {
+            Arc::new(Self {
+                id: HarnessId::new("model-evidence"),
+                calls: AtomicU64::new(0),
+                models,
+                model_override,
             })
         }
 
@@ -1336,9 +1440,9 @@ mod tests {
                 supports_tools: false,
                 supports_sessions: false,
                 max_context_tokens: 0,
-                models: Vec::new(),
+                models: self.models.clone(),
                 transport: None,
-                model_override: None,
+                model_override: self.model_override.clone(),
                 session_resume: SessionResumeMode::default(),
                 mcp_passthrough: McpMode::default(),
                 tool_injection: ToolInjection::default(),
@@ -1451,12 +1555,21 @@ mod tests {
         spec: AgentSpec,
         executor: Arc<dyn ModelExecutor>,
     ) -> (Arc<AppService>, DurableInteractionService, EventBus) {
+        test_service_with_executor_and_config(pool, spec, executor, Config::default())
+    }
+
+    fn test_service_with_executor_and_config(
+        pool: &SqlitePool,
+        spec: AgentSpec,
+        executor: Arc<dyn ModelExecutor>,
+        config: Config,
+    ) -> (Arc<AppService>, DurableInteractionService, EventBus) {
         let bus = EventBus::new(32);
         let shared = Arc::new(pool.clone());
         let recorder = EventRecorder::new(shared.clone(), bus.clone());
         let app = Arc::new(
             AppService::builder()
-                .with_config(Config::default())
+                .with_config(config)
                 .with_executor(executor)
                 .with_run_store(shared.clone())
                 .with_effect_store(shared.clone())
@@ -1470,6 +1583,20 @@ mod tests {
         app.create_agent(spec).expect("register agent");
         let service = DurableInteractionService::new(Arc::clone(&app), pool.clone());
         (app, service, bus)
+    }
+
+    fn model_test_config() -> Config {
+        Config {
+            models: ["model-a", "model-b"]
+                .into_iter()
+                .map(|slug| polkagent_config::ModelOverrideConfig {
+                    slug: slug.to_owned(),
+                    provider: "fake".to_owned(),
+                    ..polkagent_config::ModelOverrideConfig::default()
+                })
+                .collect(),
+            ..Config::default()
+        }
     }
 
     fn test_service_with_harness(
@@ -1514,6 +1641,34 @@ mod tests {
         }
     }
 
+    fn prompt_request_with_model(
+        conversation_id: ConversationId,
+        turn_id: InteractionTurnId,
+        text: &str,
+        model: OverrideValue<String>,
+    ) -> PromptRequest {
+        let mut request = prompt_request(conversation_id, turn_id, text);
+        request.config_overrides.model = model;
+        request
+    }
+
+    async fn create_model_interaction(
+        service: &DurableInteractionService,
+        agent_id: AgentId,
+        model: Option<&str>,
+    ) -> InteractionSummary {
+        let mut config = InteractionConfig::new(InteractionTarget::Agent(agent_id));
+        config.model = model.map(str::to_owned);
+        service
+            .new_interaction(CreateInteractionRequest {
+                title: None,
+                config,
+                client_context: ClientContext::new(PathBuf::from("/tmp")).expect("client context"),
+            })
+            .await
+            .expect("create model interaction")
+    }
+
     async fn wait_for_terminal(started: &mut StartedTurn) -> InteractionEvent {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -1532,6 +1687,16 @@ mod tests {
             [ContentBlock::Text { text }] => text,
             other => panic!("expected one text block, got {other:?}"),
         }
+    }
+
+    fn captured_model_for_prompt(requests: &[InferenceRequest], prompt: &str) -> Option<String> {
+        requests.iter().find_map(|request| {
+            request
+                .messages
+                .last()
+                .filter(|message| inference_message_text(message) == prompt)
+                .map(|_| request.model_id.clone())
+        })
     }
 
     async fn seed_interaction(
@@ -1668,6 +1833,270 @@ mod tests {
             }
         }
         store.load_turn(turn_id).await.expect("reload seeded turn")
+    }
+
+    #[tokio::test]
+    async fn concurrent_sessions_keep_execution_scoped_models_isolated() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let executor = CapturingExecutor::new();
+        let erased: Arc<dyn ModelExecutor> = executor.clone();
+        let (app, first_service, _bus) =
+            test_service_with_executor_and_config(&pool, spec, erased, model_test_config());
+        let second_service = DurableInteractionService::new(app, pool.clone());
+        let first = create_model_interaction(&first_service, agent_id, Some("model-a")).await;
+        let second = create_model_interaction(&second_service, agent_id, Some("model-b")).await;
+
+        let (first_started, second_started) = tokio::join!(
+            first_service.prompt(prompt_request(
+                first.conversation_id,
+                InteractionTurnId::new(),
+                "session-a"
+            )),
+            second_service.prompt(prompt_request(
+                second.conversation_id,
+                InteractionTurnId::new(),
+                "session-b"
+            )),
+        );
+        let mut first_started = first_started.expect("start first model session");
+        let mut second_started = second_started.expect("start second model session");
+        let (first_terminal, second_terminal) = tokio::join!(
+            wait_for_terminal(&mut first_started),
+            wait_for_terminal(&mut second_started)
+        );
+        assert!(matches!(
+            first_terminal,
+            InteractionEvent::TurnCompleted { .. }
+        ));
+        assert!(matches!(
+            second_terminal,
+            InteractionEvent::TurnCompleted { .. }
+        ));
+
+        let default = create_model_interaction(&first_service, agent_id, None).await;
+        let mut default_started = first_service
+            .prompt(prompt_request(
+                default.conversation_id,
+                InteractionTurnId::new(),
+                "agent-default",
+            ))
+            .await
+            .expect("start default model session");
+        wait_for_terminal(&mut default_started).await;
+
+        let requests = executor.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            captured_model_for_prompt(&requests, "session-a").as_deref(),
+            Some("fake/model-a")
+        );
+        assert_eq!(
+            captured_model_for_prompt(&requests, "session-b").as_deref(),
+            Some("fake/model-b")
+        );
+        assert_eq!(
+            captured_model_for_prompt(&requests, "agent-default").as_deref(),
+            Some("fake/model")
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_model_option_survives_service_restart() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let executor = CapturingExecutor::new();
+        let erased: Arc<dyn ModelExecutor> = executor.clone();
+        let (app, service, _bus) =
+            test_service_with_executor_and_config(&pool, spec, erased, model_test_config());
+        let interaction = create_model_interaction(&service, agent_id, None).await;
+        let config = service
+            .set_config_option(
+                interaction.conversation_id,
+                ConfigUpdate {
+                    option: ConfigOption::Model,
+                    value: ConfigOptionValue::Model(Some("model-a".to_owned())),
+                },
+            )
+            .await
+            .expect("persist model option");
+        assert_eq!(config.model.as_deref(), Some("fake/model-a"));
+
+        let restarted = DurableInteractionService::new(app, pool);
+        assert_eq!(
+            restarted
+                .load_interaction(interaction.conversation_id)
+                .await
+                .expect("load restarted interaction")
+                .config
+                .model
+                .as_deref(),
+            Some("fake/model-a")
+        );
+        let mut started = restarted
+            .prompt(prompt_request(
+                interaction.conversation_id,
+                InteractionTurnId::new(),
+                "after-restart",
+            ))
+            .await
+            .expect("start restarted model prompt");
+        wait_for_terminal(&mut started).await;
+        let requests = executor.requests();
+        assert_eq!(
+            captured_model_for_prompt(&requests, "after-restart").as_deref(),
+            Some("fake/model-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_model_override_does_not_leak_and_retry_uses_effective_config() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let executor = CapturingExecutor::new();
+        let erased: Arc<dyn ModelExecutor> = executor.clone();
+        let (_app, service, _bus) =
+            test_service_with_executor_and_config(&pool, spec, erased, model_test_config());
+        let interaction = create_model_interaction(&service, agent_id, Some("model-a")).await;
+        let override_turn_id = InteractionTurnId::new();
+        let override_request = prompt_request_with_model(
+            interaction.conversation_id,
+            override_turn_id,
+            "override-b",
+            OverrideValue::Set("model-b".to_owned()),
+        );
+        let mut override_started = service
+            .prompt(override_request.clone())
+            .await
+            .expect("start model override");
+        wait_for_terminal(&mut override_started).await;
+        let retry = service
+            .prompt(override_request)
+            .await
+            .expect("retry identical effective config");
+        assert_eq!(retry.handle, override_started.handle);
+        assert_eq!(executor.requests().len(), 1);
+
+        let conflict = service
+            .prompt(prompt_request_with_model(
+                interaction.conversation_id,
+                override_turn_id,
+                "override-b",
+                OverrideValue::Set("model-a".to_owned()),
+            ))
+            .await
+            .expect_err("retry with a different effective model must conflict");
+        assert_eq!(conflict.code, InteractionErrorCode::Conflict);
+        assert_eq!(executor.requests().len(), 1);
+
+        let mut inherited = service
+            .prompt(prompt_request(
+                interaction.conversation_id,
+                InteractionTurnId::new(),
+                "inherit-a",
+            ))
+            .await
+            .expect("start inherited model prompt");
+        wait_for_terminal(&mut inherited).await;
+        let mut cleared = service
+            .prompt(prompt_request_with_model(
+                interaction.conversation_id,
+                InteractionTurnId::new(),
+                "clear-to-agent-default",
+                OverrideValue::Clear,
+            ))
+            .await
+            .expect("start cleared model prompt");
+        wait_for_terminal(&mut cleared).await;
+        let requests = executor.requests();
+        assert_eq!(
+            captured_model_for_prompt(&requests, "override-b").as_deref(),
+            Some("fake/model-b")
+        );
+        assert_eq!(
+            captured_model_for_prompt(&requests, "inherit-a").as_deref(),
+            Some("fake/model-a")
+        );
+        assert_eq!(
+            captured_model_for_prompt(&requests, "clear-to-agent-default").as_deref(),
+            Some("fake/model")
+        );
+        assert_eq!(
+            service
+                .load_interaction(interaction.conversation_id)
+                .await
+                .expect("load session after override")
+                .config
+                .model
+                .as_deref(),
+            Some("fake/model-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_model_is_refused_before_turn_or_executor_invocation() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let executor = CapturingExecutor::new();
+        let erased: Arc<dyn ModelExecutor> = executor.clone();
+        let (_app, service, _bus) =
+            test_service_with_executor_and_config(&pool, spec, erased, model_test_config());
+        let interaction = create_model_interaction(&service, agent_id, None).await;
+        let error = service
+            .prompt(prompt_request_with_model(
+                interaction.conversation_id,
+                InteractionTurnId::new(),
+                "unknown",
+                OverrideValue::Set("not-in-catalog".to_owned()),
+            ))
+            .await
+            .expect_err("unknown model must fail before activation");
+        assert_eq!(error.code, InteractionErrorCode::InvalidRequest);
+        assert!(error.message.contains("unknown model"));
+        assert!(executor.requests().is_empty());
+        assert!(service
+            .list_turns(interaction.conversation_id)
+            .await
+            .expect("load untouched turns")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn harness_model_policy_accepts_only_noop_or_fixed_override_evidence() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let harness = NeverCalledHarness::with_model_evidence(
+            vec!["listed-but-not-selectable".to_owned()],
+            Some("fixed-model".to_owned()),
+        );
+        let erased: Arc<dyn Harness> = harness.clone();
+        let (_app, service, _bus) = test_service_with_harness(&pool, spec, erased);
+        let fixed = create_model_interaction(&service, agent_id, Some("fixed-model")).await;
+        assert_eq!(fixed.config.model.as_deref(), Some("fake/fixed-model"));
+
+        let error = service
+            .set_config_option(
+                fixed.conversation_id,
+                ConfigUpdate {
+                    option: ConfigOption::Model,
+                    value: ConfigOptionValue::Model(Some("listed-but-not-selectable".to_owned())),
+                },
+            )
+            .await
+            .expect_err("harness discovery list must not imply dynamic selection");
+        assert_eq!(error.code, InteractionErrorCode::Unsupported);
+        assert!(error.message.contains("discovery-only"));
+        assert_eq!(harness.call_count(), 0);
+        assert_eq!(
+            service
+                .load_interaction(fixed.conversation_id)
+                .await
+                .expect("load unchanged harness interaction")
+                .config
+                .model
+                .as_deref(),
+            Some("fake/fixed-model")
+        );
     }
 
     #[tokio::test]

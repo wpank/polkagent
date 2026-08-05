@@ -14,7 +14,7 @@ use std::time::Duration;
 use polkagent_card::ActionCard;
 use polkagent_chain_trait::ChainClient;
 use polkagent_config::watch::{AtomicConfig, ConfigWatcher, ReloadPolicy, WatchEventKind};
-use polkagent_config::{Config, ConfigLoader};
+use polkagent_config::{BuiltInModelCatalog, Config, ConfigLoader, ModelCatalog};
 use polkagent_core::{
     AgentId, AgentSpec, EffectAttemptId, EffectId, EffectOutcomeId, RunId, RunState, Timestamp,
     WorkerId,
@@ -46,6 +46,61 @@ use crate::provider::ProviderRegistry;
 )]
 fn approximate_amount_for_cost_record(value: u128) -> f64 {
     value as f64
+}
+
+fn effective_agent_model(agent_spec: &AgentSpec) -> String {
+    agent_spec
+        .model_preference
+        .as_ref()
+        .and_then(|preference| preference.model_id.as_deref())
+        .map_or_else(
+            || agent_spec.model.clone(),
+            |model| canonicalize_relative_model(model, model_provider(&agent_spec.model)),
+        )
+}
+
+fn canonicalize_relative_model(model: &str, provider: Option<&str>) -> String {
+    if model.contains('/') {
+        model.to_owned()
+    } else if let Some(provider) = provider {
+        format!("{provider}/{model}")
+    } else {
+        model.to_owned()
+    }
+}
+
+fn canonical_model(provider: &str, slug: &str) -> String {
+    if slug
+        .strip_prefix(provider)
+        .is_some_and(|suffix| suffix.starts_with('/'))
+    {
+        slug.to_owned()
+    } else {
+        format!("{provider}/{slug}")
+    }
+}
+
+fn model_provider(model: &str) -> Option<&str> {
+    model
+        .split_once('/')
+        .map(|(provider, _)| provider)
+        .filter(|provider| !provider.is_empty())
+}
+
+fn model_alias_matches(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    let left_parts = left.split_once('/');
+    let right_parts = right.split_once('/');
+    match (left_parts, right_parts) {
+        (Some((left_provider, left_model)), Some((right_provider, right_model))) => {
+            left_provider == right_provider && left_model == right_model
+        }
+        (Some((_, left_model)), None) => left_model == right,
+        (None, Some((_, right_model))) => left == right_model,
+        (None, None) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1010,15 +1065,49 @@ impl AppService {
         agent_id: AgentId,
         conversation_id: polkagent_core::ConversationId,
     ) -> Result<PreparedRun, ServiceError> {
-        let agent_spec = {
-            let agents = self.agents.lock().map_err(|error| ServiceError::Internal {
-                message: format!("agent lock poisoned: {error}"),
-            })?;
-            agents
-                .get(&agent_id)
-                .cloned()
-                .ok_or(ServiceError::AgentNotFound { agent_id })?
+        self.prepare_interaction_run_with_model(run_id, agent_id, conversation_id, None)
+            .await
+    }
+
+    /// Validate a session/prompt model against the selected execution backend.
+    ///
+    /// `None` inherits the registered agent model. A returned `Some` value is
+    /// canonical and safe to persist as the effective interaction override.
+    /// This method never mutates the registered [`AgentSpec`].
+    pub fn resolve_interaction_model(
+        &self,
+        agent_id: AgentId,
+        requested: Option<&str>,
+    ) -> Result<Option<String>, ServiceError> {
+        let Some(requested) = requested else {
+            return Ok(None);
         };
+        let agent_spec = self.interaction_agent_spec(agent_id)?;
+        self.resolve_model_for_agent(&agent_spec, requested)
+            .map(Some)
+    }
+
+    /// Prepare an interaction run with an execution-scoped model override.
+    ///
+    /// The override is validated before the durable run row is created and is
+    /// applied only to the cloned spec stored in [`PreparedRun`]. Concurrent
+    /// sessions therefore cannot mutate or race through the shared agent
+    /// registry.
+    pub async fn prepare_interaction_run_with_model(
+        &self,
+        run_id: RunId,
+        agent_id: AgentId,
+        conversation_id: polkagent_core::ConversationId,
+        model: Option<&str>,
+    ) -> Result<PreparedRun, ServiceError> {
+        let mut agent_spec = self.interaction_agent_spec(agent_id)?;
+        if let Some(requested) = model {
+            let resolved = self.resolve_model_for_agent(&agent_spec, requested)?;
+            agent_spec.model.clone_from(&resolved);
+            if let Some(preference) = &mut agent_spec.model_preference {
+                preference.model_id = Some(resolved);
+            }
+        }
 
         let max_concurrent = self.atomic_config.get().execution.max_concurrent_runs;
         if max_concurrent > 0 {
@@ -1046,6 +1135,103 @@ impl AppService {
             conversation_id,
             agent_spec,
         })
+    }
+
+    fn interaction_agent_spec(&self, agent_id: AgentId) -> Result<AgentSpec, ServiceError> {
+        let agents = self.agents.lock().map_err(|error| ServiceError::Internal {
+            message: format!("agent lock poisoned: {error}"),
+        })?;
+        agents
+            .get(&agent_id)
+            .cloned()
+            .ok_or(ServiceError::AgentNotFound { agent_id })
+    }
+
+    fn resolve_model_for_agent(
+        &self,
+        agent_spec: &AgentSpec,
+        requested: &str,
+    ) -> Result<String, ServiceError> {
+        let current = effective_agent_model(agent_spec);
+        if model_alias_matches(requested, &current) {
+            return Ok(current);
+        }
+
+        if let Some(harness) = &self.harness {
+            let capabilities = harness.capabilities();
+            if let Some(fixed) = capabilities.model_override.as_deref() {
+                if model_alias_matches(requested, fixed) {
+                    return Ok(canonicalize_relative_model(fixed, model_provider(&current)));
+                }
+            }
+            return Err(ServiceError::Unsupported {
+                message: format!(
+                    "harness '{}' cannot apply a dynamic model selection; its advertised models are discovery-only",
+                    harness.id()
+                ),
+            });
+        }
+
+        if self.executor.is_none() {
+            return Err(ServiceError::Unsupported {
+                message: "model selection requires an in-process executor backend".to_owned(),
+            });
+        }
+        let Some((provider, canonical)) = self.known_model(requested) else {
+            return Err(ServiceError::Config {
+                message: format!("unknown model `{requested}`"),
+            });
+        };
+        let Some(current_provider) = model_provider(&current) else {
+            return Err(ServiceError::Unsupported {
+                message: "the selected executor backend has no verifiable provider identity"
+                    .to_owned(),
+            });
+        };
+        if provider != current_provider {
+            return Err(ServiceError::Unsupported {
+                message: format!(
+                    "model `{requested}` belongs to provider `{provider}`; interaction provider switching is not supported"
+                ),
+            });
+        }
+        Ok(canonical)
+    }
+
+    fn known_model(&self, requested: &str) -> Option<(String, String)> {
+        let config = self.atomic_config.get();
+        if let Some(model) = config.models.iter().find(|model| {
+            requested == model.slug || requested == canonical_model(&model.provider, &model.slug)
+        }) {
+            return Some((
+                model.provider.clone(),
+                canonical_model(&model.provider, &model.slug),
+            ));
+        }
+        let catalog = BuiltInModelCatalog::new();
+        if let Some(model) = catalog.get(requested) {
+            return Some((
+                model.provider.clone(),
+                canonical_model(&model.provider, &model.slug),
+            ));
+        }
+        if let Some((provider, slug)) = requested.split_once('/') {
+            if let Some(model) = catalog.get(slug).filter(|model| model.provider == provider) {
+                return Some((
+                    model.provider.clone(),
+                    canonical_model(&model.provider, &model.slug),
+                ));
+            }
+        }
+        self.provider_registry
+            .list_providers()
+            .into_iter()
+            .find_map(|provider| {
+                provider.models.into_iter().find_map(|model| {
+                    (requested == model || requested == canonical_model(&provider.id, &model))
+                        .then(|| (provider.id.clone(), canonical_model(&provider.id, &model)))
+                })
+            })
     }
 
     /// Publish the first run event, enqueue, and begin a prepared run.
