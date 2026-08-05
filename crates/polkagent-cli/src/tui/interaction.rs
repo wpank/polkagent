@@ -13,6 +13,8 @@ use polkagent_store_sqlite::SqlitePool;
 /// Keep a runaway streaming response from growing the terminal process
 /// forever. Durable lifecycle/events remain available through the run views.
 const MAX_OUTPUT_BYTES: usize = 128 * 1024;
+/// Bound in-memory Console history until durable conversations own it.
+const MAX_PROMPT_HISTORY: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptRequest {
@@ -71,6 +73,10 @@ pub struct InteractionState {
     pub agent_id: Option<String>,
     pub agent_name: Option<String>,
     pub prompt_buffer: String,
+    prompt_cursor: usize,
+    prompt_history: Vec<String>,
+    prompt_history_index: Option<usize>,
+    prompt_history_draft: Option<String>,
     pub run: Option<ConsoleRun>,
 }
 
@@ -78,15 +84,110 @@ impl InteractionState {
     pub fn select_agent(&mut self, agent_id: impl Into<String>, agent_name: impl Into<String>) {
         self.agent_id = Some(agent_id.into());
         self.agent_name = Some(agent_name.into());
-        self.prompt_buffer.clear();
+        self.clear_prompt();
     }
 
     pub fn push_char(&mut self, c: char) {
-        self.prompt_buffer.push(c);
+        self.prepare_edit();
+        self.prompt_buffer.insert(self.prompt_cursor, c);
+        self.prompt_cursor += c.len_utf8();
+    }
+
+    pub fn insert_newline(&mut self) {
+        self.push_char('\n');
     }
 
     pub fn backspace(&mut self) {
-        self.prompt_buffer.pop();
+        self.prepare_edit();
+        let previous = previous_char_boundary(&self.prompt_buffer, self.prompt_cursor);
+        if previous < self.prompt_cursor {
+            self.prompt_buffer.drain(previous..self.prompt_cursor);
+            self.prompt_cursor = previous;
+        }
+    }
+
+    pub fn delete(&mut self) {
+        self.prepare_edit();
+        let next = next_char_boundary(&self.prompt_buffer, self.prompt_cursor);
+        if next > self.prompt_cursor {
+            self.prompt_buffer.drain(self.prompt_cursor..next);
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        self.prompt_cursor = previous_char_boundary(&self.prompt_buffer, self.cursor());
+    }
+
+    pub fn move_right(&mut self) {
+        self.prompt_cursor = next_char_boundary(&self.prompt_buffer, self.cursor());
+    }
+
+    pub fn move_home(&mut self) {
+        let cursor = self.cursor();
+        self.prompt_cursor = self.prompt_buffer[..cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+    }
+
+    pub fn move_end(&mut self) {
+        let cursor = self.cursor();
+        self.prompt_cursor = self.prompt_buffer[cursor..]
+            .find('\n')
+            .map_or(self.prompt_buffer.len(), |offset| cursor + offset);
+    }
+
+    /// Move vertically within multiline input, falling back to older history
+    /// only when the cursor is already on the first line.
+    pub fn move_up(&mut self) {
+        let cursor = self.cursor();
+        let line_start = self.prompt_buffer[..cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        if line_start == 0 {
+            self.history_previous();
+            return;
+        }
+
+        let column = self.prompt_buffer[line_start..cursor].chars().count();
+        let previous_end = line_start - 1;
+        let previous_start = self.prompt_buffer[..previous_end]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        self.prompt_cursor = previous_start
+            + char_column_offset(&self.prompt_buffer[previous_start..previous_end], column);
+    }
+
+    /// Move vertically within multiline input, falling back to newer history
+    /// only when the cursor is already on the last line.
+    pub fn move_down(&mut self) {
+        let cursor = self.cursor();
+        let line_start = self.prompt_buffer[..cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let Some(line_end_offset) = self.prompt_buffer[cursor..].find('\n') else {
+            self.history_next();
+            return;
+        };
+        let line_end = cursor + line_end_offset;
+        let column = self.prompt_buffer[line_start..cursor].chars().count();
+        let next_start = line_end + 1;
+        let next_end = self.prompt_buffer[next_start..]
+            .find('\n')
+            .map_or(self.prompt_buffer.len(), |offset| next_start + offset);
+        self.prompt_cursor =
+            next_start + char_column_offset(&self.prompt_buffer[next_start..next_end], column);
+    }
+
+    #[must_use]
+    pub fn cursor(&self) -> usize {
+        clamp_char_boundary(&self.prompt_buffer, self.prompt_cursor)
+    }
+
+    pub fn clear_prompt(&mut self) {
+        self.prompt_buffer.clear();
+        self.prompt_cursor = 0;
+        self.prompt_history_index = None;
+        self.prompt_history_draft = None;
     }
 
     pub fn submit(&mut self) -> Result<PromptRequest, &'static str> {
@@ -98,7 +199,8 @@ impl InteractionState {
             return Err("select an active agent before prompting");
         };
         let agent_name = self.agent_name.clone().unwrap_or_else(|| agent_id.clone());
-        self.prompt_buffer.clear();
+        self.record_history(&prompt);
+        self.clear_prompt();
         self.run = Some(ConsoleRun {
             run_id: None,
             prompt: prompt.clone(),
@@ -113,6 +215,63 @@ impl InteractionState {
             agent_name,
             prompt,
         })
+    }
+
+    fn prepare_edit(&mut self) {
+        self.prompt_cursor = self.cursor();
+        self.leave_history_navigation();
+    }
+
+    fn leave_history_navigation(&mut self) {
+        self.prompt_history_index = None;
+        self.prompt_history_draft = None;
+    }
+
+    fn record_history(&mut self, prompt: &str) {
+        if self
+            .prompt_history
+            .last()
+            .is_none_or(|entry| entry != prompt)
+        {
+            self.prompt_history.push(prompt.to_owned());
+            let overflow = self.prompt_history.len().saturating_sub(MAX_PROMPT_HISTORY);
+            if overflow > 0 {
+                self.prompt_history.drain(..overflow);
+            }
+        }
+    }
+
+    fn history_previous(&mut self) {
+        if self.prompt_history.is_empty() {
+            return;
+        }
+
+        let index = if let Some(index) = self.prompt_history_index {
+            index.saturating_sub(1)
+        } else {
+            self.prompt_history_draft = Some(self.prompt_buffer.clone());
+            self.prompt_history.len() - 1
+        };
+        self.load_history(index);
+    }
+
+    fn history_next(&mut self) {
+        let Some(index) = self.prompt_history_index else {
+            return;
+        };
+        if index + 1 < self.prompt_history.len() {
+            self.load_history(index + 1);
+        } else {
+            self.prompt_buffer = self.prompt_history_draft.take().unwrap_or_default();
+            self.prompt_cursor = self.prompt_buffer.len();
+            self.prompt_history_index = None;
+        }
+    }
+
+    fn load_history(&mut self, index: usize) {
+        self.prompt_buffer.clone_from(&self.prompt_history[index]);
+        self.prompt_cursor = self.prompt_buffer.len();
+        self.prompt_history_index = Some(index);
     }
 
     pub fn mark_cancelling(&mut self) {
@@ -179,6 +338,36 @@ impl InteractionState {
             }
         }
     }
+}
+
+fn clamp_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(text.len());
+    while !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
+}
+
+fn previous_char_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_char_boundary(text, cursor);
+    text[..cursor]
+        .char_indices()
+        .next_back()
+        .map_or(cursor, |(index, _)| index)
+}
+
+fn next_char_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_char_boundary(text, cursor);
+    text[cursor..]
+        .chars()
+        .next()
+        .map_or(cursor, |c| cursor + c.len_utf8())
+}
+
+fn char_column_offset(line: &str, column: usize) -> usize {
+    line.char_indices()
+        .nth(column)
+        .map_or(line.len(), |(index, _)| index)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,6 +576,12 @@ impl RunController {
 mod tests {
     use super::*;
 
+    fn type_prompt(state: &mut InteractionState, prompt: &str) {
+        for c in prompt.chars() {
+            state.push_char(c);
+        }
+    }
+
     #[test]
     fn reducer_rejects_empty_prompt_without_destroying_buffer() {
         let mut state = InteractionState::default();
@@ -448,5 +643,95 @@ mod tests {
             ConsoleRunStatus::Cancelled
         );
         assert_eq!(state.run.as_ref().unwrap().detail, "operator cancelled");
+    }
+
+    #[test]
+    fn prompt_editor_inserts_and_deletes_on_utf8_boundaries() {
+        let mut state = InteractionState::default();
+        type_prompt(&mut state, "a🙂界");
+        assert_eq!(state.cursor(), state.prompt_buffer.len());
+
+        state.move_left();
+        state.push_char('é');
+        assert_eq!(state.prompt_buffer, "a🙂é界");
+        assert!(state.prompt_buffer.is_char_boundary(state.cursor()));
+
+        state.backspace();
+        assert_eq!(state.prompt_buffer, "a🙂界");
+        assert!(state.prompt_buffer.is_char_boundary(state.cursor()));
+
+        state.delete();
+        assert_eq!(state.prompt_buffer, "a🙂");
+        state.move_left();
+        state.delete();
+        assert_eq!(state.prompt_buffer, "a");
+        assert!(state.prompt_buffer.is_char_boundary(state.cursor()));
+    }
+
+    #[test]
+    fn prompt_editor_moves_across_multiline_unicode_input() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        type_prompt(&mut state, "ab\n世🙂\nz");
+
+        state.move_up();
+        assert_eq!(&state.prompt_buffer[..state.cursor()], "ab\n世");
+        state.move_up();
+        assert_eq!(&state.prompt_buffer[..state.cursor()], "a");
+        state.move_down();
+        assert_eq!(&state.prompt_buffer[..state.cursor()], "ab\n世");
+
+        state.move_end();
+        assert_eq!(&state.prompt_buffer[..state.cursor()], "ab\n世🙂");
+        state.move_home();
+        assert_eq!(&state.prompt_buffer[..state.cursor()], "ab\n");
+
+        let request = state.submit().expect("valid multiline prompt");
+        assert_eq!(request.prompt, "ab\n世🙂\nz");
+    }
+
+    #[test]
+    fn prompt_history_restores_the_unsent_draft() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+
+        type_prompt(&mut state, "first prompt");
+        state.submit().expect("first prompt");
+        type_prompt(&mut state, "second prompt");
+        state.submit().expect("second prompt");
+        type_prompt(&mut state, "draft");
+
+        state.move_up();
+        assert_eq!(state.prompt_buffer, "second prompt");
+        state.move_up();
+        assert_eq!(state.prompt_buffer, "first prompt");
+        state.move_down();
+        assert_eq!(state.prompt_buffer, "second prompt");
+        state.move_down();
+        assert_eq!(state.prompt_buffer, "draft");
+        assert_eq!(state.cursor(), state.prompt_buffer.len());
+    }
+
+    #[test]
+    fn prompt_history_is_bounded_and_deduplicates_consecutive_entries() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+
+        for index in 0..=MAX_PROMPT_HISTORY {
+            type_prompt(&mut state, &format!("prompt {index}"));
+            state.submit().expect("valid prompt");
+        }
+        type_prompt(&mut state, "prompt 100");
+        state.submit().expect("duplicate prompt remains valid");
+
+        assert_eq!(state.prompt_history.len(), MAX_PROMPT_HISTORY);
+        assert_eq!(
+            state.prompt_history.first().map(String::as_str),
+            Some("prompt 1")
+        );
+        assert_eq!(
+            state.prompt_history.last().map(String::as_str),
+            Some("prompt 100")
+        );
     }
 }

@@ -20,12 +20,17 @@ pub fn render(
     input_mode: InputMode,
     theme: &Theme,
 ) {
+    let composer_height = if input_mode == InputMode::Prompt {
+        7
+    } else {
+        3
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Length(composer_height),
         ])
         .split(area);
 
@@ -166,7 +171,7 @@ fn render_composer(
 ) {
     let composing = input_mode == InputMode::Prompt;
     let title = if composing {
-        " PROMPT · Enter send · Esc cancel "
+        " PROMPT · Enter send · Shift+Enter newline · ↑/↓ line/history · Esc cancel "
     } else if state
         .interaction
         .run
@@ -191,24 +196,56 @@ fn render_composer(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let text = if composing {
-        format!("> {}", state.interaction.prompt_buffer)
-    } else {
-        "> press p to write the next prompt".to_owned()
-    };
+    if !composing {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "> press p to write the next prompt",
+                Style::default().fg(theme.text_primary),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let buffer = &state.interaction.prompt_buffer;
+    let cursor = state.interaction.cursor();
+    let before_cursor = &buffer[..cursor];
+    let cursor_line = before_cursor.bytes().filter(|byte| *byte == b'\n').count();
+    let line_start = before_cursor.rfind('\n').map_or(0, |index| index + 1);
+    let cursor_column = 2 + Span::raw(&buffer[line_start..cursor]).width();
+
+    let lines = buffer.split('\n').enumerate().map(|(index, line)| {
+        let prefix = if index == 0 { "> " } else { "  " };
+        Line::from(vec![
+            Span::styled(prefix, Style::default().fg(theme.rose_bright)),
+            Span::styled(line.to_owned(), Style::default().fg(theme.text_primary)),
+        ])
+    });
+    let visible_height = usize::from(inner.height.max(1));
+    let visible_width = usize::from(inner.width.max(1));
+    let vertical_scroll = cursor_line.saturating_sub(visible_height.saturating_sub(1));
+    let horizontal_scroll = cursor_column.saturating_sub(visible_width.saturating_sub(1));
     frame.render_widget(
-        Paragraph::new(Span::styled(text, Style::default().fg(theme.text_primary))),
+        Paragraph::new(lines.collect::<Text>()).scroll((
+            u16::try_from(vertical_scroll).unwrap_or(u16::MAX),
+            u16::try_from(horizontal_scroll).unwrap_or(u16::MAX),
+        )),
         inner,
     );
 
-    if composing && inner.width > 0 {
+    if inner.width > 0 && inner.height > 0 {
         let cursor_x = inner
             .x
-            .saturating_add(2)
             .saturating_add(
-                u16::try_from(state.interaction.prompt_buffer.chars().count()).unwrap_or(u16::MAX),
+                u16::try_from(cursor_column.saturating_sub(horizontal_scroll)).unwrap_or(u16::MAX),
             )
             .min(inner.x.saturating_add(inner.width.saturating_sub(1)));
-        frame.set_cursor_position((cursor_x, inner.y));
+        let cursor_y = inner
+            .y
+            .saturating_add(
+                u16::try_from(cursor_line.saturating_sub(vertical_scroll)).unwrap_or(u16::MAX),
+            )
+            .min(inner.y.saturating_add(inner.height.saturating_sub(1)));
+        frame.set_cursor_position((cursor_x, cursor_y));
     }
 }

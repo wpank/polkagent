@@ -523,7 +523,7 @@ impl App {
             TuiAction::Back => {
                 if self.input_mode == InputMode::Prompt {
                     self.input_mode = InputMode::Normal;
-                    self.tui_state.interaction.prompt_buffer.clear();
+                    self.tui_state.interaction.clear_prompt();
                     self.tui_state.mark_dirty();
                     return;
                 }
@@ -797,8 +797,48 @@ impl App {
                 self.tui_state.mark_dirty();
             }
 
+            TuiAction::PromptNewline => {
+                self.tui_state.interaction.insert_newline();
+                self.tui_state.mark_dirty();
+            }
+
             TuiAction::PromptBackspace => {
                 self.tui_state.interaction.backspace();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptDelete => {
+                self.tui_state.interaction.delete();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptMoveLeft => {
+                self.tui_state.interaction.move_left();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptMoveRight => {
+                self.tui_state.interaction.move_right();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptMoveUp => {
+                self.tui_state.interaction.move_up();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptMoveDown => {
+                self.tui_state.interaction.move_down();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptMoveHome => {
+                self.tui_state.interaction.move_home();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptMoveEnd => {
+                self.tui_state.interaction.move_end();
                 self.tui_state.mark_dirty();
             }
 

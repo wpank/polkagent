@@ -39,6 +39,11 @@ fn ctrl(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::CONTROL)
 }
 
+/// Create a `KeyEvent` with the supplied modifiers.
+fn modified(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+    KeyEvent::new(code, modifiers)
+}
+
 /// Extract all text from a `TestBackend` buffer as a single string.
 fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
     let buf = terminal.backend().buffer();
@@ -1217,6 +1222,42 @@ fn test_console_keys_map_to_actions() {
         key_to_action(key(KeyCode::Enter), InputMode::Prompt),
         Some(TuiAction::PromptSubmit)
     ));
+    assert!(matches!(
+        key_to_action(
+            modified(KeyCode::Enter, KeyModifiers::SHIFT),
+            InputMode::Prompt
+        ),
+        Some(TuiAction::PromptNewline)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Left), InputMode::Prompt),
+        Some(TuiAction::PromptMoveLeft)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Right), InputMode::Prompt),
+        Some(TuiAction::PromptMoveRight)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Up), InputMode::Prompt),
+        Some(TuiAction::PromptMoveUp)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Down), InputMode::Prompt),
+        Some(TuiAction::PromptMoveDown)
+    ));
+    assert!(matches!(
+        key_to_action(ctrl(KeyCode::Char('a')), InputMode::Prompt),
+        Some(TuiAction::PromptMoveHome)
+    ));
+    assert!(matches!(
+        key_to_action(ctrl(KeyCode::Char('e')), InputMode::Prompt),
+        Some(TuiAction::PromptMoveEnd)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Delete), InputMode::Prompt),
+        Some(TuiAction::PromptDelete)
+    ));
+    assert!(key_to_action(ctrl(KeyCode::Char('z')), InputMode::Prompt).is_none());
 }
 
 #[test]
@@ -1250,6 +1291,46 @@ fn test_console_renders_prompt_and_live_output() {
     assert!(text.contains("summarize proposals"), "{text}");
     assert!(text.contains("Three active proposals"), "{text}");
     assert!(text.contains("12345678"), "{text}");
+}
+
+#[test]
+fn test_console_renders_multiline_unicode_composer_and_cursor() {
+    use polkagent_cli::tui::interaction::InteractionState;
+
+    let backend = TestBackend::new(40, 16);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let theme = Theme::dark();
+    let mut interaction = InteractionState::default();
+    interaction.select_agent("agent-id", "Treasury Agent");
+    for c in "first\nsecond\nthird\nfourth\nfifth\n界🙂".chars() {
+        interaction.push_char(c);
+    }
+    let state = TuiState {
+        interaction,
+        ..TuiState::default()
+    };
+
+    terminal
+        .draw(|frame| console::render(frame, frame.area(), &state, InputMode::Prompt, &theme))
+        .expect("draw multiline composer");
+
+    let text = buffer_text(&terminal);
+    assert!(text.contains("second"), "{text}");
+    assert!(text.contains("界"), "{text}");
+    assert!(text.contains("🙂"), "{text}");
+    assert!(
+        !text.contains("> first"),
+        "old lines should scroll out: {text}"
+    );
+    let cursor = terminal.get_cursor_position().expect("cursor position");
+    assert!(
+        cursor.y >= 10,
+        "cursor should remain in the composer: {cursor:?}"
+    );
+    assert!(
+        cursor.x > 3,
+        "wide Unicode should advance the cursor: {cursor:?}"
+    );
 }
 
 #[test]

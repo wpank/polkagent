@@ -70,8 +70,24 @@ pub enum TuiAction {
     OpenPrompt,
     /// Append a character to the console prompt.
     PromptInput(char),
-    /// Delete the final character from the console prompt.
+    /// Insert a newline at the console prompt cursor.
+    PromptNewline,
+    /// Delete the character before the console prompt cursor.
     PromptBackspace,
+    /// Delete the character at the console prompt cursor.
+    PromptDelete,
+    /// Move the console prompt cursor left by one Unicode scalar value.
+    PromptMoveLeft,
+    /// Move the console prompt cursor right by one Unicode scalar value.
+    PromptMoveRight,
+    /// Move to the previous line, or the previous history entry at the top.
+    PromptMoveUp,
+    /// Move to the next line, or the next history entry at the bottom.
+    PromptMoveDown,
+    /// Move to the start of the current prompt line.
+    PromptMoveHome,
+    /// Move to the end of the current prompt line.
+    PromptMoveEnd,
     /// Start a real run using the current prompt.
     PromptSubmit,
     /// Cancel the run currently owned by the console.
@@ -138,17 +154,61 @@ pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
             KeyCode::Char(c) => Some(TuiAction::SearchInput(c)),
             _ => None,
         },
-        InputMode::Prompt => match key.code {
-            KeyCode::Esc => Some(TuiAction::Back),
-            KeyCode::Enter => Some(TuiAction::PromptSubmit),
-            KeyCode::Backspace => Some(TuiAction::PromptBackspace),
-            KeyCode::Char(c) => Some(TuiAction::PromptInput(c)),
-            _ => None,
-        },
+        InputMode::Prompt => prompt_mode_key(key),
         InputMode::Command => match key.code {
             KeyCode::Esc => Some(TuiAction::Back),
             _ => None,
         },
+    }
+}
+
+/// Key bindings active while editing the Console prompt.
+fn prompt_mode_key(key: KeyEvent) -> Option<TuiAction> {
+    match key.code {
+        KeyCode::Esc => Some(TuiAction::Back),
+        KeyCode::Enter
+            if key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+        {
+            Some(TuiAction::PromptNewline)
+        }
+        KeyCode::Enter => Some(TuiAction::PromptSubmit),
+        KeyCode::Backspace => Some(TuiAction::PromptBackspace),
+        KeyCode::Delete => Some(TuiAction::PromptDelete),
+        KeyCode::Left => Some(TuiAction::PromptMoveLeft),
+        KeyCode::Right => Some(TuiAction::PromptMoveRight),
+        KeyCode::Up => Some(TuiAction::PromptMoveUp),
+        KeyCode::Down => Some(TuiAction::PromptMoveDown),
+        KeyCode::Home => Some(TuiAction::PromptMoveHome),
+        KeyCode::End => Some(TuiAction::PromptMoveEnd),
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TuiAction::PromptMoveHome)
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TuiAction::PromptMoveEnd)
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TuiAction::PromptMoveUp)
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TuiAction::PromptMoveDown)
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TuiAction::PromptNewline)
+        }
+        KeyCode::Char(c)
+            if !key.modifiers.intersects(
+                KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER
+                    | KeyModifiers::HYPER
+                    | KeyModifiers::META,
+            ) =>
+        {
+            Some(TuiAction::PromptInput(c))
+        }
+        _ => None,
     }
 }
 
