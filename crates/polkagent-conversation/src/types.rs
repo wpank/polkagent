@@ -154,8 +154,7 @@ fn estimate_tokens_for_content(content: &MessageContent) -> u32 {
             .sum(),
     };
     // 4 chars ~= 1 token, rounding up
-    #[allow(clippy::cast_possible_truncation)]
-    let tokens = (char_count as f64 / 4.0).ceil() as u32;
+    let tokens = u32::try_from(char_count.div_ceil(4)).unwrap_or(u32::MAX);
     tokens.max(1) // every message is at least 1 token
 }
 

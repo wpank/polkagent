@@ -79,7 +79,7 @@ impl ConversationStore for InMemoryConversationStore {
             .map(ConversationSummary::from)
             .collect();
         // Sort by updated_at descending (most recent first).
-        summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        summaries.sort_by_key(|summary| std::cmp::Reverse(summary.created_at));
         // Re-sort by last_message_at when available for better ordering.
         summaries.sort_by(|a, b| {
             let a_time = a.last_message_at.unwrap_or(a.created_at);

@@ -213,7 +213,7 @@ impl ChainClient for FakeChainClient {
 
     /// Simulate (dry-run) a signed extrinsic.
     ///
-    /// The fake always reports success with a fee estimate of 1_000_000
+    /// The fake always reports success with a fee estimate of `1_000_000`
     /// planck and an empty storage-change preview.
     async fn simulate(
         &self,
@@ -364,10 +364,10 @@ impl ChainClient for FakeChainClient {
         Ok(guard.get(storage_key).cloned())
     }
 
-    /// Dry-run an extrinsic using the DryRunApi.
+    /// Dry-run an extrinsic using the `DryRunApi`.
     ///
     /// The fake always returns a successful result with a single test event
-    /// and a destination fee of 100_000.
+    /// and a destination fee of `100_000`.
     async fn dry_run_call(&self, extrinsic: &[u8]) -> Result<DryRunResult, ChainError> {
         self.maybe_sleep().await;
 
@@ -408,7 +408,7 @@ impl ChainClient for FakeChainClient {
 
     /// Query the XCM delivery fee to a destination.
     ///
-    /// The fake returns a fixed delivery fee of 50_000 planck.
+    /// The fake returns a fixed delivery fee of `50_000` planck.
     async fn xcm_query_delivery_fee(
         &self,
         dest: &GenesisHash,

@@ -72,12 +72,13 @@ impl ContextWindow {
             .iter()
             .map(|msg| {
                 let role = match msg.role {
-                    MessageRole::User => InferenceMessageRole::User,
                     MessageRole::Assistant => InferenceMessageRole::Assistant,
                     // System and Tool messages are mapped to User role for
                     // compatibility with provider APIs that only support
                     // user/assistant.
-                    MessageRole::System | MessageRole::Tool => InferenceMessageRole::User,
+                    MessageRole::User | MessageRole::System | MessageRole::Tool => {
+                        InferenceMessageRole::User
+                    }
                 };
                 let content = match &msg.content {
                     MessageContent::Text { text } => {
