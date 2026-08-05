@@ -23,6 +23,13 @@
 //!
 //! This module is only available when the `test-contracts` feature is enabled.
 
+// Contract helpers are assertion functions: a failed prerequisite should stop
+// immediately with the operation-specific message supplied at each call site.
+#![allow(
+    clippy::expect_used,
+    reason = "contract assertions intentionally panic with operation-specific diagnostics"
+)]
+
 use crate::{
     ContentBlock, InferenceMessage, InferenceRequest, MessageRole, ModelExecutor, StreamEvent,
 };

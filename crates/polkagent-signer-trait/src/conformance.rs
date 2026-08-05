@@ -30,6 +30,13 @@
 //!
 //! Compiled only when the `test-contracts` feature is enabled.
 
+// Conformance helpers are assertion functions: a failed prerequisite should
+// stop immediately with the operation-specific message supplied at each site.
+#![allow(
+    clippy::expect_used,
+    reason = "conformance assertions intentionally panic with operation-specific diagnostics"
+)]
+
 use crate::{
     AccountRef, ApprovalId, CanonicalSignRequest, ChainProfileId, GrantDigest, MetadataDigest,
     Signer, SignerError,
@@ -116,23 +123,23 @@ pub async fn test_describe_returns_accounts(signer: &dyn Signer) {
 /// signer can sign for (i.e., listed in `describe().accounts`).
 pub async fn test_sign_returns_signature(signer: &dyn Signer, account: AccountRef) {
     let request = valid_sign_request(account);
-    let signed = signer
+    let signed_payload = signer
         .sign(request)
         .await
         .expect("sign() must not fail for a valid, non-expired request");
 
     assert!(
-        !signed.signature.is_empty(),
+        !signed_payload.signature.is_empty(),
         "sign() must return a non-empty signature; got 0 bytes"
     );
 
     assert!(
-        !signed.public_key.is_empty(),
+        !signed_payload.public_key.is_empty(),
         "sign() must return a non-empty public_key; got 0 bytes"
     );
 
     assert!(
-        !signed.signed_extrinsic.is_empty(),
+        !signed_payload.signed_extrinsic.is_empty(),
         "sign() must return a non-empty signed_extrinsic; got 0 bytes"
     );
 }
@@ -219,12 +226,12 @@ pub async fn test_verify_valid_signature(signer: &dyn Signer, account: AccountRe
     let request = valid_sign_request(account);
     let original_payload = request.payload.clone();
 
-    let signed = signer
+    let signed_payload = signer
         .sign(request)
         .await
         .expect("sign() must not fail for a valid request");
 
-    let contains_payload = signed
+    let contains_payload = signed_payload
         .signed_extrinsic
         .windows(original_payload.len())
         .any(|window| window == original_payload.as_slice());
@@ -233,7 +240,7 @@ pub async fn test_verify_valid_signature(signer: &dyn Signer, account: AccountRe
         contains_payload,
         "signed_extrinsic must contain the original canonical payload bytes; \
          payload={original_payload:?} extrinsic={:?}",
-        signed.signed_extrinsic,
+        signed_payload.signed_extrinsic,
     );
 }
 

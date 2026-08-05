@@ -23,6 +23,13 @@
 //!
 //! This module is only available when the `test-contracts` feature is enabled.
 
+// Contract helpers are assertion functions: a failed prerequisite should stop
+// immediately with the operation-specific message supplied at each call site.
+#![allow(
+    clippy::expect_used,
+    reason = "contract assertions intentionally panic with operation-specific diagnostics"
+)]
+
 use crate::{
     AccountRef, ApprovalId, CanonicalSignRequest, ChainProfileId, GrantDigest, MetadataDigest,
     Signer,
@@ -79,23 +86,23 @@ pub async fn test_describe_returns_accounts(signer: &dyn Signer) {
 /// (i.e., one listed in `describe().accounts`).
 pub async fn test_sign_returns_payload(signer: &dyn Signer, account: AccountRef) {
     let request = valid_sign_request(account);
-    let signed = signer
+    let signed_payload = signer
         .sign(request)
         .await
         .expect("sign() must not fail for a valid, non-expired request");
 
     assert!(
-        !signed.signature.is_empty(),
+        !signed_payload.signature.is_empty(),
         "sign() must return a non-empty signature"
     );
 
     assert!(
-        !signed.public_key.is_empty(),
+        !signed_payload.public_key.is_empty(),
         "sign() must return a non-empty public_key"
     );
 
     assert!(
-        !signed.signed_extrinsic.is_empty(),
+        !signed_payload.signed_extrinsic.is_empty(),
         "sign() must return a non-empty signed_extrinsic"
     );
 }
@@ -111,7 +118,7 @@ pub async fn test_sign_payload_matches_request(signer: &dyn Signer, account: Acc
     let request = valid_sign_request(account);
     let original_payload = request.payload.clone();
 
-    let signed = signer
+    let signed_payload = signer
         .sign(request)
         .await
         .expect("sign() must not fail for a valid, non-expired request");
@@ -119,7 +126,7 @@ pub async fn test_sign_payload_matches_request(signer: &dyn Signer, account: Acc
     // The signed_extrinsic must contain the original payload bytes.
     // Typically, signed_extrinsic = payload || signature, so the payload
     // should appear as a prefix.
-    let contains_payload = signed
+    let contains_payload = signed_payload
         .signed_extrinsic
         .windows(original_payload.len())
         .any(|window| window == original_payload.as_slice());

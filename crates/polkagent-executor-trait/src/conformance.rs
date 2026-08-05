@@ -25,6 +25,13 @@
 //! Add `polkagent-executor-trait = { ..., features = ["test-contracts"] }` to
 //! the `[dev-dependencies]` of your adapter crate.
 
+// Conformance helpers are assertion functions: a failed prerequisite should
+// stop immediately with the operation-specific message supplied at each site.
+#![allow(
+    clippy::expect_used,
+    reason = "conformance assertions intentionally panic with operation-specific diagnostics"
+)]
+
 use futures::StreamExt;
 
 use crate::{
@@ -106,7 +113,7 @@ pub fn request_empty_prompt() -> InferenceRequest {
 // Conformance tests
 // ---------------------------------------------------------------------------
 
-/// Conformance: `complete()` returns a response with content or a stop_reason.
+/// Conformance: `complete()` returns a response with content or a `stop_reason`.
 ///
 /// Every adapter must return an [`crate::InferenceResponse`] whose `text` or
 /// `tool_calls` is non-empty, and whose `stop_reason` is a non-empty string.
@@ -153,7 +160,7 @@ pub async fn test_execute_with_tools(exec: &dyn ModelExecutor) {
 /// Conformance: `complete()` respects the `max_tokens` ceiling.
 ///
 /// When `max_tokens = 1` the response text should be very short (or the
-/// stop_reason should signal truncation).  Adapters must not produce an error
+/// `stop_reason` should signal truncation).  Adapters must not produce an error
 /// for this scenario — low token limits are a valid caller choice.
 pub async fn test_execute_respects_max_tokens(exec: &dyn ModelExecutor) {
     let result = exec.complete(request_low_max_tokens()).await;
@@ -200,7 +207,7 @@ pub async fn test_stream_yields_events(exec: &dyn ModelExecutor) {
     );
 }
 
-/// Conformance: `stream()` Completed event carries a non-empty stop_reason.
+/// Conformance: `stream()` Completed event carries a non-empty `stop_reason`.
 ///
 /// The `result` embedded in the terminal `Completed` event must match the
 /// contract of a `complete()` call: `stop_reason` must be non-empty.

@@ -44,7 +44,7 @@ use polkagent_core::Timestamp;
 /// derived at display time using the appropriate network prefix.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AccountRef {
-    /// Raw 32-byte AccountId32.
+    /// Raw 32-byte `AccountId32`.
     pub account_id: [u8; 32],
     /// Optional human-readable SS58 address for display purposes only.
     ///

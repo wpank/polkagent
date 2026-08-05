@@ -263,7 +263,7 @@ pub enum ProviderError {
     },
 
     /// The provider rejected the request due to content policy / safety
-    /// filters (e.g. Anthropic's content moderation or OpenAI's
+    /// filters (e.g. Anthropic's content moderation or `OpenAI`'s
     /// `content_filter` finish reason).
     ContentPolicy {
         /// Human-readable detail from the error body.
@@ -604,6 +604,12 @@ pub trait ModelExecutor: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These unit tests intentionally fail immediately when infallible fixture
+// serialization or a required conversion invariant stops holding.
+#[allow(
+    clippy::expect_used,
+    reason = "test assertions use expect messages to identify broken fixtures and invariants"
+)]
 mod tests {
     use super::*;
 
