@@ -2852,6 +2852,7 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "async-trait",
+ "axum-test",
  "blake2",
  "chrono",
  "clap",

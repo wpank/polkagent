@@ -102,6 +102,7 @@ rusqlite    = { workspace = true }
 parking_lot = { workspace = true }
 
 [dev-dependencies]
+axum-test = "21"
 ratatui   = { workspace = true }
 crossterm = { workspace = true }
 proptest  = { workspace = true }

@@ -18,7 +18,7 @@ use polkagent_interaction::{
     InteractionTarget, InteractionTurnId, ListInteractionsRequest, ParsedLine,
     PromptRequest as InteractionPromptRequest, RunDetailView, RunSummaryView,
     ServiceCommandExecutor, StreamError, SubscriptionRequest, TranscriptRequest, TurnHandle,
-    TurnState,
+    TurnState, UsageView,
 };
 use polkagent_runtime::{
     AdapterPolicy, ComponentState, PolkagentRuntime, RuntimeOptions, RuntimeReadiness, WarningCode,
@@ -2317,15 +2317,19 @@ async fn load_interaction_history(
     let mut turns = Vec::with_capacity(transcript.len());
     for transcript_turn in transcript {
         let summary = transcript_turn.turn;
-        let (mut output, output_tokens) = if summary.state == TurnState::Completed {
-            (
-                transcript_turn.assistant_text.ok_or_else(|| {
-                    "completed durable TUI turn is missing its assistant transcript".to_owned()
-                })?,
-                transcript_turn.assistant_token_count,
+        let (mut output, usage) = if summary.state == TurnState::Completed {
+            let output = transcript_turn.assistant_text.ok_or_else(|| {
+                "completed durable TUI turn is missing its assistant transcript".to_owned()
+            })?;
+            let usage = load_completed_turn_usage(
+                service.as_ref(),
+                interaction.conversation_id,
+                summary.handle.turn_id,
             )
+            .await?;
+            (output, usage)
         } else {
-            (String::new(), None)
+            (String::new(), UsageView::default())
         };
         truncate_output(&mut output);
         let status = console_status(summary.state);
@@ -2337,11 +2341,73 @@ async fn load_interaction_history(
             output,
             detail: format!("restored durable {} turn", status.label()),
             status,
-            input_tokens: u64::from(transcript_turn.user_token_count.unwrap_or(0)),
-            output_tokens: u64::from(output_tokens.unwrap_or(0)),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
         });
     }
     Ok((Some(interaction.conversation_id), turns))
+}
+
+async fn load_completed_turn_usage(
+    service: &dyn InteractionService,
+    conversation_id: ConversationId,
+    turn_id: InteractionTurnId,
+) -> Result<UsageView, String> {
+    let mut after_sequence = None;
+    loop {
+        let mut events = service
+            .subscribe(SubscriptionRequest {
+                conversation_id,
+                turn_id: Some(turn_id),
+                after_sequence,
+                capacity: INTERACTION_STREAM_CAPACITY,
+            })
+            .await
+            .map_err(|error| format!("load TUI turn usage: {error}"))?;
+        loop {
+            match events.recv().await {
+                Ok(envelope) => {
+                    after_sequence = Some(envelope.sequence);
+                    match envelope.event {
+                        InteractionEvent::TurnCompleted { result } => return Ok(result.usage),
+                        InteractionEvent::TurnFailed { .. }
+                        | InteractionEvent::TurnCancelled { .. }
+                        | InteractionEvent::TurnTimedOut => {
+                            return Err(
+                                "completed durable TUI turn has a non-completed terminal event"
+                                    .to_owned(),
+                            );
+                        }
+                        InteractionEvent::TurnStarted { .. }
+                        | InteractionEvent::AgentMessageDelta { .. }
+                        | InteractionEvent::ThoughtDelta { .. }
+                        | InteractionEvent::ToolCallStarted { .. }
+                        | InteractionEvent::ToolCallUpdated { .. }
+                        | InteractionEvent::PlanUpdated { .. }
+                        | InteractionEvent::ApprovalRequested { .. }
+                        | InteractionEvent::ApprovalResolved { .. }
+                        | InteractionEvent::UsageUpdated { .. }
+                        | InteractionEvent::RunStateChanged { .. } => {}
+                    }
+                }
+                Err(StreamError::Lagged {
+                    last_seen_sequence, ..
+                }) => {
+                    after_sequence = last_seen_sequence.or(after_sequence);
+                    break;
+                }
+                Err(StreamError::Closed) => {
+                    return Err(
+                        "completed durable TUI turn closed before its terminal usage event"
+                            .to_owned(),
+                    );
+                }
+                Err(StreamError::Backend(error)) => {
+                    return Err(format!("load TUI turn usage: {error}"));
+                }
+            }
+        }
+    }
 }
 
 fn console_status(state: TurnState) -> ConsoleRunStatus {

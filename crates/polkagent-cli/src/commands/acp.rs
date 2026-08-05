@@ -202,11 +202,24 @@ impl PolkagentAcpBackend {
             .config()
             .models
             .iter()
-            .find(|candidate| candidate.slug == model)
+            .find(|candidate| {
+                candidate.slug == model
+                    || model
+                        .strip_prefix(&candidate.provider)
+                        .and_then(|suffix| suffix.strip_prefix('/'))
+                        .is_some_and(|slug| slug == candidate.slug)
+            })
             .and_then(|candidate| candidate.context_window)
             .or_else(|| {
-                BuiltInModelCatalog::new()
+                let catalog = BuiltInModelCatalog::new();
+                catalog
                     .get(model)
+                    .or_else(|| {
+                        let (provider, slug) = model.split_once('/')?;
+                        catalog
+                            .get(slug)
+                            .filter(|descriptor| descriptor.provider == provider)
+                    })
                     .map(|descriptor| descriptor.context_window)
             })
     }
