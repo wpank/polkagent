@@ -40,8 +40,11 @@ clean exit, and replaces the container on the same named volume while retaining
 an HTTP-created agent, configured interaction, reason-bearing failed turn/run,
 and transcript under their exact IDs and JSON projections. The real local
 provider is intentionally unreachable, so no successful model output is
-simulated or claimed. A focused official-SDK subprocess suite also proves ACP
-initialize/new/prompt, a real `AppService` run, and cancellation while a
+simulated or claimed. It then takes a cold whole-volume SQLite snapshot after
+another clean drain, verifies its hash and database integrity, restores under
+the non-root runtime identity into a fresh Compose project/volume, and requires
+the same HTTP projections. A focused official-SDK subprocess suite also proves
+ACP initialize/new/prompt, a real `AppService` run, and cancellation while a
 provider request is active. The client receives the `Cancelled` stop reason,
 and SQLite retains the reason-bearing terminal state plus completion timestamp.
 The same suite checks that successful-session stdout lines are JSON and that a
@@ -56,8 +59,8 @@ mode. A Unix PTY
 subprocess test now proves actual Crossterm escape ordering and termios
 restoration on normal exit, ordinary error, and caught-panic unwind; Windows
 ConPTY remains unproved. These checks do not prove worker/effect draining,
-Postgres, backup/restore, tenant isolation, HA, a real chain action, role-safe
-harness multi-turn input, or complete Zed/editor behavior.
+Postgres or online/encrypted/export backup, tenant isolation, HA, a real chain
+action, role-safe harness multi-turn input, or complete Zed/editor behavior.
 
 The exact mandatory CI lint command, `cargo clippy --workspace -- -D
 warnings`, now exits zero locally. The stronger
@@ -99,7 +102,7 @@ dialect errors and 22 remaining style warnings.
 | Security | Grants, tests, redaction, signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, and unused policy runtime. |
 | Payments | Intent/store/budget components exist | Not value-moving | Store/runtime integration, real signature/settlement, and failure reconciliation remain. |
 | Marketplace/plugins | Durable local plugin/kit lifecycle, operator CLI, and listing components | Local install/list/get/update/rollback/uninstall is actionable; package execution is missing | Manifest/lock format remains split; no API/runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
-| Deployment/cloud | Canonical image/Compose boot, mounted config, health, graceful HTTP stop, and same-volume HTTP interaction/run recovery smoke pass | Bounded single-instance SQLite lifecycle with intentionally failed provider execution | Successful production-backend output, worker/run/effect drain, Postgres/tenant isolation, backup/restore, auth, release, HA, and control/worker paths remain unproven. |
+| Deployment/cloud | Canonical image/Compose boot, mounted config, health, graceful HTTP stop, same-volume HTTP recovery, and cold SQLite volume restore smoke pass | Bounded single-instance SQLite lifecycle with intentionally failed provider execution | Successful production-backend output, worker/run/effect drain, online/encrypted/export or PostgreSQL backup, retention, tenant isolation, auth, release, HA, and control/worker paths remain unproven. |
 
 ## PRD implementation posture
 
@@ -115,7 +118,7 @@ dialect errors and 22 remaining style warnings.
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Strong components | Mostly missing | No orchestration proof | Active P1 |
 | 10 Observability | Strong components | Partial | No recovery/replay proof | Active P1 |
-| 11 Deployment/cloud | Container boot/config/HTTP drain/same-volume HTTP interaction/run replacement recovery verified; broader scaffolding exists | Single-instance SQLite only | Exact failed lifecycle persists; successful production-backend output and worker/run/effect recovery remain unproved | Active P2 |
+| 11 Deployment/cloud | Container boot/config/HTTP drain/same-volume interaction recovery and fresh-volume cold SQLite restore verified | Single-instance SQLite only | Exact failed lifecycle restores; successful backend output, online/encrypted/PostgreSQL recovery, and worker/run/effect recovery remain unproved | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | Durable terminal chat plus monitoring TUI with durable actionable Console | Partial | Target-only contextual model-executor follow-up/restart/cancel and a command subset are tested; harness context, approvals, broader commands, and orchestration remain | Active P0/P1 + PRD-19 |
 | 14 API/config | Shared-runtime durable core, interaction routes, and broad control-plane routes | Agent/run/artifact/tool/interaction reads and mutations plus checkpointed interaction SSE are composed; 15 optional skill/memory/audit/registry routes remain explicitly unavailable | HTTP interaction retry/cancel/replay/live reconnect/restart/auth/read-only proof, zero-drift ordinary HTTP parity, and an OpenAPI 3.1-valid schema exist; two WebSocket frame protocols are separately documented | Active P0/P1 |
@@ -305,9 +308,14 @@ dialect errors and 22 remaining style warnings.
   turn, and run IDs plus the reason-bearing failed state and empty assistant
   output from an intentionally unreachable local provider; then requires the
   exact agent, interaction/config, turn, run, and transcript projections after
-  replacement. The CI job runs independently of the Rust 1.89 MSRV matrix and
-  uploads selected lifecycle, log, and HTTP JSON artifacts. Successful
-  production-backend output and worker/run/effect recovery remain open.
+  replacement. It then stops the source, captures the whole volume read-only
+  under the non-root runtime identity, verifies SHA-256 plus SQLite integrity
+  and foreign keys, restores into a fresh Compose project/volume, and requires
+  the same API projections. The CI job runs independently of the Rust 1.89 MSRV
+  matrix and uploads lifecycle, backup/manifest, log, and HTTP JSON artifacts.
+  Successful production-backend output, worker/run/effect recovery,
+  online/encrypted/export backup, PostgreSQL recovery, retention, and
+  upgrade/rollback remain open.
 - CI checks the workspace on stable Rust and the declared Rust 1.89 MSRV, and
   enforces `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` on
   stable. Both the exact workspace Clippy command and the stronger local

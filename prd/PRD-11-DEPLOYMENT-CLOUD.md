@@ -9,10 +9,13 @@
 > read-only bind-mounted configuration, clean SIGTERM HTTP drain, container
 > replacement on the same named volume, and exact recovery of an HTTP-created
 > agent/configured interaction/reason-bearing failed turn and run under the same
-> IDs and JSON projections. The real local provider is intentionally
-> unreachable: successful production-backend output, worker/run/effect
-> draining, Postgres, tenant isolation, backup/restore, upgrade/rollback,
-> release, and managed-cloud claims remain open.
+> IDs and JSON projections. A cold whole-volume SQLite snapshot is also
+> checksum/integrity verified and restored into a fresh project/volume under the
+> non-root runtime identity with exact API projection comparison. The real local
+> provider is intentionally unreachable: successful production-backend output,
+> worker/run/effect draining, Postgres, online/encrypted/export backup,
+> retention, tenant isolation, upgrade/rollback, release, and managed-cloud
+> claims remain open.
 
 **Status:** definitive PRD
 **Owner:** unassigned
@@ -4957,7 +4960,7 @@ DISASTER RECOVERY RUNBOOK -- Managed Cloud
 | What | How | Frequency | Retention |
 |---|---|---|---|
 | PostgreSQL state DB | Continuous WAL archiving to S3 via CNPG barman | Continuous | 30 days |
-| SQLite state DB (local) | `polkagent export` to encrypted bundle | Manual or scheduled | Operator-defined |
+| SQLite state DB (local) | Current: cold whole-volume archive; target: encrypted `polkagent export` bundle | Manual; scheduling planned | Operator-defined |
 | Artifact store | S3 versioning + cross-region replication | Continuous (S3 native) | Per bucket lifecycle policy |
 | Secrets | KMS: provider-managed key backup | Per KMS provider policy | Provider-defined |
 | Config revisions | Control plane DB backup | Continuous | 30 days |
@@ -4965,12 +4968,13 @@ DISASTER RECOVERY RUNBOOK -- Managed Cloud
 #### D.5.2 Restore procedures
 
 ```bash
-# Restore SQLite from export bundle (local deployment)
-polkagent stop
-polkagent import --bundle polkagent-export-20260730T120000Z.tar.gz \
-  --mode restore \
-  --data-dir /var/lib/polkagent
-polkagent start
+# Current bounded cold SQLite volume recovery evidence
+POLKAGENT_SMOKE_ARTIFACT_DIR=/tmp/polkagent-smoke-evidence \
+  ./scripts/container-smoke.sh
+
+# Planned operator interface -- not implemented or verified yet
+polkagent export --output polkagent-export.tar.gz
+polkagent import --bundle polkagent-export.tar.gz --mode restore
 
 # Point-in-time restore for PostgreSQL (CNPG)
 kubectl apply -f - <<EOF
@@ -4993,6 +4997,13 @@ spec:
         ...
 EOF
 ```
+
+The current executable slice stops the sole container writer before taking a
+read-only whole-volume archive, includes any SQLite WAL/SHM sidecars, verifies
+SHA-256 plus SQLite integrity and foreign keys, and restores into a fresh named
+volume under the non-root runtime UID/GID. It is cold-backup evidence only. The
+encrypted export/import commands and PostgreSQL/CNPG procedure above remain
+target interfaces rather than shipped recovery paths.
 
 ---
 

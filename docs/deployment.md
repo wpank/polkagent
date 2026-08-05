@@ -128,19 +128,57 @@ and run IDs plus the agent, interaction/config, turn, run, and transcript
 projections. It sends `SIGTERM`, requires a clean drained exit, replaces the
 container without deleting the named volume, then retrieves those same IDs and
 requires every recorded JSON projection to be unchanged. The isolated Compose
-project, volume, network, and local image are removed on exit.
+project remains stopped for the backup proof below.
 
-The host needs Docker Compose, `curl`, and `jq`; CI also runs `sh -n` and
-ShellCheck first. Set `POLKAGENT_SMOKE_ARTIFACT_DIR` to retain a summary, the
-HTTP JSON projections, selected container state, and logs. CI does this
-automatically and uploads the directory even when the smoke fails. Set
-`POLKAGENT_SMOKE_KEEP=1` only for local diagnosis; the isolated Compose project
-name is printed so it can be removed explicitly.
+The smoke then proves a bounded offline SQLite backup/restore procedure. It
+gracefully stops the source container before capture, confirms no running
+container still uses the source volume, and uses the exact locked application
+image as a networkless, read-only-rootfs helper under the runtime's non-root
+UID/GID. A whole-volume tar therefore captures `polkagent.db` together with any
+`-wal` and `-shm` sidecars. The host verifies the archive SHA-256 and runs
+SQLite integrity and foreign-key checks on an extracted copy. After rechecking
+the checksum, the same non-root helper restores into a Compose-created fresh
+named volume and project. The normal service starts from that volume and the
+smoke requires the exact agent, interaction/config, turn, run, and transcript
+HTTP projections recorded before capture. Both isolated projects, volumes,
+networks, local image tags, and the temporary backup are removed on exit.
+
+The host needs Docker Compose, `curl`, `jq`, `sqlite3`, `tar`, and either
+`sha256sum` or `shasum`; CI also runs `sh -n` and ShellCheck first. Set
+`POLKAGENT_SMOKE_ARTIFACT_DIR` to retain a summary, the verified volume archive
+and manifest, HTTP JSON projections, selected container state, and logs. CI
+does this automatically and uploads the directory even when the smoke fails.
+Set `POLKAGENT_SMOKE_KEEP=1` only for local diagnosis; both isolated Compose
+project names and the exact temporary backup path are printed for explicit
+cleanup.
 
 This is deliberately a single-instance lifecycle smoke. It does **not** prove
 successful model output or a reachable production execution backend. It also
-does not prove PostgreSQL, auth, worker/run/effect draining, HA, backup/restore,
+does not prove an online backup, encrypted/export bundle, scheduled retention,
+PostgreSQL backup/restore, auth, worker/run/effect draining, HA,
 upgrade/rollback, resource pressure, or crash recovery are production-ready.
+
+### Offline SQLite backup/restore runbook
+
+Until Polkagent ships a supported export/import command, the only verified
+SQLite recovery path is an offline whole-volume snapshot:
+
+1. Stop the single writer with `SIGTERM`, wait for exit status 0, and confirm
+   no container or process still has the volume open.
+2. Archive the entire data volume read-only, not only `polkagent.db`. Keeping
+   any `polkagent.db-wal` and `polkagent.db-shm` beside the database avoids a
+   torn snapshot when a sidecar remains after shutdown.
+3. Hash the archive and run `PRAGMA integrity_check` plus
+   `PRAGMA foreign_key_check` on a disposable extracted copy.
+4. Verify the hash again, restore into a new empty volume with the runtime UID
+   and GID, then start the canonical image against that new volume.
+5. Probe health and compare durable API records before directing traffic to the
+   restored instance. Keep the source volume unchanged until verification is
+   complete.
+
+`scripts/container-smoke.sh` is the executable reference for these steps. This
+is a cold backup with operator-defined RPO/RTO; it is not safe evidence for
+copying a live SQLite file, online backup, point-in-time recovery, or rollback.
 
 ### Development Compose
 

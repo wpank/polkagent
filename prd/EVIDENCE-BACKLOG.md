@@ -193,11 +193,24 @@ reports.
   and reason-bearing failed terminal state, then requires the same IDs and
   exact agent, interaction/config, turn, run, and transcript projections after
   replacement. The empty assistant output is asserted so this does not simulate
-  a successful model. CI uploads a summary, HTTP JSON, selected state, and
-  container logs on success or failure. EVD-08 remains open for successful
-  production-backend output, worker/run/effect draining, Postgres,
-  backup/restore, upgrade/rollback, auth, tenant isolation, crash boundaries,
-  and resource-pressure evidence.
+  a successful model. The same smoke then stops/drains the source, captures the
+  whole SQLite volume read-only under the runtime's non-root UID/GID, preserves
+  any WAL/SHM sidecars, verifies SHA-256 plus SQLite integrity/foreign keys, and
+  restores into a fresh Compose project and named volume. The normal service
+  must return the exact pre-backup API projections. CI uploads a summary,
+  verified backup/manifest, HTTP JSON, selected state, and container logs on
+  success or failure. EVD-08 remains open for successful production-backend
+  output, worker/run/effect draining, online/encrypted/export or PostgreSQL
+  backup, retention/RPO automation, upgrade/rollback, auth, tenant isolation,
+  crash boundaries, and resource-pressure evidence.
+  The 2026-08-05 local Colima run captured a 1,914,880-byte archive whose
+  manifest contained `polkagent.db`, `polkagent.db-wal`, and
+  `polkagent.db-shm`; SHA-256 was
+  `eaf56ed9ee4c9d70aa7a57be96ec67801186368b68842f9808d144a948ff27d3`.
+  Capture rounded to 0 seconds, restore-through-API took 6 seconds, the backup
+  slice took 7 seconds, and the full locked build/smoke took 178 seconds. That
+  local image build included unrelated concurrent worktree changes; the
+  committed clean CI rerun remains the authoritative hosted artifact.
 
 ## Evidence quality rules
 

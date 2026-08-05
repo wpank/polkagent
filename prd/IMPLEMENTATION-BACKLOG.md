@@ -612,8 +612,16 @@ separate files.
   and HTTP-projection diagnostics. The real local provider is intentionally
   unreachable, so successful production-backend output and daemon
   worker/run/effect recovery remain unproved.
+- [x] Prove a bounded cold SQLite volume backup/restore. After graceful source
+  shutdown, the smoke captures the complete volume (including any WAL/SHM
+  sidecars) read-only under the non-root runtime identity, verifies archive
+  SHA-256 and SQLite integrity/foreign keys, restores into a fresh Compose
+  project/volume under the same identity, and requires exact HTTP projections.
+  This is not an online, encrypted, scheduled, PostgreSQL, or export/import
+  backup contract.
 - [ ] Prove Postgres conformance and tenant isolation.
-- [ ] Define migrations, backup/restore, upgrade/rollback, resource limits,
+- [ ] Define migrations, online/encrypted backup and retention, supported
+  export/import, PostgreSQL recovery, upgrade/rollback, resource limits,
   durable run/worker/effect draining, crash recovery, and release artifacts.
 - [ ] Only then connect control/worker services and add Helm/Kubernetes/HA.
 

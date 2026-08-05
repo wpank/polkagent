@@ -259,6 +259,13 @@ Effect-store write paths open transactions with `BEGIN IMMEDIATE` (SQLite) or `S
 
 SQLite WAL files grow until a checkpoint is triggered. Polkagent does not explicitly schedule checkpoints; SQLite's default automatic checkpoint threshold (1000 pages) applies. For production deployments with high write throughput, consider configuring `PRAGMA wal_autocheckpoint` or running periodic `PRAGMA wal_checkpoint(TRUNCATE)` via a maintenance task. See [deployment.md](deployment.md) for operational guidance.
 
+The currently verified container backup procedure is deliberately offline: it
+stops and drains the sole writer, snapshots the complete data volume including
+any WAL/SHM sidecars, verifies the archive and an extracted SQLite copy, and
+restores into a fresh volume before API comparison. Copying only the main
+database while the service is live is not supported evidence. See the offline
+runbook in [deployment.md](deployment.md#offline-sqlite-backuprestore-runbook).
+
 ---
 
 ## PostgreSQL Support
