@@ -59,7 +59,7 @@ pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -
             .context("loading durable chat interaction")?;
         let agent_id = interaction_agent_id(&interaction)?;
         let agent = active_agent_by_id(runtime.pool(), agent_id)
-            .context("resolving the durable chat target from the retained runtime registry")?;
+            .context("resolving the durable chat target from the retained runtime database")?;
         (interaction, agent)
     } else {
         let agent = resolve_active_agent_target(runtime.pool(), &cmd.agent)
