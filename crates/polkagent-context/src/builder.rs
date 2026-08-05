@@ -220,6 +220,13 @@ impl ContextBuilder {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Context unit tests intentionally panic at the exact fixture or invariant
+// boundary that failed so assembly regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "context unit-test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

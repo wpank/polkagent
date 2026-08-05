@@ -43,11 +43,11 @@ impl TruncationStrategy {
     #[must_use]
     pub fn for_kind(kind: SectionKind) -> Self {
         match kind {
-            SectionKind::ConversationHistory => Self::DropOldest,
+            SectionKind::ConversationHistory
+            | SectionKind::SystemPrompt
+            | SectionKind::UserInput => Self::DropOldest,
             SectionKind::MemoryContext => Self::Summarize,
             SectionKind::ToolDescriptions => Self::Priority,
-            // System prompt and user input are not typically truncated.
-            SectionKind::SystemPrompt | SectionKind::UserInput => Self::DropOldest,
         }
     }
 }
@@ -153,7 +153,7 @@ fn truncate_priority(content: &str, max_tokens: u32, estimator: &TokenEstimator)
 /// are truncated before higher-priority ones. Returns the total estimated
 /// tokens after truncation.
 pub fn truncate_to_budget(
-    sections: &mut Vec<ContextSection>,
+    sections: &mut [ContextSection],
     total_budget: u32,
     estimator: &TokenEstimator,
 ) -> u32 {
@@ -195,6 +195,13 @@ pub fn truncate_to_budget(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Context unit tests intentionally panic at the exact fixture or invariant
+// boundary that failed so assembly regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "context unit-test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

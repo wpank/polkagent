@@ -154,11 +154,11 @@ impl TokenBudget {
     /// Create a budget with sensible defaults for a given total token limit.
     ///
     /// Default allocation ratios (of content tokens, i.e. total minus reserve):
-    /// - system_prompt: 15%
-    /// - tools: 15%
-    /// - memory: 15%
-    /// - conversation: 55%
-    /// - response_reserve: 4096 tokens (or 25% of total if total < 16384)
+    /// - `system_prompt`: 15%
+    /// - `tools`: 15%
+    /// - `memory`: 15%
+    /// - `conversation`: 55%
+    /// - `response_reserve`: 4096 tokens (or 25% of total if total < 16384)
     pub fn with_defaults(total_tokens: u32) -> ContextResult<Self> {
         let mut budget = Self::new(total_tokens)?;
 
@@ -192,6 +192,13 @@ impl TokenBudget {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Context unit tests intentionally panic at the exact fixture or invariant
+// boundary that failed so assembly regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "context unit-test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

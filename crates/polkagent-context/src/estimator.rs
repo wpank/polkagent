@@ -44,8 +44,25 @@ impl TokenEstimator {
         if text.is_empty() {
             return 0;
         }
-        #[allow(clippy::cast_possible_truncation)]
-        let tokens = (text.len() as f64 / self.chars_per_token).ceil() as u32;
+        let Ok(characters) = u32::try_from(text.len()) else {
+            // Conservatively saturate inputs larger than the public token
+            // count can represent instead of underestimating their budget.
+            return u32::MAX;
+        };
+        let estimated = (f64::from(characters) / self.chars_per_token).ceil();
+        let tokens = if estimated >= f64::from(u32::MAX) {
+            u32::MAX
+        } else {
+            // The estimator is positive by construction and the upper bound
+            // above proves this conversion fits in u32.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the value is non-negative and bounded by u32::MAX before conversion"
+            )]
+            let bounded = estimated as u32;
+            bounded
+        };
         tokens.max(1)
     }
 
@@ -75,6 +92,13 @@ impl Default for TokenEstimator {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Context unit tests intentionally panic at the exact fixture or invariant
+// boundary that failed so assembly regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "context unit-test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 
@@ -120,6 +144,12 @@ mod tests {
         let est = TokenEstimator::new(2.0);
         // "abcd" = 4 chars, 4/2 = 2 tokens
         assert_eq!(est.estimate("abcd"), 2);
+    }
+
+    #[test]
+    fn estimate_saturates_when_ratio_exceeds_token_range() {
+        let est = TokenEstimator::new(f64::MIN_POSITIVE);
+        assert_eq!(est.estimate("a"), u32::MAX);
     }
 
     #[test]
