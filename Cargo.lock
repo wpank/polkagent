@@ -4078,6 +4078,7 @@ dependencies = [
  "futures",
  "polkagent-interaction",
  "polkagent-telemetry",
+ "serde_json",
  "thiserror 2.0.19",
  "tokio",
  "uuid",

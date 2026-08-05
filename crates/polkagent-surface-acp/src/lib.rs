@@ -15,10 +15,12 @@ use std::sync::Arc;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
     CancelNotification, ContentBlock, ContentChunk, Implementation, InitializeRequest,
-    InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    ResourceLink, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
-    SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, StopReason, TextContent, UnstructuredCommandInput, UsageUpdate,
+    InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
+    NewSessionResponse, PromptRequest, PromptResponse, ResourceLink, ResumeSessionRequest,
+    ResumeSessionResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionId, SessionNotification, SessionResumeCapabilities,
+    SessionUpdate, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason,
+    TextContent, UnstructuredCommandInput, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
@@ -31,8 +33,9 @@ use tokio::sync::Mutex;
 const BACKEND_PANIC_DETAIL: &str = "Polkagent's ACP backend panicked; the request was stopped";
 const AGENT_CONFIG_ID: &str = "polkagent.agent";
 const MODEL_CONFIG_ID: &str = "model";
-const NO_AGENT_VALUE: &str = "_polkagent_no_agent";
 const INHERIT_MODEL_VALUE: &str = "_polkagent_agent_model";
+const TURN_ID_META_KEY: &str = "polkagent.turnId";
+const TURN_RESULT_META_KEY: &str = "polkagent";
 const PROMPT_UPDATE_BUFFER: usize = 32;
 const ACP_COMMANDS: [CommandName; 6] = [
     CommandName::Help,
@@ -48,6 +51,16 @@ const ACP_COMMANDS: [CommandName; 6] = [
 #[error("{message}")]
 pub struct BackendError {
     message: String,
+    kind: BackendErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendErrorKind {
+    InvalidRequest,
+    NotFound,
+    Conflict,
+    Unsupported,
+    Internal,
 }
 
 impl BackendError {
@@ -56,6 +69,43 @@ impl BackendError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            kind: BackendErrorKind::Internal,
+        }
+    }
+
+    /// Construct a caller-input failure.
+    #[must_use]
+    pub fn invalid_request(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: BackendErrorKind::InvalidRequest,
+        }
+    }
+
+    /// Construct a durable identity lookup failure.
+    #[must_use]
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: BackendErrorKind::NotFound,
+        }
+    }
+
+    /// Construct a durable state-conflict failure.
+    #[must_use]
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: BackendErrorKind::Conflict,
+        }
+    }
+
+    /// Construct a truthful unsupported-capability failure.
+    #[must_use]
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: BackendErrorKind::Unsupported,
         }
     }
 }
@@ -80,6 +130,29 @@ pub struct ModelSummary {
     pub name: String,
 }
 
+/// Durable configuration and transcript returned when an ACP session is
+/// created or attached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendSession {
+    /// Exact durable conversation identity, also used as the ACP session ID.
+    pub session_id: String,
+    /// Resolved active agent identity.
+    pub selected_agent: String,
+    /// Persisted model override; `None` inherits the agent default.
+    pub selected_model: Option<String>,
+    /// Durable transcript returned only by full `session/load`.
+    pub transcript: Vec<BackendTranscriptTurn>,
+}
+
+/// One exact durable user/assistant pair replayed during `session/load`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendTranscriptTurn {
+    /// Exact persisted user text.
+    pub user_text: String,
+    /// Exact persisted assistant text when the turn reached a durable terminal projection.
+    pub assistant_text: Option<String>,
+}
+
 /// A progressive update emitted while a backend prompt is still running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendPromptUpdate {
@@ -101,6 +174,12 @@ pub struct BackendTurn {
     pub text: String,
     /// Whether cancellation ended the turn.
     pub cancelled: bool,
+    /// Exact durable interaction turn identity.
+    pub turn_id: String,
+    /// Exact durable run identities linked to the turn.
+    pub run_ids: Vec<String>,
+    /// Last durable interaction event sequence consumed for the turn.
+    pub checkpoint: u64,
 }
 
 impl BackendTurn {
@@ -110,6 +189,9 @@ impl BackendTurn {
         Self {
             text: text.into(),
             cancelled: false,
+            turn_id: String::new(),
+            run_ids: Vec::new(),
+            checkpoint: 0,
         }
     }
 
@@ -119,7 +201,24 @@ impl BackendTurn {
         Self {
             text: text.into(),
             cancelled: true,
+            turn_id: String::new(),
+            run_ids: Vec::new(),
+            checkpoint: 0,
         }
+    }
+
+    /// Attach exact durable correlation identities to a runtime-backed turn.
+    #[must_use]
+    pub fn durable(
+        mut self,
+        turn_id: impl Into<String>,
+        run_ids: Vec<String>,
+        checkpoint: u64,
+    ) -> Self {
+        self.turn_id = turn_id.into();
+        self.run_ids = run_ids;
+        self.checkpoint = checkpoint;
+        self
     }
 }
 
@@ -132,6 +231,36 @@ pub trait AcpBackend: Send + Sync + 'static {
     /// List configured models that an editor session may select.
     async fn list_models(&self) -> Result<Vec<ModelSummary>, BackendError>;
 
+    /// Create exactly one durable interaction for a new ACP session.
+    async fn new_session(
+        &self,
+        cwd: &Path,
+        agent: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<BackendSession, BackendError>;
+
+    /// Attach an existing durable interaction and optionally load its transcript.
+    async fn load_session(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        include_transcript: bool,
+    ) -> Result<BackendSession, BackendError>;
+
+    /// Persist a new single-agent target for an ACP interaction.
+    async fn set_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<BackendSession, BackendError>;
+
+    /// Persist or clear the model override for an ACP interaction.
+    async fn set_model(
+        &self,
+        session_id: &str,
+        model: Option<&str>,
+    ) -> Result<BackendSession, BackendError>;
+
     /// Execute one prompt through Polkagent's orchestration runtime.
     ///
     /// Implementations send progressive updates through the bounded channel.
@@ -141,8 +270,7 @@ pub trait AcpBackend: Send + Sync + 'static {
         &self,
         session_id: &str,
         cwd: &Path,
-        agent: &str,
-        model: Option<&str>,
+        turn_id: &str,
         prompt: &str,
         updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
     ) -> Result<BackendTurn, BackendError>;
@@ -195,16 +323,24 @@ type Sessions = Arc<Mutex<HashMap<SessionId, EditorSession>>>;
 /// # Errors
 ///
 /// Returns an ACP transport error when framing, dispatch, or stdio I/O fails.
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeping every stable ACP request handler in one builder makes advertised capabilities auditable against registered methods"
+)]
 pub async fn serve_stdio(
     backend: Arc<dyn AcpBackend>,
     config: ServerConfig,
 ) -> Result<(), agent_client_protocol::Error> {
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let new_sessions = Arc::clone(&sessions);
+    let load_sessions = Arc::clone(&sessions);
+    let resume_sessions = Arc::clone(&sessions);
     let prompt_sessions = Arc::clone(&sessions);
     let cancel_sessions = Arc::clone(&sessions);
     let config_sessions = Arc::clone(&sessions);
     let new_backend = Arc::clone(&backend);
+    let load_backend = Arc::clone(&backend);
+    let resume_backend = Arc::clone(&backend);
     let prompt_backend = Arc::clone(&backend);
     let cancel_backend = Arc::clone(&backend);
     let config_backend = Arc::clone(&backend);
@@ -217,12 +353,69 @@ pub async fn serve_stdio(
         .on_receive_request(
             async move |request: InitializeRequest, responder, _connection| {
                 let response = InitializeResponse::new(request.protocol_version)
-                    .agent_capabilities(AgentCapabilities::new())
+                    .agent_capabilities(
+                        AgentCapabilities::new()
+                            .load_session(true)
+                            .session_capabilities(
+                                SessionCapabilities::new().resume(SessionResumeCapabilities::new()),
+                            ),
+                    )
                     .agent_info(
                         Implementation::new("polkagent", env!("CARGO_PKG_VERSION"))
                             .title("Polkagent"),
                     );
                 responder.respond(response)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: LoadSessionRequest, responder, connection| {
+                let (session_id, session, transcript) = match attach_editor_session(
+                    request.session_id,
+                    request.cwd,
+                    request.mcp_servers.is_empty(),
+                    request.additional_directories.is_empty(),
+                    &load_sessions,
+                    load_backend.as_ref(),
+                    true,
+                )
+                .await
+                {
+                    Ok(loaded) => loaded,
+                    Err(error) => return responder.respond_with_error(error),
+                };
+                replay_transcript(&connection, &session_id, &transcript)?;
+                let (agents, models) = discover_options(load_backend.as_ref()).await?;
+                responder.respond(
+                    LoadSessionResponse::new()
+                        .config_options(session_config_options(&session, &agents, &models)),
+                )?;
+                send_available_commands(&connection, session_id)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: ResumeSessionRequest, responder, connection| {
+                let (session_id, session, _) = match attach_editor_session(
+                    request.session_id,
+                    request.cwd,
+                    request.mcp_servers.is_empty(),
+                    request.additional_directories.is_empty(),
+                    &resume_sessions,
+                    resume_backend.as_ref(),
+                    false,
+                )
+                .await
+                {
+                    Ok(resumed) => resumed,
+                    Err(error) => return responder.respond_with_error(error),
+                };
+                let (agents, models) = discover_options(resume_backend.as_ref()).await?;
+                responder.respond(
+                    ResumeSessionResponse::new()
+                        .config_options(session_config_options(&session, &agents, &models)),
+                )?;
+                send_available_commands(&connection, session_id)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -268,8 +461,8 @@ pub async fn serve_stdio(
                 tokio::spawn(async move {
                     let result = handle_prompt(request, sessions, backend, &connection).await;
                     match result {
-                        Ok(stop_reason) => {
-                            let _ = responder.respond(PromptResponse::new(stop_reason));
+                        Ok(response) => {
+                            let _ = responder.respond(response);
                         }
                         Err(error) => {
                             let _ = responder.respond_with_error(error);
@@ -354,17 +547,118 @@ async fn create_editor_session(
         }
     }
 
-    let session_id = SessionId::new(format!("polkagent-{}", uuid::Uuid::now_v7()));
+    let durable =
+        call_backend(backend.new_session(&request.cwd, selected_agent.as_deref(), default_model))
+            .await
+            .map_err(|error| backend_protocol_error(&error))?;
+    let session_id = SessionId::new(durable.session_id);
     let session = EditorSession {
         cwd: request.cwd,
-        selected_agent,
-        selected_model: default_model.map(str::to_owned),
+        selected_agent: Some(durable.selected_agent),
+        selected_model: durable.selected_model,
         busy: false,
     };
     let response = NewSessionResponse::new(session_id.clone())
         .config_options(session_config_options(&session, &agents, &models));
     sessions.lock().await.insert(session_id.clone(), session);
     Ok((session_id, response))
+}
+
+async fn attach_editor_session(
+    session_id: SessionId,
+    cwd: PathBuf,
+    no_mcp_servers: bool,
+    no_additional_directories: bool,
+    sessions: &Sessions,
+    backend: &dyn AcpBackend,
+    include_transcript: bool,
+) -> Result<(SessionId, EditorSession, Vec<BackendTranscriptTurn>), agent_client_protocol::Error> {
+    validate_session_roots(&cwd, no_mcp_servers, no_additional_directories)?;
+    let durable =
+        call_backend(backend.load_session(session_id.0.as_ref(), &cwd, include_transcript))
+            .await
+            .map_err(|error| backend_protocol_error(&error))?;
+    if durable.session_id != session_id.0.as_ref() {
+        return Err(agent_client_protocol::Error::internal_error()
+            .data("durable ACP session identity changed while loading"));
+    }
+    let session = EditorSession {
+        cwd,
+        selected_agent: Some(durable.selected_agent),
+        selected_model: durable.selected_model,
+        busy: false,
+    };
+    sessions
+        .lock()
+        .await
+        .insert(session_id.clone(), session.clone());
+    Ok((session_id, session, durable.transcript))
+}
+
+fn validate_session_roots(
+    cwd: &Path,
+    no_mcp_servers: bool,
+    no_additional_directories: bool,
+) -> Result<(), agent_client_protocol::Error> {
+    if !cwd.is_absolute() {
+        return Err(agent_client_protocol::Error::invalid_params()
+            .data("session cwd must be an absolute path"));
+    }
+    if !no_mcp_servers {
+        return Err(agent_client_protocol::Error::invalid_params()
+            .data("session MCP servers are not supported by Polkagent ACP"));
+    }
+    if !no_additional_directories {
+        return Err(agent_client_protocol::Error::invalid_params()
+            .data("additional session directories are not supported by Polkagent ACP"));
+    }
+    Ok(())
+}
+
+async fn discover_options(
+    backend: &dyn AcpBackend,
+) -> Result<(Vec<AgentSummary>, Vec<ModelSummary>), agent_client_protocol::Error> {
+    let agents = call_backend(backend.list_agents())
+        .await
+        .map_err(|error| backend_protocol_error(&error))?;
+    let models = call_backend(backend.list_models())
+        .await
+        .map_err(|error| backend_protocol_error(&error))?;
+    Ok((agents, models))
+}
+
+fn replay_transcript(
+    connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
+    session_id: &SessionId,
+    transcript: &[BackendTranscriptTurn],
+) -> Result<(), agent_client_protocol::Error> {
+    for turn in transcript {
+        connection.send_notification(SessionNotification::new(
+            session_id.clone(),
+            SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Text(
+                TextContent::new(turn.user_text.clone()),
+            ))),
+        ))?;
+        if let Some(text) = &turn.assistant_text {
+            connection.send_notification(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new(text.clone()),
+                ))),
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+fn send_available_commands(
+    connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
+    session_id: SessionId,
+) -> Result<(), agent_client_protocol::Error> {
+    connection.send_notification(SessionNotification::new(
+        session_id,
+        SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(available_commands())),
+    ))
 }
 
 async fn set_session_config_option(
@@ -407,19 +701,33 @@ async fn set_session_config_option(
             .data("session configuration cannot change during an active prompt"));
     }
     match request.config_id.0.as_ref() {
-        AGENT_CONFIG_ID if value == NO_AGENT_VALUE => session.selected_agent = None,
         AGENT_CONFIG_ID => {
             let Some(agent) = agents.iter().find(|agent| agent.id == value) else {
                 return Err(agent_config_error(value));
             };
-            session.selected_agent = Some(agent.id.clone());
+            let durable = call_backend(backend.set_agent(request.session_id.0.as_ref(), &agent.id))
+                .await
+                .map_err(|error| backend_protocol_error(&error))?;
+            session.selected_agent = Some(durable.selected_agent);
+            session.selected_model = durable.selected_model;
         }
-        MODEL_CONFIG_ID if value == INHERIT_MODEL_VALUE => session.selected_model = None,
+        MODEL_CONFIG_ID if value == INHERIT_MODEL_VALUE => {
+            let durable = call_backend(backend.set_model(request.session_id.0.as_ref(), None))
+                .await
+                .map_err(|error| backend_protocol_error(&error))?;
+            session.selected_agent = Some(durable.selected_agent);
+            session.selected_model = durable.selected_model;
+        }
         MODEL_CONFIG_ID => {
             let Some(model) = models.iter().find(|model| model.id == value) else {
                 return Err(model_config_error(value));
             };
-            session.selected_model = Some(model.id.clone());
+            let durable =
+                call_backend(backend.set_model(request.session_id.0.as_ref(), Some(&model.id)))
+                    .await
+                    .map_err(|error| backend_protocol_error(&error))?;
+            session.selected_agent = Some(durable.selected_agent);
+            session.selected_model = durable.selected_model;
         }
         unsupported => {
             return Err(agent_client_protocol::Error::invalid_params().data(format!(
@@ -435,22 +743,14 @@ fn session_config_options(
     agents: &[AgentSummary],
     models: &[ModelSummary],
 ) -> Vec<SessionConfigOption> {
-    let mut agent_options = vec![SessionConfigSelectOption::new(
-        NO_AGENT_VALUE,
-        "No agent selected",
-    )];
-    agent_options.extend(
-        agents
-            .iter()
-            .map(|agent| SessionConfigSelectOption::new(agent.id.clone(), agent.name.clone())),
-    );
+    let agent_options = agents
+        .iter()
+        .map(|agent| SessionConfigSelectOption::new(agent.id.clone(), agent.name.clone()))
+        .collect::<Vec<_>>();
     let agent = SessionConfigOption::select(
         AGENT_CONFIG_ID,
         "Polkagent agent",
-        session
-            .selected_agent
-            .clone()
-            .unwrap_or_else(|| NO_AGENT_VALUE.to_owned()),
+        session.selected_agent.clone().unwrap_or_default(),
         agent_options,
     )
     .description("Active agent used for the next editor prompt".to_owned())
@@ -498,7 +798,8 @@ async fn handle_prompt(
     sessions: Sessions,
     backend: Arc<dyn AcpBackend>,
     connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
-) -> Result<StopReason, agent_client_protocol::Error> {
+) -> Result<PromptResponse, agent_client_protocol::Error> {
+    let turn_id = prompt_turn_id(&request)?;
     let prompt = prompt_text(&request.prompt)?;
     let session_id = request.session_id.clone();
     let snapshot = sessions
@@ -528,6 +829,7 @@ async fn handle_prompt(
         Ok(ParsedLine::Prompt(prompt)) => (
             handle_regular_prompt(
                 &prompt,
+                &turn_id,
                 &session_id,
                 &sessions,
                 backend.as_ref(),
@@ -549,11 +851,45 @@ async fn handle_prompt(
         send_text_update(connection, session_id.clone(), outcome.text)?;
     }
 
-    Ok(if outcome.cancelled {
+    let stop_reason = if outcome.cancelled {
         StopReason::Cancelled
     } else {
         StopReason::EndTurn
-    })
+    };
+    let mut response = PromptResponse::new(stop_reason);
+    if !outcome.turn_id.is_empty() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            TURN_RESULT_META_KEY.to_owned(),
+            serde_json::json!({
+                "conversationId": session_id.0.as_ref(),
+                "turnId": outcome.turn_id,
+                "runIds": outcome.run_ids,
+                "checkpoint": outcome.checkpoint,
+            }),
+        );
+        response = response.meta(meta);
+    }
+    Ok(response)
+}
+
+fn prompt_turn_id(request: &PromptRequest) -> Result<String, agent_client_protocol::Error> {
+    let Some(value) = request
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get(TURN_ID_META_KEY))
+    else {
+        return Ok(uuid::Uuid::now_v7().to_string());
+    };
+    let value = value.as_str().ok_or_else(|| {
+        agent_client_protocol::Error::invalid_params()
+            .data(format!("'{TURN_ID_META_KEY}' must be a UUID string"))
+    })?;
+    uuid::Uuid::parse_str(value).map_err(|_| {
+        agent_client_protocol::Error::invalid_params()
+            .data(format!("'{TURN_ID_META_KEY}' must be a valid UUID"))
+    })?;
+    Ok(value.to_owned())
 }
 
 fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_client_protocol::Error> {
@@ -580,35 +916,35 @@ fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_client_protocol:
 
 async fn handle_regular_prompt(
     prompt: &str,
+    turn_id: &str,
     session_id: &SessionId,
     sessions: &Sessions,
     backend: &dyn AcpBackend,
     connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<BackendTurn, agent_client_protocol::Error> {
-    let (cwd, agent, model) = {
+    let cwd = {
         let mut all_sessions = sessions.lock().await;
         let current = all_sessions.get_mut(session_id).ok_or_else(|| {
             agent_client_protocol::Error::invalid_params()
                 .data(format!("unknown session: {session_id}"))
         })?;
-        let Some(agent) = current.selected_agent.clone() else {
+        if current.selected_agent.is_none() {
             return Ok(BackendTurn::completed(
                 "No agent is selected. Use /agents to list active agents, then /agent <name-or-id> to select one.",
             ));
-        };
+        }
         if current.busy {
             return Err(agent_client_protocol::Error::invalid_request()
                 .data(format!("session {session_id} already has an active prompt")));
         }
         current.busy = true;
-        (current.cwd.clone(), agent, current.selected_model.clone())
+        current.cwd.clone()
     };
     let (updates_tx, mut updates_rx) = tokio::sync::mpsc::channel(PROMPT_UPDATE_BUFFER);
     let backend_call = call_backend(backend.prompt(
         session_id.0.as_ref(),
         &cwd,
-        &agent,
-        model.as_deref(),
+        turn_id,
         prompt.trim(),
         updates_tx,
     ));
@@ -746,7 +1082,13 @@ async fn handle_slash_command(
                         "The selected agent cannot change during an active editor prompt.",
                     ));
                 }
-                current.selected_agent = Some(agent.id.clone());
+                let durable = call_backend(
+                    backend.set_agent(session_id.0.as_ref(), &agent.id),
+                )
+                .await
+                .map_err(|error| backend_protocol_error(&error))?;
+                current.selected_agent = Some(durable.selected_agent);
+                current.selected_model = durable.selected_model;
                 Ok(BackendTurn::completed(format!(
                     "Selected agent '{}' ({}).",
                     agent.name, agent.id
@@ -787,10 +1129,19 @@ async fn handle_slash_command(
                     "The model cannot change during an active editor prompt.",
                 ));
             }
-            current.selected_model.clone_from(&selected);
+            let durable = call_backend(
+                backend.set_model(session_id.0.as_ref(), selected.as_deref()),
+            )
+            .await
+            .map_err(|error| backend_protocol_error(&error))?;
+            current.selected_agent = Some(durable.selected_agent);
+            current.selected_model = durable.selected_model;
             Ok(BackendTurn::completed(format!(
                 "Selected model '{}'.",
-                selected.as_deref().unwrap_or("agent default")
+                current
+                    .selected_model
+                    .as_deref()
+                    .unwrap_or("agent default")
             )))
         }
         InteractionCommand::Cancel {
@@ -809,10 +1160,10 @@ async fn handle_slash_command(
             "There is no active editor prompt to cancel in this session.",
         )),
         InteractionCommand::Cancel { .. } => Ok(BackendTurn::completed(
-            "ACP supports only /cancel without arguments (or /stop) for the current editor prompt; run-scoped and all-session cancellation require durable interaction support.",
+            "ACP supports only /cancel without arguments (or /stop) for the current durable turn; run-ID and all-session cancellation are not exposed by this adapter.",
         )),
         unsupported => Ok(BackendTurn::completed(format!(
-            "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. This ACP slice does not expose durable interactions, run history, or approvals.",
+            "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Run-history and approval commands are not exposed by this adapter.",
             unsupported.name().as_str()
         ))),
     }
@@ -872,7 +1223,7 @@ fn help_text(registry: &CommandRegistry, command: Option<CommandName>) -> String
     if let Some(command) = command {
         if !ACP_COMMANDS.contains(&command) {
             return format!(
-                "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Durable interactions, run history, and approvals are not exposed by this ACP slice.",
+                "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Run-history and approval commands are not exposed by this adapter.",
                 command.as_str()
             );
         }
@@ -932,11 +1283,25 @@ fn format_model_choices(models: &[ModelSummary]) -> String {
 }
 
 fn backend_protocol_error(error: &BackendCallError) -> agent_client_protocol::Error {
-    let detail = match error {
-        BackendCallError::Rejected(error) => polkagent_telemetry::redact_string(&error.to_string()),
-        BackendCallError::Panicked => BACKEND_PANIC_DETAIL.to_owned(),
-    };
-    agent_client_protocol::Error::internal_error().data(detail)
+    match error {
+        BackendCallError::Rejected(error) => {
+            let detail = polkagent_telemetry::redact_string(&error.to_string());
+            match error.kind {
+                BackendErrorKind::InvalidRequest | BackendErrorKind::NotFound => {
+                    agent_client_protocol::Error::invalid_params().data(detail)
+                }
+                BackendErrorKind::Conflict | BackendErrorKind::Unsupported => {
+                    agent_client_protocol::Error::invalid_request().data(detail)
+                }
+                BackendErrorKind::Internal => {
+                    agent_client_protocol::Error::internal_error().data(detail)
+                }
+            }
+        }
+        BackendCallError::Panicked => {
+            agent_client_protocol::Error::internal_error().data(BACKEND_PANIC_DETAIL)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -960,12 +1325,45 @@ mod tests {
             panic!("synthetic backend panic payload");
         }
 
+        async fn new_session(
+            &self,
+            _cwd: &Path,
+            _agent: Option<&str>,
+            _model: Option<&str>,
+        ) -> Result<BackendSession, BackendError> {
+            panic!("synthetic backend panic payload");
+        }
+
+        async fn load_session(
+            &self,
+            _session_id: &str,
+            _cwd: &Path,
+            _include_transcript: bool,
+        ) -> Result<BackendSession, BackendError> {
+            panic!("synthetic backend panic payload");
+        }
+
+        async fn set_agent(
+            &self,
+            _session_id: &str,
+            _agent_id: &str,
+        ) -> Result<BackendSession, BackendError> {
+            panic!("synthetic backend panic payload");
+        }
+
+        async fn set_model(
+            &self,
+            _session_id: &str,
+            _model: Option<&str>,
+        ) -> Result<BackendSession, BackendError> {
+            panic!("synthetic backend panic payload");
+        }
+
         async fn prompt(
             &self,
             _session_id: &str,
             _cwd: &Path,
-            _agent: &str,
-            _model: Option<&str>,
+            _turn_id: &str,
             _prompt: &str,
             _updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
         ) -> Result<BackendTurn, BackendError> {
@@ -998,12 +1396,45 @@ mod tests {
             }])
         }
 
+        async fn new_session(
+            &self,
+            _cwd: &Path,
+            _agent: Option<&str>,
+            _model: Option<&str>,
+        ) -> Result<BackendSession, BackendError> {
+            panic!("new session is not expected in configuration race test");
+        }
+
+        async fn load_session(
+            &self,
+            _session_id: &str,
+            _cwd: &Path,
+            _include_transcript: bool,
+        ) -> Result<BackendSession, BackendError> {
+            panic!("load session is not expected in configuration race test");
+        }
+
+        async fn set_agent(
+            &self,
+            _session_id: &str,
+            _agent_id: &str,
+        ) -> Result<BackendSession, BackendError> {
+            panic!("agent update is not expected after busy recheck");
+        }
+
+        async fn set_model(
+            &self,
+            _session_id: &str,
+            _model: Option<&str>,
+        ) -> Result<BackendSession, BackendError> {
+            panic!("model update is not expected after busy recheck");
+        }
+
         async fn prompt(
             &self,
             _session_id: &str,
             _cwd: &Path,
-            _agent: &str,
-            _model: Option<&str>,
+            _turn_id: &str,
             _prompt: &str,
             _updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
         ) -> Result<BackendTurn, BackendError> {
@@ -1064,7 +1495,7 @@ mod tests {
     }
 
     #[test]
-    fn help_uses_registry_aliases_without_claiming_durable_acp_support() {
+    fn help_uses_registry_aliases_without_claiming_unexposed_commands() {
         let registry = CommandRegistry::mvp();
         let help = help_text(&registry, None);
         assert!(help.contains("/agent <name-or-id>"));

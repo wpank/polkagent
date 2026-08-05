@@ -8,15 +8,21 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use polkagent_config::model_registry::{BuiltInModelCatalog, ModelCatalog as _};
-use polkagent_core::event::EventKind;
-use polkagent_core::{AgentId, RunId};
+use polkagent_core::{AgentId, ConversationId};
+use polkagent_interaction::{
+    ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate, CreateInteractionRequest,
+    InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
+    InteractionEvent, InteractionOverrides, InteractionService as _, InteractionSummary,
+    InteractionTarget, InteractionTurnId, PromptRequest as InteractionPromptRequest, StreamError,
+    SubscriptionRequest, TranscriptRequest,
+};
 use polkagent_runtime::{
     AdapterPolicy, PolkagentRuntime, RuntimeError, RuntimeFactory, RuntimeOptions, WarningCode,
 };
 use polkagent_store_sqlite::SqliteRunStore;
 use polkagent_surface_acp::{
-    AcpBackend, AgentSummary, BackendError, BackendPromptUpdate, BackendTurn, ModelSummary,
-    ServerConfig,
+    AcpBackend, AgentSummary, BackendError, BackendPromptUpdate, BackendSession,
+    BackendTranscriptTurn, BackendTurn, ModelSummary, ServerConfig,
 };
 use tokio::sync::Mutex;
 
@@ -81,8 +87,7 @@ struct PolkagentAcpBackend {
     runtime: PolkagentRuntime,
     startup_model: Option<String>,
     prompt_timeout: Option<Duration>,
-    start_runs: Mutex<()>,
-    active_runs: Mutex<HashMap<String, RunId>>,
+    active_turns: Mutex<HashMap<String, InteractionTurnId>>,
     diagnostics: AcpDiagnostics,
 }
 
@@ -117,8 +122,7 @@ impl PolkagentAcpBackend {
             runtime,
             startup_model: cmd.model.clone(),
             prompt_timeout: (cmd.timeout > 0).then(|| Duration::from_secs(cmd.timeout)),
-            start_runs: Mutex::new(()),
-            active_runs: Mutex::new(HashMap::new()),
+            active_turns: Mutex::new(HashMap::new()),
             diagnostics,
         })
     }
@@ -148,21 +152,26 @@ impl PolkagentAcpBackend {
             models.insert(model.to_owned());
         }
         for provider in self.runtime.app().provider_registry().list_providers() {
-            models.extend(
-                provider
-                    .models
-                    .into_iter()
-                    .filter(|model| !model.is_empty()),
-            );
-        }
-        models.extend(
-            self.runtime
-                .config()
+            for model in provider
                 .models
-                .iter()
-                .map(|model| model.slug.clone())
-                .filter(|model| !model.is_empty()),
-        );
+                .into_iter()
+                .filter(|model| !model.is_empty())
+            {
+                if !model.contains('/') {
+                    models.insert(format!("{}/{model}", provider.id));
+                }
+                models.insert(model);
+            }
+        }
+        for model in &self.runtime.config().models {
+            if model.slug.is_empty() {
+                continue;
+            }
+            if !model.slug.contains('/') {
+                models.insert(format!("{}/{}", model.provider, model.slug));
+            }
+            models.insert(model.slug.clone());
+        }
         let store = SqliteRunStore::new(self.runtime.pool().clone());
         for agent in store
             .list_agents(Some("active"), false)
@@ -202,11 +211,61 @@ impl PolkagentAcpBackend {
             })
     }
 
+    fn agent_default_model(&self, target: &InteractionTarget) -> Result<Option<String>> {
+        let InteractionTarget::Agent(agent_id) = target else {
+            anyhow::bail!("ACP durable interaction does not have a single-agent target");
+        };
+        let agent = SqliteRunStore::new(self.runtime.pool().clone())
+            .get_agent(&agent_id.to_string())
+            .context("loading ACP interaction agent")?;
+        Ok(stored_agent_model(&agent.spec_json))
+    }
+
+    async fn load_full_transcript(
+        &self,
+        conversation_id: ConversationId,
+        turn_count: u32,
+    ) -> Result<Vec<BackendTranscriptTurn>, InteractionError> {
+        let mut transcript = Vec::new();
+        let mut offset = 0_u32;
+        while offset < turn_count {
+            let limit = turn_count.saturating_sub(offset).min(1_000);
+            let page = self
+                .runtime
+                .interactions()
+                .load_transcript(TranscriptRequest {
+                    conversation_id,
+                    limit,
+                    offset,
+                })
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            let page_len = u32::try_from(page.len()).map_err(|_| {
+                InteractionError::new(
+                    InteractionErrorCode::Internal,
+                    "ACP transcript page exceeds supported range",
+                )
+            })?;
+            transcript.extend(page.into_iter().map(|turn| BackendTranscriptTurn {
+                user_text: turn.user_text,
+                assistant_text: turn.assistant_text,
+            }));
+            offset = offset.saturating_add(page_len);
+        }
+        Ok(transcript)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the durable event loop keeps prompt activation, checkpoint replay, exact terminal projection, timeout, and cleanup in one auditable lifecycle"
+    )]
     async fn execute_prompt(
         &self,
         session_id: &str,
-        selector: &str,
-        model: Option<&str>,
+        cwd: &Path,
+        requested_turn_id: &str,
         prompt: &str,
         updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
     ) -> Result<BackendTurn> {
@@ -215,66 +274,104 @@ impl PolkagentAcpBackend {
             "acp.prompt_started",
             "Editor prompt execution started",
         );
-        let agent = self.active_agent(selector)?;
-        let agent_id: AgentId = agent
-            .id
+        let conversation_id = parse_conversation_id(session_id)?;
+        let turn_id: InteractionTurnId = requested_turn_id
             .parse()
-            .with_context(|| format!("invalid stored agent ID: {}", agent.id))?;
-        let effective_model = model
-            .map(str::to_owned)
-            .or_else(|| stored_agent_model(&agent.spec_json));
-        let spec = build_agent_spec(agent_id, &agent.name, &agent.spec_json, effective_model);
-        let context_window = self.context_window(&spec.model);
-        // `AppService` stores one live spec per agent. Keep replacement and
-        // start atomic across concurrent ACP sessions so another session
-        // cannot substitute its model before `start_run` clones this spec.
-        let start_guard = self.start_runs.lock().await;
-        self.runtime
-            .app()
-            .create_agent(spec)
-            .context("registering ACP agent with AppService")?;
-
-        let mut events = self.runtime.subscribe_events();
-        let run_id = self
+            .with_context(|| format!("invalid ACP turn ID: {requested_turn_id}"))?;
+        let interaction = self
             .runtime
-            .app()
-            .start_run(agent_id, prompt)
+            .interactions()
+            .load_interaction(conversation_id)
             .await
-            .context("starting ACP-backed run")?;
-        drop(start_guard);
-        self.active_runs
+            .map_err(interaction_error)?;
+        let effective_model = interaction.config.model.clone().or_else(|| {
+            self.agent_default_model(&interaction.config.target)
+                .ok()
+                .flatten()
+        });
+        let context_window = effective_model
+            .as_deref()
+            .and_then(|model| self.context_window(model));
+        let mut client_context =
+            ClientContext::new(cwd.to_path_buf()).map_err(interaction_error)?;
+        client_context.client_name = Some("acp".to_owned());
+        client_context.client_session_id = Some(session_id.to_owned());
+        let started = self
+            .runtime
+            .interactions()
+            .prompt(InteractionPromptRequest {
+                turn_id: Some(turn_id),
+                conversation_id,
+                content: vec![InteractionContent::Text {
+                    text: prompt.to_owned(),
+                }],
+                config_overrides: InteractionOverrides::default(),
+                client_context,
+            })
+            .await
+            .map_err(interaction_error)?;
+        let handle = started.handle.clone();
+        let mut events = started.events;
+        self.active_turns
             .lock()
             .await
-            .insert(session_id.to_owned(), run_id);
+            .insert(session_id.to_owned(), turn_id);
 
         let wait_for_result = async {
             let mut response = String::new();
+            let mut checkpoint = handle.first_event_sequence.saturating_sub(1);
             loop {
-                let event = match events.recv().await {
+                let envelope = match events.recv().await {
                     Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        anyhow::bail!("run event stream closed before completion")
+                    Err(StreamError::Lagged {
+                        resume_after_sequence,
+                        ..
+                    }) => {
+                        checkpoint = resume_after_sequence;
+                        events = self
+                            .runtime
+                            .interactions()
+                            .subscribe(SubscriptionRequest {
+                                conversation_id,
+                                turn_id: Some(turn_id),
+                                after_sequence: Some(resume_after_sequence),
+                                capacity: 256,
+                            })
+                            .await
+                            .map_err(interaction_error)?;
+                        continue;
                     }
+                    Err(StreamError::Closed) => {
+                        events = self
+                            .runtime
+                            .interactions()
+                            .subscribe(SubscriptionRequest {
+                                conversation_id,
+                                turn_id: Some(turn_id),
+                                after_sequence: Some(checkpoint),
+                                capacity: 256,
+                            })
+                            .await
+                            .map_err(interaction_error)?;
+                        continue;
+                    }
+                    Err(StreamError::Backend(error)) => return Err(interaction_error(error)),
                 };
-                if event.run_id != run_id {
+                if envelope.turn_id != turn_id {
                     continue;
                 }
-                match event.kind {
-                    EventKind::StreamingToken { text } => {
+                checkpoint = envelope.sequence;
+                match envelope.event {
+                    InteractionEvent::AgentMessageDelta { text, .. } => {
                         response.push_str(&text);
                         updates
                             .send(BackendPromptUpdate::TextDelta(text))
                             .await
                             .context("forwarding runtime text update to ACP surface")?;
                     }
-                    EventKind::RunCompleted {
-                        input_tokens,
-                        output_tokens,
-                        ..
-                    } => {
+                    InteractionEvent::TurnCompleted { result } => {
                         if let Some(size) = context_window {
-                            let used = input_tokens.saturating_add(output_tokens);
+                            let used = result.usage.total_tokens();
                             if used > 0 {
                                 updates
                                     .send(BackendPromptUpdate::Usage { used, size })
@@ -282,21 +379,28 @@ impl PolkagentAcpBackend {
                                     .context("forwarding runtime usage update to ACP surface")?;
                             }
                         }
-                        if response.is_empty() {
-                            response.push_str("Run completed without text output.");
-                        }
-                        return Ok(BackendTurn::completed(response));
+                        return Ok(BackendTurn::completed(result.text).durable(
+                            turn_id.to_string(),
+                            result.run_ids.iter().map(ToString::to_string).collect(),
+                            checkpoint,
+                        ));
                     }
-                    EventKind::RunFailed { reason } => anyhow::bail!("run failed: {reason}"),
-                    EventKind::RunCancelled { reason } => {
+                    InteractionEvent::TurnFailed { error } => {
+                        return Err(interaction_error(error));
+                    }
+                    InteractionEvent::TurnCancelled { reason } => {
                         if !response.is_empty() {
                             response.push_str("\n\n");
                         }
                         response.push_str("Run cancelled: ");
-                        response.push_str(&reason);
-                        return Ok(BackendTurn::cancelled(response));
+                        response.push_str(reason.as_deref().unwrap_or("cancelled"));
+                        return Ok(BackendTurn::cancelled(response).durable(
+                            turn_id.to_string(),
+                            handle.run_ids.iter().map(ToString::to_string).collect(),
+                            checkpoint,
+                        ));
                     }
-                    EventKind::RunTimedOut => anyhow::bail!("run timed out"),
+                    InteractionEvent::TurnTimedOut => anyhow::bail!("run timed out"),
                     _ => {}
                 }
             }
@@ -306,7 +410,7 @@ impl PolkagentAcpBackend {
             if let Ok(result) = tokio::time::timeout(timeout, wait_for_result).await {
                 result
             } else {
-                let _ = self.runtime.app().timeout_run(run_id).await;
+                let _ = self.runtime.interactions().cancel_turn(turn_id).await;
                 Err(anyhow::anyhow!(
                     "editor prompt timed out after {} seconds",
                     timeout.as_secs()
@@ -315,7 +419,7 @@ impl PolkagentAcpBackend {
         } else {
             wait_for_result.await
         };
-        self.active_runs.lock().await.remove(session_id);
+        self.active_turns.lock().await.remove(session_id);
         if let Ok(turn) = &result {
             let (event, detail) = if turn.cancelled {
                 (
@@ -338,6 +442,74 @@ fn stored_agent_model(spec_json: &str) -> Option<String> {
         .as_str()
         .filter(|model| !model.is_empty())
         .map(str::to_owned)
+}
+
+fn parse_conversation_id(value: &str) -> Result<ConversationId> {
+    value
+        .parse()
+        .with_context(|| format!("invalid durable ACP session ID: {value}"))
+}
+
+fn backend_session(
+    summary: InteractionSummary,
+    transcript: Vec<BackendTranscriptTurn>,
+) -> Result<BackendSession> {
+    let InteractionTarget::Agent(agent_id) = summary.config.target else {
+        anyhow::bail!("ACP interaction does not resolve to one active agent");
+    };
+    Ok(BackendSession {
+        session_id: summary.conversation_id.to_string(),
+        selected_agent: agent_id.to_string(),
+        selected_model: summary.config.model,
+        transcript,
+    })
+}
+
+fn interaction_error(error: InteractionError) -> anyhow::Error {
+    anyhow::Error::new(error)
+}
+
+fn backend_error(error: anyhow::Error) -> BackendError {
+    let message = format!("{error:#}");
+    drop(error);
+    BackendError::new(message)
+}
+
+fn invalid_backend_error(error: anyhow::Error) -> BackendError {
+    let message = format!("{error:#}");
+    drop(error);
+    BackendError::invalid_request(message)
+}
+
+fn execution_backend_error(error: anyhow::Error) -> BackendError {
+    let interaction = error.downcast_ref::<InteractionError>().cloned();
+    if let Some(interaction) = interaction {
+        drop(error);
+        interaction_backend_error(interaction)
+    } else {
+        backend_error(error)
+    }
+}
+
+fn interaction_backend_error(error: InteractionError) -> BackendError {
+    let code = error.code;
+    let message = error.to_string();
+    drop(error);
+    match code {
+        InteractionErrorCode::InvalidRequest | InteractionErrorCode::InvalidConfig => {
+            BackendError::invalid_request(message)
+        }
+        InteractionErrorCode::NotFound => BackendError::not_found(message),
+        InteractionErrorCode::Conflict | InteractionErrorCode::Busy => {
+            BackendError::conflict(message)
+        }
+        InteractionErrorCode::Unsupported | InteractionErrorCode::PermissionDenied => {
+            BackendError::unsupported(message)
+        }
+        InteractionErrorCode::Unavailable | InteractionErrorCode::Internal => {
+            BackendError::new(message)
+        }
+    }
 }
 
 #[async_trait]
@@ -376,16 +548,130 @@ impl AcpBackend for PolkagentAcpBackend {
         })
     }
 
-    async fn prompt(
+    async fn new_session(
+        &self,
+        cwd: &Path,
+        agent: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<BackendSession, BackendError> {
+        let target = match agent {
+            Some(selector) => {
+                let agent = self.active_agent(selector).map_err(invalid_backend_error)?;
+                let agent_id = agent
+                    .id
+                    .parse()
+                    .with_context(|| format!("invalid stored agent ID: {}", agent.id))
+                    .map_err(invalid_backend_error)?;
+                InteractionTarget::Agent(agent_id)
+            }
+            None => InteractionTarget::Auto,
+        };
+        let mut config = InteractionConfig::new(target);
+        config.model = model.map(str::to_owned);
+        let mut context =
+            ClientContext::new(cwd.to_path_buf()).map_err(interaction_backend_error)?;
+        context.client_name = Some("acp".to_owned());
+        let summary = self
+            .runtime
+            .interactions()
+            .new_interaction(CreateInteractionRequest {
+                title: Some("ACP editor session".to_owned()),
+                config,
+                client_context: context,
+            })
+            .await
+            .map_err(interaction_backend_error)?;
+        backend_session(summary, Vec::new()).map_err(backend_error)
+    }
+
+    async fn load_session(
         &self,
         session_id: &str,
         _cwd: &Path,
-        agent: &str,
+        include_transcript: bool,
+    ) -> Result<BackendSession, BackendError> {
+        let conversation_id = parse_conversation_id(session_id).map_err(invalid_backend_error)?;
+        let summary = self
+            .runtime
+            .interactions()
+            .load_interaction(conversation_id)
+            .await
+            .map_err(interaction_backend_error)?;
+        let transcript = if include_transcript {
+            self.load_full_transcript(conversation_id, summary.turn_count)
+                .await
+                .map_err(interaction_backend_error)?
+        } else {
+            Vec::new()
+        };
+        backend_session(summary, transcript).map_err(backend_error)
+    }
+
+    async fn set_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<BackendSession, BackendError> {
+        let conversation_id = parse_conversation_id(session_id).map_err(invalid_backend_error)?;
+        let agent_id: AgentId = agent_id
+            .parse()
+            .with_context(|| format!("invalid ACP agent ID: {agent_id}"))
+            .map_err(invalid_backend_error)?;
+        self.runtime
+            .interactions()
+            .set_config_option(
+                conversation_id,
+                ConfigUpdate {
+                    option: ConfigOption::Target,
+                    value: ConfigOptionValue::Target(InteractionTarget::Agent(agent_id)),
+                },
+            )
+            .await
+            .map_err(interaction_backend_error)?;
+        let summary = self
+            .runtime
+            .interactions()
+            .load_interaction(conversation_id)
+            .await
+            .map_err(interaction_backend_error)?;
+        backend_session(summary, Vec::new()).map_err(backend_error)
+    }
+
+    async fn set_model(
+        &self,
+        session_id: &str,
         model: Option<&str>,
+    ) -> Result<BackendSession, BackendError> {
+        let conversation_id = parse_conversation_id(session_id).map_err(invalid_backend_error)?;
+        self.runtime
+            .interactions()
+            .set_config_option(
+                conversation_id,
+                ConfigUpdate {
+                    option: ConfigOption::Model,
+                    value: ConfigOptionValue::Model(model.map(str::to_owned)),
+                },
+            )
+            .await
+            .map_err(interaction_backend_error)?;
+        let summary = self
+            .runtime
+            .interactions()
+            .load_interaction(conversation_id)
+            .await
+            .map_err(interaction_backend_error)?;
+        backend_session(summary, Vec::new()).map_err(backend_error)
+    }
+
+    async fn prompt(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        turn_id: &str,
         prompt: &str,
         updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
     ) -> Result<BackendTurn, BackendError> {
-        self.execute_prompt(session_id, agent, model, prompt, updates)
+        self.execute_prompt(session_id, cwd, turn_id, prompt, updates)
             .await
             .map_err(|error| {
                 self.diagnostics.record(
@@ -393,16 +679,16 @@ impl AcpBackend for PolkagentAcpBackend {
                     "acp.prompt_failed",
                     "Editor prompt execution failed",
                 );
-                BackendError::new(format!("{error:#}"))
+                execution_backend_error(error)
             })
     }
 
     async fn cancel(&self, session_id: &str) -> Result<(), BackendError> {
-        let run_id = self.active_runs.lock().await.get(session_id).copied();
-        if let Some(run_id) = run_id {
+        let turn_id = self.active_turns.lock().await.get(session_id).copied();
+        if let Some(turn_id) = turn_id {
             self.runtime
-                .app()
-                .cancel_run(run_id)
+                .interactions()
+                .cancel_turn(turn_id)
                 .await
                 .map_err(|error| {
                     self.diagnostics.record(
@@ -410,7 +696,7 @@ impl AcpBackend for PolkagentAcpBackend {
                         "acp.cancel_failed",
                         "Cancelling the active editor prompt failed",
                     );
-                    BackendError::new(format!("cancelling run: {error}"))
+                    interaction_backend_error(error)
                 })?;
             self.diagnostics.record(
                 "info",

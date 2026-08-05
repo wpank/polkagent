@@ -9,12 +9,13 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, SessionConfigKind,
-    SessionConfigOption, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, StopReason, TextContent,
+    ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
+    PromptResponse, ResumeSessionRequest, SessionConfigKind, SessionConfigOption,
+    SessionConfigSelectOptions, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    StopReason, TextContent,
 };
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, LineDirection};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -51,6 +52,14 @@ struct DelayedSuccessProvider {
     task: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DurablePromptIdentity {
+    conversation_id: String,
+    turn_id: String,
+    run_ids: Vec<String>,
+    checkpoint: u64,
+}
+
 fn write_local_provider_config(path: &std::path::Path, id: &str, base_url: &str) {
     std::fs::write(
         path,
@@ -77,9 +86,20 @@ fn write_model_selection_config(path: &std::path::Path, base_url: &str) {
              api_key_env = \"POLKAGENT_ACP_FIXTURE_KEY\"\n\
              default_model = \"fixture-default\"\n\
              \n\
+             [[providers]]\n\
+             id = \"other-provider\"\n\
+             provider_type = \"local\"\n\
+             base_url = \"{base_url}\"\n\
+             api_key_env = \"POLKAGENT_ACP_FIXTURE_KEY\"\n\
+             default_model = \"foreign-model\"\n\
+             \n\
              [[models]]\n\
              slug = \"fixture-alternate\"\n\
-             provider = \"dynamic-provider\"\n"
+             provider = \"dynamic-provider\"\n\
+             \n\
+             [[models]]\n\
+             slug = \"foreign-model\"\n\
+             provider = \"other-provider\"\n"
         ),
     )
     .expect("write dynamic model provider config");
@@ -372,18 +392,346 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one official-client scenario must retain identities across three real ACP subprocess lifetimes to prove retry, load replay, resume, and exact database correlation end to end"
+)]
+async fn official_client_retries_and_loads_the_same_durable_interaction_after_restart() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let project_path = temp.path().to_path_buf();
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    create_active_agent(binary, &db_path, "durable-acp", "fake/test");
+
+    let first_observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let first_identity = Arc::new(Mutex::new(None));
+    let first_identity_by_client = Arc::clone(&first_identity);
+    let first_agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args(["acp", "--agent", "durable-acp"])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            ),
+        Arc::clone(&first_observed),
+    );
+    let first_turn_id = uuid::Uuid::now_v7().to_string();
+    let first_turn_id_for_client = first_turn_id.clone();
+
+    agent_client_protocol::Client
+        .connect_with(
+            first_agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                let initialized = connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                assert!(initialized.agent_capabilities.load_session);
+                let session = connection
+                    .send_request(NewSessionRequest::new(project_path))
+                    .block_task()
+                    .await?;
+                assert!(session.session_id.0.as_ref().parse::<uuid::Uuid>().is_ok());
+                connection
+                    .send_request(SetSessionConfigOptionRequest::new(
+                        session.session_id.clone(),
+                        "model",
+                        "fake/test",
+                    ))
+                    .block_task()
+                    .await?;
+                let request = prompt_with_turn_id(
+                    &session.session_id,
+                    "First durable ACP turn.",
+                    &first_turn_id_for_client,
+                );
+                let first = connection
+                    .send_request(request.clone())
+                    .block_task()
+                    .await?;
+                let retry = connection.send_request(request).block_task().await?;
+                let first = durable_prompt_identity(&first);
+                assert_eq!(durable_prompt_identity(&retry), first);
+                let conflict = connection
+                    .send_request(prompt_with_turn_id(
+                        &session.session_id,
+                        "Conflicting reuse of a durable ACP turn.",
+                        &first_turn_id_for_client,
+                    ))
+                    .block_task()
+                    .await
+                    .expect_err("conflicting turn retry must fail");
+                assert_eq!(
+                    conflict.code,
+                    agent_client_protocol::Error::invalid_request().code
+                );
+                assert!(
+                    conflict
+                        .data
+                        .as_ref()
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|detail| detail.contains("conflict")),
+                    "unexpected retry conflict: {conflict:?}"
+                );
+                assert_eq!(first.conversation_id, session.session_id.0.as_ref());
+                assert_eq!(first.turn_id, first_turn_id_for_client);
+                *first_identity_by_client
+                    .lock()
+                    .expect("first prompt identity lock") = Some(first);
+                Ok(())
+            },
+        )
+        .await
+        .expect("official ACP client completed durable first process");
+
+    let first = first_identity
+        .lock()
+        .expect("first prompt identity lock")
+        .clone()
+        .expect("first durable identity");
+    assert_eq!(first.run_ids.len(), 1);
+
+    let loaded_user_messages = Arc::new(Mutex::new(Vec::new()));
+    let loaded_agent_messages = Arc::new(Mutex::new(Vec::new()));
+    let users_by_client = Arc::clone(&loaded_user_messages);
+    let agents_by_client = Arc::clone(&loaded_agent_messages);
+    let second_identity = Arc::new(Mutex::new(None));
+    let second_identity_by_client = Arc::clone(&second_identity);
+    let second_observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let second_agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args(["acp", "--agent", "durable-acp"])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            ),
+        Arc::clone(&second_observed),
+    );
+    let session_id =
+        agent_client_protocol::schema::v1::SessionId::new(first.conversation_id.clone());
+    let second_turn_id = uuid::Uuid::now_v7().to_string();
+    let second_turn_id_for_client = second_turn_id.clone();
+    let first_conversation_id = first.conversation_id.clone();
+    let second_project_path = temp.path().to_path_buf();
+
+    agent_client_protocol::Client
+        .builder()
+        .on_receive_notification(
+            async move |notification: SessionNotification, _connection| {
+                match notification.update {
+                    SessionUpdate::UserMessageChunk(chunk) => {
+                        if let ContentBlock::Text(text) = chunk.content {
+                            users_by_client
+                                .lock()
+                                .expect("loaded users lock")
+                                .push(text.text);
+                        }
+                    }
+                    SessionUpdate::AgentMessageChunk(chunk) => {
+                        if let ContentBlock::Text(text) = chunk.content {
+                            agents_by_client
+                                .lock()
+                                .expect("loaded agents lock")
+                                .push(text.text);
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(
+            second_agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let loaded = connection
+                    .send_request(LoadSessionRequest::new(
+                        session_id.clone(),
+                        second_project_path,
+                    ))
+                    .block_task()
+                    .await?;
+                assert_eq!(
+                    config_current(
+                        loaded
+                            .config_options
+                            .as_deref()
+                            .expect("loaded durable config options"),
+                        "model",
+                    ),
+                    "fake/test"
+                );
+                let follow_up = connection
+                    .send_request(prompt_with_turn_id(
+                        &session_id,
+                        "Follow up after ACP restart.",
+                        &second_turn_id_for_client,
+                    ))
+                    .block_task()
+                    .await?;
+                let identity = durable_prompt_identity(&follow_up);
+                assert_eq!(identity.conversation_id, first_conversation_id);
+                assert_eq!(identity.turn_id, second_turn_id_for_client);
+                *second_identity_by_client
+                    .lock()
+                    .expect("second prompt identity lock") = Some(identity);
+                Ok(())
+            },
+        )
+        .await
+        .expect("official ACP client loaded durable session after restart");
+
+    let second = second_identity
+        .lock()
+        .expect("second prompt identity lock")
+        .clone()
+        .expect("second durable identity");
+    assert_eq!(second.run_ids.len(), 1);
+    assert_ne!(first.turn_id, second.turn_id);
+    assert_ne!(first.run_ids, second.run_ids);
+    assert!(loaded_user_messages
+        .lock()
+        .expect("loaded users lock")
+        .iter()
+        .any(|text| text == "First durable ACP turn."));
+    assert!(!loaded_agent_messages
+        .lock()
+        .expect("loaded agents lock")
+        .is_empty());
+
+    let resumed_user_chunks = Arc::new(Mutex::new(0_usize));
+    let resumed_user_chunks_by_client = Arc::clone(&resumed_user_chunks);
+    let third_observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let third_agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args(["acp", "--agent", "durable-acp"])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            ),
+        Arc::clone(&third_observed),
+    );
+    let resumed_session_id =
+        agent_client_protocol::schema::v1::SessionId::new(first.conversation_id.clone());
+    let resume_project_path = temp.path().to_path_buf();
+    agent_client_protocol::Client
+        .builder()
+        .on_receive_notification(
+            async move |notification: SessionNotification, _connection| {
+                if matches!(notification.update, SessionUpdate::UserMessageChunk(_)) {
+                    *resumed_user_chunks_by_client
+                        .lock()
+                        .expect("resume user chunk lock") += 1;
+                }
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(
+            third_agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                let initialized = connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                assert!(initialized
+                    .agent_capabilities
+                    .session_capabilities
+                    .resume
+                    .is_some());
+                let resumed = connection
+                    .send_request(ResumeSessionRequest::new(
+                        resumed_session_id,
+                        resume_project_path,
+                    ))
+                    .block_task()
+                    .await?;
+                assert!(resumed.config_options.is_some());
+                Ok(())
+            },
+        )
+        .await
+        .expect("official ACP client resumed durable session without replay");
+    assert_eq!(
+        *resumed_user_chunks.lock().expect("resume user chunk lock"),
+        0,
+        "session/resume must not replay transcript chunks"
+    );
+
+    let connection = rusqlite::Connection::open(&db_path).expect("open durable ACP database");
+    let durable_rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM interaction_turns t \
+             JOIN interaction_turn_runs r ON r.turn_id = t.id \
+             WHERE t.conversation_id = ?1 \
+               AND ((t.id = ?2 AND r.run_id = ?3) OR (t.id = ?4 AND r.run_id = ?5))",
+            rusqlite::params![
+                first.conversation_id,
+                first.turn_id,
+                first.run_ids[0],
+                second.turn_id,
+                second.run_ids[0],
+            ],
+            |row| row.get(0),
+        )
+        .expect("count exact durable ACP correlations");
+    assert_eq!(durable_rows, 2);
+    let interaction_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM interaction_sessions WHERE conversation_id = ?1",
+            [&first.conversation_id],
+            |row| row.get(0),
+        )
+        .expect("count durable ACP interaction");
+    assert_eq!(interaction_count, 1);
+    assert_protocol_stdout(
+        &first_observed
+            .lock()
+            .expect("first observed lock")
+            .stdout_lines,
+    );
+    assert_protocol_stdout(
+        &second_observed
+            .lock()
+            .expect("second observed lock")
+            .stdout_lines,
+    );
+    assert_protocol_stdout(
+        &third_observed
+            .lock()
+            .expect("third observed lock")
+            .stdout_lines,
+    );
+}
+
+#[tokio::test]
 async fn official_client_configures_agent_and_model_for_the_next_real_run() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let db_path = temp.path().join("polkagent.db");
     let config_path = temp.path().join("polkagent.toml");
     let binary = env!("CARGO_BIN_EXE_polkagent");
-    let first_id = create_active_agent(binary, &db_path, "config-first", "fixture-default");
-    let second_id = create_active_agent(binary, &db_path, "config-second", "fixture-default");
+    let first_id = create_active_agent(
+        binary,
+        &db_path,
+        "config-first",
+        "dynamic-provider/fixture-default",
+    );
+    let second_id = create_active_agent(
+        binary,
+        &db_path,
+        "config-second",
+        "dynamic-provider/fixture-default",
+    );
     let mut provider = recording_provider(2).await;
     write_model_selection_config(&config_path, &provider.base_url);
 
     let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
     let observed_by_client = Arc::clone(&observed);
+    let first_id_for_client = first_id.clone();
     let second_id_for_client = second_id.clone();
     let project_path = temp.path().to_path_buf();
     let config_arg = config_path.to_string_lossy().into_owned();
@@ -429,7 +777,7 @@ async fn official_client_configures_agent_and_model_for_the_next_real_run() {
                 exercise_session_configuration(
                     &connection,
                     project_path,
-                    &first_id,
+                    &first_id_for_client,
                     second_id_for_client,
                 )
                 .await
@@ -452,28 +800,25 @@ async fn official_client_configures_agent_and_model_for_the_next_real_run() {
     assert_request_model(
         [&first_request, &second_request],
         "Use the native model option.",
-        "fixture-alternate",
+        "dynamic-provider/fixture-alternate",
     );
     assert_request_model(
         [&first_request, &second_request],
         "Use the slash model option.",
-        "fixture-default",
+        "dynamic-provider/fixture-default",
     );
-    assert_runs_used_agent(&db_path, &second_id, 2);
+    assert_runs_used_agent(&db_path, &first_id, 2, 1);
+    assert_runs_used_agent(&db_path, &second_id, 2, 1);
     let observed = observed.lock().expect("observed updates lock");
     assert_protocol_stdout(&observed.stdout_lines);
-    assert!(
-        observed
-            .messages
-            .iter()
-            .any(|message| message.contains("Configured model 'missing-model' is unavailable"))
-    );
-    assert!(
-        observed
-            .messages
-            .iter()
-            .any(|message| message.contains("Selected model 'fixture-default'"))
-    );
+    assert!(observed
+        .messages
+        .iter()
+        .any(|message| message.contains("Configured model 'missing-model' is unavailable")));
+    assert!(observed
+        .messages
+        .iter()
+        .any(|message| { message.contains("Selected model 'dynamic-provider/fixture-default'") }));
 }
 
 #[tokio::test]
@@ -664,7 +1009,15 @@ async fn exercise_session_configuration(
         "model config value",
     )
     .await;
-    connection
+    assert_config_rejected(
+        connection,
+        &native_session.session_id,
+        "model",
+        "foreign-model",
+        "provider switching is not supported",
+    )
+    .await;
+    let changed_model = connection
         .send_request(SetSessionConfigOptionRequest::new(
             native_session.session_id.clone(),
             "model",
@@ -672,17 +1025,16 @@ async fn exercise_session_configuration(
         ))
         .block_task()
         .await?;
+    assert_eq!(
+        config_current(&changed_model.config_options, "model"),
+        "dynamic-provider/fixture-alternate"
+    );
+    assert!(config_values(&changed_model.config_options, "model")
+        .iter()
+        .any(|value| value == "dynamic-provider/fixture-alternate"));
 
     let slash_session = connection
         .send_request(NewSessionRequest::new(project_path))
-        .block_task()
-        .await?;
-    connection
-        .send_request(SetSessionConfigOptionRequest::new(
-            slash_session.session_id.clone(),
-            "polkagent.agent",
-            agent_client_protocol::schema::v1::SessionConfigValueId::new(second_id),
-        ))
         .block_task()
         .await?;
     send_text_prompt(
@@ -876,6 +1228,10 @@ async fn acp_restart_recovers_abandoned_run_through_shared_runtime() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the official-client cancellation proof keeps provider activation, protocol cancellation, and linked durable run/interaction assertions in one subprocess scenario"
+)]
 async fn official_client_cancels_active_run_and_persists_terminal_state() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let db_path = temp.path().join("polkagent.db");
@@ -1007,6 +1363,17 @@ async fn official_client_cancels_active_run_and_persists_terminal_state() {
         completed_at.is_some(),
         "cancelled ACP run must have a durable terminal timestamp"
     );
+    let interaction_state: String = connection
+        .query_row(
+            "SELECT t.state FROM interaction_turns t \
+             JOIN interaction_turn_runs r ON r.turn_id = t.id \
+             JOIN runs ON runs.id = r.run_id \
+             ORDER BY runs.created_at DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("load cancelled durable interaction turn");
+    assert_eq!(interaction_state, "cancelled");
 
     let observed = observed.lock().expect("observed updates lock");
     assert_protocol_stdout(&observed.stdout_lines);
@@ -1242,11 +1609,9 @@ fn assert_config_discovery(options: &[SessionConfigOption], first_id: &str, seco
     assert!(agent_values.iter().any(|value| value == second_id));
     let model_values = config_values(options, "model");
     assert!(model_values.iter().any(|value| value == "fixture-default"));
-    assert!(
-        model_values
-            .iter()
-            .any(|value| value == "fixture-alternate")
-    );
+    assert!(model_values
+        .iter()
+        .any(|value| value == "fixture-alternate"));
 }
 
 fn config_current(options: &[SessionConfigOption], id: &str) -> String {
@@ -1320,7 +1685,54 @@ async fn send_text_prompt(
     Ok(())
 }
 
-fn assert_runs_used_agent(db_path: &std::path::Path, agent_id: &str, expected: i64) {
+fn prompt_with_turn_id(
+    session_id: &agent_client_protocol::schema::v1::SessionId,
+    prompt: &str,
+    turn_id: &str,
+) -> PromptRequest {
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "polkagent.turnId".to_owned(),
+        serde_json::Value::String(turn_id.to_owned()),
+    );
+    PromptRequest::new(
+        session_id.clone(),
+        vec![ContentBlock::Text(TextContent::new(prompt))],
+    )
+    .meta(meta)
+}
+
+fn durable_prompt_identity(response: &PromptResponse) -> DurablePromptIdentity {
+    let value = response
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("polkagent"))
+        .expect("Polkagent durable prompt metadata");
+    DurablePromptIdentity {
+        conversation_id: value["conversationId"]
+            .as_str()
+            .expect("conversationId metadata")
+            .to_owned(),
+        turn_id: value["turnId"]
+            .as_str()
+            .expect("turnId metadata")
+            .to_owned(),
+        run_ids: value["runIds"]
+            .as_array()
+            .expect("runIds metadata")
+            .iter()
+            .map(|run_id| run_id.as_str().expect("run ID string").to_owned())
+            .collect(),
+        checkpoint: value["checkpoint"].as_u64().expect("checkpoint metadata"),
+    }
+}
+
+fn assert_runs_used_agent(
+    db_path: &std::path::Path,
+    agent_id: &str,
+    expected_total: i64,
+    expected_matching: i64,
+) {
     let connection = rusqlite::Connection::open(db_path).expect("open durable ACP database");
     let total: i64 = connection
         .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
@@ -1332,7 +1744,7 @@ fn assert_runs_used_agent(db_path: &std::path::Path, agent_id: &str, expected: i
             |row| row.get(0),
         )
         .expect("count configured-agent runs");
-    assert_eq!((total, matching), (expected, expected));
+    assert_eq!((total, matching), (expected_total, expected_matching));
 }
 
 fn observed_agent(config: AcpAgentConfig, observed: Arc<Mutex<ObservedUpdates>>) -> AcpAgent {

@@ -1,17 +1,19 @@
 # ACP and Zed integration
 
-Polkagent now has an initial ACP v1 stdio server. It can be launched by an ACP
-client, create an editor session, advertise slash commands, and route a normal
-prompt through the process-wide `RuntimeFactory` and its shared `AppService`,
-SQLite pool, event bus, provider registry, and startup lifecycle.
+Polkagent has an ACP v1 stdio server backed by the same durable
+`InteractionService` as its other interactive surfaces. Each `session/new`
+creates exactly one durable interaction and returns its conversation UUID
+unchanged as the ACP `sessionId`. Prompts become correlated durable turns and
+runs; editor restart does not replace their identity or transcript.
 
 This is an executable protocol slice, not a claim of complete Zed support. The
 repository tests launch the real binary through the official ACP Rust client,
-including cancellation while a provider request is active and session-scoped
-agent/model configuration across concurrent sessions. Real runtime text events
-are forwarded before the terminal prompt response. A manual Zed smoke test,
-durable thread import/resume, and structured tool and permission updates are
-still open.
+including cancellation while a provider request is active, official
+`session/load`/`session/resume` across subprocess restarts, idempotent turn
+retry, and durable agent/model isolation across concurrent sessions. Real typed
+interaction events are forwarded before the terminal prompt response. A manual
+Zed smoke test, session listing/import, and structured tool and permission
+updates are still open.
 
 ## Prerequisites
 
@@ -55,11 +57,11 @@ The editor-provided absolute `session/new` working directory is authoritative
 for ACP session metadata; there is no separate `--workdir` flag. Runtime config
 discovery and relative config/database paths are rooted at the subprocess launch
 directory because the runtime must be ready before the editor sends
-`session/new`. You may omit `--agent`; clients that render ACP configuration
-options can select an active agent in their native UI, and `/agents` followed by
-`/agent <name-or-id>` remains available in the conversation. `--model` is an
-optional initial per-session override; it must name one of the configured
-models advertised by Polkagent.
+`session/new`. You may omit `--agent`; the runtime resolves the new durable
+interaction to an active agent, and clients can later change it through their
+native selector or `/agent <name-or-id>`. `--model` is an optional initial
+persisted override; it must be valid for the selected agent's executor and
+provider.
 
 ACP file diagnostics are disabled by default. To opt in, add the global
 `--log-file` option before `acp` and use a path dedicated to one Polkagent ACP
@@ -92,27 +94,37 @@ The server publishes these through ACP `available_commands_update`:
 | `/model [id]` | Show or select the session model; use `default` or `inherit` to return to the selected agent's model. |
 | `/cancel` | Cancel the active editor prompt (`/stop`). |
 
-Normal text prompts start a real Polkagent run and return its accumulated text
-as progressive ACP agent-message updates before the terminal prompt response.
+Normal text prompts call the durable `InteractionService`, creating a stable
+turn and linked run before execution. Typed `AgentMessageDelta` events become
+progressive ACP agent-message updates before the terminal prompt response.
 The backend-to-surface channel is bounded at 32 updates, so a slow client
 applies backpressure rather than allowing unbounded buffering. The terminal
 text is reconciled against the streamed prefix and only a previously unstreamed
 suffix is sent, preventing duplicate output. A prefix mismatch fails closed as
 a protocol error.
 
-These updates reflect real runtime `StreamingToken` events. The current runtime
-orchestrator may emit one event containing a provider's complete response, so
-this does not claim HTTP/SSE token-level streaming from every provider adapter.
-Provider-to-runtime token streaming remains separate work.
+These updates ultimately reflect real runtime `StreamingToken` events projected
+through the durable interaction stream. If the bounded stream lags, the ACP
+backend reattaches after its last durable sequence checkpoint rather than
+silently skipping events. The current runtime orchestrator may emit one event
+containing a provider's complete response, so this does not claim HTTP/SSE
+token-level streaming from every provider adapter.
 
 When the runtime terminal event reports nonzero real token counts and the
 effective model has a known configured or built-in context window, Polkagent
 also sends the stable ACP `usage_update`: `used` is input plus output tokens and
 `size` is that context window. It emits no usage update when either fact is
 unknown. Only one normal prompt may be active per ACP session. Native
-`session/cancel` and `/cancel` map to the active `AppService` run. Run-ID and
-all-session cancellation are not advertised because durable ACP interactions
-are not implemented.
+`session/cancel` and `/cancel` call `InteractionService::cancel_turn` for the
+exact active durable turn. Run-ID and all-session cancellation are not
+advertised by this ACP adapter.
+
+Successful runtime-backed prompt responses include a namespaced `_meta.polkagent`
+object containing the exact `conversationId`, `turnId`, linked `runIds`, and
+last durable event `checkpoint`. A client that needs request-level idempotency
+may supply a UUID string at `_meta["polkagent.turnId"]`; retrying the same turn
+ID with identical prompt and effective configuration replays the existing turn
+without creating another run, while conflicting reuse is rejected.
 
 ## Session configuration
 
@@ -121,38 +133,63 @@ the pinned stable ACP v1 SDK:
 
 | Configuration ID | Category | Values | Effect |
 |---|---|---|---|
-| `polkagent.agent` | `_polkagent_agent` | No agent, plus active agent IDs | Selects the active Polkagent agent for later prompts. |
+| `polkagent.agent` | `_polkagent_agent` | Active agent IDs | Persists the single-agent target for later prompts. |
 | `model` | ACP `model` | Agent default, plus configured model IDs | Overrides the selected agent's model for later prompts. |
 
 `session/set_config_option` validates values against current active agents and
 configured models, rejects unknown values and changes during an active prompt,
-and returns the refreshed option list. The choice is scoped to that ACP session
-and affects the next real runtime run; it does not rebuild the process-wide
-runtime. Starts are serialized only across the short agent-spec replacement and
-run-start boundary because the shared `AppService` currently stores one live
-spec per agent. Runs execute concurrently after that boundary.
+and returns the refreshed option list. Both choices are persisted in the
+durable interaction and survive ACP subprocess restart. Model selection uses
+the interaction-service precedence and same-provider validation; a model that
+is merely discoverable but cannot be applied by the selected backend is
+rejected. Execution applies the effective model only to the cloned prepared-run
+agent spec, so concurrent ACP sessions do not mutate or race on the shared
+agent registry.
 
-`/agent` and `/model` write the same in-memory session fields as native ACP
-configuration. ACP v1 has no server-to-client configuration-change
+`/agent` and `/model` call the same durable interaction configuration methods as
+native ACP configuration. ACP v1 has no server-to-client configuration-change
 notification, so a slash-command change cannot proactively refresh an editor's
-native selector; the next prompt still uses the changed value. Session choices
-are process-local and disappear when the ACP subprocess exits because
-session load/resume is not implemented.
+native selector; a later load/resume and the next prompt use the persisted
+value.
 
-Provider, target, and autonomy controls are intentionally not advertised. The
-server cannot currently guarantee that changing those values would be isolated
-to one session without rebuilding or mutating shared runtime state.
+Provider, group/automatic-target, autonomy, tool, and permission controls are
+intentionally not advertised. Only the single-agent target and model option are
+wired through the durable interaction service.
+
+## Restart, load, and resume
+
+Initialization advertises stable ACP v1 `loadSession` and
+`sessionCapabilities.resume` support. Pass the conversation UUID returned by
+`session/new` back as the session ID:
+
+- `session/load` validates and loads that durable interaction, restores its
+  persisted agent/model configuration, and replays each correlated durable
+  user and assistant message through ACP message-chunk updates before returning.
+- `session/resume` restores the same interaction and configuration without
+  replaying earlier messages, as required by the ACP distinction.
+
+Both requests use the absolute cwd supplied by the reconnecting client for
+subsequent prompt context. Polkagent's current interaction schema does not
+persist the original client cwd, so the server cannot independently compare the
+new cwd with the value used at creation; ACP clients are responsible for the
+protocol requirement that it match. MCP servers and additional directories are
+still rejected. ACP v1 exposes no session-import method in the pinned SDK, and
+Polkagent does not advertise `session/list`.
 
 ## Current protocol boundary
 
 Implemented and covered by executable protocol evidence:
 
 - official `agent-client-protocol` v2.0 SDK using its stable ACP v1 schema;
-- stdio initialize, new-session, prompt, session-update, and cancel handlers;
+- stdio initialize, new/load/resume-session, prompt, session-update, and cancel handlers;
+- exact conversation/turn/run identity mapping and namespaced prompt-response
+  correlation metadata, including idempotent retry with a supplied turn UUID;
+- durable transcript replay on load and no replay on resume;
 - bounded forwarding of real runtime text deltas, exact terminal-text
   reconciliation, and conditional truthful ACP usage updates;
 - native `polkagent.agent` and standard `model` select-option discovery and
-  `session/set_config_option`, with validated session-scoped changes;
+  `session/set_config_option`, with validated durable changes and same-provider
+  model refusal before execution;
 - absolute-cwd validation and protocol errors for unknown/busy sessions;
 - text and resource-link prompts;
 - shared-registry slash-command discovery, aliases, detailed help, agent
@@ -172,7 +209,7 @@ Implemented and covered by executable protocol evidence:
   any protocol stdout, even though an unconfigured local session may explicitly
   use the reported simulated-executor fallback;
 - an official-client subprocess test that performs initialization, command
-  discovery, `/help`, and a real `AppService` run through the fake executor;
+  discovery, `/help`, and a real durable interaction turn through the fake executor;
 - an official-client restart test that seeds an abandoned durable run, starts
   ACP, and verifies that the shared runtime factory recovered it to a terminal
   state through the same database used by the editor surface;
@@ -186,10 +223,14 @@ Implemented and covered by executable protocol evidence:
 - an official-client subprocess test that holds a real provider request open,
   cancels it, receives `Cancelled`, and verifies the durable run state and
   terminal timestamp in SQLite.
+- an official-client new/prompt/retry/restart/load/follow-up/resume test that
+  proves one conversation identity, exact durable turn/run correlations, no
+  duplicate retry run, transcript replay on load, no replay on resume, and
+  persisted model configuration.
 
 Not implemented yet:
 
-- `session/list`, `session/load`, thread persistence/import, or restart resume;
+- `session/list` and thread import (the pinned stable ACP v1 SDK has no import request);
 - dynamic provider, target, or autonomy configuration options;
 - structured tool calls, plans, and permission request/response;
 - provider HTTP/SSE token-level streaming where the runtime currently emits a
@@ -197,8 +238,7 @@ Not implemented yet:
 - client filesystem/terminal support and MCP-server passthrough;
 - additional workspace roots (rejected explicitly) and use of cwd as model or
   filesystem context beyond session metadata;
-- durable multi-turn ACP interaction/session history (the runtime's durable
-  stores do not yet make ACP sessions resumable);
+- persistence and server-side comparison of the original session cwd during load/resume;
 - manual Zed validation, including approval, cancellation, restart, and logs.
 
 Supplied MCP servers and additional workspace roots are rejected instead of
