@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 use tracing::trace;
 
 use crate::quota::QuotaResult;
-use crate::RateLimiter;
+use crate::{floor_to_u32, RateLimiter};
 
 // ---------------------------------------------------------------------------
 // Inner state
@@ -149,7 +149,7 @@ impl RateLimiter for TokenBucket {
         inner.refill(now);
 
         if inner.try_consume(cost) {
-            let remaining = inner.tokens.floor() as u32;
+            let remaining = floor_to_u32(inner.tokens);
             trace!(key, cost, remaining, "token bucket: allowed");
             QuotaResult::allowed(remaining, None)
         } else {
@@ -162,7 +162,7 @@ impl RateLimiter for TokenBucket {
 
     fn remaining(&self, _key: &str) -> u32 {
         let inner = self.inner.lock();
-        inner.available().floor() as u32
+        floor_to_u32(inner.available())
     }
 
     fn reset_at(&self, _key: &str) -> Option<DateTime<Utc>> {

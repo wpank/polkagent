@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use tracing::trace;
 
 use crate::quota::QuotaResult;
-use crate::RateLimiter;
+use crate::{floor_to_u32, RateLimiter};
 
 // ---------------------------------------------------------------------------
 // Inner state
@@ -122,7 +122,7 @@ impl RateLimiter for LeakyBucket {
         inner.drain(now);
 
         if inner.try_add(cost) {
-            let remaining = (inner.capacity - inner.level).floor().max(0.0) as u32;
+            let remaining = floor_to_u32(inner.capacity - inner.level);
             trace!(
                 key,
                 cost,
@@ -147,7 +147,7 @@ impl RateLimiter for LeakyBucket {
     fn remaining(&self, _key: &str) -> u32 {
         let inner = self.inner.lock();
         let current = inner.current_level();
-        (inner.capacity - current).floor().max(0.0) as u32
+        floor_to_u32(inner.capacity - current)
     }
 
     fn reset_at(&self, _key: &str) -> Option<DateTime<Utc>> {

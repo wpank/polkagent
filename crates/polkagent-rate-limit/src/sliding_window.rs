@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use tracing::trace;
 
 use crate::quota::QuotaResult;
-use crate::RateLimiter;
+use crate::{floor_to_u32, RateLimiter};
 
 // ---------------------------------------------------------------------------
 // Inner state
@@ -155,9 +155,8 @@ impl RateLimiter for SlidingWindowCounter {
 
         if effective + f64::from(cost) <= f64::from(inner.max_requests) {
             inner.state.curr_count = inner.state.curr_count.saturating_add(cost);
-            let remaining = (f64::from(inner.max_requests) - effective - f64::from(cost))
-                .floor()
-                .max(0.0) as u32;
+            let remaining =
+                floor_to_u32(f64::from(inner.max_requests) - effective - f64::from(cost));
             trace!(key, cost, remaining, "sliding window: allowed");
             QuotaResult::allowed(remaining, Some(reset))
         } else {
@@ -187,7 +186,7 @@ impl RateLimiter for SlidingWindowCounter {
         };
         let effective = inner.effective_count(fraction);
         let remaining = f64::from(inner.max_requests) - effective;
-        remaining.floor().max(0.0) as u32
+        floor_to_u32(remaining)
     }
 
     fn reset_at(&self, _key: &str) -> Option<DateTime<Utc>> {

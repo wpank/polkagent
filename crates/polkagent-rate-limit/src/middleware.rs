@@ -78,7 +78,7 @@ impl<Req> fmt::Debug for RateLimitLayer<Req> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RateLimitLayer")
             .field("cost", &self.cost)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -146,7 +146,7 @@ impl<S: fmt::Debug, Req> fmt::Debug for RateLimitService<S, Req> {
         f.debug_struct("RateLimitService")
             .field("inner", &self.inner)
             .field("cost", &self.cost)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

@@ -1,5 +1,11 @@
 //! Comprehensive tests for the polkagent-rate-limit crate.
 
+#![allow(
+    clippy::expect_used,
+    clippy::float_cmp,
+    reason = "test assertions intentionally require fixture values and exact zero-rate behavior"
+)]
+
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;

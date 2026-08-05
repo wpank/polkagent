@@ -90,7 +90,7 @@ impl<K: Eq + Hash + Send + Sync + Clone + fmt::Display + 'static> fmt::Debug
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KeyedRateLimiter")
             .field("keys", &self.buckets.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -118,14 +118,13 @@ impl<K: Eq + Hash + Send + Sync + Clone + fmt::Display + 'static> KeyedRateLimit
     /// Return the remaining quota for a key.
     pub fn key_remaining(&self, key: &K) -> u32 {
         let key_str = key.to_string();
-        match self.buckets.get(key) {
-            Some(limiter) => limiter.remaining(&key_str),
-            None => {
-                // Key not yet tracked -- return full capacity by creating a
-                // temporary limiter just for the peek.
-                let temp = self.factory.create(&key_str);
-                temp.remaining(&key_str)
-            }
+        if let Some(limiter) = self.buckets.get(key) {
+            limiter.remaining(&key_str)
+        } else {
+            // Key not yet tracked -- return full capacity by creating a
+            // temporary limiter just for the peek.
+            let temp = self.factory.create(&key_str);
+            temp.remaining(&key_str)
         }
     }
 
@@ -175,12 +174,11 @@ impl RateLimiter for KeyedRateLimiter<String> {
     }
 
     fn remaining(&self, key: &str) -> u32 {
-        match self.buckets.get(&key.to_owned()) {
-            Some(limiter) => limiter.remaining(key),
-            None => {
-                let temp = self.factory.create(key);
-                temp.remaining(key)
-            }
+        if let Some(limiter) = self.buckets.get(&key.to_owned()) {
+            limiter.remaining(key)
+        } else {
+            let temp = self.factory.create(key);
+            temp.remaining(key)
         }
     }
 

@@ -58,6 +58,19 @@ pub use token_bucket::TokenBucket;
 
 use chrono::{DateTime, Utc};
 
+/// Convert a floating-point capacity to the public integer quota shape.
+///
+/// Limiter state is bounded by an originating `u32` capacity, but clamping
+/// here also makes the conversion robust against future arithmetic drift.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is floored and clamped to the full u32 domain before conversion"
+)]
+fn floor_to_u32(value: f64) -> u32 {
+    value.floor().clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
 // ---------------------------------------------------------------------------
 // RateLimiter trait
 // ---------------------------------------------------------------------------
