@@ -87,6 +87,27 @@ pub enum PcaError {
         reason: String,
     },
 
+    /// A network listener, connection, or framed I/O operation failed.
+    #[error("network error: {reason}")]
+    NetworkError {
+        /// Human-readable description.
+        reason: String,
+    },
+
+    /// Durable transport state could not be loaded or committed.
+    #[error("persistence error: {reason}")]
+    PersistenceError {
+        /// Human-readable description.
+        reason: String,
+    },
+
+    /// A peer sent a frame that violates the TCP PCA protocol.
+    #[error("protocol error: {reason}")]
+    ProtocolError {
+        /// Human-readable description.
+        reason: String,
+    },
+
     // -- C2: Group messaging errors ------------------------------------------
     /// A group operation failed (e.g. member already present, group not found).
     #[error("group error: {reason}")]
@@ -124,7 +145,7 @@ impl From<PcaError> for TransportError {
             PcaError::PeerAuthenticationFailed { reason, .. } => {
                 TransportError::Authentication { message: reason }
             }
-            PcaError::Shutdown => TransportError::ConnectionLost,
+            PcaError::Shutdown | PcaError::NetworkError { .. } => TransportError::ConnectionLost,
             PcaError::ChannelError { reason } => TransportError::Internal { message: reason },
             PcaError::SessionExpired { session_id } => TransportError::Internal {
                 message: format!("session expired: {session_id}"),
@@ -135,6 +156,14 @@ impl From<PcaError> for TransportError {
             other => TransportError::Internal {
                 message: other.to_string(),
             },
+        }
+    }
+}
+
+impl From<std::io::Error> for PcaError {
+    fn from(error: std::io::Error) -> Self {
+        Self::NetworkError {
+            reason: error.to_string(),
         }
     }
 }

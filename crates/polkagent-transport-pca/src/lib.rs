@@ -64,6 +64,7 @@ pub mod dedup;
 pub mod device_channels;
 pub mod error;
 pub mod group;
+pub mod network;
 pub mod outbound;
 pub mod persistence;
 pub mod session;

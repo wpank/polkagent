@@ -283,9 +283,23 @@ produce a reply.
 
 **Checklist:**
 
-- [ ] Implement actual peer/application I/O around existing crypto/sync types.
-- [ ] Enforce durable-before-ACK ingress, leases, dedupe, retry, ordering,
-  reconnect, restart, attachment limits, and backpressure.
+- [x] Add bounded cross-process TCP peer/application I/O around the existing
+  X25519/ChaCha20-Poly1305 session types. `TcpPcaTransport` uses framed,
+  encrypted messages and validates the configured peer identity on both the
+  handshake and decrypted message.
+- [x] Persist the sender outbox before accepting `send`, persist receiver inbox
+  plus dedup marker before the wire ACK, retain messages until application ACK,
+  redeliver expired application leases, retry the oldest entry after reconnect,
+  recover unacked inbox entries after restart, and enforce
+  message/inbox/outbox limits. Evidence:
+  `tcp_network.rs` covers socket delivery, delayed-peer reconnect, duplicate
+  retry, lease expiry, receiver restart, limits/backpressure, and a separate
+  child process.
+- [ ] Replace the bounded TCP protocol with (or adapt it behind) the pinned PCA
+  reference application's Statement Store/Polkadot App wire protocol; add
+  cryptographic SS58 authentication rather than trusting a configured identity
+  string, multi-process state-file exclusion, dedup retention/compaction, and
+  attachment/cancellation/error-reply frames.
 - [ ] Connect delivery to shared interaction/runtime and map replies/status.
 - [ ] Add compatibility fixtures against the PCA reference implementation.
 

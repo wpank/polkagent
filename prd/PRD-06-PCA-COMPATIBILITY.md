@@ -6,6 +6,16 @@
 > [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
 > the dependency-ordered execution queue.
 
+> **Delivered slice (2026-08-05):** `polkagent-transport-pca` includes a
+> durable TCP transport that exchanges encrypted frames across processes,
+> persists before its wire ACK, deduplicates reconnect retries, and redelivers
+> application-unacknowledged inbox entries after lease expiry or restart. This
+> establishes the network/durability adapter seam; it does **not** claim PCA C0
+> compatibility.
+> Statement Store/Polkadot App framing, cryptographically signed SS58 identity,
+> runtime reply mapping, attachments, and pinned reference fixtures remain in
+> [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md#pca-01--production-pca-network-transport).
+
 **Status:** definitive product requirements document
 
 **Audience:** engineers, product designers, and operators who may have no
