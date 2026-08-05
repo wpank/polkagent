@@ -4,6 +4,10 @@
 //! drift detection, staleness checking, and cache eviction from outside
 //! the crate boundary.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::time::Duration;
 
 use polkagent_core::now;
@@ -15,6 +19,14 @@ use polkagent_metadata::{
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn duration_minutes(minutes: u64) -> Duration {
+    Duration::from_secs(minutes * 60)
+}
+
+fn duration_hours(hours: u64) -> Duration {
+    duration_minutes(hours * 60)
+}
 
 fn make_snapshot(chain: &str, data: &[u8]) -> MetadataSnapshot {
     MetadataSnapshot::new(
@@ -242,12 +254,12 @@ fn stale_metadata_detected_when_old() {
     let chain = ChainId::new("polkadot");
 
     // Register a snapshot that is 2 hours old.
-    let old_snap = make_old_snapshot("polkadot", b"old_data", Duration::from_secs(7200));
+    let old_snap = make_old_snapshot("polkadot", b"old_data", duration_hours(2));
     svc.register_snapshot(old_snap);
 
     // Check with a 1-hour max age -> should be stale.
     assert!(
-        svc.is_stale(&chain, Duration::from_secs(3600)),
+        svc.is_stale(&chain, duration_hours(1)),
         "2-hour-old metadata should be stale with 1-hour threshold"
     );
 }
@@ -263,7 +275,7 @@ fn fresh_metadata_not_detected_as_stale() {
 
     // Check with a 1-hour max age -> should not be stale.
     assert!(
-        !svc.is_stale(&chain, Duration::from_secs(3600)),
+        !svc.is_stale(&chain, duration_hours(1)),
         "just-registered metadata should not be stale"
     );
 }
@@ -272,7 +284,7 @@ fn fresh_metadata_not_detected_as_stale() {
 fn no_cached_metadata_counts_as_stale() {
     let svc = MetadataService::new();
     assert!(
-        svc.is_stale(&ChainId::new("polkadot"), Duration::from_secs(60)),
+        svc.is_stale(&ChainId::new("polkadot"), duration_minutes(1)),
         "no cached metadata should be considered stale"
     );
 }
@@ -409,7 +421,7 @@ fn metadata_service_full_workflow() {
     assert!(svc.check_drift(&chain).is_none());
 
     // 7. Metadata is still fresh.
-    assert!(!svc.is_stale(&chain, Duration::from_secs(3600)));
+    assert!(!svc.is_stale(&chain, duration_hours(1)));
 }
 
 #[test]

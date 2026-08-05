@@ -1,12 +1,16 @@
 //! Service lifecycle integration tests.
 //!
-//! Exercises AppService construction with fake adapters, agent registration,
+//! Exercises `AppService` construction with fake adapters, agent registration,
 //! run creation and status query, event subscription, and shutdown sequence.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 
 use polkagent_config::Config;
-use polkagent_core::{AgentId, AgentSpec, RunId};
+use polkagent_core::{AgentId, AgentSpec, AutonomyLevel, EffectId, RunId, RunState};
 use polkagent_event::{EventBus, EventRecorder};
 use polkagent_executor_fake::FakeExecutor;
 use polkagent_executor_trait::ModelExecutor;
@@ -189,7 +193,7 @@ fn create_agent_with_empty_name_fails() {
         model: "test".into(),
         tools: vec![],
         system_prompt: None,
-        autonomy_level: Default::default(),
+        autonomy_level: AutonomyLevel::default(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         declared_capabilities: vec![],
@@ -253,7 +257,6 @@ async fn get_run_status_after_start_returns_queued_or_running() {
     let run_id = svc.start_run(agent_id, "Prompt").await.expect("start");
     let state = svc.get_run_status(run_id).await.expect("status");
 
-    use polkagent_core::RunState;
     assert!(
         matches!(state, RunState::Queued | RunState::Running),
         "run must be Queued or Running immediately after start, got: {state:?}"
@@ -280,7 +283,6 @@ async fn cancel_run_transitions_state() {
         .get_run_status(run_id)
         .await
         .expect("status after cancel");
-    use polkagent_core::RunState;
     assert!(
         matches!(state, RunState::Cancelled { .. }),
         "cancelled run must be in Cancelled state, got: {state:?}"
@@ -372,7 +374,6 @@ fn subscribe_approvals_returns_receiver() {
 async fn approve_effect_without_effect_store_returns_not_initialized() {
     let svc = make_service(); // no effect store
 
-    use polkagent_core::EffectId;
     let result = svc.approve_effect(EffectId::new()).await;
     assert!(
         matches!(result, Err(ServiceError::NotInitialized { .. })),
@@ -384,7 +385,6 @@ async fn approve_effect_without_effect_store_returns_not_initialized() {
 async fn deny_effect_without_effect_store_returns_not_initialized() {
     let svc = make_service(); // no effect store
 
-    use polkagent_core::EffectId;
     let result = svc.deny_effect(EffectId::new(), "not needed").await;
     assert!(
         matches!(result, Err(ServiceError::NotInitialized { .. })),
@@ -456,7 +456,9 @@ async fn multiple_concurrent_runs_use_different_run_ids() {
     }
 
     // All run IDs must be distinct.
-    let unique: std::collections::HashSet<String> =
-        run_ids.iter().map(|id| id.to_string()).collect();
+    let unique: std::collections::HashSet<String> = run_ids
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     assert_eq!(unique.len(), 5, "all run IDs must be unique");
 }

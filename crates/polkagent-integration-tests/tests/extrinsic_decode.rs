@@ -13,6 +13,10 @@
 //! [0x00 MultiAddress::Id] [32-byte dest (Alice)] [compact(10_000_000_000)]
 //! ```
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use polkagent_codec::call::{call_index, extract_transfer_amount, is_transfer_call, pallet_index};
 use polkagent_codec::metadata::build_minimal_metadata_v14;
 use polkagent_codec::{decode_call_with_metadata, decode_extrinsic, ScaleDecoder, ScaleEncoder};
@@ -51,7 +55,10 @@ fn load_fixture() -> Vec<u8> {
 /// Decode a hex string to bytes (no 0x prefix).
 fn hex_decode(s: &str) -> Vec<u8> {
     let s = s.strip_prefix("0x").unwrap_or(s);
-    assert!(s.len() % 2 == 0, "hex string must have even length");
+    assert!(
+        s.len().is_multiple_of(2),
+        "hex string must have even length"
+    );
     (0..s.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex digit"))
@@ -65,7 +72,9 @@ fn build_unsigned_extrinsic(pallet: u8, call: u8, args: &[u8]) -> Vec<u8> {
     payload.extend_from_slice(args);
 
     let mut enc = ScaleEncoder::new();
-    enc.encode_compact_u32(payload.len() as u32);
+    enc.encode_compact_u32(
+        u32::try_from(payload.len()).expect("fixture payload length must fit in u32"),
+    );
     let mut out = enc.finish();
     out.extend(payload);
     out

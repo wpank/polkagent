@@ -1,7 +1,11 @@
 //! IT-06: Executor streaming integration tests.
 //!
-//! Exercises FakeExecutor's streaming API: token order, tool call events,
+//! Exercises `FakeExecutor`'s streaming API: token order, tool call events,
 //! multi-turn, empty response, and error propagation.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use futures::StreamExt;
 

@@ -4,6 +4,10 @@
 //! recipe instantiation, cooldown enforcement, and cursor-backed at-least-once
 //! delivery — all wired through the `polkagent-feed` crate boundary.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

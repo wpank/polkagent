@@ -1,8 +1,12 @@
-//! IT-03: Effect lifecycle integration test with SQLite persistence.
+//! IT-03: Effect lifecycle integration test with `SQLite` persistence.
 //!
-//! Exercises the full EffectIntent lifecycle (propose → claim → attempt →
-//! outcome) against the in-memory EffectStore, verifies idempotency key
+//! Exercises the full `EffectIntent` lifecycle (propose → claim → attempt →
+//! outcome) against the in-memory `EffectStore`, verifies idempotency key
 //! deduplication, and checks that completed effects cannot be re-attempted.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +27,10 @@ use polkagent_store_trait::{EffectStore, StoreRetryClass, StoredIntent};
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn duration_minutes(minutes: u64) -> Duration {
+    Duration::from_secs(minutes * 60)
+}
 
 fn make_spec(run_id: RunId, kind: EffectKind, key: Option<IdempotencyKey>) -> EffectIntentSpec {
     EffectIntentSpec {
@@ -75,7 +83,7 @@ async fn effect_claim_transitions_to_claimed_state() {
         .expect("propose");
 
     let guard = pipeline
-        .claim_with_duration(Duration::from_secs(60))
+        .claim_with_duration(duration_minutes(1))
         .await
         .expect("claim ok")
         .expect("guard should be Some");
@@ -103,7 +111,7 @@ async fn effect_record_outcome_resolves_intent() {
         .expect("propose");
 
     let guard = pipeline
-        .claim_with_duration(Duration::from_secs(60))
+        .claim_with_duration(duration_minutes(1))
         .await
         .expect("claim")
         .expect("guard");
@@ -177,7 +185,7 @@ async fn effect_attempt_is_persisted() {
         .expect("propose");
 
     let guard = pipeline
-        .claim_with_duration(Duration::from_secs(60))
+        .claim_with_duration(duration_minutes(1))
         .await
         .expect("claim")
         .expect("guard");
@@ -246,7 +254,7 @@ async fn effect_lifecycle_persists_across_simulated_restart() {
 
     // The second pipeline can claim and complete the intent.
     let guard = pipeline2
-        .claim_with_duration(Duration::from_secs(60))
+        .claim_with_duration(duration_minutes(1))
         .await
         .expect("claim after restart")
         .expect("guard after restart");
@@ -405,7 +413,7 @@ async fn recording_outcome_twice_is_rejected() {
         .expect("propose");
 
     let guard = pipeline
-        .claim_with_duration(Duration::from_secs(60))
+        .claim_with_duration(duration_minutes(1))
         .await
         .expect("claim")
         .expect("guard");
@@ -524,7 +532,7 @@ async fn failed_outcome_resolves_intent() {
         .expect("propose");
 
     let guard = pipeline
-        .claim_with_duration(Duration::from_secs(60))
+        .claim_with_duration(duration_minutes(1))
         .await
         .expect("claim")
         .expect("guard");

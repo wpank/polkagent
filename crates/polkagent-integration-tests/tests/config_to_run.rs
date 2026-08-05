@@ -3,6 +3,10 @@
 //! Loads a config file from a temp directory, validates it, and uses config
 //! values to verify execution parameters are correctly derived.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::fs;
 
 use tempfile::TempDir;
@@ -49,8 +53,8 @@ warn_threshold_percent = 80
     assert_eq!(cfg.log.level, "debug");
     assert_eq!(cfg.execution.max_concurrent_runs, 5);
     assert_eq!(cfg.execution.default_timeout_secs, 120);
-    assert_eq!(cfg.execution.budget.max_usd_per_run, 2.0);
-    assert_eq!(cfg.execution.budget.max_usd_per_day, 50.0);
+    assert!((cfg.execution.budget.max_usd_per_run - 2.0).abs() < f64::EPSILON);
+    assert!((cfg.execution.budget.max_usd_per_day - 50.0).abs() < f64::EPSILON);
     assert_eq!(cfg.execution.budget.warn_threshold_percent, 80);
 }
 
@@ -132,7 +136,7 @@ fn config_values_set_execution_parameters() {
 
     fs::write(
         &config_path,
-        r#"
+        r"
 [execution]
 max_concurrent_runs = 20
 default_timeout_secs = 300
@@ -140,7 +144,7 @@ default_timeout_secs = 300
 [execution.budget]
 max_usd_per_run = 10.0
 max_usd_per_day = 100.0
-"#,
+",
     )
     .expect("write config");
 
@@ -158,7 +162,7 @@ max_usd_per_day = 100.0
 
     assert_eq!(max_runs, 20);
     assert_eq!(timeout.as_secs(), 300);
-    assert_eq!(budget_per_run, 10.0);
+    assert!((budget_per_run - 10.0).abs() < f64::EPSILON);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +245,6 @@ timeout_secs = 30
     let fields: Vec<&str> = errors.iter().map(|e| e.field.as_str()).collect();
     assert!(
         fields.iter().any(|f| f.ends_with("api_key_env")),
-        "expected api_key_env error, got fields: {:?}",
-        fields
+        "expected api_key_env error, got fields: {fields:?}"
     );
 }

@@ -12,6 +12,10 @@
 //! - **FI-03**: Process crash during outbox drain — no duplicate delivery
 //!   occurs on restart because the outbox is durable.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -33,6 +37,10 @@ use polkagent_store_trait::{
 // ---------------------------------------------------------------------------
 // Minimal in-memory EffectStore (shared with other integration tests)
 // ---------------------------------------------------------------------------
+
+fn duration_minutes(minutes: u64) -> Duration {
+    Duration::from_secs(minutes * 60)
+}
 
 #[derive(Debug, Default)]
 struct MemEffectStore {
@@ -174,7 +182,7 @@ impl EffectStore for MemEffectStore {
             .values()
             .filter(|i| {
                 i.state.eq_ignore_ascii_case("claimed")
-                    && i.lease_expires.map(|exp| exp < cutoff).unwrap_or(false)
+                    && i.lease_expires.is_some_and(|exp| exp < cutoff)
             })
             .cloned()
             .collect())
@@ -370,7 +378,7 @@ async fn fi_01_intent_survives_crash_at_persist_boundary() {
 /// 1. Propose intent → OK.
 /// 2. Claim intent → OK (intent transitions to "claimed").
 /// 3. Record attempt start → OK (attempt is durable).
-/// 4. Inject crash on next write (record_outcome → before_write → Crash).
+/// 4. Inject crash on next write (`record_outcome` → `before_write` → Crash).
 /// 5. Verify: intent is still "claimed" (crash prevents it moving to resolved),
 ///    and the attempt record is present.
 #[tokio::test]
@@ -398,7 +406,7 @@ async fn fi_02_attempt_survives_crash_before_outcome() {
         let pipeline =
             EffectPipeline::new(Arc::clone(&fault_store) as Arc<dyn EffectStore>, worker_id);
         let guard = pipeline
-            .claim_with_duration(Duration::from_secs(60))
+            .claim_with_duration(duration_minutes(1))
             .await
             .expect("claim")
             .expect("guard");
@@ -471,8 +479,8 @@ async fn fi_02_attempt_survives_crash_before_outcome() {
 /// Scenario:
 /// 1. Propose two intents and record outcomes for each.
 /// 2. Mark first outcome as consumed — OK (now consumed = true in store).
-/// 3. Inject crash on next mark_outcomes_consumed write.
-/// 4. Simulate "restart": query unconsumed_outcomes → should return only the
+/// 3. Inject crash on next `mark_outcomes_consumed` write.
+/// 4. Simulate "restart": query `unconsumed_outcomes` → should return only the
 ///    second (not-yet-consumed) outcome.
 #[tokio::test]
 async fn fi_03_no_duplicate_delivery_on_restart_after_crash_during_drain() {
@@ -490,8 +498,6 @@ async fn fi_03_no_duplicate_delivery_on_restart_after_crash_during_drain() {
     // Helper: propose intent + record outcome directly in backing store.
     let propose_and_outcome = |intent_id: EffectId| {
         let backing = Arc::clone(&backing);
-        let run_id = run_id;
-        let worker_id = worker_id;
         async move {
             let intent = StoredIntent {
                 id: intent_id,
@@ -502,7 +508,7 @@ async fn fi_03_no_duplicate_delivery_on_restart_after_crash_during_drain() {
                 lease_expires: None,
                 retry_class: StoreRetryClass::Idempotent,
                 payload: serde_json::json!({"kind": "model_call"}),
-                idempotency_key: format!("key-{}", intent_id),
+                idempotency_key: format!("key-{intent_id}"),
                 created_at: Utc::now(),
             };
             backing.propose_intent(intent).await.expect("propose");
@@ -594,8 +600,7 @@ async fn fi_03_no_duplicate_delivery_on_restart_after_crash_during_drain() {
         .expect("lock")
         .iter()
         .find(|o| o.id == outcome_id_1)
-        .map(|o| o.consumed)
-        .unwrap_or(false);
+        .is_some_and(|o| o.consumed);
     assert!(
         first_still_consumed,
         "first outcome must remain consumed — no duplicate delivery"

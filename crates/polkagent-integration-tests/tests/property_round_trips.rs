@@ -7,7 +7,11 @@
 //! - Display/FromStr round-trips work for ID types.
 //! - Policy evaluation obeys deny-overrides semantics.
 
-use std::collections::HashMap;
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use std::{collections::HashMap, fmt::Write as _};
 
 use proptest::prelude::*;
 
@@ -44,12 +48,22 @@ fn arb_name(max_len: usize) -> impl Strategy<Value = String> {
     prop::string::string_regex(&format!("[A-Za-z0-9_-]{{1,{max_len}}}")).expect("valid regex")
 }
 
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(
+        String::with_capacity(bytes.len() * 2),
+        |mut encoded, byte| {
+            write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+            encoded
+        },
+    )
+}
+
 /// Generate a valid-looking model identifier.
 fn arb_model() -> impl Strategy<Value = String> {
     prop::string::string_regex("[a-z]{2,8}/[a-z0-9-]{3,20}").expect("valid regex")
 }
 
-/// Generate an AutonomyLevel.
+/// Generate an `AutonomyLevel`.
 fn arb_autonomy_level() -> impl Strategy<Value = AutonomyLevel> {
     prop_oneof![
         Just(AutonomyLevel::FullySupervised),
@@ -59,7 +73,7 @@ fn arb_autonomy_level() -> impl Strategy<Value = AutonomyLevel> {
     ]
 }
 
-/// Generate a DataClassification.
+/// Generate a `DataClassification`.
 fn arb_data_classification() -> impl Strategy<Value = DataClassification> {
     prop_oneof![
         Just(DataClassification::Public),
@@ -70,7 +84,7 @@ fn arb_data_classification() -> impl Strategy<Value = DataClassification> {
     ]
 }
 
-/// Generate optional ResourceLimits.
+/// Generate optional `ResourceLimits`.
 fn arb_resource_limits() -> impl Strategy<Value = Option<ResourceLimits>> {
     prop_oneof![
         Just(None),
@@ -91,7 +105,7 @@ fn arb_resource_limits() -> impl Strategy<Value = Option<ResourceLimits>> {
     ]
 }
 
-/// Generate optional ModelPreference.
+/// Generate optional `ModelPreference`.
 fn arb_model_preference() -> impl Strategy<Value = Option<ModelPreference>> {
     prop_oneof![
         Just(None),
@@ -112,7 +126,7 @@ fn arb_model_preference() -> impl Strategy<Value = Option<ModelPreference>> {
     ]
 }
 
-/// Generate optional MemoryConfig.
+/// Generate optional `MemoryConfig`.
 fn arb_memory_config() -> impl Strategy<Value = Option<MemoryConfig>> {
     prop_oneof![
         Just(None),
@@ -133,7 +147,7 @@ fn arb_memory_config() -> impl Strategy<Value = Option<MemoryConfig>> {
     ]
 }
 
-/// Generate an AgentSpec with arbitrary (but valid) field values.
+/// Generate an `AgentSpec` with arbitrary (but valid) field values.
 fn arb_agent_spec() -> impl Strategy<Value = AgentSpec> {
     (
         arb_name(50),
@@ -186,7 +200,7 @@ fn arb_agent_spec() -> impl Strategy<Value = AgentSpec> {
         )
 }
 
-/// Generate an AssetId (native or token).
+/// Generate an `AssetId` (native or token).
 fn arb_asset_id() -> impl Strategy<Value = AssetId> {
     prop_oneof![
         Just(AssetId::Native),
@@ -206,7 +220,7 @@ fn arb_amount() -> impl Strategy<Value = Amount> {
         .prop_map(|(value, decimals)| Amount::new(value, AssetId::Native, decimals))
 }
 
-/// Generate a BudgetConfig with arbitrary limits.
+/// Generate a `BudgetConfig` with arbitrary limits.
 fn arb_budget_config() -> impl Strategy<Value = BudgetConfig> {
     (
         proptest::option::of(arb_amount()),
@@ -222,7 +236,7 @@ fn arb_budget_config() -> impl Strategy<Value = BudgetConfig> {
         })
 }
 
-/// Generate an EffectKind.
+/// Generate an `EffectKind`.
 fn arb_effect_kind() -> impl Strategy<Value = EffectKind> {
     prop_oneof![
         Just(EffectKind::ChainSubmit),
@@ -241,7 +255,7 @@ fn arb_effect_kind() -> impl Strategy<Value = EffectKind> {
     ]
 }
 
-/// Generate a RetryClass.
+/// Generate a `RetryClass`.
 fn arb_retry_class() -> impl Strategy<Value = RetryClass> {
     prop_oneof![
         Just(RetryClass::Idempotent),
@@ -250,7 +264,7 @@ fn arb_retry_class() -> impl Strategy<Value = RetryClass> {
     ]
 }
 
-/// Generate an EffectIntent.
+/// Generate an `EffectIntent`.
 fn arb_effect_intent() -> impl Strategy<Value = EffectIntent> {
     (
         arb_effect_kind(),
@@ -281,7 +295,7 @@ fn arb_effect_intent() -> impl Strategy<Value = EffectIntent> {
         )
 }
 
-/// Generate a SectionSource.
+/// Generate a `SectionSource`.
 fn arb_section_source() -> impl Strategy<Value = SectionSource> {
     prop_oneof![
         Just(SectionSource::Metadata),
@@ -290,7 +304,7 @@ fn arb_section_source() -> impl Strategy<Value = SectionSource> {
     ]
 }
 
-/// Generate a RiskFlagType.
+/// Generate a `RiskFlagType`.
 fn arb_risk_flag_type() -> impl Strategy<Value = RiskFlagType> {
     prop_oneof![
         Just(RiskFlagType::HighValue),
@@ -406,7 +420,11 @@ proptest! {
             prop_assert_ne!(a.to_string(), b.to_string());
         }
         // The Ord is total, so exactly one of a < b, a == b, a > b holds.
-        prop_assert!(a <= b || a > b);
+        let true_relations = [a < b, a == b, a > b]
+            .into_iter()
+            .filter(|relation| *relation)
+            .count();
+        prop_assert_eq!(true_relations, 1);
     }
 
     // -----------------------------------------------------------------------
@@ -732,7 +750,7 @@ proptest! {
     fn run_event_serde_round_trip(seq in 1u64..100_000) {
         let run_id = RunId::new();
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
         let event = RunEvent::new_durable(
@@ -760,7 +778,7 @@ proptest! {
     ) {
         let run_id = RunId::new();
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
 
@@ -768,7 +786,7 @@ proptest! {
             .map(|seq| {
                 RunEvent::new_durable(
                     EventId::new(),
-                    run_id.clone(),
+                    run_id,
                     seq,
                     EventKind::RunCreated,
                     correlation.clone(),
@@ -989,7 +1007,7 @@ proptest! {
 
     #[test]
     fn account_id_hex_round_trip(bytes in prop::array::uniform32(any::<u8>())) {
-        let hex_encoded: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let hex_encoded = encode_hex(&bytes);
         prop_assert_eq!(hex_encoded.len(), 64, "32 bytes -> 64 hex chars");
 
         let decoded: Vec<u8> = (0..32)
@@ -1009,7 +1027,7 @@ proptest! {
 #[test]
 fn hex_round_trip_known_value() {
     let bytes: [u8; 32] = [0xAA; 32];
-    let encoded: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let encoded = encode_hex(&bytes);
     assert_eq!(encoded.len(), 64);
     assert_eq!(
         &encoded,
@@ -1022,7 +1040,7 @@ fn hex_round_trip_known_value() {
     assert_eq!(decoded.as_slice(), &bytes);
 }
 
-/// Verify that all AutonomyLevel variants have unique Display strings.
+/// Verify that all `AutonomyLevel` variants have unique Display strings.
 #[test]
 fn all_autonomy_levels_have_unique_display() {
     let levels = [
@@ -1031,8 +1049,12 @@ fn all_autonomy_levels_have_unique_display() {
         AutonomyLevel::AssistedAutonomous,
         AutonomyLevel::FullyAutonomous,
     ];
-    let strings: Vec<String> = levels.iter().map(|l| l.to_string()).collect();
-    let unique: std::collections::HashSet<&str> = strings.iter().map(|s| s.as_str()).collect();
+    let strings: Vec<String> = levels
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    let unique: std::collections::HashSet<&str> =
+        strings.iter().map(std::string::String::as_str).collect();
     assert_eq!(
         strings.len(),
         unique.len(),
@@ -1040,7 +1062,7 @@ fn all_autonomy_levels_have_unique_display() {
     );
 }
 
-/// Verify that all DataClassification variants have unique Display strings.
+/// Verify that all `DataClassification` variants have unique Display strings.
 #[test]
 fn all_data_classifications_have_unique_display() {
     let classes = [
@@ -1050,8 +1072,12 @@ fn all_data_classifications_have_unique_display() {
         DataClassification::Sensitive,
         DataClassification::SecretForbidden,
     ];
-    let strings: Vec<String> = classes.iter().map(|c| c.to_string()).collect();
-    let unique: std::collections::HashSet<&str> = strings.iter().map(|s| s.as_str()).collect();
+    let strings: Vec<String> = classes
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    let unique: std::collections::HashSet<&str> =
+        strings.iter().map(std::string::String::as_str).collect();
     assert_eq!(
         strings.len(),
         unique.len(),

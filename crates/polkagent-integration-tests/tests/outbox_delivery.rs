@@ -1,7 +1,11 @@
 //! IT-04: Outbox delivery integration tests.
 //!
-//! Exercises DurableOutbox with FIFO ordering, failure-mid-drain retry,
-//! deduplication via DeduplicationLog, and exponential backoff configuration.
+//! Exercises `DurableOutbox` with FIFO ordering, failure-mid-drain retry,
+//! deduplication via `DeduplicationLog`, and exponential backoff configuration.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use serde_json::json;
 
@@ -12,6 +16,10 @@ use polkagent_outbox::{
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn duration_minutes(minutes: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(minutes * 60)
+}
 
 fn msg(partition: &str, idempotency: &str) -> OutboxMessage {
     OutboxMessage::new(partition, idempotency, json!({"v": 1}), 3)
@@ -301,11 +309,7 @@ fn dedup_record_is_idempotent() {
 
 #[test]
 fn backoff_delay_never_exceeds_cap() {
-    let policy = ExponentialBackoff::new(
-        std::time::Duration::from_secs(1),
-        std::time::Duration::from_secs(60),
-        5,
-    );
+    let policy = ExponentialBackoff::new(std::time::Duration::from_secs(1), duration_minutes(1), 5);
 
     for attempt in 0..20u32 {
         let d = policy.next_delay(attempt);
@@ -321,11 +325,8 @@ fn backoff_delay_never_exceeds_cap() {
 fn backoff_increases_monotonically_in_expectation() {
     // Even with jitter, the upper bound on the delay should grow with the
     // attempt number. We assert the cap is increasing.
-    let policy = ExponentialBackoff::new(
-        std::time::Duration::from_secs(1),
-        std::time::Duration::from_secs(300),
-        10,
-    );
+    let policy =
+        ExponentialBackoff::new(std::time::Duration::from_secs(1), duration_minutes(5), 10);
 
     // At attempt 0 the window is [0, base); at attempt 3 it is [0, min(cap, base*8)).
     // We check that the window grows by comparing delays from many samples.
@@ -333,7 +334,7 @@ fn backoff_increases_monotonically_in_expectation() {
     let base_nanos = policy.base_delay.as_nanos();
     let cap_nanos = policy.max_delay.as_nanos();
 
-    let upper_at_0 = cap_nanos.min(base_nanos * (1u128 << 0));
+    let upper_at_0 = cap_nanos.min(base_nanos);
     let upper_at_5 = cap_nanos.min(base_nanos * (1u128 << 5));
 
     assert!(
@@ -344,11 +345,7 @@ fn backoff_increases_monotonically_in_expectation() {
 
 #[test]
 fn backoff_should_dead_letter_threshold() {
-    let policy = ExponentialBackoff::new(
-        std::time::Duration::from_secs(1),
-        std::time::Duration::from_secs(60),
-        3,
-    );
+    let policy = ExponentialBackoff::new(std::time::Duration::from_secs(1), duration_minutes(1), 3);
 
     // Attempts 0–3 are within limit.
     assert!(!policy.should_dead_letter(0));
@@ -371,11 +368,7 @@ fn backoff_default_policy_sensible_values() {
 
 #[test]
 fn backoff_zero_base_delay_always_zero() {
-    let policy = ExponentialBackoff::new(
-        std::time::Duration::ZERO,
-        std::time::Duration::from_secs(60),
-        5,
-    );
+    let policy = ExponentialBackoff::new(std::time::Duration::ZERO, duration_minutes(1), 5);
     for attempt in 0..10 {
         assert_eq!(policy.next_delay(attempt), std::time::Duration::ZERO);
     }

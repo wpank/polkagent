@@ -5,6 +5,10 @@
 //! through the `polkagent-payment` crate boundary using only the
 //! public API.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use chrono::{Duration, Utc};
 
 use polkagent_payment::{
@@ -475,7 +479,7 @@ fn cost_estimator_gpt4o_mini_not_confused_with_gpt4o() {
 fn amount_display_human_format() {
     let amt = Amount::new(15_000_000_000, AssetId::Native, 10);
     let display = amt.display_human();
-    assert!(display.contains("1"), "display should contain whole part");
+    assert!(display.contains('1'), "display should contain whole part");
     assert!(display.contains("NATIVE"));
 }
 
@@ -483,7 +487,7 @@ fn amount_display_human_format() {
 fn amount_display_zero() {
     let amt = Amount::zero(AssetId::Native, 6);
     let display = amt.display_human();
-    assert!(display.starts_with("0"), "zero amount should start with 0");
+    assert!(display.starts_with('0'), "zero amount should start with 0");
 }
 
 #[test]

@@ -1,8 +1,12 @@
 //! Event projection integration tests.
 //!
-//! Exercises multi-run event recording, query by run_id, query by event type,
-//! and global sequence ordering using the in-memory MemEventStore and
-//! EventRecorder from the integration test helpers.
+//! Exercises multi-run event recording, query by `run_id`, query by event type,
+//! and global sequence ordering using the in-memory `MemEventStore` and
+//! `EventRecorder` from the integration test helpers.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -12,7 +16,7 @@ use uuid::Uuid;
 use polkagent_core::RunId;
 use polkagent_event::bus::EventBus;
 use polkagent_event::recorder::EventRecorder;
-use polkagent_store_trait::event::{EventFilter, EventStore, StoredEvent};
+use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
 
 use polkagent_integration_tests::MemEventStore;
 
@@ -250,7 +254,6 @@ async fn non_monotonic_sequence_returns_error() {
         .await;
     assert!(result.is_err(), "non-monotonic sequence must be rejected");
 
-    use polkagent_store_trait::event::EventStoreError;
     assert!(
         matches!(
             result.unwrap_err(),
@@ -408,7 +411,6 @@ async fn appending_second_terminal_event_is_rejected() {
         .await;
     assert!(result.is_err(), "second terminal event must be rejected");
 
-    use polkagent_store_trait::event::EventStoreError;
     assert!(
         matches!(
             result.unwrap_err(),

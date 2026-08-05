@@ -4,6 +4,10 @@
 //! validation, environment variable overrides, and multi-provider config from
 //! outside the crate boundary.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::Mutex;
 
 use polkagent_config::{
@@ -319,32 +323,37 @@ fn validation_rejects_duplicate_provider_ids() {
 
 #[test]
 fn validation_rejects_provider_with_empty_id() {
-    let mut cfg = Config::default();
-    cfg.providers = vec![ProviderConfig {
-        id: String::new(),
-        provider_type: "anthropic".into(),
-        api_key_env: "KEY".into(),
-        timeout_secs: 30,
+    let cfg = Config {
+        providers: vec![ProviderConfig {
+            id: String::new(),
+            provider_type: "anthropic".into(),
+            api_key_env: "KEY".into(),
+            timeout_secs: 30,
+            ..Default::default()
+        }],
         ..Default::default()
-    }];
+    };
 
     let errs = validate::validate(&cfg).unwrap_err();
     assert!(
-        errs.iter().any(|e| e.field.ends_with(".id")),
+        errs.iter()
+            .any(|e| e.field.rsplit('.').next() == Some("id")),
         "should flag empty provider id"
     );
 }
 
 #[test]
 fn validation_rejects_provider_with_zero_timeout() {
-    let mut cfg = Config::default();
-    cfg.providers = vec![ProviderConfig {
-        id: "p1".into(),
-        provider_type: "anthropic".into(),
-        api_key_env: "KEY".into(),
-        timeout_secs: 0,
+    let cfg = Config {
+        providers: vec![ProviderConfig {
+            id: "p1".into(),
+            provider_type: "anthropic".into(),
+            api_key_env: "KEY".into(),
+            timeout_secs: 0,
+            ..Default::default()
+        }],
         ..Default::default()
-    }];
+    };
 
     let errs = validate::validate(&cfg).unwrap_err();
     assert!(

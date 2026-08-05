@@ -1,8 +1,12 @@
 //! Conversation flow integration tests.
 //!
-//! Exercises InMemoryConversationStore (create / add messages / ordering),
-//! ContextWindow (truncation, token counting, system-message eviction),
+//! Exercises `InMemoryConversationStore` (create / add messages / ordering),
+//! `ContextWindow` (truncation, token counting, system-message eviction),
 //! and the full conversation lifecycle.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use chrono::Utc;
 use uuid::Uuid;

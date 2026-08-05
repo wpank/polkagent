@@ -5,6 +5,10 @@
 //! `complete()` and streaming `stream()` paths from outside the crate
 //! boundary.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use futures::StreamExt;
 
 use polkagent_core::{RunId, StepId};

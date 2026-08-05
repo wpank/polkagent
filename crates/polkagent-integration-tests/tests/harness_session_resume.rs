@@ -3,16 +3,20 @@
 //! Tests the session snapshot persistence and reload lifecycle:
 //! create → serialize → deserialize → verify continuity.
 //!
-//! - SR-01: SessionSnapshot round-trips through JSON.
-//! - SR-02: SessionId preserved across serialization.
+//! - SR-01: `SessionSnapshot` round-trips through JSON.
+//! - SR-02: `SessionId` preserved across serialization.
 //! - SR-03: Backend state map preserved across serialization.
 //! - SR-04: Turn count and working directory preserved.
-//! - SR-05: persist_session_state / load_session_state lifecycle.
-//! - SR-06: load_session_state fails for non-existent session.
-//! - SR-07: SessionSnapshot with empty backend state.
+//! - SR-05: `persist_session_state` / `load_session_state` lifecycle.
+//! - SR-06: `load_session_state` fails for non-existent session.
+//! - SR-07: `SessionSnapshot` with empty backend state.
 //! - SR-08: Multiple sessions serialize independently.
-//! - SR-09: HarnessConfig round-trips through serde.
-//! - SR-10: HarnessCapabilities round-trips through serde.
+//! - SR-09: `HarnessConfig` round-trips through serde.
+//! - SR-10: `HarnessCapabilities` round-trips through serde.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;

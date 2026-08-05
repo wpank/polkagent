@@ -3,6 +3,10 @@
 //! Exercises the complete effect lifecycle: propose -> claim -> attempt ->
 //! outcome, plus idempotency key deduplication and crash recovery.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,6 +27,10 @@ use polkagent_store_trait::{EffectStore, StoreRetryClass, StoredIntent};
 // ---------------------------------------------------------------------------
 // Helper: build a spec for a given run_id and kind
 // ---------------------------------------------------------------------------
+
+fn duration_minutes(minutes: u64) -> Duration {
+    Duration::from_secs(minutes * 60)
+}
 
 fn make_spec(run_id: RunId, kind: EffectKind) -> EffectIntentSpec {
     EffectIntentSpec {
@@ -64,7 +72,7 @@ async fn full_effect_lifecycle() {
 
     // 2. Claim
     let guard = pipeline
-        .claim_with_duration(Duration::from_secs(60))
+        .claim_with_duration(duration_minutes(1))
         .await
         .expect("claim")
         .expect("guard exists");
@@ -278,7 +286,7 @@ async fn recording_outcome_twice_fails() {
         .expect("propose");
 
     let guard = pipeline
-        .claim_with_duration(Duration::from_secs(60))
+        .claim_with_duration(duration_minutes(1))
         .await
         .expect("claim")
         .expect("guard");

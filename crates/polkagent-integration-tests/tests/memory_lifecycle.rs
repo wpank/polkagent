@@ -2,8 +2,12 @@
 //!
 //! Exercises store/search/update-relevance/delete, admission control for
 //! duplicate entries, tenant isolation, classification filtering with
-//! search_with_classification, and retention sweeps using RetentionSweeper
+//! `search_with_classification`, and retention sweeps using `RetentionSweeper`
 //! — all wired through the `polkagent-memory` crate boundary.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -244,17 +248,14 @@ async fn store_same_content_twice_is_accepted_or_rejected_consistently() {
         .remember(agent, content, MemoryType::Semantic, None)
         .await;
 
-    match result {
-        Ok(_) => {
-            // Accepted: verify that searching returns entries
-            let results = svc.recall(agent, content, 10).await.expect("recall");
-            assert!(!results.is_empty());
-        }
-        Err(_) => {
-            // Rejected: the first entry is still searchable
-            let results = svc.recall(agent, content, 10).await.expect("recall");
-            assert_eq!(results.len(), 1, "original entry should still be present");
-        }
+    if result.is_ok() {
+        // Accepted: verify that searching returns entries
+        let results = svc.recall(agent, content, 10).await.expect("recall");
+        assert!(!results.is_empty());
+    } else {
+        // Rejected: the first entry is still searchable
+        let results = svc.recall(agent, content, 10).await.expect("recall");
+        assert_eq!(results.len(), 1, "original entry should still be present");
     }
 }
 
@@ -648,7 +649,7 @@ async fn retention_sweep_enforces_count_limit() {
     for i in 0..10 {
         let entry = make_entry(
             agent,
-            &format!("Memory {i} about Polkadot",),
+            &format!("Memory {i} about Polkadot"),
             0.9,
             Classification::Internal,
         );
@@ -862,7 +863,7 @@ async fn recall_with_multiple_types_returns_all_types() {
     let results = svc.recall(agent, "Polkadot", 10).await.expect("recall");
     assert_eq!(results.len(), 3, "all memory types must be recalled");
 
-    let types: Vec<_> = results.iter().map(|r| r.memory_type.clone()).collect();
+    let types: Vec<_> = results.iter().map(|r| r.memory_type).collect();
     assert!(types.contains(&MemoryType::Semantic));
     assert!(types.contains(&MemoryType::Procedural));
     assert!(types.contains(&MemoryType::Episodic));

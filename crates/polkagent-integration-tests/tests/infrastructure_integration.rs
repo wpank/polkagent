@@ -3,6 +3,10 @@
 //! These tests verify that the cache, rate-limit, audit, scheduler, batch, and
 //! retry crates work correctly when used together across crate boundaries.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -161,9 +165,9 @@ mod audit {
         for i in 0..10 {
             logger
                 .log(
-                    ActorInfo::agent(&format!("agent-{i}")),
+                    ActorInfo::agent(format!("agent-{i}")),
                     AuditAction::ToolInvoked,
-                    ResourceInfo::new("tool", &format!("tool-{i}")),
+                    ResourceInfo::new("tool", format!("tool-{i}")),
                     ActionOutcome::Success,
                     json!({"iteration": i}),
                 )
@@ -189,7 +193,7 @@ mod audit {
 
         // All hashes should be distinct.
         let mut unique = hashes.clone();
-        unique.sort();
+        unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), 10, "all 10 hashes should be distinct");
     }
@@ -245,7 +249,7 @@ mod scheduler {
         InMemoryTaskStore, Schedule, ScheduledTask, Scheduler, TaskAction, TaskStatus,
     };
 
-    /// Register a task due in the past and verify poll_once executes it.
+    /// Register a task due in the past and verify `poll_once` executes it.
     #[tokio::test]
     async fn scheduler_fires_due_task() {
         let store = Arc::new(InMemoryTaskStore::new());
@@ -279,7 +283,7 @@ mod scheduler {
         assert_eq!(tasks[0].status, TaskStatus::Completed);
     }
 
-    /// Future-scheduled tasks should not be executed by poll_once.
+    /// Future-scheduled tasks should not be executed by `poll_once`.
     #[tokio::test]
     async fn scheduler_skips_future_tasks() {
         let store = Arc::new(InMemoryTaskStore::new());
@@ -344,7 +348,7 @@ mod batch {
     }
 
     /// Verify that failing items are recorded but processing continues
-    /// under SkipFailed policy.
+    /// under `SkipFailed` policy.
     #[tokio::test]
     async fn batch_skip_failed_policy() {
         let config = polkagent_batch::BatchConfig::sequential()
@@ -455,7 +459,7 @@ mod combined {
                 .log(
                     ActorInfo::agent("cache-agent"),
                     AuditAction::ToolInvoked,
-                    ResourceInfo::new("cache", &format!("item-{i}")),
+                    ResourceInfo::new("cache", format!("item-{i}")),
                     ActionOutcome::Success,
                     json!({"operation": "get", "result": outcome}),
                 )
@@ -480,7 +484,7 @@ mod combined {
                 .log(
                     ActorInfo::agent("cache-agent"),
                     AuditAction::ToolInvoked,
-                    ResourceInfo::new("cache", &format!("item-{i}")),
+                    ResourceInfo::new("cache", format!("item-{i}")),
                     ActionOutcome::Success,
                     json!({"operation": "get", "result": outcome}),
                 )
@@ -540,7 +544,7 @@ mod combined {
                 .log(
                     ActorInfo::agent("evict-agent"),
                     AuditAction::ToolInvoked,
-                    ResourceInfo::new("cache", &format!("k{i}")),
+                    ResourceInfo::new("cache", format!("k{i}")),
                     ActionOutcome::Success,
                     json!({"operation": "insert"}),
                 )

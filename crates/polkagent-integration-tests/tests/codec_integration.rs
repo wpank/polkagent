@@ -4,6 +4,10 @@
 //! transfer amount extraction, and error handling — all wired through the
 //! `polkagent-codec` crate boundary.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use polkagent_codec::{
     call::{call_index, pallet_index},
     decode_batch_call, decode_extrinsic, extract_transfer_amount, is_batch_call, is_proxy_call,
@@ -17,12 +21,12 @@ use polkagent_codec::{
 /// Compact-encode a u32 length, returning the prefix bytes.
 fn compact_len_bytes(len: usize) -> Vec<u8> {
     let mut enc = ScaleEncoder::new();
-    enc.encode_compact_u32(len as u32);
+    enc.encode_compact_u32(u32::try_from(len).expect("fixture length must fit in u32"));
     enc.finish()
 }
 
 /// Encode a minimal *unsigned* extrinsic:
-/// [compact length][version=0x04][pallet_index][call_index][...args]
+/// [compact length][version=0x04][`pallet_index`][call_index][...args]
 ///
 /// We build this manually as a Vec<u8> so we can prepend the compact length
 /// prefix without needing an `encode_bytes_raw` method.
@@ -47,7 +51,7 @@ fn compact_u64(v: u64) -> Vec<u8> {
     enc.finish()
 }
 
-/// Encode a MultiAddress Id variant: [0x00][32 bytes]
+/// Encode a `MultiAddress` Id variant: [0x00][32 bytes]
 fn multi_address_id(addr: &[u8; 32]) -> Vec<u8> {
     let mut v = vec![0x00u8];
     v.extend_from_slice(addr);
@@ -55,7 +59,7 @@ fn multi_address_id(addr: &[u8; 32]) -> Vec<u8> {
 }
 
 /// Build compact-length-prefixed inner call bytes for batch encoding.
-/// Each inner call in a batch is encoded as [compact_byte_len][pallet][call][args].
+/// Each inner call in a batch is encoded as [`compact_byte_len`][pallet][call][args].
 fn batch_inner_call(pallet: u8, call: u8, args: &[u8]) -> Vec<u8> {
     let mut call_data: Vec<u8> = Vec::with_capacity(2 + args.len());
     call_data.push(pallet);
@@ -317,7 +321,7 @@ fn extract_transfer_amount_from_transfer_call() {
         make_unsigned_extrinsic(pallet_index::BALANCES, call_index::BALANCES_TRANSFER, &args);
     let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
     let amount = extract_transfer_amount(&decoded);
-    assert_eq!(amount, Some(amount_planck as u128));
+    assert_eq!(amount, Some(u128::from(amount_planck)));
 }
 
 #[test]
@@ -335,7 +339,7 @@ fn extract_transfer_amount_from_transfer_keep_alive() {
     );
     let decoded = decode_extrinsic(&ext_bytes).expect("decode ok");
     let amount = extract_transfer_amount(&decoded);
-    assert_eq!(amount, Some(amount_planck as u128));
+    assert_eq!(amount, Some(u128::from(amount_planck)));
 }
 
 #[test]
@@ -383,7 +387,7 @@ fn extract_transfer_amount_named_u128_field_works() {
 
 #[test]
 fn small_transfer_amounts_survive_round_trip() {
-    for amount in [0u64, 1, 100, u32::MAX as u64] {
+    for amount in [0u64, 1, 100, u64::from(u32::MAX)] {
         let args = {
             let mut a = multi_address_id(&[0u8; 32]);
             a.extend(compact_u64(amount));
@@ -395,7 +399,7 @@ fn small_transfer_amounts_survive_round_trip() {
         let extracted = extract_transfer_amount(&decoded);
         assert_eq!(
             extracted,
-            Some(amount as u128),
+            Some(u128::from(amount)),
             "amount {amount} failed round-trip"
         );
     }
@@ -524,7 +528,7 @@ fn scale_encoder_decoder_round_trip_compact_u32() {
 
 #[test]
 fn scale_encoder_decoder_round_trip_compact_u64() {
-    for &v in &[0u64, 1, 64, 16384, 1_073_741_824, u32::MAX as u64] {
+    for &v in &[0u64, 1, 64, 16384, 1_073_741_824, u64::from(u32::MAX)] {
         let mut enc = ScaleEncoder::new();
         enc.encode_compact_u64(v);
         let bytes = enc.finish();
@@ -562,7 +566,7 @@ fn scale_encoder_decoder_round_trip_fixed_array() {
     let arr: [u8; 32] = {
         let mut a = [0u8; 32];
         for (i, b) in a.iter_mut().enumerate() {
-            *b = i as u8;
+            *b = u8::try_from(i).expect("32-byte fixture index must fit in u8");
         }
         a
     };

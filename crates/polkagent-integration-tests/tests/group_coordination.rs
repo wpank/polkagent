@@ -4,6 +4,10 @@
 //! quorum voting, budget enforcement, and member removal — all wired through
 //! the `polkagent-group` crate boundary.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use polkagent_core::AgentId;
 use polkagent_group::{
     check_quorum, count_approvals, count_denials, Decision, GrantSpec, GroupBudget,

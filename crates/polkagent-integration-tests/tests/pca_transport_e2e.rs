@@ -7,6 +7,10 @@
 //! 4. Message ordering and content integrity across multiple messages
 //! 5. Encrypted message exchange between two transports
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use polkagent_transport_pca::config::PcaConfig;
 use polkagent_transport_pca::crypto::KeyPair;
 use polkagent_transport_pca::session::SessionState;

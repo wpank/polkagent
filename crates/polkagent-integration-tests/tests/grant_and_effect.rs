@@ -5,6 +5,12 @@
 //! denied actions produce Deny decisions, and the budget gate tracks
 //! cumulative spend.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use std::collections::HashMap;
+
 use polkagent_grant::gate::{
     AllowlistField, AllowlistGate, BudgetGate, ComposedGate, Gate, GateRequest, GateResult,
 };
@@ -22,7 +28,7 @@ fn gate_req(principal: &str, action: &str, resource: &str, amount: Option<u64>) 
         action: action.to_string(),
         resource: resource.to_string(),
         amount,
-        metadata: Default::default(),
+        metadata: HashMap::default(),
     }
 }
 
@@ -38,7 +44,7 @@ fn policy_allows_configured_action() {
         effect: Effect::Allow,
         action_patterns: vec!["chain/query".to_string()],
         resource_patterns: vec!["**".to_string()],
-        conditions: Default::default(),
+        conditions: HashMap::default(),
         abac_condition: None,
     });
 
@@ -55,7 +61,7 @@ fn policy_denies_unconfigured_action() {
         effect: Effect::Allow,
         action_patterns: vec!["chain/query".to_string()],
         resource_patterns: vec!["**".to_string()],
-        conditions: Default::default(),
+        conditions: HashMap::default(),
         abac_condition: None,
     });
 
@@ -75,7 +81,7 @@ fn explicit_deny_overrides_allow() {
         effect: Effect::Allow,
         action_patterns: vec!["**".to_string()],
         resource_patterns: vec!["**".to_string()],
-        conditions: Default::default(),
+        conditions: HashMap::default(),
         abac_condition: None,
     });
     policy_set.add_rule(PolicyRule {
@@ -83,7 +89,7 @@ fn explicit_deny_overrides_allow() {
         effect: Effect::Deny,
         action_patterns: vec!["chain/transfer".to_string()],
         resource_patterns: vec!["**".to_string()],
-        conditions: Default::default(),
+        conditions: HashMap::default(),
         abac_condition: None,
     });
 
@@ -110,7 +116,7 @@ fn policy_with_conditions_requires_matching_context() {
         effect: Effect::Allow,
         action_patterns: vec!["chain/**".to_string()],
         resource_patterns: vec!["**".to_string()],
-        conditions: Default::default(),
+        conditions: HashMap::default(),
         abac_condition: None,
     };
     rule.conditions

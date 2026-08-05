@@ -25,7 +25,11 @@
 //!   -> EffectPipeline.record_outcome (polkagent-effect)
 //! ```
 
-use std::sync::Arc;
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use std::{fmt::Write as _, sync::Arc};
 
 use chrono::Utc;
 
@@ -65,6 +69,10 @@ use polkagent_integration_tests::{make_effect_pipeline, MemRunStore};
 // Shared fixtures and helpers
 // ---------------------------------------------------------------------------
 
+fn duration_hours(hours: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(hours * 60 * 60)
+}
+
 /// Construct a minimal unsigned extrinsic:
 /// `[compact(total_len)] [version=0x04] [pallet] [call] [args...]`
 fn build_unsigned_extrinsic(pallet: u8, call: u8, args: &[u8]) -> Vec<u8> {
@@ -72,7 +80,9 @@ fn build_unsigned_extrinsic(pallet: u8, call: u8, args: &[u8]) -> Vec<u8> {
     payload.extend_from_slice(args);
 
     let mut enc = ScaleEncoder::new();
-    enc.encode_compact_u32(payload.len() as u32);
+    enc.encode_compact_u32(
+        u32::try_from(payload.len()).expect("fixture payload length must fit in u32"),
+    );
     let mut out = enc.finish();
     out.extend(payload);
     out
@@ -80,7 +90,7 @@ fn build_unsigned_extrinsic(pallet: u8, call: u8, args: &[u8]) -> Vec<u8> {
 
 /// Construct a `Balances.transferKeepAlive` extrinsic:
 /// - dest: `MultiAddress::Id([0u8; 31, 0x01])`
-/// - value: compact(1_000_000_000_000) = 1 DOT
+/// - value: `compact(1_000_000_000_000)` = 1 DOT
 fn transfer_keep_alive_fixture() -> Vec<u8> {
     let dest = {
         let mut b = vec![0x00u8]; // MultiAddress::Id
@@ -103,7 +113,7 @@ fn transfer_keep_alive_fixture() -> Vec<u8> {
 
 /// Construct a `Balances.transfer` extrinsic (pallet 5, call 0):
 /// - dest: `MultiAddress::Id([0xAA; 32])`
-/// - value: compact(5_000_000_000_000) = 5 DOT
+/// - value: `compact(5_000_000_000_000)` = 5 DOT
 fn transfer_fixture() -> Vec<u8> {
     let dest = {
         let mut b = vec![0x00u8]; // MultiAddress::Id
@@ -124,7 +134,7 @@ fn blake3_hex(data: &[u8]) -> String {
     let hash = blake3::hash(data);
     let bytes = hash.as_bytes();
     bytes.iter().fold(String::with_capacity(64), |mut s, b| {
-        s.push_str(&format!("{b:02x}"));
+        write!(&mut s, "{b:02x}").expect("writing to a String cannot fail");
         s
     })
 }
@@ -143,7 +153,7 @@ fn canonical_request(payload: Vec<u8>) -> CanonicalSignRequest {
     }
 }
 
-/// Build fake pinned metadata for a FakeChainClient.
+/// Build fake pinned metadata for a `FakeChainClient`.
 fn fake_pinned_metadata() -> PinnedMetadata {
     PinnedMetadata {
         chain_profile: ChainChainProfileId::new("polkadot"),
@@ -181,7 +191,7 @@ fn ac_p2_001_decode_transfer_pallet_and_call() {
     );
 }
 
-/// Decode a transfer_keep_alive call and verify it is correctly identified by
+/// Decode a `transfer_keep_alive` call and verify it is correctly identified by
 /// the call helpers.
 #[test]
 fn ac_p2_001_decode_transfer_keep_alive_identified() {
@@ -196,7 +206,7 @@ fn ac_p2_001_decode_transfer_keep_alive_identified() {
     assert_eq!(ext.call_index, call_index::BALANCES_TRANSFER_KEEP_ALIVE);
 }
 
-/// Decode a known call using FakeChainClient.decode_call() and verify the
+/// Decode a known call using `FakeChainClient.decode_call()` and verify the
 /// decoded pallet name and call name match.
 #[tokio::test]
 async fn ac_p2_001_decode_via_fake_chain_client() {
@@ -228,7 +238,7 @@ async fn ac_p2_001_decode_via_fake_chain_client() {
     );
 }
 
-/// Verify that decoded arguments from FakeChainClient include the call bytes
+/// Verify that decoded arguments from `FakeChainClient` include the call bytes
 /// hex in the JSON payload.
 #[tokio::test]
 async fn ac_p2_001_decode_call_arguments_contain_call_data() {
@@ -277,7 +287,7 @@ fn ac_p2_001_action_card_canonical_fields_from_decode() {
         .add_canonical("Call", call_name, SectionSource::Metadata)
         .add_canonical(
             "Amount",
-            &format!("{amount_value} planck"),
+            format!("{amount_value} planck"),
             SectionSource::Metadata,
         )
         .with_payload_hash(payload_hash.clone())
@@ -327,10 +337,10 @@ async fn ac_p2_003_signer_receives_bitwise_identical_bytes() {
     let sign_request = canonical_request(raw_bytes.clone());
 
     let signer = FakeSigner::new();
-    let signed = signer.sign(sign_request).await.expect("sign ok");
+    let signed_payload = signer.sign(sign_request).await.expect("sign ok");
 
     // The FakeSigner constructs signed_extrinsic = payload || signature.
-    let payload_from_signed = &signed.signed_extrinsic[..raw_bytes.len()];
+    let payload_from_signed = &signed_payload.signed_extrinsic[..raw_bytes.len()];
     assert_eq!(
         payload_from_signed,
         &raw_bytes[..],
@@ -339,7 +349,7 @@ async fn ac_p2_003_signer_receives_bitwise_identical_bytes() {
 }
 
 /// BLAKE3 hash of the bytes the signer receives matches the card's
-/// payload_hash.
+/// `payload_hash`.
 #[tokio::test]
 async fn ac_p2_003_hash_binding_matches_card() {
     let raw_bytes = transfer_keep_alive_fixture();
@@ -352,9 +362,9 @@ async fn ac_p2_003_hash_binding_matches_card() {
 
     let sign_request = canonical_request(raw_bytes.clone());
     let signer = FakeSigner::new();
-    let signed = signer.sign(sign_request).await.expect("sign ok");
+    let signed_payload = signer.sign(sign_request).await.expect("sign ok");
 
-    let payload_from_signed = &signed.signed_extrinsic[..raw_bytes.len()];
+    let payload_from_signed = &signed_payload.signed_extrinsic[..raw_bytes.len()];
     let hash_from_signed = blake3_hex(payload_from_signed);
     assert_eq!(
         hash_from_signed, card.payload_hash,
@@ -431,7 +441,7 @@ async fn ac_p2_003_multiple_sign_calls_each_receive_correct_bytes() {
 // ===========================================================================
 
 /// Create metadata with version N, then register version N+1. The
-/// MetadataService must detect the drift.
+/// `MetadataService` must detect the drift.
 #[test]
 fn ac_p2_004_stale_metadata_drift_detection() {
     let svc = MetadataService::new();
@@ -481,7 +491,7 @@ fn ac_p2_004_absent_metadata_is_stale() {
     let chain = ChainId::new("polkadot");
 
     assert!(
-        svc.is_stale(&chain, std::time::Duration::from_secs(3600)),
+        svc.is_stale(&chain, duration_hours(1)),
         "absent metadata must be treated as stale (AC-P2-004)"
     );
 }
@@ -522,7 +532,7 @@ fn ac_p2_004_drift_carries_identifying_info() {
     );
 }
 
-/// FakeChainClient decode_call with fault injection produces an explicit error.
+/// `FakeChainClient` `decode_call` with fault injection produces an explicit error.
 #[tokio::test]
 async fn ac_p2_004_fake_chain_decode_call_fault_returns_explicit_error() {
     let client = FakeChainClientBuilder::polkadot().fail_next_n(1).build();
@@ -603,7 +613,7 @@ fn ac_p2_005_correct_network_genesis_hash_accepted() {
     );
 }
 
-/// The MetadataService drift mechanism detects wrong-network metadata
+/// The `MetadataService` drift mechanism detects wrong-network metadata
 /// masquerading as the target chain.
 #[test]
 fn ac_p2_005_wrong_network_detected_via_metadata_drift() {
@@ -678,7 +688,7 @@ fn ac_p2_005_independent_chains_isolated() {
     );
 }
 
-/// A rejecting signer returns UserRejected when the user declines signing.
+/// A rejecting signer returns `UserRejected` when the user declines signing.
 #[tokio::test]
 async fn ac_p2_005_user_rejects_signing_returns_explicit_error() {
     let raw_bytes = transfer_keep_alive_fixture();
@@ -699,7 +709,7 @@ async fn ac_p2_005_user_rejects_signing_returns_explicit_error() {
 // AC-P2-006 — CLI and web show identical run state
 // ===========================================================================
 
-/// Create a run via the store layer, query state through RunStore, and verify
+/// Create a run via the store layer, query state through `RunStore`, and verify
 /// the state representation is identical regardless of access path.
 #[tokio::test]
 async fn ac_p2_006_run_state_identical_via_different_access_paths() {
@@ -800,7 +810,7 @@ async fn ac_p2_006_state_transition_visible_through_all_paths() {
     );
 }
 
-/// The JSON serialization of RunSummary is identical regardless of access path.
+/// The JSON serialization of `RunSummary` is identical regardless of access path.
 #[tokio::test]
 async fn ac_p2_006_json_representation_identical() {
     let store = Arc::new(MemRunStore::default());
@@ -1013,9 +1023,9 @@ async fn full_lifecycle_intent_to_outcome() {
     };
 
     let signer = FakeSigner::new();
-    let signed = signer.sign(sign_request).await.expect("sign ok");
-    assert!(!signed.signature.is_empty());
-    assert_eq!(signed.public_key.len(), 32);
+    let signed_payload = signer.sign(sign_request).await.expect("sign ok");
+    assert!(!signed_payload.signature.is_empty());
+    assert_eq!(signed_payload.public_key.len(), 32);
 
     // Step 4: Propose effect intent.
     let (pipeline, store) = make_effect_pipeline();
@@ -1064,7 +1074,7 @@ async fn full_lifecycle_intent_to_outcome() {
         result: OutcomeResult::Success {
             data: serde_json::json!({
                 "tx_hash": "0xdeadbeef",
-                "signed_extrinsic_len": signed.signed_extrinsic.len(),
+                "signed_extrinsic_len": signed_payload.signed_extrinsic.len(),
             }),
         },
         observed_at: Utc::now(),
@@ -1090,7 +1100,7 @@ async fn full_lifecycle_intent_to_outcome() {
     assert_eq!(outcomes[0].run_id, run_id);
 }
 
-/// MetadataService pin_and_retrieve workflow.
+/// `MetadataService` `pin_and_retrieve` workflow.
 #[test]
 fn metadata_service_pin_and_retrieve() {
     let svc = MetadataService::new();
@@ -1166,7 +1176,7 @@ async fn unknown_outcome_preserved_and_resolves_intent() {
     );
 }
 
-/// The render_text output for an action card contains all key elements for
+/// The `render_text` output for an action card contains all key elements for
 /// both CLI and web consumption (AC-P2-006: same data regardless of surface).
 #[test]
 fn ac_p2_006_render_text_contains_all_key_elements() {
@@ -1204,7 +1214,7 @@ fn ac_p2_006_render_text_contains_all_key_elements() {
     assert!(json.contains("first_time_recipient"));
 }
 
-/// FakeChainClient decode_call is deterministic -- calling twice with the
+/// `FakeChainClient` `decode_call` is deterministic -- calling twice with the
 /// same bytes returns the same result.
 #[tokio::test]
 async fn fake_chain_client_decode_call_deterministic() {

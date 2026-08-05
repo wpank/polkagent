@@ -10,6 +10,10 @@
 //! 5. The sign-and-submit stage produces valid tx hashes.
 //! 6. The signer-rejected path returns the appropriate service error.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use polkagent_chain_fake::FakeChainClientBuilder;

@@ -5,6 +5,10 @@
 //! account enumeration, and expiry enforcement from outside the crate
 //! boundary.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use polkagent_core::now;
 use polkagent_signer_fake::FakeSigner;
 use polkagent_signer_trait::{
@@ -40,27 +44,27 @@ async fn fake_signer_sign_returns_deterministic_signature() {
     let req = valid_request(account.clone());
     let payload = req.payload.clone();
 
-    let signed = signer.sign(req).await.expect("sign should succeed");
+    let signed_payload = signer.sign(req).await.expect("sign should succeed");
 
     // Signature is 64 bytes with the first 4 bytes mirroring the payload.
-    assert_eq!(signed.signature.len(), 64);
-    assert_eq!(signed.signature[0], 0xDE);
-    assert_eq!(signed.signature[1], 0xAD);
-    assert_eq!(signed.signature[2], 0xBE);
-    assert_eq!(signed.signature[3], 0xEF);
+    assert_eq!(signed_payload.signature.len(), 64);
+    assert_eq!(signed_payload.signature[0], 0xDE);
+    assert_eq!(signed_payload.signature[1], 0xAD);
+    assert_eq!(signed_payload.signature[2], 0xBE);
+    assert_eq!(signed_payload.signature[3], 0xEF);
 
     // Public key matches the signing account.
-    assert_eq!(signed.public_key.len(), 32);
-    assert_eq!(signed.public_key, account.account_id.to_vec());
+    assert_eq!(signed_payload.public_key.len(), 32);
+    assert_eq!(signed_payload.public_key, account.account_id.to_vec());
 
     // signed_extrinsic = payload || signature
     assert_eq!(
-        &signed.signed_extrinsic[..payload.len()],
+        &signed_payload.signed_extrinsic[..payload.len()],
         payload.as_slice()
     );
     assert_eq!(
-        &signed.signed_extrinsic[payload.len()..],
-        signed.signature.as_slice()
+        &signed_payload.signed_extrinsic[payload.len()..],
+        signed_payload.signature.as_slice()
     );
 }
 
@@ -205,7 +209,7 @@ async fn fake_signer_accepts_future_expiry() {
 #[allow(dead_code)]
 fn _fake_signer_is_object_safe(_s: &dyn Signer) {}
 
-/// Verify that FakeSigner can be used behind an Arc<dyn Signer>.
+/// Verify that `FakeSigner` can be used behind an Arc<dyn Signer>.
 #[tokio::test]
 async fn fake_signer_can_be_used_as_dyn_signer() {
     let signer: std::sync::Arc<dyn Signer> = std::sync::Arc::new(FakeSigner::new());
@@ -213,11 +217,11 @@ async fn fake_signer_can_be_used_as_dyn_signer() {
     let caps = signer.describe().await.expect("describe via dyn");
     assert_eq!(caps.accounts.len(), 1);
 
-    let signed = signer
+    let signed_payload = signer
         .sign(valid_request(AccountRef::from_bytes([0u8; 32])))
         .await
         .expect("sign via dyn");
-    assert_eq!(signed.signature.len(), 64);
+    assert_eq!(signed_payload.signature.len(), 64);
 }
 
 // ---------------------------------------------------------------------------

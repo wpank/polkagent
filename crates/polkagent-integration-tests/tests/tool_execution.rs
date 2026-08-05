@@ -1,7 +1,11 @@
 //! Tool execution integration tests.
 //!
-//! Exercises ToolRegistry registration, grant-gated execution, rejection
+//! Exercises `ToolRegistry` registration, grant-gated execution, rejection
 //! without grant, and output capture across handler implementations.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -86,7 +90,7 @@ impl ToolHandler for FailingTool {
     }
 }
 
-/// A tool that captures the ToolContext fields.
+/// A tool that captures the `ToolContext` fields.
 struct ContextCaptureTool {
     captured: std::sync::Mutex<Option<ToolContext>>,
 }
@@ -407,22 +411,25 @@ async fn execute_grant_gated_tool_with_multiple_grants_one_matching_succeeds() {
 
 #[tokio::test]
 async fn execute_passes_correct_run_id_to_handler() {
-    let capture = std::sync::Arc::new(ContextCaptureTool::new());
-    let capture_clone = std::sync::Arc::clone(&capture);
-
-    let mut reg = ToolRegistry::new();
-    // We can't easily wrap Arc<ContextCaptureTool> as ToolHandler because
-    // register takes Box<dyn ToolHandler>. Use a wrapper instead.
+    // `ToolRegistry::register` accepts boxed handlers, so this wrapper lets the
+    // test retain a shared handle to inspect the captured context afterward.
     struct ArcWrapper(std::sync::Arc<ContextCaptureTool>);
+
     #[async_trait]
     impl ToolHandler for ArcWrapper {
         fn spec(&self) -> ToolSpec {
             self.0.spec()
         }
+
         async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
             self.0.execute(input, ctx).await
         }
     }
+
+    let capture = std::sync::Arc::new(ContextCaptureTool::new());
+    let capture_clone = std::sync::Arc::clone(&capture);
+
+    let mut reg = ToolRegistry::new();
     reg.register(Box::new(ArcWrapper(capture_clone)));
 
     let run_id = RunId::new();

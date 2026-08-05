@@ -3,6 +3,10 @@
 //! Exercises TOML manifest loading, dependency resolution (topological sort),
 //! circular dependency detection, and missing/version-conflict dependency errors.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::HashMap;
 
 use polkagent_skill::error::SkillError;

@@ -1,8 +1,12 @@
 //! Cross-crate integration tests for the memory subsystem.
 //!
 //! These tests exercise the `polkagent-memory` crate's `MemoryService` facade
-//! backed by an in-memory SQLite store, verifying storage, recall, episodes,
+//! backed by an in-memory `SQLite` store, verifying storage, recall, episodes,
 //! provenance tracking, and the forget operation across the crate boundary.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 

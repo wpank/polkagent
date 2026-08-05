@@ -3,6 +3,10 @@
 //! Creates an agent, drives a run through every lifecycle state, and verifies
 //! that the event store has a complete, ordered record of all transitions.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use polkagent_core::{AgentId, RunState};
 use polkagent_integration_tests::make_run_manager;
 use polkagent_store_trait::event::{EventFilter, EventStore};
@@ -18,36 +22,34 @@ async fn full_lifecycle_created_to_completed() {
 
     // 1. Create
     let run_id = mgr.create_run(agent_id).await.expect("create_run");
-    let state = mgr.get_state(run_id.clone()).await.expect("state");
+    let state = mgr.get_state(run_id).await.expect("state");
     assert_eq!(state, RunState::Created);
 
     // 2. Enqueue (Created -> Queued)
-    mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-    let state = mgr.get_state(run_id.clone()).await.expect("state");
+    mgr.enqueue_run(run_id).await.expect("enqueue");
+    let state = mgr.get_state(run_id).await.expect("state");
     assert_eq!(state, RunState::Queued);
 
     // 3. Start (Queued -> Running)
-    mgr.start_run(run_id.clone()).await.expect("start");
-    let state = mgr.get_state(run_id.clone()).await.expect("state");
+    mgr.start_run(run_id).await.expect("start");
+    let state = mgr.get_state(run_id).await.expect("state");
     assert_eq!(state, RunState::Running);
 
     // 4. Completing (Running -> Completing)
-    mgr.completing_run(run_id.clone())
-        .await
-        .expect("completing");
-    let state = mgr.get_state(run_id.clone()).await.expect("state");
+    mgr.completing_run(run_id).await.expect("completing");
+    let state = mgr.get_state(run_id).await.expect("state");
     assert_eq!(state, RunState::Completing);
 
     // 5. Completed (Completing -> Completed)
-    mgr.complete_run(run_id.clone(), None, 0, 0)
+    mgr.complete_run(run_id, None, 0, 0)
         .await
         .expect("complete");
-    let state = mgr.get_state(run_id.clone()).await.expect("state");
+    let state = mgr.get_state(run_id).await.expect("state");
     assert_eq!(state, RunState::Completed);
 
     // Verify events recorded for each transition.
     let events = event_store
-        .read_run_events(run_id.clone())
+        .read_run_events(run_id)
         .await
         .expect("read events");
 
@@ -83,12 +85,12 @@ async fn events_are_queryable_via_event_filter() {
     let agent_id = AgentId::new();
 
     let run_id = mgr.create_run(agent_id).await.expect("create");
-    mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-    mgr.start_run(run_id.clone()).await.expect("start");
+    mgr.enqueue_run(run_id).await.expect("enqueue");
+    mgr.start_run(run_id).await.expect("start");
 
     // Query with run_id filter.
     let filter = EventFilter {
-        run_id: Some(run_id.clone()),
+        run_id: Some(run_id),
         ..Default::default()
     };
     let results = event_store.query(filter).await.expect("query");
@@ -115,7 +117,7 @@ async fn events_readable_from_cursor() {
     let agent_id = AgentId::new();
 
     let run_id = mgr.create_run(agent_id).await.expect("create");
-    mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
+    mgr.enqueue_run(run_id).await.expect("enqueue");
 
     // Read from cursor 0 should return all events.
     let page1 = event_store
@@ -144,18 +146,16 @@ async fn terminal_run_cannot_be_cancelled() {
     let agent_id = AgentId::new();
     let run_id = mgr.create_run(agent_id).await.expect("create");
 
-    mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-    mgr.start_run(run_id.clone()).await.expect("start");
-    mgr.completing_run(run_id.clone())
-        .await
-        .expect("completing");
-    mgr.complete_run(run_id.clone(), None, 0, 0)
+    mgr.enqueue_run(run_id).await.expect("enqueue");
+    mgr.start_run(run_id).await.expect("start");
+    mgr.completing_run(run_id).await.expect("completing");
+    mgr.complete_run(run_id, None, 0, 0)
         .await
         .expect("complete");
 
     // Attempting to cancel a completed run must fail.
     let err = mgr
-        .cancel_run(run_id.clone(), "too late")
+        .cancel_run(run_id, "too late")
         .await
         .expect_err("should fail");
     assert!(
@@ -175,8 +175,8 @@ async fn two_runs_have_independent_event_sequences() {
     let run_a = mgr.create_run(AgentId::new()).await.expect("create a");
     let run_b = mgr.create_run(AgentId::new()).await.expect("create b");
 
-    mgr.enqueue_run(run_a.clone()).await.expect("enqueue a");
-    mgr.enqueue_run(run_b.clone()).await.expect("enqueue b");
+    mgr.enqueue_run(run_a).await.expect("enqueue a");
+    mgr.enqueue_run(run_b).await.expect("enqueue b");
 
     let a_events = event_store.read_run_events(run_a).await.expect("read a");
     let b_events = event_store.read_run_events(run_b).await.expect("read b");

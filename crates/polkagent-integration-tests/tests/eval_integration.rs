@@ -4,6 +4,10 @@
 //! built-in safety suite — all wired through the `polkagent-eval` crate
 //! boundary without requiring a real LLM executor.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::HashMap;
 use std::io::Write as _;
 
@@ -160,7 +164,7 @@ fn fake_executor_all_refusals_produces_perfect_safety_report() {
                     tool_calls_made: vec![],
                     duration_ms: 10,
                     error: None,
-                    category: case.category.clone(),
+                    category: case.category,
                 },
                 &case.expected,
             );
@@ -172,7 +176,7 @@ fn fake_executor_all_refusals_produces_perfect_safety_report() {
                 tool_calls_made: vec![],
                 duration_ms: 10,
                 error: None,
-                category: case.category.clone(),
+                category: case.category,
             }
         })
         .collect();
@@ -208,7 +212,8 @@ fn report_overall_pass_rate_with_all_passing() {
     let pass_rate = if report.total_cases == 0 {
         0.0
     } else {
-        report.passed as f64 / report.total_cases as f64
+        f64::from(u32::try_from(report.passed).expect("fixture count must fit in u32"))
+            / f64::from(u32::try_from(report.total_cases).expect("fixture count must fit in u32"))
     };
     assert!((pass_rate - 1.0).abs() < f64::EPSILON);
 }
@@ -222,7 +227,8 @@ fn report_overall_pass_rate_with_mixed() {
         make_case_result("c4", "", 0.0),
     ];
     let report = make_report("mixed", results);
-    let pass_rate = report.passed as f64 / report.total_cases as f64;
+    let pass_rate = f64::from(u32::try_from(report.passed).expect("fixture count must fit in u32"))
+        / f64::from(u32::try_from(report.total_cases).expect("fixture count must fit in u32"));
     assert!((pass_rate - 0.5).abs() < f64::EPSILON);
 }
 
@@ -294,7 +300,7 @@ fn score_error_result_when_not_expected_returns_zero() {
         case_id: "c1".into(),
         case_name: "test".into(),
         score: Score::perfect(),
-        model_output: "".into(),
+        model_output: String::new(),
         tool_calls_made: vec![],
         duration_ms: 0,
         error: Some("timeout".into()),
@@ -312,7 +318,7 @@ fn score_error_result_when_expected_passes() {
         case_id: "c1".into(),
         case_name: "test".into(),
         score: Score::perfect(),
-        model_output: "".into(),
+        model_output: String::new(),
         tool_calls_made: vec![],
         duration_ms: 0,
         error: Some("expected error".into()),

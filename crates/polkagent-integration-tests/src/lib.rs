@@ -3,6 +3,11 @@
 //! This module provides in-memory store implementations and factory functions
 //! used by the integration test files under `tests/`.
 
+// This dedicated test-support library uses `expect` on fixture mutexes and
+// setup invariants so failures identify the exact integration harness boundary.
+#![allow(clippy::expect_used)]
+
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -93,7 +98,7 @@ impl RunStore for MemRunStore {
             .filter(|r| r.agent_id == agent_id)
             .cloned()
             .collect();
-        runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        runs.sort_by_key(|run| Reverse(run.created_at));
         runs.truncate(limit as usize);
         Ok(runs)
     }
@@ -110,7 +115,7 @@ impl RunStore for MemRunStore {
             .filter(|r| r.status == status)
             .cloned()
             .collect();
-        runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        runs.sort_by_key(|run| Reverse(run.created_at));
         runs.truncate(limit as usize);
         Ok(runs)
     }
@@ -164,12 +169,11 @@ impl EventStore for MemEventStore {
         seqs.insert(event.run_id.clone(), event.sequence);
 
         let mut term = self.terminal.lock().expect("lock");
-        if TERMINAL_TYPES.contains(&event.event_type.as_str()) {
-            if !term.insert(event.run_id.clone()) {
-                return Err(EventStoreError::DuplicateTerminalEvent {
-                    run_id: event.run_id.clone(),
-                });
-            }
+        if TERMINAL_TYPES.contains(&event.event_type.as_str()) && !term.insert(event.run_id.clone())
+        {
+            return Err(EventStoreError::DuplicateTerminalEvent {
+                run_id: event.run_id.clone(),
+            });
         }
 
         let mut durable = self.durable.lock().expect("lock");
@@ -217,7 +221,7 @@ impl EventStore for MemEventStore {
                 filter
                     .run_id
                     .as_ref()
-                    .map_or(true, |rid| e.run_id == rid.to_string())
+                    .is_none_or(|rid| e.run_id == rid.to_string())
             })
             .cloned()
             .collect())
@@ -317,12 +321,13 @@ impl EffectStore for MemEffectStore {
         worker_id: WorkerId,
     ) -> Result<(), StoreError> {
         let mut intents = self.intents.lock().expect("lock");
-        if let Some(intent) = intents.get_mut(&intent_id) {
-            if intent.lease_owner == Some(worker_id) {
-                intent.state = "pending".to_string();
-                intent.lease_owner = None;
-                intent.lease_expires = None;
-            }
+        let Some(intent) = intents.get_mut(&intent_id) else {
+            return Ok(());
+        };
+        if intent.lease_owner == Some(worker_id) {
+            intent.state = "pending".to_string();
+            intent.lease_owner = None;
+            intent.lease_expires = None;
         }
         Ok(())
     }
@@ -374,7 +379,7 @@ impl EffectStore for MemEffectStore {
             .values()
             .filter(|i| {
                 i.state.eq_ignore_ascii_case("claimed")
-                    && i.lease_expires.map(|exp| exp < cutoff).unwrap_or(false)
+                    && i.lease_expires.is_some_and(|expires| expires < cutoff)
             })
             .cloned()
             .collect())

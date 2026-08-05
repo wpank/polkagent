@@ -3,6 +3,10 @@
 //! Creates artifacts for a run, establishes lineage (parent -> child),
 //! queries ancestors and descendants, and verifies BLAKE3 digest integrity.
 
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

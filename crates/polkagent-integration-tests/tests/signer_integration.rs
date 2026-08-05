@@ -1,7 +1,11 @@
 //! IT-08: Signer integration tests.
 //!
-//! Exercises FakeSigner: sign, canonical bytes enforcement, signature
+//! Exercises `FakeSigner`: sign, canonical bytes enforcement, signature
 //! artifact structure, no secrets in payload, sign→verify round trip.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use polkagent_core::now;
 use polkagent_signer_fake::FakeSigner;
@@ -46,18 +50,21 @@ async fn sign_succeeds_with_valid_request() {
 #[tokio::test]
 async fn sign_produces_non_empty_signature() {
     let signer = FakeSigner::new();
-    let signed = signer
+    let signed_payload = signer
         .sign(valid_request(default_account()))
         .await
         .expect("sign ok");
 
-    assert!(!signed.signature.is_empty(), "signature must not be empty");
     assert!(
-        !signed.public_key.is_empty(),
+        !signed_payload.signature.is_empty(),
+        "signature must not be empty"
+    );
+    assert!(
+        !signed_payload.public_key.is_empty(),
         "public key must not be empty"
     );
     assert!(
-        !signed.signed_extrinsic.is_empty(),
+        !signed_payload.signed_extrinsic.is_empty(),
         "signed_extrinsic must not be empty"
     );
 }
@@ -65,13 +72,13 @@ async fn sign_produces_non_empty_signature() {
 #[tokio::test]
 async fn sign_returns_64_byte_signature() {
     let signer = FakeSigner::new();
-    let signed = signer
+    let signed_payload = signer
         .sign(valid_request(default_account()))
         .await
         .expect("sign ok");
 
     assert_eq!(
-        signed.signature.len(),
+        signed_payload.signature.len(),
         64,
         "fake signature must be 64 bytes"
     );
@@ -80,12 +87,16 @@ async fn sign_returns_64_byte_signature() {
 #[tokio::test]
 async fn sign_returns_32_byte_public_key() {
     let signer = FakeSigner::new();
-    let signed = signer
+    let signed_payload = signer
         .sign(valid_request(default_account()))
         .await
         .expect("sign ok");
 
-    assert_eq!(signed.public_key.len(), 32, "public key must be 32 bytes");
+    assert_eq!(
+        signed_payload.public_key.len(),
+        32,
+        "public key must be 32 bytes"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -99,13 +110,13 @@ async fn fake_signer_embeds_payload_bytes_in_signature() {
     let mut req = valid_request(default_account());
     req.payload = payload.clone();
 
-    let signed = signer.sign(req).await.expect("sign");
+    let signed_payload = signer.sign(req).await.expect("sign");
 
     // FakeSigner copies the first 4 payload bytes into signature[0..4].
-    assert_eq!(signed.signature[0], 0xDE);
-    assert_eq!(signed.signature[1], 0xAD);
-    assert_eq!(signed.signature[2], 0xBE);
-    assert_eq!(signed.signature[3], 0xEF);
+    assert_eq!(signed_payload.signature[0], 0xDE);
+    assert_eq!(signed_payload.signature[1], 0xAD);
+    assert_eq!(signed_payload.signature[2], 0xBE);
+    assert_eq!(signed_payload.signature[3], 0xEF);
 }
 
 #[tokio::test]
@@ -115,11 +126,11 @@ async fn signed_extrinsic_contains_original_payload() {
     let mut req = valid_request(default_account());
     req.payload = payload.clone();
 
-    let signed = signer.sign(req).await.expect("sign");
+    let signed_payload = signer.sign(req).await.expect("sign");
 
     // signed_extrinsic = payload || signature
     assert!(
-        signed.signed_extrinsic.starts_with(&payload),
+        signed_payload.signed_extrinsic.starts_with(&payload),
         "signed_extrinsic must begin with the original payload bytes"
     );
 }
@@ -131,10 +142,10 @@ async fn signed_extrinsic_length_is_payload_plus_signature() {
     let mut req = valid_request(default_account());
     req.payload = vec![0xAA; payload_len];
 
-    let signed = signer.sign(req).await.expect("sign");
+    let signed_payload = signer.sign(req).await.expect("sign");
 
     assert_eq!(
-        signed.signed_extrinsic.len(),
+        signed_payload.signed_extrinsic.len(),
         payload_len + 64,
         "signed_extrinsic length must equal payload length + 64-byte signature"
     );
@@ -199,11 +210,11 @@ async fn sign_and_verify_signed_extrinsic_contains_payload() {
     let mut req = valid_request(default_account());
     req.payload = payload.clone();
 
-    let signed = signer.sign(req).await.expect("sign");
+    let signed_payload = signer.sign(req).await.expect("sign");
 
     // Verification: the signed_extrinsic contains the original payload.
     assert!(
-        signed
+        signed_payload
             .signed_extrinsic
             .windows(payload.len())
             .any(|w| w == payload.as_slice()),
@@ -212,7 +223,7 @@ async fn sign_and_verify_signed_extrinsic_contains_payload() {
 
     // Verification: the public_key matches the account.
     assert_eq!(
-        signed.public_key,
+        signed_payload.public_key,
         default_account().account_id,
         "public_key must equal the signer account's account_id"
     );

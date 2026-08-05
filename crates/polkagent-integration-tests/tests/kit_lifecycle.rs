@@ -3,16 +3,20 @@
 //! Exercises the kit install, list, uninstall, rollback, and reinstall
 //! lifecycle end-to-end via the `polkagent-kit` crate's manager functions.
 //!
-//! - KL-01: validate_kit succeeds with all capabilities granted.
-//! - KL-02: validate_kit detects missing capabilities.
-//! - KL-03: validate_kit detects missing required skills.
-//! - KL-04: prepare_install builds a correct InstalledKit record.
-//! - KL-05: skills_to_unregister excludes optional skills.
-//! - KL-06: Uninstall → reinstall yields identical InstalledKit.
+//! - KL-01: `validate_kit` succeeds with all capabilities granted.
+//! - KL-02: `validate_kit` detects missing capabilities.
+//! - KL-03: `validate_kit` detects missing required skills.
+//! - KL-04: `prepare_install` builds a correct `InstalledKit` record.
+//! - KL-05: `skills_to_unregister` excludes optional skills.
+//! - KL-06: Uninstall → reinstall yields identical `InstalledKit`.
 //! - KL-07: Rollback scenario — old version can be re-installed after uninstall.
 //! - KL-08: Invalid manifest TOML is rejected.
 //! - KL-09: Manifest missing [kit] section is rejected.
 //! - KL-10: Multiple kits can be installed independently.
+
+// This assertion-oriented integration target uses `expect`/`unwrap` to identify
+// the exact cross-crate fixture step or behavioral contract that failed.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::fs;
 use std::path::Path;
@@ -220,12 +224,12 @@ fn kl_09_missing_kit_section_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_kit_toml(
         dir.path(),
-        r#"
+        r"
 [capabilities]
 required_grants = []
 
 [skills]
-"#,
+",
     );
 
     let result = validate_kit(dir.path(), &[], &[]);
@@ -238,7 +242,7 @@ required_grants = []
 
 #[test]
 fn kl_10_multiple_kits_independent() {
-    let kit_a_toml = r#"
+    let alpha_toml = r#"
 [kit]
 name = "kit-alpha"
 version = "1.0.0"
@@ -251,7 +255,7 @@ required_grants = []
 alpha-skill = { version = "^1.0.0", role = "primary" }
 "#;
 
-    let kit_b_toml = r#"
+    let beta_toml = r#"
 [kit]
 name = "kit-beta"
 version = "1.0.0"
@@ -264,8 +268,8 @@ required_grants = []
 beta-skill = { version = "^1.0.0", role = "primary" }
 "#;
 
-    let a_manifest = KitManifest::from_toml(kit_a_toml).expect("parse alpha");
-    let b_manifest = KitManifest::from_toml(kit_b_toml).expect("parse beta");
+    let a_manifest = KitManifest::from_toml(alpha_toml).expect("parse alpha");
+    let b_manifest = KitManifest::from_toml(beta_toml).expect("parse beta");
 
     let a_installed =
         prepare_install(&a_manifest, Path::new("/kits/alpha")).expect("install alpha");
