@@ -58,7 +58,10 @@ pub mod state;
 pub mod validate;
 
 // Convenient re-exports for consumers that construct the server.
-pub use durable::{RuntimeAgentStore, RuntimeRunManager};
+pub use durable::{
+    app_state_from_runtime, RuntimeAgentStore, RuntimeRunManager, UnavailableRuntimeRoute,
+    RUNTIME_UNAVAILABLE_ROUTES,
+};
 pub use run::{InMemoryRunManager, RunManagerTrait};
 pub use server::ApiServer;
 pub use state::{AgentStore, AgentStoreError, AppState, InMemoryAgentStore};

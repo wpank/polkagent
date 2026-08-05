@@ -13,16 +13,13 @@
 //! | `--cors-origin`   | Allowed CORS origins (repeatable; overrides config)   |
 //! | `--read-only`     | Reject all mutating requests                         |
 
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tracing::info;
 
-use polkagent_api::{ApiServer, InMemoryAgentStore, InMemoryRunManager};
-use polkagent_event::EventBus;
-use polkagent_store_sqlite::SqlitePool;
-use polkagent_store_trait::EffectStore;
+use polkagent_api::{app_state_from_runtime, ApiServer, RUNTIME_UNAVAILABLE_ROUTES};
+use polkagent_runtime::{RuntimeFactory, RuntimeOptions};
 
 use crate::cli::ServeCmd;
 
@@ -32,74 +29,65 @@ use crate::cli::ServeCmd;
 
 /// Execute the `serve` subcommand.
 ///
-/// Opens the `SQLite` database, runs pending migrations, constructs the API
-/// server with production-grade stores, binds to the configured address, and
-/// serves until a shutdown signal is received.
+/// Builds one shared production runtime, projects its durable stores into the
+/// API, binds to the configured address, and serves until a shutdown signal
+/// is received.
 pub async fn run(cmd: &ServeCmd, config_path: Option<&Path>) -> Result<()> {
-    // -----------------------------------------------------------------------
-    // 1. Resolve configuration.
-    // -----------------------------------------------------------------------
-    let mut config = resolve_config(config_path)?;
+    // RuntimeFactory is the sole composition root for stores, execution
+    // adapters, startup recovery, and persisted-agent rehydration.
+    let options = runtime_options(cmd, config_path)?;
+    let runtime = RuntimeFactory::build(options)
+        .await
+        .context("building shared Polkagent server runtime")?;
 
-    // -----------------------------------------------------------------------
-    // 2. Apply CLI overrides to config.
-    // -----------------------------------------------------------------------
-    apply_cli_overrides(&mut config, cmd);
+    // CORS is an HTTP-surface concern. Clone the resolved runtime config and
+    // apply only the CLI surface overrides before constructing AppState.
+    let mut api_config = runtime.config().as_ref().clone();
+    apply_cli_overrides(&mut api_config, cmd);
 
-    // -----------------------------------------------------------------------
-    // 3. Determine bind address from CLI flags.
-    // -----------------------------------------------------------------------
     let bind_addr = build_bind_addr(cmd);
-    let effective_read_only = config.api.read_only;
-    let effective_cors_origins = config.api.cors_origins.clone();
-
-    // -----------------------------------------------------------------------
-    // 4. Open (or create) the SQLite database and run migrations.
-    // -----------------------------------------------------------------------
-    let db_path = resolve_db_path(&config);
-    let pool = open_pool(&db_path)?;
-
-    // -----------------------------------------------------------------------
-    // 5. Construct stores.
-    // -----------------------------------------------------------------------
-    // EffectStore is implemented on SqlitePool directly; use Arc<SqlitePool>.
-    let effect_store = Arc::new(pool.clone());
-
-    // The AgentStore and RunManager are in-memory for now; a future task will
-    // wire in the durable SQLite-backed implementations.
-    let agent_store = Arc::new(InMemoryAgentStore::new());
-    let run_manager = Arc::new(InMemoryRunManager::new());
-    let event_bus = EventBus::with_default_capacity();
-
-    // -----------------------------------------------------------------------
-    // 6. Build and start the server.
-    // -----------------------------------------------------------------------
-    let server = ApiServer::new(
-        config,
-        agent_store,
-        run_manager,
-        effect_store as Arc<dyn EffectStore>,
-        event_bus,
-    );
+    let effective_read_only = api_config.api.read_only;
+    let effective_cors_origins = api_config.api.cors_origins.clone();
+    let db_path = runtime.readiness().database_path.display().to_string();
+    let config_source = format!("{:?}", runtime.readiness().config_source);
+    let state = app_state_from_runtime(&runtime, api_config);
+    let server = ApiServer::from_state(state);
 
     println!("Polkagent API server listening on {bind_addr}");
     println!("{}", "-".repeat(40));
     println!("  Database:    {db_path}");
+    println!("  Config:      {config_source}");
     if effective_read_only {
         println!("  Mode:        read-only");
     }
     if !effective_cors_origins.is_empty() {
         println!("  CORS:        {}", effective_cors_origins.join(", "));
     }
+    println!(
+        "  Unavailable: {} optional routes return 501 (artifacts, skills, tools, memory, audit, registry)",
+        RUNTIME_UNAVAILABLE_ROUTES.len()
+    );
     println!("  Press Ctrl+C to stop.");
     println!();
 
     info!(
         bind_addr = %bind_addr,
         db_path = %db_path,
+        config_source = %config_source,
         read_only = effective_read_only,
+        unavailable_optional_routes = RUNTIME_UNAVAILABLE_ROUTES.len(),
         "polkagent serve starting"
     );
+    for route in RUNTIME_UNAVAILABLE_ROUTES {
+        tracing::debug!(
+            dependency = route.dependency,
+            method = route.method,
+            path = route.path,
+            reason = route.reason,
+            status = 501,
+            "runtime API route unavailable"
+        );
+    }
 
     server
         .serve_with_shutdown(&bind_addr, shutdown_signal())
@@ -112,6 +100,27 @@ pub async fn run(cmd: &ServeCmd, config_path: Option<&Path>) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Build strict shared-runtime options for the server surface.
+///
+/// Unlike explicitly simulated demos, the daemon does not silently install a
+/// fake executor. Runtime construction therefore fails unless a configured
+/// provider or discovered harness can execute work.
+fn runtime_options(cmd: &ServeCmd, config_path: Option<&Path>) -> Result<RuntimeOptions> {
+    let workdir = std::env::current_dir().context("resolving server runtime workdir")?;
+    Ok(runtime_options_at(cmd, config_path, workdir))
+}
+
+fn runtime_options_at(
+    cmd: &ServeCmd,
+    config_path: Option<&Path>,
+    workdir: PathBuf,
+) -> RuntimeOptions {
+    let mut options = RuntimeOptions::new(workdir);
+    options.config_path = config_path.map(Path::to_path_buf);
+    options.read_only = cmd.read_only;
+    options
+}
 
 /// Apply CLI-level overrides to the resolved config.
 ///
@@ -126,72 +135,12 @@ fn apply_cli_overrides(config: &mut polkagent_config::Config, cmd: &ServeCmd) {
     }
 }
 
-/// Resolve the active polkagent configuration, applying CLI-level overrides.
-///
-/// Resolution order:
-/// 1. `--config` flag path.
-/// 2. Project-local `.polkagent/polkagent.toml`.
-/// 3. User-global `~/.config/polkagent/polkagent.toml`.
-/// 4. Default `Config::default()`.
-fn resolve_config(config_override: Option<&Path>) -> Result<polkagent_config::Config> {
-    let loader = polkagent_config::ConfigLoader::new();
-    let loader = if let Some(path) = config_override {
-        loader.with_path(path)
-    } else {
-        loader
-    };
-
-    loader.load().with_context(|| {
-        config_override.map_or_else(
-            || "loading discovered Polkagent configuration".to_owned(),
-            |path| format!("loading Polkagent configuration from {}", path.display()),
-        )
-    })
-}
-
 /// Build the `host:port` bind address from the CLI flags.
 ///
 /// With the new `ServeCmd` struct, `host` and `port` always have values
 /// (either from the user or from clap defaults).
 fn build_bind_addr(cmd: &ServeCmd) -> String {
     format!("{}:{}", cmd.host, cmd.port)
-}
-
-/// Return the fully-resolved `SQLite` path from the active configuration.
-fn resolve_db_path(config: &polkagent_config::Config) -> String {
-    config.database.sqlite.path.clone()
-}
-
-/// Open (or create) the `SQLite` pool and run schema migrations.
-fn open_pool(db_path: &str) -> Result<SqlitePool> {
-    use polkagent_store_sqlite::migrations;
-
-    let expanded = expand_tilde(db_path);
-
-    if let Some(parent) = std::path::Path::new(&expanded).parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating database directory {}", parent.display()))?;
-    }
-
-    let pool =
-        SqlitePool::open(&expanded).with_context(|| format!("opening database at {expanded}"))?;
-
-    {
-        let writer = pool.writer();
-        migrations::migrate(&writer).context("running database migrations")?;
-    }
-
-    Ok(pool)
-}
-
-/// Expand a leading `~/` in a path.
-fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
-    }
-    path.to_owned()
 }
 
 /// Wait for SIGTERM or SIGINT (Ctrl+C).
@@ -235,7 +184,6 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use clap::Parser;
-    use std::io::Write as _;
 
     /// Helper to parse CLI args into a `ServeCmd` via the full `Cli` parser.
     fn parse_serve(args: &[&str]) -> crate::cli::ServeCmd {
@@ -411,35 +359,32 @@ mod tests {
     }
 
     #[test]
-    fn explicit_config_is_loaded_for_serve() {
-        let mut file = tempfile::NamedTempFile::new().expect("create temporary config");
-        writeln!(
-            file,
-            r#"
-[api]
-bind_address = "127.0.0.1:19090"
-read_only = true
+    fn explicit_config_and_read_only_are_runtime_inputs() {
+        let cmd = parse_serve(&["--read-only"]);
+        let config_path = Path::new("config/server.toml");
+        let options = runtime_options_at(&cmd, Some(config_path), PathBuf::from("/workspace"));
 
-[execution]
-max_concurrent_runs = 37
-"#
-        )
-        .expect("write temporary config");
-
-        let config = resolve_config(Some(file.path())).expect("load explicit config");
-        assert_eq!(config.api.bind_address, "127.0.0.1:19090");
-        assert!(config.api.read_only);
-        assert_eq!(config.execution.max_concurrent_runs, 37);
+        assert_eq!(options.workdir, PathBuf::from("/workspace"));
+        assert_eq!(options.config_path, Some(config_path.to_path_buf()));
+        assert!(options.read_only);
+        assert_eq!(
+            options.adapter_policy,
+            polkagent_runtime::AdapterPolicy::Strict
+        );
     }
 
-    #[test]
-    fn missing_explicit_config_is_an_error() {
+    #[tokio::test]
+    async fn missing_explicit_config_is_an_error() {
         let temp_dir = tempfile::tempdir().expect("create temporary directory");
         let missing = temp_dir.path().join("missing.toml");
+        let cmd = parse_serve(&[]);
+        let options = runtime_options_at(&cmd, Some(&missing), temp_dir.path().to_path_buf());
 
-        let error = resolve_config(Some(&missing)).expect_err("missing config must fail");
+        let error = RuntimeFactory::build(options)
+            .await
+            .expect_err("missing config must fail");
         let message = format!("{error:#}");
-        assert!(message.contains("loading Polkagent configuration from"));
+        assert!(message.contains("failed to load configuration"));
         assert!(message.contains("missing.toml"));
     }
 }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use polkagent_config::Config;
 use polkagent_core::agent::AgentSpec;
 use polkagent_core::run::RunState;
 use polkagent_core::{AgentId, EffectId, RunId};
@@ -24,7 +25,196 @@ use rusqlite::OptionalExtension;
 
 use crate::dto::TurnSummary;
 use crate::run::{ListRunsParams, RunError, RunManagerTrait, RunRecord};
-use crate::state::{AgentStore, AgentStoreError};
+use crate::state::{AgentStore, AgentStoreError, AppState};
+
+/// One HTTP route that the shared runtime cannot currently back.
+///
+/// These routes remain registered so clients receive a stable, explicit
+/// `501 Not Implemented` response instead of a misleading `404` or a
+/// process-local placeholder implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnavailableRuntimeRoute {
+    /// Runtime capability whose API adapter is missing.
+    pub dependency: &'static str,
+    /// HTTP method accepted by the registered route.
+    pub method: &'static str,
+    /// Versioned route template.
+    pub path: &'static str,
+    /// Exact reason the route is not composed.
+    pub reason: &'static str,
+}
+
+/// Exact API boundary that remains unavailable in runtime-composed servers.
+///
+/// Skills, tools, and memory exist inside [`AppService`], but their runtime
+/// contracts do not implement the query/mutation ports owned by the API
+/// crate. The runtime `SQLite` pool's artifact contract is also distinct from
+/// the API artifact port. Audit and service-registry persistence are not
+/// composed by [`polkagent_runtime::RuntimeFactory`] at all. No in-memory
+/// substitutes are installed for these routes.
+pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
+    UnavailableRuntimeRoute {
+        dependency: "artifacts",
+        method: "GET",
+        path: "/api/v1alpha1/runs/{id}/artifacts",
+        reason: "the runtime artifact store has no API ArtifactStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "artifacts",
+        method: "GET",
+        path: "/api/v1alpha1/artifacts/{id}",
+        reason: "the runtime artifact store has no API ArtifactStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "artifacts",
+        method: "GET",
+        path: "/api/v1alpha1/artifacts/{id}/content",
+        reason: "the runtime artifact store has no API ArtifactStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "artifacts",
+        method: "GET",
+        path: "/api/v1alpha1/artifacts/{id}/provenance",
+        reason: "the runtime artifact store has no API ArtifactStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "skills",
+        method: "GET",
+        path: "/api/v1alpha1/skills",
+        reason: "the runtime skill runner has no API SkillRegistry adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "skills",
+        method: "POST",
+        path: "/api/v1alpha1/skills/install",
+        reason: "the runtime skill runner has no API SkillRegistry adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "skills",
+        method: "GET",
+        path: "/api/v1alpha1/skills/{skill_id}",
+        reason: "the runtime skill runner has no API SkillRegistry adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "skills",
+        method: "POST",
+        path: "/api/v1alpha1/skills/{skill_id}/uninstall",
+        reason: "the runtime skill runner has no API SkillRegistry adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "skills",
+        method: "PUT",
+        path: "/api/v1alpha1/skills/{skill_id}/config",
+        reason: "the runtime skill runner has no API SkillRegistry adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "tools",
+        method: "GET",
+        path: "/api/v1alpha1/tools",
+        reason: "the runtime tool registry has no API ToolRegistryStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "tools",
+        method: "GET",
+        path: "/api/v1alpha1/tools/{tool_id}",
+        reason: "the runtime tool registry has no API ToolRegistryStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "tools",
+        method: "GET",
+        path: "/api/v1alpha1/tools/{tool_id}/grants",
+        reason: "the runtime tool registry has no API ToolRegistryStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "memory",
+        method: "POST",
+        path: "/api/v1alpha1/memory/query",
+        reason: "the runtime memory store has no API MemoryStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "memory",
+        method: "GET",
+        path: "/api/v1alpha1/memory/stats",
+        reason: "the runtime memory store has no API MemoryStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "memory",
+        method: "POST",
+        path: "/api/v1alpha1/memory/forget",
+        reason: "the runtime memory store has no API MemoryStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "memory",
+        method: "GET",
+        path: "/api/v1alpha1/memory/entries/{entry_id}",
+        reason: "the runtime memory store has no API MemoryStore adapter",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "audit",
+        method: "GET",
+        path: "/api/v1alpha1/audit",
+        reason: "RuntimeFactory does not compose an AuditStore",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "audit",
+        method: "GET",
+        path: "/api/v1alpha1/audit/verify",
+        reason: "RuntimeFactory does not compose an AuditStore",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "audit",
+        method: "GET",
+        path: "/api/v1alpha1/audit/{id}",
+        reason: "RuntimeFactory does not compose an AuditStore",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "service_registry",
+        method: "POST",
+        path: "/api/v1alpha1/registry/listings",
+        reason: "RuntimeFactory does not compose a ServiceRegistryStore",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "service_registry",
+        method: "GET",
+        path: "/api/v1alpha1/registry/listings/{id}",
+        reason: "RuntimeFactory does not compose a ServiceRegistryStore",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "service_registry",
+        method: "GET",
+        path: "/api/v1alpha1/registry/search",
+        reason: "RuntimeFactory does not compose a ServiceRegistryStore",
+    },
+];
+
+/// Compose production API state over one existing shared runtime.
+///
+/// The caller supplies a clone of the runtime config after applying
+/// surface-only overrides such as CORS. Agents and run lifecycle operations
+/// use the runtime's [`AppService`]; effects, events, conversations, and
+/// payments all use its single migrated `SQLite` pool; WebSocket streaming
+/// uses the runtime event bus.
+///
+/// Optional stores without a truthful adapter are deliberately left unset;
+/// their exact `501` boundary is published in
+/// [`RUNTIME_UNAVAILABLE_ROUTES`].
+#[must_use]
+pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> AppState {
+    let pool = Arc::new(runtime.pool().clone());
+    let agents = Arc::new(RuntimeAgentStore::from_runtime(runtime));
+    let runs = Arc::new(RuntimeRunManager::from_runtime(runtime));
+
+    AppState::new(
+        config,
+        agents,
+        runs,
+        pool.clone(),
+        runtime.event_bus().clone(),
+    )
+    .with_event_store(pool.clone())
+    .with_payment_store(pool.clone())
+    .with_conversation_store(pool)
+}
 
 /// Durable agent projection coupled to the live application service.
 #[derive(Clone)]

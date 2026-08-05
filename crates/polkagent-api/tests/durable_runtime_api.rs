@@ -5,14 +5,12 @@
     reason = "integration tests fail immediately at controlled fixture boundaries"
 )]
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use polkagent_api::{AgentStore, ApiServer, RunManagerTrait, RuntimeAgentStore, RuntimeRunManager};
+use polkagent_api::{app_state_from_runtime, ApiServer, RUNTIME_UNAVAILABLE_ROUTES};
 use polkagent_runtime::{AdapterPolicy, PolkagentRuntime, RuntimeFactory, RuntimeOptions};
-use polkagent_store_trait::EffectStore;
 
 async fn runtime_at(root: &std::path::Path) -> PolkagentRuntime {
     let config_path = root.join("polkagent.toml");
@@ -27,16 +25,8 @@ async fn runtime_at(root: &std::path::Path) -> PolkagentRuntime {
 }
 
 fn test_server(runtime: &PolkagentRuntime) -> TestServer {
-    let agents: Arc<dyn AgentStore> = Arc::new(RuntimeAgentStore::from_runtime(runtime));
-    let runs: Arc<dyn RunManagerTrait> = Arc::new(RuntimeRunManager::from_runtime(runtime));
-    let effects: Arc<dyn EffectStore> = Arc::new(runtime.pool().clone());
-    let server = ApiServer::new(
-        runtime.config().as_ref().clone(),
-        agents,
-        runs,
-        effects,
-        runtime.event_bus().clone(),
-    );
+    let state = app_state_from_runtime(runtime, runtime.config().as_ref().clone());
+    let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
 }
 
@@ -151,4 +141,86 @@ async fn handler_reports_conflicts_and_corrupt_projection_as_distinct_errors() {
         corrupt.json::<serde_json::Value>()["error"]["code"],
         "INTERNAL_ERROR"
     );
+}
+
+#[tokio::test]
+async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let runtime = runtime_at(temp.path()).await;
+    let state = app_state_from_runtime(&runtime, runtime.config().as_ref().clone());
+
+    assert!(state.event_store.is_some());
+    assert!(state.payment_store.is_some());
+    assert!(state.conversation_store.is_some());
+    assert!(state.artifact_store.is_none());
+    assert!(state.skill_registry.is_none());
+    assert!(state.tool_registry.is_none());
+    assert!(state.memory_store.is_none());
+    assert!(state.audit_store.is_none());
+    assert!(state.service_registry_store.is_none());
+
+    let server = TestServer::new(ApiServer::from_state(state).into_router());
+    server.get("/api/v1alpha1/events").await.assert_status_ok();
+    server
+        .get("/api/v1alpha1/payments/balance")
+        .await
+        .assert_status_ok();
+    server
+        .get("/api/v1alpha1/conversations?agent_id=00000000-0000-0000-0000-000000000000")
+        .await
+        .assert_status_ok();
+
+    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 22);
+    for route in RUNTIME_UNAVAILABLE_ROUTES {
+        let path = route
+            .path
+            .replace("{id}", "00000000-0000-0000-0000-000000000000")
+            .replace("{skill_id}", "missing-skill")
+            .replace("{tool_id}", "missing-tool")
+            .replace("{entry_id}", "missing-entry");
+        let response = match route.method {
+            "GET" => server.get(&path).await,
+            "POST" => {
+                let body = match route.path {
+                    "/api/v1alpha1/skills/install" => {
+                        serde_json::json!({"path": "/missing-skill"})
+                    }
+                    "/api/v1alpha1/memory/query" => serde_json::json!({"query": "missing"}),
+                    "/api/v1alpha1/memory/forget" => {
+                        serde_json::json!({"entry_ids": ["missing-entry"]})
+                    }
+                    "/api/v1alpha1/registry/listings" => serde_json::json!({
+                        "name": "unavailable",
+                        "description": "boundary probe",
+                        "author": "test",
+                        "version": "0.1.0",
+                        "pricing": {"model": "free"}
+                    }),
+                    _ => serde_json::json!({}),
+                };
+                server.post(&path).json(&body).await
+            }
+            "PUT" => {
+                server
+                    .put(&path)
+                    .json(&serde_json::json!({"config": {}}))
+                    .await
+            }
+            method => panic!("unexpected unavailable route method {method}"),
+        };
+        response.assert_status(StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            response.json::<serde_json::Value>()["error"]["code"],
+            "NOT_IMPLEMENTED",
+            "{} {}",
+            route.method,
+            route.path
+        );
+    }
+
+    assert!(RUNTIME_UNAVAILABLE_ROUTES.iter().all(|route| {
+        route.path.starts_with("/api/v1alpha1/")
+            && !route.method.is_empty()
+            && !route.reason.is_empty()
+    }));
 }
