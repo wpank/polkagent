@@ -11,11 +11,18 @@
 //! | [`types`] | Service listing, pricing, and search data types |
 //! | [`store`] | `ServiceRegistryStore` async trait |
 //! | [`memory`] | In-memory store for tests and local development |
+//! | [`local`] | Durable local package install and rollback lifecycle |
 
+pub mod local;
 pub mod memory;
 pub mod store;
 pub mod types;
 
+pub use local::{
+    InstallOutcome, InstalledPackage, LocalInstallPolicy, LocalPackageError, LocalPackageStore,
+    PackageCandidate, PackageKind, PackageProvenance, PackageVersion, ProvenanceStatus,
+    RollbackOutcome, UninstallOutcome, UpdateOutcome,
+};
 pub use store::ServiceRegistryStore;
 pub use types::{
     CreateListingRequest, SearchFilter, ServiceAvailability, ServiceListing, ServicePricing,

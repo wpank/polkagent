@@ -331,9 +331,15 @@ separate files.
 ### EXT-01 — Installable and safely executable extensions
 
 - [ ] Freeze canonical manifest/package/lock format.
-- [ ] Build durable local install/list/run/update/rollback/uninstall first.
+- [x] Build a durable local plugin/kit install/list/update/history/rollback/
+  uninstall store with immutable version content, atomic state replacement,
+  cross-process locking, restart validation, idempotency, and BLAKE3 integrity.
+- [ ] Expose the local lifecycle through CLI/API surfaces and connect installed
+  packages to real runtime execution (`run`).
 - [ ] Implement actual sandbox engine and capability boundary.
-- [ ] Add signature/provenance/advisory/malware/reproducibility pipeline.
+- [ ] Add cryptographic signature/provenance verification plus advisory,
+  malware, and reproducibility gates. The local store currently records
+  signature material as an **unverified claim** and never reports it verified.
 - [ ] Add federation/public/commercial behavior only after local lifecycle and
   trust gates pass.
 

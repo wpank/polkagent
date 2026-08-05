@@ -15,9 +15,15 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+blake3 = { workspace = true }
+semver = { workspace = true }
+polkagent-kit = { path = "../polkagent-kit" }
+polkagent-plugin = { path = "../polkagent-plugin" }
+fs2 = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
