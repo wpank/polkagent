@@ -578,6 +578,10 @@ fn test_status_bar_renders() {
     let text = buffer_text(&terminal);
     // The dashboard status bar should show key hints.
     assert!(
+        text.contains("F1-F9:tabs"),
+        "Status bar should show all nine tab shortcuts, got: {text:?}"
+    );
+    assert!(
         text.contains("q:quit") || text.contains("quit"),
         "Status bar should contain quit hint, got: {text:?}"
     );
@@ -1005,6 +1009,10 @@ fn test_system_view_wide_layout() {
 fn test_system_view_keybindings_shown() {
     // Use a wide terminal to guarantee the config panel is fully visible.
     let text = render_system_view(140, 50);
+    assert!(
+        text.contains("F1-F9 / 1-9"),
+        "System view should show all nine tab shortcuts, got: {text:?}"
+    );
     // Should show keybinding hints — check for the 'q' binding.
     assert!(
         text.contains('q') || text.contains("quit") || text.contains("Quit"),
@@ -1401,10 +1409,11 @@ fn test_console_renders_registry_slash_completions_and_truthful_scope() {
     assert!(text.contains("SLASH HELP"), "{text}");
     assert!(text.contains("/help [command]"), "{text}");
     assert!(text.contains("/status"), "{text}");
+    assert!(text.contains("/agents"), "{text}");
+    assert!(text.contains("/agent <name-or-id>"), "{text}");
     assert!(text.contains("/new [title]"), "{text}");
     assert!(text.contains("/resume <conversation-id>"), "{text}");
     assert!(text.contains("/model [id]"), "{text}");
-    assert!(!text.contains("/agent <name-or-id>"), "{text}");
     assert!(text.contains("Executable Console commands"), "{text}");
     assert!(text.contains("x cancels the active turn"), "{text}");
 }

@@ -239,7 +239,7 @@ fn prompt_mode_key(key: KeyEvent) -> Option<TuiAction> {
 /// Key bindings active in Normal mode.
 fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
     match key.code {
-        // ── Tab navigation (F1–F8) ──────────────────────────────────────
+        // ── Tab navigation (F1–F9) ──────────────────────────────────────
         // Numeric keys mirror the F-key tab shortcuts.
         KeyCode::F(1) | KeyCode::Char('1') => Some(TuiAction::NavigateTab(Tab::Dashboard)),
         KeyCode::F(2) | KeyCode::Char('2') => Some(TuiAction::NavigateTab(Tab::Agents)),

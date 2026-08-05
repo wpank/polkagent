@@ -1374,7 +1374,7 @@ impl App {
             &self.theme,
         );
 
-        // Tab bar (F1–F4 indicators at the very bottom of the header area).
+        // Tab bar (F1–F9 indicators at the very bottom of the header area).
         self.render_tab_bar(frame, layout.tab_bar);
 
         // Active view.

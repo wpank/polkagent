@@ -210,7 +210,8 @@ All harnesses share 11 canonical tools (read, write, edit, glob, grep, bash, web
 
 `polkagent acp` is the separate inbound ACP v1 stdio adapter for Zed and other
 ACP clients. The executable protocol slice supports session creation, prompts,
-cancellation, agent selection, and `/help`, `/status`, `/agents`, and `/agent`.
+cancellation, agent/model selection, and `/help`, `/status`, `/agents`,
+`/agent`, `/model`, and `/cancel`.
 The official SDK subprocess test proves handshake, command discovery, and one
 real `AppService` run. Durable session load/resume and native structured
 effect-backed tool updates are implemented; manual Zed interoperability,

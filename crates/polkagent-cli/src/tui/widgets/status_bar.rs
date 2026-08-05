@@ -78,7 +78,7 @@ pub fn render(
 /// Returns the key-binding hint string for each tab.
 fn key_hints(tab: Tab) -> &'static str {
     match tab {
-        Tab::Dashboard => "F1-F8:tabs  q:quit  r:refresh  j/k:scroll",
+        Tab::Dashboard => "F1-F9:tabs  q:quit  r:refresh  j/k:scroll",
         Tab::Agents => "j/k:select  p:prompt  Enter:detail  r:refresh  q:quit",
         Tab::Runs => "j/k:select  Enter:detail  r:refresh  q:quit",
         Tab::System => "r:refresh  q:quit",

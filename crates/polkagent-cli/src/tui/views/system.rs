@@ -259,7 +259,7 @@ fn render_config(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)
         kv_line("  Last error", &err_display, err_color, theme),
         Line::from(""),
         section_header("Keybindings", theme),
-        kv_line("  F1-F8 / 1-8", "Switch tabs", theme.text_primary, theme),
+        kv_line("  F1-F9 / 1-9", "Switch tabs", theme.text_primary, theme),
         kv_line("  j / k", "Scroll up / down", theme.text_primary, theme),
         kv_line("  Enter", "Select / drill-down", theme.text_primary, theme),
         kv_line(
