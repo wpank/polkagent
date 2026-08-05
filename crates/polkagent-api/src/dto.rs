@@ -78,7 +78,26 @@ pub struct PromptHttpInteractionRequest {
     pub client_session_id: Option<String>,
 }
 
-/// Request for `PUT /interactions/{id}/target`.
+/// Atomic update accepted by `PUT /interactions/{id}/config`.
+///
+/// The HTTP surface intentionally exposes only the two options implemented by
+/// the shared runtime. Unknown option tags and extra fields are rejected by
+/// Serde instead of being silently ignored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "option",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum UpdateHttpInteractionConfigRequest {
+    /// Replace the durable agent or automatic target.
+    Target(InteractionTarget),
+    /// Set a model override, or clear it with JSON `null`.
+    Model(Option<String>),
+}
+
+/// Compatibility request for `PUT /interactions/{id}/target`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateHttpInteractionTargetRequest {
@@ -156,12 +175,39 @@ pub struct CancelHttpInteractionTurnResponse {
     pub turn: InteractionTurnSummary,
 }
 
-/// Versioned response after a target update.
+/// Supported durable interaction configuration exposed over HTTP.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpInteractionConfig {
+    /// Effective durable agent target.
+    pub target: InteractionTarget,
+    /// Canonical model override, or `None` to inherit the selected agent model.
+    pub model: Option<String>,
+}
+
+impl From<InteractionConfig> for HttpInteractionConfig {
+    fn from(config: InteractionConfig) -> Self {
+        Self {
+            target: config.target,
+            model: config.model,
+        }
+    }
+}
+
+/// Versioned response for interaction configuration reads and updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpInteractionConfigResponse {
+    /// API version.
+    pub version: String,
+    /// Effective supported durable configuration.
+    pub config: HttpInteractionConfig,
+}
+
+/// Compatibility response after a target-only update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateHttpInteractionTargetResponse {
     /// API version.
     pub version: String,
-    /// Effective durable interaction configuration.
+    /// Full effective durable interaction configuration.
     pub config: InteractionConfig,
 }
 

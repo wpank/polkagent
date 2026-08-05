@@ -83,7 +83,9 @@
 //!   GET    /interactions/:id/turns
 //!   POST   /interactions/:id/prompt
 //!   POST   /interactions/:id/turns/:turn_id/cancel
-//!   PUT    /interactions/:id/target
+//!   GET    /interactions/:id/config
+//!   PUT    /interactions/:id/config
+//!   PUT    /interactions/:id/target (compatibility alias)
 //!   GET    /interactions/:id/events
 //!   GET    /interactions/:id/events/stream (SSE)
 //!
@@ -310,6 +312,10 @@ pub fn register(state: AppState) -> Router {
         .route(
             "/interactions/{id}/turns/{turn_id}/cancel",
             post(interactions::cancel_interaction_turn),
+        )
+        .route(
+            "/interactions/{id}/config",
+            get(interactions::get_interaction_config).put(interactions::update_interaction_config),
         )
         .route(
             "/interactions/{id}/target",

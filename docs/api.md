@@ -231,12 +231,22 @@ interaction routes below when a prompt must initiate agent work.
 | `GET` | `/api/v1alpha1/interactions/:id/turns` | List durable turns |
 | `POST` | `/api/v1alpha1/interactions/:id/prompt` | Start an idempotent prompt turn |
 | `POST` | `/api/v1alpha1/interactions/:id/turns/:turn_id/cancel` | Cancel a turn |
-| `PUT` | `/api/v1alpha1/interactions/:id/target` | Change the agent target |
+| `GET` | `/api/v1alpha1/interactions/:id/config` | Read supported durable configuration |
+| `PUT` | `/api/v1alpha1/interactions/:id/config` | Atomically change the target or model |
+| `PUT` | `/api/v1alpha1/interactions/:id/target` | Deprecated target-only compatibility delegate |
 | `GET` | `/api/v1alpha1/interactions/:id/events` | Replay events after a durable sequence |
 | `GET` | `/api/v1alpha1/interactions/:id/events/stream` | Replay and follow typed events over SSE |
 
 Callers may supply `turn_id` when prompting. A retry with identical input
 returns the original handle, while reuse with different input returns `409`.
+The configuration route accepts exactly one tagged target or model update,
+for example `{"option":"model","value":"claude-sonnet-4-6"}`. A `null`
+model value clears the override and restores agent-model inheritance. Target
+and model changes are validated before one durable write; invalid values do
+not create a run or turn and do not partially change the session. Provider,
+harness, autonomy, maximum-turn, and budget mutation are not supported by this
+HTTP route and unknown option tags are rejected.
+
 For replay, send `after_sequence` and persist the returned
 `checkpoint.next_after_sequence`; optional `turn_id` and `limit` parameters
 filter and page the ordered durable history.

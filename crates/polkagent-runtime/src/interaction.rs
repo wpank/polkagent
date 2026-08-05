@@ -27,7 +27,9 @@ use polkagent_interaction::{
     TurnSummary, UsageView,
 };
 use polkagent_service::{AppService, ServiceError};
-use polkagent_store_sqlite::{SqliteInteractionStore, SqlitePool, SqliteRunStore};
+use polkagent_store_sqlite::{
+    SqliteInteractionStore, SqlitePool, SqliteRunStore, StoreError as SqliteStoreError,
+};
 use polkagent_store_trait::event::{EventStore, StoredEvent};
 use polkagent_store_trait::RunStore;
 use uuid::Uuid;
@@ -174,7 +176,7 @@ impl DurableInteractionService {
         let row = match target {
             InteractionTarget::Agent(agent_id) => store
                 .get_agent(&agent_id.to_string())
-                .map_err(|error| store_error("resolve interaction agent", &error))?,
+                .map_err(interaction_target_store_error)?,
             InteractionTarget::Auto => store
                 .list_agents(Some("active"), false)
                 .map_err(|error| store_error("resolve automatic interaction agent", &error))?
@@ -1277,6 +1279,16 @@ fn internal_error(message: &str) -> InteractionError {
 fn store_error(context: &str, error: &impl std::fmt::Display) -> InteractionError {
     tracing::error!(%error, context, "durable interaction store operation failed");
     internal_error(&format!("{context}: durable store operation failed"))
+}
+
+fn interaction_target_store_error(error: SqliteStoreError) -> InteractionError {
+    match error {
+        SqliteStoreError::NotFound(_) => InteractionError::new(
+            InteractionErrorCode::NotFound,
+            "the selected interaction agent is unavailable",
+        ),
+        other => store_error("resolve interaction agent", &other),
+    }
 }
 
 fn conversation_error(context: &str, error: &impl std::fmt::Display) -> InteractionError {

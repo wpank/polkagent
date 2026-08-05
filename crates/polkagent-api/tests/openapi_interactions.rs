@@ -69,6 +69,10 @@ fn string_set(value: &Value) -> std::collections::BTreeSet<&str> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one contract assertion keeps the complete interaction path and schema inventory exact"
+)]
 async fn embedded_openapi_matches_source_and_interaction_contract() {
     let source: Value = serde_yaml::from_str(OPENAPI_SOURCE).expect("parse OpenAPI YAML");
     assert_eq!(source["openapi"], "3.1.0");
@@ -102,6 +106,16 @@ async fn embedded_openapi_matches_source_and_interaction_contract() {
             "/api/v1alpha1/interactions/{id}/turns/{turn_id}/cancel",
             "post",
             "cancelInteractionTurn",
+        ),
+        (
+            "/api/v1alpha1/interactions/{id}/config",
+            "get",
+            "getInteractionConfig",
+        ),
+        (
+            "/api/v1alpha1/interactions/{id}/config",
+            "put",
+            "updateInteractionConfig",
         ),
         (
             "/api/v1alpha1/interactions/{id}/target",
@@ -162,6 +176,40 @@ async fn embedded_openapi_matches_source_and_interaction_contract() {
     assert!(prompt["properties"].get("model").is_none());
     assert!(prompt["properties"].get("provider").is_none());
 
+    let config_update = &schemas["UpdateHttpInteractionConfigRequest"];
+    let variants = config_update["oneOf"].as_array().expect("config variants");
+    assert_eq!(variants.len(), 2);
+    assert_eq!(
+        variants
+            .iter()
+            .map(|variant| {
+                assert_eq!(variant["additionalProperties"], false);
+                assert_eq!(
+                    string_set(&variant["required"]),
+                    ["option", "value"].into_iter().collect()
+                );
+                variant["properties"]["option"]["const"]
+                    .as_str()
+                    .expect("config option tag")
+            })
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["model", "target"].into_iter().collect()
+    );
+    let public_config = &schemas["HttpInteractionConfig"];
+    assert_eq!(public_config["additionalProperties"], false);
+    assert_eq!(
+        public_config["properties"]
+            .as_object()
+            .expect("public config properties")
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["model", "target"].into_iter().collect()
+    );
+    for unsupported in ["provider", "harness", "autonomy", "max_turns", "budget"] {
+        assert!(public_config["properties"].get(unsupported).is_none());
+    }
+
     let target = &schemas["UpdateHttpInteractionTargetRequest"];
     assert_eq!(target["additionalProperties"], false);
     assert_eq!(
@@ -172,6 +220,10 @@ async fn embedded_openapi_matches_source_and_interaction_contract() {
             .map(String::as_str)
             .collect::<Vec<_>>(),
         vec!["target"]
+    );
+    assert_eq!(
+        source["paths"]["/api/v1alpha1/interactions/{id}/target"]["put"]["deprecated"],
+        true
     );
 
     let replay = &source["paths"]["/api/v1alpha1/interactions/{id}/events"]["get"];
@@ -253,6 +305,12 @@ async fn documented_interaction_methods_resolve_but_unsupported_methods_do_not()
             .post(&format!(
                 "/api/v1alpha1/interactions/{id}/turns/{turn_id}/cancel"
             ))
+            .await,
+        server
+            .get(&format!("/api/v1alpha1/interactions/{id}/config"))
+            .await,
+        server
+            .put(&format!("/api/v1alpha1/interactions/{id}/config"))
             .await,
         server
             .put(&format!("/api/v1alpha1/interactions/{id}/target"))

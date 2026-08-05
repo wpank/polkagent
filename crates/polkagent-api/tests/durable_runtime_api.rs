@@ -13,9 +13,10 @@ use polkagent_api::{
     app_state_from_runtime, ApiServer, AppState, InMemoryAgentStore, InMemoryRunManager,
     RuntimeArtifactStore, RuntimeToolRegistryStore, RUNTIME_UNAVAILABLE_ROUTES,
 };
-use polkagent_config::Config;
+use polkagent_config::{Config, ModelOverrideConfig};
 use polkagent_core::{AgentId, AgentSpec, ArtifactId, BlobRef, RunId};
 use polkagent_event::{EventBus, EventRecorder};
+use polkagent_executor_fake::FakeExecutor;
 use polkagent_interaction::{InteractionService, InteractionStore};
 use polkagent_runtime::{
     AdapterPolicy, DurableInteractionService, PolkagentRuntime, RuntimeFactory, RuntimeOptions,
@@ -96,6 +97,146 @@ fn cancellable_interaction_server() -> (TestServer, AgentId) {
         TestServer::new(ApiServer::from_state(state).into_router()),
         agent_id,
     )
+}
+
+struct ConfigInteractionFixture {
+    app: Arc<AppService>,
+    pool: SqlitePool,
+    event_bus: EventBus,
+    config: Config,
+    first_agent: AgentId,
+    second_agent: AgentId,
+}
+
+impl ConfigInteractionFixture {
+    fn new() -> Self {
+        let pool = SqlitePool::open_in_memory().expect("open configuration SQLite fixture");
+        migrations::migrate(&pool.writer()).expect("migrate configuration SQLite fixture");
+        let first_agent = AgentId::new();
+        let second_agent = AgentId::new();
+        let specs = [
+            AgentSpec::new(first_agent, "config-agent-a", "fake/default-model"),
+            AgentSpec::new(second_agent, "config-agent-b", "fake/default-model"),
+        ];
+        let now = chrono::Utc::now().to_rfc3339();
+        for spec in &specs {
+            pool.writer()
+                .execute(
+                    "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at)
+                     VALUES (?1, ?2, 'active', ?3, ?4, ?4)",
+                    rusqlite::params![
+                        spec.id.to_string(),
+                        &spec.name,
+                        serde_json::to_string(spec).expect("encode configuration agent"),
+                        &now
+                    ],
+                )
+                .expect("seed configuration agent");
+        }
+        let config = Config {
+            models: ["model-a", "model-b"]
+                .into_iter()
+                .map(|slug| ModelOverrideConfig {
+                    slug: slug.to_owned(),
+                    provider: "fake".to_owned(),
+                    ..ModelOverrideConfig::default()
+                })
+                .collect(),
+            ..Config::default()
+        };
+        let event_bus = EventBus::new(32);
+        let shared_pool = Arc::new(pool.clone());
+        let recorder = EventRecorder::new(shared_pool.clone(), event_bus.clone());
+        let app = Arc::new(
+            AppService::builder()
+                .with_config(config.clone())
+                .with_executor(FakeExecutor::new())
+                .with_run_store(shared_pool.clone())
+                .with_effect_store(shared_pool.clone())
+                .with_conversation_store(shared_pool.clone())
+                .with_payment_store(shared_pool)
+                .with_event_bus(event_bus.clone())
+                .with_event_recorder(recorder)
+                .build()
+                .expect("build configuration app service"),
+        );
+        for spec in specs {
+            app.create_agent(spec)
+                .expect("register configuration agent");
+        }
+        Self {
+            app,
+            pool,
+            event_bus,
+            config,
+            first_agent,
+            second_agent,
+        }
+    }
+
+    fn server(&self) -> TestServer {
+        let shared_pool = Arc::new(self.pool.clone());
+        let interaction_service: Arc<dyn InteractionService> = Arc::new(
+            DurableInteractionService::new(Arc::clone(&self.app), self.pool.clone()),
+        );
+        let interaction_store: Arc<dyn InteractionStore> =
+            Arc::new(SqliteInteractionStore::new(self.pool.clone()));
+        let state = AppState::new(
+            self.config.clone(),
+            Arc::new(InMemoryAgentStore::new()),
+            Arc::new(InMemoryRunManager::new()),
+            shared_pool.clone(),
+            self.event_bus.clone(),
+        )
+        .with_conversation_store(shared_pool)
+        .with_interaction_service(interaction_service)
+        .with_interaction_store(interaction_store);
+        TestServer::new(ApiServer::from_state(state).into_router())
+    }
+}
+
+async fn create_config_interaction(server: &TestServer, agent_id: AgentId) -> String {
+    let response = server
+        .post("/api/v1alpha1/interactions")
+        .json(&serde_json::json!({
+            "target": {"kind": "agent", "id": agent_id},
+            "working_directory": "/tmp"
+        }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    response.json::<serde_json::Value>()["interaction"]["conversation_id"]
+        .as_str()
+        .expect("configuration interaction id")
+        .to_owned()
+}
+
+async fn read_config(server: &TestServer, conversation_id: &str) -> serde_json::Value {
+    let response = server
+        .get(&format!(
+            "/api/v1alpha1/interactions/{conversation_id}/config"
+        ))
+        .await;
+    response.assert_status_ok();
+    let body = response.json::<serde_json::Value>();
+    assert_eq!(body["version"], "v1alpha1");
+    assert_eq!(
+        body["config"]
+            .as_object()
+            .expect("supported configuration object")
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["model", "target"].into_iter().collect()
+    );
+    body["config"].clone()
+}
+
+fn assert_http_error(response: &axum_test::TestResponse, status: StatusCode, code: &str) {
+    response.assert_status(status);
+    let body = response.json::<serde_json::Value>();
+    assert_eq!(body["error"]["code"], code);
+    assert!(body["error"]["request_id"].is_string());
+    assert!(body["error"]["timestamp"].is_string());
 }
 
 async fn store_runtime_artifact(
@@ -323,6 +464,177 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
             && !route.method.is_empty()
             && !route.reason.is_empty()
     }));
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one black-box scenario keeps atomic refusal, isolation, and restart evidence contiguous"
+)]
+async fn durable_http_config_is_atomic_isolated_and_persistent() {
+    let fixture = ConfigInteractionFixture::new();
+    let server = fixture.server();
+    let first_id = create_config_interaction(&server, fixture.first_agent).await;
+    let second_id = create_config_interaction(&server, fixture.second_agent).await;
+
+    let initial_first = read_config(&server, &first_id).await;
+    assert_eq!(
+        initial_first["target"]["id"],
+        fixture.first_agent.to_string()
+    );
+    assert!(initial_first["model"].is_null());
+
+    let changed_target = server
+        .put(&format!("/api/v1alpha1/interactions/{first_id}/config"))
+        .json(&serde_json::json!({
+            "option": "target",
+            "value": {"kind": "agent", "id": fixture.second_agent}
+        }))
+        .await;
+    changed_target.assert_status_ok();
+    assert_eq!(
+        changed_target.json::<serde_json::Value>()["config"]["target"]["id"],
+        fixture.second_agent.to_string()
+    );
+    let target_snapshot = read_config(&server, &first_id).await;
+
+    let unknown_target = server
+        .put(&format!("/api/v1alpha1/interactions/{first_id}/config"))
+        .json(&serde_json::json!({
+            "option": "target",
+            "value": {"kind": "agent", "id": AgentId::new()}
+        }))
+        .await;
+    assert_http_error(&unknown_target, StatusCode::NOT_FOUND, "NOT_FOUND");
+    assert_eq!(read_config(&server, &first_id).await, target_snapshot);
+
+    let strict_compatibility = server
+        .put(&format!("/api/v1alpha1/interactions/{first_id}/target"))
+        .json(&serde_json::json!({
+            "target": {"kind": "agent", "id": fixture.first_agent},
+            "model": "must-not-be-ignored"
+        }))
+        .await;
+    assert_http_error(
+        &strict_compatibility,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "VALIDATION_ERROR",
+    );
+    assert_eq!(read_config(&server, &first_id).await, target_snapshot);
+
+    let first_model = server
+        .put(&format!("/api/v1alpha1/interactions/{first_id}/config"))
+        .json(&serde_json::json!({"option": "model", "value": "model-a"}))
+        .await;
+    first_model.assert_status_ok();
+    assert_eq!(
+        first_model.json::<serde_json::Value>()["config"]["model"],
+        "fake/model-a"
+    );
+    let second_model = server
+        .put(&format!("/api/v1alpha1/interactions/{second_id}/config"))
+        .json(&serde_json::json!({"option": "model", "value": "model-b"}))
+        .await;
+    second_model.assert_status_ok();
+    assert_eq!(
+        second_model.json::<serde_json::Value>()["config"]["model"],
+        "fake/model-b"
+    );
+    let first_model_snapshot = read_config(&server, &first_id).await;
+    let second_model_snapshot = read_config(&server, &second_id).await;
+    assert_eq!(first_model_snapshot["model"], "fake/model-a");
+    assert_eq!(second_model_snapshot["model"], "fake/model-b");
+
+    let unknown_model = server
+        .put(&format!("/api/v1alpha1/interactions/{first_id}/config"))
+        .json(&serde_json::json!({
+            "option": "model",
+            "value": "not-in-the-model-catalog"
+        }))
+        .await;
+    assert_http_error(
+        &unknown_model,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "VALIDATION_ERROR",
+    );
+    assert_eq!(read_config(&server, &first_id).await, first_model_snapshot);
+
+    for invalid in [
+        serde_json::json!({"option": "model", "value": ""}),
+        serde_json::json!({"option": "provider", "value": "fake"}),
+        serde_json::json!({
+            "option": "model",
+            "value": "model-b",
+            "provider": "must-not-be-ignored"
+        }),
+    ] {
+        let rejected = server
+            .put(&format!("/api/v1alpha1/interactions/{first_id}/config"))
+            .json(&invalid)
+            .await;
+        assert_http_error(
+            &rejected,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "VALIDATION_ERROR",
+        );
+        assert_eq!(read_config(&server, &first_id).await, first_model_snapshot);
+    }
+
+    let cleared = server
+        .put(&format!("/api/v1alpha1/interactions/{second_id}/config"))
+        .json(&serde_json::json!({"option": "model", "value": null}))
+        .await;
+    cleared.assert_status_ok();
+    assert!(cleared.json::<serde_json::Value>()["config"]["model"].is_null());
+    server
+        .put(&format!("/api/v1alpha1/interactions/{second_id}/config"))
+        .json(&serde_json::json!({"option": "model", "value": "model-b"}))
+        .await
+        .assert_status_ok();
+
+    let compatibility = server
+        .put(&format!("/api/v1alpha1/interactions/{first_id}/target"))
+        .json(&serde_json::json!({
+            "target": {"kind": "agent", "id": fixture.first_agent}
+        }))
+        .await;
+    compatibility.assert_status_ok();
+    let compatibility = compatibility.json::<serde_json::Value>();
+    assert_eq!(
+        compatibility["config"]["target"]["id"],
+        fixture.first_agent.to_string()
+    );
+    assert_eq!(compatibility["config"]["model"], "fake/model-a");
+    assert!(compatibility["config"].get("provider").is_some());
+
+    {
+        let writer = fixture.pool.writer();
+        let turn_count: i64 = writer
+            .query_row("SELECT COUNT(*) FROM interaction_turns", [], |row| {
+                row.get(0)
+            })
+            .expect("count interaction turns");
+        let run_count: i64 = writer
+            .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+            .expect("count interaction runs");
+        assert_eq!(turn_count, 0, "configuration changes must not create turns");
+        assert_eq!(run_count, 0, "configuration changes must not create runs");
+    }
+
+    drop(server);
+    let restarted = fixture.server();
+    let restarted_first = read_config(&restarted, &first_id).await;
+    let restarted_second = read_config(&restarted, &second_id).await;
+    assert_eq!(
+        restarted_first["target"]["id"],
+        fixture.first_agent.to_string()
+    );
+    assert_eq!(restarted_first["model"], "fake/model-a");
+    assert_eq!(
+        restarted_second["target"]["id"],
+        fixture.second_agent.to_string()
+    );
+    assert_eq!(restarted_second["model"], "fake/model-b");
 }
 
 #[tokio::test]

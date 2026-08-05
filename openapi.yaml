@@ -1915,18 +1915,90 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1alpha1/interactions/{id}/config:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+
+    get:
+      operationId: getInteractionConfig
+      summary: Read supported durable interaction configuration
+      tags: [interactions]
+      description: |
+        Returns only the target and model options supported by the shared
+        runtime. The model is `null` when execution inherits the selected
+        agent's registered model.
+      responses:
+        "200":
+          description: Effective supported durable configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HttpInteractionConfigResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    put:
+      operationId: updateInteractionConfig
+      summary: Atomically update target or model configuration
+      tags: [interactions]
+      description: |
+        Validates and durably replaces exactly one tagged option before
+        returning the effective configuration. `{"option":"model","value":
+        null}` clears the model override. Unknown targets or models fail
+        without changing the interaction or creating a run or turn.
+
+        Only `target` and `model` are accepted. Provider, harness, autonomy,
+        maximum-turn, and budget options are rejected rather than ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateHttpInteractionConfigRequest"
+      responses:
+        "200":
+          description: Effective supported durable configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HttpInteractionConfigResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1alpha1/interactions/{id}/target:
     parameters:
       - $ref: "#/components/parameters/InteractionIdPath"
 
     put:
       operationId: updateInteractionTarget
-      summary: Update an interaction target
+      summary: Update an interaction target (compatibility)
       tags: [interactions]
+      deprecated: true
       description: |
-        Changes only the supported target option. This operation does not
-        accept or imply support for model, provider, harness, autonomy, or
-        budget configuration.
+        Compatibility delegate for clients using the original target-only
+        route. It performs the same strict validation and atomic durable
+        service mutation as the tagged `PUT /interactions/{id}/config` target
+        variant. New clients should use the general configuration route.
       requestBody:
         required: true
         content:
@@ -1935,7 +2007,7 @@ paths:
               $ref: "#/components/schemas/UpdateHttpInteractionTargetRequest"
       responses:
         "200":
-          description: Effective interaction configuration.
+          description: Full effective interaction configuration.
           content:
             application/json:
               schema:
@@ -4078,7 +4150,11 @@ components:
     InteractionConfig:
       type: object
       required: [target, model, provider, harness, autonomy, max_turns, budget]
-      description: Effective durable configuration projected by the service.
+      description: |
+        Full domain projection stored with an interaction. The HTTP mutation
+        surface currently supports only target and model; provider, harness,
+        autonomy, maximum-turn, and budget values remain runtime defaults and
+        have no HTTP update variant.
       properties:
         target:
           $ref: "#/components/schemas/InteractionTarget"
@@ -4152,10 +4228,52 @@ components:
           type: string
           nullable: true
 
+    UpdateHttpInteractionConfigRequest:
+      description: |
+        One atomic update for exactly one option implemented by the shared
+        runtime. No provider, harness, autonomy, maximum-turn, or budget
+        variant is accepted.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [option, value]
+          properties:
+            option:
+              type: string
+              const: target
+            value:
+              $ref: "#/components/schemas/InteractionTarget"
+        - type: object
+          additionalProperties: false
+          required: [option, value]
+          properties:
+            option:
+              type: string
+              const: model
+            value:
+              type: [string, "null"]
+              minLength: 1
+              description: Canonicalizable model selector, or null to inherit the agent model.
+      discriminator:
+        propertyName: option
+
+    HttpInteractionConfig:
+      type: object
+      additionalProperties: false
+      required: [target, model]
+      description: The two durable configuration options supported by the HTTP surface.
+      properties:
+        target:
+          $ref: "#/components/schemas/InteractionTarget"
+        model:
+          type: [string, "null"]
+          description: Canonical model override, or null to inherit the selected agent model.
+
     UpdateHttpInteractionTargetRequest:
       type: object
       additionalProperties: false
       required: [target]
+      description: Deprecated target-only compatibility request.
       properties:
         target:
           $ref: "#/components/schemas/InteractionTarget"
@@ -4283,9 +4401,20 @@ components:
         turn:
           $ref: "#/components/schemas/InteractionTurnSummary"
 
+    HttpInteractionConfigResponse:
+      type: object
+      required: [version, config]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        config:
+          $ref: "#/components/schemas/HttpInteractionConfig"
+
     UpdateHttpInteractionTargetResponse:
       type: object
       required: [version, config]
+      description: Deprecated target-only compatibility response.
       properties:
         version:
           type: string

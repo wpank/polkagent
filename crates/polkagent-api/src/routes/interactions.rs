@@ -7,7 +7,7 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{rejection::JsonRejection, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{sse::Event, sse::KeepAlive, IntoResponse, Sse},
     Json,
@@ -25,10 +25,11 @@ use tracing::{debug, instrument, warn};
 use crate::{
     dto::{
         CancelHttpInteractionTurnResponse, CreateHttpInteractionRequest, CursorInfo,
-        HttpInteractionResponse, InteractionReplayCheckpoint, ListHttpInteractionTurnsResponse,
-        ListHttpInteractionsQuery, ListHttpInteractionsResponse, PageMeta,
-        PromptHttpInteractionRequest, PromptHttpInteractionResponse, ReplayInteractionEventsQuery,
-        ReplayInteractionEventsResponse, StreamInteractionEventsQuery,
+        HttpInteractionConfigResponse, HttpInteractionResponse, InteractionReplayCheckpoint,
+        ListHttpInteractionTurnsResponse, ListHttpInteractionsQuery, ListHttpInteractionsResponse,
+        PageMeta, PromptHttpInteractionRequest, PromptHttpInteractionResponse,
+        ReplayInteractionEventsQuery, ReplayInteractionEventsResponse,
+        StreamInteractionEventsQuery, UpdateHttpInteractionConfigRequest,
         UpdateHttpInteractionTargetRequest, UpdateHttpInteractionTargetResponse, API_VERSION,
     },
     error::ApiError,
@@ -53,6 +54,24 @@ fn interaction_store(state: &AppState) -> Result<Arc<dyn InteractionStore>, ApiE
     state.interaction_store.clone().ok_or_else(|| {
         ApiError::NotImplemented("interaction event store not configured".to_owned())
     })
+}
+
+fn interaction_config_json_error(rejection: &JsonRejection) -> ApiError {
+    ApiError::ValidationError(format!(
+        "invalid interaction configuration request: {}",
+        rejection.body_text()
+    ))
+}
+
+async fn set_interaction_config(
+    state: &AppState,
+    conversation_id: ConversationId,
+    update: ConfigUpdate,
+) -> Result<InteractionConfig, ApiError> {
+    interaction_service(state)?
+        .set_config_option(conversation_id, update)
+        .await
+        .map_err(ApiError::from)
 }
 
 fn client_context(
@@ -232,23 +251,65 @@ pub async fn cancel_interaction_turn(
     }))
 }
 
-/// Change the supported interaction target configuration.
+/// Read the supported durable interaction configuration.
+#[instrument(skip(state), fields(%conversation_id))]
+pub async fn get_interaction_config(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<ConversationId>,
+) -> Result<impl IntoResponse, ApiError> {
+    let config = interaction_service(&state)?
+        .load_interaction(conversation_id)
+        .await
+        .map_err(ApiError::from)?
+        .config;
+    Ok(Json(HttpInteractionConfigResponse {
+        version: API_VERSION.to_owned(),
+        config: config.into(),
+    }))
+}
+
+/// Atomically change one supported durable interaction configuration option.
+#[instrument(skip(state, body), fields(%conversation_id))]
+pub async fn update_interaction_config(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<ConversationId>,
+    body: Result<Json<UpdateHttpInteractionConfigRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, ApiError> {
+    let Json(body) = body.map_err(|error| interaction_config_json_error(&error))?;
+    let update = match body {
+        UpdateHttpInteractionConfigRequest::Target(target) => ConfigUpdate {
+            option: ConfigOption::Target,
+            value: ConfigOptionValue::Target(target),
+        },
+        UpdateHttpInteractionConfigRequest::Model(model) => ConfigUpdate {
+            option: ConfigOption::Model,
+            value: ConfigOptionValue::Model(model),
+        },
+    };
+    let config = set_interaction_config(&state, conversation_id, update).await?;
+    Ok(Json(HttpInteractionConfigResponse {
+        version: API_VERSION.to_owned(),
+        config: config.into(),
+    }))
+}
+
+/// Compatibility delegate for the original target-only mutation route.
 #[instrument(skip(state, body), fields(%conversation_id))]
 pub async fn update_interaction_target(
     State(state): State<AppState>,
     Path(conversation_id): Path<ConversationId>,
-    Json(body): Json<UpdateHttpInteractionTargetRequest>,
+    body: Result<Json<UpdateHttpInteractionTargetRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let config = interaction_service(&state)?
-        .set_config_option(
-            conversation_id,
-            ConfigUpdate {
-                option: ConfigOption::Target,
-                value: ConfigOptionValue::Target(body.target),
-            },
-        )
-        .await
-        .map_err(ApiError::from)?;
+    let Json(body) = body.map_err(|error| interaction_config_json_error(&error))?;
+    let config = set_interaction_config(
+        &state,
+        conversation_id,
+        ConfigUpdate {
+            option: ConfigOption::Target,
+            value: ConfigOptionValue::Target(body.target),
+        },
+    )
+    .await?;
     Ok(Json(UpdateHttpInteractionTargetResponse {
         version: API_VERSION.to_owned(),
         config,
