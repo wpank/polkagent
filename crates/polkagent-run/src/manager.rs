@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use polkagent_core::{
     event::{EventCorrelation, EventKind, RunEvent},
     turn::Turn,
-    AgentId, EventId, RunId, RunState,
+    AgentId, ConversationId, EventId, RunId, RunState,
 };
 use polkagent_event::EventRecorder;
 use polkagent_store_trait::{RunStatus, RunStore};
@@ -168,6 +168,50 @@ impl RunManager {
 
         info!(%run_id, "run created");
         Ok(run_id)
+    }
+
+    /// Persist a caller-generated run and conversation correlation without
+    /// publishing a lifecycle event or starting execution.
+    ///
+    /// This preparation boundary lets an interaction service durably attach
+    /// its turn before the earliest `RunCreated` observation exists.
+    pub async fn prepare_run(
+        &self,
+        run_id: RunId,
+        agent_id: AgentId,
+        conversation_id: ConversationId,
+    ) -> Result<(), RunError> {
+        self.store
+            .create_correlated(
+                run_id,
+                &agent_id.to_string(),
+                Some(&conversation_id.to_string()),
+                RunStatus::new(RunState::Created.to_string()),
+            )
+            .await
+            .map_err(|error| RunError::Store(error.to_string()))
+    }
+
+    /// Publish the first lifecycle event for a prepared run and enqueue it.
+    pub async fn activate_prepared_run(&self, run_id: RunId) -> Result<(), RunError> {
+        let current = self.current_state(run_id).await?;
+        if current != RunState::Created {
+            return Err(RunError::Transition(crate::error::TransitionError::new(
+                current,
+                RunTransition::Start,
+                "prepared run must still be in the created state",
+            )));
+        }
+        self.emit_event(run_id, EventKind::RunCreated).await?;
+        self.enqueue_run(run_id).await
+    }
+
+    /// Compensate a prepared run before any lifecycle event was published.
+    pub async fn discard_prepared_run(&self, run_id: RunId) -> Result<(), RunError> {
+        self.store
+            .delete_prepared(run_id)
+            .await
+            .map_err(|error| RunError::Store(error.to_string()))
     }
 
     /// Enqueue a run: transition `Created → Queued`.

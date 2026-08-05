@@ -131,8 +131,19 @@ impl RunStore for SqlitePool {
         agent_id: &str,
         status: RunStatus,
     ) -> Result<(), StoreError> {
+        self.create_correlated(run_id, agent_id, None, status).await
+    }
+
+    async fn create_correlated(
+        &self,
+        run_id: RunId,
+        agent_id: &str,
+        conversation_id: Option<&str>,
+        status: RunStatus,
+    ) -> Result<(), StoreError> {
         let pool = self.clone();
         let agent_id = agent_id.to_string();
+        let conversation_id = conversation_id.map(str::to_owned);
         let status_str = status.0;
 
         tokio::task::spawn_blocking(move || {
@@ -141,9 +152,10 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
             writer
                 .execute(
-                    "INSERT INTO runs (id, agent_id, state, params_json, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, '{}', ?4, ?5)",
-                    rusqlite::params![id_str, agent_id, status_str, now, now],
+                    "INSERT INTO runs
+                         (id, agent_id, conversation_id, state, params_json, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?6)",
+                    rusqlite::params![id_str, agent_id, conversation_id, status_str, now, now],
                 )
                 .map_err(|e| map_sqlite_err_with_id(e, &id_str))?;
             Ok(())
@@ -151,6 +163,44 @@ impl RunStore for SqlitePool {
         .await
         .map_err(|e| StoreError::Internal {
             message: format!("blocking task panicked: {e}"),
+        })?
+    }
+
+    async fn delete_prepared(&self, run_id: RunId) -> Result<(), StoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let id = run_id.to_string();
+            let writer = pool.writer();
+            let changed = writer
+                .execute(
+                    "DELETE FROM runs WHERE id = ?1 AND state = 'created'",
+                    [&id],
+                )
+                .map_err(map_sqlite_err)?;
+            if changed == 1 {
+                return Ok(());
+            }
+            let exists = writer
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?1)",
+                    [&id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(map_sqlite_err)?;
+            if exists {
+                Err(StoreError::InvalidTransition {
+                    message: format!("run {id} is no longer prepared"),
+                })
+            } else {
+                Err(StoreError::NotFound {
+                    resource_type: "Run",
+                    id,
+                })
+            }
+        })
+        .await
+        .map_err(|error| StoreError::Internal {
+            message: format!("blocking task panicked: {error}"),
         })?
     }
 

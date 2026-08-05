@@ -461,6 +461,31 @@ impl AppServiceBuilder {
 // AppService
 // ---------------------------------------------------------------------------
 
+/// A caller-identified run durably correlated to an interaction but not yet
+/// visible on the lifecycle event bus.
+///
+/// Only [`AppService::execute_prepared_run`] can begin this work. Dropping the
+/// value leaves a recoverable `created` row; callers should use
+/// [`AppService::discard_prepared_run`] when a later preparation step fails.
+#[derive(Debug, Clone)]
+pub struct PreparedRun {
+    run_id: RunId,
+    conversation_id: polkagent_core::ConversationId,
+    agent_spec: AgentSpec,
+}
+
+impl PreparedRun {
+    /// Return the caller-generated durable run identity.
+    pub const fn run_id(&self) -> RunId {
+        self.run_id
+    }
+
+    /// Return the conversation attached in the run creation write.
+    pub const fn conversation_id(&self) -> polkagent_core::ConversationId {
+        self.conversation_id
+    }
+}
+
 /// The central application service that wires all Polkagent components
 /// together.
 ///
@@ -966,6 +991,112 @@ impl AppService {
 
         info!(%run_id, "run started and enqueued");
         Ok(run_id)
+    }
+
+    /// Persist a caller-generated run with its conversation correlation but do
+    /// not publish a run event or begin execution.
+    ///
+    /// Interaction services use this boundary to attach durable turn/run links
+    /// and replay subscriptions before the earliest lifecycle observation.
+    pub async fn prepare_interaction_run(
+        &self,
+        run_id: RunId,
+        agent_id: AgentId,
+        conversation_id: polkagent_core::ConversationId,
+    ) -> Result<PreparedRun, ServiceError> {
+        let agent_spec = {
+            let agents = self.agents.lock().map_err(|error| ServiceError::Internal {
+                message: format!("agent lock poisoned: {error}"),
+            })?;
+            agents
+                .get(&agent_id)
+                .cloned()
+                .ok_or(ServiceError::AgentNotFound { agent_id })?
+        };
+
+        let max_concurrent = self.atomic_config.get().execution.max_concurrent_runs;
+        if max_concurrent > 0 {
+            let active_runs = self
+                .run_store
+                .list_by_state(polkagent_store_trait::RunStatus::new("running"), 10_000, 0)
+                .await
+                .map_err(|error| ServiceError::Store {
+                    message: format!("failed to count running runs: {error}"),
+                })?;
+            let active_count = u32::try_from(active_runs.len()).unwrap_or(u32::MAX);
+            if active_count >= max_concurrent {
+                return Err(ServiceError::ConcurrentRunLimitReached {
+                    active: active_count,
+                    limit: max_concurrent,
+                });
+            }
+        }
+
+        self.run_manager
+            .prepare_run(run_id, agent_id, conversation_id)
+            .await?;
+        Ok(PreparedRun {
+            run_id,
+            conversation_id,
+            agent_spec,
+        })
+    }
+
+    /// Publish the first run event, enqueue, and begin a prepared run.
+    pub async fn execute_prepared_run(
+        &self,
+        prepared: PreparedRun,
+        prompt: &str,
+    ) -> Result<RunId, ServiceError> {
+        let run_id = prepared.run_id;
+        self.run_manager.activate_prepared_run(run_id).await?;
+
+        if let Some(orchestrator) = self.orchestrator.clone() {
+            let prompt = prompt.to_owned();
+            let run_manager = self.run_manager.clone();
+            tokio::spawn(async move {
+                match orchestrator
+                    .execute_run(run_id, &prepared.agent_spec, &prompt)
+                    .await
+                {
+                    Ok(outcome) => {
+                        info!(
+                            %run_id,
+                            final_state = %outcome.final_state,
+                            "prepared orchestrator task finished"
+                        );
+                    }
+                    Err(error) => {
+                        warn!(%run_id, %error, "prepared orchestrator task failed");
+                        let already_terminal = run_manager
+                            .get_state(run_id)
+                            .await
+                            .is_ok_and(|state| state.is_terminal());
+                        if !already_terminal {
+                            if let Err(fail_error) =
+                                run_manager.fail_run(run_id, &error.to_string()).await
+                            {
+                                error!(
+                                    %run_id,
+                                    %fail_error,
+                                    "failed to transition prepared run to Failed state"
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            info!(%run_id, "no executor configured; prepared run queued for external worker");
+        }
+
+        Ok(run_id)
+    }
+
+    /// Delete a prepared run before it has published a lifecycle event.
+    pub async fn discard_prepared_run(&self, run_id: RunId) -> Result<(), ServiceError> {
+        self.run_manager.discard_prepared_run(run_id).await?;
+        Ok(())
     }
 
     /// Cancel a running or queued run.

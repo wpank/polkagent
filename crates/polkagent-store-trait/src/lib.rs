@@ -414,6 +414,37 @@ pub trait RunStore: Send + Sync + 'static {
         status: RunStatus,
     ) -> Result<(), StoreError>;
 
+    /// Persist a caller-identified run with its conversation correlation.
+    ///
+    /// The correlation must be stored in the same write that creates the run,
+    /// before any lifecycle event for that run can be published. Backends that
+    /// do not support correlated preparation fail closed when a conversation
+    /// is supplied.
+    async fn create_correlated(
+        &self,
+        run_id: RunId,
+        agent_id: &str,
+        conversation_id: Option<&str>,
+        status: RunStatus,
+    ) -> Result<(), StoreError> {
+        if conversation_id.is_some() {
+            return Err(StoreError::Internal {
+                message: "correlated run preparation is unavailable for this store".to_owned(),
+            });
+        }
+        self.create(run_id, agent_id, status).await
+    }
+
+    /// Delete a prepared run that has not published or begun execution.
+    ///
+    /// Implementations must delete only a run still in the `created` state and
+    /// must fail closed for every other lifecycle state.
+    async fn delete_prepared(&self, _run_id: RunId) -> Result<(), StoreError> {
+        Err(StoreError::InvalidTransition {
+            message: "prepared-run compensation is unavailable for this store".to_owned(),
+        })
+    }
+
     /// Retrieve a run summary by ID.
     ///
     /// Returns [`StoreError::NotFound`] if no matching record exists.

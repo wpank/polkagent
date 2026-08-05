@@ -68,7 +68,7 @@ pub mod webhook;
 // Convenience re-exports
 // ---------------------------------------------------------------------------
 
-pub use app::{AppService, AppServiceBuilder};
+pub use app::{AppService, AppServiceBuilder, PreparedRun};
 pub use error::ServiceError;
 pub use harness::{HarnessInfo, HarnessRegistry, HarnessResolution};
 pub use lifecycle::{shutdown, startup, StartupContext};
