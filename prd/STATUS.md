@@ -77,7 +77,7 @@ startup still has a wiring gap.
 |---|---|---|---|
 | One-shot CLI run | Uses the shared `RuntimeFactory`; subprocess and durable-restart coverage pass | Partially usable | All primary executable surfaces now share the factory, but tools/effects/policy are not a real model loop. |
 | Monitoring TUI | Rich views plus a durable F9 Console, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, and a durable session selector | Actionable for one turn at a time and restart-resumable | Prompt/follow-up/live typed output/cancel, bounded contextual model-executor history, help/status/new/resume, and exact same-agent session switching run through shared services; broader commands, simultaneous orchestration, harness context, and service-routed approvals remain. |
-| REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool discovery, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction create/list/load/archive/turn/prompt/cancel/target, finite replay, and checkpointed SSE survive restart and match tested OpenAPI schemas; 15 optional skill/memory/audit/registry routes, two separately documented WebSocket transports, full shutdown, and cross-surface E2E remain. |
+| REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool discovery, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, strict persisted target/model configuration, finite replay, and checkpointed SSE survive restart and match tested OpenAPI schemas; 15 optional skill/memory/audit/registry routes, two separately documented WebSocket transports, full shutdown, and cross-surface E2E remain. |
 | Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable target-only line-mode session | Interactive/non-TTY prompt, multiline input, contextual model-executor follow-up, transcript resume, lag replay, and SIGINT cancellation work; model/provider/agent changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
 | Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio slice with shared-registry discovery, native agent/model selectors, and executable subprocess coverage | Executable protocol slice; editor interoperability and UX unverified | No durable list/load/import or shared conversations; provider/target/autonomy selectors, structured tools/permissions, MCP passthrough, and Zed tool/approval/restart smoke remain. |
@@ -185,8 +185,13 @@ startup still has a wiring gap.
   fallback pages to completion with progress validation, SQLite performs an
   indexed point lookup, and API backend failures are sanitized.
   Black-box tests prove prompt transcript, caller-turn retry and conflict,
-  idempotent cancel, target updates, finite/live reconnect, restart,
+  idempotent cancel, target/model config updates, finite/live reconnect, restart,
   authentication/read-only policy, and an explicit uncomposed 501 response.
+  Config GET/PUT exposes only the two implemented options, persists model
+  clear/inheritance and same-provider validation across service reconstruction,
+  isolates two sessions, rejects unsupported tags/extra fields without partial
+  mutation, and creates no turn or run. The original target-only mutation
+  remains as a deprecated compatibility delegate over the same setter.
 - `crates/polkagent-runtime` is the production composition root for durable
   SQLite stores, providers/executors/harnesses, chain/tool registration, one
   event bus and `AppService`, startup recovery, active-agent rehydration, and

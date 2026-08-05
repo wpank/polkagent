@@ -80,7 +80,7 @@ shared production runtime (implemented; run/TUI/chat/ACP/serve migrated)
         +--> real tool/effect/policy/approval execution
         |
         +--> durable interaction/session/event service
-             (target-only prompt/transcript/cancel/replay implemented)
+             (prompt/transcript/cancel/replay and target/model config implemented)
                     |
                     +--> terminal chat + durable/actionable TUI
                          (target-only session/restart/cancel slices exist)

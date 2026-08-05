@@ -142,7 +142,7 @@ It remains design input rather than the completion contract.
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
 | Use Polkagent *from* Zed | Protocol slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK and an executable client fixture; rich editor acceptance is still open |
 | ACP slash commands/config selectors | Shared-registry subset plus native agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/model`, and current-prompt `/cancel` plus aliases are registry-derived; native selectors share that process-local session state, while durable commands and provider/target/autonomy settings remain unavailable |
-| REST API as a production control plane | Durable interaction/core slice implemented | Versioned interaction create/list/load/archive/turn/prompt/cancel/target, finite replay, and checkpointed SSE use the exact runtime service; 15 optional skill/memory/audit/registry routes remain unavailable |
+| REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, and checkpointed SSE use the exact runtime service; unsupported config tags fail without partial mutation or work creation, while 15 optional skill/memory/audit/registry routes remain unavailable |
 
 ## 1. What Polkagent actually has today
 
@@ -271,7 +271,8 @@ deterministic ordering and truthful empty behavior when registration is
 disabled. Fifteen optional skill/memory/audit/registry routes publish and test
 an explicit 501 boundary rather than falling back to in-memory implementations.
 The exact runtime `InteractionService` also backs versioned create/list/load/
-archive/turn/prompt/cancel/target routes. A finite JSON event route provides
+archive/turn/prompt/cancel and strict target/model config routes. A finite JSON
+event route provides
 turn-filtered durable checkpoints across restart. A separate interaction SSE
 route replays then follows typed envelopes, uses durable sequence IDs and
 `Last-Event-ID`, and recovers live-receiver lag after the last event actually

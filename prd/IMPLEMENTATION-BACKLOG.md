@@ -274,9 +274,12 @@ own runtime construction or orchestrator internals.
   registration is disabled.
 - [ ] Inject truthful memory, audit, skill, registry, and service-registry
   adapters. Their exact uncomposed routes remain in the published 501 list.
-- [x] Expose interaction create/list/load/archive/turn/prompt/cancel/target
-  endpoints over the exact runtime `InteractionService`; caller-supplied turn
-  IDs provide retry idempotency and conflict detection.
+- [x] Expose interaction create/list/load/archive/turn/prompt/cancel plus strict
+  target/model config endpoints over the exact runtime `InteractionService`;
+  caller-supplied turn IDs provide retry idempotency and conflict detection.
+  Config mutation accepts only one tagged supported option, persists across
+  service reconstruction, creates no work, and retains the original target
+  endpoint as a deprecated compatibility delegate.
 - [x] Add finite JSON cursor/replay semantics with durable sequence checkpoints,
   turn filtering, restart recovery, and no skip across unrelated events.
 - [x] Add checkpoint-aware interaction SSE with `Last-Event-ID` precedence,

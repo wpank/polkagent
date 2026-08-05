@@ -109,9 +109,9 @@ reports.
   classification reads plus auth/read-only/disabled-registry coverage. A
   machine-readable list proves 15 optional routes remain explicit 501s. The
   API now injects the exact runtime `InteractionService` and exposes durable
-  create/list/load/archive, turns, prompt, cancel, target, and finite event-
-  replay routes. Black-box fixtures prove user/assistant transcript, caller
-  turn-ID retry/conflict, idempotent cancellation, filtered checkpoint paging,
+  create/list/load/archive, turns, prompt, cancel, target/model config, and
+  finite event-replay routes. Black-box fixtures prove user/assistant
+  transcript, caller turn-ID retry/conflict, idempotent cancellation, filtered checkpoint paging,
   restart replay, authentication/read-only policy, and an uncomposed 501. A
   live HTTP fixture proves replay-before-connect, disconnect/`Last-Event-ID`
   reconnect without duplicate or skipped IDs, turn filtering, and later-turn
@@ -130,6 +130,10 @@ reports.
   byte-equivalent `/openapi.json`. Exactly two WebSocket transports remain on a
   documented allowlist because OpenAPI cannot specify their frame protocols:
   `GET /api/v1alpha1/events/stream` and `GET /ws/v1alpha1`.
+  A separate config fixture proves persisted set/clear/inheritance, strict
+  same-provider model and target validation, two-session isolation, restart,
+  deprecated target-route compatibility, and refusal of unsupported tags and
+  extra fields with no partial mutation or turn/run creation.
 
 - **OBS-01 / event-ID lookup slice (2026-08-05):** store-trait, SQLite,
   conformance, and API tests find a target after 10,001 earlier events. The
