@@ -7,6 +7,7 @@ fn repeated_initialization_returns_error_instead_of_panicking() {
         log_format: LogFormat::Pretty,
         otlp_endpoint: None,
         service_name: "polkagent-telemetry-reinitialization-test".to_owned(),
+        ansi: false,
     };
 
     let _first_guard = init_telemetry(config.clone()).expect("first initialization should succeed");
