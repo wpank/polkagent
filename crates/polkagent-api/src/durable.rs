@@ -863,11 +863,8 @@ fn parse_run_state(value: &str) -> Result<RunState, RunError> {
         } else {
             ids.split(',')
                 .map(|id| {
-                    id.parse::<EffectId>().map_err(|error| {
-                        RunError::Internal(format!(
-                            "invalid effect id '{id}' in stored state '{value}': {error}"
-                        ))
-                    })
+                    id.parse::<EffectId>()
+                        .map_err(|_| RunError::Internal("stored run state is invalid".to_owned()))
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
@@ -880,10 +877,17 @@ fn parse_run_state(value: &str) -> Result<RunState, RunError> {
         "running" => Ok(RunState::Running),
         "completing" => Ok(RunState::Completing),
         "completed" => Ok(RunState::Completed),
+        // Backward compatibility for the coarse terminal tags accepted by
+        // the store contract and written by service recovery before the
+        // reason-bearing encoding was adopted.
+        "failed" => Ok(RunState::Failed {
+            reason: "legacy persisted state did not include a reason".to_owned(),
+        }),
+        "cancelled" => Ok(RunState::Cancelled {
+            reason: "legacy persisted state did not include a reason".to_owned(),
+        }),
         "timed_out" => Ok(RunState::TimedOut),
-        other => Err(RunError::Internal(format!(
-            "unknown stored run state '{other}'"
-        ))),
+        _ => Err(RunError::Internal("stored run state is invalid".to_owned())),
     }
 }
 
@@ -936,6 +940,79 @@ mod tests {
 
     fn agent(name: &str) -> AgentSpec {
         AgentSpec::new(AgentId::new(), name, "fake/default-model")
+    }
+
+    #[test]
+    fn persisted_run_state_grammar_covers_every_domain_variant_and_legacy_terminal_tag() {
+        let first_effect = EffectId::new();
+        let second_effect = EffectId::new();
+        let expected_legacy_reason = "legacy persisted state did not include a reason";
+        let accepted = [
+            ("created".to_owned(), RunState::Created),
+            ("queued".to_owned(), RunState::Queued),
+            ("running".to_owned(), RunState::Running),
+            (
+                "awaiting_approval:approval-7".to_owned(),
+                RunState::AwaitingApproval {
+                    request_id: "approval-7".to_owned(),
+                },
+            ),
+            (
+                format!("waiting_effect:{first_effect},{second_effect}"),
+                RunState::WaitingEffect {
+                    pending_intent_ids: vec![first_effect, second_effect],
+                },
+            ),
+            (
+                "waiting_effect:".to_owned(),
+                RunState::WaitingEffect {
+                    pending_intent_ids: Vec::new(),
+                },
+            ),
+            ("completing".to_owned(), RunState::Completing),
+            ("completed".to_owned(), RunState::Completed),
+            (
+                "failed:provider: timeout".to_owned(),
+                RunState::Failed {
+                    reason: "provider: timeout".to_owned(),
+                },
+            ),
+            (
+                "cancelled:user request".to_owned(),
+                RunState::Cancelled {
+                    reason: "user request".to_owned(),
+                },
+            ),
+            (
+                "failed".to_owned(),
+                RunState::Failed {
+                    reason: expected_legacy_reason.to_owned(),
+                },
+            ),
+            (
+                "cancelled".to_owned(),
+                RunState::Cancelled {
+                    reason: expected_legacy_reason.to_owned(),
+                },
+            ),
+            ("timed_out".to_owned(), RunState::TimedOut),
+        ];
+
+        for (stored, expected) in accepted {
+            assert_eq!(parse_run_state(&stored).expect("accepted state"), expected);
+        }
+
+        for malformed in [
+            "awaiting_approval",
+            "waiting_effect:not-an-effect-id",
+            "timed_out:provider timeout",
+            "invented-state",
+        ] {
+            assert!(
+                matches!(parse_run_state(malformed), Err(RunError::Internal(_))),
+                "{malformed} must fail closed"
+            );
+        }
     }
 
     #[tokio::test]

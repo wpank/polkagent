@@ -105,7 +105,10 @@ async fn build_migrates_recovers_rehydrates_and_shares_durable_events() {
     let recovered = RunStore::get(runtime.pool(), abandoned_run)
         .await
         .expect("read recovered run");
-    assert_eq!(recovered.status, RunStatus::new("failed"));
+    assert_eq!(
+        recovered.status,
+        RunStatus::new("failed:recovered after restart")
+    );
 
     let mut events = runtime.subscribe_events();
     let agent_id: AgentId = row.id.parse().expect("typed agent id");

@@ -37,6 +37,21 @@ executor. On SIGINT or SIGTERM, Axum drains active HTTP connections while the
 runtime remains alive. `AppService` still lacks an explicit shutdown handle for
 its timeout-enforcer task; runtime readiness reports that upstream limitation.
 
+### Persisted run-state grammar
+
+The `runs.state` projection uses `RunState`'s display encoding: fixed tags for
+unit states, `awaiting_approval:<request-id>`,
+`waiting_effect:<comma-separated-effect-ids>`, `failed:<reason>`, and
+`cancelled:<reason>`. `timed_out` is a unit state and has no reason-bearing
+form. Startup recovery now records `failed:recovered after restart`, retaining
+the cause while SQLite preserves the terminal timestamp.
+
+For databases created by older releases, both the kernel and API projection
+also accept bare `failed` and `cancelled`. They surface an explicit legacy
+"reason unavailable" value rather than failing the whole run projection.
+Unknown tags, malformed effect IDs, and reason-bearing `timed_out` values fail
+closed as internal errors; HTTP responses do not echo the stored value.
+
 ## Durable interaction HTTP surface
 
 The agent-execution API is exposed under `/api/v1alpha1/interactions`. It uses

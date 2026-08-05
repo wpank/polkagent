@@ -160,6 +160,9 @@ const STUCK_STATES: &[&str] = &[
     "waiting_effect",
 ];
 
+/// Reason retained when crash recovery terminates an abandoned run.
+const RESTART_RECOVERY_REASON: &str = "recovered after restart";
+
 /// Scan for runs stuck in non-terminal states and transition them to `failed`.
 ///
 /// This should be called once during startup, **after** the database is
@@ -189,7 +192,7 @@ pub async fn recover_stuck_runs(run_store: &dyn RunStore) -> Result<usize, Servi
             })?;
 
         for run in &stuck {
-            let failed_status = RunStatus::new("failed");
+            let failed_status = RunStatus::new(format!("failed:{RESTART_RECOVERY_REASON}"));
             if let Err(e) = run_store.update_state(run.id, failed_status).await {
                 warn!(
                     run_id = %run.id,

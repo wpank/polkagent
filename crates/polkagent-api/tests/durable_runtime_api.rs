@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum_test::TestServer;
 use polkagent_api::{
     app_state_from_runtime, ApiServer, AppState, InMemoryAgentStore, InMemoryRunManager,
-    RuntimeArtifactStore, RuntimeToolRegistryStore, RUNTIME_UNAVAILABLE_ROUTES,
+    RuntimeArtifactStore, RuntimeRunManager, RuntimeToolRegistryStore, RUNTIME_UNAVAILABLE_ROUTES,
 };
 use polkagent_config::{Config, ModelOverrideConfig};
 use polkagent_core::{AgentId, AgentSpec, ArtifactId, BlobRef, RunId};
@@ -23,7 +23,7 @@ use polkagent_runtime::{
 };
 use polkagent_service::AppService;
 use polkagent_store_sqlite::{migrations, SqliteInteractionStore, SqlitePool};
-use polkagent_store_trait::ArtifactStore;
+use polkagent_store_trait::{ArtifactStore, RunStatus, RunStore};
 use sha2::{Digest, Sha256};
 
 async fn runtime_at(root: &std::path::Path) -> PolkagentRuntime {
@@ -42,6 +42,30 @@ fn test_server(runtime: &PolkagentRuntime) -> TestServer {
     let state = app_state_from_runtime(runtime, runtime.config().as_ref().clone());
     let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
+}
+
+fn projection_server(pool: SqlitePool) -> TestServer {
+    let event_bus = EventBus::with_default_capacity();
+    let shared_pool = Arc::new(pool.clone());
+    let recorder = EventRecorder::new(shared_pool.clone(), event_bus.clone());
+    let app = Arc::new(
+        AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(shared_pool.clone())
+            .with_effect_store(shared_pool.clone())
+            .with_event_bus(event_bus.clone())
+            .with_event_recorder(recorder)
+            .build()
+            .expect("build projection service"),
+    );
+    let state = AppState::new(
+        Config::default(),
+        Arc::new(InMemoryAgentStore::new()),
+        Arc::new(RuntimeRunManager::new(pool, app)),
+        shared_pool,
+        event_bus,
+    );
+    TestServer::new(ApiServer::from_state(state).into_router())
 }
 
 fn cancellable_interaction_server() -> (TestServer, AgentId) {
@@ -373,6 +397,261 @@ async fn handler_reports_conflicts_and_corrupt_projection_as_distinct_errors() {
         corrupt.json::<serde_json::Value>()["error"]["code"],
         "INTERNAL_ERROR"
     );
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the table keeps the complete persisted state grammar visible in one restart contract"
+)]
+async fn durable_run_state_grammar_survives_projection_restart_and_sanitizes_corruption() {
+    struct StateFixture {
+        id: RunId,
+        stored: String,
+        expected_status: serde_json::Value,
+        terminal_reason: Option<&'static str>,
+        started: bool,
+        completed: bool,
+    }
+
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let database_path = temp.path().join("projection-restart.db");
+    let pool = SqlitePool::open(&database_path).expect("open state fixture database");
+    migrations::migrate(&pool.writer()).expect("migrate state fixture database");
+    let agent_id = AgentId::new();
+    let agent = AgentSpec::new(agent_id, "state-projection-agent", "fake/default-model");
+    pool.writer()
+        .execute(
+            "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at)
+             VALUES (?1, ?2, 'active', ?3, ?4, ?4)",
+            rusqlite::params![
+                agent_id.to_string(),
+                &agent.name,
+                serde_json::to_string(&agent).expect("encode state fixture agent"),
+                agent.created_at.to_rfc3339(),
+            ],
+        )
+        .expect("seed state fixture agent");
+    let first_effect = polkagent_core::EffectId::new();
+    let second_effect = polkagent_core::EffectId::new();
+    let legacy_reason = "legacy persisted state did not include a reason";
+    let fixtures = vec![
+        StateFixture {
+            id: RunId::new(),
+            stored: "created".to_owned(),
+            expected_status: serde_json::json!({"state": "created"}),
+            terminal_reason: None,
+            started: false,
+            completed: false,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "queued".to_owned(),
+            expected_status: serde_json::json!({"state": "queued"}),
+            terminal_reason: None,
+            started: false,
+            completed: false,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "running".to_owned(),
+            expected_status: serde_json::json!({"state": "running"}),
+            terminal_reason: None,
+            started: true,
+            completed: false,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "awaiting_approval:approval-7".to_owned(),
+            expected_status: serde_json::json!({
+                "state": "awaiting_approval",
+                "request_id": "approval-7"
+            }),
+            terminal_reason: None,
+            started: true,
+            completed: false,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: format!("waiting_effect:{first_effect},{second_effect}"),
+            expected_status: serde_json::json!({
+                "state": "waiting_effect",
+                "pending_intent_ids": [first_effect, second_effect]
+            }),
+            terminal_reason: None,
+            started: true,
+            completed: false,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "completing".to_owned(),
+            expected_status: serde_json::json!({"state": "completing"}),
+            terminal_reason: None,
+            started: true,
+            completed: false,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "completed".to_owned(),
+            expected_status: serde_json::json!({"state": "completed"}),
+            terminal_reason: None,
+            started: true,
+            completed: true,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "failed:provider: timeout".to_owned(),
+            expected_status: serde_json::json!({
+                "state": "failed",
+                "reason": "provider: timeout"
+            }),
+            terminal_reason: Some("provider: timeout"),
+            started: true,
+            completed: true,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "cancelled:user request".to_owned(),
+            expected_status: serde_json::json!({
+                "state": "cancelled",
+                "reason": "user request"
+            }),
+            terminal_reason: Some("user request"),
+            started: true,
+            completed: true,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "failed".to_owned(),
+            expected_status: serde_json::json!({
+                "state": "failed",
+                "reason": legacy_reason
+            }),
+            terminal_reason: Some(legacy_reason),
+            started: true,
+            completed: true,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "cancelled".to_owned(),
+            expected_status: serde_json::json!({
+                "state": "cancelled",
+                "reason": legacy_reason
+            }),
+            terminal_reason: Some(legacy_reason),
+            started: true,
+            completed: true,
+        },
+        StateFixture {
+            id: RunId::new(),
+            stored: "timed_out".to_owned(),
+            expected_status: serde_json::json!({"state": "timed_out"}),
+            terminal_reason: None,
+            started: true,
+            completed: true,
+        },
+    ];
+    let created_at = "2026-03-01T10:00:00Z";
+    let started_at = "2026-03-01T10:01:00Z";
+    let completed_at = "2026-03-01T10:02:00Z";
+
+    for fixture in &fixtures {
+        RunStore::create(
+            &pool,
+            fixture.id,
+            &agent_id.to_string(),
+            RunStatus::new(fixture.stored.clone()),
+        )
+        .await
+        .expect("seed persisted run state");
+        let input = serde_json::json!({"stored_state": fixture.stored});
+        pool.writer()
+            .execute(
+                "UPDATE runs
+                 SET params_json = ?1, created_at = ?2, updated_at = ?2,
+                     started_at = ?3, completed_at = ?4
+                 WHERE id = ?5",
+                rusqlite::params![
+                    serde_json::to_string(&input).expect("encode run input"),
+                    created_at,
+                    fixture.started.then_some(started_at),
+                    fixture.completed.then_some(completed_at),
+                    fixture.id.to_string(),
+                ],
+            )
+            .expect("set persisted run projection fields");
+    }
+
+    let malformed = [
+        (RunId::new(), "timed_out:private-reason"),
+        (RunId::new(), "waiting_effect:private-invalid-effect-id"),
+        (RunId::new(), "invented-state-private-payload"),
+    ];
+    for (run_id, state) in malformed {
+        RunStore::create(&pool, run_id, &agent_id.to_string(), RunStatus::new(state))
+            .await
+            .expect("seed malformed persisted state");
+    }
+
+    drop(pool);
+    let reopened = SqlitePool::open(&database_path).expect("reopen state fixture database");
+    let server = projection_server(reopened);
+
+    for fixture in &fixtures {
+        let response = server
+            .get(&format!("/api/v1alpha1/runs/{}", fixture.id))
+            .await;
+        response.assert_status_ok();
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(
+            body["status"], fixture.expected_status,
+            "{}",
+            fixture.stored
+        );
+        assert_eq!(
+            body["input"],
+            serde_json::json!({"stored_state": fixture.stored}),
+            "{}",
+            fixture.stored
+        );
+        assert_eq!(body["created_at"], created_at, "{}", fixture.stored);
+        assert_eq!(
+            body.get("started_at").and_then(serde_json::Value::as_str),
+            fixture.started.then_some(started_at),
+            "{}",
+            fixture.stored
+        );
+        assert_eq!(
+            body.get("completed_at").and_then(serde_json::Value::as_str),
+            fixture.completed.then_some(completed_at),
+            "{}",
+            fixture.stored
+        );
+        assert_eq!(
+            body.get("terminal_reason")
+                .and_then(serde_json::Value::as_str),
+            fixture.terminal_reason,
+            "{}",
+            fixture.stored
+        );
+    }
+
+    for (run_id, state) in malformed {
+        let response = server.get(&format!("/api/v1alpha1/runs/{run_id}")).await;
+        response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
+        assert_eq!(
+            body["error"]["message"],
+            "internal error: stored run state is invalid"
+        );
+        assert!(
+            !serde_json::to_string(&body)
+                .expect("encode error response")
+                .contains(state),
+            "malformed persisted state must not leak over HTTP"
+        );
+    }
 }
 
 #[tokio::test]
