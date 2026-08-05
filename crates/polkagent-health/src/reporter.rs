@@ -151,6 +151,11 @@ impl HealthReporter {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "reporter lifecycle tests use fail-fast assertions for controlled background tasks"
+    )]
+
     use super::*;
     use crate::check::HealthCheck;
     use crate::types::{CheckSeverity, HealthStatus, Status};
@@ -170,7 +175,7 @@ mod tests {
                 checked_at: Utc::now(),
             }
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "always-up"
         }
         fn severity(&self) -> CheckSeverity {

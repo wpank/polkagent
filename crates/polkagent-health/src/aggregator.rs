@@ -197,6 +197,11 @@ fn compute_overall_status(results: &[HealthStatus], severities: &[CheckSeverity]
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "health aggregation tests use fail-fast assertions for deterministic check fixtures"
+    )]
+
     use super::*;
     use crate::check::HealthCheck;
     use async_trait::async_trait;
@@ -238,7 +243,7 @@ mod tests {
             HealthStatus {
                 name: self.check_name.clone(),
                 status: self.status,
-                latency_ms: self.delay.as_millis() as u64,
+                latency_ms: u64::try_from(self.delay.as_millis()).unwrap_or(u64::MAX),
                 details: None,
                 checked_at: Utc::now(),
             }

@@ -76,6 +76,11 @@ pub use types::{CheckSeverity, HealthStatus, OverallHealth, Status};
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "public health API tests use fail-fast assertions for deterministic probe fixtures"
+    )]
+
     use super::*;
     use async_trait::async_trait;
     use chrono::Utc;
@@ -218,7 +223,7 @@ mod tests {
                     checked_at: Utc::now(),
                 }
             }
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "down-dep"
             }
             fn severity(&self) -> CheckSeverity {

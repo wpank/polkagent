@@ -294,6 +294,11 @@ impl HealthCheck for SqliteCheck {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "dependency health tests unwrap optional details only after controlled checks produce them"
+    )]
+
     use super::*;
 
     #[tokio::test]
