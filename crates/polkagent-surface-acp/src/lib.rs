@@ -18,7 +18,7 @@ use agent_client_protocol::schema::v1::{
     InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
     ResourceLink, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
     SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, StopReason, TextContent, UnstructuredCommandInput,
+    SetSessionConfigOptionResponse, StopReason, TextContent, UnstructuredCommandInput, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
@@ -33,6 +33,7 @@ const AGENT_CONFIG_ID: &str = "polkagent.agent";
 const MODEL_CONFIG_ID: &str = "model";
 const NO_AGENT_VALUE: &str = "_polkagent_no_agent";
 const INHERIT_MODEL_VALUE: &str = "_polkagent_agent_model";
+const PROMPT_UPDATE_BUFFER: usize = 32;
 const ACP_COMMANDS: [CommandName; 6] = [
     CommandName::Help,
     CommandName::Status,
@@ -79,10 +80,24 @@ pub struct ModelSummary {
     pub name: String,
 }
 
+/// A progressive update emitted while a backend prompt is still running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendPromptUpdate {
+    /// Text appended to the final assistant response.
+    TextDelta(String),
+    /// Real cumulative run-token usage with a known model context window.
+    Usage {
+        /// Input plus output tokens reported by the runtime terminal event.
+        used: u64,
+        /// Configured context-window size for the effective model.
+        size: u64,
+    },
+}
+
 /// The result of one backend prompt turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendTurn {
-    /// Text to stream to the ACP client.
+    /// Exact final text, including any prefix already sent as progressive updates.
     pub text: String,
     /// Whether cancellation ended the turn.
     pub cancelled: bool,
@@ -118,6 +133,10 @@ pub trait AcpBackend: Send + Sync + 'static {
     async fn list_models(&self) -> Result<Vec<ModelSummary>, BackendError>;
 
     /// Execute one prompt through Polkagent's orchestration runtime.
+    ///
+    /// Implementations send progressive updates through the bounded channel.
+    /// The returned text must equal the concatenated text deltas plus any
+    /// unstreamed terminal suffix.
     async fn prompt(
         &self,
         session_id: &str,
@@ -125,6 +144,7 @@ pub trait AcpBackend: Send + Sync + 'static {
         agent: &str,
         model: Option<&str>,
         prompt: &str,
+        updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
     ) -> Result<BackendTurn, BackendError>;
 
     /// Cancel the active run, if any, for an ACP session.
@@ -492,8 +512,8 @@ async fn handle_prompt(
         })?;
 
     let registry = CommandRegistry::mvp();
-    let outcome = match registry.parse(&prompt) {
-        Ok(ParsedLine::Command(invocation)) => {
+    let (outcome, text_already_forwarded) = match registry.parse(&prompt) {
+        Ok(ParsedLine::Command(invocation)) => (
             handle_slash_command(
                 invocation.command,
                 &session_id,
@@ -502,24 +522,31 @@ async fn handle_prompt(
                 backend.as_ref(),
                 &registry,
             )
-            .await?
-        }
-        Ok(ParsedLine::Prompt(prompt)) => {
-            handle_regular_prompt(&prompt, &session_id, &sessions, backend.as_ref()).await?
-        }
-        Err(error) => BackendTurn::completed(format!(
-            "Command error: {error}\n\n{}",
-            help_text(&registry, None)
-        )),
+            .await?,
+            false,
+        ),
+        Ok(ParsedLine::Prompt(prompt)) => (
+            handle_regular_prompt(
+                &prompt,
+                &session_id,
+                &sessions,
+                backend.as_ref(),
+                connection,
+            )
+            .await?,
+            true,
+        ),
+        Err(error) => (
+            BackendTurn::completed(format!(
+                "Command error: {error}\n\n{}",
+                help_text(&registry, None)
+            )),
+            false,
+        ),
     };
 
-    if !outcome.text.is_empty() {
-        connection.send_notification(SessionNotification::new(
-            session_id,
-            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                TextContent::new(outcome.text),
-            ))),
-        ))?;
+    if !text_already_forwarded && !outcome.text.is_empty() {
+        send_text_update(connection, session_id.clone(), outcome.text)?;
     }
 
     Ok(if outcome.cancelled {
@@ -556,6 +583,7 @@ async fn handle_regular_prompt(
     session_id: &SessionId,
     sessions: &Sessions,
     backend: &dyn AcpBackend,
+    connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<BackendTurn, agent_client_protocol::Error> {
     let (cwd, agent, model) = {
         let mut all_sessions = sessions.lock().await;
@@ -575,19 +603,104 @@ async fn handle_regular_prompt(
         current.busy = true;
         (current.cwd.clone(), agent, current.selected_model.clone())
     };
-    let turn = call_backend(backend.prompt(
+    let (updates_tx, mut updates_rx) = tokio::sync::mpsc::channel(PROMPT_UPDATE_BUFFER);
+    let backend_call = call_backend(backend.prompt(
         session_id.0.as_ref(),
         &cwd,
         &agent,
         model.as_deref(),
         prompt.trim(),
-    ))
-    .await
-    .map_err(|error| backend_protocol_error(&error));
+        updates_tx,
+    ));
+    tokio::pin!(backend_call);
+    let mut streamed_text = String::new();
+    let mut forwarding_error = None;
+    let backend_result = loop {
+        tokio::select! {
+            result = &mut backend_call => {
+                while let Some(update) = updates_rx.recv().await {
+                    record_and_forward_update(
+                        connection,
+                        session_id,
+                        update,
+                        &mut streamed_text,
+                        &mut forwarding_error,
+                    );
+                }
+                break result;
+            }
+            update = updates_rx.recv() => {
+                let Some(update) = update else {
+                    break backend_call.as_mut().await;
+                };
+                record_and_forward_update(
+                    connection,
+                    session_id,
+                    update,
+                    &mut streamed_text,
+                    &mut forwarding_error,
+                );
+            }
+        }
+    };
     if let Some(current) = sessions.lock().await.get_mut(session_id) {
         current.busy = false;
     }
-    turn
+    let turn = backend_result.map_err(|error| backend_protocol_error(&error))?;
+    if let Some(error) = forwarding_error {
+        return Err(error);
+    }
+    let suffix = turn.text.strip_prefix(&streamed_text).ok_or_else(|| {
+        agent_client_protocol::Error::internal_error()
+            .data("backend terminal text did not preserve its progressive text prefix")
+    })?;
+    if !suffix.is_empty() {
+        send_text_update(connection, session_id.clone(), suffix.to_owned())?;
+    }
+    Ok(turn)
+}
+
+fn record_and_forward_update(
+    connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
+    session_id: &SessionId,
+    update: BackendPromptUpdate,
+    streamed_text: &mut String,
+    forwarding_error: &mut Option<agent_client_protocol::Error>,
+) {
+    if forwarding_error.is_some() {
+        if let BackendPromptUpdate::TextDelta(text) = update {
+            streamed_text.push_str(&text);
+        }
+        return;
+    }
+    let result = match update {
+        BackendPromptUpdate::TextDelta(text) => {
+            streamed_text.push_str(&text);
+            send_text_update(connection, session_id.clone(), text)
+        }
+        BackendPromptUpdate::Usage { used, size } => {
+            connection.send_notification(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::UsageUpdate(UsageUpdate::new(used, size)),
+            ))
+        }
+    };
+    if let Err(error) = result {
+        *forwarding_error = Some(error);
+    }
+}
+
+fn send_text_update(
+    connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
+    session_id: SessionId,
+    text: String,
+) -> Result<(), agent_client_protocol::Error> {
+    connection.send_notification(SessionNotification::new(
+        session_id,
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            text,
+        )))),
+    ))
 }
 
 async fn handle_slash_command(
@@ -854,6 +967,7 @@ mod tests {
             _agent: &str,
             _model: Option<&str>,
             _prompt: &str,
+            _updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
         ) -> Result<BackendTurn, BackendError> {
             panic!("synthetic backend panic payload");
         }
@@ -891,6 +1005,7 @@ mod tests {
             _agent: &str,
             _model: Option<&str>,
             _prompt: &str,
+            _updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
         ) -> Result<BackendTurn, BackendError> {
             panic!("prompt is not expected in configuration race test");
         }

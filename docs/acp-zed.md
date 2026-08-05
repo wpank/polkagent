@@ -8,7 +8,8 @@ SQLite pool, event bus, provider registry, and startup lifecycle.
 This is an executable protocol slice, not a claim of complete Zed support. The
 repository tests launch the real binary through the official ACP Rust client,
 including cancellation while a provider request is active and session-scoped
-agent/model configuration across concurrent sessions. A manual Zed smoke test,
+agent/model configuration across concurrent sessions. Real runtime text events
+are forwarded before the terminal prompt response. A manual Zed smoke test,
 durable thread import/resume, and structured tool and permission updates are
 still open.
 
@@ -92,11 +93,26 @@ The server publishes these through ACP `available_commands_update`:
 | `/cancel` | Cancel the active editor prompt (`/stop`). |
 
 Normal text prompts start a real Polkagent run and return its accumulated text
-as an ACP agent-message update before the terminal prompt response. Only one
-normal prompt may be active per ACP session. Native `session/cancel` and the
-`/cancel` command are mapped to the active `AppService` run. Run-ID and
+as progressive ACP agent-message updates before the terminal prompt response.
+The backend-to-surface channel is bounded at 32 updates, so a slow client
+applies backpressure rather than allowing unbounded buffering. The terminal
+text is reconciled against the streamed prefix and only a previously unstreamed
+suffix is sent, preventing duplicate output. A prefix mismatch fails closed as
+a protocol error.
+
+These updates reflect real runtime `StreamingToken` events. The current runtime
+orchestrator may emit one event containing a provider's complete response, so
+this does not claim HTTP/SSE token-level streaming from every provider adapter.
+Provider-to-runtime token streaming remains separate work.
+
+When the runtime terminal event reports nonzero real token counts and the
+effective model has a known configured or built-in context window, Polkagent
+also sends the stable ACP `usage_update`: `used` is input plus output tokens and
+`size` is that context window. It emits no usage update when either fact is
+unknown. Only one normal prompt may be active per ACP session. Native
+`session/cancel` and `/cancel` map to the active `AppService` run. Run-ID and
 all-session cancellation are not advertised because durable ACP interactions
-are not implemented. Token-by-token ACP forwarding is still open.
+are not implemented.
 
 ## Session configuration
 
@@ -133,6 +149,8 @@ Implemented and covered by executable protocol evidence:
 
 - official `agent-client-protocol` v2.0 SDK using its stable ACP v1 schema;
 - stdio initialize, new-session, prompt, session-update, and cancel handlers;
+- bounded forwarding of real runtime text deltas, exact terminal-text
+  reconciliation, and conditional truthful ACP usage updates;
 - native `polkagent.agent` and standard `model` select-option discovery and
   `session/set_config_option`, with validated session-scoped changes;
 - absolute-cwd validation and protocol errors for unknown/busy sessions;
@@ -162,6 +180,9 @@ Implemented and covered by executable protocol evidence:
   configuration and `/model`, overlaps their real prompts, and proves that each
   provider request receives its own model while both durable runs use the
   selected agent;
+- an official-client delayed-provider test that proves a real runtime text
+  event and truthful usage update arrive before the terminal ACP response,
+  verifies exact non-duplicated final text, and rejects non-JSON stdout;
 - an official-client subprocess test that holds a real provider request open,
   cancels it, receives `Cancelled`, and verifies the durable run state and
   terminal timestamp in SQLite.
@@ -170,7 +191,9 @@ Not implemented yet:
 
 - `session/list`, `session/load`, thread persistence/import, or restart resume;
 - dynamic provider, target, or autonomy configuration options;
-- structured tool calls, plans, usage, and permission request/response;
+- structured tool calls, plans, and permission request/response;
+- provider HTTP/SSE token-level streaming where the runtime currently emits a
+  complete response as one `StreamingToken` event;
 - client filesystem/terminal support and MCP-server passthrough;
 - additional workspace roots (rejected explicitly) and use of cwd as model or
   filesystem context beyond session metadata;
@@ -205,6 +228,7 @@ cargo test -p polkagent-cli --test acp_stdio_e2e -- --nocapture
 For a manual smoke, verify in order: agent appears, session opens, the native
 agent/model selectors and slash-command completion are visible, changing each
 selector affects the next prompt, `/model` affects a later prompt, `/status`
-responds, cancellation stops active work, and Zed's ACP log contains only
-JSON-RPC frames on the server's stdout channel. This manual matrix remains
-unverified in the repository status.
+responds, response chunks appear before the terminal turn response, known-model
+usage appears without duplicating text, cancellation stops active work, and
+Zed's ACP log contains only JSON-RPC frames on the server's stdout channel.
+This manual matrix remains unverified in the repository status.

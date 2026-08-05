@@ -22,6 +22,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 struct ObservedUpdates {
     command_names: Vec<String>,
     messages: Vec<String>,
+    usage_updates: Vec<(u64, u64)>,
+    timeline: Vec<String>,
     stdout_lines: Vec<String>,
     stderr_lines: Vec<String>,
 }
@@ -40,6 +42,12 @@ struct FailingProvider {
 struct RecordingProvider {
     base_url: String,
     requests: tokio::sync::mpsc::Receiver<serde_json::Value>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct DelayedSuccessProvider {
+    base_url: String,
+    model: tokio::sync::oneshot::Receiver<String>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -75,6 +83,21 @@ fn write_model_selection_config(path: &std::path::Path, base_url: &str) {
         ),
     )
     .expect("write dynamic model provider config");
+}
+
+fn write_progressive_provider_config(path: &std::path::Path, base_url: &str) {
+    std::fs::write(
+        path,
+        format!(
+            "[[providers]]\n\
+             id = \"progressive-provider\"\n\
+             provider_type = \"local\"\n\
+             base_url = \"{base_url}\"\n\
+             api_key_env = \"POLKAGENT_ACP_FIXTURE_KEY\"\n\
+             default_model = \"claude-sonnet-4-6\"\n"
+        ),
+    )
+    .expect("write progressive provider config");
 }
 
 #[cfg(debug_assertions)]
@@ -451,6 +474,138 @@ async fn official_client_configures_agent_and_model_for_the_next_real_run() {
             .iter()
             .any(|message| message.contains("Selected model 'fixture-default'"))
     );
+}
+
+#[tokio::test]
+async fn official_client_receives_runtime_text_and_usage_before_prompt_completion() {
+    const EXPECTED_TEXT: &str = "A real progressive runtime response.";
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let config_path = temp.path().join("polkagent.toml");
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    create_active_agent(binary, &db_path, "progressive-fixture", "claude-sonnet-4-6");
+    let provider = delayed_success_provider(EXPECTED_TEXT).await;
+    write_progressive_provider_config(&config_path, &provider.base_url);
+
+    let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let observed_by_client = Arc::clone(&observed);
+    let observed_at_terminal = Arc::clone(&observed);
+    let project_path = temp.path().to_path_buf();
+    let config_arg = config_path.to_string_lossy().into_owned();
+    let agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args([
+                "--config",
+                config_arg.as_str(),
+                "acp",
+                "--agent",
+                "progressive-fixture",
+                "--provider",
+                "progressive-provider",
+            ])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            )
+            .env("POLKAGENT_ACP_FIXTURE_KEY", "fixture-key"),
+        Arc::clone(&observed),
+    );
+
+    agent_client_protocol::Client
+        .builder()
+        .on_receive_notification(
+            async move |notification: SessionNotification, _connection| {
+                let mut observed = observed_by_client.lock().expect("observed updates lock");
+                match notification.update {
+                    SessionUpdate::AgentMessageChunk(chunk) => {
+                        if let ContentBlock::Text(text) = chunk.content {
+                            observed.messages.push(text.text);
+                            observed.timeline.push("text_chunk".to_owned());
+                        }
+                    }
+                    SessionUpdate::UsageUpdate(usage) => {
+                        observed.usage_updates.push((usage.used, usage.size));
+                        observed.timeline.push("usage".to_owned());
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(
+            agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(project_path))
+                    .block_task()
+                    .await?;
+                let response = connection
+                    .send_request(PromptRequest::new(
+                        session.session_id,
+                        vec![ContentBlock::Text(TextContent::new(
+                            "Prove progressive ACP delivery.",
+                        ))],
+                    ))
+                    .block_task()
+                    .await?;
+                assert_eq!(response.stop_reason, StopReason::EndTurn);
+                observed_at_terminal
+                    .lock()
+                    .expect("observed updates lock")
+                    .timeline
+                    .push("terminal".to_owned());
+                Ok(())
+            },
+        )
+        .await
+        .expect("official ACP client received progressive runtime updates");
+    let requested_model = provider.model.await.expect("record delayed provider model");
+    provider.task.await.expect("delayed provider completed");
+    assert_eq!(requested_model, "claude-sonnet-4-6");
+
+    let durable_usage: (i64, i64) = rusqlite::Connection::open(&db_path)
+        .expect("open progressive ACP database")
+        .query_row(
+            "SELECT input_tokens, output_tokens FROM turns ORDER BY completed_at DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("load progressive turn usage");
+    assert_eq!(durable_usage, (7, 3));
+    let observed = observed.lock().expect("observed updates lock");
+    assert_eq!(observed.messages.concat(), EXPECTED_TEXT);
+    assert_eq!(
+        observed.usage_updates,
+        vec![(10, 200_000)],
+        "timeline={:?}; stdout={:?}; stderr={:?}",
+        observed.timeline,
+        observed.stdout_lines,
+        observed.stderr_lines
+    );
+    let text_index = observed
+        .timeline
+        .iter()
+        .position(|event| event == "text_chunk")
+        .expect("text update timeline entry");
+    let usage_index = observed
+        .timeline
+        .iter()
+        .position(|event| event == "usage")
+        .expect("usage timeline entry");
+    let terminal_index = observed
+        .timeline
+        .iter()
+        .position(|event| event == "terminal")
+        .expect("terminal timeline entry");
+    assert!(text_index < usage_index);
+    assert!(usage_index < terminal_index);
+    assert_protocol_stdout(&observed.stdout_lines);
 }
 
 async fn exercise_session_configuration(
@@ -1273,6 +1428,60 @@ async fn failing_provider(raw_secret: &str) -> FailingProvider {
     });
     FailingProvider {
         base_url: format!("http://{address}/v1"),
+        task,
+    }
+}
+
+async fn delayed_success_provider(text: &str) -> DelayedSuccessProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind delayed success provider");
+    let address = listener
+        .local_addr()
+        .expect("delayed success provider address");
+    let text = text.to_owned();
+    let (model_tx, model_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept provider request");
+        let mut reader = BufReader::new(stream);
+        let request = read_http_json_request(&mut reader).await;
+        let model = request
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .expect("provider request model")
+            .to_owned();
+        model_tx.send(model.clone()).expect("record provider model");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let body = serde_json::json!({
+            "id": "chatcmpl-acp-progressive",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        reader
+            .get_mut()
+            .write_all(response.as_bytes())
+            .await
+            .expect("write delayed provider response");
+        reader
+            .get_mut()
+            .shutdown()
+            .await
+            .expect("close delayed provider response");
+    });
+    DelayedSuccessProvider {
+        base_url: format!("http://{address}/v1"),
+        model: model_rx,
         task,
     }
 }

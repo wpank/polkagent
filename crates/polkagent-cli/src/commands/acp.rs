@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use polkagent_config::model_registry::{BuiltInModelCatalog, ModelCatalog as _};
 use polkagent_core::event::EventKind;
 use polkagent_core::{AgentId, RunId};
 use polkagent_runtime::{
@@ -14,7 +15,8 @@ use polkagent_runtime::{
 };
 use polkagent_store_sqlite::SqliteRunStore;
 use polkagent_surface_acp::{
-    AcpBackend, AgentSummary, BackendError, BackendTurn, ModelSummary, ServerConfig,
+    AcpBackend, AgentSummary, BackendError, BackendPromptUpdate, BackendTurn, ModelSummary,
+    ServerConfig,
 };
 use tokio::sync::Mutex;
 
@@ -170,7 +172,9 @@ impl PolkagentAcpBackend {
                 .id
                 .parse()
                 .with_context(|| format!("invalid stored agent ID: {}", agent.id))?;
-            let model = build_agent_spec(agent_id, &agent.name, &agent.spec_json, None).model;
+            let model = stored_agent_model(&agent.spec_json).unwrap_or_else(|| {
+                build_agent_spec(agent_id, &agent.name, &agent.spec_json, None).model
+            });
             if !model.is_empty() {
                 models.insert(model);
             }
@@ -184,12 +188,27 @@ impl PolkagentAcpBackend {
             .collect())
     }
 
+    fn context_window(&self, model: &str) -> Option<u64> {
+        self.runtime
+            .config()
+            .models
+            .iter()
+            .find(|candidate| candidate.slug == model)
+            .and_then(|candidate| candidate.context_window)
+            .or_else(|| {
+                BuiltInModelCatalog::new()
+                    .get(model)
+                    .map(|descriptor| descriptor.context_window)
+            })
+    }
+
     async fn execute_prompt(
         &self,
         session_id: &str,
         selector: &str,
         model: Option<&str>,
         prompt: &str,
+        updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
     ) -> Result<BackendTurn> {
         self.diagnostics.record(
             "info",
@@ -201,12 +220,11 @@ impl PolkagentAcpBackend {
             .id
             .parse()
             .with_context(|| format!("invalid stored agent ID: {}", agent.id))?;
-        let spec = build_agent_spec(
-            agent_id,
-            &agent.name,
-            &agent.spec_json,
-            model.map(str::to_owned),
-        );
+        let effective_model = model
+            .map(str::to_owned)
+            .or_else(|| stored_agent_model(&agent.spec_json));
+        let spec = build_agent_spec(agent_id, &agent.name, &agent.spec_json, effective_model);
+        let context_window = self.context_window(&spec.model);
         // `AppService` stores one live spec per agent. Keep replacement and
         // start atomic across concurrent ACP sessions so another session
         // cannot substitute its model before `start_run` clones this spec.
@@ -243,8 +261,27 @@ impl PolkagentAcpBackend {
                     continue;
                 }
                 match event.kind {
-                    EventKind::StreamingToken { text } => response.push_str(&text),
-                    EventKind::RunCompleted { .. } => {
+                    EventKind::StreamingToken { text } => {
+                        response.push_str(&text);
+                        updates
+                            .send(BackendPromptUpdate::TextDelta(text))
+                            .await
+                            .context("forwarding runtime text update to ACP surface")?;
+                    }
+                    EventKind::RunCompleted {
+                        input_tokens,
+                        output_tokens,
+                        ..
+                    } => {
+                        if let Some(size) = context_window {
+                            let used = input_tokens.saturating_add(output_tokens);
+                            if used > 0 {
+                                updates
+                                    .send(BackendPromptUpdate::Usage { used, size })
+                                    .await
+                                    .context("forwarding runtime usage update to ACP surface")?;
+                            }
+                        }
                         if response.is_empty() {
                             response.push_str("Run completed without text output.");
                         }
@@ -252,7 +289,12 @@ impl PolkagentAcpBackend {
                     }
                     EventKind::RunFailed { reason } => anyhow::bail!("run failed: {reason}"),
                     EventKind::RunCancelled { reason } => {
-                        return Ok(BackendTurn::cancelled(format!("Run cancelled: {reason}")));
+                        if !response.is_empty() {
+                            response.push_str("\n\n");
+                        }
+                        response.push_str("Run cancelled: ");
+                        response.push_str(&reason);
+                        return Ok(BackendTurn::cancelled(response));
                     }
                     EventKind::RunTimedOut => anyhow::bail!("run timed out"),
                     _ => {}
@@ -287,6 +329,15 @@ impl PolkagentAcpBackend {
         }
         result
     }
+}
+
+fn stored_agent_model(spec_json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(spec_json)
+        .ok()?
+        .get("model")?
+        .as_str()
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
 }
 
 #[async_trait]
@@ -332,8 +383,9 @@ impl AcpBackend for PolkagentAcpBackend {
         agent: &str,
         model: Option<&str>,
         prompt: &str,
+        updates: tokio::sync::mpsc::Sender<BackendPromptUpdate>,
     ) -> Result<BackendTurn, BackendError> {
-        self.execute_prompt(session_id, agent, model, prompt)
+        self.execute_prompt(session_id, agent, model, prompt, updates)
             .await
             .map_err(|error| {
                 self.diagnostics.record(
