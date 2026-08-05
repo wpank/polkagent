@@ -17,7 +17,7 @@ use crate::event::{InteractionEvent, InteractionEventEnvelope, RunRole};
 use crate::ids::{InteractionEventId, InteractionTurnId};
 use crate::model::{
     InteractionConfig, InteractionState, InteractionSummary, InteractionTarget,
-    ListInteractionsRequest, TurnSummary,
+    ListInteractionsRequest, TranscriptRequest, TurnSummary,
 };
 
 /// Safe durable defaults for a conversation-backed interaction.
@@ -153,6 +153,46 @@ pub struct StoredInteractionTurn {
     pub error: Option<InteractionError>,
 }
 
+/// Durable transcript role decoded without exposing a conversation-store type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredTranscriptRole {
+    /// Human-authored prompt text.
+    User,
+    /// Assistant-authored response text.
+    Assistant,
+    /// Internal system message, invalid for a turn transcript correlation.
+    System,
+    /// Tool message, invalid for a turn transcript correlation.
+    Tool,
+}
+
+/// One message loaded by an exact durable turn-message identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTranscriptMessage {
+    /// Stable conversation-message identity.
+    pub message_id: Uuid,
+    /// Conversation recorded on the message row.
+    pub conversation_id: ConversationId,
+    /// Decoded durable role.
+    pub role: StoredTranscriptRole,
+    /// Plain text when the stored content is exactly text; `None` denotes rich
+    /// content that the runtime must reject rather than flatten.
+    pub text: Option<String>,
+    /// Exact stored token count, when present.
+    pub token_count: Option<u32>,
+}
+
+/// One bounded persistence row for runtime transcript validation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredTranscriptTurn {
+    /// Durable turn and its authoritative correlated message identities.
+    pub turn: StoredInteractionTurn,
+    /// Exact lookup result for [`StoredInteractionTurn::user_message_id`].
+    pub user_message: Option<StoredTranscriptMessage>,
+    /// Exact lookup result for the optional assistant message identity.
+    pub assistant_message: Option<StoredTranscriptMessage>,
+}
+
 /// Idempotent input for appending one durable interaction event.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewInteractionEvent {
@@ -225,6 +265,18 @@ pub trait InteractionStore: Send + Sync {
         &self,
         conversation_id: ConversationId,
     ) -> Result<Vec<StoredInteractionTurn>, InteractionError>;
+
+    /// Load one bounded ordinal turn page and its exact correlated transcript
+    /// message rows without scanning unrelated conversation history.
+    async fn load_transcript_turns(
+        &self,
+        _request: TranscriptRequest,
+    ) -> Result<Vec<StoredTranscriptTurn>, InteractionError> {
+        Err(InteractionError::new(
+            crate::InteractionErrorCode::Unsupported,
+            "bounded durable transcript persistence is unavailable",
+        ))
+    }
 
     /// Append one event and atomically update the turn lifecycle projection.
     ///

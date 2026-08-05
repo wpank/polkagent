@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use polkagent_conversation::{ContentPart, ConversationStore, MessageContent, MessageRole};
 use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
     AgentTargetView, CancelTarget, ClientContext, CommandContext, CommandExecutor, CommandName,
@@ -15,7 +14,7 @@ use polkagent_interaction::{
     InteractionErrorCode, InteractionEvent, InteractionOverrides, InteractionService,
     InteractionSummary, InteractionTarget, ParsedLine, PromptRequest, RunDetailView,
     RunSummaryView, ServiceCommandExecutor, StartedTurn, StreamError, SubscriptionRequest,
-    TurnHandle, UsageView,
+    TranscriptRequest, TurnHandle, UsageView,
 };
 use polkagent_runtime::{
     AdapterPolicy, PolkagentRuntime, RuntimeFactory, RuntimeOptions, WarningCode,
@@ -76,7 +75,6 @@ pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -
     };
 
     let mut session = ChatSession {
-        runtime,
         service,
         registry,
         executor,
@@ -180,7 +178,6 @@ fn validate_agent_target(interaction: &InteractionSummary, agent_id: AgentId) ->
 }
 
 struct ChatSession {
-    runtime: PolkagentRuntime,
     service: Arc<dyn InteractionService>,
     registry: CommandRegistry,
     executor: ServiceCommandExecutor,
@@ -491,47 +488,39 @@ impl ChatSession {
     }
 
     async fn render_transcript(&self) -> Result<()> {
-        let conversation = ConversationStore::get(self.runtime.pool(), self.conversation_id)
-            .await
-            .context("loading durable chat transcript")?;
-        let limit = usize::try_from(conversation.message_count)
-            .context("chat transcript exceeds this platform's addressable size")?;
-        let messages =
-            ConversationStore::get_messages(self.runtime.pool(), self.conversation_id, limit, 0)
+        let mut offset = 0_u32;
+        loop {
+            let turns = self
+                .service
+                .load_transcript(TranscriptRequest {
+                    conversation_id: self.conversation_id,
+                    limit: 1_000,
+                    offset,
+                })
                 .await
-                .context("loading durable chat messages")?;
-        for message in messages {
-            let Some(text) = transcript_text(&message.content) else {
-                continue;
-            };
-            match message.role {
-                MessageRole::User => println!("user> {text}"),
-                MessageRole::Assistant => println!("assistant> {text}"),
-                MessageRole::System | MessageRole::Tool => {}
+                .context("loading durable turn-correlated chat transcript")?;
+            if turns.is_empty() {
+                break;
+            }
+            let page_len = u32::try_from(turns.len())
+                .context("chat transcript page exceeds the supported size")?;
+            for turn in turns {
+                println!("user> {}", turn.user_text);
+                if let Some(text) = turn.assistant_text {
+                    println!("assistant> {text}");
+                }
+            }
+            offset = offset
+                .checked_add(page_len)
+                .context("chat transcript offset overflowed")?;
+            if page_len < 1_000 {
+                break;
             }
         }
         std::io::stdout()
             .flush()
             .context("flushing durable transcript")?;
         Ok(())
-    }
-}
-
-fn transcript_text(content: &MessageContent) -> Option<String> {
-    match content {
-        MessageContent::Text { text } => Some(text.clone()),
-        MessageContent::Mixed { parts } => {
-            let text = parts
-                .iter()
-                .filter_map(|part| match part {
-                    ContentPart::Text { text } => Some(text.as_str()),
-                    ContentPart::ToolUse { .. } | ContentPart::ToolResult { .. } => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            (!text.is_empty()).then_some(text)
-        }
-        MessageContent::ToolCall { .. } | MessageContent::ToolResult { .. } => None,
     }
 }
 

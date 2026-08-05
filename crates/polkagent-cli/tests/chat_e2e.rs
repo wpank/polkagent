@@ -107,6 +107,35 @@ fn non_tty_chat_keeps_stdout_clean_and_resumes_durable_transcript_after_restart(
     assert!(first_stderr.contains("[usage]"));
     let conversation_id = session_id(&first_stderr).to_owned();
 
+    // Low-level conversation rows not correlated by an interaction turn must
+    // never bleed into the surface-neutral transcript projection.
+    {
+        let connection = rusqlite::Connection::open(&database_path)
+            .expect("open chat DB for unlinked message fixture");
+        connection
+            .execute(
+                "INSERT INTO conversation_messages
+                     (id, conversation_id, role, content_json, created_at)
+                 VALUES (?1, ?2, 'user', ?3, '2026-01-01T00:00:01Z')",
+                rusqlite::params![
+                    uuid::Uuid::now_v7().to_string(),
+                    &conversation_id,
+                    serde_json::json!({
+                        "type": "text",
+                        "text": "unlinked message must not render",
+                    })
+                    .to_string(),
+                ],
+            )
+            .expect("insert unlinked conversation message");
+        connection
+            .execute(
+                "UPDATE conversations SET message_count = message_count + 1 WHERE id = ?1",
+                [&conversation_id],
+            )
+            .expect("update unlinked message count");
+    }
+
     let mut resumed = chat_command(&database_path, &log_path, &config_path);
     resumed.args([
         "chat",

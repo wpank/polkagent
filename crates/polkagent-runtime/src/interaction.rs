@@ -1,5 +1,6 @@
 //! Durable headless interaction service over one shared runtime.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,9 +17,11 @@ use polkagent_interaction::{
     InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
     InteractionEvent, InteractionEventHub, InteractionEventId, InteractionOverrides,
     InteractionRunLink, InteractionService, InteractionState, InteractionStore, InteractionSummary,
-    InteractionTarget, InteractionTurnId, ListInteractionsRequest, NewAssistantMessage,
-    NewInteraction, NewInteractionEvent, NewInteractionTurn, OverrideValue, PromptRequest, RunRole,
-    StartedTurn, SubscriptionRequest, TurnResult, TurnSummary, UsageView,
+    InteractionTarget, InteractionTranscriptTurn, InteractionTurnId, ListInteractionsRequest,
+    NewAssistantMessage, NewInteraction, NewInteractionEvent, NewInteractionTurn, OverrideValue,
+    PromptRequest, RunRole, StartedTurn, StoredTranscriptMessage, StoredTranscriptRole,
+    StoredTranscriptTurn, SubscriptionRequest, TranscriptRequest, TurnResult, TurnSummary,
+    UsageView,
 };
 use polkagent_service::AppService;
 use polkagent_store_sqlite::{SqliteInteractionStore, SqlitePool, SqliteRunStore};
@@ -317,6 +320,35 @@ impl DurableInteractionService {
                 "interaction user message has incompatible role or content",
             )),
         }
+    }
+
+    async fn transcript_page(
+        &self,
+        request: TranscriptRequest,
+    ) -> Result<Vec<InteractionTranscriptTurn>, InteractionError> {
+        request.validate()?;
+        let stored = self.store.load_transcript_turns(request).await?;
+        let mut message_ids = HashSet::with_capacity(stored.len().saturating_mul(2));
+        for item in &stored {
+            if !message_ids.insert(item.turn.user_message_id) {
+                return Err(internal_error(
+                    "interaction transcript user message is linked more than once",
+                ));
+            }
+            if item
+                .turn
+                .assistant_message_id
+                .is_some_and(|message_id| !message_ids.insert(message_id))
+            {
+                return Err(internal_error(
+                    "interaction transcript assistant message is linked more than once",
+                ));
+            }
+        }
+        stored
+            .into_iter()
+            .map(|stored| project_transcript_turn(stored, request.conversation_id))
+            .collect()
     }
 
     async fn retry_existing_turn(
@@ -774,6 +806,13 @@ impl InteractionService for DurableInteractionService {
             .collect())
     }
 
+    async fn load_transcript(
+        &self,
+        request: TranscriptRequest,
+    ) -> Result<Vec<InteractionTranscriptTurn>, InteractionError> {
+        self.transcript_page(request).await
+    }
+
     async fn delete_interaction(
         &self,
         conversation_id: ConversationId,
@@ -921,6 +960,90 @@ impl InteractionService for DurableInteractionService {
         self.store.load_interaction(request.conversation_id).await?;
         self.hub.subscribe(request).await
     }
+}
+
+fn project_transcript_turn(
+    stored: StoredTranscriptTurn,
+    conversation_id: ConversationId,
+) -> Result<InteractionTranscriptTurn, InteractionError> {
+    let turn = stored.turn;
+    let user = stored.user_message.ok_or_else(|| {
+        internal_error("interaction transcript is missing its correlated user message")
+    })?;
+    if user.message_id != turn.user_message_id {
+        return Err(internal_error(
+            "interaction transcript returned the wrong user message identity",
+        ));
+    }
+    let (user_text, user_token_count) =
+        correlated_plain_text(user, conversation_id, StoredTranscriptRole::User, "user")?;
+    let (assistant_text, assistant_token_count) =
+        match (turn.summary.state.is_terminal(), turn.assistant_message_id) {
+            (true, Some(message_id)) => {
+                let assistant = stored.assistant_message.ok_or_else(|| {
+                    internal_error("terminal interaction turn is missing its assistant transcript")
+                })?;
+                if assistant.message_id != message_id {
+                    return Err(internal_error(
+                        "interaction transcript returned the wrong assistant message identity",
+                    ));
+                }
+                let (text, tokens) = correlated_plain_text(
+                    assistant,
+                    conversation_id,
+                    StoredTranscriptRole::Assistant,
+                    "assistant",
+                )?;
+                (Some(text), tokens)
+            }
+            (true, None) => {
+                return Err(internal_error(
+                    "terminal interaction turn is missing its assistant transcript",
+                ));
+            }
+            (false, Some(_) | None) if stored.assistant_message.is_some() => {
+                return Err(internal_error(
+                    "active interaction turn already has an assistant transcript",
+                ));
+            }
+            (false, Some(_)) => {
+                return Err(internal_error(
+                    "active interaction turn has a durable assistant message identity",
+                ));
+            }
+            (false, None) => (None, None),
+        };
+    Ok(InteractionTranscriptTurn {
+        turn: turn.summary,
+        user_text,
+        user_token_count,
+        assistant_text,
+        assistant_token_count,
+    })
+}
+
+fn correlated_plain_text(
+    message: StoredTranscriptMessage,
+    conversation_id: ConversationId,
+    expected_role: StoredTranscriptRole,
+    label: &str,
+) -> Result<(String, Option<u32>), InteractionError> {
+    if message.conversation_id != conversation_id {
+        return Err(internal_error(
+            "interaction transcript message belongs to another conversation",
+        ));
+    }
+    if message.role != expected_role {
+        return Err(internal_error(&format!(
+            "interaction transcript {label} message has a mismatched role"
+        )));
+    }
+    let text = message.text.ok_or_else(|| {
+        internal_error(&format!(
+            "interaction transcript {label} message contains unsupported rich content"
+        ))
+    })?;
+    Ok((text, message.token_count))
 }
 
 fn prompt_text(content: &[InteractionContent]) -> Result<String, InteractionError> {
@@ -1156,6 +1279,422 @@ mod tests {
             .await
             .expect("seed interaction");
         store
+    }
+
+    #[derive(Clone, Copy)]
+    enum TranscriptOutcome {
+        Active,
+        Completed,
+        Failed,
+        Cancelled,
+        TimedOut,
+    }
+
+    async fn seed_transcript_turn(
+        pool: &SqlitePool,
+        store: &SqliteInteractionStore,
+        agent_id: AgentId,
+        conversation_id: ConversationId,
+        ordinal: u32,
+        outcome: TranscriptOutcome,
+        assistant_text: &str,
+    ) -> polkagent_interaction::StoredInteractionTurn {
+        let run_id = RunId::new();
+        RunStore::create_correlated(
+            pool,
+            run_id,
+            &agent_id.to_string(),
+            Some(&conversation_id.to_string()),
+            RunStatus::new("created"),
+        )
+        .await
+        .expect("prepare transcript run");
+        let turn_id = InteractionTurnId::new();
+        let user_message_id = Uuid::now_v7();
+        store
+            .create_turn(NewInteractionTurn {
+                turn_id,
+                conversation_id,
+                ordinal,
+                target: InteractionTarget::Agent(agent_id),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                user_message_id,
+                user_message_text: format!("user-{ordinal}"),
+                runs: vec![InteractionRunLink {
+                    run_id,
+                    role: RunRole::Primary,
+                    ordinal: 1,
+                }],
+                initial_event_id: InteractionEventId::new(),
+                started_at: Utc::now(),
+            })
+            .await
+            .expect("seed transcript turn");
+        let assistant_message_id = if matches!(outcome, TranscriptOutcome::Active) {
+            None
+        } else {
+            let event = match outcome {
+                TranscriptOutcome::Completed => InteractionEvent::TurnCompleted {
+                    result: TurnResult {
+                        text: assistant_text.to_owned(),
+                        run_ids: vec![run_id],
+                        usage: UsageView {
+                            input_tokens: 11,
+                            output_tokens: 13,
+                            ..UsageView::default()
+                        },
+                    },
+                },
+                TranscriptOutcome::Failed => InteractionEvent::TurnFailed {
+                    error: InteractionError::new(
+                        InteractionErrorCode::Unavailable,
+                        "fixture failure",
+                    ),
+                },
+                TranscriptOutcome::Cancelled => InteractionEvent::TurnCancelled {
+                    reason: Some("fixture cancellation".to_owned()),
+                },
+                TranscriptOutcome::TimedOut => InteractionEvent::TurnTimedOut,
+                TranscriptOutcome::Active => unreachable!("active turns do not finish"),
+            };
+            let message_id = Uuid::now_v7();
+            store
+                .finish_turn(
+                    NewInteractionEvent {
+                        event_id: InteractionEventId::new(),
+                        conversation_id,
+                        turn_id,
+                        timestamp: Utc::now(),
+                        event,
+                    },
+                    NewAssistantMessage {
+                        message_id,
+                        text: assistant_text.to_owned(),
+                        created_at: Utc::now(),
+                    },
+                )
+                .await
+                .expect("finish transcript turn");
+            Some(message_id)
+        };
+        {
+            let writer = pool.writer();
+            writer
+                .execute(
+                    "UPDATE conversation_messages SET token_count = ?1 WHERE id = ?2",
+                    rusqlite::params![i64::from(ordinal), user_message_id.to_string()],
+                )
+                .expect("set user transcript tokens");
+            if let Some(message_id) = assistant_message_id {
+                writer
+                    .execute(
+                        "UPDATE conversation_messages SET token_count = ?1 WHERE id = ?2",
+                        rusqlite::params![i64::from(ordinal) + 10, message_id.to_string()],
+                    )
+                    .expect("set assistant transcript tokens");
+            }
+        }
+        store.load_turn(turn_id).await.expect("reload seeded turn")
+    }
+
+    #[tokio::test]
+    async fn transcript_projection_survives_service_restart_and_preserves_turn_truth() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let (app, _service, _bus) = test_service(&pool, spec, false);
+        let conversation_id = ConversationId::new();
+        let store = seed_interaction(&pool, agent_id, conversation_id).await;
+        for (ordinal, outcome, assistant) in [
+            (1, TranscriptOutcome::Completed, "completed"),
+            (2, TranscriptOutcome::Failed, "partial"),
+            (3, TranscriptOutcome::Cancelled, ""),
+            (4, TranscriptOutcome::TimedOut, "before timeout"),
+            (5, TranscriptOutcome::Active, ""),
+        ] {
+            seed_transcript_turn(
+                &pool,
+                &store,
+                agent_id,
+                conversation_id,
+                ordinal,
+                outcome,
+                assistant,
+            )
+            .await;
+        }
+
+        let restarted = DurableInteractionService::new(app, pool);
+        let transcript = restarted
+            .load_transcript(TranscriptRequest {
+                conversation_id,
+                limit: 100,
+                offset: 0,
+            })
+            .await
+            .expect("load restarted transcript");
+        assert_eq!(transcript.len(), 5);
+        assert_eq!(
+            transcript
+                .iter()
+                .map(|turn| turn.turn.state)
+                .collect::<Vec<_>>(),
+            vec![
+                TurnState::Completed,
+                TurnState::Failed,
+                TurnState::Cancelled,
+                TurnState::TimedOut,
+                TurnState::Running,
+            ]
+        );
+        for (index, turn) in transcript.iter().enumerate() {
+            let ordinal = u32::try_from(index + 1).expect("fixture ordinal");
+            assert_eq!(turn.turn.ordinal, ordinal);
+            assert_eq!(turn.user_text, format!("user-{ordinal}"));
+            assert_eq!(turn.user_token_count, Some(ordinal));
+            assert_eq!(
+                turn.assistant_token_count,
+                (ordinal < 5).then_some(ordinal + 10)
+            );
+        }
+        assert_eq!(transcript[0].assistant_text.as_deref(), Some("completed"));
+        assert_eq!(transcript[1].assistant_text.as_deref(), Some("partial"));
+        assert_eq!(transcript[2].assistant_text.as_deref(), Some(""));
+        assert_eq!(
+            transcript[3].assistant_text.as_deref(),
+            Some("before timeout")
+        );
+        assert_eq!(transcript[4].assistant_text, None);
+    }
+
+    #[tokio::test]
+    async fn transcript_projection_fails_closed_on_missing_mismatched_and_rich_messages() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let (_app, service, _bus) = test_service(&pool, spec, false);
+
+        for (case, corruption, expected) in [
+            (
+                "missing",
+                "UPDATE interaction_turns SET state = 'completed', completed_at = started_at WHERE id = ?1",
+                "missing its assistant transcript",
+            ),
+            (
+                "mismatched",
+                "UPDATE conversation_messages SET role = 'assistant' WHERE id = ?1",
+                "mismatched role",
+            ),
+            (
+                "rich",
+                "UPDATE conversation_messages SET content_json = '{\"type\":\"tool_call\",\"name\":\"fixture\",\"arguments\":{}}' WHERE id = ?1",
+                "unsupported rich content",
+            ),
+        ] {
+            let conversation_id = ConversationId::new();
+            let store = seed_interaction(&pool, agent_id, conversation_id).await;
+            let turn = seed_transcript_turn(
+                &pool,
+                &store,
+                agent_id,
+                conversation_id,
+                1,
+                TranscriptOutcome::Active,
+                "",
+            )
+            .await;
+            let target = if case == "missing" {
+                turn.summary.handle.turn_id.to_string()
+            } else {
+                turn.user_message_id.to_string()
+            };
+            pool.writer()
+                .execute(corruption, [target])
+                .expect("corrupt transcript correlation");
+            let error = service
+                .load_transcript(TranscriptRequest {
+                    conversation_id,
+                    limit: 100,
+                    offset: 0,
+                })
+                .await
+                .expect_err("corrupt transcript must fail closed");
+            assert_eq!(error.code, InteractionErrorCode::Internal, "{case}");
+            assert!(error.message.contains(expected), "{case}: {error}");
+        }
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the single transaction keeps the 1001-turn pagination fixture fast and auditable"
+    )]
+    async fn transcript_projection_pages_beyond_one_thousand_turns_and_messages() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let (_app, service, _bus) = test_service(&pool, spec, false);
+        let conversation_id = ConversationId::new();
+        seed_interaction(&pool, agent_id, conversation_id).await;
+        let target = InteractionTarget::Agent(agent_id);
+        let target_json = serde_json::to_string(&target).expect("encode target");
+        let config_json =
+            serde_json::to_string(&InteractionConfig::new(target.clone())).expect("encode config");
+        {
+            let mut writer = pool.writer();
+            let transaction = writer.transaction().expect("begin large transcript seed");
+            for ordinal in 1..=1_002_i64 {
+                let turn_id = InteractionTurnId::new();
+                let run_id = RunId::new();
+                let user_id = Uuid::now_v7();
+                let assistant_id = Uuid::now_v7();
+                let event_id = InteractionEventId::new();
+                let timestamp = (Utc::now() + chrono::Duration::milliseconds(ordinal)).to_rfc3339();
+                for (message_id, role, text, tokens) in [
+                    (user_id, "user", format!("user-{ordinal}"), ordinal),
+                    (
+                        assistant_id,
+                        "assistant",
+                        format!("assistant-{ordinal}"),
+                        ordinal + 10,
+                    ),
+                ] {
+                    let content = serde_json::to_string(&MessageContent::Text { text })
+                        .expect("encode transcript message");
+                    transaction
+                        .execute(
+                            "INSERT INTO conversation_messages
+                             (id, conversation_id, role, content_json, token_count, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            rusqlite::params![
+                                message_id.to_string(),
+                                conversation_id.to_string(),
+                                role,
+                                content,
+                                tokens,
+                                &timestamp,
+                            ],
+                        )
+                        .expect("seed paged transcript message");
+                }
+                transaction
+                .execute(
+                    "INSERT INTO runs
+                         (id, agent_id, conversation_id, state, params_json, created_at, updated_at, completed_at)
+                     VALUES (?1, ?2, ?3, 'completed', '{}', ?4, ?4, ?4)",
+                    rusqlite::params![
+                        run_id.to_string(),
+                        agent_id.to_string(),
+                        conversation_id.to_string(),
+                        &timestamp,
+                    ],
+                )
+                .expect("seed paged transcript run");
+                transaction
+                    .execute(
+                        "INSERT INTO interaction_turns
+                         (id, conversation_id, ordinal, state, target_json, config_json,
+                          user_message_id, assistant_message_id, started_at, completed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                        rusqlite::params![
+                            turn_id.to_string(),
+                            conversation_id.to_string(),
+                            ordinal,
+                            match ordinal {
+                                1_001 => "failed",
+                                1_002 => "cancelled",
+                                _ => "completed",
+                            },
+                            &target_json,
+                            &config_json,
+                            user_id.to_string(),
+                            assistant_id.to_string(),
+                            &timestamp,
+                        ],
+                    )
+                    .expect("seed paged transcript turn");
+                transaction
+                    .execute(
+                        "INSERT INTO interaction_turn_runs (turn_id, run_id, role_json, ordinal)
+                     VALUES (?1, ?2, '\"primary\"', 1)",
+                        rusqlite::params![turn_id.to_string(), run_id.to_string()],
+                    )
+                    .expect("seed paged transcript run link");
+                let event = InteractionEvent::TurnStarted {
+                    target: target.clone(),
+                    runs: vec![(run_id, RunRole::Primary)],
+                };
+                transaction
+                .execute(
+                    "INSERT INTO interaction_events
+                         (id, conversation_id, turn_id, sequence, kind, payload_json, is_terminal, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 'turn_started', ?5, 0, ?6)",
+                    rusqlite::params![
+                        event_id.to_string(),
+                        conversation_id.to_string(),
+                        turn_id.to_string(),
+                        ordinal,
+                        serde_json::to_string(&event).expect("encode turn event"),
+                        &timestamp,
+                    ],
+                )
+                .expect("seed paged transcript event");
+            }
+            let unlinked_content = serde_json::to_string(&MessageContent::Text {
+                text: "unlinked-low-level-message".to_owned(),
+            })
+            .expect("encode unlinked message");
+            transaction
+                .execute(
+                    "INSERT INTO conversation_messages
+                     (id, conversation_id, role, content_json, token_count, created_at)
+                 VALUES (?1, ?2, 'user', ?3, 999999, ?4)",
+                    rusqlite::params![
+                        Uuid::now_v7().to_string(),
+                        conversation_id.to_string(),
+                        unlinked_content,
+                        Utc::now().to_rfc3339(),
+                    ],
+                )
+                .expect("seed unlinked low-level message");
+            transaction
+                .execute(
+                    "UPDATE conversations SET message_count = 2005 WHERE id = ?1",
+                    [conversation_id.to_string()],
+                )
+                .expect("update paged transcript count");
+            transaction.commit().expect("commit large transcript seed");
+        }
+
+        let tail = service
+            .load_transcript(TranscriptRequest {
+                conversation_id,
+                limit: 3,
+                offset: 999,
+            })
+            .await
+            .expect("load transcript tail across message pages");
+        assert_eq!(tail.len(), 3);
+        assert_eq!(tail[0].turn.ordinal, 1_000);
+        assert_eq!(tail[0].turn.state, TurnState::Completed);
+        assert_eq!(tail[0].user_text, "user-1000");
+        assert_eq!(tail[0].assistant_text.as_deref(), Some("assistant-1000"));
+        assert_eq!(tail[1].turn.ordinal, 1_001);
+        assert_eq!(tail[1].turn.state, TurnState::Failed);
+        assert_eq!(tail[1].user_token_count, Some(1_001));
+        assert_eq!(tail[1].assistant_token_count, Some(1_011));
+        assert_eq!(tail[2].turn.ordinal, 1_002);
+        assert_eq!(tail[2].turn.state, TurnState::Cancelled);
+        assert_eq!(tail[2].assistant_text.as_deref(), Some("assistant-1002"));
+        assert!(tail
+            .iter()
+            .all(|turn| !turn.user_text.contains("unlinked-low-level-message")));
+        assert!(service
+            .load_transcript(TranscriptRequest {
+                conversation_id,
+                limit: 100,
+                offset: 1_002,
+            })
+            .await
+            .expect("load empty transcript tail")
+            .is_empty());
     }
 
     #[tokio::test]

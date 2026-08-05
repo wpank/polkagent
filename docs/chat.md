@@ -21,6 +21,14 @@ polkagent chat --agent research-agent --resume <conversation-id>
 
 Resume verifies that the interaction still targets the selected agent and
 prints its persisted user/assistant transcript before accepting more input.
+Transcript reads go through the surface-neutral interaction service as bounded,
+ordinal pages. Each item is correlated to its durable turn and exact user and
+optional assistant message identity; broken, mismatched, or rich-content
+correlations fail closed instead of being guessed from message order. Active
+turns show their user text without inventing an assistant response.
+The SQLite persistence adapter applies the requested ordinal limit/offset
+before loading those exact message IDs, so an unrelated or very large
+conversation history is not scanned into each transcript page.
 Group and automatic targets are deliberately refused; terminal chat does not
 pretend that group orchestration is wired when it is not.
 
@@ -86,6 +94,10 @@ If the bounded live event stream lags, chat re-subscribes through the durable
 interaction service after its last delivered checkpoint and replays the gap.
 It does not abandon still-active work merely because a live receiver fell
 behind.
+
+The transcript is a durable UI projection only. Polkagent does not currently
+claim that earlier transcript turns are automatically supplied to the model as
+context for a later prompt.
 
 For Zed and other ACP-capable editors, use `polkagent acp`; see
 [`acp-zed.md`](acp-zed.md). ACP owns stdout as JSON-RPC transport, whereas

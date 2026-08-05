@@ -353,7 +353,7 @@ mod tests {
     use crate::ids::InteractionTurnId;
     use crate::model::{
         ClientContext, InteractionState, InteractionSummary, ListInteractionsRequest,
-        PromptRequest, SubscriptionRequest, TurnSummary,
+        PromptRequest, SubscriptionRequest, TranscriptRequest, TurnSummary,
     };
     use crate::service::{BoxInteractionEventStream, StartedTurn};
 
@@ -646,6 +646,21 @@ mod tests {
             client_context: ClientContext::new(PathBuf::from("/tmp/project"))
                 .expect("absolute client context"),
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_surface_fake_gets_explicit_transcript_unsupported_default() {
+        let fixture = fixture();
+        let error = fixture
+            .interactions
+            .load_transcript(TranscriptRequest {
+                conversation_id: fixture.conversation_id,
+                limit: 100,
+                offset: 0,
+            })
+            .await
+            .expect_err("fake has no transcript composition");
+        assert_eq!(error.code, InteractionErrorCode::Unsupported);
     }
 
     #[tokio::test]

@@ -398,6 +398,51 @@ pub struct TurnSummary {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// One turn in a durable, surface-neutral interaction transcript.
+///
+/// The projection is correlated through the message identities retained by
+/// the durable interaction turn. It intentionally exposes plain text rather
+/// than conversation-store message types, and it does not imply that earlier
+/// turns were supplied as model context for a later run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InteractionTranscriptTurn {
+    /// Durable lifecycle, target-run correlation, and ordinal.
+    pub turn: TurnSummary,
+    /// Exact durable plain-text user message for this turn.
+    pub user_text: String,
+    /// Stored user token count, when one was recorded.
+    pub user_token_count: Option<u32>,
+    /// Exact durable plain-text assistant message once atomically attached.
+    /// Active turns have no assistant text; terminal turns must have one,
+    /// which may be an empty string after failure or cancellation.
+    pub assistant_text: Option<String>,
+    /// Stored assistant token count, when one was recorded.
+    pub assistant_token_count: Option<u32>,
+}
+
+/// Stable ordinal page requested from a durable interaction transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptRequest {
+    /// Interaction whose correlated turns should be loaded.
+    pub conversation_id: ConversationId,
+    /// Maximum turns to return, between 1 and 1,000.
+    pub limit: u32,
+    /// Number of ordinal-ordered turns to skip.
+    pub offset: u32,
+}
+
+impl TranscriptRequest {
+    /// Validate the bounded page shape.
+    pub fn validate(&self) -> Result<(), InteractionError> {
+        if self.limit == 0 || self.limit > 1_000 {
+            return Err(InteractionError::invalid_request(
+                "transcript limit must be between 1 and 1000",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Request to create a durable interaction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateInteractionRequest {
@@ -675,5 +720,46 @@ mod tests {
             capacity: 0,
         };
         assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn transcript_pages_are_bounded_to_one_thousand_turns() {
+        let mut request = TranscriptRequest {
+            conversation_id: ConversationId::new(),
+            limit: 0,
+            offset: u32::MAX,
+        };
+        assert!(request.validate().is_err());
+        request.limit = 1_001;
+        assert!(request.validate().is_err());
+        request.limit = 1_000;
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn transcript_turn_round_trip_preserves_empty_terminal_text_and_tokens() {
+        let conversation_id = ConversationId::new();
+        let projection = InteractionTranscriptTurn {
+            turn: TurnSummary {
+                handle: TurnHandle {
+                    turn_id: InteractionTurnId::new(),
+                    conversation_id,
+                    run_ids: vec![RunId::new()],
+                    first_event_sequence: 7,
+                },
+                ordinal: 3,
+                state: TurnState::Cancelled,
+                started_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+            },
+            user_text: "stop".to_owned(),
+            user_token_count: Some(1),
+            assistant_text: Some(String::new()),
+            assistant_token_count: Some(0),
+        };
+        let encoded = serde_json::to_value(&projection).expect("serialize transcript turn");
+        let decoded: InteractionTranscriptTurn =
+            serde_json::from_value(encoded).expect("deserialize transcript turn");
+        assert_eq!(decoded, projection);
     }
 }

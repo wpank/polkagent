@@ -10,7 +10,8 @@ use polkagent_interaction::{
     InteractionError, InteractionErrorCode, InteractionEvent, InteractionEventEnvelope,
     InteractionEventId, InteractionRunLink, InteractionState, InteractionStore, InteractionSummary,
     InteractionTurnId, ListInteractionsRequest, NewAssistantMessage, NewInteraction,
-    NewInteractionEvent, NewInteractionTurn, StoredInteractionTurn, TurnHandle, TurnState,
+    NewInteractionEvent, NewInteractionTurn, StoredInteractionTurn, StoredTranscriptMessage,
+    StoredTranscriptRole, StoredTranscriptTurn, TranscriptRequest, TurnHandle, TurnState,
     TurnSummary,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction};
@@ -281,6 +282,69 @@ impl InteractionStore for SqliteInteractionStore {
             ids.into_iter()
                 .map(|id| {
                     parse_id("interaction turn", &id).and_then(|id| load_turn_conn(&writer, id))
+                })
+                .collect()
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn load_transcript_turns(
+        &self,
+        request: TranscriptRequest,
+    ) -> Result<Vec<StoredTranscriptTurn>, InteractionError> {
+        request.validate()?;
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            // Preserve NotFound for an empty or out-of-range page without
+            // computing the interaction's total turn count.
+            let exists = writer
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM interaction_sessions WHERE conversation_id = ?1
+                     )",
+                    [request.conversation_id.to_string()],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| backend_error("check transcript interaction", &error))?;
+            if !exists {
+                return Err(not_found_error("interaction was not found"));
+            }
+            let mut statement = writer
+                .prepare(
+                    "SELECT id FROM interaction_turns
+                     WHERE conversation_id = ?1 ORDER BY ordinal ASC
+                     LIMIT ?2 OFFSET ?3",
+                )
+                .map_err(|error| backend_error("prepare transcript turn page", &error))?;
+            let ids = statement
+                .query_map(
+                    rusqlite::params![
+                        request.conversation_id.to_string(),
+                        i64::from(request.limit),
+                        i64::from(request.offset),
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| backend_error("query transcript turn page", &error))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| backend_error("decode transcript turn page", &error))?;
+            ids.into_iter()
+                .map(|id| {
+                    let turn_id = parse_id("interaction turn", &id)?;
+                    let turn = load_turn_conn(&writer, turn_id)?;
+                    let user_message = load_transcript_message_conn(&writer, turn.user_message_id)?;
+                    let assistant_message = turn
+                        .assistant_message_id
+                        .map(|message_id| load_transcript_message_conn(&writer, message_id))
+                        .transpose()?
+                        .flatten();
+                    Ok(StoredTranscriptTurn {
+                        turn,
+                        user_message,
+                        assistant_message,
+                    })
                 })
                 .collect()
         })
@@ -1109,6 +1173,58 @@ fn load_turn_conn(
             .map(|value| decode_json("interaction failure", value))
             .transpose()?,
     })
+}
+
+fn load_transcript_message_conn(
+    connection: &Connection,
+    message_id: Uuid,
+) -> Result<Option<StoredTranscriptMessage>, InteractionError> {
+    let row = connection
+        .query_row(
+            "SELECT conversation_id, role, content_json, token_count
+             FROM conversation_messages WHERE id = ?1",
+            [message_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| backend_error("load correlated transcript message", &error))?;
+    let Some((conversation_id, role, content_json, token_count)) = row else {
+        return Ok(None);
+    };
+    let role = match role.as_str() {
+        "user" => StoredTranscriptRole::User,
+        "assistant" => StoredTranscriptRole::Assistant,
+        "system" => StoredTranscriptRole::System,
+        "tool" => StoredTranscriptRole::Tool,
+        _ => return Err(invariant_error("stored transcript message role is invalid")),
+    };
+    let content: MessageContent = decode_json("transcript message content", &content_json)?;
+    let text = match content {
+        MessageContent::Text { text } => Some(text),
+        MessageContent::ToolCall { .. }
+        | MessageContent::ToolResult { .. }
+        | MessageContent::Mixed { .. } => None,
+    };
+    let token_count = token_count
+        .map(|value| {
+            u32::try_from(value)
+                .map_err(|_| invariant_error("stored transcript token count is invalid"))
+        })
+        .transpose()?;
+    Ok(Some(StoredTranscriptMessage {
+        message_id,
+        conversation_id: parse_id("conversation", &conversation_id)?,
+        role,
+        text,
+        token_count,
+    }))
 }
 
 fn load_event_by_id(

@@ -9,7 +9,8 @@ use crate::event::InteractionEventEnvelope;
 use crate::ids::InteractionTurnId;
 use crate::model::{
     ConfigUpdate, CreateInteractionRequest, InteractionConfig, InteractionSummary,
-    ListInteractionsRequest, PromptRequest, SubscriptionRequest, TurnHandle, TurnSummary,
+    InteractionTranscriptTurn, ListInteractionsRequest, PromptRequest, SubscriptionRequest,
+    TranscriptRequest, TurnHandle, TurnSummary,
 };
 
 /// Failure observed while consuming an interaction event stream.
@@ -107,6 +108,21 @@ pub trait InteractionService: Send + Sync {
         &self,
         conversation_id: ConversationId,
     ) -> Result<Vec<TurnSummary>, InteractionError>;
+
+    /// Load an ordinal page of exact, turn-correlated durable transcript text.
+    ///
+    /// The default preserves source compatibility for surfaces and test fakes
+    /// that do not yet compose a transcript store. Production durable services
+    /// should override it and fail closed on broken message correlation.
+    async fn load_transcript(
+        &self,
+        _request: TranscriptRequest,
+    ) -> Result<Vec<InteractionTranscriptTurn>, InteractionError> {
+        Err(InteractionError::new(
+            crate::InteractionErrorCode::Unsupported,
+            "durable interaction transcript projection is unavailable",
+        ))
+    }
 
     /// Delete or tombstone an interaction according to runtime retention policy.
     async fn delete_interaction(

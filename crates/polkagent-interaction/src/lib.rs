@@ -57,12 +57,13 @@ pub use model::{
     ApprovalDecision, ClientCapabilities, ClientCapability, ClientContext, ConfigOption,
     ConfigOptionValue, ConfigUpdate, CreateInteractionRequest, InteractionConfig,
     InteractionContent, InteractionOverrides, InteractionState, InteractionSummary,
-    InteractionTarget, ListInteractionsRequest, OverrideValue, PromptRequest, SubscriptionRequest,
-    TurnHandle, TurnState, TurnSummary,
+    InteractionTarget, InteractionTranscriptTurn, ListInteractionsRequest, OverrideValue,
+    PromptRequest, SubscriptionRequest, TranscriptRequest, TurnHandle, TurnState, TurnSummary,
 };
 pub use persistence::{
     InteractionRunLink, InteractionStore, NewAssistantMessage, NewInteraction, NewInteractionEvent,
-    NewInteractionTurn, StoredInteractionTurn,
+    NewInteractionTurn, StoredInteractionTurn, StoredTranscriptMessage, StoredTranscriptRole,
+    StoredTranscriptTurn,
 };
 pub use service::{
     BoxInteractionEventStream, InteractionEventStream, InteractionService, StartedTurn, StreamError,
