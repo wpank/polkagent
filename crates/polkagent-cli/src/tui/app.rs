@@ -14,13 +14,15 @@
 //! | **Total**        | **~8 ms** |
 
 use std::io::Stdout;
+use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
+    cursor::Show,
+    event::{DisableMouseCapture, EnableMouseCapture, Event},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -261,13 +263,12 @@ impl App {
             // 1. Poll input (non-blocking).
             let timeout = FRAME_DURATION.saturating_sub(last_frame.elapsed());
             if crossterm::event::poll(timeout)? {
-                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                let event = crossterm::event::read()?;
+                if matches!(event, Event::Key(_)) {
                     self.last_input = Instant::now();
-                    if let Some(action) = key_to_action(key, self.input_mode) {
-                        self.apply_action(action);
-                    }
-                } else if let crossterm::event::Event::Resize(w, h) = crossterm::event::read()? {
-                    self.apply_action(TuiAction::Resize(w, h));
+                }
+                if let Some(action) = terminal_event_to_action(&event, self.input_mode) {
+                    self.apply_action(action);
                 }
             }
 
@@ -1253,6 +1254,19 @@ impl App {
     }
 }
 
+/// Translate one already-read terminal event into an application action.
+///
+/// Keeping event acquisition outside this function ensures each successful
+/// poll consumes exactly one event. In particular, resize events must not
+/// trigger a second blocking read while the first event is discarded.
+fn terminal_event_to_action(event: &Event, input_mode: InputMode) -> Option<TuiAction> {
+    match event {
+        Event::Key(key) => key_to_action(*key, input_mode),
+        Event::Resize(width, height) => Some(TuiAction::Resize(*width, *height)),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Layout computation
 // ---------------------------------------------------------------------------
@@ -1288,25 +1302,267 @@ fn compute_layout(area: Rect) -> TuiLayout {
 // Terminal init / teardown
 // ---------------------------------------------------------------------------
 
-/// Enter alternate screen mode and return a configured terminal.
-pub fn enter_tui() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreStep {
+    RawMode,
+    AlternateScreen,
+    MouseCapture,
+    Cursor,
+}
+
+impl RestoreStep {
+    const ALL: [Self; 4] = [
+        Self::RawMode,
+        Self::AlternateScreen,
+        Self::MouseCapture,
+        Self::Cursor,
+    ];
+
+    const fn mask(self) -> u8 {
+        match self {
+            Self::RawMode => 1 << 0,
+            Self::AlternateScreen => 1 << 1,
+            Self::MouseCapture => 1 << 2,
+            Self::Cursor => 1 << 3,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::RawMode => "disable raw mode",
+            Self::AlternateScreen => "leave alternate screen",
+            Self::MouseCapture => "disable mouse capture",
+            Self::Cursor => "show cursor",
+        }
+    }
+}
+
+trait RestoreActions {
+    fn restore(&mut self, step: RestoreStep) -> std::io::Result<()>;
+}
+
+struct CrosstermRestoreActions;
+
+impl RestoreActions for CrosstermRestoreActions {
+    fn restore(&mut self, step: RestoreStep) -> std::io::Result<()> {
+        match step {
+            RestoreStep::RawMode => crossterm::terminal::disable_raw_mode(),
+            RestoreStep::AlternateScreen => {
+                let mut stdout = std::io::stdout();
+                execute!(stdout, LeaveAlternateScreen)
+            }
+            RestoreStep::MouseCapture => {
+                let mut stdout = std::io::stdout();
+                execute!(stdout, DisableMouseCapture)
+            }
+            RestoreStep::Cursor => {
+                let mut stdout = std::io::stdout();
+                execute!(stdout, Show)
+            }
+        }
+    }
+}
+
+struct RestoreProgress(u8);
+
+impl RestoreProgress {
+    const fn pending() -> Self {
+        Self((1 << RestoreStep::ALL.len()) - 1)
+    }
+
+    const fn contains(&self, step: RestoreStep) -> bool {
+        self.0 & step.mask() != 0
+    }
+
+    fn complete(&mut self, step: RestoreStep) {
+        self.0 &= !step.mask();
+    }
+}
+
+struct RestorationGuard<A: RestoreActions> {
+    actions: A,
+    pending: RestoreProgress,
+}
+
+impl<A: RestoreActions> RestorationGuard<A> {
+    const fn new(actions: A) -> Self {
+        Self {
+            actions,
+            pending: RestoreProgress::pending(),
+        }
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        let mut errors = Vec::new();
+
+        for step in RestoreStep::ALL {
+            if !self.pending.contains(step) {
+                continue;
+            }
+            match self.actions.restore(step) {
+                Ok(()) => self.pending.complete(step),
+                Err(error) => errors.push(format!("{}: {error}", step.label())),
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "terminal restoration failed: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+}
+
+impl<A: RestoreActions> Drop for RestorationGuard<A> {
+    fn drop(&mut self) {
+        // A best-effort retry covers setup failures, early returns, and
+        // unwinding. Explicit teardown still reports its first-pass errors.
+        drop(self.restore());
+    }
+}
+
+/// A configured terminal paired with a drop-backed restoration guard.
+///
+/// The wrapper dereferences to ratatui's terminal so callers can render as
+/// usual. If setup, the event loop, or explicit teardown returns an error (or
+/// unwinds), the guard still attempts every terminal restoration action.
+pub struct TuiTerminal {
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+    restoration: RestorationGuard<CrosstermRestoreActions>,
+}
+
+impl Deref for TuiTerminal {
+    type Target = Terminal<CrosstermBackend<Stdout>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.terminal
+    }
+}
+
+impl DerefMut for TuiTerminal {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.terminal
+    }
+}
+
+/// Enter alternate screen mode and return a guarded, configured terminal.
+pub fn enter_tui() -> Result<TuiTerminal> {
+    let restoration = RestorationGuard::new(CrosstermRestoreActions);
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    Ok(terminal)
+    Ok(TuiTerminal {
+        terminal,
+        restoration,
+    })
 }
 
-/// Restore the terminal to its previous state.
-pub fn exit_tui(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-    Ok(())
+/// Restore the terminal to its previous state, attempting every action.
+pub fn exit_tui(terminal: &mut TuiTerminal) -> Result<()> {
+    terminal.restoration.restore()
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    struct RecordingRestoreActions {
+        calls: Arc<Mutex<Vec<RestoreStep>>>,
+        failing_step: Option<RestoreStep>,
+    }
+
+    impl RestoreActions for RecordingRestoreActions {
+        fn restore(&mut self, step: RestoreStep) -> std::io::Result<()> {
+            self.calls.lock().unwrap().push(step);
+            if self.failing_step == Some(step) {
+                Err(std::io::Error::other("injected restore failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn recording_actions(
+        failing_step: Option<RestoreStep>,
+    ) -> (RecordingRestoreActions, Arc<Mutex<Vec<RestoreStep>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        (
+            RecordingRestoreActions {
+                calls: Arc::clone(&calls),
+                failing_step,
+            },
+            calls,
+        )
+    }
+
+    fn fail_while_guarded(actions: RecordingRestoreActions) -> Result<()> {
+        let _restoration = RestorationGuard::new(actions);
+        Err(anyhow!("injected event-loop failure"))
+    }
+
+    #[test]
+    fn restoration_guard_restores_on_normal_error() {
+        let (actions, calls) = recording_actions(None);
+
+        let result = fail_while_guarded(actions);
+
+        assert!(result.is_err());
+        assert_eq!(*calls.lock().unwrap(), RestoreStep::ALL);
+    }
+
+    #[test]
+    fn restoration_guard_restores_while_unwinding_a_panic() {
+        let (actions, calls) = recording_actions(None);
+
+        let result = std::panic::catch_unwind(|| {
+            let _restoration = RestorationGuard::new(actions);
+            panic!("injected event-loop panic");
+        });
+
+        assert!(result.is_err());
+        assert_eq!(*calls.lock().unwrap(), RestoreStep::ALL);
+    }
+
+    #[test]
+    fn restoration_attempts_every_action_after_one_fails() {
+        let (actions, calls) = recording_actions(Some(RestoreStep::RawMode));
+        let mut restoration = RestorationGuard::new(actions);
+
+        let error = restoration
+            .restore()
+            .expect_err("raw-mode failure should surface");
+
+        assert!(error.to_string().contains("disable raw mode"));
+        assert_eq!(*calls.lock().unwrap(), RestoreStep::ALL);
+    }
+
+    #[test]
+    fn terminal_events_translate_without_another_read() {
+        let resize = Event::Resize(120, 42);
+        assert!(matches!(
+            terminal_event_to_action(&resize, InputMode::Normal),
+            Some(TuiAction::Resize(120, 42))
+        ));
+
+        let key = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            terminal_event_to_action(&key, InputMode::Normal),
+            Some(TuiAction::Quit)
+        ));
+
+        assert!(terminal_event_to_action(&Event::FocusGained, InputMode::Normal).is_none());
+    }
 }
