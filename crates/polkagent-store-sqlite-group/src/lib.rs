@@ -1,7 +1,7 @@
-//! SQLite [`GroupStore`] implementation for the Polkagent platform.
+//! `SQLite` [`GroupStore`] implementation for the Polkagent platform.
 //!
 //! This crate provides a dedicated [`GroupStore`] implementation backed by
-//! SQLite, separated from the main `polkagent-store-sqlite` crate to avoid
+//! `SQLite`, separated from the main `polkagent-store-sqlite` crate to avoid
 //! `rustc` trait-solver recursion limit issues.
 //!
 //! # Why a separate crate?
@@ -48,6 +48,8 @@
     clippy::missing_errors_doc,
     clippy::missing_panics_doc
 )]
+// Assertion-oriented unit tests unwrap controlled fixtures for precise failures.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
 
 pub mod error;
 pub mod group_store_impl;

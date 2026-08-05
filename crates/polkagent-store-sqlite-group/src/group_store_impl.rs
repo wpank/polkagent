@@ -140,7 +140,7 @@ fn decode_budget(s: &str) -> GroupResult<GroupBudget> {
 
     let get_u64 = |key: &str| -> GroupResult<u64> {
         val.get(key)
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .ok_or_else(|| GroupError::Internal(format!("budget missing or invalid field '{key}'")))
     };
     let get_opt_u64 = |key: &str| -> GroupResult<Option<u64>> {
@@ -171,7 +171,7 @@ fn decode_budget(s: &str) -> GroupResult<GroupBudget> {
 }
 
 /// Serialize an optional [`GrantSpec`] to JSON (`NULL` for `None`).
-fn encode_grant_override(grant: &Option<GrantSpec>) -> GroupResult<Option<String>> {
+fn encode_grant_override(grant: Option<&GrantSpec>) -> GroupResult<Option<String>> {
     match grant {
         None => Ok(None),
         Some(g) => serde_json::to_string(g)
@@ -196,7 +196,7 @@ fn decode_grant_override(s: Option<String>) -> GroupResult<Option<GrantSpec>> {
 
 /// Raw column tuple from `group_members`.
 ///
-/// Columns: agent_id, role, grant_override_json, joined_at
+/// Columns: `agent_id`, role, `grant_override_json`, `joined_at`
 type RawMemberRow = (String, String, Option<String>, String);
 
 fn raw_to_member(raw: RawMemberRow) -> GroupResult<GroupMember> {
@@ -265,7 +265,7 @@ impl GroupStore for SqliteGroupStore {
             .members
             .iter()
             .map(|m| {
-                let grant_json = encode_grant_override(&m.grant_override)?;
+                let grant_json = encode_grant_override(m.grant_override.as_ref())?;
                 Ok((
                     m.agent_id.to_string(),
                     encode_role(m.role).to_string(),
@@ -435,7 +435,7 @@ impl GroupStore for SqliteGroupStore {
             .members
             .iter()
             .map(|m| {
-                let grant_json = encode_grant_override(&m.grant_override)?;
+                let grant_json = encode_grant_override(m.grant_override.as_ref())?;
                 Ok((
                     m.agent_id.to_string(),
                     encode_role(m.role).to_string(),
@@ -631,7 +631,7 @@ impl GroupStore for SqliteGroupStore {
         let id_str = group_id.to_string();
         let agent_id_str = member.agent_id.to_string();
         let role_str = encode_role(member.role).to_string();
-        let grant_json = encode_grant_override(&member.grant_override)?;
+        let grant_json = encode_grant_override(member.grant_override.as_ref())?;
         let joined_at_str = member.joined_at.to_rfc3339();
 
         tokio::task::spawn_blocking(move || {
@@ -661,8 +661,7 @@ impl GroupStore for SqliteGroupStore {
                 .map_err(|e| {
                     if is_constraint_violation(&e) {
                         GroupError::Internal(format!(
-                            "agent '{}' is already a member of group '{}'",
-                            agent_id_str, id_str
+                            "agent '{agent_id_str}' is already a member of group '{id_str}'"
                         ))
                     } else {
                         map_err(e)

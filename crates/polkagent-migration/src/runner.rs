@@ -28,7 +28,7 @@ pub struct RollbackResult {
     pub dry_run: bool,
 }
 
-/// Manages applying and rolling back migrations against a SQLite database.
+/// Manages applying and rolling back migrations against a `SQLite` database.
 pub struct MigrationRunner {
     lock_path: Option<PathBuf>,
 }
@@ -140,13 +140,12 @@ impl MigrationRunner {
         dry_run: bool,
     ) -> MigrationResult<Vec<ApplyResult>> {
         self.acquire_lock()?;
-        let result = self.apply_pending_inner(conn, migrations, dry_run);
+        let result = Self::apply_pending_inner(conn, migrations, dry_run);
         self.release_lock();
         result
     }
 
     fn apply_pending_inner(
-        &self,
         conn: &Connection,
         migrations: &[Migration],
         dry_run: bool,
@@ -245,13 +244,12 @@ impl MigrationRunner {
         dry_run: bool,
     ) -> MigrationResult<RollbackResult> {
         self.acquire_lock()?;
-        let result = self.rollback_last_inner(conn, migrations, dry_run);
+        let result = Self::rollback_last_inner(conn, migrations, dry_run);
         self.release_lock();
         result
     }
 
     fn rollback_last_inner(
-        &self,
         conn: &Connection,
         migrations: &[Migration],
         dry_run: bool,

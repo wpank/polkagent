@@ -63,7 +63,7 @@ pub enum MigrationError {
     #[error("invalid migration version: {0}")]
     InvalidVersion(u32),
 
-    /// The schema_migrations table is missing or corrupt.
+    /// The `schema_migrations` table is missing or corrupt.
     #[error("schema_migrations table error: {0}")]
     SchemaTable(String),
 }

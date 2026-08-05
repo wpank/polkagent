@@ -1,4 +1,4 @@
-//! Standalone migration management tool for Polkagent SQLite databases.
+//! Standalone migration management tool for Polkagent `SQLite` databases.
 //!
 //! This crate provides a CLI and library for running, listing, and verifying
 //! database migrations independently of the main application.
@@ -43,6 +43,9 @@
 //!     println!("Applied v{}: {}", r.version, r.name);
 //! }
 //! ```
+
+// Assertion-oriented unit tests unwrap controlled fixtures for precise failures.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
 
 pub mod cli;
 pub mod error;

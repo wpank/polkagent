@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "migrate", about = "Manage database migrations")]
 pub struct MigrateCli {
-    /// Path to the SQLite database file.
+    /// Path to the `SQLite` database file.
     #[arg(short, long, env = "POLKAGENT_DB_PATH")]
     pub database: PathBuf,
 
@@ -58,7 +58,7 @@ pub struct RunArgs {
 /// Arguments for the `migrate generate` subcommand.
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
-    /// Name for the new migration (e.g. "add_users_table").
+    /// Name for the new migration (e.g. "`add_users_table`").
     pub name: String,
 
     /// Generate a reversible migration with a down.sql file.

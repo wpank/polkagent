@@ -6,6 +6,10 @@
 use polkagent_group::GroupError;
 
 /// Map a [`rusqlite::Error`] to a [`GroupError::Internal`].
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the owned signature lets this helper serve directly as Result::map_err throughout the store"
+)]
 pub(crate) fn map_err(e: rusqlite::Error) -> GroupError {
     GroupError::Internal(format!("sqlite error: {e}"))
 }

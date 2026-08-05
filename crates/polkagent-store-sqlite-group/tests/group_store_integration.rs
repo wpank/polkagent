@@ -3,6 +3,9 @@
 //! These tests exercise the full async [`GroupStore`] trait surface via
 //! [`SqliteGroupStore`], which wraps [`SqlitePool`] in a newtype.
 
+// Integration assertions unwrap controlled fixtures to preserve failure context.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use chrono::Utc;
 
 use polkagent_core::ids::AgentId;
