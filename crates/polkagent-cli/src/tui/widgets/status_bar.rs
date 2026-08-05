@@ -61,6 +61,7 @@ pub fn render(
         InputMode::Normal => "NRM",
         InputMode::Insert => "INS",
         InputMode::Prompt => "PRM",
+        InputMode::SessionPicker => "SES",
         InputMode::Command => "CMD",
     };
     let right = Paragraph::new(Line::from(vec![
@@ -86,6 +87,6 @@ fn key_hints(tab: Tab) -> &'static str {
         Tab::Approvals => "j/k:select  a:approve  d:deny  r:refresh  q:quit",
         Tab::Memory => "j/k:select  /:search  Del:forget  r:refresh  q:quit",
         Tab::Audit => "j/k:scroll  r:refresh  q:quit",
-        Tab::Console => "p:prompt  x:cancel  F3:runs  F5:timeline  q:quit",
+        Tab::Console => "p:prompt  s:sessions  x:cancel  F3:runs  F5:timeline  q:quit",
     }
 }

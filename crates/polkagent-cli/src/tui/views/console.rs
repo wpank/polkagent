@@ -4,12 +4,15 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
 use crate::tui::input::InputMode;
-use crate::tui::interaction::{ConsoleCommandStatus, ConsoleRunStatus, SlashCommandMenu};
+use crate::tui::interaction::{
+    ConsoleCommandStatus, ConsoleRunStatus, ConsoleSessionPicker, SessionPickerStatus,
+    SlashCommandMenu,
+};
 use crate::tui::state::TuiState;
 use crate::tui::theme::Theme;
 
@@ -41,6 +44,9 @@ pub fn render(
     render_session(frame, rows[0], state, theme);
     render_transcript(frame, rows[1], state, theme);
     render_composer(frame, rows[2], state, input_mode, theme);
+    if let Some(picker) = &state.interaction.session_picker {
+        render_session_picker(frame, area, picker, theme);
+    }
 }
 
 fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
@@ -286,7 +292,7 @@ fn render_composer(
     {
         " RUNNING · x cancel "
     } else {
-        " p compose · F3 runs · F5 timeline "
+        " p compose · s sessions · F3 runs · F5 timeline "
     };
     let border = if composing {
         theme.rose_bright
@@ -373,6 +379,113 @@ fn render_composer(
             );
         frame.set_cursor_position((cursor_x, cursor_y));
     }
+}
+
+fn render_session_picker(
+    frame: &mut Frame,
+    area: Rect,
+    picker: &ConsoleSessionPicker,
+    theme: &Theme,
+) {
+    let width = area.width.saturating_sub(4).min(110);
+    let desired_height = u16::try_from(picker.sessions.len().min(12) + 9).unwrap_or(u16::MAX);
+    let height = area.height.saturating_sub(2).min(desired_height);
+    if width < 12 || height < 6 {
+        return;
+    }
+    let overlay = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, overlay);
+    let block = Block::default()
+        .title(Span::styled(
+            " DURABLE SESSIONS ",
+            Style::default()
+                .fg(theme.rose_bright)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border_active))
+        .style(Style::default().bg(theme.bg_mid));
+    let inner = block.inner(overlay);
+    frame.render_widget(block, overlay);
+
+    let status = match picker.status {
+        SessionPickerStatus::LoadingList => "loading recent same-agent sessions…",
+        SessionPickerStatus::Ready => "ready",
+        SessionPickerStatus::LoadingSelection => "loading selected transcript…",
+        SessionPickerStatus::Failed => "service request failed",
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" Agent  ", Style::default().fg(theme.text_dim)),
+            Span::styled(
+                short_id(Some(&picker.agent_id)),
+                Style::default().fg(theme.bone),
+            ),
+            Span::styled("   State  ", Style::default().fg(theme.text_dim)),
+            Span::styled(status, Style::default().fg(theme.rose_bright)),
+        ]),
+        Line::from(""),
+    ];
+
+    if picker.sessions.is_empty() && picker.status == SessionPickerStatus::Ready {
+        lines.push(Line::from(Span::styled(
+            " No durable single-agent sessions found. Use /new [title] in the composer.",
+            Style::default().fg(theme.text_primary),
+        )));
+    } else if !picker.sessions.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "     TITLE · ID       STATE      TURNS   UPDATED",
+            Style::default().fg(theme.text_dim),
+        )));
+        let visible = usize::from(inner.height).saturating_sub(6).max(1);
+        let start = picker
+            .selected
+            .saturating_sub(visible.saturating_sub(1))
+            .min(picker.sessions.len().saturating_sub(visible));
+        for (index, session) in picker.sessions.iter().enumerate().skip(start).take(visible) {
+            let selected = index == picker.selected;
+            let style = if selected {
+                Style::default().fg(theme.bone).bg(theme.bg_highlight)
+            } else {
+                Style::default().fg(theme.text_primary)
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    " {} {} · {}   {:<10} {:>4}   {}",
+                    if selected { "›" } else { " " },
+                    session.title,
+                    short_id(Some(&session.conversation_id)),
+                    session.state,
+                    session.turn_count,
+                    session.updated_at
+                ),
+                style,
+            )));
+        }
+    }
+
+    if let Some(error) = &picker.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(" ! {error}"),
+            Style::default().fg(theme.danger),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " ↑/↓ or j/k navigate · Enter resume · Esc close · /new [title] creates",
+        Style::default().fg(theme.text_dim),
+    )));
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 fn render_slash_menu(frame: &mut Frame, area: Rect, menu: &SlashCommandMenu, theme: &Theme) {

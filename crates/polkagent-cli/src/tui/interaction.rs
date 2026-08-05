@@ -33,6 +33,9 @@ const MAX_OUTPUT_BYTES: usize = 128 * 1024;
 pub const MAX_COMPOSER_BYTES: usize = 128 * 1024;
 /// Bound composer recall even when a durable interaction has a longer transcript.
 const MAX_PROMPT_HISTORY: usize = 100;
+const MAX_SESSION_SELECTOR_ITEMS: usize = 50;
+const MAX_SESSION_SELECTOR_SCAN: u32 = 1_000;
+const MAX_SESSION_TITLE_BYTES: usize = 256;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
 const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 4] = [
@@ -149,6 +152,46 @@ pub struct PasteOutcome {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPickerStatus {
+    LoadingList,
+    Ready,
+    LoadingSelection,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleSessionItem {
+    pub conversation_id: String,
+    pub title: String,
+    pub state: String,
+    pub turn_count: u32,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleSessionPicker {
+    pub request_id: String,
+    pub agent_id: String,
+    pub status: SessionPickerStatus,
+    pub sessions: Vec<ConsoleSessionItem>,
+    pub selected: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionListRequest {
+    pub request_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLoadRequest {
+    pub request_id: String,
+    pub agent_id: String,
+    pub conversation: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsoleRunStatus {
     Starting,
@@ -211,6 +254,7 @@ pub struct InteractionState {
     pub transcript: Vec<ConsoleRun>,
     pub run: Option<ConsoleRun>,
     pub command_result: Option<ConsoleCommandResult>,
+    pub session_picker: Option<ConsoleSessionPicker>,
 }
 
 impl InteractionState {
@@ -222,6 +266,7 @@ impl InteractionState {
             self.run = None;
             self.prompt_history.clear();
             self.command_result = None;
+            self.session_picker = None;
         }
         self.agent_id = Some(agent_id);
         self.agent_name = Some(agent_name.into());
@@ -364,6 +409,113 @@ impl InteractionState {
         self.prompt_history_draft = None;
         self.slash_completion_selection = 0;
         self.slash_completion_dismissed = false;
+    }
+
+    pub fn begin_session_picker(&mut self) -> Result<SessionListRequest, &'static str> {
+        let Some(agent_id) = self.agent_id.clone() else {
+            return Err("select an active agent before browsing Console sessions");
+        };
+        if self
+            .run
+            .as_ref()
+            .is_some_and(|run| !run.status.is_terminal())
+        {
+            return Err("finish or cancel the active Console turn before switching sessions");
+        }
+        if self
+            .command_result
+            .as_ref()
+            .is_some_and(|result| result.status == ConsoleCommandStatus::Running)
+        {
+            return Err("wait for the active Console command before switching sessions");
+        }
+        let request_id = uuid::Uuid::now_v7().to_string();
+        self.session_picker = Some(ConsoleSessionPicker {
+            request_id: request_id.clone(),
+            agent_id: agent_id.clone(),
+            status: SessionPickerStatus::LoadingList,
+            sessions: Vec::new(),
+            selected: 0,
+            error: None,
+        });
+        Ok(SessionListRequest {
+            request_id,
+            agent_id,
+        })
+    }
+
+    pub fn close_session_picker(&mut self) {
+        self.session_picker = None;
+    }
+
+    pub fn session_picker_up(&mut self) {
+        let Some(picker) = &mut self.session_picker else {
+            return;
+        };
+        if picker.status != SessionPickerStatus::Ready || picker.sessions.is_empty() {
+            return;
+        }
+        picker.selected = if picker.selected == 0 {
+            picker.sessions.len() - 1
+        } else {
+            picker.selected - 1
+        };
+        picker.error = None;
+    }
+
+    pub fn session_picker_down(&mut self) {
+        let Some(picker) = &mut self.session_picker else {
+            return;
+        };
+        if picker.status != SessionPickerStatus::Ready || picker.sessions.is_empty() {
+            return;
+        }
+        picker.selected = (picker.selected + 1) % picker.sessions.len();
+        picker.error = None;
+    }
+
+    pub fn begin_session_selection(&mut self) -> Result<SessionLoadRequest, &'static str> {
+        let Some(picker) = &mut self.session_picker else {
+            return Err("open the Console session selector first");
+        };
+        if picker.status != SessionPickerStatus::Ready {
+            return Err("wait for the Console session selector to finish loading");
+        }
+        let Some(conversation_id) = picker
+            .sessions
+            .get(picker.selected)
+            .map(|session| session.conversation_id.clone())
+        else {
+            picker.error = Some(
+                "No durable sessions exist for this agent; use /new [title] in the composer."
+                    .to_owned(),
+            );
+            return Err("no durable Console session is selected");
+        };
+        let request_id = uuid::Uuid::now_v7().to_string();
+        picker.request_id.clone_from(&request_id);
+        picker.status = SessionPickerStatus::LoadingSelection;
+        picker.error = None;
+        Ok(SessionLoadRequest {
+            request_id,
+            agent_id: picker.agent_id.clone(),
+            conversation: conversation_id,
+        })
+    }
+
+    pub fn fail_session_picker_request(&mut self, request_id: &str, reason: impl Into<String>) {
+        let Some(picker) = &mut self.session_picker else {
+            return;
+        };
+        if picker.request_id != request_id {
+            return;
+        }
+        picker.status = if picker.sessions.is_empty() {
+            SessionPickerStatus::Failed
+        } else {
+            SessionPickerStatus::Ready
+        };
+        picker.error = Some(reason.into());
     }
 
     /// Return shared slash-command candidates for the current composer text.
@@ -687,6 +839,7 @@ impl InteractionState {
                 if self.agent_id.as_deref() != Some(agent_id.as_str())
                     || self.run.is_some()
                     || self.command_result.is_some()
+                    || self.session_picker.is_some()
                 {
                     return;
                 }
@@ -727,6 +880,63 @@ impl InteractionState {
                 {
                     self.command_result = Some(result);
                 }
+            }
+            ControllerEvent::SessionListLoaded {
+                agent_id,
+                request_id,
+                sessions,
+            } => {
+                if self.agent_id.as_deref() != Some(agent_id.as_str()) {
+                    return;
+                }
+                let Some(picker) = &mut self.session_picker else {
+                    return;
+                };
+                if picker.agent_id != agent_id || picker.request_id != request_id {
+                    return;
+                }
+                picker.selected = self
+                    .conversation_id
+                    .as_deref()
+                    .and_then(|conversation_id| {
+                        sessions
+                            .iter()
+                            .position(|session| session.conversation_id.as_str() == conversation_id)
+                    })
+                    .unwrap_or(0);
+                picker.sessions = sessions;
+                picker.status = SessionPickerStatus::Ready;
+                picker.error = None;
+            }
+            ControllerEvent::SessionListFailed {
+                agent_id,
+                request_id,
+                reason,
+            }
+            | ControllerEvent::SessionSelectionFailed {
+                agent_id,
+                request_id,
+                reason,
+            } => {
+                if self.agent_id.as_deref() == Some(agent_id.as_str()) {
+                    self.fail_session_picker_request(&request_id, reason);
+                }
+            }
+            ControllerEvent::SessionSelected {
+                agent_id,
+                request_id,
+                selection,
+            } => {
+                if self.agent_id.as_deref() != Some(agent_id.as_str())
+                    || self.session_picker.as_ref().is_none_or(|picker| {
+                        picker.agent_id != agent_id || picker.request_id != request_id
+                    })
+                {
+                    return;
+                }
+                self.session_picker = None;
+                self.command_result = None;
+                self.replace_conversation(Some(selection.conversation_id), selection.turns);
             }
             event => self.apply_run_event(event),
         }
@@ -810,7 +1020,11 @@ impl InteractionState {
             ControllerEvent::HistoryLoaded { .. }
             | ControllerEvent::HistoryFailed { .. }
             | ControllerEvent::CommandCompleted { .. }
-            | ControllerEvent::CommandFailed { .. } => {}
+            | ControllerEvent::CommandFailed { .. }
+            | ControllerEvent::SessionListLoaded { .. }
+            | ControllerEvent::SessionListFailed { .. }
+            | ControllerEvent::SessionSelected { .. }
+            | ControllerEvent::SessionSelectionFailed { .. } => {}
         }
     }
 }
@@ -1036,6 +1250,26 @@ pub enum ControllerEvent {
         request_id: String,
         result: ConsoleCommandResult,
     },
+    SessionListLoaded {
+        agent_id: String,
+        request_id: String,
+        sessions: Vec<ConsoleSessionItem>,
+    },
+    SessionListFailed {
+        agent_id: String,
+        request_id: String,
+        reason: String,
+    },
+    SessionSelected {
+        agent_id: String,
+        request_id: String,
+        selection: ConsoleConversationSelection,
+    },
+    SessionSelectionFailed {
+        agent_id: String,
+        request_id: String,
+        reason: String,
+    },
     Started {
         conversation_id: String,
         turn_id: String,
@@ -1069,6 +1303,10 @@ impl ControllerEvent {
                 | Self::TimedOut
                 | Self::CommandCompleted { .. }
                 | Self::CommandFailed { .. }
+                | Self::SessionListLoaded { .. }
+                | Self::SessionListFailed { .. }
+                | Self::SessionSelected { .. }
+                | Self::SessionSelectionFailed { .. }
         )
     }
 }
@@ -1375,6 +1613,121 @@ impl RunController {
         Ok(())
     }
 
+    pub fn list_sessions(&mut self, request: SessionListRequest) -> Result<(), &'static str> {
+        if self.active {
+            return Err("a Console action is already active");
+        }
+        let Some(task_runtime) = self.task_runtime.clone() else {
+            return Err("interactive session selector runtime is unavailable");
+        };
+        self.active = true;
+        self.cancel = None;
+        let polkagent_runtime = self.polkagent_runtime.clone();
+        let event_tx = self.event_tx.clone();
+        task_runtime.spawn(async move {
+            let SessionListRequest {
+                request_id,
+                agent_id,
+            } = request;
+            let typed_agent_id = match agent_id.parse::<AgentId>() {
+                Ok(agent_id) => agent_id,
+                Err(error) => {
+                    let _ = event_tx.send(ControllerEvent::SessionListFailed {
+                        agent_id,
+                        request_id,
+                        reason: format!("invalid selected agent ID: {error}"),
+                    });
+                    return;
+                }
+            };
+            let result = polkagent_runtime
+                .interactions()
+                .list_interactions(ListInteractionsRequest {
+                    limit: MAX_SESSION_SELECTOR_SCAN,
+                    offset: 0,
+                    state: None,
+                })
+                .await
+                .map(|interactions| project_session_items(interactions, typed_agent_id));
+            match result {
+                Ok(sessions) => {
+                    let _ = event_tx.send(ControllerEvent::SessionListLoaded {
+                        agent_id,
+                        request_id,
+                        sessions,
+                    });
+                }
+                Err(error) => {
+                    let _ = event_tx.send(ControllerEvent::SessionListFailed {
+                        agent_id,
+                        request_id,
+                        reason: format!("list durable Console sessions: {error}"),
+                    });
+                }
+            }
+        });
+        Ok(())
+    }
+
+    pub fn load_session(&mut self, request: SessionLoadRequest) -> Result<(), &'static str> {
+        if self.active {
+            return Err("a Console action is already active");
+        }
+        let Some(task_runtime) = self.task_runtime.clone() else {
+            return Err("interactive session selector runtime is unavailable");
+        };
+        self.active = true;
+        self.cancel = None;
+        let polkagent_runtime = self.polkagent_runtime.clone();
+        let event_tx = self.event_tx.clone();
+        task_runtime.spawn(async move {
+            let SessionLoadRequest {
+                request_id,
+                agent_id,
+                conversation: conversation_id,
+            } = request;
+            let result = async {
+                let typed_agent_id = parse_selected_agent_id(&agent_id)?;
+                let conversation_id =
+                    conversation_id.parse::<ConversationId>().map_err(|error| {
+                        format!(
+                            "invalid selected Console conversation ID '{conversation_id}': {error}"
+                        )
+                    })?;
+                let interaction = polkagent_runtime
+                    .interactions()
+                    .load_interaction(conversation_id)
+                    .await
+                    .map_err(|error| format!("load durable Console session: {error}"))?;
+                validate_console_target(&interaction, typed_agent_id)
+                    .map_err(|error| error.to_string())?;
+                let (_, turns) = load_interaction_history(&polkagent_runtime, &interaction).await?;
+                Ok::<_, String>(ConsoleConversationSelection {
+                    conversation_id: interaction.conversation_id.to_string(),
+                    turns,
+                })
+            }
+            .await;
+            match result {
+                Ok(selection) => {
+                    let _ = event_tx.send(ControllerEvent::SessionSelected {
+                        agent_id,
+                        request_id,
+                        selection,
+                    });
+                }
+                Err(reason) => {
+                    let _ = event_tx.send(ControllerEvent::SessionSelectionFailed {
+                        agent_id,
+                        request_id,
+                        reason,
+                    });
+                }
+            }
+        });
+        Ok(())
+    }
+
     /// Load the durable TUI interaction for a selected agent without blocking
     /// input or rendering. A stale result is ignored by the reducer.
     pub fn load_history(&self, agent_id: String) -> Result<(), &'static str> {
@@ -1475,6 +1828,42 @@ fn send_command_failure(
         request_id,
         result,
     });
+}
+
+fn project_session_items(
+    interactions: Vec<InteractionSummary>,
+    agent_id: AgentId,
+) -> Vec<ConsoleSessionItem> {
+    interactions
+        .into_iter()
+        .filter(|interaction| {
+            matches!(interaction.config.target, InteractionTarget::Agent(target) if target == agent_id)
+        })
+        .take(MAX_SESSION_SELECTOR_ITEMS)
+        .map(|interaction| {
+            let title = interaction
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map_or("Untitled session", |title| {
+                    bounded_grapheme_prefix(title, MAX_SESSION_TITLE_BYTES)
+                })
+                .to_owned();
+            let state = match interaction.state {
+                DurableInteractionState::Active => "active",
+                DurableInteractionState::Archived => "archived",
+            }
+            .to_owned();
+            ConsoleSessionItem {
+                conversation_id: interaction.conversation_id.to_string(),
+                title,
+                state,
+                turn_count: interaction.turn_count,
+                updated_at: interaction.updated_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+            }
+        })
+        .collect()
 }
 
 struct ProjectedConsoleCommand {
@@ -2426,6 +2815,112 @@ mod tests {
         assert!(state.run.is_none());
     }
 
+    #[test]
+    fn session_picker_guards_requests_and_agents_then_switches_exact_conversation() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        let first_id = ConversationId::new().to_string();
+        let second_id = ConversationId::new().to_string();
+        state.conversation_id = Some(first_id.clone());
+        let request = state.begin_session_picker().expect("open selector");
+        let sessions = vec![
+            ConsoleSessionItem {
+                conversation_id: second_id.clone(),
+                title: "Second".to_owned(),
+                state: "active".to_owned(),
+                turn_count: 2,
+                updated_at: "2026-01-02 00:00 UTC".to_owned(),
+            },
+            ConsoleSessionItem {
+                conversation_id: first_id.clone(),
+                title: "First".to_owned(),
+                state: "active".to_owned(),
+                turn_count: 1,
+                updated_at: "2026-01-01 00:00 UTC".to_owned(),
+            },
+        ];
+
+        state.apply(ControllerEvent::SessionListLoaded {
+            agent_id: "agent-id".to_owned(),
+            request_id: "stale".to_owned(),
+            sessions: sessions.clone(),
+        });
+        assert_eq!(
+            state.session_picker.as_ref().map(|picker| picker.status),
+            Some(SessionPickerStatus::LoadingList)
+        );
+        state.apply(ControllerEvent::SessionListLoaded {
+            agent_id: "other-agent".to_owned(),
+            request_id: request.request_id.clone(),
+            sessions: sessions.clone(),
+        });
+        assert_eq!(
+            state.session_picker.as_ref().map(|picker| picker.status),
+            Some(SessionPickerStatus::LoadingList)
+        );
+        state.apply(ControllerEvent::SessionListLoaded {
+            agent_id: request.agent_id,
+            request_id: request.request_id,
+            sessions,
+        });
+        let picker = state.session_picker.as_ref().expect("ready selector");
+        assert_eq!(picker.status, SessionPickerStatus::Ready);
+        assert_eq!(picker.selected, 1, "current conversation is highlighted");
+
+        state.session_picker_down();
+        let load = state
+            .begin_session_selection()
+            .expect("select second session");
+        assert_eq!(load.conversation, second_id);
+        state.apply(ControllerEvent::SessionSelected {
+            agent_id: "agent-id".to_owned(),
+            request_id: "stale-load".to_owned(),
+            selection: ConsoleConversationSelection {
+                conversation_id: "stale-conversation".to_owned(),
+                turns: Vec::new(),
+            },
+        });
+        assert_eq!(state.conversation_id.as_deref(), Some(first_id.as_str()));
+        assert!(state.session_picker.is_some());
+
+        state.apply(ControllerEvent::SessionSelectionFailed {
+            agent_id: "agent-id".to_owned(),
+            request_id: load.request_id,
+            reason: "service unavailable".to_owned(),
+        });
+        let picker = state.session_picker.as_ref().expect("selector stays open");
+        assert_eq!(picker.status, SessionPickerStatus::Ready);
+        assert_eq!(picker.error.as_deref(), Some("service unavailable"));
+
+        let retry = state
+            .begin_session_selection()
+            .expect("retry selected session");
+        state.apply(ControllerEvent::SessionSelected {
+            agent_id: retry.agent_id,
+            request_id: retry.request_id,
+            selection: ConsoleConversationSelection {
+                conversation_id: second_id.clone(),
+                turns: Vec::new(),
+            },
+        });
+        assert_eq!(state.conversation_id.as_deref(), Some(second_id.as_str()));
+        assert!(state.session_picker.is_none());
+    }
+
+    #[test]
+    fn session_picker_refuses_an_active_turn() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        type_prompt(&mut state, "active prompt");
+        state.submit().expect("start reducer turn");
+
+        assert_eq!(
+            state.begin_session_picker(),
+            Err("finish or cancel the active Console turn before switching sessions")
+        );
+        assert!(state.session_picker.is_none());
+    }
+
     fn writer_pointer(pool: &SqlitePool) -> *const rusqlite::Connection {
         let writer = pool.writer();
         std::ptr::from_ref(&*writer)
@@ -2652,6 +3147,190 @@ mod tests {
             1,
             "slash commands must never become model turns"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::too_many_lines)]
+    async fn session_selector_switches_between_two_sessions_after_restart() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("tui-session-selector.db");
+        let config_path = temp.path().join("selected.toml");
+        std::fs::write(&config_path, "").expect("write config");
+        let seed_pool = SqlitePool::open(&database_path).expect("open database");
+        migrations::migrate(&seed_pool.writer()).expect("migrate database");
+        let store = SqliteRunStore::new(seed_pool.clone());
+        let timestamp = "2026-01-01T00:00:00Z";
+        let spec = |name: &str| {
+            serde_json::json!({
+                "name": name,
+                "description": null,
+                "model": "fake/default-model",
+                "tools": [],
+                "system_prompt": null,
+                "autonomy_level": "supervised",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            })
+        };
+        let agent = store
+            .create_agent("selector-agent", None, &spec("selector-agent").to_string())
+            .expect("create selector agent");
+        let other_agent = store
+            .create_agent("other-agent", None, &spec("other-agent").to_string())
+            .expect("create other agent");
+        let mut options =
+            tui_runtime_options(&seed_pool, Some(&config_path)).expect("TUI runtime options");
+        options.workdir = temp.path().to_path_buf();
+        options.disable_harness = true;
+        options.discover_environment_providers = false;
+        drop(store);
+        drop(seed_pool);
+
+        let restart_options = options.clone();
+        let runtime = RuntimeFactory::build(options).await.expect("build runtime");
+        let service = runtime.interactions();
+        let first = service
+            .new_interaction(CreateInteractionRequest {
+                title: Some("First durable session".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(
+                    agent.id.parse().expect("agent ID"),
+                )),
+                client_context: tui_client_context(&runtime).expect("client context"),
+            })
+            .await
+            .expect("create first session");
+        let second = service
+            .new_interaction(CreateInteractionRequest {
+                title: Some("Second durable session".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(
+                    agent.id.parse().expect("agent ID"),
+                )),
+                client_context: tui_client_context(&runtime).expect("client context"),
+            })
+            .await
+            .expect("create second session");
+        service
+            .new_interaction(CreateInteractionRequest {
+                title: Some("Foreign session".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(
+                    other_agent.id.parse().expect("other agent ID"),
+                )),
+                client_context: tui_client_context(&runtime).expect("client context"),
+            })
+            .await
+            .expect("create foreign session");
+
+        let mut seed_controller = RunController::new(runtime.clone());
+        for (interaction, prompt) in [
+            (&first, "first session prompt"),
+            (&second, "second session prompt"),
+        ] {
+            seed_controller
+                .start(PromptRequest {
+                    agent_id: agent.id.clone(),
+                    agent_name: agent.name.clone(),
+                    conversation_id: Some(interaction.conversation_id.to_string()),
+                    prompt: prompt.to_owned(),
+                })
+                .expect("start seed prompt");
+            let _ = wait_for_controller_terminal(&mut seed_controller).await;
+        }
+        drop(seed_controller);
+        drop(runtime);
+
+        let restarted = RuntimeFactory::build(restart_options)
+            .await
+            .expect("restart runtime");
+        let mut controller = RunController::new(restarted.clone());
+        let mut state = InteractionState::default();
+        state.select_agent(agent.id.clone(), agent.name.clone());
+        let list_request = state.begin_session_picker().expect("open session selector");
+        controller
+            .list_sessions(list_request)
+            .expect("list sessions asynchronously");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+        let picker = state.session_picker.as_ref().expect("ready selector");
+        assert_eq!(picker.status, SessionPickerStatus::Ready);
+        assert_eq!(
+            picker.sessions.len(),
+            2,
+            "foreign agent session is excluded"
+        );
+        assert!(picker
+            .sessions
+            .iter()
+            .all(|session| session.title != "Foreign session"));
+        assert!(picker
+            .sessions
+            .iter()
+            .all(|session| { session.state == "active" && !session.updated_at.is_empty() }));
+        let first_id = first.conversation_id.to_string();
+        let first_index = picker
+            .sessions
+            .iter()
+            .position(|session| session.conversation_id == first_id)
+            .expect("first session in selector");
+        for _ in 0..first_index {
+            state.session_picker_down();
+        }
+
+        let load_request = state
+            .begin_session_selection()
+            .expect("select first session");
+        assert_eq!(load_request.conversation, first_id);
+        controller
+            .load_session(load_request)
+            .expect("load selected transcript");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+        assert!(state.session_picker.is_none());
+        assert_eq!(state.conversation_id.as_deref(), Some(first_id.as_str()));
+        assert_eq!(
+            state.run.as_ref().map(|run| run.prompt.as_str()),
+            Some("first session prompt")
+        );
+
+        type_prompt(&mut state, "follow up in selected first session");
+        let prompt = state.submit().expect("submit selected-session prompt");
+        assert_eq!(prompt.conversation_id.as_deref(), Some(first_id.as_str()));
+        controller
+            .start(prompt)
+            .expect("start selected-session prompt");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+
+        type_prompt(&mut state, "/status");
+        let ConsoleCommandSubmission::Execute(status) =
+            state.submit_command().expect("status command")
+        else {
+            panic!("status command rejected")
+        };
+        controller
+            .execute_command(status)
+            .expect("execute status command");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+        let first_turns = restarted
+            .interactions()
+            .list_turns(first.conversation_id)
+            .await
+            .expect("list first-session turns");
+        let second_turns = restarted
+            .interactions()
+            .list_turns(second.conversation_id)
+            .await
+            .expect("list second-session turns");
+        assert_eq!(first_turns.len(), 2);
+        assert_eq!(second_turns.len(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

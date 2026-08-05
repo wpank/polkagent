@@ -23,6 +23,8 @@ pub enum InputMode {
     Insert,
     /// Interactive console composer — characters go to the agent prompt.
     Prompt,
+    /// Durable Console session selector overlay.
+    SessionPicker,
     /// Command-palette mode — input goes to the palette filter.
     Command,
 }
@@ -68,6 +70,16 @@ pub enum TuiAction {
     // -- Interactive console ------------------------------------------------
     /// Open the console composer for the selected/default active agent.
     OpenPrompt,
+    /// Open or refresh the durable Console session selector.
+    OpenSessionPicker,
+    /// Move the durable session selector up.
+    SessionPickerUp,
+    /// Move the durable session selector down.
+    SessionPickerDown,
+    /// Load the selected durable Console session.
+    SessionPickerConfirm,
+    /// Close the durable Console session selector.
+    SessionPickerClose,
     /// Append a character to the console prompt.
     PromptInput(char),
     /// Insert one bracketed-paste payload as bounded composer content.
@@ -159,6 +171,13 @@ pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
             _ => None,
         },
         InputMode::Prompt => prompt_mode_key(key),
+        InputMode::SessionPicker => match key.code {
+            KeyCode::Esc => Some(TuiAction::SessionPickerClose),
+            KeyCode::Up | KeyCode::Char('k') => Some(TuiAction::SessionPickerUp),
+            KeyCode::Down | KeyCode::Char('j') => Some(TuiAction::SessionPickerDown),
+            KeyCode::Enter => Some(TuiAction::SessionPickerConfirm),
+            _ => None,
+        },
         InputMode::Command => match key.code {
             KeyCode::Esc => Some(TuiAction::Back),
             _ => None,
@@ -262,6 +281,7 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
 
         // ── Interactive console ─────────────────────────────────────────
         KeyCode::Char('p') => Some(TuiAction::OpenPrompt),
+        KeyCode::Char('s') => Some(TuiAction::OpenSessionPicker),
         KeyCode::Char('x') => Some(TuiAction::CancelActiveRun),
 
         // ── Approval actions ─────────────────────────────────────────────

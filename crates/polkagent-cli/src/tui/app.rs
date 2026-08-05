@@ -805,6 +805,84 @@ impl App {
                 self.tui_state.mark_dirty();
             }
 
+            TuiAction::OpenSessionPicker => {
+                if self.active_tab != Tab::Console {
+                    return;
+                }
+                let run_active = self
+                    .tui_state
+                    .interaction
+                    .run
+                    .as_ref()
+                    .is_some_and(|run| !run.status.is_terminal());
+                if run_active {
+                    self.tui_state.last_error = Some(
+                        "finish or cancel the active Console turn before switching sessions"
+                            .to_owned(),
+                    );
+                } else if self.run_controller.is_active() {
+                    self.tui_state.last_error = Some(
+                        "wait for the active Console action before switching sessions".to_owned(),
+                    );
+                } else if self.ensure_console_agent() {
+                    match self.tui_state.interaction.begin_session_picker() {
+                        Ok(request) => {
+                            let request_id = request.request_id.clone();
+                            self.input_mode = InputMode::SessionPicker;
+                            self.tui_state.last_error = None;
+                            if let Err(error) = self.run_controller.list_sessions(request) {
+                                self.tui_state
+                                    .interaction
+                                    .fail_session_picker_request(&request_id, error);
+                            }
+                        }
+                        Err(error) => self.tui_state.last_error = Some(error.to_owned()),
+                    }
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SessionPickerUp => {
+                self.tui_state.interaction.session_picker_up();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SessionPickerDown => {
+                self.tui_state.interaction.session_picker_down();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SessionPickerConfirm => {
+                if self.run_controller.is_active() {
+                    if let Some(request_id) = self
+                        .tui_state
+                        .interaction
+                        .session_picker
+                        .as_ref()
+                        .map(|picker| picker.request_id.clone())
+                    {
+                        self.tui_state.interaction.fail_session_picker_request(
+                            &request_id,
+                            "wait for the active Console action before selecting a session",
+                        );
+                    }
+                } else if let Ok(request) = self.tui_state.interaction.begin_session_selection() {
+                    let request_id = request.request_id.clone();
+                    if let Err(error) = self.run_controller.load_session(request) {
+                        self.tui_state
+                            .interaction
+                            .fail_session_picker_request(&request_id, error);
+                    }
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SessionPickerClose => {
+                self.tui_state.interaction.close_session_picker();
+                self.input_mode = InputMode::Normal;
+                self.tui_state.mark_dirty();
+            }
+
             TuiAction::PromptInput(c) => {
                 if !self.tui_state.interaction.push_char(c) {
                     self.tui_state.last_error = Some(format!(
@@ -1008,7 +1086,20 @@ impl App {
             ) {
                 refresh = true;
             }
+            let selector_event = matches!(
+                &event,
+                ControllerEvent::SessionListLoaded { .. }
+                    | ControllerEvent::SessionListFailed { .. }
+                    | ControllerEvent::SessionSelected { .. }
+                    | ControllerEvent::SessionSelectionFailed { .. }
+            );
             self.tui_state.interaction.apply(event);
+            if selector_event
+                && self.input_mode == InputMode::SessionPicker
+                && self.tui_state.interaction.session_picker.is_none()
+            {
+                self.input_mode = InputMode::Normal;
+            }
             self.tui_state.mark_dirty();
         }
         if refresh {

@@ -382,6 +382,7 @@ durable multi-turn surface:
 |-----|--------|
 | `F9` or `9` | Open Console |
 | `p` | Select the highlighted/first active agent and compose a prompt |
+| `s` | Open the bounded durable session selector for the selected agent |
 | `Enter` | Submit a prompt or one of the supported slash commands |
 | `x` | Request cancellation of the active durable turn and its linked run |
 | `F3` | Inspect the selected durable run |
@@ -410,6 +411,16 @@ effect rows directly. The separate legacy Approvals tab retains its existing
 direct approve/deny behavior. Transcript reloads use the interaction service's
 turn-correlated, bounded projection, and all Console prompt-path mutations also
 go through that service.
+
+From an idle Console, `s` opens a durable session selector backed only by the
+interaction service. It scans at most 1,000 newest interaction summaries and
+shows at most 50 exact same-agent sessions with title, lifecycle state, turn
+count, and UTC update time. Use `j`/`k` or the arrow keys to navigate, Enter to
+load the selected turn-correlated transcript, and Escape to close it. The
+selector and transcript load are asynchronous, ignore stale results by request
+and agent identity, and refuse to open or switch while a turn or Console action
+is active. Empty and service-error states remain visible in the selector;
+`/new [title]` remains the supported creation path.
 
 The composer edits extended Unicode grapheme clusters, so cursor movement,
 Backspace, and Delete do not split combining sequences or joined emoji.

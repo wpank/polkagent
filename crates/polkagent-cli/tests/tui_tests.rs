@@ -330,6 +330,7 @@ fn test_any_key_no_panic() {
         InputMode::Normal,
         InputMode::Insert,
         InputMode::Prompt,
+        InputMode::SessionPicker,
         InputMode::Command,
     ];
     let modifiers = [
@@ -1211,6 +1212,10 @@ fn test_console_keys_map_to_actions() {
         Some(TuiAction::OpenPrompt)
     ));
     assert!(matches!(
+        key_to_action(key(KeyCode::Char('s')), InputMode::Normal),
+        Some(TuiAction::OpenSessionPicker)
+    ));
+    assert!(matches!(
         key_to_action(key(KeyCode::Char('x')), InputMode::Normal),
         Some(TuiAction::CancelActiveRun)
     ));
@@ -1266,6 +1271,30 @@ fn test_console_keys_map_to_actions() {
         Some(TuiAction::Back)
     ));
     assert!(key_to_action(ctrl(KeyCode::Char('z')), InputMode::Prompt).is_none());
+    assert!(matches!(
+        key_to_action(key(KeyCode::Up), InputMode::SessionPicker),
+        Some(TuiAction::SessionPickerUp)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Char('k')), InputMode::SessionPicker),
+        Some(TuiAction::SessionPickerUp)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Down), InputMode::SessionPicker),
+        Some(TuiAction::SessionPickerDown)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Char('j')), InputMode::SessionPicker),
+        Some(TuiAction::SessionPickerDown)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Enter), InputMode::SessionPicker),
+        Some(TuiAction::SessionPickerConfirm)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Esc), InputMode::SessionPicker),
+        Some(TuiAction::SessionPickerClose)
+    ));
 }
 
 #[test]
@@ -1375,6 +1404,100 @@ fn test_console_renders_registry_slash_completions_and_truthful_scope() {
     assert!(!text.contains("/agent <name-or-id>"), "{text}");
     assert!(text.contains("Executable Console commands"), "{text}");
     assert!(text.contains("x cancels the active turn"), "{text}");
+}
+
+#[test]
+fn test_console_renders_durable_same_agent_session_selector() {
+    use polkagent_cli::tui::interaction::{
+        ConsoleSessionItem, ControllerEvent, InteractionState, SessionPickerStatus,
+    };
+
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let theme = Theme::dark();
+    let mut interaction = InteractionState::default();
+    interaction.select_agent("agent-id", "Treasury Agent");
+    let request = interaction.begin_session_picker().expect("open selector");
+    interaction.apply(ControllerEvent::SessionListLoaded {
+        agent_id: request.agent_id,
+        request_id: request.request_id,
+        sessions: vec![ConsoleSessionItem {
+            conversation_id: "12345678-1234-1234-1234-123456789abc".to_owned(),
+            title: "Treasury review".to_owned(),
+            state: "active".to_owned(),
+            turn_count: 3,
+            updated_at: "2026-08-05 12:34 UTC".to_owned(),
+        }],
+    });
+    assert_eq!(
+        interaction
+            .session_picker
+            .as_ref()
+            .map(|picker| picker.status),
+        Some(SessionPickerStatus::Ready)
+    );
+    let state = TuiState {
+        interaction,
+        ..TuiState::default()
+    };
+
+    terminal
+        .draw(|frame| {
+            console::render(
+                frame,
+                frame.area(),
+                &state,
+                InputMode::SessionPicker,
+                &theme,
+            );
+        })
+        .expect("draw session selector");
+    let text = buffer_text(&terminal);
+    assert!(text.contains("DURABLE SESSIONS"), "{text}");
+    assert!(text.contains("Treasury review"), "{text}");
+    assert!(text.contains("12345678"), "{text}");
+    assert!(text.contains("active"), "{text}");
+    assert!(text.contains('3'), "{text}");
+    assert!(text.contains("2026-08-05 12:34 UTC"), "{text}");
+    assert!(text.contains("Enter resume"), "{text}");
+    assert!(text.contains("/new [title] creates"), "{text}");
+}
+
+#[test]
+fn test_console_renders_structured_session_selector_service_error() {
+    use polkagent_cli::tui::interaction::{ControllerEvent, InteractionState};
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let theme = Theme::dark();
+    let mut interaction = InteractionState::default();
+    interaction.select_agent("agent-id", "Treasury Agent");
+    let request = interaction.begin_session_picker().expect("open selector");
+    interaction.apply(ControllerEvent::SessionListFailed {
+        agent_id: request.agent_id,
+        request_id: request.request_id,
+        reason: "interaction service unavailable".to_owned(),
+    });
+    let state = TuiState {
+        interaction,
+        ..TuiState::default()
+    };
+
+    terminal
+        .draw(|frame| {
+            console::render(
+                frame,
+                frame.area(),
+                &state,
+                InputMode::SessionPicker,
+                &theme,
+            );
+        })
+        .expect("draw selector error");
+    let text = buffer_text(&terminal);
+    assert!(text.contains("service request failed"), "{text}");
+    assert!(text.contains("interaction service unavailable"), "{text}");
+    assert!(text.contains("Esc close"), "{text}");
 }
 
 #[test]
