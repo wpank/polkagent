@@ -36,6 +36,21 @@ struct FailingProvider {
     task: tokio::task::JoinHandle<()>,
 }
 
+fn write_local_provider_config(path: &std::path::Path, id: &str, base_url: &str) {
+    std::fs::write(
+        path,
+        format!(
+            "[[providers]]\n\
+             id = \"{id}\"\n\
+             provider_type = \"local\"\n\
+             base_url = \"{base_url}\"\n\
+             api_key_env = \"POLKAGENT_ACP_FIXTURE_KEY\"\n\
+             default_model = \"fixture-model\"\n"
+        ),
+    )
+    .expect("write local provider config");
+}
+
 #[cfg(debug_assertions)]
 #[test]
 fn acp_panic_hook_suppresses_payload_and_keeps_stdout_empty() {
@@ -380,6 +395,97 @@ fn assert_editor_command_updates(observed: &ObservedUpdates) {
 }
 
 #[tokio::test]
+async fn acp_restart_recovers_abandoned_run_through_shared_runtime() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let log_path = temp.path().join("acp-restart.jsonl");
+    let project_path = temp.path().to_path_buf();
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+
+    assert_cli_success(
+        binary,
+        &db_path,
+        &["agent", "create", "restart-fixture", "--model", "fake/test"],
+    );
+    assert_cli_success(binary, &db_path, &["agent", "start", "restart-fixture"]);
+
+    let abandoned_run_id = uuid::Uuid::now_v7().to_string();
+    {
+        let connection = rusqlite::Connection::open(&db_path).expect("open fixture database");
+        let agent_id: String = connection
+            .query_row(
+                "SELECT id FROM agents WHERE name = 'restart-fixture'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("load fixture agent ID");
+        connection
+            .execute(
+                "INSERT INTO runs (id, agent_id, state, params_json, created_at, updated_at) \
+                 VALUES (?1, ?2, 'running', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                rusqlite::params![abandoned_run_id, agent_id],
+            )
+            .expect("seed run abandoned by a previous process");
+    }
+
+    let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let log_arg = log_path.to_string_lossy().into_owned();
+    let agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args([
+                "--log-file",
+                log_arg.as_str(),
+                "acp",
+                "--agent",
+                "restart-fixture",
+            ])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            ),
+        Arc::clone(&observed),
+    );
+
+    agent_client_protocol::Client
+        .connect_with(
+            agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                connection
+                    .send_request(NewSessionRequest::new(project_path))
+                    .block_task()
+                    .await?;
+                Ok(())
+            },
+        )
+        .await
+        .expect("official ACP client restarted the subprocess");
+
+    let connection = rusqlite::Connection::open(&db_path).expect("reopen durable ACP database");
+    let (state, completed_at): (String, Option<String>) = connection
+        .query_row(
+            "SELECT state, completed_at FROM runs WHERE id = ?1",
+            [&abandoned_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("load recovered run");
+    assert_eq!(state, "failed");
+    assert!(
+        completed_at.is_some(),
+        "runtime startup recovery must persist a terminal timestamp"
+    );
+
+    let diagnostics = std::fs::read_to_string(log_path).expect("read restart diagnostics");
+    assert!(diagnostics.contains("\"event\":\"acp.runtime_ready\""));
+    assert!(diagnostics.contains("\"event\":\"acp.server_ready\""));
+    let observed = observed.lock().expect("observed updates lock");
+    assert_protocol_stdout(&observed.stdout_lines);
+}
+
+#[tokio::test]
 async fn official_client_cancels_active_run_and_persists_terminal_state() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let db_path = temp.path().join("polkagent.db");
@@ -401,18 +507,7 @@ async fn official_client_cancels_active_run_and_persists_terminal_state() {
     assert_cli_success(binary, &db_path, &["agent", "start", "cancel-fixture"]);
 
     let delayed_provider = delayed_provider().await;
-    std::fs::write(
-        &config_path,
-        format!(
-            "[[providers]]\n\
-             id = \"cancel-provider\"\n\
-             provider_type = \"local\"\n\
-             base_url = \"{}\"\n\
-             default_model = \"fixture-model\"\n",
-            delayed_provider.base_url
-        ),
-    )
-    .expect("write cancellation provider config");
+    write_local_provider_config(&config_path, "cancel-provider", &delayed_provider.base_url);
 
     let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
     let observed_by_client = Arc::clone(&observed);
@@ -441,7 +536,8 @@ async fn official_client_cancels_active_run_and_persists_terminal_state() {
             .env("PERPLEXITY_API_KEY", "")
             .env("CEREBRAS_API_KEY", "")
             .env("OLLAMA_URL", "")
-            .env("OLLAMA_MODEL", ""),
+            .env("OLLAMA_MODEL", "")
+            .env("POLKAGENT_ACP_FIXTURE_KEY", "fixture-key"),
         Arc::clone(&observed),
     );
 
@@ -565,18 +661,7 @@ async fn provider_failure_is_redacted_and_keeps_stdout_protocol_only() {
     assert_cli_success(binary, &db_path, &["agent", "start", "failure-fixture"]);
 
     let failing_provider = failing_provider(raw_secret).await;
-    std::fs::write(
-        &config_path,
-        format!(
-            "[[providers]]\n\
-             id = \"failing-provider\"\n\
-             provider_type = \"local\"\n\
-             base_url = \"{}\"\n\
-             default_model = \"fixture-model\"\n",
-            failing_provider.base_url
-        ),
-    )
-    .expect("write failing provider config");
+    write_local_provider_config(&config_path, "failing-provider", &failing_provider.base_url);
 
     let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
     let config_arg = config_path.to_string_lossy().into_owned();
@@ -605,7 +690,8 @@ async fn provider_failure_is_redacted_and_keeps_stdout_protocol_only() {
             .env("PERPLEXITY_API_KEY", "")
             .env("CEREBRAS_API_KEY", "")
             .env("OLLAMA_URL", "")
-            .env("OLLAMA_MODEL", ""),
+            .env("OLLAMA_MODEL", "")
+            .env("POLKAGENT_ACP_FIXTURE_KEY", "fixture-key"),
         Arc::clone(&observed),
     );
 
@@ -690,8 +776,8 @@ fn explicit_config_startup_failure_keeps_stdout_empty() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error: loading ACP configuration"));
-    assert!(stderr.contains("loading config from"));
+    assert!(stderr.contains("Error: building shared ACP runtime"));
+    assert!(stderr.contains("failed to load configuration from"));
     let diagnostics = std::fs::read_to_string(log_path).expect("read startup diagnostics");
     assert!(diagnostics.contains("\"event\":\"acp.backend_initialization_failed\""));
     assert!(diagnostics.contains("\"event\":\"acp.server_failed\""));

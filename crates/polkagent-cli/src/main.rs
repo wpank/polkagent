@@ -571,18 +571,14 @@ async fn run_acp_command(
     run_acp_panic_probe(&diagnostics);
 
     let db_path = resolve_db_path(config_path);
-    let pool = match open_pool(&db_path) {
-        Ok(pool) => pool,
-        Err(error) => {
-            diagnostics.record(
-                "error",
-                "acp.database_open_failed",
-                "ACP database initialization failed",
-            );
-            return (exit_codes::CONFIG_ERROR, Some(error));
-        }
-    };
-    match commands::acp::run(cmd, pool, config_path, diagnostics.clone()).await {
+    match commands::acp::run(
+        cmd,
+        std::path::Path::new(&db_path),
+        config_path,
+        diagnostics.clone(),
+    )
+    .await
+    {
         Ok(()) => (exit_codes::SUCCESS, None),
         Err(error) => {
             diagnostics.record(

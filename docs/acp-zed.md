@@ -2,7 +2,8 @@
 
 Polkagent now has an initial ACP v1 stdio server. It can be launched by an ACP
 client, create an editor session, advertise slash commands, and route a normal
-prompt through Polkagent's existing `AppService` run orchestration.
+prompt through the process-wide `RuntimeFactory` and its shared `AppService`,
+SQLite pool, event bus, provider registry, and startup lifecycle.
 
 This is an executable protocol slice, not a claim of complete Zed support. The
 repository tests launch the real binary through the official ACP Rust client,
@@ -48,9 +49,12 @@ your Zed settings. Replace the command with the absolute path printed above:
 }
 ```
 
-The editor-provided absolute `session/new` working directory is authoritative;
-there is no separate `--workdir` flag. You may omit `--agent` and select one in
-the conversation with `/agents` followed by `/agent <name-or-id>`.
+The editor-provided absolute `session/new` working directory is authoritative
+for ACP session metadata; there is no separate `--workdir` flag. Runtime config
+discovery and relative config/database paths are rooted at the subprocess launch
+directory because the runtime must be ready before the editor sends
+`session/new`. You may omit `--agent` and select one in the conversation with
+`/agents` followed by `/agent <name-or-id>`.
 
 ACP file diagnostics are disabled by default. To opt in, add the global
 `--log-file` option before `acp` and use a path dedicated to one Polkagent ACP
@@ -100,6 +104,9 @@ Implemented and covered by executable protocol evidence:
 - shared-registry slash-command discovery, aliases, detailed help, agent
   selection, status, and active-prompt cancellation;
 - CLI early dispatch before telemetry so stdout belongs to ACP;
+- one shared `RuntimeFactory` composition for ACP, including file-backed SQLite
+  migration, abandoned-run recovery, active-agent rehydration, provider/model
+  overrides, the `AppService`, and its event bus;
 - opt-in JSONL file diagnostics with bounded rotation, restrictive Unix file
   permissions, non-regular-path refusal, and known-pattern secret redaction;
 - controlled diagnostic categories that omit the exercised prompt and response
@@ -107,8 +114,14 @@ Implemented and covered by executable protocol evidence:
 - subprocess stdout-line assertions that reject anything other than JSON-RPC;
 - fail-closed startup for a missing explicit config: exit code 4, an empty
   stdout channel, and the diagnostic on stderr;
+- fail-closed startup for an unavailable explicitly selected provider before
+  any protocol stdout, even though an unconfigured local session may explicitly
+  use the reported simulated-executor fallback;
 - an official-client subprocess test that performs initialization, command
   discovery, `/help`, and a real `AppService` run through the fake executor;
+- an official-client restart test that seeds an abandoned durable run, starts
+  ACP, and verifies that the shared runtime factory recovered it to a terminal
+  state through the same database used by the editor surface;
 - an official-client subprocess test that holds a real provider request open,
   cancels it, receives `Cancelled`, and verifies the durable run state and
   terminal timestamp in SQLite.
@@ -121,7 +134,8 @@ Not implemented yet:
 - client filesystem/terminal support and MCP-server passthrough;
 - additional workspace roots (rejected explicitly) and use of cwd as model or
   filesystem context beyond session metadata;
-- durable multi-turn conversation history and a shared `RuntimeFactory`;
+- durable multi-turn ACP interaction/session history (the runtime's durable
+  stores do not yet make ACP sessions resumable);
 - manual Zed validation, including approval, cancellation, restart, and logs.
 
 Supplied MCP servers and additional workspace roots are rejected instead of

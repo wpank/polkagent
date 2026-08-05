@@ -7,26 +7,23 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use polkagent_chain_trait::ChainClient;
 use polkagent_core::event::EventKind;
 use polkagent_core::{AgentId, RunId};
-use polkagent_event::{EventBus, EventRecorder};
-use polkagent_service::AppService;
-use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
+use polkagent_runtime::{
+    AdapterPolicy, PolkagentRuntime, RuntimeError, RuntimeFactory, RuntimeOptions, WarningCode,
+};
+use polkagent_store_sqlite::SqliteRunStore;
 use polkagent_surface_acp::{AcpBackend, AgentSummary, BackendError, BackendTurn, ServerConfig};
 use tokio::sync::Mutex;
 
 use crate::acp_diagnostics::AcpDiagnostics;
 use crate::cli::AcpCmd;
-use crate::commands::run::{
-    build_agent_spec, build_chain_client, build_provider_registry, load_config_from_path,
-    resolve_provider,
-};
+use crate::commands::run::build_agent_spec;
 
 /// Start a protocol-safe ACP stdio server.
 pub async fn run(
     cmd: &AcpCmd,
-    pool: SqlitePool,
+    database_path: &Path,
     config_path: Option<&Path>,
     diagnostics: AcpDiagnostics,
 ) -> Result<()> {
@@ -35,21 +32,23 @@ pub async fn run(
         "acp.backend_initializing",
         "ACP runtime backend initialization started",
     );
-    let backend = PolkagentAcpBackend::build(
-        pool,
-        config_path,
-        cmd.provider.as_deref(),
-        cmd.model.clone(),
-        cmd.timeout,
-        diagnostics.clone(),
-    )
-    .inspect_err(|_| {
-        diagnostics.record(
-            "error",
-            "acp.backend_initialization_failed",
-            "ACP runtime backend initialization failed",
-        );
-    })?;
+    let backend = PolkagentAcpBackend::build(cmd, database_path, config_path, diagnostics.clone())
+        .await
+        .inspect_err(|error| {
+            if is_database_initialization_error(error) {
+                diagnostics.record(
+                    "error",
+                    "acp.database_open_failed",
+                    "ACP database initialization failed",
+                );
+            }
+            diagnostics.record(
+                "error",
+                "acp.backend_initialization_failed",
+                "ACP runtime backend initialization failed",
+            );
+        })?;
+    diagnostics.record("info", "acp.runtime_ready", "ACP shared runtime is ready");
     diagnostics.record(
         "info",
         "acp.server_ready",
@@ -74,9 +73,7 @@ pub async fn run(
 }
 
 struct PolkagentAcpBackend {
-    pool: SqlitePool,
-    app: Arc<AppService>,
-    event_bus: EventBus,
+    runtime: PolkagentRuntime,
     model_override: Option<String>,
     prompt_timeout: Option<Duration>,
     active_runs: Mutex<HashMap<String, RunId>>,
@@ -84,61 +81,43 @@ struct PolkagentAcpBackend {
 }
 
 impl PolkagentAcpBackend {
-    fn build(
-        pool: SqlitePool,
+    async fn build(
+        cmd: &AcpCmd,
+        database_path: &Path,
         config_path: Option<&Path>,
-        provider: Option<&str>,
-        model_override: Option<String>,
-        timeout_secs: u64,
         diagnostics: AcpDiagnostics,
     ) -> Result<Self> {
-        let config = load_config_from_path(config_path).context("loading ACP configuration")?;
-        let registry = build_provider_registry(&config);
-        let (executor, provider_note) =
-            resolve_provider(provider, model_override.as_deref(), &config, &registry)?;
-        if let Some(note) = provider_note {
-            eprintln!("{note}");
+        let workdir = std::env::current_dir().context("resolving ACP runtime workdir")?;
+        let mut options = RuntimeOptions::new(workdir);
+        options.config_path = config_path.map(Path::to_path_buf);
+        options.database_path = Some(database_path.to_path_buf());
+        options.provider_override.clone_from(&cmd.provider);
+        options.model_override.clone_from(&cmd.model);
+        options.disable_harness = true;
+        // Preserve the established local-first ACP behavior while keeping an
+        // explicitly selected provider fail-closed in RuntimeFactory.
+        options.adapter_policy = AdapterPolicy::AllowSimulated;
+
+        let runtime = RuntimeFactory::build(options)
+            .await
+            .map_err(|error| explicit_provider_error(cmd, error))
+            .context("building shared ACP runtime")?;
+        if !runtime.readiness().operational {
+            anyhow::bail!("shared ACP runtime is not operational");
         }
-
-        let event_bus = EventBus::with_default_capacity();
-        let recorder = EventRecorder::new(Arc::new(pool.clone()), event_bus.clone());
-        let chain_client: Arc<dyn ChainClient> = build_chain_client();
-        let mut tool_registry = polkagent_tool::ToolRegistry::new();
-        polkagent_tool_governance::register_governance_tools(
-            &mut tool_registry,
-            Arc::clone(&chain_client),
-        );
-        polkagent_tool_treasury::register_treasury_tools(
-            &mut tool_registry,
-            Arc::clone(&chain_client),
-        );
-
-        let app = AppService::builder()
-            .with_config(config)
-            .with_run_store(Arc::new(pool.clone()))
-            .with_effect_store(Arc::new(pool.clone()))
-            .with_event_bus(event_bus.clone())
-            .with_event_recorder(recorder)
-            .with_executor(executor)
-            .with_provider_registry(registry)
-            .with_chain_client(chain_client)
-            .with_tool_registry(Arc::new(tool_registry))
-            .build()
-            .context("building ACP AppService")?;
+        report_executor_selection(&runtime);
 
         Ok(Self {
-            pool,
-            app: Arc::new(app),
-            event_bus,
-            model_override,
-            prompt_timeout: (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs)),
+            runtime,
+            model_override: cmd.model.clone(),
+            prompt_timeout: (cmd.timeout > 0).then(|| Duration::from_secs(cmd.timeout)),
             active_runs: Mutex::new(HashMap::new()),
             diagnostics,
         })
     }
 
     fn active_agent(&self, selector: &str) -> Result<polkagent_store_sqlite::AgentRow> {
-        let store = SqliteRunStore::new(self.pool.clone());
+        let store = SqliteRunStore::new(self.runtime.pool().clone());
         let agent = store
             .get_agent_by_name_or_id(selector)
             .with_context(|| format!("active agent not found: {selector}"))?;
@@ -174,13 +153,15 @@ impl PolkagentAcpBackend {
             &agent.spec_json,
             self.model_override.clone(),
         );
-        self.app
+        self.runtime
+            .app()
             .create_agent(spec)
             .context("registering ACP agent with AppService")?;
 
-        let mut events = self.event_bus.subscribe();
+        let mut events = self.runtime.subscribe_events();
         let run_id = self
-            .app
+            .runtime
+            .app()
             .start_run(agent_id, prompt)
             .await
             .context("starting ACP-backed run")?;
@@ -224,7 +205,7 @@ impl PolkagentAcpBackend {
             if let Ok(result) = tokio::time::timeout(timeout, wait_for_result).await {
                 result
             } else {
-                let _ = self.app.timeout_run(run_id).await;
+                let _ = self.runtime.app().timeout_run(run_id).await;
                 Err(anyhow::anyhow!(
                     "editor prompt timed out after {} seconds",
                     timeout.as_secs()
@@ -252,7 +233,7 @@ impl PolkagentAcpBackend {
 #[async_trait]
 impl AcpBackend for PolkagentAcpBackend {
     async fn list_agents(&self) -> Result<Vec<AgentSummary>, BackendError> {
-        SqliteRunStore::new(self.pool.clone())
+        SqliteRunStore::new(self.runtime.pool().clone())
             .list_agents(Some("active"), false)
             .map(|agents| {
                 agents
@@ -296,14 +277,18 @@ impl AcpBackend for PolkagentAcpBackend {
     async fn cancel(&self, session_id: &str) -> Result<(), BackendError> {
         let run_id = self.active_runs.lock().await.get(session_id).copied();
         if let Some(run_id) = run_id {
-            self.app.cancel_run(run_id).await.map_err(|error| {
-                self.diagnostics.record(
-                    "error",
-                    "acp.cancel_failed",
-                    "Cancelling the active editor prompt failed",
-                );
-                BackendError::new(format!("cancelling run: {error}"))
-            })?;
+            self.runtime
+                .app()
+                .cancel_run(run_id)
+                .await
+                .map_err(|error| {
+                    self.diagnostics.record(
+                        "error",
+                        "acp.cancel_failed",
+                        "Cancelling the active editor prompt failed",
+                    );
+                    BackendError::new(format!("cancelling run: {error}"))
+                })?;
             self.diagnostics.record(
                 "info",
                 "acp.cancel_requested",
@@ -311,5 +296,41 @@ impl AcpBackend for PolkagentAcpBackend {
             );
         }
         Ok(())
+    }
+}
+
+fn explicit_provider_error(cmd: &AcpCmd, error: RuntimeError) -> anyhow::Error {
+    if let RuntimeError::ProviderUnavailable { provider, reason } = error {
+        if cmd.provider.as_deref() == Some(provider.as_str()) {
+            return anyhow::anyhow!(
+                "Provider '{provider}' was explicitly requested (--provider flag) but could not be found: {reason}"
+            );
+        }
+        return anyhow::Error::new(RuntimeError::ProviderUnavailable { provider, reason });
+    }
+    anyhow::Error::new(error)
+}
+
+fn is_database_initialization_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RuntimeError>().is_some_and(|error| {
+        matches!(
+            error,
+            RuntimeError::Database { .. }
+                | RuntimeError::DatabaseDirectory { .. }
+                | RuntimeError::InMemoryDatabase
+        )
+    })
+}
+
+fn report_executor_selection(runtime: &PolkagentRuntime) {
+    if runtime
+        .readiness()
+        .warnings
+        .iter()
+        .any(|warning| warning.code == WarningCode::SimulatedExecutor)
+    {
+        eprintln!("No API key or local model configured. Using simulated responses.");
+    } else {
+        eprintln!("{}", runtime.readiness().executor.detail);
     }
 }
