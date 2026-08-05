@@ -3,6 +3,12 @@
 //! These tests use `proptest` to verify invariants of the configuration
 //! schema, TOML round-trip serialization, and validation logic.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "property tests fail immediately when generated round trips or expected rejection invariants do not hold"
+)]
+
 use proptest::prelude::*;
 
 use polkagent_config::schema::Config;

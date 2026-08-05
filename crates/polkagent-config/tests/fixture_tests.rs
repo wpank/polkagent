@@ -2,6 +2,11 @@
 //! `fixtures/configs/` directory, verify parsing, validation, and round-trip
 //! serialization.
 
+#![allow(
+    clippy::expect_used,
+    reason = "fixture integration tests fail immediately when required workspace fixtures or expected validation outcomes are absent"
+)]
+
 use std::path::PathBuf;
 
 use polkagent_config::schema::{Config, DatabaseBackend, LogFormat, TuiTheme};
