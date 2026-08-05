@@ -151,6 +151,28 @@ impl InteractionStore for SqliteInteractionStore {
         .await
         .map_err(join_error)?
     }
+
+    async fn latest_event_sequence(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<u64, InteractionError> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let sequence: i64 = writer
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) FROM interaction_events
+                     WHERE conversation_id = ?1",
+                    [conversation_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(|error| backend_error("load latest interaction sequence", &error))?;
+            u64::try_from(sequence)
+                .map_err(|_| invariant_error("stored interaction event sequence is invalid"))
+        })
+        .await
+        .map_err(join_error)?
+    }
 }
 
 fn create_turn_blocking(

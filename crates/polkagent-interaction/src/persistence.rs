@@ -167,6 +167,12 @@ pub trait InteractionStore: Send + Sync {
         after_sequence: u64,
         limit: u32,
     ) -> Result<Vec<InteractionEventEnvelope>, InteractionError>;
+
+    /// Return the latest durable event sequence for an interaction, or zero.
+    async fn latest_event_sequence(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<u64, InteractionError>;
 }
 
 #[cfg(test)]

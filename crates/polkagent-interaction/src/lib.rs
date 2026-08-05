@@ -31,6 +31,7 @@
 pub mod command;
 pub mod error;
 pub mod event;
+pub mod hub;
 pub mod ids;
 pub mod model;
 pub mod persistence;
@@ -48,6 +49,7 @@ pub use event::{
     PlanEntryView, RunRole, ToolCallKind, ToolCallStatus, ToolCallView, ToolLocation, TurnResult,
     UsageView,
 };
+pub use hub::InteractionEventHub;
 pub use ids::{InteractionEventId, InteractionTurnId, PlanEntryId, ToolCallId};
 pub use model::{
     ApprovalDecision, ClientCapabilities, ClientCapability, ClientContext, ConfigOption,
