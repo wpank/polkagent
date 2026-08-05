@@ -185,6 +185,11 @@ impl PluginInstance {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "lifecycle tests intentionally panic at transition and rejection fixture boundaries"
+)]
 mod tests {
     use super::*;
 
@@ -235,7 +240,7 @@ mod tests {
 
         instance.record_health(HealthStatus::healthy("ok"));
         assert!(instance.last_health.is_some());
-        assert!(instance.last_health.as_ref().map_or(false, |h| h.healthy));
+        assert!(instance.last_health.as_ref().is_some_and(|h| h.healthy));
     }
 
     struct DummyPlugin {

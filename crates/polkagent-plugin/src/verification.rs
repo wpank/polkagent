@@ -223,6 +223,11 @@ impl Default for PackageVerifier {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "verification tests intentionally panic at trust-policy and rejection fixture boundaries"
+)]
 mod tests {
     use super::*;
     use crate::manifest::{CapabilitiesSection, PluginSection, ProvenanceSection};
@@ -355,8 +360,8 @@ mod tests {
         assert!(msg.contains("below minimum"));
 
         // Verified >= Verified → should be accepted.
-        let verified = verified_manifest("high-enough");
-        let result = verifier.verify(&verified).expect("should accept");
+        let verified_package = verified_manifest("high-enough");
+        let result = verifier.verify(&verified_package).expect("should accept");
         assert!(result.accepted);
     }
 

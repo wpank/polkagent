@@ -246,6 +246,10 @@ impl fmt::Display for CapabilitySet {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "capability parser tests intentionally panic when static fixtures fail to parse"
+)]
 mod tests {
     use super::*;
 

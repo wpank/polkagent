@@ -222,8 +222,14 @@ impl DependencyResolver {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "dependency tests intentionally panic at graph resolution and rejection fixture boundaries"
+)]
 mod tests {
     use super::*;
+    use crate::manifest::{CapabilitiesSection, ProvenanceSection};
     use std::collections::HashMap;
 
     /// Helper: create a manifest with optional dependencies.
@@ -242,9 +248,9 @@ mod tests {
                 license: String::new(),
                 entry_point: String::new(),
             },
-            capabilities: Default::default(),
+            capabilities: CapabilitiesSection::default(),
             dependencies,
-            provenance: Default::default(),
+            provenance: ProvenanceSection::default(),
         }
     }
 

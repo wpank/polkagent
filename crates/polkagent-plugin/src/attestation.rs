@@ -246,6 +246,11 @@ impl Default for AttestationChecker {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "attestation tests intentionally panic at provenance and policy fixture boundaries"
+)]
 mod tests {
     use super::*;
     use crate::manifest::{CapabilitiesSection, PluginSection, ProvenanceSection};

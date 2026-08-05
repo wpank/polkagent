@@ -365,6 +365,11 @@ impl Default for WasmtimeSandbox {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "sandbox tests intentionally panic at grant, resource, and rejection fixture boundaries"
+)]
 mod tests {
     use super::*;
 

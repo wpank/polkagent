@@ -269,9 +269,14 @@ impl Default for PluginManager {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "plugin manager tests intentionally panic at lifecycle integration fixture boundaries"
+)]
 mod tests {
     use super::*;
-    use crate::manifest::{CapabilitiesSection, PluginSection};
+    use crate::manifest::{CapabilitiesSection, PluginSection, ProvenanceSection};
     use std::collections::HashMap;
 
     fn make_manifest(name: &str, version: &str, required_caps: &[&str]) -> PluginManifest {
@@ -289,7 +294,7 @@ mod tests {
                 optional: Vec::new(),
             },
             dependencies: HashMap::new(),
-            provenance: Default::default(),
+            provenance: ProvenanceSection::default(),
         }
     }
 

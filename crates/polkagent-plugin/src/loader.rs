@@ -161,6 +161,10 @@ impl PluginLoader {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "loader tests intentionally panic at TOML and temporary filesystem fixture boundaries"
+)]
 mod tests {
     use super::*;
 

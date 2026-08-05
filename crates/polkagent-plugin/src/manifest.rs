@@ -348,6 +348,11 @@ impl PluginManifest {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "manifest tests intentionally panic at parsing and rejection fixture boundaries"
+)]
 mod tests {
     use super::*;
 
