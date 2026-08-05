@@ -15,7 +15,7 @@
 //! [prom-fmt]: https://prometheus.io/docs/instrumenting/exposition_formats/
 
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -85,6 +85,17 @@ pub enum MetricValue {
         /// Upper-bound / cumulative-count pairs.
         buckets: Vec<(f64, u64)>,
     },
+}
+
+/// Snapshot of one histogram time-series.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HistogramSnapshot {
+    /// Total number of observations.
+    pub count: u64,
+    /// Sum of all observed values.
+    pub sum: f64,
+    /// Upper-bound / non-cumulative-count pairs.
+    pub buckets: Vec<(f64, u64)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -268,8 +279,9 @@ impl Histogram {
     /// bucket is always appended automatically.
     pub fn with_buckets(bounds: &[f64]) -> Self {
         let mut sorted: Vec<f64> = bounds.to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        sorted.dedup();
+        sorted.retain(|bound| bound.is_finite());
+        sorted.sort_by(f64::total_cmp);
+        sorted.dedup_by(|left, right| left.total_cmp(right).is_eq());
         Self {
             upper_bounds: sorted,
             series: RwLock::new(BTreeMap::new()),
@@ -306,7 +318,7 @@ impl Histogram {
     pub fn get(&self, labels: &[Label]) -> (u64, f64) {
         let key = sorted_labels(labels);
         let map = self.series.read();
-        map.get(&key).map(|s| (s.count, s.sum)).unwrap_or((0, 0.0))
+        map.get(&key).map_or((0, 0.0), |s| (s.count, s.sum))
     }
 
     /// Return the bucket boundaries configured for this histogram.
@@ -315,10 +327,19 @@ impl Histogram {
     }
 
     /// Return all series.
-    pub fn all_series(&self) -> BTreeMap<Vec<Label>, (u64, f64, Vec<(f64, u64)>)> {
+    pub fn all_series(&self) -> BTreeMap<Vec<Label>, HistogramSnapshot> {
         let map = self.series.read();
         map.iter()
-            .map(|(k, v)| (k.clone(), (v.count, v.sum, v.bucket_counts.clone())))
+            .map(|(key, series)| {
+                (
+                    key.clone(),
+                    HistogramSnapshot {
+                        count: series.count,
+                        sum: series.sum,
+                        buckets: series.bucket_counts.clone(),
+                    },
+                )
+            })
             .collect()
     }
 
@@ -367,68 +388,74 @@ impl MetricFamily {
     pub fn render(&self) -> String {
         let mut out = String::new();
 
-        out.push_str(&format!("# HELP {} {}\n", self.name, self.help));
-        out.push_str(&format!("# TYPE {} {}\n", self.name, self.metric_type));
+        let _ = writeln!(out, "# HELP {} {}", self.name, self.help);
+        let _ = writeln!(out, "# TYPE {} {}", self.name, self.metric_type);
 
         match &self.inner {
             MetricInner::Counter(c) => {
                 for (labels, value) in &c.series() {
-                    out.push_str(&format!(
-                        "{}{} {}\n",
+                    let _ = writeln!(
+                        out,
+                        "{}{} {}",
                         self.name,
                         format_labels(labels),
                         format_f64(*value),
-                    ));
+                    );
                 }
             }
             MetricInner::Gauge(g) => {
                 for (labels, value) in &g.series() {
-                    out.push_str(&format!(
-                        "{}{} {}\n",
+                    let _ = writeln!(
+                        out,
+                        "{}{} {}",
                         self.name,
                         format_labels(labels),
                         format_f64(*value),
-                    ));
+                    );
                 }
             }
             MetricInner::Histogram(h) => {
-                for (labels, (count, sum, buckets)) in &h.all_series() {
+                for (labels, snapshot) in &h.all_series() {
                     // Cumulative bucket lines.
                     let mut cumulative: u64 = 0;
-                    for &(bound, raw_count) in buckets {
+                    for &(bound, raw_count) in &snapshot.buckets {
                         cumulative += raw_count;
                         let mut bucket_labels = labels.clone();
                         bucket_labels.push(Label::new("le", format_f64(bound)));
-                        out.push_str(&format!(
-                            "{}_bucket{} {}\n",
+                        let _ = writeln!(
+                            out,
+                            "{}_bucket{} {}",
                             self.name,
                             format_labels(&bucket_labels),
                             cumulative,
-                        ));
+                        );
                     }
                     // +Inf bucket.
                     {
                         let mut inf_labels = labels.clone();
                         inf_labels.push(Label::new("le", "+Inf"));
-                        out.push_str(&format!(
-                            "{}_bucket{} {}\n",
+                        let _ = writeln!(
+                            out,
+                            "{}_bucket{} {}",
                             self.name,
                             format_labels(&inf_labels),
-                            count,
-                        ));
+                            snapshot.count,
+                        );
                     }
-                    out.push_str(&format!(
-                        "{}_sum{} {}\n",
+                    let _ = writeln!(
+                        out,
+                        "{}_sum{} {}",
                         self.name,
                         format_labels(labels),
-                        format_f64(*sum),
-                    ));
-                    out.push_str(&format!(
-                        "{}_count{} {}\n",
+                        format_f64(snapshot.sum),
+                    );
+                    let _ = writeln!(
+                        out,
+                        "{}_count{} {}",
                         self.name,
                         format_labels(labels),
-                        count,
-                    ));
+                        snapshot.count,
+                    );
                 }
             }
         }
@@ -664,10 +691,14 @@ fn sorted_labels(labels: &[Label]) -> Vec<Label> {
 /// Format an `f64` for Prometheus output. Integers are rendered without a
 /// decimal point (e.g. `42` not `42.0`).
 fn format_f64(v: f64) -> String {
-    if v.fract() == 0.0 && v.is_finite() {
-        format!("{}", v as i64)
+    if v.is_nan() {
+        "NaN".to_owned()
+    } else if v.is_infinite() && v.is_sign_positive() {
+        "+Inf".to_owned()
+    } else if v.is_infinite() {
+        "-Inf".to_owned()
     } else {
-        format!("{v}")
+        v.to_string()
     }
 }
 
@@ -677,6 +708,8 @@ fn format_f64(v: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::float_cmp)]
+
     use super::*;
 
     // -- Label tests --------------------------------------------------------
@@ -861,15 +894,15 @@ mod tests {
         h.observe(&[], 15.0); // fits in none
 
         let series = h.all_series();
-        let (_, _, buckets) = series
+        let snapshot = series
             .get(&Vec::<Label>::new())
             .cloned()
             .unwrap_or_default();
         // Raw (non-cumulative) counts stored per bucket:
         // le=1.0 -> 1, le=5.0 -> 1, le=10.0 -> 1
-        assert_eq!(buckets[0], (1.0, 1));
-        assert_eq!(buckets[1], (5.0, 1));
-        assert_eq!(buckets[2], (10.0, 1));
+        assert_eq!(snapshot.buckets[0], (1.0, 1));
+        assert_eq!(snapshot.buckets[1], (5.0, 1));
+        assert_eq!(snapshot.buckets[2], (10.0, 1));
     }
 
     #[test]
@@ -894,6 +927,12 @@ mod tests {
     fn histogram_custom_buckets_sorted_and_deduped() {
         let h = Histogram::with_buckets(&[10.0, 1.0, 5.0, 1.0]);
         assert_eq!(h.upper_bounds(), &[1.0, 5.0, 10.0]);
+    }
+
+    #[test]
+    fn histogram_discards_non_finite_bucket_bounds() {
+        let h = Histogram::with_buckets(&[f64::NAN, 1.0, f64::INFINITY]);
+        assert_eq!(h.upper_bounds(), &[1.0]);
     }
 
     #[test]
@@ -1204,7 +1243,14 @@ mod tests {
 
     #[test]
     fn format_f64_decimal() {
-        assert_eq!(format_f64(3.14), "3.14");
+        assert_eq!(format_f64(3.125), "3.125");
+    }
+
+    #[test]
+    fn format_f64_uses_prometheus_non_finite_spellings() {
+        assert_eq!(format_f64(f64::INFINITY), "+Inf");
+        assert_eq!(format_f64(f64::NEG_INFINITY), "-Inf");
+        assert_eq!(format_f64(f64::NAN), "NaN");
     }
 
     // -- MetricType display --------------------------------------------------

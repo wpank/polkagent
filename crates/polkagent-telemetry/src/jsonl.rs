@@ -94,7 +94,7 @@ impl std::fmt::Debug for JsonlWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JsonlWriter")
             .field("path", &self.path)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -142,6 +142,8 @@ fn event_kind_label(kind: &polkagent_core::event::EventKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use polkagent_core::event::{EventCorrelation, EventKind};
     use polkagent_core::ids::{EventId, RunId};
@@ -149,7 +151,7 @@ mod tests {
     fn make_test_event(run_id: RunId) -> RunEvent {
         RunEvent::new_durable(
             EventId::new(),
-            run_id.clone(),
+            run_id,
             1,
             EventKind::RunCreated,
             EventCorrelation {
@@ -196,11 +198,11 @@ mod tests {
             for seq in 1..=5 {
                 let event = RunEvent::new_durable(
                     EventId::new(),
-                    run_id.clone(),
+                    run_id,
                     seq,
                     EventKind::RunCreated,
                     EventCorrelation {
-                        run_id: run_id.clone(),
+                        run_id,
                         ..Default::default()
                     },
                 );
@@ -219,7 +221,7 @@ mod tests {
         let path = dir.path().join("append.jsonl");
 
         let run_id = RunId::new();
-        let event = make_test_event(run_id.clone());
+        let event = make_test_event(run_id);
 
         // Write first event.
         {
@@ -231,7 +233,7 @@ mod tests {
         {
             let event2 = RunEvent::new_durable(
                 EventId::new(),
-                run_id.clone(),
+                run_id,
                 2,
                 EventKind::RunQueued,
                 EventCorrelation {

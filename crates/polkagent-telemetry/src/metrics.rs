@@ -31,9 +31,10 @@ impl MetricRecorder {
 
     /// Record the total duration of a run and its terminal state.
     pub fn record_run_duration(&self, duration: Duration, state: &str) {
+        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         tracing::info!(
             metric = "run.duration",
-            duration_ms = duration.as_millis() as u64,
+            duration_ms,
             run.state = state,
             "run completed"
         );
@@ -72,8 +73,13 @@ impl MetricRecorder {
 
     /// Decrement the active run counter.
     pub fn decrement_active_runs(&self) {
-        let prev = self.active_runs.fetch_sub(1, Ordering::Relaxed);
-        let current = prev.saturating_sub(1);
+        let previous = self
+            .active_runs
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_sub(1))
+            })
+            .unwrap_or(0);
+        let current = previous.saturating_sub(1);
         tracing::info!(
             metric = "runs.active",
             runs.active = current,
@@ -175,13 +181,10 @@ mod tests {
     #[test]
     fn decrement_below_zero_saturates() {
         let r = MetricRecorder::new();
-        // Decrementing from 0 should not underflow (AtomicU64 wraps, but we
-        // use saturating_sub for the reported value).
+        // Decrementing from zero must keep both the reported metric and the
+        // stored gauge at zero.
         r.decrement_active_runs();
-        // The atomic will have wrapped to u64::MAX, but the reported metric
-        // used saturating_sub so the tracing event showed 0.
-        // The actual counter is now wrapped, which is acceptable for
-        // a metrics counter that should never go below zero in practice.
+        assert_eq!(r.active_runs(), 0);
     }
 
     #[test]

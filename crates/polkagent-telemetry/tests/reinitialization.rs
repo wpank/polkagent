@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used)]
+
 use polkagent_telemetry::{init_telemetry, LogFormat, TelemetryConfig};
 
 #[test]

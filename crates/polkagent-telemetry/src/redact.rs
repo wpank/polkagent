@@ -5,6 +5,7 @@
 //! via [`redact_string`].
 
 use std::fmt;
+use std::sync::LazyLock;
 
 use serde::Serialize;
 use zeroize::Zeroize;
@@ -66,6 +67,24 @@ impl<T: Zeroize> Serialize for Redacted<T> {
 // Pattern-based redaction
 // ---------------------------------------------------------------------------
 
+struct RedactionPatterns {
+    api_key: regex_lite::Regex,
+    hex_seed: regex_lite::Regex,
+    mnemonic_24: regex_lite::Regex,
+    mnemonic_12: regex_lite::Regex,
+}
+
+static REDACTION_PATTERNS: LazyLock<Option<RedactionPatterns>> = LazyLock::new(|| {
+    Some(RedactionPatterns {
+        api_key: regex_lite::Regex::new(r"(sk-|pk-)[A-Za-z0-9_\-]{8,}").ok()?,
+        hex_seed: regex_lite::Regex::new(r"0x[0-9a-fA-F]{64}(?:[^0-9a-fA-F]|$)").ok()?,
+        mnemonic_24: regex_lite::Regex::new(r"(?:^|\s)([a-z]{2,}(?:\s+[a-z]{2,}){23})(?:\s|$)")
+            .ok()?,
+        mnemonic_12: regex_lite::Regex::new(r"(?:^|\s)([a-z]{2,}(?:\s+[a-z]{2,}){11})(?:\s|$)")
+            .ok()?,
+    })
+});
+
 /// Redact known secret patterns from a string.
 ///
 /// Patterns handled:
@@ -73,21 +92,23 @@ impl<T: Zeroize> Serialize for Redacted<T> {
 /// - Hex seeds: `0x` followed by exactly 64 hex characters
 /// - BIP-39 style mnemonics: sequences of 12 or 24 lowercase words
 pub fn redact_string(s: &str) -> String {
+    let Some(patterns) = REDACTION_PATTERNS.as_ref() else {
+        // Fail closed if a built-in pattern is ever invalid after an upgrade.
+        return "[REDACTION ERROR]".to_owned();
+    };
     let mut result = s.to_owned();
 
     // API keys: sk-... or pk-... (at least 8 chars after prefix)
-    let api_key_re = regex_lite::Regex::new(r"(sk-|pk-)[A-Za-z0-9_\-]{8,}").expect("valid regex");
-    result = api_key_re
+    result = patterns
+        .api_key
         .replace_all(&result, "${1}***REDACTED***")
         .into_owned();
 
     // Hex seeds: 0x followed by exactly 64 hex chars, not followed by more hex
-    let hex_seed_re =
-        regex_lite::Regex::new(r"0x[0-9a-fA-F]{64}(?:[^0-9a-fA-F]|$)").expect("valid regex");
-    result = hex_seed_re
+    result = patterns
+        .hex_seed
         .replace_all(&result, |caps: &regex_lite::Captures<'_>| {
-            let m = caps.get(0).expect("match exists");
-            let text = m.as_str();
+            let text = caps.get(0).map_or("", |matched| matched.as_str());
             // text is 66 chars (0x + 64 hex) or 67 if there is a trailing non-hex char.
             // If 67, we need to preserve the trailing char.
             if text.len() > 66 {
@@ -99,15 +120,13 @@ pub fn redact_string(s: &str) -> String {
         .into_owned();
 
     // Mnemonics: 24 lowercase words first, then 12 (greedy match order)
-    let mnemonic_24_re = regex_lite::Regex::new(r"(?:^|\s)([a-z]{2,}(?:\s+[a-z]{2,}){23})(?:\s|$)")
-        .expect("valid regex");
-    result = mnemonic_24_re
+    result = patterns
+        .mnemonic_24
         .replace_all(&result, " ***MNEMONIC_REDACTED*** ")
         .into_owned();
 
-    let mnemonic_12_re = regex_lite::Regex::new(r"(?:^|\s)([a-z]{2,}(?:\s+[a-z]{2,}){11})(?:\s|$)")
-        .expect("valid regex");
-    result = mnemonic_12_re
+    result = patterns
+        .mnemonic_12
         .replace_all(&result, " ***MNEMONIC_REDACTED*** ")
         .into_owned();
 
@@ -120,6 +139,8 @@ pub fn redact_string(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]

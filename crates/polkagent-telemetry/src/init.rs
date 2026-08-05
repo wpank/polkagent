@@ -133,15 +133,20 @@ fn build_otel_provider(
 pub fn init_telemetry(
     config: TelemetryConfig,
 ) -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>> {
-    let env_filter =
-        EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
+    let TelemetryConfig {
+        log_level,
+        log_format,
+        otlp_endpoint,
+        service_name,
+        ansi,
+    } = config;
+    let env_filter = EnvFilter::try_new(log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Build each combination of (format x otlp) separately so that the
     // tracing-subscriber type-level layering is fully resolved at compile time.
-    let ansi = config.ansi;
-    let provider = match (&config.log_format, &config.otlp_endpoint) {
+    let provider = match (log_format, otlp_endpoint.as_deref()) {
         (LogFormat::Pretty, Some(endpoint)) => {
-            let (provider, tracer) = build_otel_provider(endpoint, &config.service_name)?;
+            let (provider, tracer) = build_otel_provider(endpoint, &service_name)?;
             let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
             tracing_subscriber::registry()
                 .with(env_filter)
@@ -156,7 +161,7 @@ pub fn init_telemetry(
             Some(provider)
         }
         (LogFormat::Json, Some(endpoint)) => {
-            let (provider, tracer) = build_otel_provider(endpoint, &config.service_name)?;
+            let (provider, tracer) = build_otel_provider(endpoint, &service_name)?;
             let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
             tracing_subscriber::registry()
                 .with(env_filter)
@@ -242,6 +247,8 @@ pub fn init_from_env() -> Result<TelemetryGuard, Box<dyn std::error::Error + Sen
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]
