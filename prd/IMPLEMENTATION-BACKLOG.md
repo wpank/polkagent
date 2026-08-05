@@ -234,9 +234,11 @@ network before claiming safe writes.
 
 **Checklist:**
 
-- [ ] Repair PRD-17 fixture/workflow variable, endpoint-scheme, and binary
+- [x] Repair PRD-17 fixture/workflow variable, endpoint-scheme, and binary
   assumptions.
-- [ ] Ensure tests actually consume live RPC environment variables.
+- [x] Ensure tests actually consume live RPC environment variables. The live
+  target now probes both chains and requires relay finality progression; retain
+  the checklist below because this is read-only evidence, not action E2E.
 - [ ] Add a real dev signer with explicit testnet-only safeguards.
 - [ ] Pin metadata/genesis/spec version; decode and sign the exact bytes shown.
 - [ ] Match submitted transaction/events during inclusion/finality watching.

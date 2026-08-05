@@ -65,7 +65,7 @@ startup still has a wiring gap.
 | 13 UX | CLI/TUI exist | Partial | Interactive experience missing | Active P0/P1 + PRD-19 |
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
 | 15 Testing | Broad green suite | Production paths under-tested | Live/client/ops gates missing | Active cross-cutting |
-| 17 Local testnet | Fixtures/workflow being added | Not connected to real tests | No | Active P1 |
+| 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
 | 19 Interactive/ACP | Architecture specified | Missing | No | Active P0/P1 |
 
 ## Decisive implementation evidence
@@ -90,8 +90,9 @@ startup still has a wiring gap.
   in-process transport, not real PCA application/peer I/O.
 - `crates/polkagent-payment/src/ledger.rs` labels its signature as an
   experimental placeholder.
-- current PRD-17 workflow/tests do not yet prove that a spawned local network is
-  queried, signed against, submitted to, and observed to finality.
+- PRD-17 now has an honest live-node target that queries relay/Asset Hub RPC and
+  requires relay finality to advance. The actual CI network run is still needed
+  as evidence, and no bytes are yet signed, submitted, matched, or reconciled.
 
 ## Completion gate for future status updates
 
