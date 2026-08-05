@@ -61,6 +61,9 @@ pub fn build_export(
 }
 
 #[cfg(test)]
+// These assertion-oriented response tests use `expect` to identify the exact
+// summary, export, or serde response contract that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use chrono::Utc;
@@ -111,7 +114,7 @@ mod tests {
 
         assert_eq!(summary.run_count, 0);
         assert_eq!(summary.total_input_tokens, 0);
-        assert_eq!(summary.total_cost_usd, 0.0);
+        assert!(summary.total_cost_usd.abs() < f64::EPSILON);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::error::BillingError;
 use polkagent_payment::CostRecord;
+use std::fmt::Write as _;
 
 const CSV_HEADER: &str =
     "run_id,provider,model,input_tokens,output_tokens,estimated_usd,recorded_at";
@@ -20,7 +21,8 @@ pub fn export_csv(records: &[CostRecord]) -> Result<String, BillingError> {
         buf.push(',');
         buf.push_str(&record.output_tokens.to_string());
         buf.push(',');
-        buf.push_str(&format!("{:.6}", record.estimated_usd));
+        write!(&mut buf, "{:.6}", record.estimated_usd)
+            .map_err(|e| BillingError::Export(format!("format estimated cost: {e}")))?;
         buf.push(',');
         buf.push_str(&record.recorded_at.to_rfc3339());
         buf.push('\n');
@@ -43,6 +45,9 @@ pub fn export_csv_bytes(records: &[CostRecord]) -> Result<Vec<u8>, BillingError>
 }
 
 #[cfg(test)]
+// These assertion-oriented CSV tests use `expect` to identify the exact
+// serialization, escaping, or byte-export contract that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use chrono::Utc;
@@ -75,7 +80,7 @@ mod tests {
         let csv = export_csv(&[]).expect("export");
         assert!(csv.starts_with(CSV_HEADER));
         // Header + trailing newline only.
-        let lines: Vec<&str> = csv.trim().split('\n').collect();
+        let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 1);
     }
 
@@ -83,7 +88,7 @@ mod tests {
     fn export_csv_with_records() {
         let records = sample_records();
         let csv = export_csv(&records).expect("export");
-        let lines: Vec<&str> = csv.trim().split('\n').collect();
+        let lines: Vec<&str> = csv.lines().collect();
 
         // Header + 2 data rows.
         assert_eq!(lines.len(), 3);
@@ -104,7 +109,7 @@ mod tests {
             recorded_at: Utc::now(),
         }];
         let csv = export_csv(&records).expect("export");
-        let lines: Vec<&str> = csv.trim().split('\n').collect();
+        let lines: Vec<&str> = csv.lines().collect();
         let fields: Vec<&str> = lines[1].split(',').collect();
 
         assert_eq!(fields[0], "r1");

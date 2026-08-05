@@ -1,4 +1,4 @@
-//! SQLite [`polkagent_feed::FeedStore`] implementation for the Polkagent platform.
+//! `SQLite` [`polkagent_feed::FeedStore`] implementation for the `Polkagent` platform.
 //!
 //! This crate provides a durable, SQLite-backed implementation of
 //! [`polkagent_feed::FeedStore`] via the [`SqliteFeedStore`] newtype wrapper

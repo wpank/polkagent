@@ -89,8 +89,8 @@ impl MultisigState {
         MultisigSummary {
             multisig_account: self.multisig_account.clone(),
             threshold: self.threshold,
-            total_signatories: self.signatories.len() as u16,
-            current_approvals: self.approvals.len() as u16,
+            total_signatories: u16::try_from(self.signatories.len()).unwrap_or(u16::MAX),
+            current_approvals: u16::try_from(self.approvals.len()).unwrap_or(u16::MAX),
             approved_by: self.approvals.iter().cloned().collect(),
             missing: self
                 .missing_signers()
@@ -141,12 +141,14 @@ impl ProxyConfig {
         }
     }
 
+    #[must_use]
     pub fn with_agent_proxy(mut self, proxy: impl Into<String>, filter: impl Into<String>) -> Self {
         self.agent_proxy = Some(proxy.into());
         self.proxy_filter = Some(filter.into());
         self
     }
 
+    #[must_use]
     pub fn with_announcement_delay(mut self, blocks: u32) -> Self {
         self.announcement_delay = blocks;
         self
@@ -288,6 +290,9 @@ fn decode_proxy_config(account: &str, bytes: &[u8]) -> Result<ProxyConfig, Gover
 // ===========================================================================
 
 #[cfg(test)]
+// These assertion-oriented contract tests use `expect`/`unwrap_err` to identify
+// the exact multisig, proxy, decoding, or chain-fixture invariant that failed.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use polkagent_chain_fake::FakeChainClientBuilder;

@@ -29,6 +29,28 @@ use polkagent_store_sqlite::SqlitePool;
 
 use crate::error::{map_json, map_sqlite, map_uuid, parse_ts};
 
+fn storage_i64_from_u64(value: u64, field: &str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| {
+        FeedError::ProcessingError(format!(
+            "{field} value {value} exceeds SQLite INTEGER capacity"
+        ))
+    })
+}
+
+fn storage_i64_from_usize(value: usize, field: &str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| {
+        FeedError::ProcessingError(format!(
+            "{field} value {value} exceeds SQLite INTEGER capacity"
+        ))
+    })
+}
+
+fn u64_from_storage_i64(value: i64, field: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| {
+        FeedError::ProcessingError(format!("negative SQLite INTEGER for {field}: {value}"))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // FeedStatus <-> TEXT encoding
 // ---------------------------------------------------------------------------
@@ -107,12 +129,13 @@ impl FeedStore for SqliteFeedStore {
     async fn create_feed(&self, feed: Feed) -> Result<Feed> {
         let pool = self.0.clone();
         let id_str = feed.id.to_string();
-        let source_json = serde_json::to_string(&feed.source).map_err(map_json)?;
+        let source_json = serde_json::to_string(&feed.source).map_err(|e| map_json(&e))?;
         let status_str = encode_status(&feed.status);
         let agent_id_str = feed.agent_id.to_string();
         let cursor_position = feed.cursor.position.clone();
         let cursor_last_processed_at = feed.cursor.last_processed_at.to_rfc3339();
-        let cursor_items_processed = feed.cursor.items_processed as i64;
+        let cursor_items_processed =
+            storage_i64_from_u64(feed.cursor.items_processed, "cursor items processed")?;
         let created_at = feed.created_at.to_rfc3339();
 
         tokio::task::spawn_blocking(move || {
@@ -225,7 +248,8 @@ impl FeedStore for SqliteFeedStore {
         let pool = self.0.clone();
         let id_str = feed_id.to_string();
         let last_processed_at = cursor.last_processed_at.to_rfc3339();
-        let items_processed = cursor.items_processed as i64;
+        let items_processed =
+            storage_i64_from_u64(cursor.items_processed, "cursor items processed")?;
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
@@ -256,9 +280,12 @@ impl FeedStore for SqliteFeedStore {
         let pool = self.0.clone();
         let id_str = trigger.id.to_string();
         let feed_id_str = trigger.feed_id.to_string();
-        let condition_json = serde_json::to_string(&trigger.condition).map_err(map_json)?;
-        let action_json = serde_json::to_string(&trigger.action).map_err(map_json)?;
-        let cooldown_secs = trigger.cooldown_secs.map(|s| s as i64);
+        let condition_json = serde_json::to_string(&trigger.condition).map_err(|e| map_json(&e))?;
+        let action_json = serde_json::to_string(&trigger.action).map_err(|e| map_json(&e))?;
+        let cooldown_secs = trigger
+            .cooldown_secs
+            .map(|seconds| storage_i64_from_u64(seconds, "trigger cooldown seconds"))
+            .transpose()?;
         let last_fired_at = trigger.last_fired_at.map(|dt| dt.to_rfc3339());
         let enabled = i32::from(trigger.enabled);
 
@@ -369,9 +396,12 @@ impl FeedStore for SqliteFeedStore {
         let pool = self.0.clone();
         let id_str = trigger.id.to_string();
         let feed_id_str = trigger.feed_id.to_string();
-        let condition_json = serde_json::to_string(&trigger.condition).map_err(map_json)?;
-        let action_json = serde_json::to_string(&trigger.action).map_err(map_json)?;
-        let cooldown_secs = trigger.cooldown_secs.map(|s| s as i64);
+        let condition_json = serde_json::to_string(&trigger.condition).map_err(|e| map_json(&e))?;
+        let action_json = serde_json::to_string(&trigger.action).map_err(|e| map_json(&e))?;
+        let cooldown_secs = trigger
+            .cooldown_secs
+            .map(|seconds| storage_i64_from_u64(seconds, "trigger cooldown seconds"))
+            .transpose()?;
         let last_fired_at = trigger.last_fired_at.map(|dt| dt.to_rfc3339());
         let enabled = i32::from(trigger.enabled);
 
@@ -412,10 +442,11 @@ impl FeedStore for SqliteFeedStore {
     async fn create_recipe(&self, recipe: Recipe) -> Result<Recipe> {
         let pool = self.0.clone();
         let id_str = recipe.id.to_string();
-        let source_json = serde_json::to_string(&recipe.source).map_err(map_json)?;
-        let trigger_json = serde_json::to_string(&recipe.trigger).map_err(map_json)?;
-        let action_json = serde_json::to_string(&recipe.action).map_err(map_json)?;
-        let parameters_json = serde_json::to_string(&recipe.parameters).map_err(map_json)?;
+        let source_json = serde_json::to_string(&recipe.source).map_err(|e| map_json(&e))?;
+        let trigger_json = serde_json::to_string(&recipe.trigger).map_err(|e| map_json(&e))?;
+        let action_json = serde_json::to_string(&recipe.action).map_err(|e| map_json(&e))?;
+        let parameters_json =
+            serde_json::to_string(&recipe.parameters).map_err(|e| map_json(&e))?;
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
@@ -526,7 +557,7 @@ impl FeedStore for SqliteFeedStore {
         let pool = self.0.clone();
         let id_str = item.id.to_string();
         let feed_id_str = item.feed_id.to_string();
-        let payload_json = serde_json::to_string(&item.payload).map_err(map_json)?;
+        let payload_json = serde_json::to_string(&item.payload).map_err(|e| map_json(&e))?;
         let received_at = item.received_at.to_rfc3339();
         let processed = i32::from(item.processed);
 
@@ -549,6 +580,7 @@ impl FeedStore for SqliteFeedStore {
     async fn dequeue_items(&self, feed_id: &FeedId, limit: usize) -> Result<Vec<FeedItem>> {
         let pool = self.0.clone();
         let feed_id_str = feed_id.to_string();
+        let limit = storage_i64_from_usize(limit, "dequeue limit")?;
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
@@ -563,7 +595,7 @@ impl FeedStore for SqliteFeedStore {
                 .map_err(map_sqlite)?;
 
             let rows = stmt
-                .query_map(rusqlite::params![feed_id_str, limit as i64], |row| {
+                .query_map(rusqlite::params![feed_id_str, limit], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -632,10 +664,10 @@ fn decode_feed_row(row: FeedRow) -> Result<Feed> {
         created_at_s,
     ) = row;
 
-    let id = id_s.parse::<Uuid>().map_err(map_uuid)?;
-    let source: FeedSource = serde_json::from_str(&source_json_s).map_err(map_json)?;
+    let id = id_s.parse::<Uuid>().map_err(|e| map_uuid(&e))?;
+    let source: FeedSource = serde_json::from_str(&source_json_s).map_err(|e| map_json(&e))?;
     let cursor_last_processed_at = parse_ts(&cursor_ts_s)?;
-    let agent_id = agent_id_s.parse::<Uuid>().map_err(map_uuid)?;
+    let agent_id = agent_id_s.parse::<Uuid>().map_err(|e| map_uuid(&e))?;
     let created_at = parse_ts(&created_at_s)?;
 
     Ok(Feed {
@@ -645,7 +677,7 @@ fn decode_feed_row(row: FeedRow) -> Result<Feed> {
         cursor: Cursor {
             position: cursor_pos,
             last_processed_at: cursor_last_processed_at,
-            items_processed: cursor_items as u64,
+            items_processed: u64_from_storage_i64(cursor_items, "cursor items processed")?,
         },
         status: decode_status(&status_s),
         agent_id: polkagent_core::AgentId::from(agent_id),
@@ -668,10 +700,11 @@ fn decode_trigger_row(row: TriggerRow) -> Result<Trigger> {
     let (id_s, name, feed_id_s, cond_json_s, action_json_s, cooldown, last_fired_s, enabled_i) =
         row;
 
-    let id = id_s.parse::<Uuid>().map_err(map_uuid)?;
-    let feed_id = feed_id_s.parse::<Uuid>().map_err(map_uuid)?;
-    let condition: TriggerCondition = serde_json::from_str(&cond_json_s).map_err(map_json)?;
-    let action: TriggerAction = serde_json::from_str(&action_json_s).map_err(map_json)?;
+    let id = id_s.parse::<Uuid>().map_err(|e| map_uuid(&e))?;
+    let feed_id = feed_id_s.parse::<Uuid>().map_err(|e| map_uuid(&e))?;
+    let condition: TriggerCondition =
+        serde_json::from_str(&cond_json_s).map_err(|e| map_json(&e))?;
+    let action: TriggerAction = serde_json::from_str(&action_json_s).map_err(|e| map_json(&e))?;
     let last_fired_at = last_fired_s.as_deref().map(parse_ts).transpose()?;
 
     Ok(Trigger {
@@ -680,7 +713,9 @@ fn decode_trigger_row(row: TriggerRow) -> Result<Trigger> {
         feed_id: FeedId::from_uuid(feed_id),
         condition,
         action,
-        cooldown_secs: cooldown.map(|s| s as u64),
+        cooldown_secs: cooldown
+            .map(|seconds| u64_from_storage_i64(seconds, "trigger cooldown seconds"))
+            .transpose()?,
         last_fired_at,
         enabled: enabled_i != 0,
     })
@@ -709,12 +744,13 @@ fn decode_recipe_row(row: RecipeRow) -> Result<Recipe> {
         params_json_s,
     ) = row;
 
-    let id = id_s.parse::<Uuid>().map_err(map_uuid)?;
-    let source: FeedSource = serde_json::from_str(&source_json_s).map_err(map_json)?;
-    let trigger: TriggerCondition = serde_json::from_str(&trigger_json_s).map_err(map_json)?;
-    let action: TriggerAction = serde_json::from_str(&action_json_s).map_err(map_json)?;
+    let id = id_s.parse::<Uuid>().map_err(|e| map_uuid(&e))?;
+    let source: FeedSource = serde_json::from_str(&source_json_s).map_err(|e| map_json(&e))?;
+    let trigger: TriggerCondition =
+        serde_json::from_str(&trigger_json_s).map_err(|e| map_json(&e))?;
+    let action: TriggerAction = serde_json::from_str(&action_json_s).map_err(|e| map_json(&e))?;
     let parameters: Vec<RecipeParameter> =
-        serde_json::from_str(&params_json_s).map_err(map_json)?;
+        serde_json::from_str(&params_json_s).map_err(|e| map_json(&e))?;
 
     Ok(Recipe {
         id: RecipeId::from_uuid(id),
@@ -733,9 +769,10 @@ type ItemRow = (String, String, String, String, i32);
 fn decode_item_row(row: ItemRow) -> Result<FeedItem> {
     let (id_s, feed_id_s, payload_json_s, received_at_s, processed_i) = row;
 
-    let id = id_s.parse::<Uuid>().map_err(map_uuid)?;
-    let feed_id = feed_id_s.parse::<Uuid>().map_err(map_uuid)?;
-    let payload: serde_json::Value = serde_json::from_str(&payload_json_s).map_err(map_json)?;
+    let id = id_s.parse::<Uuid>().map_err(|e| map_uuid(&e))?;
+    let feed_id = feed_id_s.parse::<Uuid>().map_err(|e| map_uuid(&e))?;
+    let payload: serde_json::Value =
+        serde_json::from_str(&payload_json_s).map_err(|e| map_json(&e))?;
     let received_at = parse_ts(&received_at_s)?;
 
     Ok(FeedItem {
@@ -752,6 +789,9 @@ fn decode_item_row(row: ItemRow) -> Result<FeedItem> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented store tests use `expect` to identify the exact
+// fixture setup, persistence operation, or feed contract that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::migrations;

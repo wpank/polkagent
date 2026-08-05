@@ -84,6 +84,7 @@ impl<C: ChainClient> ChainRoutePlanner<C> {
         }
     }
 
+    #[must_use]
     pub fn with_xcm_version(mut self, version: u8) -> Self {
         self.xcm_version = version;
         self
@@ -264,6 +265,9 @@ pub async fn plan_route(
 // ===========================================================================
 
 #[cfg(test)]
+// These assertion-oriented route tests use `expect`/`unwrap_err` to identify
+// the exact XCM planning or fake-chain contract that failed.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use polkagent_chain_fake::FakeChainClientBuilder;

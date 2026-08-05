@@ -17,7 +17,7 @@ use tracing::debug;
 use polkagent_feed::FeedError;
 
 /// The full DDL for the feed store tables.
-const FEED_SCHEMA: &str = r#"
+const FEED_SCHEMA: &str = r"
 -- ---------------------------------------------------------------------------
 -- Feeds
 -- ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_feed_items_processed
 
 CREATE INDEX IF NOT EXISTS idx_feed_items_feed_processed
     ON feed_items(feed_id, processed, received_at);
-"#;
+";
 
 /// Create the feed store tables if they do not already exist.
 ///
@@ -116,6 +116,9 @@ pub fn migrate(conn: &Connection) -> polkagent_feed::Result<()> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These assertion-oriented migration tests use `expect` to identify the exact
+// in-memory schema setup or table-existence invariant that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use rusqlite::Connection;

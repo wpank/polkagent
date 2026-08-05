@@ -111,7 +111,7 @@ impl MeterEmitter {
 
     #[must_use]
     pub fn pending_count(&self) -> usize {
-        self.events.lock().map(|e| e.len()).unwrap_or(0)
+        self.events.lock().map_or(0, |events| events.len())
     }
 }
 
@@ -122,6 +122,9 @@ impl Default for MeterEmitter {
 }
 
 #[cfg(test)]
+// These assertion-oriented meter tests use `expect` to identify the exact
+// event serialization or in-memory queue contract that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

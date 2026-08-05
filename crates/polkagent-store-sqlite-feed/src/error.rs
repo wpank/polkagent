@@ -1,4 +1,4 @@
-//! Error mapping between SQLite storage errors and [`polkagent_feed::FeedError`].
+//! Error mapping between `SQLite` storage errors and [`polkagent_feed::FeedError`].
 //!
 //! This module provides conversion helpers so that `rusqlite`, `serde_json`,
 //! `uuid`, and timestamp-parsing errors are transparently mapped to the
@@ -18,12 +18,12 @@ pub(crate) fn map_sqlite(e: rusqlite::Error) -> FeedError {
 }
 
 /// Map a [`serde_json::Error`] to [`FeedError::ProcessingError`].
-pub(crate) fn map_json(e: serde_json::Error) -> FeedError {
+pub(crate) fn map_json(e: &serde_json::Error) -> FeedError {
     FeedError::ProcessingError(format!("json error: {e}"))
 }
 
 /// Map a [`uuid::Error`] to [`FeedError::ProcessingError`].
-pub(crate) fn map_uuid(e: uuid::Error) -> FeedError {
+pub(crate) fn map_uuid(e: &uuid::Error) -> FeedError {
     FeedError::ProcessingError(format!("invalid id: {e}"))
 }
 

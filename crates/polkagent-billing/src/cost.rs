@@ -110,6 +110,9 @@ impl Default for AggregateCost {
 }
 
 #[cfg(test)]
+// These assertion-oriented calculator tests use `expect` to identify the
+// exact pricing serialization or round-trip contract that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -133,7 +136,7 @@ mod tests {
         let calc = RunCostCalculator::new();
         let cost = calc.compute("run-2", "anthropic", "claude-sonnet-4", 0, 0);
 
-        assert_eq!(cost.cost_usd, 0.0);
+        assert!(cost.cost_usd.abs() < f64::EPSILON);
     }
 
     #[test]
@@ -141,7 +144,7 @@ mod tests {
         let calc = RunCostCalculator::new();
         let cost = calc.compute("run-3", "unknown", "mystery-model", 1000, 500);
 
-        assert_eq!(cost.cost_usd, 0.0);
+        assert!(cost.cost_usd.abs() < f64::EPSILON);
     }
 
     #[test]
@@ -190,7 +193,7 @@ mod tests {
         let agg = calc.compute_aggregate(&[]);
         assert_eq!(agg.run_count, 0);
         assert_eq!(agg.total_input_tokens, 0);
-        assert_eq!(agg.total_cost_usd, 0.0);
+        assert!(agg.total_cost_usd.abs() < f64::EPSILON);
     }
 
     #[test]
@@ -231,6 +234,6 @@ mod tests {
         assert_eq!(agg.run_count, 0);
         assert_eq!(agg.total_input_tokens, 0);
         assert_eq!(agg.total_output_tokens, 0);
-        assert_eq!(agg.total_cost_usd, 0.0);
+        assert!(agg.total_cost_usd.abs() < f64::EPSILON);
     }
 }
