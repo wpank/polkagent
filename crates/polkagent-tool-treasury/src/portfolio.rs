@@ -158,8 +158,7 @@ impl ToolHandler for PortfolioSummaryTool {
                 "balance",
             )
             .await
-            .map(|b| b.free)
-            .unwrap_or(0);
+            .map_or(0, |b| b.free);
 
         // Query staking position.
         let staking_balance = self
@@ -171,8 +170,7 @@ impl ToolHandler for PortfolioSummaryTool {
                 "staking",
             )
             .await
-            .map(|p| p.total_stake)
-            .unwrap_or(0);
+            .map_or(0, |p| p.total_stake);
 
         // Query vesting info.
         let vesting_balance = self
@@ -184,8 +182,7 @@ impl ToolHandler for PortfolioSummaryTool {
                 "vesting",
             )
             .await
-            .map(|v| v.total_locked)
-            .unwrap_or(0);
+            .map_or(0, |v| v.total_locked);
 
         // Query crowdloan contributions (stored as a simple u128 balance).
         let crowdloan_balance = self
@@ -197,8 +194,7 @@ impl ToolHandler for PortfolioSummaryTool {
                 "crowdloan",
             )
             .await
-            .map(|e| e.balance)
-            .unwrap_or(0);
+            .map_or(0, |e| e.balance);
 
         let entries: Vec<PortfolioEntry> = vec![
             PortfolioEntry {
@@ -249,6 +245,8 @@ impl ToolHandler for PortfolioSummaryTool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test assertions deliberately unwrap fixtures so failures retain precise context.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::tests::MockChainClient;

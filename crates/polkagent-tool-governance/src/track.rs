@@ -21,7 +21,7 @@ use crate::types::Track;
 // TrackInfoTool
 // ---------------------------------------------------------------------------
 
-/// Lists OpenGov governance tracks and their parameters.
+/// Lists `OpenGov` governance tracks and their parameters.
 ///
 /// When called without a `track_id`, returns all tracks. When called with
 /// a specific `track_id`, returns that single track's details.

@@ -1,8 +1,8 @@
-//! `polkagent-tool-governance` — OpenGov governance research tools for the
+//! `polkagent-tool-governance` — `OpenGov` governance research tools for the
 //! Polkagent platform.
 //!
 //! This crate provides read-only tools that let agents research and analyze
-//! Polkadot/Kusama OpenGov governance proposals, referenda, voting patterns,
+//! Polkadot/Kusama `OpenGov` governance proposals, referenda, voting patterns,
 //! delegations, and treasury state.
 //!
 //! # Tools

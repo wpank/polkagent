@@ -22,7 +22,7 @@ use crate::types::{Referendum, ReferendumStatus, TimelineEvent};
 // ReferendumLookupTool
 // ---------------------------------------------------------------------------
 
-/// Looks up an OpenGov referendum by its index.
+/// Looks up an `OpenGov` referendum by its index.
 ///
 /// Returns the referendum's status, track, tally (ayes/nays/support),
 /// proposer, and timeline events. Requires `chain.query` grant for
@@ -223,8 +223,8 @@ fn try_decode_scale_referendum(index: u32, bytes: &[u8]) -> Result<Referendum, G
 ///   - origin: Compact-encoded string (we read as bytes and attempt UTF-8)
 ///   - … (several fields we skip) …
 ///   - tally: { ayes: u128, nays: u128, support: u128 }
-///   - submission_block: u32
-///   - submitter: [u8; 32] (AccountId)
+///   - `submission_block`: u32
+///   - submitter: [u8; 32] (`AccountId`)
 ///
 /// This is a best-effort decoder — it extracts what it can from the
 /// beginning of the SCALE payload. If the layout does not match our

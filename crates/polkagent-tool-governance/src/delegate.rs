@@ -156,7 +156,7 @@ impl ToolHandler for DelegationInfoTool {
                 })?;
                 (vec![], inc)
             }
-            "both" | _ => {
+            _ => {
                 let out = self.lookup_outgoing(account).await.map_err(|e| {
                     ToolError::ExecutionFailed {
                         reason: e.to_string(),

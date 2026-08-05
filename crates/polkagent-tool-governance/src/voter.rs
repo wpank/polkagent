@@ -1,7 +1,7 @@
 //! Voter history tool.
 //!
 //! The [`VoterHistoryTool`] looks up the voting history for an SS58-encoded
-//! account across OpenGov referenda, returning a list of votes with
+//! account across `OpenGov` referenda, returning a list of votes with
 //! conviction, balance, and direction.
 
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use crate::types::Vote;
 // VoterHistoryTool
 // ---------------------------------------------------------------------------
 
-/// Looks up voting history for an account across OpenGov referenda.
+/// Looks up voting history for an account across `OpenGov` referenda.
 ///
 /// Returns a list of votes cast by the account, including the referendum
 /// index, conviction, balance, and direction for each vote. Requires
@@ -112,7 +112,11 @@ impl ToolHandler for VoterHistoryTool {
         let limit = input
             .get("limit")
             .and_then(Value::as_u64)
-            .map(|v| v as usize);
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| ToolError::InvalidInput {
+                reason: "'limit' exceeds the maximum supported value".to_string(),
+            })?;
 
         debug!(
             account = account,

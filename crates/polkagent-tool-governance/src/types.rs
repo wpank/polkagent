@@ -1,6 +1,6 @@
 //! Shared domain types for governance tools.
 //!
-//! These types model the core OpenGov primitives: referenda, tracks, votes,
+//! These types model the core `OpenGov` primitives: referenda, tracks, votes,
 //! delegations, and treasury state. All types derive [`Serialize`] and
 //! [`Deserialize`] so they can be returned as structured JSON from tool
 //! handlers.
@@ -57,7 +57,7 @@ impl std::fmt::Display for ReferendumStatus {
 /// A significant event in the referendum lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEvent {
-    /// The kind of event (e.g. "submitted", "decision_started").
+    /// The kind of event (e.g. `submitted` or `decision_started`).
     pub event: String,
     /// The block number at which the event occurred.
     pub block_number: u64,
@@ -96,7 +96,7 @@ pub struct Referendum {
 // Track
 // ---------------------------------------------------------------------------
 
-/// An OpenGov governance track with its parameters.
+/// An `OpenGov` governance track with its parameters.
 ///
 /// Tracks define the rules under which referenda are decided, including
 /// time periods and approval/support curves.
@@ -104,7 +104,7 @@ pub struct Referendum {
 pub struct Track {
     /// The track ID.
     pub id: u16,
-    /// Human-readable track name (e.g. "Root", "SmallTipper").
+    /// Human-readable track name (e.g. `Root` or `SmallTipper`).
     pub name: String,
     /// Maximum number of referenda that can be decided simultaneously.
     pub max_deciding: u32,
@@ -112,7 +112,7 @@ pub struct Track {
     pub decision_period: u32,
     /// Confirmation period in blocks.
     pub confirm_period: u32,
-    /// Description of the minimum approval curve (e.g. "linear_decreasing(0.5, 0.0)").
+    /// Description of the minimum approval curve (e.g. `linear_decreasing(0.5, 0.0)`).
     pub min_approval_curve: String,
     /// Description of the minimum support curve (e.g. "reciprocal(0.01)").
     pub min_support_curve: String,

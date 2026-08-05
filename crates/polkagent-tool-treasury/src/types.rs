@@ -192,6 +192,8 @@ pub struct VestingInfo {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test assertions deliberately unwrap fixtures so failures retain precise context.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 
