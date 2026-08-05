@@ -26,7 +26,7 @@
 //! configured ceiling, the request is refused with
 //! [`ProxySignerError::BudgetExceeded`] before reaching the delegate signer.
 //!
-//! # DryRunApi pre-flight
+//! # `DryRunApi` pre-flight
 //!
 //! When a [`ChainClient`] is provided, the proxy performs a `dry_run_call`
 //! against the extrinsic payload before delegating to the inner signer. This
@@ -90,7 +90,7 @@ pub struct ProxySignerConfig {
     /// Set to `None` for non-transfer operations that don't consume budget.
     pub transfer_amount: Option<u64>,
 
-    /// Whether to perform DryRunApi pre-flight validation.
+    /// Whether to perform `DryRunApi` pre-flight validation.
     pub dry_run_enabled: bool,
 
     /// Chain profiles this proxy signer supports (e.g. Asset Hub, relay chain).
@@ -105,7 +105,7 @@ pub struct ProxySignerConfig {
 /// delegating to an inner signer.
 ///
 /// Use [`ProxySigner::new`] for the simplest construction. Attach a
-/// [`ChainClient`] via [`with_chain_client`] for DryRunApi pre-flight.
+/// [`ChainClient`] via [`with_chain_client`] for `DryRunApi` pre-flight.
 ///
 /// [`with_chain_client`]: ProxySigner::with_chain_client
 pub struct ProxySigner {
@@ -134,7 +134,7 @@ impl ProxySigner {
         }
     }
 
-    /// Attach a chain client for DryRunApi pre-flight validation.
+    /// Attach a chain client for `DryRunApi` pre-flight validation.
     #[must_use]
     pub fn with_chain_client(mut self, client: Arc<dyn ChainClient>) -> Self {
         self.chain_client = Some(client);
@@ -151,9 +151,8 @@ impl ProxySigner {
     /// Returns `Ok(())` if the transfer amount is within the remaining budget,
     /// or if no transfer amount is set.
     async fn check_budget(&self) -> Result<(), ProxySignerError> {
-        let amount = match self.config.transfer_amount {
-            Some(a) => a,
-            None => return Ok(()),
+        let Some(amount) = self.config.transfer_amount else {
+            return Ok(());
         };
 
         let within_budget = self
@@ -199,15 +198,14 @@ impl ProxySigner {
         Ok(())
     }
 
-    /// Run DryRunApi pre-flight validation if a chain client is attached.
+    /// Run `DryRunApi` pre-flight validation if a chain client is attached.
     async fn preflight_dry_run(&self, payload: &[u8]) -> Result<(), ProxySignerError> {
         if !self.config.dry_run_enabled {
             return Ok(());
         }
 
-        let client = match &self.chain_client {
-            Some(c) => c,
-            None => return Ok(()),
+        let Some(client) = &self.chain_client else {
+            return Ok(());
         };
 
         let result =
@@ -236,7 +234,7 @@ impl Signer for ProxySigner {
         let mut caps = self.inner.describe().await?;
         caps.display_name = format!("ProxySigner({})", caps.display_name);
         if !self.config.chain_profiles.is_empty() {
-            caps.chain_profiles = self.config.chain_profiles.clone();
+            caps.chain_profiles.clone_from(&self.config.chain_profiles);
         }
         Ok(caps)
     }
@@ -256,7 +254,7 @@ impl Signer for ProxySigner {
                 message: format!("budget gate: {e}"),
             })?;
 
-        // 3. DryRunApi pre-flight validation.
+        // 3. `DryRunApi` pre-flight validation.
         self.preflight_dry_run(&request.payload)
             .await
             .map_err(|e| SignerError::Internal {
@@ -296,9 +294,17 @@ impl Signer for ProxySigner {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Signer adapter tests intentionally panic at the exact contract boundary that
+// failed so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "signer adapter test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::ids::{AgentId, RunId};
+    use polkagent_signer_fake::FakeSigner;
     use polkagent_signer_trait::{
         AccountRef, ApprovalId, CanonicalSignRequest, ChainProfileId, GrantDigest, MetadataDigest,
     };
@@ -326,7 +332,6 @@ mod tests {
         transfer_amount: Option<u64>,
         tracker: Arc<BudgetTracker>,
     ) -> ProxySigner {
-        use polkagent_signer_fake::FakeSigner;
         let config = ProxySignerConfig {
             agent_id,
             run_id,
@@ -548,7 +553,6 @@ mod tests {
             ],
         };
 
-        use polkagent_signer_fake::FakeSigner;
         let proxy = ProxySigner::new(Box::new(FakeSigner::new()), tracker, config);
         let caps = proxy.describe().await.expect("describe ok");
 

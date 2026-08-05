@@ -4,6 +4,11 @@
 //! [`Signer`] trait contract and the shared PRD-15 conformance suite defined
 //! in `polkagent-signer-trait`.
 
+#![allow(
+    clippy::expect_used,
+    reason = "signer contract tests intentionally panic with focused diagnostics"
+)]
+
 use std::sync::Arc;
 
 use polkagent_core::ids::{AgentId, RunId};

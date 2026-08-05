@@ -1,8 +1,8 @@
 //! External [`Signer`] adapter for browser extensions and signing services.
 //!
 //! This crate provides [`ExternalSigner`] -- a [`Signer`] implementation that
-//! delegates signing to an external process or browser extension (Polkadot.js,
-//! Talisman, SubWallet, etc.) over HTTP.
+//! delegates signing to an external process or browser extension (`Polkadot.js`,
+//! Talisman, `SubWallet`, etc.) over HTTP.
 //!
 //! # Protocol
 //!
@@ -87,12 +87,14 @@ impl ExternalSignerConfig {
     }
 
     /// Set the request timeout.
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set the allowed account list.
+    #[must_use]
     pub fn with_allowed_accounts(mut self, accounts: Vec<AccountRef>) -> Self {
         self.allowed_accounts = Some(accounts);
         self
@@ -240,7 +242,7 @@ impl std::fmt::Debug for ExternalSigner {
         f.debug_struct("ExternalSigner")
             .field("config", &self.config)
             .field("has_approval_callback", &self.approval_callback.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -271,6 +273,7 @@ impl ExternalSigner {
     ///
     /// If the callback returns `false`, the request is rejected with
     /// [`SignerError::UserRejected`].
+    #[must_use]
     pub fn with_approval_callback(mut self, cb: ApprovalCallback) -> Self {
         self.approval_callback = Some(cb);
         self
@@ -321,7 +324,7 @@ impl ExternalSigner {
     }
 
     /// Map an HTTP/reqwest error to an [`ExternalSignerError`].
-    fn map_reqwest_error(err: reqwest::Error) -> ExternalSignerError {
+    fn map_reqwest_error(err: &reqwest::Error) -> ExternalSignerError {
         if err.is_timeout() {
             ExternalSignerError::Timeout
         } else if err.is_connect() {
@@ -432,7 +435,7 @@ impl Signer for ExternalSigner {
             .await
             .map_err(|e| {
                 error!(error = %e, "failed to reach external signer");
-                SignerError::from(Self::map_reqwest_error(e))
+                SignerError::from(Self::map_reqwest_error(&e))
             })?;
 
         let status = http_response.status();
@@ -485,7 +488,7 @@ impl Signer for ExternalSigner {
             .get(&url)
             .send()
             .await
-            .map_err(|e| SignerError::from(Self::map_reqwest_error(e)))?;
+            .map_err(|e| SignerError::from(Self::map_reqwest_error(&e)))?;
 
         if response.status().is_success() {
             Ok(())
@@ -503,14 +506,21 @@ impl Signer for ExternalSigner {
 
 /// Encode bytes as lowercase hex (no `0x` prefix).
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for &byte in bytes {
+        encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 /// Decode a hex string (with or without `0x` prefix) to bytes.
 /// Returns `None` if the input is invalid hex.
 fn hex_decode(hex: &str) -> Option<Vec<u8>> {
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     (0..hex.len())

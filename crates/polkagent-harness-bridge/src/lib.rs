@@ -123,24 +123,28 @@ pub struct BridgeConfigBuilder {
 
 impl BridgeConfigBuilder {
     /// Set the endpoint URL.
+    #[must_use]
     pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = Some(endpoint.into());
         self
     }
 
     /// Set the authentication token.
+    #[must_use]
     pub fn auth_token(mut self, token: impl Into<String>) -> Self {
         self.auth_token = Some(token.into());
         self
     }
 
     /// Set the request timeout.
+    #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set the transport mode.
+    #[must_use]
     pub fn transport(mut self, transport: BridgeTransport) -> Self {
         self.transport = Some(transport);
         self
@@ -223,7 +227,7 @@ impl std::fmt::Debug for BridgeHarness {
         f.debug_struct("BridgeHarness")
             .field("harness_id", &self.harness_id)
             .field("endpoint", &self.config.endpoint)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -493,6 +497,12 @@ impl Harness for BridgeHarness {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Bridge adapter tests intentionally panic at serialization boundaries so
+// malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "bridge adapter test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

@@ -11,7 +11,7 @@
 //! |--------------------|----------------------|--------------------|
 //! | `mock` (default)   | In-process mock KMS  | ✓ Implemented      |
 //! | `aws-kms`          | AWS KMS              | Stub (PRD-07 v2)   |
-//! | `hashicorp-vault`  | HashiCorp Vault      | Stub (PRD-07 v2)   |
+//! | `hashicorp-vault`  | `HashiCorp Vault`    | Stub (PRD-07 v2)   |
 //!
 //! # Key isolation invariant
 //!
@@ -41,7 +41,7 @@ pub enum KmsProvider {
     Mock,
     /// AWS KMS (requires `aws-kms` feature).
     AwsKms,
-    /// HashiCorp Vault Transit engine (requires `hashicorp-vault` feature).
+    /// `HashiCorp Vault` Transit engine (requires `hashicorp-vault` feature).
     HashiCorpVault,
 }
 
@@ -253,6 +253,12 @@ impl Signer for KmsSigner {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// KMS adapter tests intentionally panic at the exact contract boundary that
+// failed so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "KMS adapter test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_signer_trait::{conformance, contracts};
@@ -267,11 +273,11 @@ mod tests {
 
         let request = conformance::valid_sign_request(account);
         let payload = request.payload.clone();
-        let signed = signer.sign(request).await.expect("sign ok");
+        let signed_payload = signer.sign(request).await.expect("sign ok");
 
-        assert!(!signed.signature.is_empty());
-        assert_eq!(signed.public_key.len(), 32);
-        assert!(signed.signed_extrinsic.starts_with(&payload));
+        assert!(!signed_payload.signature.is_empty());
+        assert_eq!(signed_payload.public_key.len(), 32);
+        assert!(signed_payload.signed_extrinsic.starts_with(&payload));
     }
 
     #[tokio::test]
