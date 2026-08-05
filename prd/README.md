@@ -19,9 +19,11 @@ crate count as the current roadmap.
 5. The active delivery PRDs:
    [`PRD-17-LOCAL-TESTNET-E2E.md`](PRD-17-LOCAL-TESTNET-E2E.md) and
    [`PRD-19-INTERACTIVE-CONSOLE-ACP.md`](PRD-19-INTERACTIVE-CONSOLE-ACP.md).
-6. [`EVIDENCE-BACKLOG.md`](EVIDENCE-BACKLOG.md) for research, validation, and
+6. [`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md) — the
+   active durable permission-gating and crash-resume execution packet.
+7. [`EVIDENCE-BACKLOG.md`](EVIDENCE-BACKLOG.md) for research, validation, and
    operational proof that code-only work cannot close.
-7. [`ADR-002`](../docs/adr/ADR-002-Shared-Runtime-Interaction-Semantics.md) for
+8. [`ADR-002`](../docs/adr/ADR-002-Shared-Runtime-Interaction-Semantics.md) for
    the accepted shared runtime, interaction, persistence, event, and command
    boundaries used by current implementation work.
 
