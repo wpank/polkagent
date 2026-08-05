@@ -90,6 +90,12 @@ Stop the service without deleting its named data volume:
 docker compose down
 ```
 
+`docker stop`/Compose sends `SIGTERM`. The `serve` process stops accepting new
+HTTP connections, lets in-flight HTTP requests drain through Axum, and exits
+with status 0. Starting Compose again reuses the named volume. This is an HTTP
+server lifecycle guarantee only: the current production composition does not
+yet drain durable agent runs, workers, transports, or effects.
+
 Delete the named volume only when its SQLite data is intentionally disposable:
 
 ```bash
@@ -106,14 +112,23 @@ Run the same automated smoke path used by CI:
 
 The script validates the Compose model, builds and starts the image, waits for
 the container healthcheck, probes `/health/live`, `/health/ready`, and
-`/health/startup` through the published port, verifies that the configured
-user and running process UID are non-root, and verifies that SQLite created
-`/data/polkagent.db`. It uses an isolated Compose project and removes its test
-container, volume, network, and locally tagged image on exit.
+`/health/startup` through the published port, and verifies that the configured
+user and running process UID are non-root. A test override bind-mounts a
+read-only config; the smoke checks its API read-only mode, CORS allow-list, and
+execution-limit sentinel. It creates a durable CLI agent marker in SQLite,
+sends `SIGTERM`, requires a clean drained exit, replaces the container without
+deleting the named volume, and verifies both the config and marker again. The
+isolated Compose project, volume, network, and local image are removed on exit.
 
-This is deliberately a boot/health smoke test. It does **not** prove that all
-API routes use durable stores, that PostgreSQL works, or that auth, HA,
-backup/restore, upgrades, and crash recovery are production-ready.
+Set `POLKAGENT_SMOKE_ARTIFACT_DIR` to retain a summary, selected container
+state, and logs. CI does this automatically and uploads the directory even
+when the smoke fails. Set `POLKAGENT_SMOKE_KEEP=1` only for local diagnosis;
+the isolated Compose project name is printed so it can be removed explicitly.
+
+This is deliberately a single-instance lifecycle smoke. It does **not** prove
+that HTTP API agents/runs use durable stores (they currently do not), that
+PostgreSQL works, or that auth, worker/run draining, HA, backup/restore,
+upgrade/rollback, resource pressure, and crash recovery are production-ready.
 
 ### Development Compose
 
@@ -128,18 +143,25 @@ Use `POLKAGENT_HTTP_PORT=9090` when another process already owns port `8080`.
 
 ### Current configuration contract
 
-For the current `serve` implementation, bind host and port are explicit CLI
-arguments. The container sets the one deployment environment variable that
-the command directly resolves today:
+`serve` now receives the same explicit config path selected by the root CLI:
+`--config` takes precedence over `POLKAGENT_CONFIG`, followed by normal config
+discovery and environment overrides. Bind host and port remain explicit CLI
+arguments; the Compose image selects `0.0.0.0:8080`. The container also sets:
 
 ```bash
 POLKAGENT_DATABASE_SQLITE_PATH=/data/polkagent.db
 ```
 
+The resolved config supplies API read-only/CORS behavior, database settings,
+execution limits, and the rest of the server's safe configuration summary.
+Because `serve --host/--port` currently have concrete defaults,
+`api.bind_address` is not used to select the listener; use those flags for the
+listener until FND-01/API-01 unify config provenance completely.
+
 Do not rely on the retired `serve --api` flag or on
 `POLKAGENT_API_BIND`/`POLKAGENT_SERVER_BIND` to override the listener in this
-image. Runtime-wide configuration and durable production composition remain
-tracked by FND-01 and API-01 in the implementation backlog.
+image. Durable production composition remains tracked by FND-01 and API-01 in
+the implementation backlog.
 
 ## Database Options
 

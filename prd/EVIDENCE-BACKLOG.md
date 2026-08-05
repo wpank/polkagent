@@ -24,15 +24,18 @@ reports.
 
 ## Partial evidence captured
 
-- **EVD-08 / OPS-01 container boot slice (2026-08-05):**
+- **EVD-08 / OPS-01 container lifecycle slices (2026-08-05):**
   `scripts/container-smoke.sh`, invoked by the `container-smoke` CI job,
   validates the Compose model, builds the canonical image with `Cargo.lock`,
   waits for Docker readiness, probes live/ready/startup through the published
-  port, verifies a configured non-root user and process UID, and verifies
-  SQLite creation in the data volume. EVD-08 remains open for durable API
-  data, restart and graceful-shutdown behavior, Postgres, backup/restore,
-  upgrade/rollback,
-  auth, tenant isolation, and resource-pressure evidence.
+  port, and verifies a configured non-root user and process UID. It also proves
+  that a read-only bind-mounted config reaches `serve`, SIGTERM drains the HTTP
+  server with exit 0, a newly created container retains the same named volume,
+  and a SQLite-backed CLI agent marker survives replacement. CI uploads a
+  summary, selected state, and container logs on success or failure. EVD-08
+  remains open for durable API run/agent recovery, worker/effect draining,
+  Postgres, backup/restore, upgrade/rollback, auth, tenant isolation, crash
+  boundaries, and resource-pressure evidence.
 
 ## Evidence quality rules
 

@@ -347,9 +347,14 @@ separate files.
   test. Delivered by `scripts/container-smoke.sh`: locked image build,
   unprivileged boot, all three HTTP probes, and SQLite file creation. This is
   single-instance boot evidence, not durable API or production-ops proof.
+- [x] Prove the bounded single-instance HTTP lifecycle: root config selection
+  reaches `serve`; a read-only bind-mounted config is honoured; SIGTERM drains
+  Axum and exits 0; a replacement container reuses the named volume; and a
+  durable CLI agent marker survives. CI uploads selected lifecycle diagnostics.
+  This does not prove durable HTTP API runs or daemon worker/effect recovery.
 - [ ] Prove Postgres conformance and tenant isolation.
 - [ ] Define migrations, backup/restore, upgrade/rollback, resource limits,
-  graceful shutdown, and release artifacts.
+  durable run/worker/effect draining, crash recovery, and release artifacts.
 - [ ] Only then connect control/worker services and add Helm/Kubernetes/HA.
 
 **Depends on:** FND-01, API-01, OBS-01, SEC-01.

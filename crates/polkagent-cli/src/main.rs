@@ -120,7 +120,10 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
         Some(Commands::Inspect(cmd)) => ("inspect", commands::inspect::run(cmd).await),
         Some(Commands::Auth(cmd)) => ("auth", commands::auth::run(cmd)),
         Some(Commands::Network(cmd)) => ("network", commands::network::run(cmd).await),
-        Some(Commands::Serve(cmd)) => ("serve", commands::serve::run(cmd).await),
+        Some(Commands::Serve(cmd)) => (
+            "serve",
+            commands::serve::run(cmd, config_path.as_deref()).await,
+        ),
         Some(Commands::Package(cmd)) => (
             "package",
             commands::package::run(cmd, format, config_path.as_deref(), dry_run, yes),

@@ -1,0 +1,9 @@
+services:
+  polkagent:
+    environment:
+      POLKAGENT_CONFIG: /etc/polkagent/recovery-config.toml
+    volumes:
+      - type: bind
+        source: ./tests/deployment/recovery-config.toml
+        target: /etc/polkagent/recovery-config.toml
+        read_only: true

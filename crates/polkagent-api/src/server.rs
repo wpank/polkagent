@@ -21,7 +21,7 @@
 //! # }
 //! ```
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use axum::{http::HeaderValue, middleware, Router};
 use thiserror::Error;
@@ -278,6 +278,23 @@ impl ApiServer {
     /// # }
     /// ```
     pub async fn serve(self, bind_addr: &str) -> Result<(), ServerError> {
+        self.serve_with_shutdown(bind_addr, std::future::pending())
+            .await
+    }
+
+    /// Bind to `bind_addr` and drain active HTTP connections after `shutdown`
+    /// resolves.
+    ///
+    /// The listener stops accepting new connections when shutdown begins, then
+    /// Axum waits for in-flight work to finish before this future returns.
+    pub async fn serve_with_shutdown<F>(
+        self,
+        bind_addr: &str,
+        shutdown: F,
+    ) -> Result<(), ServerError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         let addr: std::net::SocketAddr =
             bind_addr
                 .parse()
@@ -304,7 +321,9 @@ impl ApiServer {
             "Polkagent API server listening"
         );
 
-        axum::serve(listener, router).await?;
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown)
+            .await?;
         Ok(())
     }
 }

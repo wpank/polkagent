@@ -1,0 +1,10 @@
+# Deliberately non-default, non-secret values used by the container recovery
+# smoke test. The listener is still selected by `polkagent serve --host/--port`;
+# bind_address is a sentinel exposed by the safe system-info summary.
+[api]
+bind_address = "127.0.0.1:19090"
+cors_origins = ["https://container-recovery.invalid"]
+read_only = true
+
+[execution]
+max_concurrent_runs = 37

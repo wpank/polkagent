@@ -4,10 +4,13 @@
 > but its embedded implementation statements and checklists are not current
 > status evidence. Use [STATUS.md](STATUS.md) and
 > [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
-> the dependency-ordered execution queue. The first OPS-01 slice now verifies
-> the canonical single-instance image/Compose boot, non-root user, SQLite
-> creation, and HTTP health probes in CI. Durable API composition, Postgres,
-> tenant isolation, recovery, release, and managed-cloud claims remain open.
+> the dependency-ordered execution queue. Bounded OPS-01 slices now verify the
+> canonical single-instance image/Compose boot, non-root user, HTTP health,
+> read-only bind-mounted configuration, clean SIGTERM HTTP drain, container
+> replacement on the same named volume, and a restart-safe SQLite CLI marker
+> in CI. This is not durable API/run recovery: durable API composition,
+> worker/effect draining, Postgres, tenant isolation, backup/restore,
+> upgrade/rollback, release, and managed-cloud claims remain open.
 
 **Status:** definitive PRD
 **Owner:** unassigned
@@ -3541,6 +3544,14 @@ pub struct ReadinessReport {
 
 Graceful shutdown is initiated by `SIGTERM` (Kubernetes default) or
 `polkagent stop --graceful`. The shutdown sequence:
+
+> **Current bounded evidence (2026-08-05):** `polkagent serve` handles SIGTERM
+> and SIGINT through Axum graceful shutdown, so the listener stops accepting
+> and active HTTP connections drain before a clean process exit. The container
+> smoke verifies that boundary. The broader daemon sequence below—run/worker
+> admission control, durable checkpoints, effect/transport flush, timeout
+> escalation, and `polkagent stop --graceful`—is not implemented; EP-09 and
+> HA-03 remain open.
 
 ```rust
 // crates/polkagent-daemon/src/shutdown.rs

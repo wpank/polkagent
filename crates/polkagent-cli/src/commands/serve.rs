@@ -13,6 +13,7 @@
 //! | `--cors-origin`   | Allowed CORS origins (repeatable; overrides config)   |
 //! | `--read-only`     | Reject all mutating requests                         |
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -34,11 +35,11 @@ use crate::cli::ServeCmd;
 /// Opens the SQLite database, runs pending migrations, constructs the API
 /// server with production-grade stores, binds to the configured address, and
 /// serves until a shutdown signal is received.
-pub async fn run(cmd: &ServeCmd) -> Result<()> {
+pub async fn run(cmd: &ServeCmd, config_path: Option<&Path>) -> Result<()> {
     // -----------------------------------------------------------------------
     // 1. Resolve configuration.
     // -----------------------------------------------------------------------
-    let mut config = resolve_config(None)?;
+    let mut config = resolve_config(config_path)?;
 
     // -----------------------------------------------------------------------
     // 2. Apply CLI overrides to config.
@@ -49,11 +50,13 @@ pub async fn run(cmd: &ServeCmd) -> Result<()> {
     // 3. Determine bind address from CLI flags.
     // -----------------------------------------------------------------------
     let bind_addr = build_bind_addr(cmd);
+    let effective_read_only = config.api.read_only;
+    let effective_cors_origins = config.api.cors_origins.clone();
 
     // -----------------------------------------------------------------------
     // 4. Open (or create) the SQLite database and run migrations.
     // -----------------------------------------------------------------------
-    let db_path = resolve_db_path(None);
+    let db_path = resolve_db_path(&config);
     let pool = open_pool(&db_path)?;
 
     // -----------------------------------------------------------------------
@@ -82,11 +85,11 @@ pub async fn run(cmd: &ServeCmd) -> Result<()> {
     println!("Polkagent API server listening on {bind_addr}");
     println!("{}", "-".repeat(40));
     println!("  Database:    {db_path}");
-    if cmd.read_only {
+    if effective_read_only {
         println!("  Mode:        read-only");
     }
-    if !cmd.cors_origins.is_empty() {
-        println!("  CORS:        {}", cmd.cors_origins.join(", "));
+    if !effective_cors_origins.is_empty() {
+        println!("  CORS:        {}", effective_cors_origins.join(", "));
     }
     println!("  Press Ctrl+C to stop.");
     println!();
@@ -94,23 +97,14 @@ pub async fn run(cmd: &ServeCmd) -> Result<()> {
     info!(
         bind_addr = %bind_addr,
         db_path = %db_path,
-        read_only = cmd.read_only,
+        read_only = effective_read_only,
         "polkagent serve starting"
     );
 
-    // Wrap the serve future with a graceful shutdown signal.
-    let serve_fut = server.serve(&bind_addr);
-
-    tokio::select! {
-        result = serve_fut => {
-            result.map_err(|e| anyhow::anyhow!("server error: {e}"))?;
-        }
-        () = shutdown_signal() => {
-            println!();
-            println!("Shutdown signal received. Stopping server...");
-            info!("shutdown signal received");
-        }
-    }
+    server
+        .serve_with_shutdown(&bind_addr, shutdown_signal())
+        .await
+        .map_err(|e| anyhow::anyhow!("server error: {e}"))?;
 
     Ok(())
 }
@@ -139,30 +133,20 @@ fn apply_cli_overrides(config: &mut polkagent_config::Config, cmd: &ServeCmd) {
 /// 2. Project-local `.polkagent/polkagent.toml`.
 /// 3. User-global `~/.config/polkagent/polkagent.toml`.
 /// 4. Default `Config::default()`.
-fn resolve_config(config_override: Option<&str>) -> Result<polkagent_config::Config> {
-    if let Some(path) = config_override {
-        let content =
-            std::fs::read_to_string(path).with_context(|| format!("reading config file {path}"))?;
-        return toml::from_str(&content).with_context(|| format!("parsing config file {path}"));
-    }
+fn resolve_config(config_override: Option<&Path>) -> Result<polkagent_config::Config> {
+    let loader = polkagent_config::ConfigLoader::new();
+    let loader = if let Some(path) = config_override {
+        loader.with_path(path)
+    } else {
+        loader
+    };
 
-    // Project-local config.
-    if let Ok(content) = std::fs::read_to_string(".polkagent/polkagent.toml") {
-        if let Ok(cfg) = toml::from_str(&content) {
-            return Ok(cfg);
-        }
-    }
-
-    // User-global config.
-    let home = std::env::var("HOME").unwrap_or_default();
-    let user_cfg = format!("{home}/.config/polkagent/polkagent.toml");
-    if let Ok(content) = std::fs::read_to_string(&user_cfg) {
-        if let Ok(cfg) = toml::from_str(&content) {
-            return Ok(cfg);
-        }
-    }
-
-    Ok(polkagent_config::Config::default())
+    loader.load().with_context(|| {
+        config_override.map_or_else(
+            || "loading discovered Polkagent configuration".to_owned(),
+            |path| format!("loading Polkagent configuration from {}", path.display()),
+        )
+    })
 }
 
 /// Build the `host:port` bind address from the CLI flags.
@@ -173,34 +157,9 @@ fn build_bind_addr(cmd: &ServeCmd) -> String {
     format!("{}:{}", cmd.host, cmd.port)
 }
 
-/// Resolve the SQLite database path from environment, config, or default.
-fn resolve_db_path(config_override: Option<&str>) -> String {
-    if let Ok(path) = std::env::var("POLKAGENT_DATABASE_SQLITE_PATH") {
-        if !path.is_empty() {
-            return path;
-        }
-    }
-
-    if let Some(cfg_path) = config_override {
-        if let Ok(content) = std::fs::read_to_string(cfg_path) {
-            if let Ok(cfg) = toml::from_str::<polkagent_config::schema::Config>(&content) {
-                if !cfg.database.sqlite.path.is_empty() {
-                    return cfg.database.sqlite.path;
-                }
-            }
-        }
-    }
-
-    if let Ok(content) = std::fs::read_to_string(".polkagent/polkagent.toml") {
-        if let Ok(cfg) = toml::from_str::<polkagent_config::schema::Config>(&content) {
-            if !cfg.database.sqlite.path.is_empty() {
-                return cfg.database.sqlite.path;
-            }
-        }
-    }
-
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/.local/share/polkagent/polkagent.db")
+/// Return the fully-resolved SQLite path from the active configuration.
+fn resolve_db_path(config: &polkagent_config::Config) -> String {
+    config.database.sqlite.path.clone()
 }
 
 /// Open (or create) the SQLite pool and run schema migrations.
@@ -260,6 +219,10 @@ async fn shutdown_signal() {
         () = ctrl_c => {}
         () = terminate => {}
     }
+
+    println!();
+    println!("Shutdown signal received. Draining active HTTP connections...");
+    info!("shutdown signal received; draining active HTTP connections");
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +233,7 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::io::Write as _;
 
     /// Helper to parse CLI args into a `ServeCmd` via the full `Cli` parser.
     fn parse_serve(args: &[&str]) -> crate::cli::ServeCmd {
@@ -442,5 +406,38 @@ mod tests {
         assert!(cmd.read_only);
         let addr = build_bind_addr(&cmd);
         assert_eq!(addr, "192.168.1.1:5555");
+    }
+
+    #[test]
+    fn explicit_config_is_loaded_for_serve() {
+        let mut file = tempfile::NamedTempFile::new().expect("create temporary config");
+        writeln!(
+            file,
+            r#"
+[api]
+bind_address = "127.0.0.1:19090"
+read_only = true
+
+[execution]
+max_concurrent_runs = 37
+"#
+        )
+        .expect("write temporary config");
+
+        let config = resolve_config(Some(file.path())).expect("load explicit config");
+        assert_eq!(config.api.bind_address, "127.0.0.1:19090");
+        assert!(config.api.read_only);
+        assert_eq!(config.execution.max_concurrent_runs, 37);
+    }
+
+    #[test]
+    fn missing_explicit_config_is_an_error() {
+        let temp_dir = tempfile::tempdir().expect("create temporary directory");
+        let missing = temp_dir.path().join("missing.toml");
+
+        let error = resolve_config(Some(&missing)).expect_err("missing config must fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("loading Polkagent configuration from"));
+        assert!(message.contains("missing.toml"));
     }
 }

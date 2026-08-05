@@ -17,10 +17,12 @@ cargo test --workspace --no-fail-fast
 The workspace test run exited 0 and includes extensive unit, property,
 contract, integration, security, TUI rendering, API, and doc tests. This is a
 strong component baseline. The container smoke additionally proves that the
-locked canonical image builds, starts unprivileged, creates its SQLite file,
-and answers the three HTTP probes through Compose. It does not prove durable
-API composition, Postgres, recovery, auth, HA, a real chain action, an
-interactive TUI prompt, or an ACP server session.
+locked canonical image builds, starts unprivileged, honours a bind-mounted
+read-only config, answers the three HTTP probes, drains HTTP on SIGTERM with a
+clean exit, and replaces the container on the same named volume while retaining
+a SQLite CLI marker. It does not prove durable API/run recovery, worker/effect
+draining, Postgres, backup/restore, auth, HA, a real chain action, an interactive
+TUI prompt, or an ACP server session.
 
 The audit intentionally treats tests such as “returns 501 when store is not
 configured” as contract coverage and simultaneous evidence that production
@@ -47,7 +49,7 @@ startup still has a wiring gap.
 | Security | Grants, tests, redaction, signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, and unused policy runtime. |
 | Payments | Intent/store/budget components exist | Not value-moving | Store/runtime integration, real signature/settlement, and failure reconciliation remain. |
 | Marketplace/plugins | Durable local plugin/kit lifecycle, operator CLI, and listing components | Local install/list/get/update/rollback/uninstall is actionable; package execution is missing | Manifest/lock format remains split; no API/runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
-| Deployment/cloud | Canonical image/Compose boot and health smoke pass | Single-instance boot only | Durable API stores, Postgres/tenant isolation, recovery, auth, release, HA, and control/worker paths remain unproven. |
+| Deployment/cloud | Canonical image/Compose boot, mounted config, health, graceful HTTP stop, and same-volume replacement smoke pass | Bounded single-instance lifecycle only | Durable API/run recovery, worker/effect drain, Postgres/tenant isolation, backup/restore, auth, release, HA, and control/worker paths remain unproven. |
 
 ## PRD implementation posture
 
@@ -63,7 +65,7 @@ startup still has a wiring gap.
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Strong components | Mostly missing | No orchestration proof | Active P1 |
 | 10 Observability | Strong components | Partial | No recovery/replay proof | Active P1 |
-| 11 Deployment/cloud | Container boot verified; broader scaffolding exists | Single-instance SQLite only | Boot/health smoke only | Active P2 |
+| 11 Deployment/cloud | Container boot/config/HTTP drain/same-volume replacement verified; broader scaffolding exists | Single-instance SQLite only | CLI marker persistence, not durable API/run recovery | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | CLI/TUI exist | Partial | Interactive experience missing | Active P0/P1 + PRD-19 |
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
@@ -105,8 +107,11 @@ startup still has a wiring gap.
   requires relay finality to advance. The actual CI network run is still needed
   as evidence, and no bytes are yet signed, submitted, matched, or reconciled.
 - `scripts/container-smoke.sh` builds the locked canonical image and verifies
-  Compose boot, non-root configuration, `/health/{live,ready,startup}`, and
-  SQLite creation. The CI job runs independently of the Rust 1.89 MSRV matrix.
+  Compose boot, non-root execution, `/health/{live,ready,startup}`, read-only
+  bind-mounted config behavior, clean SIGTERM HTTP drain, container replacement
+  on the same named volume, and restart-safe SQLite CLI marker lookup. The CI
+  job runs independently of the Rust 1.89 MSRV matrix and uploads selected
+  lifecycle state/log artifacts. API agents and runs are still in-memory.
 
 ## Completion gate for future status updates
 
