@@ -185,11 +185,11 @@ pub struct PalletInfo {
 pub struct CallInfo {
     /// Name of the pallet containing this call.
     pub pallet: String,
-    /// Name of the call (e.g., "transfer_keep_alive").
+    /// Name of the call (e.g., "`transfer_keep_alive`").
     pub name: String,
     /// Call index within the pallet.
     pub index: u8,
-    /// Arguments as (name, type_name) pairs.
+    /// Arguments as (name, `type_name`) pairs.
     pub args: Vec<(String, String)>,
 }
 

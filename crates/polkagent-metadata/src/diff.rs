@@ -44,7 +44,7 @@ pub struct PalletDiff {
     pub added_constants: Vec<String>,
     /// Constants removed from the old version.
     pub removed_constants: Vec<String>,
-    /// Constants whose type_id changed.
+    /// Constants whose `type_id` changed.
     pub changed_constants: Vec<String>,
 }
 
@@ -84,23 +84,23 @@ pub struct MetadataDiff {
     pub removed_pallets: Vec<String>,
     /// Pallets present in both but with changes.
     pub modified_pallets: Vec<PalletDiff>,
-    /// Calls added across all pallets (formatted as "Pallet.call_name").
+    /// Calls added across all pallets (formatted as "`Pallet.call_name`").
     pub added_calls: Vec<String>,
-    /// Calls removed across all pallets (formatted as "Pallet.call_name").
+    /// Calls removed across all pallets (formatted as "`Pallet.call_name`").
     pub removed_calls: Vec<String>,
     /// Events added (pallet names that gained events).
     pub added_events: Vec<String>,
     /// Events removed (pallet names that lost events).
     pub removed_events: Vec<String>,
-    /// Storage entries added across all pallets (formatted as "Pallet.entry").
+    /// Storage entries added across all pallets (formatted as "`Pallet.entry`").
     pub added_storage: Vec<String>,
-    /// Storage entries removed across all pallets (formatted as "Pallet.entry").
+    /// Storage entries removed across all pallets (formatted as "`Pallet.entry`").
     pub removed_storage: Vec<String>,
-    /// Constants added across all pallets (formatted as "Pallet.constant_name").
+    /// Constants added across all pallets (formatted as "`Pallet.constant_name`").
     pub added_constants: Vec<String>,
-    /// Constants removed across all pallets (formatted as "Pallet.constant_name").
+    /// Constants removed across all pallets (formatted as "`Pallet.constant_name`").
     pub removed_constants: Vec<String>,
-    /// Constants whose type changed across all pallets (formatted as "Pallet.constant_name").
+    /// Constants whose type changed across all pallets (formatted as "`Pallet.constant_name`").
     pub changed_constants: Vec<String>,
     /// Human-readable descriptions of breaking changes.
     pub breaking_changes: Vec<String>,

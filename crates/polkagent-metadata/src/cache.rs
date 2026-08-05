@@ -68,7 +68,10 @@ impl MetadataCache {
     /// replaced and moved to the most-recently-used position. If the cache
     /// is full the least-recently-used entry is evicted first.
     pub fn insert(&self, snapshot: MetadataSnapshot) {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let chain_id = snapshot.chain_id.clone();
         let hash = snapshot.hash.clone();
 
@@ -94,7 +97,10 @@ impl MetadataCache {
     /// Marks the entry as most-recently-used on hit.
     #[must_use]
     pub fn get(&self, chain_id: &ChainId, hash: &MetadataHash) -> Option<MetadataSnapshot> {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pos = inner
             .entries
             .iter()
@@ -111,7 +117,10 @@ impl MetadataCache {
     /// Get the most recently inserted/accessed snapshot for a chain.
     #[must_use]
     pub fn get_latest(&self, chain_id: &ChainId) -> Option<MetadataSnapshot> {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner
             .entries
             .iter()
@@ -124,7 +133,10 @@ impl MetadataCache {
     ///
     /// Returns `true` if the entry was found and removed.
     pub fn evict(&self, chain_id: &ChainId, hash: &MetadataHash) -> bool {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = inner.entries.len();
         inner
             .entries
@@ -135,7 +147,10 @@ impl MetadataCache {
     /// Return the current number of entries in the cache.
     #[must_use]
     pub fn len(&self) -> usize {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.entries.len()
     }
 
@@ -148,7 +163,10 @@ impl MetadataCache {
     /// Return the maximum number of entries the cache can hold.
     #[must_use]
     pub fn capacity(&self) -> usize {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.max_entries
     }
 }

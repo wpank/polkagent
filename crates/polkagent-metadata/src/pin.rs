@@ -33,7 +33,10 @@ impl PinStore {
     ///
     /// If the same `(chain_id, hash)` is already pinned, this is a no-op.
     pub fn pin(&self, chain_id: ChainId, hash: MetadataHash, label: impl Into<String>) {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pins = inner.entry(chain_id.clone()).or_default();
 
         // Do not duplicate.
@@ -55,7 +58,10 @@ impl PinStore {
     /// Returns `Ok(())` if the pin was found and removed, or
     /// `Err(MetadataError::PinNotFound)` if no such pin exists.
     pub fn unpin(&self, chain_id: &ChainId, hash: &MetadataHash) -> Result<(), MetadataError> {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pins = inner
             .get_mut(chain_id)
             .ok_or_else(|| MetadataError::PinNotFound {
@@ -83,7 +89,10 @@ impl PinStore {
     /// Check whether a specific hash is pinned for a chain.
     #[must_use]
     pub fn is_pinned(&self, chain_id: &ChainId, hash: &MetadataHash) -> bool {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner
             .get(chain_id)
             .is_some_and(|pins| pins.iter().any(|p| &p.hash == hash))
@@ -92,7 +101,10 @@ impl PinStore {
     /// Get all pinned metadata records for a chain.
     #[must_use]
     pub fn get_pinned(&self, chain_id: &ChainId) -> Vec<PinnedMetadata> {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.get(chain_id).cloned().unwrap_or_default()
     }
 
@@ -106,7 +118,10 @@ impl PinStore {
         chain_id: &ChainId,
         current_hash: &MetadataHash,
     ) -> Result<(), MetadataDrift> {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(pins) = inner.get(chain_id) else {
             // No pins for this chain — nothing to verify against.
             return Ok(());
@@ -130,7 +145,10 @@ impl PinStore {
     /// Return the total number of pins across all chains.
     #[must_use]
     pub fn total_pins(&self) -> usize {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.values().map(Vec::len).sum()
     }
 }

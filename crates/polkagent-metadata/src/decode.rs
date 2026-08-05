@@ -48,7 +48,7 @@ pub type Result<T> = std::result::Result<T, MetadataError>;
 #[derive(Debug, Clone)]
 pub struct DecodeService {
     service: MetadataService,
-    /// Cache of already-parsed RuntimeMetadata, keyed by chain name.
+    /// Cache of already-parsed `RuntimeMetadata`, keyed by chain name.
     /// Each entry also records the raw bytes hash so we can detect when the
     /// metadata snapshot has been replaced and the parsed form needs a refresh.
     parsed_cache: Arc<RwLock<HashMap<String, ParsedEntry>>>,
@@ -199,7 +199,10 @@ impl DecodeService {
 
         // Fast path: parsed metadata already in cache and still current.
         {
-            let parsed = self.parsed_cache.read().unwrap_or_else(|e| e.into_inner());
+            let parsed = self
+                .parsed_cache
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = parsed.get(chain) {
                 if entry.raw_hash == raw_hash {
                     return Ok(entry.metadata.clone());
@@ -212,7 +215,10 @@ impl DecodeService {
             .map_err(|e| MetadataError::Codec(e.to_string()))?;
 
         {
-            let mut parsed = self.parsed_cache.write().unwrap_or_else(|e| e.into_inner());
+            let mut parsed = self
+                .parsed_cache
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             parsed.insert(
                 chain.to_string(),
                 ParsedEntry {

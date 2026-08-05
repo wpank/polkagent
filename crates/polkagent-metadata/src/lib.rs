@@ -17,9 +17,9 @@
 //! ```
 //!
 //! - **Cache**: LRU in-memory cache of [`MetadataSnapshot`]s.
-//! - **PinStore**: Stores hashes of known-good metadata for drift comparison.
-//! - **DriftDetector**: Compares current metadata against pins.
-//! - **MetadataService**: Facade composing all three.
+//! - **`PinStore`**: Stores hashes of known-good metadata for drift comparison.
+//! - **`DriftDetector`**: Compares current metadata against pins.
+//! - **`MetadataService`**: Facade composing all three.
 //!
 //! # Usage
 //!
