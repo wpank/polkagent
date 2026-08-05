@@ -6,9 +6,9 @@ decoding, identity primitives, and the CLI commands that expose these
 capabilities to operators.
 
 Cross-references:
-- Signer isolation and the effect pipeline: [safety.md](../../docs/safety.md)
-- Governance and treasury tools that use chain reads: [tools-and-skills.md](../../docs/tools-and-skills.md)
-- CLI chain commands: [cli.md](../../docs/cli.md#chain)
+- Signer isolation and the effect pipeline: [safety.md](safety.md)
+- Governance and treasury tools that use chain reads: [tools-and-skills.md](tools-and-skills.md)
+- CLI chain commands: [cli.md](cli.md#chain)
 
 ---
 
@@ -415,7 +415,7 @@ sequenceDiagram
     end
 ```
 
-**Safety notes (see [safety.md](../../docs/safety.md)):**
+**Safety notes (see [safety.md](safety.md)):**
 
 - Step 13 reflects **INV-01 (Signer Isolation)**: the signer receives only
   bytes verified by `decode_call` against pinned metadata. The model cannot
@@ -616,7 +616,7 @@ because the prefix byte(s) differ. `SS58Address::decode` recovers both the
 ## CLI Chain Commands
 
 The `polkagent chain` sub-command group exposes chain operations to operators.
-Full reference: [cli.md](../../docs/cli.md#chain).
+Full reference: [cli.md](cli.md#chain).
 
 ```
 polkagent chain <SUBCOMMAND> [--chain <CHAIN>]
@@ -645,10 +645,10 @@ language explanation of a hex extrinsic.
 
 | Topic | Document |
 |---|---|
-| Signer isolation (INV-01) and the effect pipeline that wraps `submit_extrinsic` | [safety.md — INV-01: Signer Isolation](../../docs/safety.md#inv-01-signer-isolation) |
-| `FinalityObservation::Unknown` and INV-04 | [safety.md — INV-04: Unknown Stays Unknown](../../docs/safety.md#inv-04-unknown-stays-unknown) |
-| `SignatureRequest` effect kind (NoAutoRetry, 1 attempt) | [safety.md — Effect Kinds table](../../docs/safety.md#effect-kinds) |
-| Governance tools using `chain.query` grant and chain reads | [tools-and-skills.md — Governance Tools](../../docs/tools-and-skills.md#governance-tools) |
-| Treasury tools using `chain.query` grant | [tools-and-skills.md — Treasury Tools](../../docs/tools-and-skills.md#treasury-tools) |
-| Full CLI reference including all `chain` subcommands | [cli.md — chain](../../docs/cli.md#chain) |
-| `polkagent explain` command | [cli.md — explain](../../docs/cli.md#explain-extrinsic_hex) |
+| Signer isolation (INV-01) and the effect pipeline that wraps `submit_extrinsic` | [safety.md — INV-01: Signer Isolation](safety.md#inv-01-signer-isolation) |
+| `FinalityObservation::Unknown` and INV-04 | [safety.md — INV-04: Unknown Stays Unknown](safety.md#inv-04-unknown-stays-unknown) |
+| `SignatureRequest` effect kind (NoAutoRetry, 1 attempt) | [safety.md — Effect Kinds table](safety.md#effect-kinds) |
+| Governance tools using `chain.query` grant and chain reads | [tools-and-skills.md — Governance Tools](tools-and-skills.md#governance-tools) |
+| Treasury tools using `chain.query` grant | [tools-and-skills.md — Treasury Tools](tools-and-skills.md#treasury-tools) |
+| Full CLI reference including all `chain` subcommands | [cli.md — chain](cli.md#chain) |
+| `polkagent explain` command | [cli.md — explain](cli.md#explain-extrinsic_hex) |

@@ -61,7 +61,10 @@ jobs:
         run: cargo test --workspace
 
       - name: Run slow / ignored tests
-        run: cargo test --workspace -- --ignored
+        # Restrict this pass to test targets. Rustdoc treats `ignore` examples
+        # as runnable under `--ignored`, but those examples intentionally use
+        # adapter placeholders and are not slow-test fixtures.
+        run: cargo test --workspace --tests -- --ignored
 
   container-smoke:
     name: Container smoke

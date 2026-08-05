@@ -761,9 +761,9 @@ polling.
 - official ACP trait implementation;
 - protocol-to-domain type conversion;
 - per-client/session handles;
-- interaction-event-to-ACP update mapping;
+- backend turn and slash-command results to bounded ACP session updates;
 - capability negotiation;
-- stdio transport startup and protocol-safe logging.
+- stdio transport startup with protocol-only stdout and stderr diagnostics.
 
 Remaining work is durable `InteractionService` mapping, structured events and
 permissions, session persistence/config options, and protocol-safe file

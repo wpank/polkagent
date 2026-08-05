@@ -281,7 +281,10 @@ polkagent skill list
 polkagent skill show governance-analyst
 ```
 
-The self-hostable **marketplace** provides a service registry for discovering and publishing agent services with pricing models, SLA tiers, and capability-based search.
+`polkagent package` provides a durable local lifecycle for plugin and product-kit
+packages. Local install/list/get/update/rollback/uninstall works; runtime/API
+activation, a real sandbox boundary, cryptographic verification, federation,
+and commercial registry behavior remain open.
 
 ### Multi-Agent Groups
 
@@ -324,13 +327,21 @@ polkagent eval compare results-v1.json results-v2.json
 | **Fault Injection** | `polkagent-fault` | Controlled crashes, timeouts, corruption for testing |
 | **Telemetry** | `polkagent-telemetry` | OpenTelemetry tracing, Prometheus metrics, JSONL event logging |
 
-### Cloud Deployment
+### Cloud and Operations Scaffolding
+
+The following crates/components exist, but they are not yet composed into a
+production cloud deployment:
 
 - **Control Plane** &mdash; Priority-based job queue with capability-aware worker assignment and Cedar-style data residency policies
 - **Worker Nodes** &mdash; Register, heartbeat, poll-and-execute, graceful drain lifecycle
 - **PostgreSQL** &mdash; Multi-tenant store with row-level security, replacing SQLite for production
 - **Billing** &mdash; Per-run cost tracking with provider pricing tables and CSV export
 - **Docker** &mdash; Multi-stage builds (~130 MB images) with health checks
+
+The verified deployment boundary is the single-instance SQLite image/Compose
+lifecycle documented in [STATUS](prd/STATUS.md); durable API/run recovery,
+Postgres conformance, tenant isolation, backup/restore, auth, release, and HA
+remain unproven.
 
 ---
 

@@ -5,6 +5,7 @@ graph LR
     PA["polkagent"] --> INIT["init"]
     PA --> RUN["run"]
     PA --> ACP["acp"]
+    PA --> PACKAGE["package"]
     PA --> AGENT["agent"]
     PA --> SKILL["skill"]
     PA --> TUI["tui"]
@@ -171,6 +172,45 @@ Stdout is reserved for ACP JSON-RPC traffic. When `--agent` is omitted, use
 `/agents` and `/agent <name-or-id>` from the editor session. See
 [ACP and Zed integration](acp-zed.md) for setup, verified behavior, and current
 gaps.
+
+---
+
+### `package`
+
+Manage durable local plugin and product-kit packages.
+
+```text
+polkagent package [--store <PATH>] [--trust-policy <POLICY>] <COMMAND>
+```
+
+| Command | Purpose |
+|---------|---------|
+| `install <PATH>` | Install a local plugin or product kit |
+| `list` | List installed packages |
+| `get <NAME>` | Show the active package and retained history |
+| `update <PATH>` | Install and select a newer local version |
+| `rollback <NAME> [--to <VERSION>]` | Select a retained version |
+| `uninstall <NAME>` | Remove a package and retained content |
+
+`--store` overrides `POLKAGENT_PACKAGE_STORE` and config-derived defaults.
+Global `--format json`/`json-pretty`, `--dry-run`, and `--yes` are supported.
+Strict trust is the default and currently rejects unsigned packages or
+signature claims that have not been cryptographically verified. Development
+trust is an explicit local-risk opt-in that retains integrity checks and emits
+warnings:
+
+```bash
+polkagent package --trust-policy development install ./local-plugin
+polkagent package list
+polkagent package get local-plugin
+polkagent package --trust-policy development update ./local-plugin-v2
+polkagent package rollback local-plugin --to 1.0.0
+polkagent --yes package uninstall local-plugin
+```
+
+Package management is durable across restarts, but installed content is not
+yet activated by `run` or the API and no OS/WASM sandbox or cryptographic trust
+pipeline is connected.
 
 ---
 

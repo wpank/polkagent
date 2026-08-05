@@ -6,6 +6,14 @@ lifecycle a plugin goes through from discovery to active use.
 
 Related reading: [Tools and Skills](tools-and-skills.md)
 
+> **Current implementation boundary:** `polkagent package` provides durable
+> local install/list/get/update/rollback/uninstall management for plugins and
+> product kits. Installed packages are not yet activated by `run` or the API;
+> `PluginSandbox` is capability bookkeeping rather than an OS/WASM process
+> boundary, and cryptographic signature verification is not implemented.
+> Strict trust therefore fails closed, while development trust is an explicit
+> local-risk opt-in. See the [package CLI](cli.md#package).
+
 ---
 
 ## Overview

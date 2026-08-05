@@ -13,6 +13,7 @@ At this evidence snapshot, the following local gates passed:
 cargo check --workspace
 cargo +1.89 check --workspace --locked
 cargo test --workspace --no-fail-fast
+cargo test --workspace --tests -- --ignored
 cargo test -p polkagent-cli --test tui_tests
 cargo test -p polkagent-cli --test acp_stdio_e2e
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
@@ -142,6 +143,9 @@ startup still has a wiring gap.
   Commit `639ba62` cleared current workspace rustdoc warnings, but
   `.github/workflows/ci.yml` does not yet enforce the warning-denying rustdoc
   command listed in the verification baseline.
+- The slow/ignored CI pass is scoped to Rust test targets so it runs the PCA
+  subprocess helpers without asking rustdoc to compile illustrative
+  adapter-placeholder examples marked `ignore`.
 
 ## Completion gate for future status updates
 
