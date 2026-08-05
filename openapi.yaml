@@ -70,6 +70,8 @@ tags:
     description: Budget tracking, usage statistics, and payment receipts.
   - name: memory
     description: Semantic memory search and management.
+  - name: interactions
+    description: Durable, idempotent agent prompting and checkpointed event replay.
   - name: system
     description: Platform version and configuration summary.
   - name: health
@@ -1332,6 +1334,335 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   # ==========================================================================
+  # Durable interactions
+  # ==========================================================================
+
+  /api/v1alpha1/interactions:
+    post:
+      operationId: createInteraction
+      summary: Create a durable interaction
+      tags: [interactions]
+      description: |
+        Creates a durable interaction without starting execution. The target
+        is resolved by the shared runtime. Provider and model configuration
+        are intentionally not accepted by this HTTP surface.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateHttpInteractionRequest"
+      responses:
+        "201":
+          description: Interaction created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HttpInteractionResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listInteractions
+      summary: List durable interactions
+      tags: [interactions]
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum summaries to return (default 50, max 100).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          description: Number of summaries to skip in stable recency order.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: state
+          in: query
+          description: Optional interaction lifecycle filter.
+          schema:
+            $ref: "#/components/schemas/InteractionState"
+      responses:
+        "200":
+          description: Page of durable interactions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListHttpInteractionsResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+
+    get:
+      operationId: getInteraction
+      summary: Get a durable interaction
+      tags: [interactions]
+      responses:
+        "200":
+          description: Durable interaction projection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HttpInteractionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: archiveInteraction
+      summary: Archive a terminal interaction
+      tags: [interactions]
+      description: |
+        Marks the interaction archived while retaining its transcript, turns,
+        and events. An interaction with active work cannot be archived.
+      responses:
+        "204":
+          description: Interaction archived; no response body.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}/turns:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+
+    get:
+      operationId: listInteractionTurns
+      summary: List durable interaction turns
+      tags: [interactions]
+      responses:
+        "200":
+          description: Turns in monotonic ordinal order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListHttpInteractionTurnsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}/prompt:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+
+    post:
+      operationId: promptInteraction
+      summary: Start an idempotent interaction turn
+      tags: [interactions]
+      description: |
+        Durably commits the user message, caller correlation, run link, and
+        initial event before execution begins. Supplying `turn_id` makes the
+        call idempotent: identical retries return the original handle, while
+        different input with the same ID returns `409 Conflict`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromptHttpInteractionRequest"
+      responses:
+        "202":
+          description: Turn is durable and execution has been accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptHttpInteractionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}/turns/{turn_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+      - $ref: "#/components/parameters/InteractionTurnIdPath"
+
+    post:
+      operationId: cancelInteractionTurn
+      summary: Cancel an interaction turn
+      tags: [interactions]
+      description: |
+        Verifies that the turn belongs to the path interaction, then requests
+        cancellation through the shared interaction service. Repeated
+        cancellation of a terminal turn is idempotent.
+      responses:
+        "200":
+          description: Current cancelled or terminal turn projection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelHttpInteractionTurnResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}/target:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+
+    put:
+      operationId: updateInteractionTarget
+      summary: Update an interaction target
+      tags: [interactions]
+      description: |
+        Changes only the supported target option. This operation does not
+        accept or imply support for model, provider, harness, autonomy, or
+        budget configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateHttpInteractionTargetRequest"
+      responses:
+        "200":
+          description: Effective interaction configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateHttpInteractionTargetResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+
+    get:
+      operationId: replayInteractionEvents
+      summary: Replay durable interaction events
+      tags: [interactions]
+      description: |
+        Returns a finite, ordered JSON page after a durable per-interaction
+        sequence. Persist `checkpoint.next_after_sequence` and pass it as the
+        next `after_sequence`. A `turn_id` filter scans across unrelated turns
+        without skipping matching events. This is replay, not a live SSE or
+        WebSocket interaction stream.
+      parameters:
+        - name: after_sequence
+          in: query
+          description: Return events strictly after this durable sequence.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+        - name: turn_id
+          in: query
+          description: Optional turn filter; sequences remain interaction-wide.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          description: Maximum matching events to return (default 100, max 999).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 999
+            default: 100
+      responses:
+        "200":
+          description: Ordered finite replay page and durable checkpoint.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayInteractionEventsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
   # System
   # ==========================================================================
 
@@ -1613,6 +1944,24 @@ components:
         type: string
         format: uuid
 
+    InteractionIdPath:
+      name: id
+      in: path
+      required: true
+      description: Conversation UUID that is also the durable interaction ID.
+      schema:
+        type: string
+        format: uuid
+
+    InteractionTurnIdPath:
+      name: turn_id
+      in: path
+      required: true
+      description: Caller- or server-generated durable interaction turn UUID.
+      schema:
+        type: string
+        format: uuid
+
     SkillIdPath:
       name: skill_id
       in: path
@@ -1696,6 +2045,32 @@ components:
               code: NOT_IMPLEMENTED
               message: "skill installation is not yet implemented"
               request_id: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6eb"
+              timestamp: "2026-07-31T12:00:00Z"
+
+    PermissionDenied:
+      description: The authenticated caller is not permitted to perform the operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: PERMISSION_DENIED
+              message: "permission denied: interaction operation is not authorized"
+              request_id: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6ed"
+              timestamp: "2026-07-31T12:00:00Z"
+
+    Unavailable:
+      description: A composed runtime dependency is temporarily unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: UNAVAILABLE
+              message: "unavailable: interaction execution is temporarily unavailable"
+              request_id: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6ee"
               timestamp: "2026-07-31T12:00:00Z"
 
     InternalError:
@@ -1814,6 +2189,8 @@ components:
             - VALIDATION_ERROR
             - INTERNAL_ERROR
             - NOT_IMPLEMENTED
+            - PERMISSION_DENIED
+            - UNAVAILABLE
           example: AGENT_NOT_FOUND
         message:
           type: string
@@ -2787,6 +3164,783 @@ components:
           $ref: "#/components/schemas/MemoryResult"
 
     # ---- System --------------------------------------------------------------
+
+    # ---- Durable interactions -----------------------------------------------
+
+    InteractionAutonomyLevel:
+      type: string
+      description: Requested autonomy; policy and grants may narrow it.
+      enum:
+        - fully_supervised
+        - supervised
+        - assisted_autonomous
+        - fully_autonomous
+
+    InteractionState:
+      type: string
+      enum: [active, archived]
+
+    InteractionTurnState:
+      type: string
+      enum:
+        - pending
+        - running
+        - awaiting_approval
+        - completed
+        - failed
+        - cancelled
+        - timed_out
+
+    InteractionTarget:
+      description: Durable interaction execution target.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, id]
+          properties:
+            kind:
+              type: string
+              const: agent
+            id:
+              type: string
+              format: uuid
+        - type: object
+          additionalProperties: false
+          required: [kind, id]
+          properties:
+            kind:
+              type: string
+              const: group
+            id:
+              type: string
+              format: uuid
+        - type: object
+          additionalProperties: false
+          required: [kind]
+          properties:
+            kind:
+              type: string
+              const: auto
+      discriminator:
+        propertyName: kind
+
+    InteractionBudgetLimits:
+      type: object
+      required: [max_cost_usd, max_tokens, max_input_tokens, max_output_tokens]
+      properties:
+        max_cost_usd:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+        max_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        max_input_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        max_output_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+
+    InteractionBudget:
+      type: object
+      required: [max_cost_usd, max_tokens, per_run, per_turn]
+      properties:
+        max_cost_usd:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+        max_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        per_run:
+          allOf:
+            - $ref: "#/components/schemas/InteractionBudgetLimits"
+          nullable: true
+        per_turn:
+          allOf:
+            - $ref: "#/components/schemas/InteractionBudgetLimits"
+          nullable: true
+
+    InteractionConfig:
+      type: object
+      required: [target, model, provider, harness, autonomy, max_turns, budget]
+      description: Effective durable configuration projected by the service.
+      properties:
+        target:
+          $ref: "#/components/schemas/InteractionTarget"
+        model:
+          type: string
+          nullable: true
+        provider:
+          type: string
+          nullable: true
+        harness:
+          type: string
+          nullable: true
+        autonomy:
+          $ref: "#/components/schemas/InteractionAutonomyLevel"
+        max_turns:
+          type: integer
+          format: int32
+          minimum: 1
+          nullable: true
+        budget:
+          allOf:
+            - $ref: "#/components/schemas/InteractionBudget"
+          nullable: true
+
+    CreateHttpInteractionRequest:
+      type: object
+      additionalProperties: false
+      required: [target, working_directory]
+      description: |
+        Creates a durable interaction. Unsupported model/provider fields are
+        rejected instead of being silently ignored.
+      properties:
+        title:
+          type: string
+          nullable: true
+        target:
+          $ref: "#/components/schemas/InteractionTarget"
+        working_directory:
+          type: string
+          description: Absolute project directory used by the runtime.
+          example: "/workspace/project"
+        client_name:
+          type: string
+          nullable: true
+        client_session_id:
+          type: string
+          nullable: true
+
+    PromptHttpInteractionRequest:
+      type: object
+      additionalProperties: false
+      required: [prompt, working_directory]
+      description: Text-only prompt accepted by the durable HTTP surface.
+      properties:
+        turn_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Caller-generated idempotency identity.
+        prompt:
+          type: string
+          minLength: 1
+        working_directory:
+          type: string
+          description: Absolute project directory used by the runtime.
+          example: "/workspace/project"
+        client_name:
+          type: string
+          nullable: true
+        client_session_id:
+          type: string
+          nullable: true
+
+    UpdateHttpInteractionTargetRequest:
+      type: object
+      additionalProperties: false
+      required: [target]
+      properties:
+        target:
+          $ref: "#/components/schemas/InteractionTarget"
+
+    InteractionSummary:
+      type: object
+      required: [conversation_id, title, config, state, turn_count, created_at, updated_at]
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          nullable: true
+        config:
+          $ref: "#/components/schemas/InteractionConfig"
+        state:
+          $ref: "#/components/schemas/InteractionState"
+        turn_count:
+          type: integer
+          format: int32
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HttpInteractionResponse:
+      type: object
+      required: [version, interaction]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        interaction:
+          $ref: "#/components/schemas/InteractionSummary"
+
+    ListHttpInteractionsResponse:
+      type: object
+      required: [version, data, cursor, meta]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/InteractionSummary"
+        cursor:
+          $ref: "#/components/schemas/CursorInfo"
+        meta:
+          $ref: "#/components/schemas/PageMeta"
+
+    InteractionTurnHandle:
+      type: object
+      required: [turn_id, conversation_id, run_ids, first_event_sequence]
+      properties:
+        turn_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        run_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        first_event_sequence:
+          type: integer
+          format: int64
+          minimum: 1
+
+    InteractionTurnSummary:
+      type: object
+      required: [handle, ordinal, state, started_at, completed_at]
+      properties:
+        handle:
+          $ref: "#/components/schemas/InteractionTurnHandle"
+        ordinal:
+          type: integer
+          format: int32
+          minimum: 1
+        state:
+          $ref: "#/components/schemas/InteractionTurnState"
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ListHttpInteractionTurnsResponse:
+      type: object
+      required: [version, data]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/InteractionTurnSummary"
+
+    PromptHttpInteractionResponse:
+      type: object
+      required: [version, handle]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        handle:
+          $ref: "#/components/schemas/InteractionTurnHandle"
+
+    CancelHttpInteractionTurnResponse:
+      type: object
+      required: [version, turn]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        turn:
+          $ref: "#/components/schemas/InteractionTurnSummary"
+
+    UpdateHttpInteractionTargetResponse:
+      type: object
+      required: [version, config]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        config:
+          $ref: "#/components/schemas/InteractionConfig"
+
+    InteractionReplayCheckpoint:
+      type: object
+      required: [next_after_sequence, has_more]
+      properties:
+        next_after_sequence:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Safe checkpoint for the next replay request.
+        has_more:
+          type: boolean
+          description: Whether another matching event is already durable.
+
+    InteractionErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - not_found
+        - conflict
+        - busy
+        - permission_denied
+        - invalid_config
+        - unsupported
+        - unavailable
+        - internal
+
+    InteractionDomainError:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code:
+          $ref: "#/components/schemas/InteractionErrorCode"
+        message:
+          type: string
+        retryable:
+          type: boolean
+        details:
+          description: Optional redacted structured context.
+
+    InteractionUsageView:
+      type: object
+      required:
+        - input_tokens
+        - output_tokens
+        - cache_read_tokens
+        - cache_write_tokens
+        - cost_usd
+        - remaining_tokens
+        - remaining_cost_usd
+      properties:
+        input_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        output_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        cache_read_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        cache_write_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        cost_usd:
+          type: number
+          format: double
+          nullable: true
+        remaining_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        remaining_cost_usd:
+          type: number
+          format: double
+          nullable: true
+
+    InteractionTurnResult:
+      type: object
+      required: [text, run_ids, usage]
+      properties:
+        text:
+          type: string
+        run_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        usage:
+          $ref: "#/components/schemas/InteractionUsageView"
+
+    InteractionRunRole:
+      description: Role of a run linked to an interaction turn.
+      oneOf:
+        - type: string
+          enum: [primary, coordinator]
+        - type: object
+          additionalProperties: false
+          required: [child]
+          properties:
+            child:
+              type: string
+
+    InteractionToolLocation:
+      type: object
+      required: [path, line, column]
+      properties:
+        path:
+          type: string
+        line:
+          type: integer
+          format: int32
+          minimum: 1
+          nullable: true
+        column:
+          type: integer
+          format: int32
+          minimum: 1
+          nullable: true
+
+    InteractionToolCallView:
+      type: object
+      required: [call_id, run_id, name, title, kind, status]
+      properties:
+        call_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        title:
+          type: string
+        kind:
+          type: string
+          enum: [read, write, execute, network, chain, other]
+        status:
+          type: string
+          enum: [pending, in_progress, awaiting_approval, succeeded, failed, cancelled, unknown]
+        arguments:
+          description: Optional redacted structured arguments.
+        summary:
+          type: string
+        output:
+          description: Optional redacted structured output.
+        locations:
+          type: array
+          items:
+            $ref: "#/components/schemas/InteractionToolLocation"
+        diff:
+          type: string
+        error:
+          type: string
+
+    InteractionPlanEntryView:
+      type: object
+      required: [entry_id, title, description, status, run_ids]
+      properties:
+        entry_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, in_progress, completed, failed, cancelled]
+        run_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    InteractionApprovalView:
+      type: object
+      required:
+        - approval_id
+        - effect_id
+        - run_id
+        - tool_call_id
+        - title
+        - description
+        - status
+        - policy_reason
+        - expires_at
+      properties:
+        approval_id:
+          type: string
+          format: uuid
+        effect_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        tool_call_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved, denied, expired, cancelled]
+        policy_reason:
+          type: string
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    InteractionApprovalDecision:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, deny]
+        reason:
+          type: string
+          nullable: true
+
+    InteractionRunState:
+      type: object
+      required: [state]
+      description: Tagged durable run state; fields apply to the matching state.
+      properties:
+        state:
+          type: string
+          enum:
+            - created
+            - queued
+            - running
+            - awaiting_approval
+            - waiting_effect
+            - completing
+            - completed
+            - failed
+            - cancelled
+            - timed_out
+        request_id:
+          type: string
+        pending_intent_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        reason:
+          type: string
+
+    InteractionEvent:
+      description: Stable tagged event vocabulary stored for durable replay.
+      discriminator:
+        propertyName: type
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, target, runs]
+          properties:
+            type:
+              type: string
+              const: turn_started
+            target:
+              $ref: "#/components/schemas/InteractionTarget"
+            runs:
+              type: array
+              items:
+                type: array
+                minItems: 2
+                maxItems: 2
+                prefixItems:
+                  - type: string
+                    format: uuid
+                  - $ref: "#/components/schemas/InteractionRunRole"
+        - type: object
+          additionalProperties: false
+          required: [type, run_id, text]
+          properties:
+            type:
+              type: string
+              const: agent_message_delta
+            run_id:
+              type: string
+              format: uuid
+            text:
+              type: string
+        - type: object
+          additionalProperties: false
+          required: [type, run_id, text]
+          properties:
+            type:
+              type: string
+              const: thought_delta
+            run_id:
+              type: string
+              format: uuid
+            text:
+              type: string
+        - type: object
+          additionalProperties: false
+          required: [type, call]
+          properties:
+            type:
+              type: string
+              const: tool_call_started
+            call:
+              $ref: "#/components/schemas/InteractionToolCallView"
+        - type: object
+          additionalProperties: false
+          required: [type, call]
+          properties:
+            type:
+              type: string
+              const: tool_call_updated
+            call:
+              $ref: "#/components/schemas/InteractionToolCallView"
+        - type: object
+          additionalProperties: false
+          required: [type, entries]
+          properties:
+            type:
+              type: string
+              const: plan_updated
+            entries:
+              type: array
+              items:
+                $ref: "#/components/schemas/InteractionPlanEntryView"
+        - type: object
+          additionalProperties: false
+          required: [type, request]
+          properties:
+            type:
+              type: string
+              const: approval_requested
+            request:
+              $ref: "#/components/schemas/InteractionApprovalView"
+        - type: object
+          additionalProperties: false
+          required: [type, approval_id, decision]
+          properties:
+            type:
+              type: string
+              const: approval_resolved
+            approval_id:
+              type: string
+              format: uuid
+            decision:
+              $ref: "#/components/schemas/InteractionApprovalDecision"
+        - type: object
+          additionalProperties: false
+          required: [type, usage]
+          properties:
+            type:
+              type: string
+              const: usage_updated
+            usage:
+              $ref: "#/components/schemas/InteractionUsageView"
+        - type: object
+          additionalProperties: false
+          required: [type, run_id, state]
+          properties:
+            type:
+              type: string
+              const: run_state_changed
+            run_id:
+              type: string
+              format: uuid
+            state:
+              $ref: "#/components/schemas/InteractionRunState"
+        - type: object
+          additionalProperties: false
+          required: [type, result]
+          properties:
+            type:
+              type: string
+              const: turn_completed
+            result:
+              $ref: "#/components/schemas/InteractionTurnResult"
+        - type: object
+          additionalProperties: false
+          required: [type, error]
+          properties:
+            type:
+              type: string
+              const: turn_failed
+            error:
+              $ref: "#/components/schemas/InteractionDomainError"
+        - type: object
+          additionalProperties: false
+          required: [type, reason]
+          properties:
+            type:
+              type: string
+              const: turn_cancelled
+            reason:
+              type: string
+              nullable: true
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type:
+              type: string
+              const: turn_timed_out
+
+    InteractionEventEnvelope:
+      type: object
+      required: [event_id, conversation_id, turn_id, sequence, timestamp, event]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        turn_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          format: int64
+          minimum: 1
+        timestamp:
+          type: string
+          format: date-time
+        event:
+          $ref: "#/components/schemas/InteractionEvent"
+
+    ReplayInteractionEventsResponse:
+      type: object
+      required: [version, data, checkpoint]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/InteractionEventEnvelope"
+        checkpoint:
+          $ref: "#/components/schemas/InteractionReplayCheckpoint"
 
     ConfigSummary:
       type: object
