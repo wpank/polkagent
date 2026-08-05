@@ -31,6 +31,7 @@
 pub mod command;
 pub mod error;
 pub mod event;
+pub mod executor;
 pub mod hub;
 pub mod ids;
 pub mod model;
@@ -49,6 +50,7 @@ pub use event::{
     PlanEntryView, RunRole, ToolCallKind, ToolCallStatus, ToolCallView, ToolLocation, TurnResult,
     UsageView,
 };
+pub use executor::{InteractionCommandRuntime, ServiceCommandExecutor};
 pub use hub::InteractionEventHub;
 pub use ids::{InteractionEventId, InteractionTurnId, PlanEntryId, ToolCallId};
 pub use model::{
