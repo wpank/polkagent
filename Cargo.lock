@@ -2863,7 +2863,6 @@ dependencies = [
  "polkagent-chain-trait",
  "polkagent-codec",
  "polkagent-config",
- "polkagent-conversation",
  "polkagent-core",
  "polkagent-eval",
  "polkagent-event",

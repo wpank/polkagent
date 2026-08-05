@@ -58,6 +58,9 @@ polkagent agent create my-agent \
 # Run a query
 polkagent run -a my-agent -p "Summarize referendum 1234 and list the top 10 voters"
 
+# Or start a durable line-oriented terminal session
+polkagent chat --agent my-agent
+
 # Or launch the interactive TUI directly in its Console
 polkagent tui --tab console
 # Press p to compose for an active agent; Enter starts; x cancels.
@@ -65,6 +68,10 @@ polkagent tui --tab console
 # Or expose Polkagent to an ACP editor such as Zed
 polkagent acp --agent my-agent
 ```
+
+See [durable terminal chat](docs/chat.md) for resume, slash-command, stream,
+and cancellation behavior. Its transcript is durable UI history; prior turns
+are not yet automatically supplied to the model as later-prompt context.
 
 ### Docker
 
@@ -179,7 +186,7 @@ multi-turn Console:
 | `F8` | **Audit** | System audit log with severity filtering |
 | `F9` | **Console** | Select an active agent, keep durable session/transcript history, stream typed updates, and cancel the active turn |
 
-Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, and `q` to quit. In the Console, `p` opens the prompt composer, `Enter` submits a durable turn, and `x` cancels that turn and its linked run. Follow-up prompts share the agent's durable TUI session, and transcript/composer history reloads after restart; prior turns are not yet assembled into the next model prompt, so model execution remains one-shot. Slash-command execution, approval decisions from the Console prompt path, and simultaneous group orchestration remain unavailable. The separate legacy Approvals tab retains its existing approve/deny actions.
+Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, and `q` to quit. In the Console, `p` opens the composer, `Enter` submits a durable prompt or supported command, and `x` cancels the exact active turn and its linked run. Follow-up prompts share the agent's durable TUI session, and transcript/composer history reloads after restart; prior turns are not yet assembled into the next model prompt, so model execution remains one-shot. `/help`, `/status`, `/new [title]`, and `/resume <conversation-id>` execute through the shared command service and render structured results. `/cancel` remains unavailable because the composer closes during an active turn; use `x`. Agent/model/provider/autonomy, approval, group, and run-inspection commands remain unavailable in this Console path. The separate legacy Approvals tab retains its existing approve/deny actions.
 
 ### Coding Harness Integrations
 

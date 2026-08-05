@@ -37,7 +37,7 @@ use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::{
     input::{key_to_action, InputMode, TuiAction},
-    interaction::{ControllerEvent, RunController},
+    interaction::{ConsoleCommandSubmission, ControllerEvent, RunController},
     state::TuiState,
     theme::Theme,
     views,
@@ -792,6 +792,9 @@ impl App {
                 if run_active {
                     self.tui_state.last_error =
                         Some("a console run is already active; press x to cancel it".to_owned());
+                } else if self.run_controller.is_active() {
+                    self.tui_state.last_error =
+                        Some("a Console command is still running".to_owned());
                 } else if self.ensure_console_agent() {
                     self.active_tab = Tab::Console;
                     self.input_mode = InputMode::Prompt;
@@ -855,24 +858,42 @@ impl App {
                 self.tui_state.mark_dirty();
             }
 
-            TuiAction::PromptSubmit => match self.tui_state.interaction.submit() {
-                Ok(request) => {
-                    self.input_mode = InputMode::Normal;
-                    if let Err(error) = self.run_controller.start(request) {
-                        self.tui_state
-                            .interaction
-                            .apply(ControllerEvent::Failed(error.to_owned()));
-                        self.tui_state.last_error = Some(error.to_owned());
-                    } else {
-                        self.tui_state.last_error = None;
+            TuiAction::PromptSubmit => {
+                if self.tui_state.interaction.is_command_input() {
+                    match self.tui_state.interaction.submit_command() {
+                        Ok(ConsoleCommandSubmission::Execute(request)) => {
+                            self.input_mode = InputMode::Normal;
+                            if let Err(error) = self.run_controller.execute_command(request) {
+                                self.tui_state.interaction.fail_pending_command(error);
+                                self.tui_state.last_error = Some(error.to_owned());
+                            } else {
+                                self.tui_state.last_error = None;
+                            }
+                        }
+                        Ok(ConsoleCommandSubmission::Rejected) => {
+                            self.input_mode = InputMode::Normal;
+                            self.tui_state.last_error = None;
+                        }
+                        Err(error) => self.tui_state.last_error = Some(error.to_owned()),
                     }
-                    self.tui_state.mark_dirty();
+                } else {
+                    match self.tui_state.interaction.submit() {
+                        Ok(request) => {
+                            self.input_mode = InputMode::Normal;
+                            if let Err(error) = self.run_controller.start(request) {
+                                self.tui_state
+                                    .interaction
+                                    .apply(ControllerEvent::Failed(error.to_owned()));
+                                self.tui_state.last_error = Some(error.to_owned());
+                            } else {
+                                self.tui_state.last_error = None;
+                            }
+                        }
+                        Err(error) => self.tui_state.last_error = Some(error.to_owned()),
+                    }
                 }
-                Err(error) => {
-                    self.tui_state.last_error = Some(error.to_owned());
-                    self.tui_state.mark_dirty();
-                }
-            },
+                self.tui_state.mark_dirty();
+            }
 
             TuiAction::CancelActiveRun => {
                 if self.run_controller.cancel() {

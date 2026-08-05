@@ -160,6 +160,24 @@ verbosity.
 
 ---
 
+### `chat`
+
+Start or resume a durable, line-oriented terminal session for one active agent.
+
+```text
+polkagent chat --agent <AGENT> [--title <TITLE>]
+polkagent chat --agent <AGENT> --resume <CONVERSATION_ID>
+```
+
+The session supports a truthful subset of shared slash commands and streams
+assistant text on stdout while lifecycle and correlation details stay on
+stderr. See the [durable terminal chat guide](chat.md) for input, resume,
+cancellation, and output contracts. Transcript continuity is a durable UI
+projection only; prior turns are not yet automatically supplied to the model
+as context for a later prompt.
+
+---
+
 ### `acp`
 
 Start an ACP v1 stdio server for editor integrations such as Zed.
@@ -364,10 +382,14 @@ durable multi-turn surface:
 |-----|--------|
 | `F9` or `9` | Open Console |
 | `p` | Select the highlighted/first active agent and compose a prompt |
-| `Enter` | Submit the prompt as the next durable interaction turn |
+| `Enter` | Submit a prompt or one of the supported slash commands |
 | `x` | Request cancellation of the active durable turn and its linked run |
 | `F3` | Inspect the selected durable run |
 | `F5` | Inspect its timeline |
+| `/help [command]` | Show the executable Console command subset |
+| `/status` | Show structured durable interaction status |
+| `/new [title]` | Create and select a new durable single-agent interaction |
+| `/resume <conversation-id>` | Select a same-agent interaction and reload its transcript |
 
 The Console creates one durable interaction for the selected agent and keeps
 follow-up turns in that session. This is durable transcript and composer-history
@@ -375,14 +397,19 @@ continuity, not contextual model follow-up: prior turns are not yet assembled
 into the next model prompt, so each model execution remains one-shot. The
 Console consumes typed interaction events, shows correlated
 conversation/turn/run IDs, reloads history after restart, and keeps one active
-turn at a time so cancellation has an exact target. The slash picker remains
-discovery/completion only. Model, provider, harness, group orchestration,
-command execution, and approval decisions from the Console prompt path are not
-yet available; approval events there are displayed as unavailable rather than
-mutating effect rows directly. The separate legacy Approvals tab retains its
-existing direct approve/deny behavior. A temporary read-only conversation
-projection supplies transcript message bodies until the interaction service
-exposes them; all Console prompt-path mutations still go through that service.
+turn at a time so cancellation has an exact target. The slash picker advertises
+only `/help`, `/status`, `/new`, and `/resume`; those commands use the shared
+registry and service executor, render structured success/error output, and are
+never sent to the model. `/new` and `/resume` switch the selected durable
+conversation before the next prompt. `/cancel` is not accepted because the
+composer is closed while a turn is active; `x` remains the exact current-turn
+cancellation path. Agent, model, provider, autonomy, harness, group
+orchestration, approval, and run-inspection commands are explicitly refused in
+the Console. Approval events are displayed as unavailable rather than mutating
+effect rows directly. The separate legacy Approvals tab retains its existing
+direct approve/deny behavior. Transcript reloads use the interaction service's
+turn-correlated, bounded projection, and all Console prompt-path mutations also
+go through that service.
 A root `--config` path is used consistently for the TUI database and its
 run/provider settings.
 

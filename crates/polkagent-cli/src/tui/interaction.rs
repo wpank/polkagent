@@ -4,21 +4,21 @@
 //! owns the deterministic reducer and the bridge to the same process-wide
 //! production runtime used by `polkagent run`.
 
-use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{mpsc, Arc, OnceLock};
 
-use polkagent_conversation::{
-    types::{Message, MessageContent, MessageRole},
-    ConversationStore,
-};
-use polkagent_core::{AgentId, ConversationId};
+use async_trait::async_trait;
+use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
-    ClientContext, CommandRegistry, CreateInteractionRequest, InteractionConfig,
-    InteractionContent, InteractionError, InteractionEvent, InteractionOverrides,
+    AgentTargetView, ClientContext, CommandContext, CommandExecutor, CommandInvocation,
+    CommandName, CommandOutput, CommandRegistry, CommandRequest, CreateInteractionRequest,
+    InteractionCommand, InteractionCommandRuntime, InteractionConfig, InteractionContent,
+    InteractionError, InteractionErrorCode, InteractionEvent, InteractionOverrides,
     InteractionService, InteractionState as DurableInteractionState, InteractionSummary,
-    InteractionTarget, InteractionTurnId, ListInteractionsRequest,
-    PromptRequest as InteractionPromptRequest, StreamError, SubscriptionRequest, TurnState,
+    InteractionTarget, InteractionTurnId, ListInteractionsRequest, ParsedLine,
+    PromptRequest as InteractionPromptRequest, RunDetailView, RunSummaryView,
+    ServiceCommandExecutor, StreamError, SubscriptionRequest, TranscriptRequest, TurnHandle,
+    TurnState,
 };
 use polkagent_runtime::{
     AdapterPolicy, ComponentState, PolkagentRuntime, RuntimeOptions, RuntimeReadiness, WarningCode,
@@ -32,6 +32,12 @@ const MAX_OUTPUT_BYTES: usize = 128 * 1024;
 const MAX_PROMPT_HISTORY: usize = 100;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
+const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 4] = [
+    CommandName::Help,
+    CommandName::Status,
+    CommandName::New,
+    CommandName::Resume,
+];
 
 /// One canonical entry in the Console's shared slash-command picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +84,57 @@ impl SlashCommandMenu {
 pub struct PromptRequest {
     pub agent_id: String,
     pub agent_name: String,
+    pub conversation_id: Option<String>,
     pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleCommandRequest {
+    pub request_id: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub conversation_id: Option<String>,
+    pub line: String,
+    pub invocation: CommandInvocation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleCommandStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+impl ConsoleCommandStatus {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleCommandResult {
+    pub request_id: String,
+    pub line: String,
+    pub status: ConsoleCommandStatus,
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConsoleCommandSubmission {
+    Execute(ConsoleCommandRequest),
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleConversationSelection {
+    pub conversation_id: String,
+    pub turns: Vec<ConsoleRun>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +198,7 @@ pub struct InteractionState {
     pub conversation_id: Option<String>,
     pub transcript: Vec<ConsoleRun>,
     pub run: Option<ConsoleRun>,
+    pub command_result: Option<ConsoleCommandResult>,
 }
 
 impl InteractionState {
@@ -152,6 +209,7 @@ impl InteractionState {
             self.transcript.clear();
             self.run = None;
             self.prompt_history.clear();
+            self.command_result = None;
         }
         self.agent_id = Some(agent_id);
         self.agent_name = Some(agent_name.into());
@@ -270,10 +328,6 @@ impl InteractionState {
     }
 
     /// Return shared slash-command candidates for the current composer text.
-    ///
-    /// The menu is a discovery/completion projection only. Command execution
-    /// remains outside this TUI slice until the durable interaction service is
-    /// connected to the Console.
     #[must_use]
     pub fn slash_command_menu(&self) -> Option<SlashCommandMenu> {
         if self.slash_completion_dismissed {
@@ -291,6 +345,7 @@ impl InteractionState {
         let candidates = if has_arguments || registry.resolve(&typed_name).is_some() {
             registry
                 .resolve(&typed_name)
+                .filter(|spec| SUPPORTED_CONSOLE_COMMANDS.contains(&spec.command))
                 .into_iter()
                 .map(slash_candidate)
                 .collect()
@@ -298,6 +353,7 @@ impl InteractionState {
             registry
                 .specs()
                 .into_iter()
+                .filter(|spec| SUPPORTED_CONSOLE_COMMANDS.contains(&spec.command))
                 .filter(|spec| {
                     spec.name.starts_with(&typed_name)
                         || spec
@@ -374,9 +430,7 @@ impl InteractionState {
             return Err("prompt cannot be empty");
         }
         if prompt.starts_with('/') {
-            return Err(
-                "slash commands are catalog-only in the Console; command execution is not wired yet",
-            );
+            return Err("slash commands must use the Console command path");
         }
         let Some(agent_id) = self.agent_id.clone() else {
             return Err("select an active agent before prompting");
@@ -384,6 +438,7 @@ impl InteractionState {
         let agent_name = self.agent_name.clone().unwrap_or_else(|| agent_id.clone());
         self.record_history(&prompt);
         self.clear_prompt();
+        self.command_result = None;
         if self
             .run
             .as_ref()
@@ -407,8 +462,80 @@ impl InteractionState {
         Ok(PromptRequest {
             agent_id,
             agent_name,
+            conversation_id: self.conversation_id.clone(),
             prompt,
         })
+    }
+
+    #[must_use]
+    pub fn is_command_input(&self) -> bool {
+        self.prompt_buffer.trim_start().starts_with('/')
+    }
+
+    pub fn submit_command(&mut self) -> Result<ConsoleCommandSubmission, &'static str> {
+        let line = self.prompt_buffer.trim().to_owned();
+        if line.is_empty() {
+            return Err("command cannot be empty");
+        }
+        if !line.starts_with('/') {
+            return Err("Console command input must begin with '/'");
+        }
+        let Some(agent_id) = self.agent_id.clone() else {
+            return Err("select an active agent before using Console commands");
+        };
+        let agent_name = self.agent_name.clone().unwrap_or_else(|| agent_id.clone());
+        self.record_history(&line);
+        self.clear_prompt();
+
+        let invocation = match command_registry().parse(&line) {
+            Ok(ParsedLine::Command(invocation)) => invocation,
+            Ok(ParsedLine::Prompt(_)) => unreachable!("slash input parsed as a prompt"),
+            Err(error) => {
+                self.reject_command(&line, console_parse_error(&line, &error.to_string()));
+                return Ok(ConsoleCommandSubmission::Rejected);
+            }
+        };
+        if let Err(reason) = validate_console_command(&invocation.command) {
+            self.reject_command(&line, reason);
+            return Ok(ConsoleCommandSubmission::Rejected);
+        }
+
+        let request_id = uuid::Uuid::now_v7().to_string();
+        self.command_result = Some(ConsoleCommandResult {
+            request_id: request_id.clone(),
+            line: line.clone(),
+            status: ConsoleCommandStatus::Running,
+            title: "Executing shared command".to_owned(),
+            lines: vec!["Waiting for the durable interaction service.".to_owned()],
+        });
+        Ok(ConsoleCommandSubmission::Execute(ConsoleCommandRequest {
+            request_id,
+            agent_id,
+            agent_name,
+            conversation_id: self.conversation_id.clone(),
+            line,
+            invocation,
+        }))
+    }
+
+    fn reject_command(&mut self, line: &str, reason: String) {
+        self.command_result = Some(ConsoleCommandResult {
+            request_id: uuid::Uuid::now_v7().to_string(),
+            line: line.to_owned(),
+            status: ConsoleCommandStatus::Failed,
+            title: "Command unavailable".to_owned(),
+            lines: vec![reason],
+        });
+    }
+
+    pub fn fail_pending_command(&mut self, reason: impl Into<String>) {
+        if let Some(result) = &mut self.command_result {
+            if result.status == ConsoleCommandStatus::Running {
+                result.status = ConsoleCommandStatus::Failed;
+                "Command failed".clone_into(&mut result.title);
+                result.lines = vec![reason.into()];
+            }
+        }
     }
 
     fn prepare_edit(&mut self) {
@@ -510,25 +637,71 @@ impl InteractionState {
             ControllerEvent::HistoryLoaded {
                 agent_id,
                 conversation_id,
-                mut turns,
+                turns,
             } => {
-                if self.agent_id.as_deref() != Some(agent_id.as_str()) || self.run.is_some() {
+                if self.agent_id.as_deref() != Some(agent_id.as_str())
+                    || self.run.is_some()
+                    || self.command_result.is_some()
+                {
                     return;
                 }
-                self.conversation_id = conversation_id;
-                self.prompt_history = turns
-                    .iter()
-                    .map(|turn| turn.prompt.clone())
-                    .rev()
-                    .take(MAX_PROMPT_HISTORY)
-                    .collect::<Vec<_>>();
-                self.prompt_history.reverse();
-                self.run = turns.pop();
-                self.transcript = turns;
+                self.replace_conversation(conversation_id, turns);
             }
             ControllerEvent::HistoryFailed { .. } => {}
+            ControllerEvent::CommandCompleted {
+                agent_id,
+                request_id,
+                result,
+                selection,
+            } => {
+                if self.agent_id.as_deref() != Some(agent_id.as_str())
+                    || self
+                        .command_result
+                        .as_ref()
+                        .map(|result| result.request_id.as_str())
+                        != Some(request_id.as_str())
+                {
+                    return;
+                }
+                self.command_result = Some(result);
+                if let Some(selection) = selection {
+                    self.replace_conversation(Some(selection.conversation_id), selection.turns);
+                }
+            }
+            ControllerEvent::CommandFailed {
+                agent_id,
+                request_id,
+                result,
+            } => {
+                if self.agent_id.as_deref() == Some(agent_id.as_str())
+                    && self
+                        .command_result
+                        .as_ref()
+                        .map(|result| result.request_id.as_str())
+                        == Some(request_id.as_str())
+                {
+                    self.command_result = Some(result);
+                }
+            }
             event => self.apply_run_event(event),
         }
+    }
+
+    fn replace_conversation(
+        &mut self,
+        conversation_id: Option<String>,
+        mut turns: Vec<ConsoleRun>,
+    ) {
+        self.conversation_id = conversation_id;
+        self.prompt_history = turns
+            .iter()
+            .map(|turn| turn.prompt.clone())
+            .rev()
+            .take(MAX_PROMPT_HISTORY)
+            .collect::<Vec<_>>();
+        self.prompt_history.reverse();
+        self.run = turns.pop();
+        self.transcript = turns;
     }
 
     fn apply_run_event(&mut self, event: ControllerEvent) {
@@ -589,7 +762,10 @@ impl InteractionState {
                 run.status = ConsoleRunStatus::TimedOut;
                 "run timed out".clone_into(&mut run.detail);
             }
-            ControllerEvent::HistoryLoaded { .. } | ControllerEvent::HistoryFailed { .. } => {}
+            ControllerEvent::HistoryLoaded { .. }
+            | ControllerEvent::HistoryFailed { .. }
+            | ControllerEvent::CommandCompleted { .. }
+            | ControllerEvent::CommandFailed { .. } => {}
         }
     }
 }
@@ -619,6 +795,62 @@ fn replace_bounded_output(output: &mut String, text: &str) {
 fn command_registry() -> &'static CommandRegistry {
     static REGISTRY: OnceLock<CommandRegistry> = OnceLock::new();
     REGISTRY.get_or_init(CommandRegistry::mvp)
+}
+
+fn validate_console_command(command: &InteractionCommand) -> Result<(), String> {
+    match command {
+        InteractionCommand::Help {
+            command: Some(command),
+        } if !SUPPORTED_CONSOLE_COMMANDS.contains(command) => Err(format!(
+            "/{} is not supported in the Console",
+            command.as_str()
+        )),
+        InteractionCommand::Agents | InteractionCommand::Agent { .. } => Err(
+            "agent selection commands are unavailable in the Console; choose an active agent in F2"
+                .to_owned(),
+        ),
+        InteractionCommand::Runs | InteractionCommand::Inspect { .. } => Err(
+            "run inspection commands are unavailable in the Console; use F3 Runs and F5 Timeline"
+                .to_owned(),
+        ),
+        InteractionCommand::Cancel { .. } => Err(
+            "/cancel is unavailable because the composer is closed during an active turn; press x for exact current-turn cancellation"
+                .to_owned(),
+        ),
+        InteractionCommand::Approve { .. } | InteractionCommand::Deny { .. } => Err(
+            "approval commands are unavailable in the Console prompt path; use an authorized approval surface"
+                .to_owned(),
+        ),
+        InteractionCommand::Model { .. } => Err(
+            "model selection is unavailable in the Console; configure the selected agent outside this surface"
+                .to_owned(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn console_parse_error(line: &str, shared_error: &str) -> String {
+    let name = line
+        .trim_start_matches('/')
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "group" | "groups" => {
+            "group orchestration is unavailable in the Console; select one active agent in F2"
+                .to_owned()
+        }
+        "provider" => {
+            "provider selection is unavailable in the Console; configure the runtime and restart"
+                .to_owned()
+        }
+        "autonomy" => {
+            "autonomy changes are unavailable in the Console; configure the agent outside this surface"
+                .to_owned()
+        }
+        _ => shared_error.to_owned(),
+    }
 }
 
 fn slash_candidate(spec: &polkagent_interaction::CommandSpec) -> SlashCommandCandidate {
@@ -671,6 +903,17 @@ pub enum ControllerEvent {
         agent_id: String,
         reason: String,
     },
+    CommandCompleted {
+        agent_id: String,
+        request_id: String,
+        result: ConsoleCommandResult,
+        selection: Option<ConsoleConversationSelection>,
+    },
+    CommandFailed {
+        agent_id: String,
+        request_id: String,
+        result: ConsoleCommandResult,
+    },
     Started {
         conversation_id: String,
         turn_id: String,
@@ -698,7 +941,12 @@ impl ControllerEvent {
     fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Completed { .. } | Self::Failed(_) | Self::Cancelled(_) | Self::TimedOut
+            Self::Completed { .. }
+                | Self::Failed(_)
+                | Self::Cancelled(_)
+                | Self::TimedOut
+                | Self::CommandCompleted { .. }
+                | Self::CommandFailed { .. }
         )
     }
 }
@@ -743,25 +991,28 @@ impl RunController {
         self.active = true;
 
         task_runtime.spawn(async move {
-            let typed_agent_id = match request.agent_id.parse::<AgentId>() {
+            let PromptRequest {
+                agent_id,
+                agent_name,
+                conversation_id,
+                prompt,
+            } = request;
+            let typed_agent_id = match parse_selected_agent_id(&agent_id) {
                 Ok(agent_id) => agent_id,
-                Err(error) => {
-                    let _ = event_tx.send(ControllerEvent::Failed(format!(
-                        "invalid selected agent ID '{}': {error}",
-                        request.agent_id
-                    )));
+                Err(reason) => {
+                    let _ = event_tx.send(ControllerEvent::Failed(reason));
                     return;
                 }
             };
             let service = Arc::clone(polkagent_runtime.interactions());
-            let interaction = match find_or_create_console_interaction(
+            let interaction = match resolve_prompt_interaction(
                 service.as_ref(),
                 &polkagent_runtime,
                 typed_agent_id,
-                &request.agent_name,
+                &agent_name,
+                conversation_id.as_deref(),
             )
-            .await
-            {
+            .await {
                 Ok(interaction) => interaction,
                 Err(error) => {
                     let _ = event_tx.send(ControllerEvent::Failed(error.to_string()));
@@ -780,7 +1031,7 @@ impl RunController {
                 turn_id: Some(turn_id),
                 conversation_id: interaction.conversation_id,
                 content: vec![InteractionContent::Text {
-                    text: request.prompt,
+                    text: prompt,
                 }],
                 config_overrides: InteractionOverrides::default(),
                 client_context,
@@ -812,14 +1063,13 @@ impl RunController {
                 return;
             };
             let mut events = started.events;
-            let mut notes = runtime_notes(polkagent_runtime.readiness());
-            notes.push("Conversation and turn history are durable.".to_owned());
+            let notes = runtime_notes(polkagent_runtime.readiness());
 
             let _ = event_tx.send(ControllerEvent::Started {
                 conversation_id: interaction.conversation_id.to_string(),
                 turn_id: turn_id.to_string(),
                 run_id: run_id.to_string(),
-                agent_name: request.agent_name,
+                agent_name,
                 notes,
             });
 
@@ -885,6 +1135,124 @@ impl RunController {
         Ok(())
     }
 
+    pub fn execute_command(&mut self, request: ConsoleCommandRequest) -> Result<(), &'static str> {
+        if self.active {
+            return Err("a Console action is already active");
+        }
+        let Some(task_runtime) = self.task_runtime.clone() else {
+            return Err("interactive command runtime is unavailable");
+        };
+        self.active = true;
+        self.cancel = None;
+        let polkagent_runtime = self.polkagent_runtime.clone();
+        let event_tx = self.event_tx.clone();
+        task_runtime.spawn(async move {
+            let ConsoleCommandRequest {
+                request_id,
+                agent_id,
+                agent_name,
+                conversation_id,
+                line,
+                invocation,
+            } = request;
+            let typed_agent_id = match agent_id.parse::<AgentId>() {
+                Ok(agent_id) => agent_id,
+                Err(error) => {
+                    send_command_failure(
+                        &event_tx,
+                        agent_id,
+                        request_id,
+                        line,
+                        format!("invalid selected agent ID: {error}"),
+                    );
+                    return;
+                }
+            };
+            let conversation_id = match conversation_id
+                .map(|id| {
+                    id.parse::<ConversationId>().map_err(|error| {
+                        format!("invalid selected Console conversation ID '{id}': {error}")
+                    })
+                })
+                .transpose()
+            {
+                Ok(conversation_id) => conversation_id,
+                Err(error) => {
+                    send_command_failure(&event_tx, agent_id, request_id, line, error);
+                    return;
+                }
+            };
+            let service: Arc<dyn InteractionService> = polkagent_runtime.interactions().clone();
+            let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(TuiCommandRuntime {
+                service: Arc::clone(&service),
+                agent_id: typed_agent_id,
+            });
+            let executor = match ServiceCommandExecutor::new(
+                command_registry().clone(),
+                service,
+                command_runtime,
+            ) {
+                Ok(executor) => executor,
+                Err(error) => {
+                    send_command_failure(&event_tx, agent_id, request_id, line, error.to_string());
+                    return;
+                }
+            };
+            let client_context = match tui_client_context(&polkagent_runtime) {
+                Ok(context) => context,
+                Err(error) => {
+                    send_command_failure(&event_tx, agent_id, request_id, line, error.to_string());
+                    return;
+                }
+            };
+            let output = executor
+                .execute(CommandRequest {
+                    invocation,
+                    context: CommandContext {
+                        conversation_id,
+                        has_active_turn: false,
+                        pending_approval_count: 0,
+                        can_mutate: true,
+                    },
+                    client_context,
+                })
+                .await;
+            let outcome = match output {
+                Ok(output) => {
+                    project_console_command_output(
+                        &polkagent_runtime,
+                        typed_agent_id,
+                        &agent_name,
+                        output,
+                    )
+                    .await
+                }
+                Err(error) => Err(error.to_string()),
+            };
+            match outcome {
+                Ok(outcome) => {
+                    let result = ConsoleCommandResult {
+                        request_id: request_id.clone(),
+                        line,
+                        status: ConsoleCommandStatus::Completed,
+                        title: outcome.title,
+                        lines: outcome.lines,
+                    };
+                    let _ = event_tx.send(ControllerEvent::CommandCompleted {
+                        agent_id,
+                        request_id,
+                        result,
+                        selection: outcome.selection,
+                    });
+                }
+                Err(error) => {
+                    send_command_failure(&event_tx, agent_id, request_id, line, error);
+                }
+            }
+        });
+        Ok(())
+    }
+
     /// Load the durable TUI interaction for a selected agent without blocking
     /// input or rendering. A stale result is ignored by the reducer.
     pub fn load_history(&self, agent_id: String) -> Result<(), &'static str> {
@@ -929,6 +1297,11 @@ impl RunController {
             .is_some_and(|cancel| cancel.send(()).is_ok())
     }
 
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.active
+    }
+
     pub fn try_recv(&mut self) -> Option<ControllerEvent> {
         match self.event_rx.try_recv() {
             Ok(event) => {
@@ -947,12 +1320,231 @@ fn tui_interaction_title(agent_name: &str) -> String {
     format!("{TUI_INTERACTION_TITLE_PREFIX} · {agent_name}")
 }
 
+fn parse_selected_agent_id(agent_id: &str) -> Result<AgentId, String> {
+    agent_id
+        .parse::<AgentId>()
+        .map_err(|error| format!("invalid selected agent ID '{agent_id}': {error}"))
+}
+
 fn tui_client_context(
     runtime: &PolkagentRuntime,
 ) -> Result<ClientContext, polkagent_interaction::InteractionError> {
     let mut context = ClientContext::new(runtime.workdir().to_path_buf())?;
     context.client_name = Some("tui".to_owned());
     Ok(context)
+}
+
+fn send_command_failure(
+    event_tx: &mpsc::Sender<ControllerEvent>,
+    agent_id: String,
+    request_id: String,
+    line: String,
+    error: String,
+) {
+    let result = ConsoleCommandResult {
+        request_id: request_id.clone(),
+        line,
+        status: ConsoleCommandStatus::Failed,
+        title: "Command failed".to_owned(),
+        lines: vec![error],
+    };
+    let _ = event_tx.send(ControllerEvent::CommandFailed {
+        agent_id,
+        request_id,
+        result,
+    });
+}
+
+struct ProjectedConsoleCommand {
+    title: String,
+    lines: Vec<String>,
+    selection: Option<ConsoleConversationSelection>,
+}
+
+async fn project_console_command_output(
+    runtime: &PolkagentRuntime,
+    agent_id: AgentId,
+    agent_name: &str,
+    output: CommandOutput,
+) -> Result<ProjectedConsoleCommand, String> {
+    match output {
+        CommandOutput::Help { commands } => {
+            let mut commands = commands
+                .into_iter()
+                .filter(|spec| SUPPORTED_CONSOLE_COMMANDS.contains(&spec.command))
+                .collect::<Vec<_>>();
+            commands.sort_by_key(|spec| spec.command);
+            let mut lines = commands
+                .into_iter()
+                .map(|spec| {
+                    let hint = spec
+                        .input_hint
+                        .as_deref()
+                        .map_or(String::new(), |hint| format!(" {hint}"));
+                    format!("/{}{hint} — {}", spec.name, spec.description)
+                })
+                .collect::<Vec<_>>();
+            lines.push("x — cancel the exact current turn (not a slash command)".to_owned());
+            lines.push(
+                "Agent/model/provider/autonomy, approval, group, and run-inspection commands are unavailable in Console."
+                    .to_owned(),
+            );
+            Ok(ProjectedConsoleCommand {
+                title: "Supported Console commands".to_owned(),
+                lines,
+                selection: None,
+            })
+        }
+        CommandOutput::Status {
+            interaction,
+            active_turns,
+            pending_approvals: _,
+        } => Ok(ProjectedConsoleCommand {
+            title: "Durable Console status".to_owned(),
+            lines: vec![
+                format!("conversation: {}", interaction.conversation_id),
+                format!(
+                    "target: {}",
+                    display_interaction_target(&interaction.config.target)
+                ),
+                format!("state: {:?}", interaction.state),
+                format!("turns: {}", interaction.turn_count),
+                format!("active turns: {}", active_turns.len()),
+                "pending approvals: visibility unavailable in Console".to_owned(),
+                format!(
+                    "model/provider: {}/{} (read-only; selection unsupported)",
+                    interaction
+                        .config
+                        .model
+                        .as_deref()
+                        .unwrap_or("runtime default"),
+                    interaction
+                        .config
+                        .provider
+                        .as_deref()
+                        .unwrap_or("runtime default")
+                ),
+            ],
+            selection: None,
+        }),
+        CommandOutput::InteractionCreated { interaction } => {
+            validate_console_target(&interaction, agent_id).map_err(|error| error.to_string())?;
+            let (_, turns) = load_interaction_history(runtime, &interaction).await?;
+            Ok(ProjectedConsoleCommand {
+                title: "Created durable interaction".to_owned(),
+                lines: vec![
+                    format!("conversation: {}", interaction.conversation_id),
+                    format!("agent: {agent_name}"),
+                    format!(
+                        "title: {}",
+                        interaction.title.as_deref().unwrap_or("untitled")
+                    ),
+                ],
+                selection: Some(ConsoleConversationSelection {
+                    conversation_id: interaction.conversation_id.to_string(),
+                    turns,
+                }),
+            })
+        }
+        CommandOutput::InteractionResumed { interaction } => {
+            validate_console_target(&interaction, agent_id).map_err(|error| error.to_string())?;
+            let (_, turns) = load_interaction_history(runtime, &interaction).await?;
+            Ok(ProjectedConsoleCommand {
+                title: "Resumed durable interaction".to_owned(),
+                lines: vec![
+                    format!("conversation: {}", interaction.conversation_id),
+                    format!("agent: {agent_name}"),
+                    format!("restored turns: {}", turns.len()),
+                ],
+                selection: Some(ConsoleConversationSelection {
+                    conversation_id: interaction.conversation_id.to_string(),
+                    turns,
+                }),
+            })
+        }
+        CommandOutput::Agents { .. }
+        | CommandOutput::TargetChanged { .. }
+        | CommandOutput::Runs { .. }
+        | CommandOutput::RunInspected { .. }
+        | CommandOutput::CancellationRequested { .. }
+        | CommandOutput::ApprovalResolved { .. }
+        | CommandOutput::Model { .. } => {
+            Err("shared command returned an output unsupported by Console".to_owned())
+        }
+    }
+}
+
+fn display_interaction_target(target: &InteractionTarget) -> String {
+    match target {
+        InteractionTarget::Agent(id) => format!("agent {id}"),
+        InteractionTarget::Group(id) => format!("group {id}"),
+        InteractionTarget::Auto => "automatic".to_owned(),
+    }
+}
+
+struct TuiCommandRuntime {
+    service: Arc<dyn InteractionService>,
+    agent_id: AgentId,
+}
+
+#[async_trait]
+impl InteractionCommandRuntime for TuiCommandRuntime {
+    async fn default_interaction_config(&self) -> Result<InteractionConfig, InteractionError> {
+        Ok(InteractionConfig::new(InteractionTarget::Agent(
+            self.agent_id,
+        )))
+    }
+
+    async fn list_agents(&self) -> Result<Vec<AgentTargetView>, InteractionError> {
+        Err(tui_command_unsupported("agent discovery"))
+    }
+
+    async fn resolve_agent(&self, _selector: &str) -> Result<AgentTargetView, InteractionError> {
+        Err(tui_command_unsupported("agent selection"))
+    }
+
+    async fn list_runs(
+        &self,
+        _conversation_id: ConversationId,
+    ) -> Result<Vec<RunSummaryView>, InteractionError> {
+        Err(tui_command_unsupported("run listing"))
+    }
+
+    async fn inspect_run(&self, _run_id: RunId) -> Result<RunDetailView, InteractionError> {
+        Err(tui_command_unsupported("run inspection"))
+    }
+
+    async fn cancel_run(&self, _run_id: RunId) -> Result<(), InteractionError> {
+        Err(tui_command_unsupported("run-scoped cancellation"))
+    }
+
+    async fn active_turns(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<Vec<TurnHandle>, InteractionError> {
+        Ok(self
+            .service
+            .list_turns(conversation_id)
+            .await?
+            .into_iter()
+            .filter(|turn| !turn.state.is_terminal())
+            .map(|turn| turn.handle)
+            .collect())
+    }
+
+    async fn pending_approvals(
+        &self,
+        _conversation_id: ConversationId,
+    ) -> Result<Vec<ApprovalId>, InteractionError> {
+        Ok(Vec::new())
+    }
+}
+
+fn tui_command_unsupported(capability: &str) -> InteractionError {
+    InteractionError::new(
+        InteractionErrorCode::Unsupported,
+        format!("Console does not support {capability}"),
+    )
 }
 
 async fn find_console_interaction(
@@ -1006,6 +1598,50 @@ async fn find_or_create_console_interaction(
         .await
 }
 
+async fn resolve_prompt_interaction(
+    service: &impl InteractionService,
+    runtime: &PolkagentRuntime,
+    agent_id: AgentId,
+    agent_name: &str,
+    conversation_id: Option<&str>,
+) -> Result<InteractionSummary, InteractionError> {
+    let Some(conversation_id) = conversation_id else {
+        return find_or_create_console_interaction(service, runtime, agent_id, agent_name).await;
+    };
+    let conversation_id = conversation_id.parse::<ConversationId>().map_err(|error| {
+        InteractionError::invalid_request(format!(
+            "invalid selected Console conversation ID '{conversation_id}': {error}"
+        ))
+    })?;
+    let interaction = service.load_interaction(conversation_id).await?;
+    validate_console_target(&interaction, agent_id)?;
+    Ok(interaction)
+}
+
+fn validate_console_target(
+    interaction: &InteractionSummary,
+    agent_id: AgentId,
+) -> Result<(), InteractionError> {
+    match interaction.config.target {
+        InteractionTarget::Agent(target) if target == agent_id => Ok(()),
+        InteractionTarget::Agent(target) => Err(InteractionError::new(
+            InteractionErrorCode::Conflict,
+            format!(
+                "conversation {} targets agent {target}, not selected agent {agent_id}",
+                interaction.conversation_id
+            ),
+        )),
+        InteractionTarget::Group(_) => Err(InteractionError::new(
+            InteractionErrorCode::Unsupported,
+            "Console does not support group interactions",
+        )),
+        InteractionTarget::Auto => Err(InteractionError::new(
+            InteractionErrorCode::Unsupported,
+            "Console requires a durable single-agent interaction target",
+        )),
+    }
+}
+
 async fn load_console_history(
     runtime: &PolkagentRuntime,
     agent_id: AgentId,
@@ -1017,40 +1653,49 @@ async fn load_console_history(
     else {
         return Ok((None, Vec::new()));
     };
-    let summaries = service
-        .list_turns(interaction.conversation_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let conversation = ConversationStore::get(runtime.pool(), interaction.conversation_id)
-        .await
-        .map_err(|error| format!("load TUI interaction transcript: {error}"))?;
-    let message_limit = usize::try_from(conversation.message_count)
-        .map_err(|_| "TUI transcript message count exceeds this platform".to_owned())?;
-    // Temporary read-only projection until InteractionService exposes message
-    // bodies. Surfaces must never mutate ConversationStore behind the service.
-    let messages = if message_limit == 0 {
-        Vec::new()
-    } else {
-        ConversationStore::get_messages(
-            runtime.pool(),
-            interaction.conversation_id,
-            message_limit,
-            0,
-        )
-        .await
-        .map_err(|error| format!("load TUI interaction messages: {error}"))?
-    };
-    let mut transcript = pair_transcript_messages(messages)?;
+    load_interaction_history(runtime, &interaction).await
+}
 
-    let mut turns = Vec::with_capacity(summaries.len());
-    for summary in summaries {
-        let transcript_turn = transcript
-            .pop_front()
-            .ok_or_else(|| "durable TUI turn is missing its user transcript".to_owned())?;
+async fn load_interaction_history(
+    runtime: &PolkagentRuntime,
+    interaction: &InteractionSummary,
+) -> Result<(Option<ConversationId>, Vec<ConsoleRun>), String> {
+    let service = runtime.interactions();
+    let capacity = usize::try_from(interaction.turn_count)
+        .map_err(|_| "TUI transcript turn count exceeds this platform".to_owned())?;
+    let mut transcript = Vec::with_capacity(capacity);
+    let mut offset = 0_u32;
+    while offset < interaction.turn_count {
+        let limit = interaction.turn_count.saturating_sub(offset).min(1_000);
+        let page = service
+            .load_transcript(TranscriptRequest {
+                conversation_id: interaction.conversation_id,
+                limit,
+                offset,
+            })
+            .await
+            .map_err(|error| format!("load TUI interaction transcript: {error}"))?;
+        if page.is_empty() {
+            return Err("durable TUI transcript ended before its recorded turn count".to_owned());
+        }
+        let page_len = u32::try_from(page.len())
+            .map_err(|_| "TUI transcript page exceeds supported size".to_owned())?;
+        transcript.extend(page);
+        offset = offset
+            .checked_add(page_len)
+            .ok_or_else(|| "TUI transcript pagination overflowed".to_owned())?;
+    }
+
+    let mut turns = Vec::with_capacity(transcript.len());
+    for transcript_turn in transcript {
+        let summary = transcript_turn.turn;
         let (mut output, output_tokens) = if summary.state == TurnState::Completed {
-            transcript_turn.assistant.ok_or_else(|| {
-                "completed durable TUI turn is missing its assistant transcript".to_owned()
-            })?
+            (
+                transcript_turn.assistant_text.ok_or_else(|| {
+                    "completed durable TUI turn is missing its assistant transcript".to_owned()
+                })?,
+                transcript_turn.assistant_token_count,
+            )
         } else {
             (String::new(), None)
         };
@@ -1060,57 +1705,15 @@ async fn load_console_history(
             conversation_id: Some(interaction.conversation_id.to_string()),
             turn_id: Some(summary.handle.turn_id.to_string()),
             run_id: summary.handle.run_ids.first().map(ToString::to_string),
-            prompt: transcript_turn.prompt,
+            prompt: transcript_turn.user_text,
             output,
             detail: format!("restored durable {} turn", status.label()),
             status,
-            input_tokens: u64::from(transcript_turn.input_tokens.unwrap_or(0)),
+            input_tokens: u64::from(transcript_turn.user_token_count.unwrap_or(0)),
             output_tokens: u64::from(output_tokens.unwrap_or(0)),
         });
     }
     Ok((Some(interaction.conversation_id), turns))
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct TranscriptTurn {
-    prompt: String,
-    input_tokens: Option<u32>,
-    assistant: Option<(String, Option<u32>)>,
-}
-
-fn pair_transcript_messages(messages: Vec<Message>) -> Result<VecDeque<TranscriptTurn>, String> {
-    let mut turns = VecDeque::new();
-    for message in messages {
-        let MessageContent::Text { text } = message.content else {
-            if matches!(message.role, MessageRole::User | MessageRole::Assistant) {
-                return Err(
-                    "TUI interaction transcript contains unsupported rich content".to_owned(),
-                );
-            }
-            continue;
-        };
-        match message.role {
-            MessageRole::User => turns.push_back(TranscriptTurn {
-                prompt: text,
-                input_tokens: message.token_count,
-                assistant: None,
-            }),
-            MessageRole::Assistant => {
-                let turn = turns.back_mut().ok_or_else(|| {
-                    "TUI interaction transcript has an assistant before any user message".to_owned()
-                })?;
-                if turn.assistant.is_some() {
-                    return Err(
-                        "TUI interaction transcript has multiple assistants for one turn"
-                            .to_owned(),
-                    );
-                }
-                turn.assistant = Some((text, message.token_count));
-            }
-            MessageRole::System | MessageRole::Tool => {}
-        }
-    }
-    Ok(turns)
 }
 
 fn console_status(state: TurnState) -> ConsoleRunStatus {
@@ -1240,43 +1843,6 @@ mod tests {
         for c in prompt.chars() {
             state.push_char(c);
         }
-    }
-
-    fn transcript_message(
-        conversation_id: ConversationId,
-        role: MessageRole,
-        text: &str,
-    ) -> Message {
-        Message {
-            id: uuid::Uuid::now_v7(),
-            conversation_id,
-            role,
-            content: MessageContent::Text {
-                text: text.to_owned(),
-            },
-            created_at: chrono::Utc::now(),
-            token_count: None,
-        }
-    }
-
-    #[test]
-    fn transcript_pairing_does_not_shift_completed_output_after_failed_turn() {
-        let conversation_id = ConversationId::new();
-        let paired = pair_transcript_messages(vec![
-            transcript_message(conversation_id, MessageRole::User, "fails"),
-            transcript_message(conversation_id, MessageRole::User, "succeeds"),
-            transcript_message(conversation_id, MessageRole::Assistant, "second answer"),
-        ])
-        .expect("pair durable transcript");
-
-        assert_eq!(paired.len(), 2);
-        assert_eq!(paired[0].prompt, "fails");
-        assert!(paired[0].assistant.is_none());
-        assert_eq!(paired[1].prompt, "succeeds");
-        assert_eq!(
-            paired[1].assistant.as_ref().map(|(text, _)| text.as_str()),
-            Some("second answer")
-        );
     }
 
     #[test]
@@ -1533,7 +2099,7 @@ mod tests {
     #[test]
     fn slash_completion_navigates_accepts_and_dismisses() {
         let mut state = InteractionState::default();
-        type_prompt(&mut state, "/a");
+        type_prompt(&mut state, "/");
 
         let menu = state.slash_command_menu().expect("slash completions");
         assert_eq!(
@@ -1541,19 +2107,19 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["agents", "agent", "approve"]
+            vec!["help", "status", "new", "resume"]
         );
         assert_eq!(menu.selected, 0);
 
         state.move_down();
         assert_eq!(state.slash_command_menu().unwrap().selected, 1);
         assert!(state.accept_slash_completion());
-        assert_eq!(state.prompt_buffer, "/agent ");
+        assert_eq!(state.prompt_buffer, "/status");
         assert_eq!(state.cursor(), state.prompt_buffer.len());
 
         assert!(state.dismiss_slash_completion());
         assert!(state.slash_command_menu().is_none());
-        state.push_char('A');
+        state.backspace();
         assert!(state.slash_command_menu().is_some());
     }
 
@@ -1565,9 +2131,94 @@ mod tests {
 
         assert_eq!(
             state.submit(),
-            Err("slash commands are catalog-only in the Console; command execution is not wired yet")
+            Err("slash commands must use the Console command path")
         );
         assert_eq!(state.prompt_buffer, "/runs");
+        assert!(state.run.is_none());
+
+        assert_eq!(
+            state.submit_command(),
+            Ok(ConsoleCommandSubmission::Rejected)
+        );
+        let result = state.command_result.as_ref().expect("structured refusal");
+        assert_eq!(result.status, ConsoleCommandStatus::Failed);
+        assert!(result.lines[0].contains("run inspection commands"));
+        assert!(state.run.is_none());
+        assert!(state.prompt_buffer.is_empty());
+    }
+
+    #[test]
+    fn supported_slash_submission_uses_typed_command_without_creating_a_run() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        state.conversation_id = Some(ConversationId::new().to_string());
+        type_prompt(&mut state, "/status");
+
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("typed Console command")
+        else {
+            panic!("status command was rejected")
+        };
+        assert!(matches!(
+            request.invocation.command,
+            InteractionCommand::Status
+        ));
+        assert_eq!(request.line, "/status");
+        assert!(state.run.is_none());
+        assert_eq!(
+            state.command_result.as_ref().map(|result| result.status),
+            Some(ConsoleCommandStatus::Running)
+        );
+    }
+
+    #[test]
+    fn command_reducer_switches_conversation_and_ignores_stale_results() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        type_prompt(&mut state, "/new Fresh");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("new command")
+        else {
+            panic!("new command was rejected")
+        };
+        let selected_id = ConversationId::new().to_string();
+        state.apply(ControllerEvent::CommandCompleted {
+            agent_id: "agent-id".to_owned(),
+            request_id: "stale-request".to_owned(),
+            result: ConsoleCommandResult {
+                request_id: "stale-request".to_owned(),
+                line: "/new Stale".to_owned(),
+                status: ConsoleCommandStatus::Completed,
+                title: "stale".to_owned(),
+                lines: Vec::new(),
+            },
+            selection: Some(ConsoleConversationSelection {
+                conversation_id: "stale-conversation".to_owned(),
+                turns: Vec::new(),
+            }),
+        });
+        assert_ne!(state.conversation_id.as_deref(), Some("stale-conversation"));
+
+        state.apply(ControllerEvent::CommandCompleted {
+            agent_id: "agent-id".to_owned(),
+            request_id: request.request_id.clone(),
+            result: ConsoleCommandResult {
+                request_id: request.request_id,
+                line: request.line,
+                status: ConsoleCommandStatus::Completed,
+                title: "Created durable interaction".to_owned(),
+                lines: vec![format!("conversation: {selected_id}")],
+            },
+            selection: Some(ConsoleConversationSelection {
+                conversation_id: selected_id.clone(),
+                turns: Vec::new(),
+            }),
+        });
+        assert_eq!(state.conversation_id.as_deref(), Some(selected_id.as_str()));
+        assert_eq!(
+            state.command_result.as_ref().map(|result| result.status),
+            Some(ConsoleCommandStatus::Completed)
+        );
         assert!(state.run.is_none());
     }
 
@@ -1657,6 +2308,149 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn console_commands_create_prompt_resume_after_restart_and_report_status() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("tui-command-runtime.db");
+        let config_path = temp.path().join("selected.toml");
+        std::fs::write(&config_path, "").expect("write config");
+        let seed_pool = SqlitePool::open(&database_path).expect("open database");
+        migrations::migrate(&seed_pool.writer()).expect("migrate database");
+        let store = SqliteRunStore::new(seed_pool.clone());
+        let timestamp = "2026-01-01T00:00:00Z";
+        let spec = serde_json::json!({
+            "name": "command-agent",
+            "description": null,
+            "model": "fake/default-model",
+            "tools": [],
+            "system_prompt": null,
+            "autonomy_level": "supervised",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        });
+        let agent = store
+            .create_agent("command-agent", None, &spec.to_string())
+            .expect("create active agent");
+        let mut options =
+            tui_runtime_options(&seed_pool, Some(&config_path)).expect("TUI runtime options");
+        options.workdir = temp.path().to_path_buf();
+        options.disable_harness = true;
+        options.discover_environment_providers = false;
+        drop(store);
+        drop(seed_pool);
+
+        let restart_options = options.clone();
+        let runtime = RuntimeFactory::build(options).await.expect("build runtime");
+        let mut state = InteractionState::default();
+        state.select_agent(agent.id.clone(), agent.name.clone());
+        let mut controller = RunController::new(runtime.clone());
+
+        type_prompt(&mut state, "/new 'Fresh Console session'");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("new command")
+        else {
+            panic!("new command rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute new command");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+        let conversation_id = state
+            .conversation_id
+            .clone()
+            .expect("new command selects conversation");
+        assert_eq!(
+            state
+                .command_result
+                .as_ref()
+                .map(|result| result.title.as_str()),
+            Some("Created durable interaction")
+        );
+
+        type_prompt(&mut state, "prompt in explicitly selected session");
+        let prompt = state.submit().expect("prompt after new command");
+        assert_eq!(
+            prompt.conversation_id.as_deref(),
+            Some(conversation_id.as_str())
+        );
+        controller.start(prompt).expect("start selected prompt");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+        assert_eq!(
+            state.run.as_ref().map(|run| run.output.as_str()),
+            Some("I am a fake assistant")
+        );
+        drop(controller);
+        drop(runtime);
+
+        let restarted = RuntimeFactory::build(restart_options)
+            .await
+            .expect("restart runtime");
+        let mut controller = RunController::new(restarted.clone());
+        let mut resumed = InteractionState::default();
+        resumed.select_agent(agent.id.clone(), agent.name.clone());
+        type_prompt(&mut resumed, &format!("/resume {conversation_id}"));
+        let ConsoleCommandSubmission::Execute(request) =
+            resumed.submit_command().expect("resume command")
+        else {
+            panic!("resume command rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute resume command");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            resumed.apply(event);
+        }
+        assert_eq!(
+            resumed.conversation_id.as_deref(),
+            Some(conversation_id.as_str())
+        );
+        assert_eq!(
+            resumed.run.as_ref().map(|run| run.prompt.as_str()),
+            Some("prompt in explicitly selected session")
+        );
+
+        for command in ["/status", "/help"] {
+            type_prompt(&mut resumed, command);
+            let ConsoleCommandSubmission::Execute(request) =
+                resumed.submit_command().expect("query command")
+            else {
+                panic!("query command rejected")
+            };
+            controller
+                .execute_command(request)
+                .expect("execute query command");
+            let (_, events) = wait_for_controller_terminal(&mut controller).await;
+            for event in events {
+                resumed.apply(event);
+            }
+            assert_eq!(
+                resumed.command_result.as_ref().map(|result| result.status),
+                Some(ConsoleCommandStatus::Completed)
+            );
+        }
+        let help = resumed.command_result.as_ref().expect("help result");
+        assert!(help.lines.iter().any(|line| line.starts_with("/new")));
+        assert!(help.lines.iter().any(|line| line.starts_with("/resume")));
+        assert!(help.lines.iter().any(|line| line.starts_with("x —")));
+        let turns = restarted
+            .interactions()
+            .list_turns(conversation_id.parse().expect("conversation ID"))
+            .await
+            .expect("list durable turns");
+        assert_eq!(
+            turns.len(),
+            1,
+            "slash commands must never become model turns"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     #[allow(clippy::too_many_lines)]
     async fn controller_reuses_durable_interaction_across_followup_restart_and_cancel() {
         let temp = tempfile::TempDir::new().expect("tempdir");
@@ -1727,6 +2521,7 @@ mod tests {
                 .start(PromptRequest {
                     agent_id: agent.id.clone(),
                     agent_name: agent.name.clone(),
+                    conversation_id: None,
                     prompt: prompt.to_owned(),
                 })
                 .expect("start sequential prompt");
@@ -1803,6 +2598,7 @@ mod tests {
             .start(PromptRequest {
                 agent_id: agent.id.clone(),
                 agent_name: agent.name.clone(),
+                conversation_id: None,
                 prompt: "follow up after restart".to_owned(),
             })
             .expect("start follow-up prompt");
@@ -1818,6 +2614,7 @@ mod tests {
             .start(PromptRequest {
                 agent_id: agent.id.clone(),
                 agent_name: agent.name.clone(),
+                conversation_id: None,
                 prompt: "cancel this durable turn".to_owned(),
             })
             .expect("start cancellable prompt");

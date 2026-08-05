@@ -1352,7 +1352,7 @@ fn test_console_renders_registry_slash_completions_and_truthful_scope() {
     let theme = Theme::dark();
     let mut interaction = InteractionState::default();
     interaction.select_agent("agent-id", "Treasury Agent");
-    for character in "/a".chars() {
+    for character in "/".chars() {
         interaction.push_char(character);
     }
     let state = TuiState {
@@ -1366,11 +1366,53 @@ fn test_console_renders_registry_slash_completions_and_truthful_scope() {
 
     let text = buffer_text(&terminal);
     assert!(text.contains("SLASH HELP"), "{text}");
-    assert!(text.contains("/agents"), "{text}");
-    assert!(text.contains("/agent <name-or-id>"), "{text}");
-    assert!(text.contains("/approve <approval-id>"), "{text}");
-    assert!(text.contains("List configured agents"), "{text}");
-    assert!(text.contains("execution is not wired"), "{text}");
+    assert!(text.contains("/help [command]"), "{text}");
+    assert!(text.contains("/status"), "{text}");
+    assert!(text.contains("/new [title]"), "{text}");
+    assert!(text.contains("/resume <conversation-id>"), "{text}");
+    assert!(!text.contains("/agent <name-or-id>"), "{text}");
+    assert!(text.contains("Executable Console commands"), "{text}");
+    assert!(text.contains("x cancels the active turn"), "{text}");
+}
+
+#[test]
+fn test_console_renders_structured_command_failure_over_completed_turn_status() {
+    use polkagent_cli::tui::interaction::{
+        ConsoleCommandResult, ConsoleCommandStatus, ControllerEvent, InteractionState,
+    };
+
+    let backend = TestBackend::new(110, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let theme = Theme::dark();
+    let mut interaction = InteractionState::default();
+    interaction.select_agent("agent-id", "Treasury Agent");
+    interaction.prompt_buffer = "finished prompt".to_owned();
+    interaction.submit().expect("prompt");
+    interaction.apply(ControllerEvent::Completed {
+        text: "finished answer".to_owned(),
+        input_tokens: 1,
+        output_tokens: 2,
+    });
+    interaction.command_result = Some(ConsoleCommandResult {
+        request_id: "request-id".to_owned(),
+        line: "/model unsupported".to_owned(),
+        status: ConsoleCommandStatus::Failed,
+        title: "Command unavailable".to_owned(),
+        lines: vec!["model selection is unavailable in the Console".to_owned()],
+    });
+    let state = TuiState {
+        interaction,
+        ..TuiState::default()
+    };
+
+    terminal
+        .draw(|frame| console::render(frame, frame.area(), &state, InputMode::Normal, &theme))
+        .expect("draw command failure");
+    let text = buffer_text(&terminal);
+    assert!(text.contains("Action"), "{text}");
+    assert!(text.contains("failed"), "{text}");
+    assert!(text.contains("Command unavailable"), "{text}");
+    assert!(text.contains("model selection is unavailable"), "{text}");
 }
 
 #[test]

@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::tui::input::InputMode;
-use crate::tui::interaction::{ConsoleRunStatus, SlashCommandMenu};
+use crate::tui::interaction::{ConsoleCommandStatus, ConsoleRunStatus, SlashCommandMenu};
 use crate::tui::state::TuiState;
 use crate::tui::theme::Theme;
 
@@ -49,19 +49,44 @@ fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme
         .agent_name
         .as_deref()
         .unwrap_or("no active agent");
-    let (status, color) = state
+    let run_status = state.interaction.run.as_ref().map(|run| {
+        let color = match run.status {
+            ConsoleRunStatus::Completed => theme.success,
+            ConsoleRunStatus::Failed | ConsoleRunStatus::TimedOut => theme.danger,
+            ConsoleRunStatus::Cancelled => theme.warning,
+            _ => theme.rose_bright,
+        };
+        (run.status.label(), color)
+    });
+    let command_status = state.interaction.command_result.as_ref().map(|command| {
+        let color = match command.status {
+            ConsoleCommandStatus::Running => theme.rose_bright,
+            ConsoleCommandStatus::Completed => theme.success,
+            ConsoleCommandStatus::Failed => theme.danger,
+        };
+        (command.status.label(), color)
+    });
+    let active_command = state
+        .interaction
+        .command_result
+        .as_ref()
+        .filter(|command| command.status == ConsoleCommandStatus::Running)
+        .and(command_status);
+    let active_run = state
         .interaction
         .run
         .as_ref()
-        .map_or(("idle", theme.text_dim), |run| {
-            let color = match run.status {
-                ConsoleRunStatus::Completed => theme.success,
-                ConsoleRunStatus::Failed | ConsoleRunStatus::TimedOut => theme.danger,
-                ConsoleRunStatus::Cancelled => theme.warning,
-                _ => theme.rose_bright,
-            };
-            (run.status.label(), color)
-        });
+        .filter(|run| !run.status.is_terminal())
+        .and(run_status);
+    let selected_status = active_command
+        .map(|status| ("Action", status))
+        .or_else(|| active_run.map(|status| ("Turn", status)))
+        .or_else(|| command_status.map(|status| ("Action", status)))
+        .or_else(|| run_status.map(|status| ("Turn", status)));
+    let (status_kind, status, color) = selected_status.map_or(
+        ("State", "idle", theme.text_dim),
+        |(kind, (status, color))| (kind, status, color),
+    );
     let conversation_id = short_id(state.interaction.conversation_id.as_deref());
     let turn_id = short_id(
         state
@@ -92,7 +117,10 @@ fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(format!(" Agent  {agent}"), Style::default().fg(theme.bone)),
-            Span::styled("   State  ", Style::default().fg(theme.text_dim)),
+            Span::styled(
+                format!("   {status_kind}  "),
+                Style::default().fg(theme.text_dim),
+            ),
             Span::styled(
                 status,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -128,7 +156,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Th
         .iter()
         .chain(state.interaction.run.iter())
         .collect::<Vec<_>>();
-    if turns.is_empty() {
+    if turns.is_empty() && state.interaction.command_result.is_none() {
         lines.push(Line::from(Span::styled(
             " Choose an active agent in F2, then press p to compose a prompt.",
             Style::default().fg(theme.text_dim),
@@ -137,7 +165,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Th
             " You can also press p here to use the first active agent.",
             Style::default().fg(theme.text_dim),
         )));
-    } else {
+    } else if !turns.is_empty() {
         for (index, run) in turns.iter().enumerate() {
             if index > 0 {
                 lines.push(Line::from(""));
@@ -188,6 +216,37 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Th
         }
     }
 
+    if let Some(command) = &state.interaction.command_result {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        let color = match command.status {
+            ConsoleCommandStatus::Running => theme.rose_bright,
+            ConsoleCommandStatus::Completed => theme.success,
+            ConsoleCommandStatus::Failed => theme.danger,
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" COMMAND  ", Style::default().fg(theme.rose_bright)),
+            Span::styled(
+                command.line.clone(),
+                Style::default().fg(theme.text_primary),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} ", command.status.label()),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(command.title.clone(), Style::default().fg(theme.bone)),
+        ]));
+        lines.extend(command.lines.iter().map(|line| {
+            Line::from(Span::styled(
+                format!("   {line}"),
+                Style::default().fg(theme.text_primary),
+            ))
+        }));
+    }
+
     let height = usize::from(inner.height);
     let scroll = u16::try_from(lines.len().saturating_sub(height)).unwrap_or(u16::MAX);
     frame.render_widget(
@@ -218,7 +277,7 @@ fn render_composer(
     let title = if slash_menu.is_some() {
         " SLASH HELP · ↑/↓ select · Tab complete · Esc dismiss "
     } else if composing {
-        " PROMPT · Enter send · Shift+Enter newline · ↑/↓ line/history · Esc cancel "
+        " PROMPT / COMMAND · Enter submit · Shift+Enter newline · ↑/↓ line/history · Esc cancel "
     } else if state
         .interaction
         .run
@@ -246,7 +305,7 @@ fn render_composer(
     if !composing {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "> press p to write the next prompt",
+                "> press p to write the next prompt or Console command",
                 Style::default().fg(theme.text_primary),
             )),
             inner,
@@ -359,11 +418,11 @@ fn render_slash_menu(frame: &mut Frame, area: Rect, menu: &SlashCommandMenu, the
         .collect::<Vec<_>>();
     lines.push(Line::from(Span::styled(
         format!(
-            "  Shared catalog · {}/{} · execution is not wired in Console yet",
+            "  Executable Console commands · {}/{} · x cancels the active turn",
             menu.selected + 1,
             menu.candidates.len()
         ),
-        Style::default().fg(theme.warning),
+        Style::default().fg(theme.success),
     )));
     frame.render_widget(Paragraph::new(lines), area);
 }
