@@ -179,6 +179,10 @@ impl ConversationStore for InMemoryConversationStore {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "in-memory conversation tests intentionally panic at CRUD and pagination fixture boundaries"
+)]
 mod tests {
     use super::*;
     use crate::types::{MessageContent, MessageRole};

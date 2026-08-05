@@ -241,6 +241,10 @@ impl From<&Conversation> for ConversationSummary {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "conversation type tests intentionally panic when static serialization and content fixtures fail"
+)]
 mod tests {
     use super::*;
 
