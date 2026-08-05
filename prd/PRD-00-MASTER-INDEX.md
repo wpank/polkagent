@@ -2,15 +2,17 @@
 
 **Status:** active index
 **Audited:** 2026-08-05
-**Scope:** current dirty worktree, including active PRD-17/E2E changes
+**Scope:** current `main` worktree after the 2026-08-05 implementation audit
 
 ## Executive state
 
-Polkagent has a broad, green Rust component suite, but no PRD is complete
-end-to-end under the repository's completion rule. The dominant gap is
-composition: many implemented stores, adapters, policies, tools, and domain
-services are not connected to the executable path used by CLI, API, TUI, ACP,
-or PCA users.
+Polkagent has a broad passing Rust check/test/rustdoc suite, though the
+mandatory workspace Clippy gate still has substantial debt. Bounded product
+slices now exist for the TUI, ACP, local packages, PCA transport, and container
+lifecycle, but no PRD is complete end-to-end under the repository's completion
+rule. The dominant gap is composition: these slices do not converge on one
+shared durable runtime/session/event contract, and the API/tool/effect/policy
+paths remain incomplete.
 
 The next milestone is therefore not “add more crates.” It is one durable
 runtime and interaction contract, followed by real tool/effect execution and
@@ -45,16 +47,16 @@ percentage.
 | [PRD-04](PRD-04-PROVIDERS-MODELS-TOOLS.md) | Providers, models, harnesses, tools, skills | Active; adapters exist but tools are not in the model execution loop. |
 | [PRD-04a](PRD-04a-PROVIDER-HARNESS-EXPANSION.md) | Provider/harness expansion | Active component scope; prove each adapter through the shared runtime. |
 | [PRD-05](PRD-05-POLKADOT-INTEGRATIONS.md) | Polkadot read/write integrations | Active; live finality, signing, dry-run/XCM, and action E2E remain. |
-| [PRD-06](PRD-06-PCA-COMPATIBILITY.md) | PCA compatibility and transport | Active; current transport is in-process, not production PCA networking. |
+| [PRD-06](PRD-06-PCA-COMPATIBILITY.md) | PCA compatibility and transport | Active; durable encrypted TCP/control delivery is cross-process tested, but reference PCA framing, signed identity, attachments, and runtime composition remain. |
 | [PRD-07](PRD-07-IDENTITY-SECURITY.md) | Identity, grants, policy, secrets, signers | Active; production auth, secret custody, policy wiring, and tenant enforcement remain. |
 | [PRD-08](PRD-08-PAYMENTS-AUTONOMY.md) | Payments, budgets, autonomy | Active; domain code is not a value-moving composed product. |
 | [PRD-09](PRD-09-MEMORY-GROUPS-EVALS.md) | Memory, groups, feeds, evals | Active; substantial libraries, little production orchestration wiring. |
 | [PRD-10](PRD-10-DATA-OBSERVABILITY.md) | Events, artifacts, telemetry, recovery | Active; production injection and stream gap/replay behavior remain. |
-| [PRD-11](PRD-11-DEPLOYMENT-CLOUD.md) | Deployment and cloud | Active long-term scope; container and durable deployment smoke paths are not proven. |
-| [PRD-12](PRD-12-MARKETPLACE-EXTENSIONS.md) | Extensions and marketplace | Active long-term scope; packaging, persistence, sandbox execution, and trust pipeline remain. |
-| [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; TUI is chiefly a monitor and studio/mobile surfaces are absent. |
+| [PRD-11](PRD-11-DEPLOYMENT-CLOUD.md) | Deployment and cloud | Active; bounded single-instance container/config/shutdown/replacement persistence is proven, while durable API/run recovery and production operations remain. |
+| [PRD-12](PRD-12-MARKETPLACE-EXTENSIONS.md) | Extensions and marketplace | Active; durable local package lifecycle and operator CLI work, while activation, sandbox execution, cryptographic trust, and registry paths remain. |
+| [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; the TUI has a bounded actionable Console, but durable chat/orchestration and studio/mobile surfaces are absent. |
 | [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; API production composition and OpenAPI parity are P0/P1 gaps. |
-| [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; component coverage is strong, production/live/client conformance is not. |
+| [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; broad component coverage and stable/Rust-1.89 checks exist, and local strict rustdoc passes; Clippy and production/live/client conformance remain incomplete. |
 
 ## Active delivery PRDs
 
@@ -77,8 +79,10 @@ shared production runtime
         |
         +--> durable interaction/session/event contract
                     |
-                    +--> terminal chat + actionable TUI
-                    +--> ACP server + Zed
+                    +--> terminal chat + durable/actionable TUI
+                         (bounded single-run TUI slice exists)
+                    +--> complete ACP server + Zed support
+                         (bounded stdio protocol slice exists)
                     +--> durable API control plane
                     +--> group/feed orchestration
 

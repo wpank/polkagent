@@ -43,24 +43,27 @@ rather than receiving a long-lived `PolkagentRuntime`; it retains only the most
 recent in-memory transcript; input is single-line and has no history or slash
 commands; direct approval/database actions remain; restart/resume,
 conversation-turn correlation, simultaneous runs, group orchestration,
-attachments, and ACP are not implemented. The architecture below remains the
-target rather than retroactively treating this slice as TUI-01 completion.
+attachments, and shared command/session parity with ACP are not implemented.
+The architecture below remains the target rather than retroactively treating
+this slice as TUI-01 completion.
 
 Polkagent now has a useful single-run interactive TUI slice, but it is not yet
 the durable, multi-turn agent product described by this PRD.
 
 It has a substantial monitoring TUI, a runnable one-shot `polkagent run`, an
-in-process execution service, streaming run events, conversation storage, and
-an ACP **client** used to drive other coding agents. These are valuable building
-blocks. The TUI now assembles them for one active run, but they are not yet
-assembled into a durable session that can resume or operate from an editor.
+in-process execution service, streaming run events, conversation storage, an
+ACP **client** used to drive other coding agents, and a separate bounded ACP
+**agent server** for editors. These are valuable building blocks. The TUI and
+ACP server each reach a real `AppService` run, but neither is backed by the
+shared durable interaction/runtime target.
 
-Two distinct features are needed:
+The delivered slices establish two distinct product surfaces that still need
+to be completed:
 
-1. An interactive Polkagent session that can be used in a terminal and inside
-   the existing TUI.
-2. An ACP **agent server** (`polkagent acp`) that lets Zed and other ACP clients
-   use Polkagent as the external agent.
+1. The bounded TUI Console must become a durable interactive Polkagent session
+   usable both as focused terminal chat and inside the existing TUI.
+2. The ACP **agent server** (`polkagent acp`) must grow from its protocol MVP
+   into full Zed and other ACP-client support.
 
 The important architectural decision is to build both as adapters over one
 shared `InteractionService`, command registry, production runtime, and event
@@ -207,26 +210,20 @@ The interactive feature should not be built as “TUI calls the current REST
 server.” First create a real shared runtime. Local surfaces can call it
 in-process; remote surfaces can later call the same service through HTTP/WS.
 
-### 1.6 Existing “ACP support” points in the opposite direction
-
-The naming is misleading for this goal:
+### 1.6 The two ACP directions are separate adapters
 
 ```text
-Current:
+Downstream harness path:
 Polkagent (ACP client) ──spawns/prompts──> Cursor / Goose / Kiro / OpenCode
 
-Needed for Zed:
-Zed (ACP client) ──spawns/prompts──> Polkagent (ACP agent server)
+Editor path:
+Zed (ACP client) ──spawns/prompts──> polkagent acp (ACP agent server)
 ```
 
-`polkagent-harness-acp` is therefore reusable protocol knowledge but not the
-feature Zed needs. It implements an ACP client and a Polkagent `Harness`; it
-does not implement an ACP server or expose Polkagent as an external agent.
-
-Create a separately named server crate (`polkagent-acp-server` or
-`polkagent-surface-acp`). Do not overload `polkagent-harness-acp`, because
-client and agent responsibilities, trust boundaries, and lifecycle are
-different.
+`polkagent-harness-acp` remains the downstream client. The separate
+`polkagent-surface-acp` server adapter now implements the bounded ACP v1 editor
+slice. Keep these responsibilities and trust boundaries separate while both
+move onto the future shared interaction/runtime contract.
 
 ## 2. What Roko demonstrates
 
@@ -407,13 +404,16 @@ must be identical.
 
 ### 4.3 ACP usage
 
-Add:
-
 ```bash
-polkagent acp --workdir /path/to/project
-polkagent acp --config /path/to/polkagent.toml
-polkagent acp --log-file /path/to/acp.log
+polkagent acp --agent editor-agent
+polkagent --config /path/to/polkagent.toml acp --agent editor-agent
+polkagent acp --agent editor-agent --provider anthropic --model <model> --timeout 300
 ```
+
+ACP uses the absolute working directory supplied by `session/new`; there is no
+`--workdir` flag. Although `--log-file` is a global CLI option, ACP early
+dispatch currently bypasses telemetry/file-log initialization, so ACP file
+logging must not be documented as supported yet.
 
 From Zed, a user should be able to:
 
@@ -756,7 +756,7 @@ polling.
 
 ### 7.1 Crate boundary
 
-Add `crates/polkagent-surface-acp` (preferred name) with only:
+`crates/polkagent-surface-acp` now owns:
 
 - official ACP trait implementation;
 - protocol-to-domain type conversion;
@@ -765,8 +765,10 @@ Add `crates/polkagent-surface-acp` (preferred name) with only:
 - capability negotiation;
 - stdio transport startup and protocol-safe logging.
 
-It may depend on `polkagent-service`, the new interaction/command crate, and
-ACP SDK. Core/service crates must not depend on ACP types.
+Remaining work is durable `InteractionService` mapping, structured events and
+permissions, session persistence/config options, and protocol-safe file
+logging. It may depend on `polkagent-service`, the new interaction/command
+crate, and ACP SDK. Core/service crates must not depend on ACP types.
 
 ### 7.2 CLI boot safety
 
@@ -944,6 +946,7 @@ resume a conversation without any TUI or ACP types.
 - [ ] Convert TUI event loop to async channel-driven architecture.
 - [ ] Pass `PolkagentRuntime`, not only `SqlitePool`, into `App`.
 - [x] Add the first single-run Console workspace and composer.
+- [x] Preserve root explicit config selection through the TUI run bootstrap.
 - [ ] Upgrade the composer for Unicode cursor movement, multiline input,
   history, completion, and durable conversation selection.
 - [x] Start/cancel a run through the shared one-shot `AppService` bootstrap as
@@ -975,6 +978,8 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [ ] Implement tool permission round-trip.
 - [x] Write the Zed custom-agent setup guide.
 - [x] Add an official-SDK subprocess protocol fixture.
+- [ ] Add official-client cancellation/stop-reason coverage.
+- [ ] Add protocol-safe file diagnostics and startup/panic/redaction proof.
 - [ ] Validate manually with Zed ACP logs and the full acceptance matrix.
 
 **Exit:** Polkagent can be added as a Zed custom external agent and complete a
@@ -1073,16 +1078,16 @@ Zed, not merely a single-agent chat wrapper.
 
 | Area | Suggested change |
 |---|---|
-| Workspace | Add `polkagent-interaction`, `polkagent-runtime`, `polkagent-surface-acp` (names may be collapsed if APIs stay clean) |
+| Workspace | Keep `polkagent-surface-acp`; add `polkagent-interaction` and `polkagent-runtime` behind clean APIs |
 | `polkagent-service` | Accept linked run requests; expose all UI mutations; integrate group service |
 | `polkagent-run` | Enrich progress/tool/approval identity; add interaction correlation |
 | `polkagent-conversation` | Treat as durable transcript store under interaction service |
 | `polkagent-store-sqlite` | Add turn/run link migrations and projections |
-| `polkagent-cli/src/main.rs` | Add early ACP dispatch; route chat/TUI/run through runtime factory |
+| `polkagent-cli/src/main.rs` | Early ACP dispatch exists; route run/TUI/chat/ACP through the runtime factory and add ACP-safe diagnostics |
 | `polkagent-cli/src/tui/` | Async loop, composer, conversation projection, shared command completion |
 | `polkagent-cli/src/commands/serve.rs` | Replace in-memory stores with production runtime |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
-| Docs | Add interactive chat, TUI console, ACP/Zed setup and troubleshooting |
+| Docs | ACP/Zed and bounded TUI setup exist; add terminal-chat guidance and attach manual Zed acceptance evidence |
 
 ## 13. Source trail
 
@@ -1105,7 +1110,8 @@ Primary local Polkagent evidence:
 - `crates/polkagent-harness-acp/src/lib.rs`
 - `crates/polkagent-api/src/routes/ws.rs`
 - `prd/archive/2026-08-05/superseded-plans/PRD-18-INTERACTIVE-TUI.md`
-- `tmp/archive/2026-08-05/audit-evidence/ux-tui-issues.md`
+- local-only ignored evidence:
+  `tmp/archive/2026-08-05/audit-evidence/ux-tui-issues.md`
 
 Primary local Roko comparison:
 
@@ -1130,13 +1136,7 @@ External primary references:
 
 ## Final recommendation
 
-Start with the production runtime and durable interaction service, then ship
-`polkagent chat`, then integrate the same service into the TUI and ACP. TUI and
-ACP can be developed in parallel only after that shared contract exists.
-
-The fastest visible patch would be a TUI prompt bar that shells out to
-`polkagent run`. Do not ship that as the architecture: it would make the UI
-appear actionable while creating separate runtime state, weak cancellation,
-no durable session semantics, poor streaming, and inevitable divergence from
-Zed. The shortest path to a good product is the shared interaction layer, even
-though it is one layer deeper than the requested UI.
+The interim TUI and ACP slices are shipped and intentionally bounded. Next
+extract `RuntimeFactory` and `InteractionService`, migrate run/TUI/ACP onto
+them, then add chat, durable sessions, richer commands, tools/permissions, and
+orchestration. Do not deepen the separate bootstrap seams.

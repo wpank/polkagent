@@ -18,7 +18,8 @@ use tokio::sync::Mutex;
 
 use crate::cli::AcpCmd;
 use crate::commands::run::{
-    build_agent_spec, build_chain_client, build_provider_registry, load_config, resolve_provider,
+    build_agent_spec, build_chain_client, build_provider_registry, load_config_from_path,
+    resolve_provider,
 };
 
 /// Start a protocol-safe ACP stdio server.
@@ -57,14 +58,7 @@ impl PolkagentAcpBackend {
         model_override: Option<String>,
         timeout_secs: u64,
     ) -> Result<Self> {
-        let config = if let Some(path) = config_path {
-            polkagent_config::ConfigLoader::new()
-                .with_path(path)
-                .load()
-                .with_context(|| format!("loading ACP config from {}", path.display()))?
-        } else {
-            load_config()
-        };
+        let config = load_config_from_path(config_path).context("loading ACP configuration")?;
         let registry = build_provider_registry(&config);
         let (executor, provider_note) =
             resolve_provider(provider, model_override.as_deref(), &config, &registry)?;

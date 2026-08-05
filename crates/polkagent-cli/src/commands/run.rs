@@ -5,6 +5,7 @@
 //! and streams events to stdout until a terminal event arrives or the timeout
 //! expires.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -59,6 +60,7 @@ pub(crate) async fn start_interactive_run(
     pool: &SqlitePool,
     agent_id: &str,
     prompt: &str,
+    config: Config,
 ) -> Result<StartedRun> {
     start_run_inner(
         pool,
@@ -69,7 +71,7 @@ pub(crate) async fn start_interactive_run(
             model: None,
             harness: None,
             no_harness: false,
-            config: None,
+            config: Some(config),
         },
     )
     .await
@@ -84,7 +86,12 @@ pub(crate) async fn start_interactive_run(
 /// Builds an [`AppService`] inline (no daemon required), starts the run, then
 /// subscribes to the event bus and streams events to stdout until the run
 /// reaches a terminal state or the timeout expires.
-pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
+pub async fn run(
+    cmd: &RunCmd,
+    pool: &SqlitePool,
+    config_path: Option<&Path>,
+    dry_run: bool,
+) -> Result<()> {
     // --dry-run: print what would happen and exit without starting a real run.
     if dry_run {
         println!("Dry run — no run will be started.");
@@ -104,6 +111,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
+    let config = load_config_from_path(config_path)?;
     let started = start_run_inner(
         pool,
         &cmd.agent_id,
@@ -113,7 +121,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
             model: cmd.model.clone(),
             harness: cmd.harness.as_deref(),
             no_harness: cmd.no_harness,
-            config: None,
+            config: Some(config),
         },
     )
     .await?;
@@ -468,6 +476,20 @@ pub(crate) fn load_config() -> Config {
             tracing::warn!("Failed to load config: {e}, using defaults");
             Config::default()
         }
+    }
+}
+
+/// Load an explicitly selected config or use normal discovery when absent.
+///
+/// Explicit paths fail closed so every executable surface uses the same file
+/// selected by the root `--config`/`POLKAGENT_CONFIG` option.
+pub(crate) fn load_config_from_path(config_path: Option<&Path>) -> Result<Config> {
+    match config_path {
+        Some(path) => polkagent_config::ConfigLoader::new()
+            .with_path(path)
+            .load()
+            .with_context(|| format!("loading config from {}", path.display())),
+        None => Ok(load_config()),
     }
 }
 
@@ -993,6 +1015,33 @@ pub(crate) fn build_chain_client() -> Arc<dyn ChainClient> {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_config_path_is_loaded_for_interactive_surfaces() {
+        let path =
+            std::env::temp_dir().join(format!("polkagent-run-config-{}.toml", AgentId::new()));
+        std::fs::write(
+            &path,
+            "[meta]\napi_version = \"polkagent.dev/v1alpha1\"\nschema_version = 1\n\
+             [execution]\ndefault_timeout_secs = 42\n",
+        )
+        .expect("write explicit config");
+
+        let config = load_config_from_path(Some(&path)).expect("load explicit config");
+        std::fs::remove_file(&path).expect("remove explicit config");
+
+        assert_eq!(config.execution.default_timeout_secs, 42);
+    }
+
+    #[test]
+    fn missing_explicit_config_path_fails_closed() {
+        let path = std::env::temp_dir().join(format!(
+            "polkagent-missing-run-config-{}.toml",
+            AgentId::new()
+        ));
+        let error = load_config_from_path(Some(&path)).expect_err("missing path must fail");
+        assert!(error.to_string().contains("loading config from"));
+    }
 
     #[test]
     fn build_agent_spec_from_valid_json() {

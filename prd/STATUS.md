@@ -2,16 +2,20 @@
 
 **Evidence snapshot:** 2026-08-05
 **Conclusion:** broad component maturity; incomplete production composition;
-no PRD verified complete end-to-end; first actionable TUI run slice exists
+no PRD verified complete end-to-end; first actionable TUI and ACP run slices
+exist
 
 ## Verification baseline
 
-The current worktree passed:
+At this evidence snapshot, the following local gates passed:
 
 ```text
 cargo check --workspace
+cargo +1.89 check --workspace --locked
 cargo test --workspace --no-fail-fast
+cargo test -p polkagent-cli --test tui_tests
 cargo test -p polkagent-cli --test acp_stdio_e2e
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
 ./scripts/container-smoke.sh
 ```
 
@@ -23,10 +27,19 @@ read-only config, answers the three HTTP probes, drains HTTP on SIGTERM with a
 clean exit, and replaces the container on the same named volume while retaining
 a SQLite CLI marker. A focused official-SDK subprocess test also proves one ACP
 initialize/new/prompt session and a real `AppService` run. Focused TUI tests
-prove the bounded Console prompt/start/stream/cancel projection. These checks
-do not prove durable API/run recovery, worker/effect draining, Postgres,
-backup/restore, auth, HA, a real chain action, a durable multi-turn interaction,
-or complete Zed/editor behavior.
+cover reducer/input/render behavior, while a shared-bootstrap fake run proves
+start, completion, and durable storage. They do not yet prove cancellation
+through the async controller or a real terminal event loop. These checks do not
+prove durable API/run recovery, worker/effect draining, Postgres, backup/restore,
+auth, HA, a real chain action, a durable multi-turn interaction, or complete
+Zed/editor behavior.
+
+The CI lint command is not green: `cargo clippy --workspace -- -D warnings`
+currently reports extensive pre-existing pedantic lint debt across multiple
+crates, beginning with signer/executor conformance helpers and continuing
+through config, memory, metadata, payment, and rate-limit code. This is tracked
+as QA-01; passing checks, tests, and rustdoc must not be described as a fully
+green CI baseline until it is closed.
 
 The audit intentionally treats tests such as “returns 501 when store is not
 configured” as contract coverage and simultaneous evidence that production
@@ -37,11 +50,11 @@ startup still has a wiring gap.
 | Surface/capability | Component state | Product state | Decisive gap |
 |---|---|---|---|
 | One-shot CLI run | Substantial and tested | Partially usable | Bootstrap is now reusable by the TUI but still lives in the command composition; tools/effects/policy are not a real model loop. |
-| Monitoring TUI | Rich views plus an F9 Console | Actionable for one run at a time | Prompt/start/live output/cancel work; durable conversations, history/slash commands, simultaneous orchestration, restart recovery, and service-routed approvals remain. |
+| Monitoring TUI | Rich views plus an F9 Console | Actionable for one run at a time | Prompt/start/live output work and cancellation is wired, but async cancellation lacks E2E proof; durable conversations, history/slash commands, simultaneous orchestration, restart recovery, and service-routed approvals remain. |
 | REST/WebSocket API | Broad route and middleware coverage | Not a durable production control plane | `serve` uses in-memory agents/runs and omits most optional stores/registries, producing many 501s. |
 | Interactive terminal chat | No shared surface | Missing | Requires `InteractionService`, command registry, and runtime factory. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
-| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio slice with executable subprocess coverage | Protocol-usable MVP; manual Zed support unverified | No durable list/load/import, shared conversations/config registry, structured tools/permissions, MCP passthrough, or Zed tool/approval/restart smoke. |
+| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio slice with executable subprocess coverage | Executable protocol slice; editor interoperability and UX unverified | No durable list/load/import, shared conversations/config registry, structured tools/permissions, MCP passthrough, or Zed tool/approval/restart smoke. |
 | Providers/harnesses | Many adapters exist | Partially composed | Each adapter needs shared-runtime conformance and real failure/readiness evidence. |
 | Tools/skills | Registries and handlers exist | Not actionable in normal run loop | Orchestrator sends no tool schemas and synthesizes tool success instead of executing. |
 | Effects/approvals/policy | Strong domain libraries | Incomplete execution path | Effect pipeline and grant resolver are not used by the central orchestrator. |
@@ -73,9 +86,9 @@ startup still has a wiring gap.
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | CLI/TUI plus actionable Console slice | Partial | Single-run prompt E2E; no durable chat/orchestration UX | Active P0/P1 + PRD-19 |
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
-| 15 Testing | Broad green suite | Production paths under-tested | Live/client/ops gates missing | Active cross-cutting |
+| 15 Testing | Broad passing check/test/rustdoc suite | Mandatory Clippy gate is red; production paths under-tested | Lint debt plus live/client/ops gates missing | Active cross-cutting |
 | 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
-| 19 Interactive/ACP | Initial ACP server and actionable TUI slices implemented | Both independently compose the one-shot `AppService` path; shared interaction/runtime factory remains missing | Official client proves ACP discovery and prompt/run; TUI fake-executor E2E proves prompt/start/stream/cancel; no full Zed or durable session E2E | Active P0/P1 |
+| 19 Interactive/ACP | Initial ACP server and actionable TUI slices implemented | Both independently compose the one-shot `AppService` path; shared interaction/runtime factory remains missing | Official client proves ACP discovery and prompt/run; focused TUI reducer/render plus durable fake-run tests cover the bounded seam, but no async cancel, full Zed, or durable session E2E exists | Active P0/P1 |
 
 ## Decisive implementation evidence
 
@@ -98,6 +111,8 @@ startup still has a wiring gap.
   the shared one-shot run bootstrap, projects live events without blocking the
   render loop, and cancels through `AppService`; `App` still lacks the target
   long-lived production/interaction runtime and durable session projection.
+  Root explicit config selection is now passed through both one-shot and TUI
+  run composition instead of being rediscovered independently.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent
   harnesses, not a Polkagent ACP agent server.
 - `crates/polkagent-surface-acp` is the separate server-side adapter. The
@@ -123,6 +138,10 @@ startup still has a wiring gap.
   on the same named volume, and restart-safe SQLite CLI marker lookup. The CI
   job runs independently of the Rust 1.89 MSRV matrix and uploads selected
   lifecycle state/log artifacts. API agents and runs are still in-memory.
+- CI checks the workspace on stable Rust and the declared Rust 1.89 MSRV.
+  Commit `639ba62` cleared current workspace rustdoc warnings, but
+  `.github/workflows/ci.yml` does not yet enforce the warning-denying rustdoc
+  command listed in the verification baseline.
 
 ## Completion gate for future status updates
 

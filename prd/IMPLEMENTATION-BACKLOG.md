@@ -20,10 +20,11 @@ Wave 2: user surfaces
   TUI-01 terminal/TUI + ACP-01 Zed + ORC-01 groups/feeds
 
 Parallel throughout where interfaces are stable:
-  CHAIN-01 live chain | SEC-01 auth/custody | PCA-01 networking
+  CHAIN-01 live chain | SEC-01 auth/custody | PCA-01 networking | QA-01 CI lint
 
-Later productization:
-  OPS-01 deployment | EXT-01 marketplace | PAY-01 settlement
+Bounded productization slices already delivered; remaining work:
+  OPS-01 durable API recovery/Postgres/backup
+  EXT-01 runtime activation/sandbox/trust | PAY-01 settlement
 ```
 
 ## Operating rules for implementation agents
@@ -43,6 +44,42 @@ Later productization:
   tenant isolation, and explicit unknown outcomes.
 
 ## P0 — shared foundation and executable core
+
+### QA-01 — Restore the mandatory workspace Clippy gate
+
+**Goal:** make the existing CI command `cargo clippy --workspace -- -D
+warnings` pass without weakening the workspace lint policy or hiding product
+defects behind broad crate-level allowances.
+
+**Current evidence:** checks, tests, exact Rust 1.89 compilation, formatting,
+and strict rustdoc pass, but the mandatory Clippy job fails across many
+pre-existing crates. The first failure wave includes signer/executor
+conformance helpers, config, memory, metadata, payment, and rate-limit code;
+test-only `expect`/`unwrap` policy also needs an explicit consistent decision.
+
+**Checklist:**
+
+- [x] Align the declared and CI-tested MSRV at Rust 1.89.
+- [x] Clear current workspace rustdoc warnings.
+- [ ] Enforce `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` in
+  CI.
+- [ ] Capture a machine-readable crate/lint inventory from the exact CI
+  command and partition it into independently owned crate batches.
+- [ ] Fix production-code correctness/style diagnostics rather than adding
+  workspace-wide allowances.
+- [ ] Decide and document the narrow test/conformance policy for
+  `expect_used`/`unwrap_used`; scope any allowances to test or conformance
+  modules with reasons.
+- [ ] Keep `cargo +1.89 check --workspace --locked`, strict rustdoc, and the
+  full workspace test suite green after every batch.
+- [ ] Re-run the exact stable CI command and retain its successful transcript.
+
+**Exit checks:** `cargo clippy --workspace -- -D warnings` exits 0 on the same
+stable toolchain used by CI, with no broad reduction in lint levels.
+
+**Ownership:** partition by crate; one integration agent owns lint-policy
+changes and the final exact-CI verification. **Depends on:** none and can run in
+parallel with every product packet.
 
 ### FND-01 — One production runtime composition root
 
@@ -190,6 +227,9 @@ adapter hooks through small interfaces.
   selection, prompt submission, non-blocking live output/lifecycle projection,
   cancellation, durable run selection, and focused reducer/render/bootstrap
   tests using the one-shot service composition.
+- [x] Thread the root explicit `--config`/`POLKAGENT_CONFIG` selection into
+  both one-shot and TUI run composition instead of silently rediscovering
+  provider/harness/execution settings.
 - [ ] Add `polkagent chat` using `InteractionService` and shared commands.
 - [ ] Convert the TUI loop to async/channel-driven input, runtime events, and
   background completion.
@@ -234,6 +274,10 @@ the stable execution event path; can run fully parallel to ACP-01.
   explicitly instead of ignoring them.
 - [ ] Add structured tool/plan/usage updates, permission round-trips, default
   deny on timeout/disconnect, client capabilities, and secret-safe logging proof.
+- [ ] Add an official-client cancellation/stop-reason test covering
+  cancellation during an active run.
+- [ ] Implement and prove ACP-safe file diagnostics, redaction, panic behavior,
+  and startup failures without contaminating stdout.
 - [x] Add an official-SDK subprocess fixture and a Zed custom-agent setup guide.
 - [ ] Complete the manual Zed smoke (tool, approval/deny, cancel, restart/import,
   and ACP-log inspection).
@@ -414,7 +458,7 @@ separate files.
 | 0 | FND-01 runtime interface; FND-02 data/event interface; CHAIN-01 workflow repair; SEC-01 backend research/spikes | Freeze runtime handle, interaction events, principal context, and migration ownership. |
 | 1 | FND-01 composition; FND-02 headless interaction; EXE-01 orchestrator; CHAIN-01 real tests | Production composition test plus real tool-call test. |
 | 2 | API-01; TUI-01; ACP-01; OBS-01; PCA-01 | Same conversation/run can be initiated and inspected across clients; restart and lag tests pass. |
-| 3 | ORC-01; OPS-01 container/Postgres; EXT-01 local package lifecycle; PAY-01 design/spike | Completion gate from `STATUS.md`; no fake path hidden by surface tests. |
+| 3 | ORC-01; OPS-01 durable API/Postgres/recovery; EXT-01 manifest/runtime/sandbox/trust; PAY-01 design/spike | Completion gate from `STATUS.md`; no fake path hidden by surface tests. |
 
 At each wave boundary, one integration agent should own workspace manifests,
 CLI command registration, SQLite migration registration, and the final

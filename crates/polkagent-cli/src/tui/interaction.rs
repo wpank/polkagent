@@ -6,6 +6,7 @@
 
 use std::sync::mpsc;
 
+use polkagent_config::Config;
 use polkagent_core::event::EventKind;
 use polkagent_store_sqlite::SqlitePool;
 
@@ -212,6 +213,7 @@ impl ControllerEvent {
 pub struct RunController {
     runtime: Option<tokio::runtime::Handle>,
     pool: SqlitePool,
+    config: Config,
     event_tx: mpsc::Sender<ControllerEvent>,
     event_rx: mpsc::Receiver<ControllerEvent>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
@@ -220,11 +222,12 @@ pub struct RunController {
 
 impl RunController {
     #[must_use]
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: SqlitePool, config: Config) -> Self {
         let (event_tx, event_rx) = mpsc::channel();
         Self {
             runtime: tokio::runtime::Handle::try_current().ok(),
             pool,
+            config,
             event_tx,
             event_rx,
             cancel: None,
@@ -241,6 +244,7 @@ impl RunController {
         };
 
         let pool = self.pool.clone();
+        let config = self.config.clone();
         let event_tx = self.event_tx.clone();
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
         self.cancel = Some(cancel_tx);
@@ -251,6 +255,7 @@ impl RunController {
                 &pool,
                 &request.agent_id,
                 &request.prompt,
+                config,
             );
             tokio::pin!(start);
 

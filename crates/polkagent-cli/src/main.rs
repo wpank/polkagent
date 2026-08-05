@@ -158,7 +158,7 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
             let (name, res) = match &cli.command {
                 None => {
                     if std::io::stdout().is_terminal() {
-                        ("tui", launch_tui(pool, "dashboard"))
+                        ("tui", launch_tui(pool, config_path.as_deref(), "dashboard"))
                     } else {
                         let _ = Cli::command().print_help();
                         println!();
@@ -167,7 +167,7 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                 }
                 Some(Commands::Tui(cmd)) => {
                     if std::io::stdout().is_terminal() {
-                        ("tui", launch_tui(pool, &cmd.tab))
+                        ("tui", launch_tui(pool, config_path.as_deref(), &cmd.tab))
                     } else {
                         (
                             "tui",
@@ -183,7 +183,10 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                         agent_id = %cmd.agent_id,
                     )
                     .entered();
-                    ("run", commands::run::run(cmd, &pool, dry_run).await)
+                    (
+                        "run",
+                        commands::run::run(cmd, &pool, config_path.as_deref(), dry_run).await,
+                    )
                 }
                 Some(Commands::Agent(cmd)) => ("agent", commands::agent::run(cmd, &pool, format)),
                 Some(Commands::Skill(cmd)) => ("skill", commands::skill::run(cmd, &pool)),
@@ -365,13 +368,15 @@ fn open_pool(db_path: &str) -> Result<SqlitePool> {
 /// Launch the interactive ROSEDUST TUI and ensure teardown on exit.
 ///
 /// `tab` is the `--tab` flag value (e.g. `"dashboard"`, `"memory"`).
-fn launch_tui(pool: SqlitePool, tab: &str) -> Result<()> {
+fn launch_tui(pool: SqlitePool, config_path: Option<&std::path::Path>, tab: &str) -> Result<()> {
     use crate::tui::app::{enter_tui, exit_tui, App, Tab};
     use crate::tui::theme::Theme;
 
     let theme = Theme::from_env();
     let initial_tab = Tab::from_cli_str(tab);
-    let mut app = App::new(theme, pool, initial_tab);
+    let config =
+        commands::run::load_config_from_path(config_path).context("loading TUI configuration")?;
+    let mut app = App::new(theme, pool, config, initial_tab);
 
     let mut terminal = enter_tui()?;
 

@@ -5,6 +5,13 @@
 > status evidence. Use [STATUS.md](STATUS.md) and
 > [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
 > the dependency-ordered execution queue.
+>
+> **Delivered slice:** the existing monitoring TUI now has an F9 Console that
+> can select an active agent, submit one prompt through the shared one-shot run
+> bootstrap, project live output/lifecycle/usage, cancel through `AppService`,
+> and select the durable run in Runs/Timeline. This is not the durable
+> multi-turn interaction, orchestration, or cross-surface parity specified by
+> this PRD.
 
 **Status:** definitive PRD
 **Owner:** unassigned
@@ -13,7 +20,9 @@
 PRD-03 (execution model), PRD-06 (PCA compatibility), PRD-07 (identity/signers),
 PRD-08 (payments), PRD-10 (data/artifacts/events), PRD-11 (cloud/tenancy),
 PRD-12 (marketplace)
-**Implementation status:** design requirements only; no surface has been built
+**Implementation status:** broad CLI and monitoring TUI plus a bounded
+actionable Console; most complete product surfaces and shared interaction UX
+remain unimplemented
 
 ---
 

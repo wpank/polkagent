@@ -313,7 +313,27 @@ Launch the interactive ROSEDUST terminal UI.
 
 ```bash
 polkagent tui
+polkagent tui --tab console
 ```
+
+Running `polkagent` with no subcommand also opens the TUI when stdout is an
+interactive terminal. The actionable Console is intentionally a bounded
+single-run surface:
+
+| Key | Action |
+|-----|--------|
+| `F9` or `9` | Open Console |
+| `p` | Select the highlighted/first active agent and compose a prompt |
+| `Enter` | Submit the prompt and start a durable run |
+| `x` | Request cancellation of the active Console run |
+| `F3` | Inspect the selected durable run |
+| `F5` | Inspect its timeline |
+
+The Console projects live text, lifecycle/tool progress, errors, and final
+usage. It currently supports one single-line prompt/run at a time; durable
+multi-turn conversations, history, slash commands, simultaneous orchestration,
+restart resume, and service-routed approvals remain open. A root `--config`
+path is used consistently for the TUI database and its run/provider settings.
 
 ---
 
