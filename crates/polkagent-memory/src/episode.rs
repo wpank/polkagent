@@ -115,7 +115,7 @@ pub struct RedactionRule {
     pub pattern: Regex,
     /// The replacement string (may use capture group references like `$1`).
     pub replacement: String,
-    /// Human-readable label for this rule (e.g. "api_key", "email").
+    /// Human-readable label for this rule (e.g. "`api_key`", "email").
     pub label: String,
 }
 
@@ -452,7 +452,7 @@ impl EpisodeLogger {
 
         // Compress if configured.
         if self.config.compress_rotated {
-            self.compress_file(&rotated_path)?;
+            Self::compress_file(&rotated_path)?;
         }
 
         // Open a new active file.
@@ -467,7 +467,7 @@ impl EpisodeLogger {
     }
 
     /// Compress a file using zstd and remove the original.
-    fn compress_file(&self, path: &Path) -> MemoryResult<()> {
+    fn compress_file(path: &Path) -> MemoryResult<()> {
         let compressed_path = path.with_extension("jsonl.zst");
         let input = File::open(path)?;
         let output = File::create(&compressed_path)?;
@@ -502,7 +502,7 @@ pub fn replay(
     let path = path.to_path_buf();
 
     Box::pin(async_stream::stream! {
-        let is_compressed = path.extension().map_or(false, |ext| ext == "zst");
+        let is_compressed = path.extension().is_some_and(|ext| ext == "zst");
 
         let reader: Box<dyn BufRead + Send> = if is_compressed {
             let file = match File::open(&path) {
@@ -533,7 +533,7 @@ pub fn replay(
 
         for line in reader.lines() {
             match line {
-                Ok(line) if line.trim().is_empty() => continue,
+                Ok(line) if line.trim().is_empty() => {}
                 Ok(line) => {
                     match serde_json::from_str::<EpisodeEntry>(&line) {
                         Ok(entry) => yield Ok(entry),
@@ -906,7 +906,7 @@ mod tests {
         let episode_dir = dir.path().join(ep.to_string());
         let files: Vec<_> = fs::read_dir(&episode_dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.file_name().to_string_lossy().starts_with("episode-"))
             .collect();
         assert!(
@@ -936,7 +936,7 @@ mod tests {
         let episode_dir = dir.path().join(ep.to_string());
         let zst_files: Vec<_> = fs::read_dir(&episode_dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.file_name().to_string_lossy().ends_with(".zst"))
             .collect();
         assert!(

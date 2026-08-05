@@ -20,6 +20,11 @@
 //! }
 //! ```
 
+#![allow(
+    clippy::expect_used,
+    reason = "reusable conformance assertions intentionally stop at the first violated store contract"
+)]
+
 use chrono::Utc;
 use polkagent_core::ids::AgentId;
 

@@ -44,6 +44,16 @@
     clippy::unwrap_used,
     clippy::expect_used
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::panic,
+        clippy::unwrap_used,
+        reason = "unit tests intentionally assert fixture and persistence invariants with immediate failures"
+    )
+)]
 #![allow(
     clippy::module_name_repetitions,
     clippy::must_use_candidate,

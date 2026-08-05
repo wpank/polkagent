@@ -92,7 +92,7 @@ impl EmbeddingVector {
 /// Known embedding model variants with their native dimensionality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EmbeddingModel {
-    /// OpenAI `text-embedding-ada-002` (1536 dimensions).
+    /// `OpenAI` `text-embedding-ada-002` (1536 dimensions).
     Ada002,
     /// Sentence-Transformers `all-MiniLM-L6-v2` (384 dimensions).
     AllMiniLML6,
@@ -442,7 +442,7 @@ impl VectorIndex {
 
 /// Async trait for producing embedding vectors from text.
 ///
-/// Implementations may call external APIs (OpenAI, local models, etc.).
+/// Implementations may call external APIs (`OpenAI`, local models, etc.).
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
     /// Embed a single piece of text and return its vector.
@@ -488,7 +488,8 @@ impl EmbeddingProvider for MockEmbeddingProvider {
             i.hash(&mut hasher);
             let h = hasher.finish();
             // Map hash to [-1, 1] range.
-            let val = ((h % 20001) as f32 / 10000.0) - 1.0;
+            let reduced = u16::try_from(h % 20_001).unwrap_or_default();
+            let val = (f32::from(reduced) / 10_000.0) - 1.0;
             data.push(val);
         }
         // L2-normalise so cosine similarity tests are meaningful.

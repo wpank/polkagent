@@ -233,7 +233,7 @@ impl ContextBudget {
     #[must_use]
     pub fn estimate_tokens(text: &str) -> usize {
         // Rough heuristic: 1 token ~= 4 chars for English text.
-        (text.len() + 3) / 4
+        text.len().div_ceil(4)
     }
 }
 
@@ -265,7 +265,7 @@ pub fn rrf_fuse(ranked_lists: &[(&[(MemoryId, f32)], f32)], k: u32) -> Vec<Ranke
 
     for (ranked_list, weight) in ranked_lists {
         for (rank_0, (id, _raw_score)) in ranked_list.iter().enumerate() {
-            let rank_1 = (rank_0 + 1) as f64;
+            let rank_1 = f64::from(u32::try_from(rank_0 + 1).unwrap_or(u32::MAX));
             let rrf_score = f64::from(*weight) / (f64::from(k) + rank_1);
             *scores.entry(*id).or_default() += rrf_score;
         }
@@ -349,8 +349,9 @@ impl<'a> HybridRetriever<'a> {
         let fts_entries = self.store.search(&fts_query).await?;
         let fts_ranked: Vec<(MemoryId, f32)> = fts_entries
             .iter()
-            .enumerate()
-            .map(|(i, e)| (e.id, (fts_entries.len() - i) as f32))
+            // RRF uses slice order as the rank and intentionally ignores the
+            // source's raw score.
+            .map(|entry| (entry.id, 0.0))
             .collect();
 
         // 2. Vector similarity search.
@@ -676,16 +677,8 @@ mod tests {
     #[test]
     fn rrf_fuse_preserves_all_ids() {
         let ids: Vec<MemoryId> = (0..5).map(|_| MemoryId::new()).collect();
-        let list1: Vec<(MemoryId, f32)> = ids[..3]
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (*id, (3 - i) as f32))
-            .collect();
-        let list2: Vec<(MemoryId, f32)> = ids[2..]
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (*id, (3 - i) as f32))
-            .collect();
+        let list1: Vec<(MemoryId, f32)> = ids[..3].iter().map(|id| (*id, 0.0)).collect();
+        let list2: Vec<(MemoryId, f32)> = ids[2..].iter().map(|id| (*id, 0.0)).collect();
 
         let result = rrf_fuse(&[(&list1, 1.0), (&list2, 1.0)], 60);
         assert_eq!(result.len(), 5);
@@ -743,7 +736,6 @@ mod tests {
             rrf_k: 60,
             fts_weight: 1.0,
             vec_weight: 0.0,
-            ..RetrievalConfig::default()
         };
 
         let retriever = HybridRetriever::new(&store, &vec_index, config);
@@ -771,7 +763,6 @@ mod tests {
             rrf_k: 60,
             fts_weight: 0.0,
             vec_weight: 1.0,
-            ..RetrievalConfig::default()
         };
 
         let retriever = HybridRetriever::new(&store, &vec_index, config);
@@ -809,7 +800,6 @@ mod tests {
             rrf_k: 60,
             fts_weight: 1.0,
             vec_weight: 1.0,
-            ..RetrievalConfig::default()
         };
 
         let retriever = HybridRetriever::new(&store, &vec_index, config);

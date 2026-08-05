@@ -187,7 +187,7 @@ impl<'a> MetadataRagService<'a> {
                         .to_string(),
                     block_number: meta
                         .get("block_number")
-                        .and_then(|v| v.as_u64())
+                        .and_then(serde_json::Value::as_u64)
                         .unwrap_or_default(),
                     pallet_name: meta
                         .get("pallet_name")
@@ -228,7 +228,9 @@ pub fn format_call_doc(pallet_name: &str, call_name: &str, args: &[(String, Stri
         if i > 0 {
             s.push_str(", ");
         }
-        s.push_str(&format!("{name}: {ty}"));
+        s.push_str(name);
+        s.push_str(": ");
+        s.push_str(ty);
     }
     s.push(')');
     s
