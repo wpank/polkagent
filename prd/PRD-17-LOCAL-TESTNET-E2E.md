@@ -1,11 +1,132 @@
 # PRD-17: Local Testnet Infrastructure, End-to-End Testing, and Agent-Driven Development
 
-**Status:** draft
+**Status:** active — infrastructure baseline implemented; scenario suite incomplete
 **Owner:** unassigned
-**Last updated:** 2026-08-03
+**Last updated:** 2026-08-05
 **Audience:** engineers, QA, operators, and AI coding agents (Claude Code, etc.)
 who need to run, test, debug, and diagnose polkagent against production-realistic
 local Polkadot networks
+
+---
+
+## Implementation status tracker
+
+> **Last audited:** 2026-08-05. This table tracks what is implemented in the
+> codebase vs. what exists only in this PRD specification.
+
+### Legend
+
+| Tag | Meaning |
+|---|---|
+| **IMPLEMENTED** | Code exists, compiles, and is tested |
+| **PARTIAL** | Some code exists but is incomplete or not wired up |
+| **SPEC ONLY** | Exists only in this PRD — no code written |
+| **PALETTE ONLY** | Color/theme tokens defined but no rendering code uses them |
+| **BLOCKED** | Cannot implement until a dependency is resolved |
+
+### Section-by-section status
+
+| § | Section | Status | What exists | What's missing |
+|---|---|---|---|---|
+| 2.1 | Three one-liners (`go`, `demo`, `try`) | **SPEC ONLY** | Nothing | Entire `testnet` CLI subcommand |
+| 2.2 | Visual status dashboard | **SPEC ONLY** | Nothing | `testnet status` command + rendering |
+| 2.3 | Visual balance table | **SPEC ONLY** | Nothing | `testnet balances` command |
+| 2.4 | Visual query output | **SPEC ONLY** | Nothing | `testnet query` command family |
+| 2.5 | Visual exec output | **SPEC ONLY** | Nothing | `testnet exec` command family |
+| 2.6 | TUI F9 Testnet tab | **SPEC ONLY** | 8 tabs exist (F1-F8 in `app.rs`) | New `Tab::Testnet` variant + view |
+| 2.7 | Demo scenarios | **SPEC ONLY** | Nothing | `testnet demo` command + 8 scenario implementations |
+| 2.8 | Alias commands | **SPEC ONLY** | Nothing | Short aliases for common operations |
+| 2.9 | Design principles | **N/A** | Design guidance, not code | — |
+| 2.10.1 | Perpetual motion principle | **SPEC ONLY** | Nothing | Continuous animation system |
+| 2.10.2 | Rendering techniques | **PARTIAL** | `token_sparkline.rs` uses Braille; `progress_bar.rs` uses block elements | Half-block, Canvas, full density ramp, waveforms |
+| 2.10.3 | CRT atmosphere | **PALETTE ONLY** | `theme.rs` defines `scanline_dark`, `phosphor_res`, `noise_warm`, `noise_cool` | No rendering code uses these colors |
+| 2.10.4 | TachyonFX animations | **SPEC ONLY** | Nothing | `tachyonfx` crate dependency + animation triggers |
+| 2.10.5 | Network topology Canvas | **SPEC ONLY** | Nothing | `ratatui::widgets::canvas::Canvas` + `Marker::HalfBlock` |
+| 2.10.6 | Widget catalog (8 widgets) | **SPEC ONLY** | Nothing | Block waveform, finality oscilloscope, referendum thermometer, treasury waterfall, XCM flow, validator array, event stream, test grid |
+| 2.10.7 | Full-screen cinematic layout | **SPEC ONLY** | Nothing | Composed layout of all widgets |
+| 2.10.8 | Responsive breakpoints | **PARTIAL** | `dashboard.rs` has 3 breakpoints (Compact/Standard/Wide) | Testnet view needs its own breakpoint layouts |
+| 2.10.9 | Color semantics | **PARTIAL** | ROSEDUST palette fully defined in `theme.rs` | Testnet-specific semantic mapping not applied |
+| 2.10.10 | Agent JSON compatibility | **PARTIAL** | `output.rs` has `format_output()` + `OutputFormat` enum, `format` used in `finish_command()` for success/error envelopes | Individual command handlers use per-command `--json` flags instead of global `--format`; 37 commands have their own `pub json: bool` |
+| 2.11 | `testnet watch` live mode | **SPEC ONLY** | Nothing | Standalone ratatui app for testnet monitoring |
+| 3 | Local testnet architecture | **PARTIAL** | Native-provider Zombienet fixture with a two-validator relay and Asset Hub | Full five-chain topology, lifecycle manager, port allocation |
+| 3.1 | Tooling selection | **PARTIAL** | Pinned Zombienet CLI is provisioned for CI and local use | `zombienet-sdk` programmatic lifecycle integration |
+| 3.2 | Network topology | **PARTIAL** | Relay chain plus Asset Hub fixture exercises relay/parachain connectivity | Bridge Hub, People, and Collectives chains; HRMP configuration |
+| 3.3 | Port allocation | **SPEC ONLY** | Nothing | Port conflict detection |
+| 3.4 | Polkagent config generation | **SPEC ONLY** | Existing `polkagent-config` crate with schema | Auto-generation from live testnet endpoints |
+| 4 | Genesis state configuration | **SPEC ONLY** | Nothing | Genesis override JSON for balances/staking (gov params require runtime recompile) |
+| 4.1 | Dev accounts | **PARTIAL** | `polkagent-signer-fake` has deterministic keys | No real sr25519 dev account signing (`polkagent-signer-dev` does not exist) |
+| 5 | Agent-driven workflow | **SPEC ONLY** | `network` command has advisory `start`/`stop` only | Full `testnet` subcommand tree (12 subcommands) |
+| 5.1 | CLI subcommand tree | **SPEC ONLY** | Nothing | `commands/testnet.rs` with clap definitions |
+| 6 | E2E test scenarios (36) | **PARTIAL** | Live relay/parachain RPC and relay-finality smoke test; other integration tests use fakes | Real signed writes and the 36 named scenarios |
+| 7 | Test execution framework | **SPEC ONLY** | Nothing | `polkagent-e2e-tests` crate, `TestnetManager`, `TestContext`, `#[e2e_test]` macro |
+| 7.2 | Zombienet SDK integration | **SPEC ONLY** | Nothing | `zombienet-sdk = "0.4.15"` in Cargo.toml |
+| 7.3 | Test organization | **SPEC ONLY** | Nothing | File structure, test grouping |
+| 8 | Chopsticks testing | **SPEC ONLY** | Referenced in `network.rs` guidance text | No programmatic integration |
+| 9 | Monitoring & observability | **SPEC ONLY** | Nothing | Prometheus scraping, log capture, Grafana |
+| 10 | CI/CD integration | **PARTIAL** | Pinned binary provisioning, Zombienet spawn, JSON-RPC readiness, live smoke gate, teardown, and log artifacts | Full scenario reports, retries, state snapshots, and flake tracking |
+| 11.1 | ChainClient trait exercised | **PARTIAL** | Live smoke test exercises the production HTTP RPC transport, metadata, headers, and finality | Full `ChainClient` trait and signed transaction lifecycle against live nodes |
+| 11.4 | `polkagent-signer-dev` | **SPEC ONLY** | `polkagent-signer-fake` (417 lines) exists | Real sr25519 dev signer crate not created |
+| 11.5 | Explain-before-sign E2E | **PARTIAL** | `explain_and_sign_e2e.rs` tests pipeline with fakes | Not tested against real chain |
+| 12 | Phased delivery | **SPEC ONLY** | Nothing | All 5 phases unstarted |
+
+### Crate and dependency status
+
+| Crate / Dependency | Status | Notes |
+|---|---|---|
+| `polkagent-e2e-tests` | **DOES NOT EXIST** | New crate needed for E2E test harness |
+| `polkagent-signer-dev` | **DOES NOT EXIST** | New crate wrapping `subxt-signer` with real sr25519 |
+| `zombienet-sdk` 0.4.15 | **NOT IN Cargo.toml** | Required for `TestnetManager` and `testnet up` |
+| `subxt-signer` 0.50.2 | **NOT IN Cargo.toml** | Required for dev account keys in E2E tests |
+| `tachyonfx` 0.25.0 | **NOT IN Cargo.toml** | Required for TUI animation effects |
+| `ascii-petgraph` 0.2.0 | **NOT IN Cargo.toml** | Optional: force-directed graph layout for topology |
+| `ratatui-flow` 0.1.1 | **NOT IN Cargo.toml** | Optional: DAG layout for pipeline views |
+| `polkagent-chain-subxt` | **EXISTS, PARTIAL** | HTTP JSON-RPC client is live-tested; advanced operations such as dry-run/XCM remain unsupported |
+| `polkagent-chain-fake` | **EXISTS (1,440 lines)** | In-memory deterministic chain for unit/integration tests |
+| `polkagent-signer-fake` | **EXISTS (417 lines)** | Deterministic fake signer for testing |
+| `polkagent-integration-tests` | **EXISTS (36 test files)** | All use fakes — none hit real chains |
+| `output.rs` (`format_output`) | **EXISTS, PARTIALLY WIRED** | Used in `finish_command()` for envelopes; individual commands use `--json` flags instead of global `--format` |
+| `theme.rs` (ROSEDUST palette) | **EXISTS (complete)** | CRT atmosphere colors defined but not rendered |
+
+### File status
+
+| File | Status | Notes |
+|---|---|---|
+| `commands/testnet.rs` | **DOES NOT EXIST** | Needs creation with clap subcommand definitions |
+| `tui/views/testnet.rs` | **DOES NOT EXIST** | F9 Testnet tab view |
+| `tui/widgets/network_topology.rs` | **DOES NOT EXIST** | Canvas-based network graph |
+| `tui/widgets/block_waveform.rs` | **DOES NOT EXIST** | Per-chain block production sparkline |
+| `tui/widgets/event_stream.rs` | **DOES NOT EXIST** | Phosphor-decay event list |
+| `tui/widgets/referendum_gauge.rs` | **DOES NOT EXIST** | Approval/support thermometer |
+| `tui/widgets/validator_array.rs` | **DOES NOT EXIST** | NERV-style validator grid |
+| `tui/widgets/test_progress.rs` | **DOES NOT EXIST** | Test execution unit array |
+| `tui/widgets/xcm_flow.rs` | **DOES NOT EXIST** | Animated XCM message visualization |
+| `fixtures/zombienet/polkagent-testnet.toml` | **EXISTS, PARTIAL** | Two-validator relay plus Asset Hub using native binaries |
+| `testnet/genesis/*.json` | **DOES NOT EXIST** | Genesis state override files |
+| `scripts/setup-binaries.sh` | **EXISTS** | Pinned, checksummed Polkadot binary provisioning and Zombienet provisioning |
+| `POLKADOT_VERSION` | **EXISTS** | Source-controlled Polkadot SDK release pin |
+| `.github/workflows/e2e.yml` | **EXISTS, PARTIAL** | Builds, provisions, spawns, probes live RPC/finality, tears down, and captures logs |
+| `crates/polkagent-chain-subxt/tests/live_rpc.rs` | **EXISTS, PARTIAL** | Real relay/parachain read surface and finality progression; signed writes remain |
+
+---
+
+### Implemented infrastructure baseline (2026-08-05)
+
+The first honest live-chain slice is now present:
+
+- `scripts/setup-binaries.sh` provisions pinned Polkadot, parachain, PVF worker,
+  and Zombienet binaries, verifying published Polkadot SHA-256 files.
+- `fixtures/zombienet/polkagent-testnet.toml` starts two relay validators and
+  one Asset Hub collator through the native provider.
+- `.github/workflows/e2e.yml` waits for a successful JSON-RPC response rather
+  than an open socket, then runs only tests that actually call the live nodes.
+- `live_rpc.rs` reads health, version, genesis/latest/finalized hashes, headers,
+  and runtime metadata from both endpoints and requires relay finality to move.
+
+This baseline is deliberately not described as full E2E completion. It does
+not yet sign or submit an extrinsic, exercise a complete tool/action flow, add
+the dev signer, implement `polkagent testnet` commands, or cover the specified
+five-chain topology and 36 scenarios. Fake-backed suites remain useful
+regression tests but are not counted as live-chain evidence.
 
 ---
 
@@ -511,7 +632,24 @@ existing ROSEDUST design system.
 ```
 
 The Testnet tab refreshes every 5 seconds (matching existing TUI refresh
-cycle) and uses the ROSEDUST palette:
+cycle at `REFRESH_INTERVAL_SECS = 5` in `app.rs`) and uses the ROSEDUST palette.
+
+> **Implementation changes required** (from codebase exploration):
+>
+> 1. **`app.rs` Tab enum** (line ~62): Add `Testnet` variant after `Audit`.
+> 2. **`Tab::ALL`** (line ~87): Change `[Tab; 8]` → `[Tab; 9]`, append `Tab::Testnet`.
+> 3. **`Tab::label()`**: Add `Self::Testnet => "TESTNET"`.
+> 4. **`Tab::fkey_label()`**: Add `Self::Testnet => "[F9]"`.
+> 5. **`Tab::next()`**: `Audit → Testnet`, `Testnet → Dashboard`.
+> 6. **`Tab::prev()`**: `Dashboard → Testnet`, `Testnet → Audit`.
+> 7. **`input.rs`** (line ~145): Add `KeyCode::F(9) => Some(TuiAction::NavigateTab(Tab::Testnet))`.
+> 8. **`input.rs`** (line ~154): Add `KeyCode::Char('9') => Some(TuiAction::NavigateTab(Tab::Testnet))`.
+> 9. **`apply_action()`** (line ~277): Add refresh trigger for `Tab::Testnet`.
+> 10. **`views/mod.rs`** (currently 9 modules): Add `pub mod testnet;`.
+> 11. Create `views/testnet.rs` following the standard signature:
+>     `pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)`.
+
+ROSEDUST palette usage:
 
 - `dot_pink` for chain names and Polkadot-branded elements.
 - `finalized_teal` for finalized block heights and "producing" status.
@@ -709,29 +847,83 @@ network stress, noise increases to 2%.
 
 #### 2.10.4 Animation with TachyonFX
 
-> **Dependency:** `tachyonfx` crate — ratatui's official animation library
-> (50+ shader-like effects).
+> **Dependency:** `tachyonfx` = **0.25.0** — ratatui's official animation library
+> (50+ shader-like effects, owned by the ratatui GitHub org).
+>
+> ```toml
+> [dependencies]
+> tachyonfx = "0.25"
+> ratatui = "0.30"
+> ```
+
+**Architecture:** Effects operate as buffer post-processing — they modify
+cells **after** widgets have been rendered. Use `EffectManager<K>` with
+unique keys to manage lifecycle (add/cancel/replace effects by key).
+
+```rust
+// Core integration pattern:
+use tachyonfx::{fx, EffectManager, EffectRenderer, Interpolation};
+
+let mut effects: EffectManager<u8> = EffectManager::default();
+
+// In draw():
+frame.render_widget(my_widget, area);         // 1. render widget
+let buf = frame.buffer_mut();                  // 2. get buffer
+effects.process_effects(elapsed, buf, area);   // 3. apply effects post-render
+```
 
 The testnet TUI SHOULD use TachyonFX for transitions and state-change
 animations:
 
-| Event | TachyonFX effect | Duration |
-|---|---|---|
-| Test step passes | `sweep` (left→right, jade) | 300ms |
-| Test step fails | `coalesce` (crimson border flash) | 500ms |
-| Chain starts producing | `fade_in` on chain row | 800ms |
-| Chain stalls | `dissolve` on chain status indicator | 1200ms |
-| Referendum advances stage | `slide_in` new stage label | 400ms |
-| Block finalized | `ping` pulse on finalized height | 200ms |
-| Transfer completes | `sweep` along the transfer row | 350ms |
-| XCM message arrives | `coalesce` at destination chain | 400ms |
-| Network spawn complete | `parallel(fade_in, sweep)` on all chains | 1500ms |
-| Era transition | `dissolve` old era → `fade_in` new era | 600ms |
+| Event | TachyonFX effect | Duration | Easing |
+|---|---|---|---|
+| Test step passes | `fx::sweep_in(LeftToRight, jade)` | 300ms | `QuadOut` |
+| Test step fails | `fx::coalesce` + `fx::fade_from_fg(crimson)` | 500ms | `SineOut` |
+| Chain starts producing | `fx::fade_from(bg_void, bg_void)` | 800ms | `CubicOut` |
+| Chain stalls | `fx::dissolve` | 1200ms | `QuintIn` |
+| Referendum advances | `fx::slide_in(LeftToRight)` | 400ms | `QuadOut` |
+| Block finalized | `fx::hsl_shift_fg([0, 0, 0.3])` | 200ms | `SineOut` |
+| Transfer completes | `fx::sweep_in(LeftToRight, success)` | 350ms | `QuadOut` |
+| XCM arrives | `fx::coalesce` | 400ms | `SineOut` |
+| Network spawn | `fx::parallel([fade_from, sweep_in])` | 1500ms | `CubicOut` |
+| Era transition | `fx::sequence([dissolve, fade_from])` | 600ms | `Linear` |
+
+**Phosphor decay chain** (the signature Bardo effect):
+
+```rust
+// Bright → dim → dark → dim → bright (looping)
+let phosphor = fx::ping_pong(fx::sequence(&[
+    // Step 1: sweep in from phosphor green
+    fx::sweep_in(Motion::LeftToRight, 12, 3,
+        Color::Rgb(0, 20, 0), (600, Interpolation::QuadOut)),
+    // Step 2: hot glow — hue shift green→yellow + brighten
+    fx::parallel(&[
+        fx::hsl_shift_fg([20.0, 0.0, 0.15], (300, Interpolation::SineOut)),
+        fx::lighten_fg(0.3, (300, Interpolation::SineOut)),
+    ]),
+    // Step 3: decay — cells dissolve randomly
+    fx::dissolve((800, Interpolation::QuintIn)),
+    // Step 4: afterglow fades to black
+    fx::fade_to(Color::Black, Color::Black, (500, Interpolation::ExpoIn)),
+]));
+
+// Register as unique keyed effect (replaceable/cancellable)
+effects.add_unique_effect(PHOSPHOR_KEY, fx::never_complete(phosphor));
+```
+
+**Available interpolation curves:** `Linear`, `SmoothStep`, `Spring`,
+`SineIn/Out/InOut`, `QuadIn/Out/InOut`, `CubicIn/Out/InOut`,
+`QuartIn/Out/InOut`, `QuintIn/Out/InOut`, `ExpoIn/Out/InOut`,
+`CircIn/Out/InOut`, `BackIn/Out/InOut`, `ElasticIn/Out/InOut`,
+`BounceIn/Out/InOut` (34 total).
+
+**CellFilter** for targeted effects: `CellFilter::Text` (only text cells),
+`CellFilter::FgColor(color)` (only cells with specific fg), `CellFilter::Inner(Margin)`.
 
 These animations fire during the TUI's 5-second refresh cycle. When a
-refresh detects a state change, the appropriate animation is queued and
-rendered over subsequent frames. The TUI should target 15-30fps during
-animations (ratatui crossterm backend can sustain this).
+refresh detects a state change, the appropriate animation is queued via
+`effects.add_unique_effect(key, fx)` and rendered over subsequent frames.
+The TUI should target 15-30fps during animations.
 
 #### 2.10.5 Network topology visualization
 
@@ -771,9 +963,23 @@ Implementation with ratatui `Canvas`:
 - Node size/brightness scales with block production rate.
 - Stalled chains dim and their edges turn `rose_dim`.
 
-**Complementary crate:** `ratatui-plt` provides `NetworkGraph` for
-force-directed graph layout. Use this for automatic node positioning when
-the network has more than 5 chains.
+**Complementary crates for graph visualization:**
+
+| Crate | Version | Use case |
+|---|---|---|
+| `ascii-petgraph` | 0.2.0 | Force-directed layout with `petgraph`. Best for auto-positioning nodes. |
+| `ratatui-flow` | 0.1.1 | DAG layout with connection auto-routing. Best for ordered pipeline views. |
+
+> **Note:** `malevich` does not exist on crates.io. `ratatui-plt` is
+> archived and GPL-3.0 licensed — do not use.
+
+**Canvas API notes (`ratatui` 0.30.2):**
+- `Marker::HalfBlock` gives 1×2 resolution per cell with **distinct fg/bg color** per cell — better color fidelity than Braille for topology visualization
+- `Marker::Braille` gives 2×4 resolution (8 dots per cell) but only one fg color per cell — better for sparklines and waveforms
+- Canvas uses **lower-left origin** coordinate system (mathematical, not screen)
+- Built-in shapes: `Circle`, `Line`, `Rectangle`, `Points`
+- Custom shapes implement the `Shape` trait with `fn draw(&self, painter: &mut Painter)`
+- `ctx.layer()` starts a new drawing layer; `ctx.print(x, y, text)` renders labels on top
 
 #### 2.10.6 Visualization widget catalog for testnet
 
@@ -1240,20 +1446,31 @@ connection from polkagent and diagnostic scripts without parsing spawn output.
 
 ### 3.4 Binary requirements
 
-| Binary | Source | Purpose |
-|---|---|---|
-| `polkadot` | `polkadot-sdk` release or nix | Relay chain validator node |
-| `polkadot-parachain` | `polkadot-sdk` release or nix | System parachain collator |
-| `chain-spec-builder` | `polkadot-sdk` release or nix | Custom chain spec generation |
-| `zombienet` | npm / GitHub releases | Network orchestration (CLI) |
-| `chopsticks` | npm (`@acala-network/chopsticks`) | State fork testing |
-| `subxt` | `cargo install subxt-cli` | Runtime exploration (`subxt explore`) |
-| `subkey` | `polkadot-sdk` or cargo install | Key inspection and signing |
-| `polkadot-js-api` | npm (`@polkadot/api-cli`) | Quick chain queries from CLI |
+| Binary | Source | Platform | Purpose |
+|---|---|---|---|
+| `polkadot` | `polkadot-sdk` GitHub release | Linux x86_64, macOS aarch64 | Relay chain validator |
+| `polkadot-parachain` | `polkadot-sdk` GitHub release | Linux x86_64, macOS aarch64 | System parachain collator |
+| `polkadot-execute-worker` | `polkadot-sdk` GitHub release | same | PVF execution worker (must be in same dir) |
+| `polkadot-prepare-worker` | `polkadot-sdk` GitHub release | same | PVF preparation worker (must be in same dir) |
+| `zombienet` | `paritytech/zombienet` GitHub release | Linux x64, macOS arm64/x64 | Network orchestration (CLI) |
+| `chopsticks` | npm (`@acala-network/chopsticks`) | Node.js | State fork testing |
+| `subxt` | `cargo install subxt-cli` | any | Runtime exploration (`subxt explore`) |
+| `subkey` | `polkadot-sdk` or cargo install | any | Key inspection and signing |
 
-Binaries SHOULD be pinned to a specific polkadot-sdk release (e.g.,
-`polkadot-stable2407` or later) in `testnet/POLKADOT_VERSION` to ensure
-reproducible genesis state and runtime behavior.
+> **Release URL pattern:**
+> `https://github.com/paritytech/polkadot-sdk/releases/download/<TAG>/<ASSET>`
+>
+> - Example tag: `polkadot-stable2606`
+> - Each binary ships with `<ASSET>.sha256` (hex digest) and `<ASSET>.asc` (GPG sig)
+> - macOS x86_64 is NOT published — use aarch64 binary under Rosetta 2
+> - PVF workers (`polkadot-execute-worker`, `polkadot-prepare-worker`) MUST reside
+>   in the same directory as `polkadot` (or specify `--workers-path`)
+
+Binaries MUST be pinned to a specific polkadot-sdk release in
+`testnet/POLKADOT_VERSION` (e.g., `polkadot-stable2606`). The provisioning
+script (`scripts/setup-binaries.sh`) handles platform detection, download,
+checksum verification, caching in `~/.cache/polkagent/binaries/`, and macOS
+Gatekeeper quarantine removal (`xattr -d com.apple.quarantine`).
 
 ### 3.5 Provider configuration
 
@@ -1310,106 +1527,111 @@ Polkadot development accounts are derived from the well-known seed:
 
 ### 5.2 Shortened governance parameters
 
-Production Polkadot governance tracks have decision periods of 14-28 days,
-which are impractical for testing. The genesis config MUST override track
-parameters to enable governance lifecycles to complete within minutes:
+> **CRITICAL IMPLEMENTATION NOTE:** Governance track parameters
+> (`decision_period`, `confirm_period`, `prepare_period`, `min_enactment_period`)
+> are **compile-time constants** embedded in the runtime WASM blob. They are
+> defined in the `TracksInfo` trait implementation at
+> `relay/polkadot/src/governance/tracks.rs` in `polkadot-fellows/runtimes`.
+> They **CANNOT** be overridden via genesis JSON.
+>
+> The `--features fast-runtime` flag (which uses the `prod_or_fast!` macro)
+> shortens staking epochs and election phases but does **NOT** touch governance
+> tracks. To get shortened governance periods, the runtime source MUST be
+> forked and recompiled.
 
-```json
-{
-  "referenda": {
-    "tracks": [
-      {
-        "id": 0,
-        "name": "root",
-        "max_deciding": 1,
-        "decision_deposit": "1000000000000",
-        "prepare_period": 2,
-        "decision_period": 50,
-        "confirm_period": 10,
-        "min_enactment_period": 5,
-        "min_approval": { "linearDecreasing": { "length": 1000000000, "floor": 500000000, "ceil": 1000000000 } },
-        "min_support": { "linearDecreasing": { "length": 1000000000, "floor": 0, "ceil": 500000000 } }
-      },
-      {
-        "id": 1,
-        "name": "whitelisted_caller",
-        "max_deciding": 10,
-        "decision_deposit": "100000000000",
-        "prepare_period": 1,
-        "decision_period": 30,
-        "confirm_period": 5,
-        "min_enactment_period": 2
-      },
-      {
-        "id": 10,
-        "name": "treasurer",
-        "max_deciding": 5,
-        "decision_deposit": "10000000000",
-        "prepare_period": 1,
-        "decision_period": 30,
-        "confirm_period": 5,
-        "min_enactment_period": 2
-      },
-      {
-        "id": 30, "name": "small_tipper",
-        "max_deciding": 15, "decision_deposit": "1000000000",
-        "prepare_period": 1, "decision_period": 10,
-        "confirm_period": 3, "min_enactment_period": 1
-      },
-      {
-        "id": 31, "name": "big_tipper",
-        "max_deciding": 10, "decision_deposit": "5000000000",
-        "prepare_period": 1, "decision_period": 15,
-        "confirm_period": 5, "min_enactment_period": 1
-      },
-      {
-        "id": 32, "name": "small_spender",
-        "max_deciding": 10, "decision_deposit": "10000000000",
-        "prepare_period": 1, "decision_period": 20,
-        "confirm_period": 5, "min_enactment_period": 2
-      },
-      {
-        "id": 33, "name": "medium_spender",
-        "max_deciding": 5, "decision_deposit": "50000000000",
-        "prepare_period": 1, "decision_period": 25,
-        "confirm_period": 5, "min_enactment_period": 2
-      },
-      {
-        "id": 34, "name": "big_spender",
-        "max_deciding": 5, "decision_deposit": "100000000000",
-        "prepare_period": 2, "decision_period": 30,
-        "confirm_period": 5, "min_enactment_period": 3
-      }
-    ]
-  }
-}
+#### Production values (for reference)
+
+| Track | prepare | decision | confirm | min_enactment |
+|---|---|---|---|---|
+| Root (0) | 2h (1,200 blk) | 28d (403,200 blk) | 24h (14,400 blk) | 24h (14,400 blk) |
+| Whitelisted Caller (1) | 30min (300 blk) | 28d (403,200 blk) | 10min (100 blk) | 10min (100 blk) |
+| Treasurer (11) | 2h (1,200 blk) | 28d (403,200 blk) | 7d (100,800 blk) | 24h (14,400 blk) |
+| Small Tipper (30) | 1min (10 blk) | 7d (100,800 blk) | 10min (100 blk) | 1min (10 blk) |
+| Small Spender (32) | 4h (2,400 blk) | 28d (403,200 blk) | 2d (28,800 blk) | 24h (14,400 blk) |
+| Big Spender (34) | 4h (2,400 blk) | 28d (403,200 blk) | 7d (100,800 blk) | 24h (14,400 blk) |
+
+#### Target test values (requires recompiled runtime)
+
+| Track | prepare | decision | confirm | min_enactment | Full cycle |
+|---|---|---|---|---|---|
+| Root (0) | 10 blk (1min) | 50 blk (5min) | 20 blk (2min) | 10 blk (1min) | ~9 min |
+| Whitelisted Caller (1) | 1 blk (6s) | 30 blk (3min) | 5 blk (30s) | 2 blk (12s) | ~4 min |
+| Treasurer (11) | 10 blk (1min) | 50 blk (5min) | 30 blk (3min) | 10 blk (1min) | ~10 min |
+| Small Tipper (30) | 1 blk (6s) | 30 blk (3min) | 10 blk (1min) | 1 blk (6s) | ~4 min |
+| Small Spender (32) | 2 blk (12s) | 40 blk (4min) | 10 blk (1min) | 5 blk (30s) | ~6 min |
+| Big Spender (34) | 2 blk (12s) | 50 blk (5min) | 20 blk (2min) | 10 blk (1min) | ~8 min |
+
+#### How to apply: fork `tracks.rs` with `prod_or_fast!`
+
+```rust
+// In relay/polkadot/src/governance/tracks.rs (forked)
+// Wrap each period with the prod_or_fast! macro:
+
+prepare_period: prod_or_fast!(2 * HOURS, MINUTES),
+decision_period: prod_or_fast!(28 * DAYS, 5 * MINUTES),
+confirm_period: prod_or_fast!(24 * HOURS, 2 * MINUTES),
+min_enactment_period: prod_or_fast!(24 * HOURS, MINUTES),
+
+// Then build with:
+// cargo build --release --features fast-runtime -p polkadot
 ```
 
-All periods are specified in **blocks**. With a 6-second block time, a
-50-block decision period completes in 5 minutes.
+Environment variable overrides MAY be added for CI flexibility using the
+three-argument form of `prod_or_fast!`:
+
+```rust
+decision_period: prod_or_fast!(28 * DAYS, 5 * MINUTES, "DOT_ROOT_DECISION_PERIOD"),
+```
+
+#### Alternative: Chopsticks storage override (no recompile)
+
+For ad-hoc scenario testing without recompiling, use Chopsticks to
+override referenda state directly via `dev_setStorage`, bypassing the
+period-driven state machine entirely. This is useful for testing specific
+governance outcomes but does NOT exercise the full lifecycle flow.
+
+#### What CAN vs CANNOT be set at genesis
+
+| Configurable at genesis | NOT configurable (compile-time) |
+|---|---|
+| Account balances (`System.Account`) | Track periods (`decision_period`, etc.) |
+| Staking validators + stakers | `SpendPeriod` (treasury) |
+| Session keys | `Burn` percentage (treasury) |
+| `sudo.key` | `EpochDuration` (BABE) |
+| Treasury initial balance (via balances entry) | `SessionsPerEra` |
+| Parachains configuration | `BondingDuration` |
+| BABE epoch config | Approval/support curves |
 
 ### 5.3 Shortened staking parameters
 
-| Parameter | Production | Local testnet |
-|---|---|---|
-| Era duration | 24 hours (14400 blocks) | 2 minutes (20 blocks) |
-| Session length | 4 hours (2400 blocks) | 1 minute (10 blocks) |
-| Sessions per era | 6 | 2 |
-| Bonding duration | 28 eras (28 days) | 4 eras (8 minutes) |
-| Slash defer duration | 27 eras | 2 eras |
-| History depth | 84 eras | 10 eras |
-| Max nominations | 16 | 16 |
-| Min nominator bond | 250 DOT | 1 DOT |
+> **Mechanism:** `EpochDuration` and `SessionsPerEra` are shortened by
+> `--features fast-runtime` via the `prod_or_fast!` macro.
+> `BondingDuration` and `SlashDeferDuration` are NOT shortened by
+> `fast-runtime` — they require source edits in the runtime fork.
+
+| Parameter | Production | fast-runtime | Recommended test | How to set |
+|---|---|---|---|---|
+| `EpochDuration` | 4h (2,400 slots) | 2min (20 slots) | 2min | `--features fast-runtime` |
+| `SessionsPerEra` | 6 | 1 | 1 | `--features fast-runtime` |
+| Era duration (derived) | 24h | ~2min | ~2min | Derived from above |
+| `BondingDuration` | 28 eras (28d) | **28 eras** (unchanged) | 2 eras (~4min) | Edit source: `prod_or_fast!(28, 2)` |
+| `SlashDeferDuration` | 27 eras | **27 eras** (unchanged) | 1 era (~2min) | Edit source: `prod_or_fast!(27, 1)` |
+| History depth | 84 eras | 84 eras | 10 eras | Edit source |
+| Max nominations | 16 | 16 | 16 | Genesis-configurable |
+| Min nominator bond | 250 DOT | 250 DOT | 1 DOT | Genesis-configurable |
 
 ### 5.4 Shortened treasury parameters
 
-| Parameter | Production | Local testnet |
-|---|---|---|
-| Spend period | 24 days (345600 blocks) | 5 minutes (50 blocks) |
-| Burn rate | 1% of remainder | 1% of remainder |
-| Bounty deposit base | 1 DOT | 0.1 DOT |
-| Bounty update period | 90 days | 5 minutes (50 blocks) |
-| Tip countdown | 1 day | 1 minute (10 blocks) |
+> **Mechanism:** `SpendPeriod` and `Burn` are compile-time `parameter_types!`
+> constants, NOT genesis-configurable. Requires source edit and recompile.
+
+| Parameter | Production | Recommended test | How to set |
+|---|---|---|---|
+| `SpendPeriod` | 24d (345,600 blk) | 5min (50 blk) | Recompile: edit `parameter_types!` |
+| `Burn` | 1% per period | 0% (for predictable tests) | Recompile: `Permill::from_percent(0)` |
+| Bounty deposit base | 1 DOT | 0.1 DOT | Recompile |
+| `BountyUpdatePeriod` | 90d | 5min (50 blk) | Recompile |
+| Tip countdown | 1d | 1min (10 blk) | Recompile |
 
 ### 5.5 Pre-seeded state
 
@@ -1478,9 +1700,23 @@ and from a test failure to understanding the root cause in under 30 seconds.**
 
 ### 5.1 The `polkagent testnet` CLI subcommand
 
-A new `testnet` subcommand group is added to the polkagent CLI (extending the
-existing `network` command group or as a sibling). All commands support the
-global `--format json` flag for structured output that agents can parse.
+A new `testnet` subcommand group is added to the polkagent CLI as a sibling
+to the existing `network` command group. All commands support the global
+`--format json` flag for structured output that agents can parse.
+
+> **Implementation pattern** (from codebase exploration):
+>
+> 1. Add `Testnet(TestnetCmd)` variant to `Commands` enum in `cli.rs`
+>    (line ~130), annotated with `#[command(subcommand)]`.
+> 2. Create `crates/polkagent-cli/src/commands/testnet.rs` with a
+>    `TestnetCmd` enum (`#[derive(Debug, Subcommand)]`) mirroring the
+>    `NetworkCmd` pattern in `commands/network.rs`.
+> 3. Add dispatch in `main.rs` (line ~105):
+>    `Some(Commands::Testnet(cmd)) => ("testnet", commands::testnet::run(cmd).await)`.
+> 4. Individual handlers follow the pattern: `async fn status(cmd: &TestnetStatusCmd) -> Result<()>`
+>    with conditional `cmd.json` output. The global `--format` flag flows
+>    through `finish_command()` (line ~170) for success/error envelopes.
+> 5. Register module in `commands/mod.rs` (currently 24 lines, 9 modules).
 
 #### 4.1.1 Command reference
 
@@ -2869,67 +3105,150 @@ The `polkagent-e2e-tests` crate MUST use the `zombienet-sdk` Rust crate for
 programmatic network control. This gives typed access to nodes, metrics, and
 subxt clients without parsing CLI output.
 
+> **Verified versions (August 2026):**
+> - `zombienet-sdk` = **0.4.15** (typestate builder, `NetworkConfigExt` trait)
+> - `subxt` = **0.50.2** (block-anchored tx client, dynamic API)
+> - `subxt-signer` = **0.50.2** (sr25519 dev keys, `Signer<T>` impl)
+
 ```toml
 # Cargo.toml for polkagent-e2e-tests
 [dependencies]
-zombienet-sdk = "0.3"
-subxt = { version = "0.50", features = ["native"] }
-subxt-signer = { version = "0.50", features = ["sr25519"] }
-tokio = { version = "1", features = ["full"] }
+zombienet-sdk = "0.4.15"
+subxt         = "0.50.2"
+subxt-signer  = { version = "0.50.2", features = ["sr25519", "subxt"] }
+tokio         = { version = "1", features = ["full"] }
 ```
+
+#### Key API details
+
+**`NetworkConfigBuilder`** uses a typestate pattern (`Initial` →
+`WithRelaychain`). Adding relay/parachain/HRMP channels uses closure-based
+builders. `build()` returns `Result<NetworkConfig, Vec<Error>>`.
+
+**`spawn_native()`** is a method on the `NetworkConfigExt` trait (must be
+imported). Returns `Network<LocalFileSystem>`.
+
+**`NetworkNode`** key methods:
+- `ws_uri()` — returns `"ws://127.0.0.1:PORT"` (use `from_insecure_url` with subxt)
+- `wait_client::<Config>()` — preferred over deprecated `client()`, waits for node readiness
+- `wait_metric(name, predicate)` / `wait_metric_with_timeout(name, pred, secs)` — poll Prometheus
+- `logs()` — capture node output
+- `pause()` / `resume()` / `restart(after)` — lifecycle control (SIGSTOP/SIGCONT)
+
+**`OnlineClient::from_insecure_url()`** — MUST use this for `ws://` URIs from zombienet. `from_url()` rejects non-TLS schemes.
+
+**`api.tx().await?`** — `tx()` is async in subxt 0.50.2 (returns block-anchored `TransactionsClient`). `sign_and_submit_then_watch_default` takes `&mut self`.
 
 **Key SDK usage patterns:**
 
 ```rust
 use zombienet_sdk::{NetworkConfig, NetworkConfigExt};
+use subxt::{OnlineClient, PolkadotConfig};
+use subxt::dynamic::Value;
 use subxt_signer::sr25519::dev;
 
-// Spawn from TOML
+// ── Spawn from TOML ────────────────────────────────────────────────────────
 let network = NetworkConfig::load_from_toml("testnet/zombienet.toml")?
     .spawn_native()
     .await?;
 
-// Access nodes
+// Wait for all nodes to be up
+network.wait_until_is_up(120).await?;
+
+// ── Access nodes ────────────────────────────────────────────────────────────
 let alice_node = network.get_node("alice")?;
 let ws_url = alice_node.ws_uri(); // "ws://127.0.0.1:9944"
 
-// Get typed subxt client
-let client = alice_node.client::<subxt::PolkadotConfig>().await?;
+// Use wait_client (NOT the deprecated client()) — waits for node readiness
+let api: OnlineClient<PolkadotConfig> =
+    alice_node.wait_client::<PolkadotConfig>().await?;
 
-// Wait for blocks to be produced
-alice_node.wait_metric(
-    "block_height_best",
-    |v| v >= 5.0,
-    Duration::from_secs(120)
-).await?;
+// ── Wait for block production ───────────────────────────────────────────────
+alice_node
+    .wait_metric("substrate_block_height{status=\"best\"}", |v| v >= 5.0)
+    .await?;
 
 // Check parachain is included
 let para_node = network.get_node("asset-hub-collator-01")?;
-para_node.wait_metric(
-    "block_height_best",
-    |v| v >= 2.0,
-    Duration::from_secs(120)
-).await?;
+para_node
+    .wait_metric("substrate_block_height{status=\"best\"}", |v| v >= 2.0)
+    .await?;
 
-// Submit extrinsic via subxt
+// ── Build dynamic transaction (no codegen) ──────────────────────────────────
 let alice = dev::alice();
-let tx = subxt::dynamic::transaction(
+let bob = dev::bob();
+
+let transfer_tx = subxt::dynamic::tx(
     "Balances",
     "transfer_allow_death",
-    (dev::bob().public_key().to_address::<()>(), 10_000_000_000_000u128),
+    vec![
+        ("dest", Value::unnamed_variant("Id", [Value::from_bytes(bob.public_key().0)])),
+        ("value", Value::u128(1_000_000_000_000_u128)), // 100 DOT
+    ],
 );
-let events = client
+
+// ── Sign, submit, watch finality ────────────────────────────────────────────
+let events = api
     .tx()
-    .sign_and_submit_then_watch_default(&tx, &alice)
+    .await?   // NOTE: tx() is async in subxt 0.50.2
+    .sign_and_submit_then_watch_default(&transfer_tx, &alice)
     .await?
     .wait_for_finalized_success()
     .await?;
 
-// Attach to a running network (for interactive sessions)
+println!("Finalized: {:?}", events.extrinsic_hash());
+
+// ── Attach to a running network (interactive sessions) ──────────────────────
 use zombienet_sdk::AttachToLiveNetwork;
 let network = AttachToLiveNetwork::attach_native(
     PathBuf::from("testnet/.zombienet/zombie.json")
 ).await?;
+
+// ── Programmatic builder (alternative to TOML) ──────────────────────────────
+let config = NetworkConfigBuilder::new()
+    .with_relaychain(|r| {
+        r.with_chain("rococo-local")
+            .with_default_command("polkadot")
+            .with_validator(|n| n.with_name("alice"))
+            .with_validator(|n| n.with_name("bob"))
+    })
+    .with_parachain(|p| {
+        p.with_id(1000)
+            .with_default_command("polkadot-parachain")
+            .with_collator(|c| c.with_name("asset-hub-collator"))
+    })
+    .with_hrmp_channel(|h| {
+        h.with_sender(1000)
+            .with_recipient(2000)
+            .with_max_capacity(8)
+            .with_max_message_size(1048576)
+    })
+    .build()?;
+
+// ── Tear down ───────────────────────────────────────────────────────────────
+network.destroy().await?;
+```
+
+#### subxt-signer dev accounts
+
+`subxt_signer::sr25519::dev` provides 8 pre-derived keypairs from the
+well-known Substrate dev seed phrase:
+
+```rust
+use subxt_signer::sr25519::dev;
+
+let alice   = dev::alice();   // "//Alice"
+let bob     = dev::bob();     // "//Bob"
+let charlie = dev::charlie(); // "//Charlie"
+let dave    = dev::dave();    // ... etc
+let eve     = dev::eve();
+let ferdie  = dev::ferdie();
+
+// Keypair implements Signer<T> for PolkadotConfig when feature "subxt" is on.
+// Pass directly to sign_and_submit_then_watch_default().
+
+// Get AccountId32 from keypair:
+let account_id: subxt::utils::AccountId32 = alice.public_key().into();
 ```
 
 ### 7.3 Test organization
@@ -3052,6 +3371,13 @@ For CI simplicity, the default runner executes all tests sequentially.
 
 ## 8. Chopsticks-based testing (complementary)
 
+> **What is Chopsticks?** A Node.js tool by Acala Foundation
+> (`@acala-network/chopsticks`) that forks live Substrate chain state locally.
+> It fetches state from a remote RPC, runs it inside a WASM runtime, and
+> exposes a standard JSON-RPC server plus custom `dev_*` methods. There are
+> **no native Rust bindings** — integration from Rust is via subprocess +
+> HTTP/WebSocket JSON-RPC.
+
 ### 8.1 Use cases
 
 Chopsticks complements Zombienet for scenarios where:
@@ -3060,8 +3386,133 @@ Chopsticks complements Zombienet for scenarios where:
 - **Deterministic block production** is required (no consensus variability).
 - **Fast iteration** is needed (5-second startup vs 30-60 seconds).
 - **Storage manipulation** is needed to set up specific edge cases.
+- **Governance shortcutting** — bypass period-driven state machine entirely
+  by injecting referendum state via `dev_setStorage` (avoids the need for
+  a recompiled runtime with shortened track periods).
 
-### 8.2 Agent workflow with Chopsticks
+### 8.2 Custom RPC methods
+
+| Method | Parameters | Purpose |
+|---|---|---|
+| `dev_newBlock` | `{count?, to?, transactions?, unsafeBlockHeight?}` | Produce N blocks or advance to a block number |
+| `dev_setStorage` | `[values_json, block_hash?]` | Override storage entries using pallet/storage hierarchy |
+| `dev_setHead` | `[hash_or_number]` | Reposition chain tip to a specific block |
+| `dev_timeTravel` | `["ISO-8601-string"]` | Warp block timestamp for all subsequent blocks |
+| `dev_setBlockBuildMode` | `["Batch"|"Instant"|"Manual"]` | Control when blocks are produced |
+
+#### `dev_setStorage` format
+
+The values object follows the pallet/storage hierarchy. Maps use
+`[[key], value]` arrays. The special key `"$removePrefix"` clears all
+entries under a storage prefix.
+
+```jsonc
+{
+  "System": {
+    "Account": [
+      [
+        ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"],
+        {
+          "providers": 1,
+          "data": { "free": "10000000000000000000", "reserved": "0", "frozen": "0" }
+        }
+      ]
+    ]
+  },
+  "ParasDisputes": { "$removePrefix": ["disputes"] }
+}
+```
+
+### 8.3 Multi-chain XCM mode
+
+```bash
+# Relay + two parachains — each gets its own port (8000, 8001, 8002)
+npx @acala-network/chopsticks@latest xcm \
+  -r polkadot \
+  -p asset-hub \
+  -p collectives
+
+# Bridge mode for cross-ecosystem testing
+npx @acala-network/chopsticks@latest bridge \
+  -r polkadot -p polkadot-bridge-hub -p polkadot-asset-hub \
+  -R kusama  -P kusama-bridge-hub  -P kusama-asset-hub
+```
+
+### 8.4 Configuration YAML
+
+```yaml
+# testnet/chopsticks/polkadot-fork.yml
+endpoint:
+  - wss://polkadot-rpc.n.dwellir.com
+  - wss://rpc.polkadot.io
+block: 22000000                  # pin to a specific block; omit for latest
+db: ./chopsticks-polkadot.sqlite # SQLite cache (speeds up re-runs)
+port: 8000
+mock-signature-host: true        # any sig starting with 0xdeadbeef is valid
+build-block-mode: manual         # tests control block production
+
+import-storage:
+  System:
+    Account:
+      - - "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
+        - providers: 1
+          data:
+            free: "10000000000000000000"
+            reserved: "0"
+            frozen: "0"
+  ParasDisputes:
+    $removePrefix:
+      - disputes
+```
+
+### 8.5 Rust integration pattern
+
+Since Chopsticks is Node.js, Rust integrates via subprocess + HTTP JSON-RPC:
+
+```rust
+// Simplified API — full implementation in polkagent-e2e-tests/src/chopsticks.rs
+
+pub struct ChopsticksHandle {
+    child: tokio::process::Child,
+    endpoint: String,   // "http://localhost:8000"
+    http: reqwest::Client,
+}
+
+impl ChopsticksHandle {
+    /// Spawn Chopsticks and wait for "RPC listening on port" log line.
+    pub async fn spawn(cfg: ChopsticksConfig) -> Result<Self, ChopsticksError> {
+        let mut child = Command::new("npx")
+            .arg("@acala-network/chopsticks@latest")
+            .args(&["--config", &cfg.config_file, "--port", &cfg.port.to_string()])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        // Read stdout until "RPC listening on port" appears...
+    }
+
+    pub async fn dev_new_block(&self, count: u32) -> Result<Value, ChopsticksError>;
+    pub async fn dev_set_storage(&self, values: Value) -> Result<Value, ChopsticksError>;
+    pub async fn dev_time_travel(&self, date: &str) -> Result<Value, ChopsticksError>;
+    pub async fn dev_set_head(&self, hash_or_number: Value) -> Result<Value, ChopsticksError>;
+
+    /// High-level: set an account's free balance.
+    pub async fn set_balance(&self, address: &str, free: u128) -> Result<()>;
+
+    /// High-level: inject a privileged call via Scheduler.Agenda
+    /// (bypasses governance periods for testing).
+    pub async fn schedule_privileged_call(
+        &self, encoded_call: &str, origin: Value,
+    ) -> Result<()>;
+}
+```
+
+Key design decisions:
+- **HTTP transport** (not WebSocket) — simpler, no connection lifecycle; `dev_*` methods don't need subscriptions
+- **`kill_on_drop(true)`** — child is killed if test panics before `shutdown()`
+- **`build-block-mode=manual`** — always; tests must control block production explicitly
+- **`mock-signature-host`** — required for testing without real private keys
+
+### 8.6 Agent workflow with Chopsticks
 
 ```bash
 # Fork mainnet at latest block
@@ -3089,7 +3540,7 @@ $ polkagent testnet exec --chain relay --provider chopsticks \
     dev-new-block --count 10 --format json
 ```
 
-### 8.3 Chopsticks test scenarios
+### 8.7 Chopsticks test scenarios
 
 #### CHOP-01: Test polkagent against real mainnet state
 
@@ -3103,19 +3554,31 @@ $ polkagent testnet exec --chain relay --provider chopsticks \
 #### CHOP-02: XCM dry-run simulation
 
 **Steps:**
-1. Fork both relay chain and Asset Hub.
-2. Use Chopsticks XCM simulation mode to test teleport.
-3. Call `dev_newBlock` on both chains to advance XCM processing.
-4. Verify balances on both chains.
+1. Fork both relay chain and Asset Hub using Chopsticks XCM mode.
+2. Inject balances on relay chain via `dev_setStorage`.
+3. Submit `limited_teleport_assets` extrinsic.
+4. Call `dev_newBlock` on relay chain, then on Asset Hub to advance XCM.
+5. Verify balances updated on both chains.
 
 #### CHOP-03: Edge case storage injection
 
 **Steps:**
-1. Use `dev_setStorage` to create a specific edge case:
-   - Account at exactly existential deposit.
+1. Use `dev_setStorage` to create specific edge cases:
+   - Account at exactly existential deposit (1 DOT = 10^10 planck).
    - Referendum in `Confirming` state with 1 block remaining.
    - Nomination pool with pending slashes.
 2. Connect polkagent and verify it handles each edge case gracefully.
+
+#### CHOP-04: Governance bypass via Scheduler injection
+
+**Steps:**
+1. Fork mainnet state.
+2. Inject a `Scheduler.Agenda` entry that dispatches a treasury spend
+   with `origin: { "origins": "SmallSpender" }` in the next block.
+3. Call `dev_newBlock(1)` — the scheduler executes the privileged call.
+4. Verify treasury balance decreased without going through referendum flow.
+5. This pattern is useful for testing polkagent's treasury queries against
+   post-enactment state without waiting for governance periods.
 
 ---
 
@@ -3210,15 +3673,63 @@ This is NOT required for CI but is valuable for local debugging.
 
 ### 10.4 Binary provisioning
 
-Polkadot SDK binaries MUST be provisioned in CI via one of:
+Polkadot SDK binaries MUST be provisioned in CI via pre-built GitHub releases
+(preferred for speed) or cargo build from source (for custom runtimes with
+shortened governance parameters).
 
-1. **Pre-built releases** from the polkadot-sdk GitHub releases page (preferred).
-2. **Nix flake** for reproducible builds (`nix build .#polkadot`).
-3. **Docker images** (`parity/polkadot`, `parity/polkadot-parachain`)
-   extracted to local binaries.
-
-The binary version MUST be pinned in `testnet/POLKADOT_VERSION` and updated
+The binary version MUST be pinned in `POLKADOT_VERSION` and updated
 deliberately via PR.
+
+#### CI workflow structure
+
+The GitHub Actions E2E workflow (`.github/workflows/e2e.yml`) uses a
+**four-job layout**:
+
+```
+┌─────────────┐  ┌─────────────────────┐
+│  build       │  │  provision-binaries │    (parallel)
+│  (cargo)     │  │  (download + cache) │
+└──────┬──────┘  └──────────┬──────────┘
+       │                    │
+       └────────┬───────────┘
+                │
+       ┌────────▼────────┐
+       │  e2e             │    (depends on both)
+       │  (spawn + test)  │
+       └────────┬────────┘
+                │
+       ┌────────▼────────┐
+       │  e2e-gate        │    (status check)
+       └─────────────────┘
+```
+
+Key design decisions:
+- **Concurrency control:** `cancel-in-progress: true` on `github.ref` group
+- **Binary caching:** `actions/cache` keyed on `polkadot-bins-<VERSION>-<runner.os>`
+- **Version pinning:** `POLKADOT_VERSION` file for local provisioning, mirrored
+  in workflow environment until the workflow reads the file directly
+
+#### CI timing estimates
+
+| Stage | Hot cache | Cold cache |
+|---|---|---|
+| `cargo build --workspace` | 2–3 min | 10–15 min |
+| Download binaries (~340 MB) | 0 s (cache hit) | 3–5 min |
+| Zombienet spawn + ready | 20–40 s | 20–40 s |
+| E2E test suite | ~2 min | ~2 min |
+| Teardown + artifact upload | 10–30 s | 10–30 s |
+| **Total** | **~8–10 min** | **~20–25 min** |
+
+#### `scripts/setup-binaries.sh`
+
+The provisioning script handles:
+1. **Platform detection** — Linux x86_64, macOS aarch64 (no Intel-Mac builds from Parity)
+2. **Version precedence** — `$POLKADOT_VERSION` env > `POLKADOT_VERSION` file > hardcoded default
+3. **Idempotent downloads** — `.version-<name>` marker files; skip if version matches
+4. **Atomic writes** — download to `mktemp`, `mv` after checksum verification
+5. **SHA-256 verification** — downloaded from `<ASSET>.sha256` alongside each binary
+6. **macOS Gatekeeper** — `xattr -d com.apple.quarantine` on Darwin
+7. **Cache directory** — `~/.cache/polkagent/binaries/` (or `$POLKAGENT_BIN_DIR`)
 
 ---
 
@@ -3226,21 +3737,22 @@ deliberately via PR.
 
 ### 11.1 ChainClient trait exercised
 
-The E2E tests validate that `polkagent-chain-subxt` (the real chain client
-implementation) correctly implements the `ChainClient` trait
-(`polkagent-chain-trait/src/lib.rs`) against live nodes. Specifically:
+The completed E2E suite MUST validate that `polkagent-chain-subxt` (the real
+chain client implementation) correctly implements the `ChainClient` trait
+(`polkagent-chain-trait/src/lib.rs`) against live nodes. The current baseline
+only proves the underlying HTTP read surface and finalized-head progression.
 
-| ChainClient method | Scenarios that exercise it |
-|---|---|
-| `fetch_metadata` | All scenarios (metadata pinning on first connection) |
-| `simulate` / `dry_run_call` | E2E-PAY-01, E2E-PAY-02, E2E-PAY-03 |
-| `submit_extrinsic` | E2E-PAY-01, E2E-PAY-02, E2E-PAY-04 |
-| `watch_finality` | E2E-PAY-01, E2E-PAY-02 (receipted state) |
-| `decode_call` | E2E-PAY-01 (action card rendering) |
-| `query_storage` | E2E-GOV-01, E2E-TRES-01, E2E-STAKE-01, etc. |
-| `xcm_query_delivery_fee` | E2E-PAY-02, E2E-XCM-01 |
-| `is_trusted_teleporter` | E2E-XCM-01, E2E-PAY-02 |
-| `health` | `polkagent doctor` / `polkagent testnet status` |
+| ChainClient method | Target scenarios | Current live evidence |
+|---|---|---|
+| `fetch_metadata` | All scenarios (metadata pinning on first connection) | Raw `state_getMetadata` only |
+| `simulate` / `dry_run_call` | E2E-PAY-01, E2E-PAY-02, E2E-PAY-03 | None; implementation gap |
+| `submit_extrinsic` | E2E-PAY-01, E2E-PAY-02, E2E-PAY-04 | None |
+| `watch_finality` | E2E-PAY-01, E2E-PAY-02 (receipted state) | Raw finalized-head progression only |
+| `decode_call` | E2E-PAY-01 (action card rendering) | None |
+| `query_storage` | E2E-GOV-01, E2E-TRES-01, E2E-STAKE-01, etc. | None through trait |
+| `xcm_query_delivery_fee` | E2E-PAY-02, E2E-XCM-01 | None; implementation gap |
+| `is_trusted_teleporter` | E2E-XCM-01, E2E-PAY-02 | None; implementation gap |
+| `health` | `polkagent doctor` / `polkagent testnet status` | Raw `system_health` only |
 
 ### 11.2 Tool validation matrix
 
@@ -3277,15 +3789,38 @@ E2E tests MUST use a real signer (not `polkagent-signer-fake`) to exercise
 the full signing path:
 
 **Implementation:** A new `polkagent-signer-dev` crate wrapping `subxt-signer`
-with sr25519 dev account keys. This signer:
+with sr25519 dev account keys. This signer follows the exact pattern of
+`polkagent-signer-fake` (417 lines) but uses real cryptography.
 
-- Implements the `Signer` trait from `polkagent-signer-trait`.
-- Constructs keypairs from dev URIs (`//Alice`, `//Bob`, etc.) via
-  `subxt_signer::sr25519::dev::alice()` etc.
-- Performs real sr25519 signing (not deterministic fakes).
-- Records sign requests for test assertions (like `polkagent-signer-fake` does).
-- Verifies `CanonicalSignRequest.expires_at` is not in the past.
-- Rejects requests for accounts it doesn't manage.
+> **Existing pattern to follow:** `polkagent-signer-fake/src/lib.rs`
+> - `Mode` enum (`Signing` / `Rejecting`) for test scenarios
+> - `AtomicU64` sign call counter + `Mutex<Option<CanonicalSignRequest>>` last request
+> - `fn fake_sign()` embeds first 4 payload bytes in signature for test verification
+> - Constructor variants: `new()`, `with_accounts(vec)`, `rejecting()`
+
+The dev signer:
+
+- Implements the `Signer` trait from `polkagent-signer-trait` (3 async methods:
+  `describe()`, `sign(CanonicalSignRequest)`, `health()`).
+- Constructs `subxt_signer::sr25519::Keypair` from dev URIs via
+  `dev::alice()`, `dev::bob()`, etc. (feature `"sr25519"` + `"subxt"`).
+- Maps `CanonicalSignRequest.account.account_id` to the matching dev keypair
+  by comparing 32-byte public keys.
+- Performs **real sr25519 signing** (not deterministic fakes).
+- Returns `SignedPayload` with `signed_extrinsic`, `public_key`, and `signature`.
+- Records sign requests for test assertions (like `polkagent-signer-fake`).
+- Verifies `CanonicalSignRequest.expires_at` is not in the past (returns `SignerError::Expired`).
+- Returns `SignerError::AccountNotFound` for non-dev accounts.
+- Returns `SignerCapabilities` with `accounts: [alice, bob, charlie, dave, eve, ferdie]`,
+  `chain_profiles: ["polkadot"]`, `hardware_backed: false`, `can_sign: true`.
+
+```toml
+# crates/polkagent-signer-dev/Cargo.toml
+[dependencies]
+polkagent-signer-trait = { path = "../polkagent-signer-trait" }
+subxt-signer = { version = "0.50.2", features = ["sr25519", "subxt"] }
+async-trait = { workspace = true }
+```
 
 ```rust
 use polkagent_signer_dev::DevSigner;
@@ -3295,7 +3830,7 @@ let capabilities = signer.describe().await?;
 // capabilities.accounts = [alice, bob, charlie, dave, eve, ferdie]
 
 let signed = signer.sign(CanonicalSignRequest { ... }).await?;
-// signed.signature = real sr25519 signature
+// signed.signature = real sr25519 signature (64 bytes)
 // signed.public_key = real 32-byte public key
 
 assert_eq!(signer.sign_call_count(), 1);

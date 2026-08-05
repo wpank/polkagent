@@ -1,0 +1,68 @@
+# fixtures/zombienet/polkagent-testnet.toml
+#
+# Polkagent E2E testnet — native provider
+#
+# Spawns a minimal Polkadot relay chain (rococo-local, 2 validators) plus one
+# Asset Hub parachain (parachain id 1000) for testing XCM and governance
+# flows.
+#
+# The binaries are expected to be on PATH (or pointed to by `command` below).
+# setup-binaries.sh installs the Polkadot workers beside the node binary, which
+# is the layout used by the native provider in CI and local development.
+#
+# Ref: https://paritytech.github.io/zombienet/
+
+[settings]
+# Maximum time (seconds) zombienet will wait for the network to become
+# ready before considering the spawn a failure.
+timeout = 300
+
+[relaychain]
+# Use rococo-local which requires only 2 validators and finishes epoch 0
+# very quickly — suitable for short-lived CI sessions.
+chain = "rococo-local"
+
+# "command" is the binary name (resolved via PATH) or an absolute path.
+default_command = "polkadot"
+
+# Extra flags passed to every validator node.
+default_args = [
+  # Detailed logs for parachain subsystems — helpful for failure diagnosis.
+  "-lparachain=debug,runtime=info",
+]
+
+  [[relaychain.nodes]]
+  name = "alice"
+  validator = true
+  # Alice uses well-known dev key.
+  args = ["--alice"]
+  # Relay-chain RPC port; polkagent-chain-subxt connects here.
+  rpc_port = 9944
+  ws_port = 9944
+
+  [[relaychain.nodes]]
+  name = "bob"
+  validator = true
+  args = ["--bob"]
+  rpc_port = 9945
+  ws_port = 9945
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Parachain 1000 — Asset Hub (westend-local chain spec bundled with
+# polkadot-parachain binary)
+# ──────────────────────────────────────────────────────────────────────────────
+[[parachains]]
+id = 1000
+chain = "asset-hub-rococo-local"
+# cumulus adds_default_protocol_id is true by default
+
+  [parachains.collator]
+  name = "asset-hub-collator"
+  command = "polkadot-parachain"
+  args = [
+    "--alice",
+    "-lparachain=debug,runtime=info",
+  ]
+  # Parachain RPC port; polkagent tests use POLKAGENT_E2E_PARACHAIN_RPC.
+  rpc_port = 9988
+  ws_port = 9988

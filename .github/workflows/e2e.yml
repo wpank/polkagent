@@ -1,0 +1,289 @@
+name: E2E
+
+# Runs on every PR and on a nightly schedule.
+# The job spawns a local Polkadot relay-chain + parachain testnet via
+# zombienet (native provider) and then exercises polkagent's live JSON-RPC
+# surface against it. Fake-backed integration tests remain in the normal CI
+# suite and are not presented as live E2E coverage.
+
+on:
+  pull_request:
+  schedule:
+    # 02:30 UTC every day — avoids peak-load periods on GitHub-hosted runners
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # One E2E run per PR branch at a time; nightly runs are independent.
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  # Pinned stable release — keep in sync with POLKADOT_VERSION below and
+  # with scripts/setup-binaries.sh.
+  POLKADOT_VERSION: "polkadot-stable2606"
+  ZOMBIENET_VERSION: "v1.3.138"
+  # Where setup-binaries.sh caches binaries on the runner.
+  BIN_CACHE_DIR: "${{ github.workspace }}/.bin-cache"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1.  Build the Rust workspace (cached).
+  # ──────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Include the profile so release/debug caches don't collide.
+          key: e2e-build
+
+      - name: cargo build (workspace)
+        # Build the entire workspace so the E2E tests link against fresh
+        # artifacts without requiring a full rebuild in the test step.
+        run: cargo build --workspace
+
+      # Persist the compiled test binary artefacts so the e2e job can run
+      # them without rebuilding.
+      - name: Save compiled test artefacts
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/*.d
+          key: e2e-test-bins-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2.  Download + cache Polkadot and zombienet binaries.
+  # ──────────────────────────────────────────────────────────────────────────
+  provision-binaries:
+    name: Provision binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      bin-cache-key: ${{ steps.cache-key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Compute a stable cache key from the pinned versions so we only
+      # download when a version actually changes.
+      - name: Compute cache key
+        id: cache-key
+        run: |
+          echo "key=polkadot-bins-${{ env.POLKADOT_VERSION }}-${{ env.ZOMBIENET_VERSION }}-${{ runner.os }}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Restore binary cache
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.BIN_CACHE_DIR }}
+          key: ${{ steps.cache-key.outputs.key }}
+
+      # Only download when the cache was cold.
+      - name: Download and verify binaries
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        env:
+          POLKADOT_VERSION: ${{ env.POLKADOT_VERSION }}
+          ZOMBIENET_VERSION: ${{ env.ZOMBIENET_VERSION }}
+          POLKAGENT_BIN_DIR: ${{ env.BIN_CACHE_DIR }}
+        run: |
+          chmod +x scripts/setup-binaries.sh
+          scripts/setup-binaries.sh
+
+      - name: Save binary cache
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.BIN_CACHE_DIR }}
+          key: ${{ steps.cache-key.outputs.key }}
+
+      # Emit a summary so it is easy to see which versions are in use.
+      - name: Summarise binary versions
+        run: |
+          echo "### Binary versions" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Binary | Version |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ------ | ------- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| polkadot | \`${{ env.POLKADOT_VERSION }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| polkadot-parachain | \`${{ env.POLKADOT_VERSION }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| zombienet | \`${{ env.ZOMBIENET_VERSION }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          ls -lh "${{ env.BIN_CACHE_DIR }}/" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3.  Spawn testnet and run E2E suite.
+  # ──────────────────────────────────────────────────────────────────────────
+  e2e:
+    name: E2E tests
+    needs: [build, provision-binaries]
+    runs-on: ubuntu-latest
+    # Overall wall-clock cap: binary download (0 if cached) + spawn + tests.
+    # Typical hot-cache run: ~18 min.  Cold-cache ceiling: 28 min.
+    timeout-minutes: 30
+    env:
+      ZOMBIENET_LOG_DIR: ${{ github.workspace }}/logs/zombienet
+      POLKAGENT_BIN_DIR: ${{ env.BIN_CACHE_DIR }}
+      POLKAGENT_E2E_RPC: "http://127.0.0.1:9944"
+      POLKAGENT_E2E_PARACHAIN_RPC: "http://127.0.0.1:9988"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # Restore the Rust build cache so `cargo test` links quickly.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-build
+
+      # Restore the Polkadot + zombienet binary cache.
+      - name: Restore binary cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.BIN_CACHE_DIR }}
+          key: ${{ needs.provision-binaries.outputs.bin-cache-key }}
+          fail-on-cache-miss: true
+
+      # Put binaries on PATH for both zombienet and the Rust tests.
+      - name: Add binaries to PATH
+        run: |
+          echo "${{ env.BIN_CACHE_DIR }}" >> "$GITHUB_PATH"
+          # Verify expected binaries are reachable.
+          polkadot --version
+          polkadot-parachain --version
+          zombienet --version
+
+      # Create log directory.
+      - name: Prepare log directory
+        run: mkdir -p "${{ env.ZOMBIENET_LOG_DIR }}"
+
+      # Spawn the testnet.  The network definition uses the native provider so
+      # zombienet calls the polkadot / polkadot-parachain binaries directly.
+      # We background zombienet and wait for the relay-chain RPC to become
+      # available before proceeding, so the tests do not race the node startup.
+      - name: Spawn zombienet testnet
+        id: spawn-testnet
+        run: |
+          echo "Spawning zombienet testnet…"
+          zombienet \
+            --provider native \
+            spawn fixtures/zombienet/polkagent-testnet.toml \
+            > "${{ env.ZOMBIENET_LOG_DIR }}/spawn.log" 2>&1 &
+          ZOMBIENET_PID=$!
+          echo "zombienet_pid=$ZOMBIENET_PID" >> "$GITHUB_OUTPUT"
+
+          # Poll actual JSON-RPC methods rather than accepting bare open
+          # sockets. This catches nodes that have not initialized RPC yet.
+          wait_for_rpc() {
+            label="$1"
+            endpoint="$2"
+            echo "Waiting for ${label} JSON-RPC at ${endpoint}…"
+            for i in $(seq 1 180); do
+              if ! kill -0 "$ZOMBIENET_PID" 2>/dev/null; then
+                echo "ERROR: zombienet exited while waiting for ${label}" >&2
+                tail -n 200 "${{ env.ZOMBIENET_LOG_DIR }}/spawn.log" || true
+                exit 1
+              fi
+              response=$(curl --silent --show-error --max-time 2 \
+                --header 'content-type: application/json' \
+                --data '{"id":1,"jsonrpc":"2.0","method":"system_health"}' \
+                "$endpoint" || true)
+              if echo "$response" | grep -q '"result"'; then
+                echo "${label} JSON-RPC is up (attempt $i)"
+                return 0
+              fi
+              sleep 1
+            done
+            echo "ERROR: ${label} JSON-RPC did not become available in 180 s" >&2
+            tail -n 200 "${{ env.ZOMBIENET_LOG_DIR }}/spawn.log" || true
+            return 1
+          }
+
+          wait_for_rpc "relay chain" "$POLKAGENT_E2E_RPC"
+          wait_for_rpc "Asset Hub" "$POLKAGENT_E2E_PARACHAIN_RPC"
+
+          # Give the node an additional 10 s to complete its startup sequence
+          # (block production, peer discovery) before subjecting it to tests.
+          echo "Relay-chain RPC up; waiting 10 s for block production…"
+          sleep 10
+
+      # This target performs real HTTP JSON-RPC calls to both spawned chains and
+      # requires relay-chain finality to advance. It skips outside E2E when the
+      # endpoint variables are absent.
+      - name: Run live-chain E2E smoke test
+        env:
+          POLKAGENT_E2E_RPC: ${{ env.POLKAGENT_E2E_RPC }}
+          POLKAGENT_E2E_PARACHAIN_RPC: ${{ env.POLKAGENT_E2E_PARACHAIN_RPC }}
+          RUST_LOG: "polkagent=debug,zombienet=info,warn"
+        run: |
+          cargo test \
+            --package polkagent-chain-subxt \
+            --test live_rpc \
+            -- --nocapture 2>&1 | tee logs/e2e-integration.log
+
+      # Always shut zombienet down cleanly so the runner is not left with
+      # lingering polkadot processes.
+      - name: Teardown zombienet
+        if: always()
+        run: |
+          if [ -n "${{ steps.spawn-testnet.outputs.zombienet_pid }}" ]; then
+            kill "${{ steps.spawn-testnet.outputs.zombienet_pid }}" 2>/dev/null || true
+          fi
+          # Belt-and-suspenders: kill any remaining polkadot processes.
+          pkill -f "polkadot" 2>/dev/null || true
+          echo "Testnet torn down."
+
+      # Collect all logs and node data as a single artifact on failure.
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          path: |
+            logs/
+            ${{ env.ZOMBIENET_LOG_DIR }}/
+            # zombienet writes per-node directories under /tmp/zombie-*
+            /tmp/zombie-*/
+          # Do not fail the upload step if some paths don't exist.
+          if-no-files-found: warn
+
+      # On success also keep a lighter artefact for debugging slow tests.
+      - name: Upload test logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          path: logs/
+          if-no-files-found: warn
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4.  Required status check gate — PR authors see a single green tick.
+  # ──────────────────────────────────────────────────────────────────────────
+  e2e-gate:
+    name: E2E gate
+    needs: e2e
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check E2E result
+        run: |
+          if [ "${{ needs.e2e.result }}" != "success" ]; then
+            echo "E2E tests did not pass (result: ${{ needs.e2e.result }})"
+            exit 1
+          fi
+          echo "E2E tests passed."
