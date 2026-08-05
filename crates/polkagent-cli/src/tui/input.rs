@@ -70,15 +70,17 @@ pub enum TuiAction {
     OpenPrompt,
     /// Append a character to the console prompt.
     PromptInput(char),
+    /// Insert one bracketed-paste payload as bounded composer content.
+    PromptPaste(String),
     /// Insert a newline at the console prompt cursor.
     PromptNewline,
     /// Delete the character before the console prompt cursor.
     PromptBackspace,
     /// Delete the character at the console prompt cursor.
     PromptDelete,
-    /// Move the console prompt cursor left by one Unicode scalar value.
+    /// Move the console prompt cursor left by one extended grapheme cluster.
     PromptMoveLeft,
-    /// Move the console prompt cursor right by one Unicode scalar value.
+    /// Move the console prompt cursor right by one extended grapheme cluster.
     PromptMoveRight,
     /// Move to the previous line, or the previous history entry at the top.
     PromptMoveUp,

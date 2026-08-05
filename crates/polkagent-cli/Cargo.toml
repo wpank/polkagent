@@ -68,6 +68,7 @@ async-trait = { workspace = true }
 # TUI
 ratatui   = { workspace = true }
 crossterm = { workspace = true }
+unicode-segmentation = "1.13"
 
 # HTTP (blocking — used by TUI chain poller)
 ureq = { workspace = true }

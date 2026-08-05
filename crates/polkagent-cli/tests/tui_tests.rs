@@ -1312,7 +1312,7 @@ fn test_console_renders_multiline_unicode_composer_and_cursor() {
     let theme = Theme::dark();
     let mut interaction = InteractionState::default();
     interaction.select_agent("agent-id", "Treasury Agent");
-    for c in "first\nsecond\nthird\nfourth\nfifth\n界🙂".chars() {
+    for c in "first\nsecond\nthird\nfourth\nfifth\n界👩\u{200d}💻e\u{301}".chars() {
         interaction.push_char(c);
     }
     let state = TuiState {
@@ -1327,7 +1327,9 @@ fn test_console_renders_multiline_unicode_composer_and_cursor() {
     let text = buffer_text(&terminal);
     assert!(text.contains("second"), "{text}");
     assert!(text.contains("界"), "{text}");
-    assert!(text.contains("🙂"), "{text}");
+    assert!(text.contains("👩"), "{text}");
+    assert!(text.contains("💻"), "{text}");
+    assert!(text.contains("e\u{301}"), "{text}");
     assert!(
         !text.contains("> first"),
         "old lines should scroll out: {text}"

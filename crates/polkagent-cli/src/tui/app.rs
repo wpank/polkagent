@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use crossterm::{
     cursor::Show,
-    event::{DisableMouseCapture, EnableMouseCapture, Event},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    },
     execute,
     terminal::{enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -268,10 +270,10 @@ impl App {
             let timeout = FRAME_DURATION.saturating_sub(last_frame.elapsed());
             if crossterm::event::poll(timeout)? {
                 let event = crossterm::event::read()?;
-                if matches!(event, Event::Key(_)) {
+                if matches!(event, Event::Key(_) | Event::Paste(_)) {
                     self.last_input = Instant::now();
                 }
-                if let Some(action) = terminal_event_to_action(&event, self.input_mode) {
+                if let Some(action) = terminal_event_to_action(event, self.input_mode) {
                     self.apply_action(action);
                 }
             }
@@ -804,12 +806,33 @@ impl App {
             }
 
             TuiAction::PromptInput(c) => {
-                self.tui_state.interaction.push_char(c);
+                if !self.tui_state.interaction.push_char(c) {
+                    self.tui_state.last_error = Some(format!(
+                        "Console composer is limited to {} KiB",
+                        crate::tui::interaction::MAX_COMPOSER_BYTES / 1024
+                    ));
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptPaste(pasted) => {
+                let outcome = self.tui_state.interaction.insert_paste(&pasted);
+                self.tui_state.last_error = outcome.truncated.then(|| {
+                    format!(
+                        "paste truncated at the {} KiB Console composer limit",
+                        crate::tui::interaction::MAX_COMPOSER_BYTES / 1024
+                    )
+                });
                 self.tui_state.mark_dirty();
             }
 
             TuiAction::PromptNewline => {
-                self.tui_state.interaction.insert_newline();
+                if !self.tui_state.interaction.insert_newline() {
+                    self.tui_state.last_error = Some(format!(
+                        "Console composer is limited to {} KiB",
+                        crate::tui::interaction::MAX_COMPOSER_BYTES / 1024
+                    ));
+                }
                 self.tui_state.mark_dirty();
             }
 
@@ -1341,10 +1364,13 @@ impl App {
 /// Keeping event acquisition outside this function ensures each successful
 /// poll consumes exactly one event. In particular, resize events must not
 /// trigger a second blocking read while the first event is discarded.
-fn terminal_event_to_action(event: &Event, input_mode: InputMode) -> Option<TuiAction> {
+fn terminal_event_to_action(event: Event, input_mode: InputMode) -> Option<TuiAction> {
     match event {
-        Event::Key(key) => key_to_action(*key, input_mode),
-        Event::Resize(width, height) => Some(TuiAction::Resize(*width, *height)),
+        Event::Key(key) => key_to_action(key, input_mode),
+        Event::Paste(pasted) if input_mode == InputMode::Prompt => {
+            Some(TuiAction::PromptPaste(pasted))
+        }
+        Event::Resize(width, height) => Some(TuiAction::Resize(width, height)),
         _ => None,
     }
 }
@@ -1389,14 +1415,16 @@ enum RestoreStep {
     RawMode,
     AlternateScreen,
     MouseCapture,
+    BracketedPaste,
     Cursor,
 }
 
 impl RestoreStep {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::RawMode,
         Self::AlternateScreen,
         Self::MouseCapture,
+        Self::BracketedPaste,
         Self::Cursor,
     ];
 
@@ -1405,7 +1433,8 @@ impl RestoreStep {
             Self::RawMode => 1 << 0,
             Self::AlternateScreen => 1 << 1,
             Self::MouseCapture => 1 << 2,
-            Self::Cursor => 1 << 3,
+            Self::BracketedPaste => 1 << 3,
+            Self::Cursor => 1 << 4,
         }
     }
 
@@ -1414,6 +1443,7 @@ impl RestoreStep {
             Self::RawMode => "disable raw mode",
             Self::AlternateScreen => "leave alternate screen",
             Self::MouseCapture => "disable mouse capture",
+            Self::BracketedPaste => "disable bracketed paste",
             Self::Cursor => "show cursor",
         }
     }
@@ -1436,6 +1466,10 @@ impl RestoreActions for CrosstermRestoreActions {
             RestoreStep::MouseCapture => {
                 let mut stdout = std::io::stdout();
                 execute!(stdout, DisableMouseCapture)
+            }
+            RestoreStep::BracketedPaste => {
+                let mut stdout = std::io::stdout();
+                execute!(stdout, DisableBracketedPaste)
             }
             RestoreStep::Cursor => {
                 let mut stdout = std::io::stdout();
@@ -1535,7 +1569,12 @@ pub fn enter_tui() -> Result<TuiTerminal> {
     let restoration = RestorationGuard::new(CrosstermRestoreActions);
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -1630,21 +1669,32 @@ mod terminal_tests {
 
     #[test]
     fn terminal_events_translate_without_another_read() {
-        let resize = Event::Resize(120, 42);
         assert!(matches!(
-            terminal_event_to_action(&resize, InputMode::Normal),
+            terminal_event_to_action(Event::Resize(120, 42), InputMode::Normal),
             Some(TuiAction::Resize(120, 42))
         ));
 
-        let key = Event::Key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('q'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
         assert!(matches!(
-            terminal_event_to_action(&key, InputMode::Normal),
+            terminal_event_to_action(
+                Event::Key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char('q'),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+                InputMode::Normal
+            ),
             Some(TuiAction::Quit)
         ));
 
-        assert!(terminal_event_to_action(&Event::FocusGained, InputMode::Normal).is_none());
+        assert!(terminal_event_to_action(Event::FocusGained, InputMode::Normal).is_none());
+    }
+
+    #[test]
+    fn bracketed_paste_is_one_prompt_action_and_ignored_outside_the_composer() {
+        let payload = "/status\r\nexplain this".to_owned();
+        assert!(matches!(
+            terminal_event_to_action(Event::Paste(payload.clone()), InputMode::Prompt),
+            Some(TuiAction::PromptPaste(pasted)) if pasted == payload
+        ));
+        assert!(terminal_event_to_action(Event::Paste(payload), InputMode::Normal).is_none());
     }
 }

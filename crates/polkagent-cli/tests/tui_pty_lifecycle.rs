@@ -32,6 +32,8 @@ const ENTER_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
 const LEAVE_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049l";
 const ENABLE_MOUSE_CAPTURE: &[u8] = b"\x1b[?1000h";
 const DISABLE_MOUSE_CAPTURE: &[u8] = b"\x1b[?1000l";
+const ENABLE_BRACKETED_PASTE: &[u8] = b"\x1b[?2004h";
+const DISABLE_BRACKETED_PASTE: &[u8] = b"\x1b[?2004l";
 const SHOW_CURSOR: &[u8] = b"\x1b[?25h";
 
 struct PtyResult {
@@ -140,6 +142,14 @@ fn assert_restored(case: &str, result: &PtyResult) {
         "{case} did not disable mouse capture: {escaped:?}"
     );
     assert!(
+        contains_bytes(&result.output, ENABLE_BRACKETED_PASTE),
+        "{case} did not enable bracketed paste: {escaped:?}"
+    );
+    assert!(
+        contains_bytes(&result.output, DISABLE_BRACKETED_PASTE),
+        "{case} did not disable bracketed paste: {escaped:?}"
+    );
+    assert!(
         contains_bytes(&result.output, SHOW_CURSOR),
         "{case} did not show the cursor: {escaped:?}"
     );
@@ -151,6 +161,10 @@ fn assert_restored(case: &str, result: &PtyResult) {
         byte_position(&result.output, ENABLE_MOUSE_CAPTURE).expect("mouse enable already asserted");
     let mouse_disable_position = byte_position(&result.output, DISABLE_MOUSE_CAPTURE)
         .expect("mouse disable already asserted");
+    let paste_enable_position = byte_position(&result.output, ENABLE_BRACKETED_PASTE)
+        .expect("bracketed-paste enable already asserted");
+    let paste_disable_position = byte_position(&result.output, DISABLE_BRACKETED_PASTE)
+        .expect("bracketed-paste disable already asserted");
     let show_cursor_position =
         byte_position(&result.output, SHOW_CURSOR).expect("cursor show already asserted");
     assert!(
@@ -162,7 +176,13 @@ fn assert_restored(case: &str, result: &PtyResult) {
         "{case} disabled mouse capture before enabling it: {escaped:?}"
     );
     assert!(
-        leave_position < mouse_disable_position && mouse_disable_position < show_cursor_position,
+        paste_enable_position < paste_disable_position,
+        "{case} disabled bracketed paste before enabling it: {escaped:?}"
+    );
+    assert!(
+        leave_position < mouse_disable_position
+            && mouse_disable_position < paste_disable_position
+            && paste_disable_position < show_cursor_position,
         "{case} emitted restoration escapes out of order: {escaped:?}"
     );
     assert_termios_restored(case, &result.initial_termios, &result.final_termios);

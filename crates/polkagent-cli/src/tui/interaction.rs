@@ -24,10 +24,13 @@ use polkagent_runtime::{
     AdapterPolicy, ComponentState, PolkagentRuntime, RuntimeOptions, RuntimeReadiness, WarningCode,
 };
 use polkagent_store_sqlite::SqlitePool;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Keep a runaway streaming response from growing the terminal process
 /// forever. Durable lifecycle/events remain available through the run views.
 const MAX_OUTPUT_BYTES: usize = 128 * 1024;
+/// Maximum UTF-8 size of the editable Console composer.
+pub const MAX_COMPOSER_BYTES: usize = 128 * 1024;
 /// Bound composer recall even when a durable interaction has a longer transcript.
 const MAX_PROMPT_HISTORY: usize = 100;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
@@ -137,6 +140,15 @@ pub struct ConsoleConversationSelection {
     pub turns: Vec<ConsoleRun>,
 }
 
+/// Result of inserting one bracketed-paste payload into the composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasteOutcome {
+    /// UTF-8 bytes inserted after normalization.
+    pub inserted_bytes: usize,
+    /// Whether the normalized prefix was clipped at the composer byte limit.
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsoleRunStatus {
     Starting,
@@ -216,19 +228,42 @@ impl InteractionState {
         self.clear_prompt();
     }
 
-    pub fn push_char(&mut self, c: char) {
+    pub fn push_char(&mut self, c: char) -> bool {
         self.prepare_edit();
-        self.prompt_buffer.insert(self.prompt_cursor, c);
-        self.prompt_cursor += c.len_utf8();
+        if self.prompt_buffer.len().saturating_add(c.len_utf8()) > MAX_COMPOSER_BYTES {
+            return false;
+        }
+        let insertion = self.prompt_cursor;
+        self.prompt_buffer.insert(insertion, c);
+        self.prompt_cursor = ceil_grapheme_boundary(&self.prompt_buffer, insertion + c.len_utf8());
+        true
     }
 
-    pub fn insert_newline(&mut self) {
-        self.push_char('\n');
+    pub fn insert_newline(&mut self) -> bool {
+        self.push_char('\n')
+    }
+
+    /// Insert a bracketed-paste payload without interpreting embedded newlines
+    /// as key events. CRLF and lone CR become LF, tabs become four spaces, and
+    /// other Unicode control characters are discarded.
+    pub fn insert_paste(&mut self, pasted: &str) -> PasteOutcome {
+        self.prepare_edit();
+        let remaining = MAX_COMPOSER_BYTES.saturating_sub(self.prompt_buffer.len());
+        let (normalized, truncated) = normalize_bounded_paste(pasted, remaining);
+        let inserted_bytes = normalized.len();
+        let insertion = self.prompt_cursor;
+        self.prompt_buffer.insert_str(insertion, &normalized);
+        self.prompt_cursor =
+            ceil_grapheme_boundary(&self.prompt_buffer, insertion + inserted_bytes);
+        PasteOutcome {
+            inserted_bytes,
+            truncated,
+        }
     }
 
     pub fn backspace(&mut self) {
         self.prepare_edit();
-        let previous = previous_char_boundary(&self.prompt_buffer, self.prompt_cursor);
+        let previous = previous_grapheme_boundary(&self.prompt_buffer, self.prompt_cursor);
         if previous < self.prompt_cursor {
             self.prompt_buffer.drain(previous..self.prompt_cursor);
             self.prompt_cursor = previous;
@@ -237,18 +272,18 @@ impl InteractionState {
 
     pub fn delete(&mut self) {
         self.prepare_edit();
-        let next = next_char_boundary(&self.prompt_buffer, self.prompt_cursor);
+        let next = next_grapheme_boundary(&self.prompt_buffer, self.prompt_cursor);
         if next > self.prompt_cursor {
             self.prompt_buffer.drain(self.prompt_cursor..next);
         }
     }
 
     pub fn move_left(&mut self) {
-        self.prompt_cursor = previous_char_boundary(&self.prompt_buffer, self.cursor());
+        self.prompt_cursor = previous_grapheme_boundary(&self.prompt_buffer, self.cursor());
     }
 
     pub fn move_right(&mut self) {
-        self.prompt_cursor = next_char_boundary(&self.prompt_buffer, self.cursor());
+        self.prompt_cursor = next_grapheme_boundary(&self.prompt_buffer, self.cursor());
     }
 
     pub fn move_home(&mut self) {
@@ -280,13 +315,15 @@ impl InteractionState {
             return;
         }
 
-        let column = self.prompt_buffer[line_start..cursor].chars().count();
+        let column = self.prompt_buffer[line_start..cursor]
+            .graphemes(true)
+            .count();
         let previous_end = line_start - 1;
         let previous_start = self.prompt_buffer[..previous_end]
             .rfind('\n')
             .map_or(0, |index| index + 1);
         self.prompt_cursor = previous_start
-            + char_column_offset(&self.prompt_buffer[previous_start..previous_end], column);
+            + grapheme_column_offset(&self.prompt_buffer[previous_start..previous_end], column);
     }
 
     /// Move vertically within multiline input, falling back to newer history
@@ -304,18 +341,20 @@ impl InteractionState {
             return;
         };
         let line_end = cursor + line_end_offset;
-        let column = self.prompt_buffer[line_start..cursor].chars().count();
+        let column = self.prompt_buffer[line_start..cursor]
+            .graphemes(true)
+            .count();
         let next_start = line_end + 1;
         let next_end = self.prompt_buffer[next_start..]
             .find('\n')
             .map_or(self.prompt_buffer.len(), |offset| next_start + offset);
         self.prompt_cursor =
-            next_start + char_column_offset(&self.prompt_buffer[next_start..next_end], column);
+            next_start + grapheme_column_offset(&self.prompt_buffer[next_start..next_end], column);
     }
 
     #[must_use]
     pub fn cursor(&self) -> usize {
-        clamp_char_boundary(&self.prompt_buffer, self.prompt_cursor)
+        clamp_grapheme_boundary(&self.prompt_buffer, self.prompt_cursor)
     }
 
     pub fn clear_prompt(&mut self) {
@@ -331,6 +370,9 @@ impl InteractionState {
     #[must_use]
     pub fn slash_command_menu(&self) -> Option<SlashCommandMenu> {
         if self.slash_completion_dismissed {
+            return None;
+        }
+        if self.prompt_buffer.contains('\n') {
             return None;
         }
         let command_line = self.prompt_buffer.trim_start().strip_prefix('/')?;
@@ -429,7 +471,7 @@ impl InteractionState {
         if prompt.is_empty() {
             return Err("prompt cannot be empty");
         }
-        if prompt.starts_with('/') {
+        if self.is_command_input() {
             return Err("slash commands must use the Console command path");
         }
         let Some(agent_id) = self.agent_id.clone() else {
@@ -469,7 +511,7 @@ impl InteractionState {
 
     #[must_use]
     pub fn is_command_input(&self) -> bool {
-        self.prompt_buffer.trim_start().starts_with('/')
+        !self.prompt_buffer.contains('\n') && self.prompt_buffer.trim_start().starts_with('/')
     }
 
     pub fn submit_command(&mut self) -> Result<ConsoleCommandSubmission, &'static str> {
@@ -479,6 +521,9 @@ impl InteractionState {
         }
         if !line.starts_with('/') {
             return Err("Console command input must begin with '/'");
+        }
+        if line.contains('\n') {
+            return Err("Console slash commands must fit on one line");
         }
         let Some(agent_id) = self.agent_id.clone() else {
             return Err("select an active agent before using Console commands");
@@ -695,7 +740,7 @@ impl InteractionState {
         self.conversation_id = conversation_id;
         self.prompt_history = turns
             .iter()
-            .map(|turn| turn.prompt.clone())
+            .map(|turn| bounded_grapheme_prefix(&turn.prompt, MAX_COMPOSER_BYTES).to_owned())
             .rev()
             .take(MAX_PROMPT_HISTORY)
             .collect::<Vec<_>>();
@@ -781,9 +826,9 @@ fn truncate_output(output: &mut String) {
     }
     let overflow = output.len() - MAX_OUTPUT_BYTES;
     let boundary = output
-        .char_indices()
+        .grapheme_indices(true)
         .find_map(|(index, _)| (index >= overflow).then_some(index))
-        .unwrap_or(overflow);
+        .unwrap_or(output.len());
     output.drain(..boundary);
 }
 
@@ -862,34 +907,111 @@ fn slash_candidate(spec: &polkagent_interaction::CommandSpec) -> SlashCommandCan
     }
 }
 
-fn clamp_char_boundary(text: &str, cursor: usize) -> usize {
-    let mut cursor = cursor.min(text.len());
-    while !text.is_char_boundary(cursor) {
-        cursor -= 1;
+fn clamp_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    if cursor == text.len() {
+        return cursor;
     }
-    cursor
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .rfind(|index| *index <= cursor)
+        .unwrap_or(0)
 }
 
-fn previous_char_boundary(text: &str, cursor: usize) -> usize {
-    let cursor = clamp_char_boundary(text, cursor);
+fn ceil_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    if cursor >= text.len() {
+        return text.len();
+    }
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .find(|index| *index >= cursor)
+        .unwrap_or(text.len())
+}
+
+fn previous_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_grapheme_boundary(text, cursor);
     text[..cursor]
-        .char_indices()
+        .grapheme_indices(true)
         .next_back()
         .map_or(cursor, |(index, _)| index)
 }
 
-fn next_char_boundary(text: &str, cursor: usize) -> usize {
-    let cursor = clamp_char_boundary(text, cursor);
+fn next_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_grapheme_boundary(text, cursor);
     text[cursor..]
-        .chars()
+        .graphemes(true)
         .next()
-        .map_or(cursor, |c| cursor + c.len_utf8())
+        .map_or(cursor, |grapheme| cursor + grapheme.len())
 }
 
-fn char_column_offset(line: &str, column: usize) -> usize {
-    line.char_indices()
+fn grapheme_column_offset(line: &str, column: usize) -> usize {
+    line.grapheme_indices(true)
         .nth(column)
         .map_or(line.len(), |(index, _)| index)
+}
+
+fn bounded_grapheme_prefix(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let end = text
+        .grapheme_indices(true)
+        .take_while(|(index, grapheme)| index.saturating_add(grapheme.len()) <= max_bytes)
+        .last()
+        .map_or(0, |(index, grapheme)| index + grapheme.len());
+    &text[..end]
+}
+
+fn normalize_bounded_paste(pasted: &str, max_bytes: usize) -> (String, bool) {
+    let mut normalized = String::with_capacity(pasted.len().min(max_bytes));
+    let mut consumed = 0;
+    for grapheme in pasted.graphemes(true) {
+        let normalized_len = normalized_paste_grapheme_len(grapheme);
+        if normalized.len().saturating_add(normalized_len) > max_bytes {
+            return (normalized, true);
+        }
+        append_normalized_paste_grapheme(&mut normalized, grapheme);
+        consumed += grapheme.len();
+    }
+    (normalized, consumed < pasted.len())
+}
+
+fn normalized_paste_grapheme_len(grapheme: &str) -> usize {
+    let mut length = 0;
+    let mut chars = grapheme.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                length += 1;
+            }
+            '\n' => length += 1,
+            '\t' => length += 4,
+            control if control.is_control() => {}
+            printable => length += printable.len_utf8(),
+        }
+    }
+    length
+}
+
+fn append_normalized_paste_grapheme(output: &mut String, grapheme: &str) {
+    let mut chars = grapheme.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                output.push('\n');
+            }
+            '\n' => output.push('\n'),
+            '\t' => output.push_str("    "),
+            control if control.is_control() => {}
+            printable => output.push(printable),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1893,12 +2015,12 @@ mod tests {
     }
 
     #[test]
-    fn reducer_bounds_terminal_output_on_utf8_boundaries() {
+    fn reducer_bounds_terminal_output_on_grapheme_boundaries() {
         let mut state = InteractionState::default();
         state.select_agent("agent-id", "Alice");
         type_prompt(&mut state, "produce a large answer");
         state.submit().expect("valid prompt");
-        let final_text = format!("{}tail", "界".repeat(MAX_OUTPUT_BYTES));
+        let final_text = format!("{}tail", "e\u{301}".repeat(MAX_OUTPUT_BYTES));
 
         state.apply(ControllerEvent::Completed {
             text: final_text,
@@ -1909,7 +2031,8 @@ mod tests {
         let output = &state.run.as_ref().expect("completed run").output;
         assert!(output.len() <= MAX_OUTPUT_BYTES);
         let body = output.strip_suffix("tail").expect("preserve newest output");
-        assert!(body.chars().all(|character| character == '界'));
+        assert!(!body.is_empty());
+        assert!(body.graphemes(true).all(|grapheme| grapheme == "e\u{301}"));
     }
 
     #[test]
@@ -1990,26 +2113,42 @@ mod tests {
     }
 
     #[test]
-    fn prompt_editor_inserts_and_deletes_on_utf8_boundaries() {
+    fn prompt_editor_moves_and_deletes_extended_grapheme_clusters() {
         let mut state = InteractionState::default();
-        type_prompt(&mut state, "a🙂界");
+        type_prompt(&mut state, "a👩\u{200d}💻e\u{301}界");
         assert_eq!(state.cursor(), state.prompt_buffer.len());
 
         state.move_left();
-        state.push_char('é');
-        assert_eq!(state.prompt_buffer, "a🙂é界");
-        assert!(state.prompt_buffer.is_char_boundary(state.cursor()));
+        assert_eq!(
+            &state.prompt_buffer[..state.cursor()],
+            "a👩\u{200d}💻e\u{301}"
+        );
 
         state.backspace();
-        assert_eq!(state.prompt_buffer, "a🙂界");
-        assert!(state.prompt_buffer.is_char_boundary(state.cursor()));
+        assert_eq!(state.prompt_buffer, "a👩\u{200d}💻界");
+        assert_eq!(&state.prompt_buffer[..state.cursor()], "a👩\u{200d}💻");
 
         state.delete();
-        assert_eq!(state.prompt_buffer, "a🙂");
+        assert_eq!(state.prompt_buffer, "a👩\u{200d}💻");
         state.move_left();
         state.delete();
         assert_eq!(state.prompt_buffer, "a");
-        assert!(state.prompt_buffer.is_char_boundary(state.cursor()));
+        assert_eq!(state.cursor(), 1);
+    }
+
+    #[test]
+    fn prompt_editor_keeps_cursor_out_of_a_cluster_joined_by_insertion() {
+        let mut state = InteractionState::default();
+        type_prompt(&mut state, "👩💻");
+        state.move_left();
+
+        assert!(state.push_char('\u{200d}'));
+        assert_eq!(state.prompt_buffer, "👩\u{200d}💻");
+        assert_eq!(state.cursor(), state.prompt_buffer.len());
+
+        state.backspace();
+        assert!(state.prompt_buffer.is_empty());
+        assert_eq!(state.cursor(), 0);
     }
 
     #[test]
@@ -2032,6 +2171,71 @@ mod tests {
 
         let request = state.submit().expect("valid multiline prompt");
         assert_eq!(request.prompt, "ab\n世🙂\nz");
+    }
+
+    #[test]
+    fn vertical_movement_uses_grapheme_columns_for_zwj_combining_and_cjk() {
+        let mut state = InteractionState::default();
+        type_prompt(&mut state, "a👩\u{200d}💻b\ne\u{301}界");
+
+        state.move_up();
+        assert_eq!(&state.prompt_buffer[..state.cursor()], "a👩\u{200d}💻");
+        state.move_down();
+        assert_eq!(state.cursor(), state.prompt_buffer.len());
+    }
+
+    #[test]
+    fn multiline_paste_is_normalized_as_content_without_command_execution() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+
+        let outcome = state.insert_paste("/status\r\nexplain\t界\rnext\u{1b}[31m");
+
+        assert_eq!(state.prompt_buffer, "/status\nexplain    界\nnext[31m");
+        assert_eq!(outcome.inserted_bytes, state.prompt_buffer.len());
+        assert!(!outcome.truncated);
+        assert!(!state.is_command_input());
+        assert!(state.slash_command_menu().is_none());
+        assert!(state.run.is_none());
+        assert!(state.command_result.is_none());
+
+        let request = state.submit().expect("explicitly submit pasted content");
+        assert_eq!(request.prompt, "/status\nexplain    界\nnext[31m");
+        assert!(state.command_result.is_none());
+    }
+
+    #[test]
+    fn composer_size_limit_never_splits_a_pasted_grapheme() {
+        let mut state = InteractionState::default();
+        let pasted = "界".repeat(MAX_COMPOSER_BYTES);
+
+        let outcome = state.insert_paste(&pasted);
+
+        assert!(outcome.truncated);
+        assert!(state.prompt_buffer.len() <= MAX_COMPOSER_BYTES);
+        assert_eq!(state.prompt_buffer.len() % "界".len(), 0);
+        assert_eq!(state.cursor(), state.prompt_buffer.len());
+        assert!(state
+            .prompt_buffer
+            .graphemes(true)
+            .all(|cluster| cluster == "界"));
+        assert!(!state.push_char('界'));
+        assert!(state.prompt_buffer.len() <= MAX_COMPOSER_BYTES);
+    }
+
+    #[test]
+    fn composer_limit_rejects_one_oversized_grapheme_instead_of_splitting_it() {
+        let mut oversized = String::from("e");
+        oversized.extend(std::iter::repeat_n('\u{301}', MAX_COMPOSER_BYTES));
+        assert_eq!(oversized.graphemes(true).count(), 1);
+        let mut state = InteractionState::default();
+
+        let outcome = state.insert_paste(&oversized);
+
+        assert!(outcome.truncated);
+        assert_eq!(outcome.inserted_bytes, 0);
+        assert!(state.prompt_buffer.is_empty());
+        assert_eq!(state.cursor(), 0);
     }
 
     #[test]

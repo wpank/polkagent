@@ -410,6 +410,18 @@ effect rows directly. The separate legacy Approvals tab retains its existing
 direct approve/deny behavior. Transcript reloads use the interaction service's
 turn-correlated, bounded projection, and all Console prompt-path mutations also
 go through that service.
+
+The composer edits extended Unicode grapheme clusters, so cursor movement,
+Backspace, and Delete do not split combining sequences or joined emoji.
+Bracketed paste is enabled only as composer input: an entire paste is inserted
+as content and never acts like Enter, so submission always requires a separate
+Enter keypress. Paste normalization converts CRLF and lone CR to LF, preserves
+LF, expands each tab to four spaces, and discards other Unicode control
+characters. Slash commands must occupy one line; therefore slash-prefixed
+multiline pasted text remains prompt content. The composer is capped at 128 KiB
+of UTF-8, and an oversized paste keeps only the largest normalized prefix ending
+at a complete grapheme cluster while reporting truncation.
+
 A root `--config` path is used consistently for the TUI database and its
 run/provider settings.
 
