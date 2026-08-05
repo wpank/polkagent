@@ -229,7 +229,8 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
             let (name, res) = match &cli.command {
                 None => {
                     if std::io::stdout().is_terminal() {
-                        ("tui", launch_tui(pool, config_path.as_deref(), "dashboard"))
+                        let result = launch_tui(pool, config_path.as_deref(), "dashboard").await;
+                        ("tui", result)
                     } else {
                         let _ = Cli::command().print_help();
                         println!();
@@ -238,7 +239,8 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                 }
                 Some(Commands::Tui(cmd)) => {
                     if std::io::stdout().is_terminal() {
-                        ("tui", launch_tui(pool, config_path.as_deref(), &cmd.tab))
+                        let result = launch_tui(pool, config_path.as_deref(), &cmd.tab).await;
+                        ("tui", result)
                     } else {
                         (
                             "tui",
@@ -439,15 +441,24 @@ fn open_pool(db_path: &str) -> Result<SqlitePool> {
 /// Launch the interactive ROSEDUST TUI and ensure teardown on exit.
 ///
 /// `tab` is the `--tab` flag value (e.g. `"dashboard"`, `"memory"`).
-fn launch_tui(pool: SqlitePool, config_path: Option<&std::path::Path>, tab: &str) -> Result<()> {
+async fn launch_tui(
+    pool: SqlitePool,
+    config_path: Option<&std::path::Path>,
+    tab: &str,
+) -> Result<()> {
     use crate::tui::app::{enter_tui, exit_tui, App, Tab};
+    use crate::tui::interaction::tui_runtime_options;
     use crate::tui::theme::Theme;
+    use polkagent_runtime::RuntimeFactory;
 
     let theme = Theme::from_env();
     let initial_tab = Tab::from_cli_str(tab);
-    let config =
-        commands::run::load_config_from_path(config_path).context("loading TUI configuration")?;
-    let mut app = App::new(theme, pool, config, initial_tab);
+    let runtime_options = tui_runtime_options(&pool, config_path)?;
+    drop(pool);
+    let runtime = RuntimeFactory::build(runtime_options)
+        .await
+        .context("building shared TUI runtime")?;
+    let mut app = App::new(theme, runtime, initial_tab);
 
     let mut terminal = enter_tui()?;
 

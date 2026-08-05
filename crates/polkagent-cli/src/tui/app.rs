@@ -32,7 +32,7 @@ use ratatui::{
     Frame, Terminal,
 };
 
-use polkagent_config::Config;
+use polkagent_runtime::PolkagentRuntime;
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::{
@@ -228,9 +228,10 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new `App` with the given theme, database pool, and initial tab.
-    pub fn new(theme: Theme, pool: SqlitePool, config: Config, initial_tab: Tab) -> Self {
-        let run_controller = RunController::new(pool.clone(), config);
+    /// Create an `App` over one process-wide runtime and its durable pool.
+    pub fn new(theme: Theme, runtime: PolkagentRuntime, initial_tab: Tab) -> Self {
+        let pool = runtime.pool().clone();
+        let run_controller = RunController::new(runtime);
         Self {
             active_tab: initial_tab,
             tui_state: TuiState::default(),

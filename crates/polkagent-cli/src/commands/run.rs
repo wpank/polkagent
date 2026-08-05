@@ -2,9 +2,9 @@
 //!
 //! When no daemon is running the one-shot command builds a shared production
 //! runtime, starts the run, subscribes to its event bus, and streams events to
-//! stdout until a terminal event arrives or the timeout expires. The TUI's
-//! compatibility entry point still builds an inline [`AppService`] until its
-//! dedicated runtime-handle migration lands.
+//! stdout until a terminal event arrives or the timeout expires. Interactive
+//! surfaces retain the same process-wide runtime instead of composing a new
+//! service for each prompt.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use polkagent_config::model_registry::synthesize_providers_from_env;
 use polkagent_config::Config;
 use polkagent_core::event::EventKind;
 use polkagent_core::{AgentId, AgentSpec, RunId};
-use polkagent_event::{EventBus, EventReceiver, EventRecorder};
+use polkagent_event::EventReceiver;
 use polkagent_executor_anthropic::AnthropicExecutor;
 use polkagent_executor_fake::FakeExecutor;
 use polkagent_executor_gemini::GeminiExecutor;
@@ -29,7 +29,7 @@ use polkagent_executor_trait::{ExecutorError, ModelExecutor};
 use polkagent_runtime::{
     AdapterPolicy, ComponentState, RuntimeFactory, RuntimeOptions, RuntimeReadiness, WarningCode,
 };
-use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
+use polkagent_service::{AppService, ProviderRegistry};
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
 use crate::cli::RunCmd;
@@ -38,9 +38,7 @@ use crate::tui::theme::Theme;
 
 /// A started run plus the live resources needed by foreground surfaces.
 ///
-/// The one-shot command now obtains these resources from `RuntimeFactory`.
-/// The TUI retains its legacy bootstrap through `start_interactive_run` until
-/// its separate runtime-handle migration lands.
+/// The one-shot command obtains these resources from `RuntimeFactory`.
 pub(crate) struct StartedRun {
     pub(crate) service: Arc<AppService>,
     pub(crate) events: EventReceiver,
@@ -51,36 +49,6 @@ pub(crate) struct StartedRun {
     pub(crate) notes: Vec<String>,
 }
 
-struct StartRunOptions<'a> {
-    provider: Option<&'a str>,
-    model: Option<String>,
-    harness: Option<&'a str>,
-    no_harness: bool,
-    config: Option<Config>,
-}
-
-/// Start a run with normal config/environment auto-detection for a long-lived
-/// interactive surface such as the TUI.
-pub(crate) async fn start_interactive_run(
-    pool: &SqlitePool,
-    agent_id: &str,
-    prompt: &str,
-    config: Config,
-) -> Result<StartedRun> {
-    start_run_inner(
-        pool,
-        agent_id,
-        prompt,
-        StartRunOptions {
-            provider: None,
-            model: None,
-            harness: None,
-            no_harness: false,
-            config: Some(config),
-        },
-    )
-    .await
-}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -437,136 +405,6 @@ fn find_runnable_agent(
     Ok(agent)
 }
 
-async fn start_run_inner(
-    pool: &SqlitePool,
-    agent_reference: &str,
-    prompt: &str,
-    options: StartRunOptions<'_>,
-) -> Result<StartedRun> {
-    validate_prompt(prompt)?;
-    let agent = find_runnable_agent(pool, agent_reference)?;
-
-    let typed_agent_id: AgentId = agent
-        .id
-        .parse()
-        .with_context(|| format!("invalid agent ID in database: {}", agent.id))?;
-    let config = options.config.unwrap_or_else(load_config);
-    let registry = build_provider_registry(&config);
-    let (executor, executor_note) = resolve_provider(
-        options.provider,
-        options.model.as_deref(),
-        &config,
-        &registry,
-    )?;
-
-    let mut notes = Vec::new();
-    if let Some(note) = executor_note {
-        notes.push(note);
-    }
-
-    let mut harness_registry = HarnessRegistry::with_known_harnesses();
-    for (id, entry) in &config.harness.harnesses {
-        if let Some(ref path) = entry.binary_path {
-            harness_registry.register_with_path(id, id, path.clone());
-        } else {
-            harness_registry.register(id, id);
-        }
-    }
-    let resolution = if options.no_harness {
-        polkagent_service::harness::HarnessResolution {
-            harness_name: None,
-            note: None,
-        }
-    } else {
-        harness_registry.resolve(options.harness, config.harness.default.as_deref())
-    };
-    if let Some(note) = resolution.note.clone() {
-        notes.push(note);
-    }
-    if let Some(ref name) = resolution.harness_name {
-        info!(harness = %name, "harness selected");
-    }
-
-    let harness: Option<Arc<dyn polkagent_harness_trait::Harness>> =
-        match resolution.harness_name.as_deref() {
-            Some("codex") => {
-                let hcfg = polkagent_harness_trait::HarnessConfig::new("codex");
-                let codex = polkagent_harness_codex::CodexHarness::new(
-                    hcfg,
-                    polkagent_harness_codex::CodexHarnessConfig::default(),
-                )
-                .context("creating CodexHarness")?;
-                Some(Arc::new(codex))
-            }
-            Some("claude-code") => {
-                let hcfg = polkagent_harness_trait::HarnessConfig::new("claude-code");
-                let claude = polkagent_harness_claude::ClaudeHarness::new(
-                    hcfg,
-                    polkagent_harness_claude::ClaudeHarnessConfig::default(),
-                )
-                .context("creating ClaudeHarness")?;
-                Some(Arc::new(claude))
-            }
-            Some("cursor") => {
-                let hcfg = polkagent_harness_trait::HarnessConfig::new("cursor");
-                let cursor = polkagent_harness_acp::AcpHarness::new(
-                    polkagent_harness_cursor::CursorConfigurator::default(),
-                    hcfg,
-                );
-                Some(Arc::new(cursor))
-            }
-            _ => None,
-        };
-
-    let event_bus = EventBus::with_default_capacity();
-    let events = event_bus.subscribe();
-    let event_recorder = EventRecorder::new(Arc::new(pool.clone()), event_bus.clone());
-    let chain_client: Arc<dyn ChainClient> = build_chain_client();
-    let mut tool_registry = polkagent_tool::ToolRegistry::new();
-    polkagent_tool_governance::register_governance_tools(&mut tool_registry, chain_client.clone());
-    polkagent_tool_treasury::register_treasury_tools(&mut tool_registry, chain_client.clone());
-
-    let mut builder = AppService::builder()
-        .with_config(config)
-        .with_run_store(Arc::new(pool.clone()))
-        .with_effect_store(Arc::new(pool.clone()))
-        .with_event_bus(event_bus)
-        .with_event_recorder(event_recorder)
-        .with_executor(executor)
-        .with_provider_registry(registry)
-        .with_chain_client(chain_client)
-        .with_tool_registry(Arc::new(tool_registry));
-    if let Some(harness) = harness {
-        builder = builder.with_harness(harness);
-    }
-
-    let service = Arc::new(builder.build().context("building AppService")?);
-    let timeout_secs = service.config().execution.default_timeout_secs;
-    let timeout_config =
-        polkagent_service::TimeoutConfig::with_global_max(Duration::from_secs(timeout_secs));
-    service.start_timeout_enforcer(timeout_config, Duration::from_secs(30));
-
-    let agent_spec = build_agent_spec(typed_agent_id, &agent.name, &agent.spec_json, options.model);
-    let agent_model = agent_spec.model.clone();
-    service
-        .create_agent(agent_spec)
-        .context("registering agent with AppService")?;
-    let run_id = service
-        .start_run(typed_agent_id, prompt)
-        .await
-        .context("starting run")?;
-
-    info!(%run_id, agent_id = %agent.id, "run started");
-    Ok(StartedRun {
-        service,
-        events,
-        run_id,
-        agent_id: agent.id,
-        agent_name: agent.name,
-        agent_model,
-        notes,
-    })
-}
 
 // ---------------------------------------------------------------------------
 // Config loading
@@ -1125,6 +963,7 @@ pub(crate) fn build_chain_client() -> Arc<dyn ChainClient> {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use polkagent_service::HarnessRegistry;
 
     #[test]
     fn explicit_config_path_is_loaded_for_interactive_surfaces() {
@@ -1253,54 +1092,6 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn shared_run_bootstrap_executes_and_persists_fake_run() {
-        let _guard = EnvGuard::new();
-        let pool = SqlitePool::open_in_memory().expect("open database");
-        polkagent_store_sqlite::migrations::migrate(&pool.writer()).expect("migrate database");
-        let store = SqliteRunStore::new(pool.clone());
-        let agent = store
-            .create_agent("console-agent", None, "{}")
-            .expect("create agent");
-
-        let mut started = start_run_inner(
-            &pool,
-            &agent.id,
-            "hello from the console",
-            StartRunOptions {
-                provider: None,
-                model: None,
-                harness: None,
-                no_harness: true,
-                config: Some(Config::default()),
-            },
-        )
-        .await
-        .expect("start run");
-        let run_id = started.run_id.to_string();
-
-        tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                let event = started.events.recv().await.expect("run event");
-                if event.run_id != started.run_id {
-                    continue;
-                }
-                match event.kind {
-                    EventKind::RunCompleted { .. } => break,
-                    EventKind::RunFailed { reason } => panic!("run failed: {reason}"),
-                    EventKind::RunCancelled { reason } => panic!("run cancelled: {reason}"),
-                    EventKind::RunTimedOut => panic!("run timed out"),
-                    _ => {}
-                }
-            }
-        })
-        .await
-        .expect("fake run should finish");
-
-        let durable = store.get_run(&run_id).expect("durable run");
-        assert_eq!(durable.agent_id, agent.id);
-        assert_eq!(durable.state, "completed");
-    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn one_shot_run_uses_shared_runtime_and_durable_stores() {

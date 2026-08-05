@@ -1,14 +1,18 @@
 //! Headless interaction state and asynchronous run controller for the TUI.
 //!
 //! Terminal input/rendering stays in `input` and `views::console`; this module
-//! owns the deterministic reducer and the bridge to the same production run
-//! bootstrap used by `polkagent run`.
+//! owns the deterministic reducer and the bridge to the same process-wide
+//! production runtime used by `polkagent run`.
 
-use std::sync::{mpsc, OnceLock};
+use std::path::Path;
+use std::sync::{mpsc, Arc, OnceLock};
 
-use polkagent_config::Config;
 use polkagent_core::event::EventKind;
+use polkagent_core::AgentId;
 use polkagent_interaction::CommandRegistry;
+use polkagent_runtime::{
+    AdapterPolicy, ComponentState, PolkagentRuntime, RuntimeOptions, RuntimeReadiness, WarningCode,
+};
 use polkagent_store_sqlite::SqlitePool;
 
 /// Keep a runaway streaming response from growing the terminal process
@@ -598,9 +602,8 @@ impl ControllerEvent {
 /// Runtime bridge owned by `App`. It can be driven without blocking the
 /// Crossterm event loop and exposes plain events for deterministic reduction.
 pub struct RunController {
-    runtime: Option<tokio::runtime::Handle>,
-    pool: SqlitePool,
-    config: Config,
+    task_runtime: Option<tokio::runtime::Handle>,
+    polkagent_runtime: PolkagentRuntime,
     event_tx: mpsc::Sender<ControllerEvent>,
     event_rx: mpsc::Receiver<ControllerEvent>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
@@ -609,12 +612,11 @@ pub struct RunController {
 
 impl RunController {
     #[must_use]
-    pub fn new(pool: SqlitePool, config: Config) -> Self {
+    pub fn new(polkagent_runtime: PolkagentRuntime) -> Self {
         let (event_tx, event_rx) = mpsc::channel();
         Self {
-            runtime: tokio::runtime::Handle::try_current().ok(),
-            pool,
-            config,
+            task_runtime: tokio::runtime::Handle::try_current().ok(),
+            polkagent_runtime,
             event_tx,
             event_rx,
             cancel: None,
@@ -626,54 +628,60 @@ impl RunController {
         if self.active {
             return Err("a run is already active; cancel it before starting another");
         }
-        let Some(runtime) = self.runtime.clone() else {
+        let Some(task_runtime) = self.task_runtime.clone() else {
             return Err("interactive run runtime is unavailable");
         };
 
-        let pool = self.pool.clone();
-        let config = self.config.clone();
+        let polkagent_runtime = self.polkagent_runtime.clone();
         let event_tx = self.event_tx.clone();
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
         self.cancel = Some(cancel_tx);
         self.active = true;
 
-        runtime.spawn(async move {
-            let start = crate::commands::run::start_interactive_run(
-                &pool,
-                &request.agent_id,
-                &request.prompt,
-                config,
-            );
+        task_runtime.spawn(async move {
+            let typed_agent_id = match request.agent_id.parse::<AgentId>() {
+                Ok(agent_id) => agent_id,
+                Err(error) => {
+                    let _ = event_tx.send(ControllerEvent::Failed(format!(
+                        "invalid selected agent ID '{}': {error}",
+                        request.agent_id
+                    )));
+                    return;
+                }
+            };
+            let mut events = polkagent_runtime.subscribe_events();
+            let service = Arc::clone(polkagent_runtime.app());
+            let notes = runtime_notes(polkagent_runtime.readiness());
+            let start = service.start_run(typed_agent_id, &request.prompt);
             tokio::pin!(start);
 
-            let started = tokio::select! {
-                result = &mut start => match result {
-                    Ok(started) => started,
-                    Err(error) => {
-                        let _ = event_tx.send(ControllerEvent::Failed(format!("{error:#}")));
-                        return;
-                    }
-                },
+            let run_id = tokio::select! {
+                biased;
                 _ = &mut cancel_rx => {
                     let _ = event_tx.send(ControllerEvent::Cancelled(
                         "cancelled before the run started".to_owned(),
                     ));
                     return;
                 }
+                result = &mut start => match result {
+                    Ok(run_id) => run_id,
+                    Err(error) => {
+                        let _ = event_tx.send(ControllerEvent::Failed(format!("{error:#}")));
+                        return;
+                    }
+                }
             };
 
-            let run_id = started.run_id;
-            let service = started.service;
-            let mut events = started.events;
             let _ = event_tx.send(ControllerEvent::Started {
                 run_id: run_id.to_string(),
-                agent_name: started.agent_name,
-                notes: started.notes,
+                agent_name: request.agent_name,
+                notes,
             });
 
             let mut cancellation_requested = false;
             loop {
                 let event = tokio::select! {
+                    biased;
                     _ = &mut cancel_rx, if !cancellation_requested => {
                         cancellation_requested = true;
                         match service.cancel_run(run_id).await {
@@ -770,9 +778,63 @@ impl RunController {
     }
 }
 
+/// Build runtime options for the TUI without losing root config/database
+/// selection. The simulated-adapter policy preserves the Console's established
+/// local-first fallback and is reported as degraded readiness by the runtime.
+pub fn tui_runtime_options(
+    pool: &SqlitePool,
+    config_path: Option<&Path>,
+) -> anyhow::Result<RuntimeOptions> {
+    let workdir = std::env::current_dir()
+        .map_err(|error| anyhow::anyhow!("resolving TUI working directory: {error}"))?;
+    let mut options = RuntimeOptions::new(workdir);
+    options.config_path = config_path.map(Path::to_path_buf);
+    options.database_path = Some(pool.path().to_path_buf());
+    options.adapter_policy = AdapterPolicy::AllowSimulated;
+    Ok(options)
+}
+
+fn runtime_notes(readiness: &RuntimeReadiness) -> Vec<String> {
+    let mut notes = Vec::new();
+    if readiness.executor.state == ComponentState::Degraded
+        && readiness
+            .warnings
+            .iter()
+            .any(|warning| warning.code == WarningCode::SimulatedExecutor)
+    {
+        notes.push("No API key or local model configured. Using simulated responses.".to_owned());
+    } else if readiness.executor.state == ComponentState::Ready {
+        notes.push(readiness.executor.detail.clone());
+    }
+
+    match readiness.harness.state {
+        ComponentState::Ready => notes.push(readiness.harness.detail.clone()),
+        ComponentState::Disabled => {
+            notes.push("No harness found. Running in executor-only mode.".to_owned());
+        }
+        ComponentState::Degraded | ComponentState::Unavailable => {
+            if let Some(warning) = readiness
+                .warnings
+                .iter()
+                .find(|warning| warning.code == WarningCode::HarnessUnavailable)
+            {
+                notes.push(warning.message.clone());
+            }
+        }
+    }
+    notes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+    use std::time::Duration;
+
+    use polkagent_core::RunId;
+    use polkagent_runtime::{ConfigSource, RuntimeFactory};
+    use polkagent_store_sqlite::{migrations, SqliteRunStore};
+    use polkagent_store_trait::{RunStatus, RunStore};
 
     fn type_prompt(state: &mut InteractionState, prompt: &str) {
         for c in prompt.chars() {
@@ -989,5 +1051,196 @@ mod tests {
         );
         assert_eq!(state.prompt_buffer, "/runs");
         assert!(state.run.is_none());
+    }
+
+    fn writer_pointer(pool: &SqlitePool) -> *const rusqlite::Connection {
+        let writer = pool.writer();
+        std::ptr::from_ref(&*writer)
+    }
+
+    async fn wait_for_controller_terminal(
+        controller: &mut RunController,
+    ) -> (Option<String>, Vec<ControllerEvent>) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut run_id = None;
+            let mut observed = Vec::new();
+            loop {
+                if let Some(event) = controller.try_recv() {
+                    if let ControllerEvent::Started {
+                        run_id: started_id, ..
+                    } = &event
+                    {
+                        run_id = Some(started_id.clone());
+                    }
+                    let terminal = event.is_terminal();
+                    observed.push(event);
+                    if terminal {
+                        return (run_id, observed);
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("controller terminal event timeout")
+    }
+
+    #[test]
+    fn tui_runtime_options_preserve_config_and_durable_database_selection() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("tui-options.db");
+        let config_path = temp.path().join("selected.toml");
+        std::fs::write(&config_path, "").expect("write config");
+        let pool = SqlitePool::open(&database_path).expect("open database");
+
+        let options = tui_runtime_options(&pool, Some(&config_path)).expect("TUI runtime options");
+
+        assert_eq!(options.config_path.as_deref(), Some(config_path.as_path()));
+        assert_eq!(
+            options.database_path.as_deref(),
+            Some(database_path.as_path())
+        );
+        assert_eq!(options.adapter_policy, AdapterPolicy::AllowSimulated);
+        assert!(options.discover_environment_providers);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn controller_reuses_runtime_service_bus_and_pool_across_prompts_and_cancel() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("tui-runtime.db");
+        let config_path = temp.path().join("selected.toml");
+        std::fs::write(&config_path, "").expect("write config");
+        let seed_pool = SqlitePool::open(&database_path).expect("open database");
+        migrations::migrate(&seed_pool.writer()).expect("migrate database");
+        let store = SqliteRunStore::new(seed_pool.clone());
+        let timestamp = "2026-01-01T00:00:00Z";
+        let spec = serde_json::json!({
+            "name": "console-agent",
+            "description": null,
+            "model": "fake/default-model",
+            "tools": [],
+            "system_prompt": null,
+            "autonomy_level": "supervised",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        });
+        let agent = store
+            .create_agent("console-agent", None, &spec.to_string())
+            .expect("create active agent");
+        let abandoned_run = RunId::new();
+        RunStore::create(
+            &seed_pool,
+            abandoned_run,
+            &agent.id,
+            RunStatus::new("running"),
+        )
+        .await
+        .expect("seed abandoned run");
+
+        let mut options =
+            tui_runtime_options(&seed_pool, Some(&config_path)).expect("TUI runtime options");
+        options.workdir = temp.path().to_path_buf();
+        options.disable_harness = true;
+        options.discover_environment_providers = false;
+        drop(store);
+        drop(seed_pool);
+
+        let runtime = RuntimeFactory::build(options)
+            .await
+            .expect("build shared TUI runtime");
+        assert_eq!(runtime.readiness().recovered_runs, 1);
+        assert_eq!(runtime.readiness().rehydrated_agents, 1);
+        assert!(matches!(
+            runtime.readiness().config_source,
+            ConfigSource::Explicit { ref path } if path == &config_path
+        ));
+
+        let shared_service = Arc::clone(runtime.app());
+        let runtime_writer = writer_pointer(runtime.pool());
+        let mut shared_events = runtime.subscribe_events();
+        let mut controller = RunController::new(runtime.clone());
+        assert!(Arc::ptr_eq(
+            &shared_service,
+            controller.polkagent_runtime.app()
+        ));
+        assert!(std::ptr::eq(
+            runtime_writer,
+            writer_pointer(controller.polkagent_runtime.pool())
+        ));
+
+        let mut completed_run_ids = Vec::new();
+        for prompt in ["first shared prompt", "second shared prompt"] {
+            controller
+                .start(PromptRequest {
+                    agent_id: agent.id.clone(),
+                    agent_name: agent.name.clone(),
+                    prompt: prompt.to_owned(),
+                })
+                .expect("start sequential prompt");
+            let (run_id, observed) = wait_for_controller_terminal(&mut controller).await;
+            let run_id = run_id.expect("runtime-backed run started");
+            assert!(observed.iter().any(|event| matches!(
+                event,
+                ControllerEvent::Started { notes, .. }
+                    if notes.iter().any(|note| note.contains("simulated responses"))
+            )));
+            assert!(observed
+                .iter()
+                .any(|event| matches!(event, ControllerEvent::Completed { .. })));
+            completed_run_ids.push(run_id);
+        }
+        assert_ne!(completed_run_ids[0], completed_run_ids[1]);
+
+        let observed_bus_run_ids = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut terminal_ids = BTreeSet::new();
+            while terminal_ids.len() < completed_run_ids.len() {
+                let event = shared_events.recv().await.expect("shared event bus");
+                if matches!(
+                    event.kind,
+                    EventKind::RunCompleted { .. }
+                        | EventKind::RunFailed { .. }
+                        | EventKind::RunCancelled { .. }
+                        | EventKind::RunTimedOut
+                ) {
+                    terminal_ids.insert(event.run_id.to_string());
+                }
+            }
+            terminal_ids
+        })
+        .await
+        .expect("shared bus terminal events timeout");
+        assert_eq!(
+            observed_bus_run_ids,
+            completed_run_ids.iter().cloned().collect()
+        );
+
+        let durable_store = SqliteRunStore::new(runtime.pool().clone());
+        for run_id in &completed_run_ids {
+            let run = durable_store.get_run(run_id).expect("durable Console run");
+            assert_eq!(run.state, "completed");
+            assert_eq!(run.agent_id, agent.id);
+        }
+        assert_eq!(
+            durable_store
+                .get_run(&abandoned_run.to_string())
+                .expect("recovered run")
+                .state,
+            "failed"
+        );
+
+        controller
+            .start(PromptRequest {
+                agent_id: agent.id,
+                agent_name: agent.name,
+                prompt: "cancel before dispatch".to_owned(),
+            })
+            .expect("start cancellable prompt");
+        assert!(controller.cancel());
+        let (cancelled_run_id, observed) = wait_for_controller_terminal(&mut controller).await;
+        assert!(cancelled_run_id.is_none());
+        assert!(observed.iter().any(|event| matches!(
+            event,
+            ControllerEvent::Cancelled(reason) if reason == "cancelled before the run started"
+        )));
     }
 }
