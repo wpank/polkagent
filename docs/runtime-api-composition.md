@@ -17,6 +17,7 @@ in-memory agent or run stores.
 | `EffectStore` | Runtime `SqlitePool` | Durable |
 | `EventStore` | Runtime `SqlitePool` | Durable |
 | `ArtifactStore` | `SqliteApiArtifactStore` over the runtime pool | Durable metadata, verified BLAKE3 content, classification, and lineage |
+| `ToolRegistryStore` | Read-only projection of `AppService::tool_registry()` | Exact process-wide registry; deterministic list, or an empty view when chain-backed registration is disabled |
 | `PaymentStore` | Runtime `SqlitePool` | Durable |
 | `ConversationStore` | Runtime `SqlitePool` | Durable |
 | `EventBus` | Runtime event bus | Process-local live stream paired with the durable event recorder |
@@ -47,9 +48,6 @@ is `polkagent_api::RUNTIME_UNAVAILABLE_ROUTES`.
 | Skills | `GET` | `/api/v1alpha1/skills/{skill_id}` | Same missing adapter |
 | Skills | `POST` | `/api/v1alpha1/skills/{skill_id}/uninstall` | Same missing adapter |
 | Skills | `PUT` | `/api/v1alpha1/skills/{skill_id}/config` | Same missing adapter |
-| Tools | `GET` | `/api/v1alpha1/tools` | Runtime tool registry has no API `ToolRegistryStore` adapter |
-| Tools | `GET` | `/api/v1alpha1/tools/{tool_id}` | Same missing adapter |
-| Tools | `GET` | `/api/v1alpha1/tools/{tool_id}/grants` | Same missing adapter |
 | Memory | `POST` | `/api/v1alpha1/memory/query` | Runtime memory store has no API `MemoryStore` adapter |
 | Memory | `GET` | `/api/v1alpha1/memory/stats` | Same missing adapter |
 | Memory | `POST` | `/api/v1alpha1/memory/forget` | Same missing adapter |
@@ -63,9 +61,8 @@ is `polkagent_api::RUNTIME_UNAVAILABLE_ROUTES`.
 
 ## Next implementation slices
 
-1. Add read-only query adapters for the runtime tool registry and skill
-   runner; decide separately whether install/config/uninstall belong in a
-   production daemon.
+1. Add a read-only query adapter for the runtime skill runner; decide
+   separately whether install/config/uninstall belong in a production daemon.
 2. Define one memory port shared by the API and `polkagent-memory`, then add
    query, statistics, entry lookup, and deletion contract tests.
 3. Compose durable audit and service-registry stores in `RuntimeFactory` before
@@ -89,6 +86,15 @@ operations and remain available when `--read-only` is enabled. They still pass
 through the server's normal API-key middleware; enabling auth requires a valid
 Bearer or `X-Api-Key` credential before any artifact classification is
 projected.
+
+Tool metadata is projected directly from the registry already owned by
+`AppService`; the API never creates a second mutable production registry.
+Configured tools retain their input JSON Schemas, grant patterns, and
+snake-case output classifications. Listing is sorted by tool ID so responses
+are deterministic despite the registry's internal hash-map order. When
+chain-backed tool registration is disabled, the same API routes truthfully
+return an empty list or `404` for a named lookup. These `GET` routes remain
+available in read-only mode and retain the normal API authentication boundary.
 
 The black-box test `durable_runtime_api` constructs the server through the same
 runtime composition helper used by `serve`, creates an agent and a run over

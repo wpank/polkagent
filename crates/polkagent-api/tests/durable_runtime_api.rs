@@ -5,12 +5,13 @@
     reason = "integration tests fail immediately at controlled fixture boundaries"
 )]
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
 use polkagent_api::{
-    app_state_from_runtime, ApiServer, RuntimeArtifactStore, RUNTIME_UNAVAILABLE_ROUTES,
+    app_state_from_runtime, ApiServer, RuntimeArtifactStore, RuntimeToolRegistryStore,
+    RUNTIME_UNAVAILABLE_ROUTES,
 };
 use polkagent_core::{ArtifactId, BlobRef, RunId};
 use polkagent_runtime::{AdapterPolicy, PolkagentRuntime, RuntimeFactory, RuntimeOptions};
@@ -182,7 +183,7 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
     assert!(state.conversation_store.is_some());
     assert!(state.artifact_store.is_some());
     assert!(state.skill_registry.is_none());
-    assert!(state.tool_registry.is_none());
+    assert!(state.tool_registry.is_some());
     assert!(state.memory_store.is_none());
     assert!(state.audit_store.is_none());
     assert!(state.service_registry_store.is_none());
@@ -198,7 +199,7 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
         .await
         .assert_status_ok();
 
-    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 18);
+    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 15);
     for route in RUNTIME_UNAVAILABLE_ROUTES {
         let path = route
             .path
@@ -251,6 +252,111 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
             && !route.method.is_empty()
             && !route.reason.is_empty()
     }));
+}
+
+#[tokio::test]
+async fn configured_runtime_tools_preserve_specs_order_and_read_policy() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let runtime = runtime_at(temp.path()).await;
+    let server = test_server(&runtime);
+
+    let first = server.get("/api/v1alpha1/tools").await;
+    first.assert_status_ok();
+    let first = first.json::<serde_json::Value>();
+    let tools = first["data"].as_array().expect("tool list");
+    assert_eq!(tools.len(), 10);
+    let names = tools
+        .iter()
+        .map(|tool| tool["id"].as_str().expect("tool id"))
+        .collect::<Vec<_>>();
+    assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+
+    let second = server
+        .get("/api/v1alpha1/tools")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(first, second);
+
+    let referendum = server
+        .get("/api/v1alpha1/tools/polkagent.governance.referendum_lookup")
+        .await;
+    referendum.assert_status_ok();
+    let referendum = referendum.json::<serde_json::Value>();
+    assert_eq!(referendum["required_grant"], "chain.query");
+    assert_eq!(referendum["output_classification"], "public");
+    assert_eq!(
+        referendum["input_schema"]["properties"]["index"]["type"],
+        "integer"
+    );
+    assert!(referendum["description"]
+        .as_str()
+        .is_some_and(|description| !description.is_empty()));
+
+    let treasury = server
+        .get("/api/v1alpha1/tools/polkagent.treasury.balance_query")
+        .await;
+    treasury.assert_status_ok();
+    assert_eq!(
+        treasury.json::<serde_json::Value>()["output_classification"],
+        "internal"
+    );
+    let grants = server
+        .get("/api/v1alpha1/tools/polkagent.governance.referendum_lookup/grants")
+        .await;
+    grants.assert_status_ok();
+    let grants = grants.json::<serde_json::Value>();
+    assert_eq!(grants["tool_id"], "polkagent.governance.referendum_lookup");
+    assert_eq!(grants["required_grant"], "chain.query");
+
+    let missing = server.get("/api/v1alpha1/tools/missing-tool").await;
+    missing.assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing.json::<serde_json::Value>()["error"]["code"],
+        "NOT_FOUND"
+    );
+
+    let token = "tool-reader-token";
+    let mut protected_config = runtime.config().as_ref().clone();
+    protected_config.auth.enabled = true;
+    protected_config.auth.api_keys = vec![format!("{:x}", Sha256::digest(token.as_bytes()))];
+    protected_config.api.read_only = true;
+    let protected = TestServer::new(
+        ApiServer::from_state(app_state_from_runtime(&runtime, protected_config)).into_router(),
+    );
+    protected
+        .get("/api/v1alpha1/tools")
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    protected
+        .get("/api/v1alpha1/tools")
+        .authorization_bearer(token)
+        .await
+        .assert_status_ok();
+}
+
+#[tokio::test]
+async fn disabled_tool_registration_exposes_truthful_empty_read_view() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let runtime = runtime_at(temp.path()).await;
+    let mut state = app_state_from_runtime(&runtime, runtime.config().as_ref().clone());
+    state.tool_registry = Some(Arc::new(RuntimeToolRegistryStore::new(None)));
+    let server = TestServer::new(ApiServer::from_state(state).into_router());
+
+    let listed = server.get("/api/v1alpha1/tools").await;
+    listed.assert_status_ok();
+    assert_eq!(
+        listed.json::<serde_json::Value>()["data"],
+        serde_json::json!([])
+    );
+
+    server
+        .get("/api/v1alpha1/tools/missing-tool")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    server
+        .get("/api/v1alpha1/tools/missing-tool/grants")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

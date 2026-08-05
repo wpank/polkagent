@@ -27,7 +27,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 fn spec_to_response(spec: polkagent_tool::ToolSpec) -> ToolResponse {
-    let classification = format!("{:?}", spec.output_classification);
+    let classification = spec.output_classification.to_string();
     ToolResponse {
         version: API_VERSION.to_owned(),
         id: spec.name,

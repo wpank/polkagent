@@ -59,8 +59,8 @@ pub mod validate;
 
 // Convenient re-exports for consumers that construct the server.
 pub use durable::{
-    app_state_from_runtime, RuntimeAgentStore, RuntimeRunManager, UnavailableRuntimeRoute,
-    RUNTIME_UNAVAILABLE_ROUTES,
+    app_state_from_runtime, RuntimeAgentStore, RuntimeRunManager, RuntimeToolRegistryStore,
+    UnavailableRuntimeRoute, RUNTIME_UNAVAILABLE_ROUTES,
 };
 pub use polkagent_store_sqlite::SqliteApiArtifactStore as RuntimeArtifactStore;
 pub use run::{InMemoryRunManager, RunManagerTrait};

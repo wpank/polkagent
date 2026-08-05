@@ -25,7 +25,7 @@ use rusqlite::OptionalExtension;
 
 use crate::dto::TurnSummary;
 use crate::run::{ListRunsParams, RunError, RunManagerTrait, RunRecord};
-use crate::state::{AgentStore, AgentStoreError, AppState};
+use crate::state::{AgentStore, AgentStoreError, AppState, ToolRegistryStore};
 
 /// One HTTP route that the shared runtime cannot currently back.
 ///
@@ -46,7 +46,7 @@ pub struct UnavailableRuntimeRoute {
 
 /// Exact API boundary that remains unavailable in runtime-composed servers.
 ///
-/// Skills, tools, and memory exist inside [`AppService`], but their runtime
+/// Skills and memory exist inside [`AppService`], but their runtime
 /// contracts do not implement the query/mutation ports owned by the API
 /// crate. Audit and service-registry persistence are not composed by
 /// [`polkagent_runtime::RuntimeFactory`] at all. No in-memory substitutes are
@@ -81,24 +81,6 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
         method: "PUT",
         path: "/api/v1alpha1/skills/{skill_id}/config",
         reason: "the runtime skill runner has no API SkillRegistry adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "tools",
-        method: "GET",
-        path: "/api/v1alpha1/tools",
-        reason: "the runtime tool registry has no API ToolRegistryStore adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "tools",
-        method: "GET",
-        path: "/api/v1alpha1/tools/{tool_id}",
-        reason: "the runtime tool registry has no API ToolRegistryStore adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "tools",
-        method: "GET",
-        path: "/api/v1alpha1/tools/{tool_id}/grants",
-        reason: "the runtime tool registry has no API ToolRegistryStore adapter",
     },
     UnavailableRuntimeRoute {
         dependency: "memory",
@@ -166,8 +148,9 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
 ///
 /// The caller supplies a clone of the runtime config after applying
 /// surface-only overrides such as CORS. Agents and run lifecycle operations
-/// use the runtime's [`AppService`]; effects, events, artifacts,
-/// conversations, and payments all use its single migrated `SQLite` pool;
+/// use the runtime's [`AppService`]; tools query that service's exact configured
+/// registry (or an empty read view when registration is disabled); effects,
+/// events, artifacts, conversations, and payments all use its single migrated `SQLite` pool;
 /// WebSocket streaming uses the runtime event bus.
 ///
 /// Optional stores without a truthful adapter are deliberately left unset;
@@ -177,6 +160,7 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
 pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> AppState {
     let pool = Arc::new(runtime.pool().clone());
     let artifacts = Arc::new(SqliteApiArtifactStore::new(runtime.pool().clone()));
+    let tools = Arc::new(RuntimeToolRegistryStore::from_runtime(runtime));
     let agents = Arc::new(RuntimeAgentStore::from_runtime(runtime));
     let runs = Arc::new(RuntimeRunManager::from_runtime(runtime));
 
@@ -189,8 +173,64 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
     )
     .with_event_store(pool.clone())
     .with_artifact_store(artifacts)
+    .with_tool_registry(tools)
     .with_payment_store(pool.clone())
     .with_conversation_store(pool)
+}
+
+/// Read-only API projection of the tool registry owned by [`AppService`].
+///
+/// This adapter never creates or mutates a production registry. When runtime
+/// tool registration is disabled, it deliberately exposes an empty list and
+/// normal not-found lookups instead of a misleading `501 Not Implemented`.
+#[derive(Clone)]
+pub struct RuntimeToolRegistryStore {
+    registry: Option<Arc<polkagent_tool::ToolRegistry>>,
+}
+
+impl std::fmt::Debug for RuntimeToolRegistryStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeToolRegistryStore")
+            .field(
+                "tool_count",
+                &self.registry.as_ref().map_or(0, |registry| registry.len()),
+            )
+            .finish()
+    }
+}
+
+impl RuntimeToolRegistryStore {
+    /// Build a read view over the registry already selected by the runtime.
+    #[must_use]
+    pub fn new(registry: Option<Arc<polkagent_tool::ToolRegistry>>) -> Self {
+        Self { registry }
+    }
+
+    /// Capture the exact registry owned by the shared runtime service.
+    #[must_use]
+    pub fn from_runtime(runtime: &PolkagentRuntime) -> Self {
+        Self::new(runtime.app().tool_registry().cloned())
+    }
+}
+
+#[async_trait]
+impl ToolRegistryStore for RuntimeToolRegistryStore {
+    async fn list_tools(&self) -> Vec<polkagent_tool::ToolSpec> {
+        let Some(registry) = &self.registry else {
+            return Vec::new();
+        };
+        let mut specs = registry.list();
+        specs.sort_by(|left, right| left.name.cmp(&right.name));
+        specs
+    }
+
+    async fn get_tool(&self, name: &str) -> Option<polkagent_tool::ToolSpec> {
+        self.registry
+            .as_ref()
+            .and_then(|registry| registry.get(name))
+            .map(polkagent_tool::ToolHandler::spec)
+    }
 }
 
 /// Durable agent projection coupled to the live application service.
