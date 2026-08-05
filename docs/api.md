@@ -249,10 +249,10 @@ event envelope. Comment-only keepalives carry no application data. On bounded
 receiver lag, the server replays after the last event it emitted, avoiding
 duplicates and gaps; terminal turn events do not close the session stream.
 
-The live receiver is bounded, but the underlying interaction service currently
-materializes all durable replay events after the checkpoint before returning
-it. Reconnecting from a very old checkpoint is therefore not yet
-storage-bounded.
+The underlying interaction service attaches its bounded live receiver first,
+then loads durable replay lazily in bounded pages as the client consumes the
+stream. Reconnecting from an old checkpoint therefore does not materialize the
+full backlog, and disconnecting early stops further replay reads.
 
 ### System
 

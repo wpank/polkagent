@@ -81,10 +81,11 @@ connection without serializing backend messages; server logs record only the
 typed error code. The older `/events/stream` and `/ws/v1alpha1` transports
 remain separate run-event protocols.
 
-One upstream scaling gap remains: `InteractionEventHub::subscribe` currently
-materializes the full durable replay after the requested checkpoint before it
-returns its bounded live receiver. Live fan-out is bounded, but a reconnect
-from a very old checkpoint is not yet storage-bounded.
+`InteractionEventHub::subscribe` attaches the bounded live receiver before any
+replay read, then the returned stream loads at most one bounded durable page at
+a time as its consumer calls `recv`. This keeps old-checkpoint reconnects
+storage-bounded without losing publications that race with replay; dropping the
+stream prevents any later replay pages from being loaded.
 
 The `/conversations` API is a low-level transcript compatibility surface.
 In particular, `POST /conversations/{id}/messages` appends a record only: it

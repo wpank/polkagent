@@ -1686,9 +1686,10 @@ paths:
         filter can therefore produce non-contiguous IDs. Terminal turn events
         do not close the interaction stream because later turns may follow.
 
-        The current service materializes the full durable replay after the
-        checkpoint before returning the bounded live receiver. Consequently,
-        reconnecting from a very old checkpoint is not yet storage-bounded.
+        The service attaches its bounded live receiver before replay, then
+        loads durable history lazily in bounded pages as the client consumes
+        the stream. Old-checkpoint reconnects therefore avoid materializing the
+        full backlog, and an early disconnect stops later replay reads.
       parameters:
         - name: after_sequence
           in: query
