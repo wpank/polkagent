@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn deadline_exceeded_error_carries_run_id() {
         let run_id = RunId::new();
-        let mut run = Run::new(run_id.clone(), AgentId::new());
+        let mut run = Run::new(run_id, AgentId::new());
         run.deadline = Some(Utc::now() - chrono::Duration::seconds(1));
         let err = enforcer_no_limit().check(&run).unwrap_err();
         match err {

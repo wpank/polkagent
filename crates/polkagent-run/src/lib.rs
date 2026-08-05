@@ -16,6 +16,10 @@
 //! | [`timeout`] | [`TimeoutEnforcer`], [`TimeoutConfig`]: deadline enforcement |
 //! | [`error`] | [`RunError`], [`TransitionError`]: error types |
 
+// Unit tests use `expect`/`unwrap` to pinpoint fixture setup and the exact
+// lifecycle assertion that failed. Non-test library targets remain strict.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
+
 pub mod budget;
 pub mod cost_tracker;
 pub mod dag;

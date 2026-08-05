@@ -979,8 +979,7 @@ mod tests {
                 Some(RunProgressEvent::TextDelta { delta, .. }) => {
                     collected_text.push_str(&delta);
                 }
-                Some(RunProgressEvent::Completed { .. }) => break,
-                None => break,
+                Some(RunProgressEvent::Completed { .. }) | None => break,
                 _ => {}
             }
         }

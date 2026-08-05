@@ -726,7 +726,7 @@ mod tests {
         enforcer.begin_turn();
         let _ = enforcer.record(&make_record(100, 50, 0.5));
         let remaining = enforcer.remaining_cost_usd().unwrap();
-        assert_eq!(remaining, 0.0);
+        assert!(remaining.abs() < f64::EPSILON);
     }
 
     #[test]

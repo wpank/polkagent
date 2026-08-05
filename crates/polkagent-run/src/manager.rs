@@ -615,8 +615,8 @@ mod tests {
         event::{EventFilter, EventStore, EventStoreError, StoredEvent},
         RunStatus, RunStore, RunSummary, StoreError,
     };
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::{cmp::Reverse, collections::HashMap};
 
     // ── In-memory RunStore ─────────────────────────────────────────────────
 
@@ -695,7 +695,7 @@ mod tests {
                 .filter(|r| r.agent_id == agent_id)
                 .cloned()
                 .collect();
-            runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            runs.sort_by_key(|run| Reverse(run.created_at));
             runs.truncate(limit as usize);
             Ok(runs)
         }
@@ -712,7 +712,7 @@ mod tests {
                 .filter(|r| r.status == status)
                 .cloned()
                 .collect();
-            runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            runs.sort_by_key(|run| Reverse(run.created_at));
             runs.truncate(limit as usize);
             Ok(runs)
         }
@@ -767,12 +767,12 @@ mod tests {
             seqs.insert(event.run_id.clone(), event.sequence);
 
             let mut term = self.terminal.lock().expect("lock");
-            if TERMINAL_TYPES.contains(&event.event_type.as_str()) {
-                if !term.insert(event.run_id.clone()) {
-                    return Err(EventStoreError::DuplicateTerminalEvent {
-                        run_id: event.run_id.clone(),
-                    });
-                }
+            if TERMINAL_TYPES.contains(&event.event_type.as_str())
+                && !term.insert(event.run_id.clone())
+            {
+                return Err(EventStoreError::DuplicateTerminalEvent {
+                    run_id: event.run_id.clone(),
+                });
             }
 
             let mut durable = self.durable.lock().expect("lock");
@@ -823,7 +823,7 @@ mod tests {
                     filter
                         .run_id
                         .as_ref()
-                        .map_or(true, |rid| e.run_id == rid.to_string())
+                        .is_none_or(|rid| e.run_id == rid.to_string())
                 })
                 .cloned()
                 .collect())
@@ -859,7 +859,7 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create_run");
-        let state = mgr.get_state(run_id.clone()).await.expect("get_state");
+        let state = mgr.get_state(run_id).await.expect("get_state");
         assert_eq!(state, RunState::Created);
     }
 
@@ -883,16 +883,14 @@ mod tests {
         let agent_id = AgentId::new();
 
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.completing_run(run_id.clone())
-            .await
-            .expect("completing");
-        mgr.complete_run(run_id.clone(), None, 0, 0)
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
+        mgr.completing_run(run_id).await.expect("completing");
+        mgr.complete_run(run_id, None, 0, 0)
             .await
             .expect("complete");
 
-        let state = mgr.get_state(run_id.clone()).await.expect("get_state");
+        let state = mgr.get_state(run_id).await.expect("get_state");
         assert_eq!(state, RunState::Completed);
 
         let stored = events.read_run_events(run_id).await.expect("read");
@@ -914,9 +912,9 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.cancel_run(run_id.clone(), "user request")
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
+        mgr.cancel_run(run_id, "user request")
             .await
             .expect("cancel");
 
@@ -929,11 +927,9 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.fail_run(run_id.clone(), "provider error")
-            .await
-            .expect("fail");
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
+        mgr.fail_run(run_id, "provider error").await.expect("fail");
 
         let state = mgr.get_state(run_id).await.expect("get_state");
         assert!(matches!(state, RunState::Failed { .. }));
@@ -944,9 +940,9 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.timeout_run(run_id.clone()).await.expect("timeout");
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
+        mgr.timeout_run(run_id).await.expect("timeout");
 
         let state = mgr.get_state(run_id).await.expect("get_state");
         assert_eq!(state, RunState::TimedOut);
@@ -968,12 +964,10 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.completing_run(run_id.clone())
-            .await
-            .expect("completing");
-        mgr.complete_run(run_id.clone(), None, 0, 0)
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
+        mgr.completing_run(run_id).await.expect("completing");
+        mgr.complete_run(run_id, None, 0, 0)
             .await
             .expect("complete");
 
@@ -995,23 +989,23 @@ mod tests {
         let (mgr, events) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
 
         // Request approval.
-        mgr.request_approval(run_id.clone(), "req-1")
+        mgr.request_approval(run_id, "req-1")
             .await
             .expect("request_approval");
-        let state = mgr.get_state(run_id.clone()).await.expect("state");
+        let state = mgr.get_state(run_id).await.expect("state");
         assert!(
             matches!(state, RunState::AwaitingApproval { request_id } if request_id == "req-1")
         );
 
         // Grant approval.
-        mgr.grant_approval(run_id.clone(), "approval-1")
+        mgr.grant_approval(run_id, "approval-1")
             .await
             .expect("grant_approval");
-        let state = mgr.get_state(run_id.clone()).await.expect("state");
+        let state = mgr.get_state(run_id).await.expect("state");
         assert_eq!(state, RunState::Running);
 
         let stored = events.read_run_events(run_id).await.expect("read");
@@ -1025,12 +1019,12 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.request_approval(run_id.clone(), "req-1")
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
+        mgr.request_approval(run_id, "req-1")
             .await
             .expect("request");
-        mgr.deny_approval(run_id.clone(), "budget exceeded")
+        mgr.deny_approval(run_id, "budget exceeded")
             .await
             .expect("deny");
 
@@ -1045,8 +1039,8 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
 
         let recovered = mgr.recover_stuck_runs().await.expect("recover");
         assert_eq!(recovered, 1);
@@ -1062,7 +1056,7 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
+        mgr.enqueue_run(run_id).await.expect("enqueue");
 
         let recovered = mgr.recover_stuck_runs().await.expect("recover");
         assert_eq!(recovered, 1);
@@ -1078,11 +1072,9 @@ mod tests {
         let (mgr, _) = make_manager();
         let agent_id = AgentId::new();
         let run_id = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.completing_run(run_id.clone())
-            .await
-            .expect("completing");
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
+        mgr.completing_run(run_id).await.expect("completing");
 
         let recovered = mgr.recover_stuck_runs().await.expect("recover");
         assert_eq!(recovered, 1);
@@ -1099,13 +1091,11 @@ mod tests {
         let agent_id = AgentId::new();
 
         // Create a completed run — should not be recovered.
-        let run_id = mgr.create_run(agent_id.clone()).await.expect("create");
-        mgr.enqueue_run(run_id.clone()).await.expect("enqueue");
-        mgr.start_run(run_id.clone()).await.expect("start");
-        mgr.completing_run(run_id.clone())
-            .await
-            .expect("completing");
-        mgr.complete_run(run_id.clone(), None, 0, 0)
+        let run_id = mgr.create_run(agent_id).await.expect("create");
+        mgr.enqueue_run(run_id).await.expect("enqueue");
+        mgr.start_run(run_id).await.expect("start");
+        mgr.completing_run(run_id).await.expect("completing");
+        mgr.complete_run(run_id, None, 0, 0)
             .await
             .expect("complete");
 
@@ -1122,12 +1112,12 @@ mod tests {
         let agent_id = AgentId::new();
 
         // One running, one queued.
-        let r1 = mgr.create_run(agent_id.clone()).await.expect("create");
-        mgr.enqueue_run(r1.clone()).await.expect("enqueue");
-        mgr.start_run(r1.clone()).await.expect("start");
+        let r1 = mgr.create_run(agent_id).await.expect("create");
+        mgr.enqueue_run(r1).await.expect("enqueue");
+        mgr.start_run(r1).await.expect("start");
 
         let r2 = mgr.create_run(agent_id).await.expect("create");
-        mgr.enqueue_run(r2.clone()).await.expect("enqueue");
+        mgr.enqueue_run(r2).await.expect("enqueue");
 
         let recovered = mgr.recover_stuck_runs().await.expect("recover");
         assert_eq!(recovered, 2);

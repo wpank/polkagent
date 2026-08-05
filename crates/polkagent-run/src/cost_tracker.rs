@@ -326,7 +326,7 @@ mod tests {
         // feature, total_usd stays 0.0 and budget check is based on
         // accumulated 0.0 vs. limit, so we need to also test the
         // non-feature path.
-        let _result = tracker
+        let result = tracker
             .record_turn_cost("anthropic", "claude-sonnet-4", 1_000_000, 500_000)
             .await;
 
@@ -337,6 +337,11 @@ mod tests {
         assert!(
             result.is_some(),
             "large spend should exceed tiny budget when payment feature is on"
+        );
+        #[cfg(not(feature = "payment"))]
+        assert!(
+            result.is_none(),
+            "budget cannot be exceeded when payment accounting is disabled"
         );
     }
 
@@ -373,7 +378,7 @@ mod tests {
     #[test]
     fn unbounded_has_zero_initial_cost() {
         let tracker = CostTracker::unbounded(RunId::new());
-        assert_eq!(tracker.total_usd(), 0.0);
+        assert!(tracker.total_usd().abs() < f64::EPSILON);
         assert_eq!(tracker.total_input_tokens(), 0);
         assert_eq!(tracker.total_output_tokens(), 0);
     }

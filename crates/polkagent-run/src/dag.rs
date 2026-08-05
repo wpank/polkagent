@@ -1385,21 +1385,21 @@ mod tests {
         //        A -> C -> D
         //        E (independent)
         let mut dag = ExecutionDag::new();
-        let a = dag.add_node("a", StepKind::ContextAssembly);
-        let b = dag.add_node("b", StepKind::ModelInference);
-        let c = dag.add_node("c", StepKind::ToolInvocation);
-        let d = dag.add_node("d", StepKind::OutputParsing);
-        let e = dag.add_node("e", StepKind::Delivery);
+        let source = dag.add_node("a", StepKind::ContextAssembly);
+        let model_branch = dag.add_node("b", StepKind::ModelInference);
+        let tool_branch = dag.add_node("c", StepKind::ToolInvocation);
+        let sink = dag.add_node("d", StepKind::OutputParsing);
+        let independent = dag.add_node("e", StepKind::Delivery);
 
-        dag.add_edge(a, b).expect("a->b");
-        dag.add_edge(a, c).expect("a->c");
-        dag.add_edge(b, d).expect("b->d");
-        dag.add_edge(c, d).expect("c->d");
+        dag.add_edge(source, model_branch).expect("a->b");
+        dag.add_edge(source, tool_branch).expect("a->c");
+        dag.add_edge(model_branch, sink).expect("b->d");
+        dag.add_edge(tool_branch, sink).expect("c->d");
 
         // A and E should be ready initially.
         let mut ready = dag.ready_nodes();
         ready.sort_by_key(|id| id.0);
-        assert_eq!(ready, vec![a, e]);
+        assert_eq!(ready, vec![source, independent]);
 
         dag.validate().expect("valid");
     }

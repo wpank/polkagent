@@ -566,8 +566,8 @@ impl RunOrchestrator {
                 });
 
                 let tracker = match max_usd {
-                    Some(limit) => CostTracker::with_budget(run_id.clone(), limit),
-                    None => CostTracker::unbounded(run_id.clone()),
+                    Some(limit) => CostTracker::with_budget(run_id, limit),
+                    None => CostTracker::unbounded(run_id),
                 };
 
                 match &self.payment_store {
@@ -923,9 +923,8 @@ impl RunOrchestrator {
         messages: &[InferenceMessage],
         system_prompt: Option<&str>,
     ) -> Vec<InferenceMessage> {
-        let assembler = match &self.context_assembler {
-            Some(a) => a,
-            None => return messages.to_vec(),
+        let Some(context_assembler) = &self.context_assembler else {
+            return messages.to_vec();
         };
 
         // Extract conversation messages as strings for the assembler.
@@ -980,11 +979,13 @@ impl RunOrchestrator {
             })
             .collect();
 
-        let conversation_refs: Vec<&str> =
-            conversation_strings.iter().map(|s| s.as_str()).collect();
+        let conversation_refs: Vec<&str> = conversation_strings
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
 
         // Assemble context with the system prompt and conversation history.
-        let assembled = match assembler.assemble(
+        let assembled_context = match context_assembler.assemble(
             system_prompt,
             &[], // tool descriptions are handled separately in InferenceRequest
             &[], // memory entries (not used in orchestrator yet)
@@ -999,9 +1000,9 @@ impl RunOrchestrator {
         };
 
         info!(
-            total_tokens = assembled.total_tokens,
-            remaining = assembled.remaining_tokens(),
-            sections = assembled.section_count(),
+            total_tokens = assembled_context.total_tokens,
+            remaining = assembled_context.remaining_tokens(),
+            sections = assembled_context.section_count(),
             "context assembled for turn"
         );
 
@@ -1010,34 +1011,31 @@ impl RunOrchestrator {
         // truncated) conversation history. We parse it back into messages.
         let mut result = Vec::new();
 
-        for section in &assembled.sections {
-            match section.kind {
-                polkagent_context::section::SectionKind::ConversationHistory => {
-                    // Parse each line back into messages. Lines are in
-                    // "Role: content" format.
-                    for line in section.content.lines() {
-                        if let Some(text) = line.strip_prefix("User: ") {
-                            result.push(InferenceMessage {
-                                role: MessageRole::User,
-                                content: vec![ContentBlock::Text {
-                                    text: text.to_owned(),
-                                }],
-                            });
-                        } else if let Some(text) = line.strip_prefix("Assistant: ") {
-                            result.push(InferenceMessage {
-                                role: MessageRole::Assistant,
-                                content: vec![ContentBlock::Text {
-                                    text: text.to_owned(),
-                                }],
-                            });
-                        }
+        for section in &assembled_context.sections {
+            if section.kind == polkagent_context::section::SectionKind::ConversationHistory {
+                // Parse each line back into messages. Lines are in
+                // "Role: content" format.
+                for line in section.content.lines() {
+                    if let Some(text) = line.strip_prefix("User: ") {
+                        result.push(InferenceMessage {
+                            role: MessageRole::User,
+                            content: vec![ContentBlock::Text {
+                                text: text.to_owned(),
+                            }],
+                        });
+                    } else if let Some(text) = line.strip_prefix("Assistant: ") {
+                        result.push(InferenceMessage {
+                            role: MessageRole::Assistant,
+                            content: vec![ContentBlock::Text {
+                                text: text.to_owned(),
+                            }],
+                        });
                     }
                 }
-                // System prompt and other sections are handled separately
-                // (system prompt goes in InferenceRequest.system, not in
-                // messages).
-                _ => {}
             }
+            // System prompt and other sections are handled separately
+            // (system prompt goes in InferenceRequest.system, not in
+            // messages).
         }
 
         // Safety: if assembly produced no conversation messages (e.g.
@@ -1365,12 +1363,12 @@ mod tests {
             seqs.insert(event.run_id.clone(), event.sequence);
 
             let mut term = self.terminal.lock().expect("lock");
-            if TERMINAL_TYPES.contains(&event.event_type.as_str()) {
-                if !term.insert(event.run_id.clone()) {
-                    return Err(EventStoreError::DuplicateTerminalEvent {
-                        run_id: event.run_id.clone(),
-                    });
-                }
+            if TERMINAL_TYPES.contains(&event.event_type.as_str())
+                && !term.insert(event.run_id.clone())
+            {
+                return Err(EventStoreError::DuplicateTerminalEvent {
+                    run_id: event.run_id.clone(),
+                });
             }
 
             let mut durable = self.durable.lock().expect("lock");
@@ -1421,7 +1419,7 @@ mod tests {
                     filter
                         .run_id
                         .as_ref()
-                        .map_or(true, |rid| e.run_id == rid.to_string())
+                        .is_none_or(|rid| e.run_id == rid.to_string())
                 })
                 .cloned()
                 .collect())
@@ -1555,7 +1553,7 @@ mod tests {
             }
         }
 
-        /// Create a simple text response with end_turn.
+        /// Create a simple text response with `end_turn`.
         fn text_response(text: &str, input_tokens: u32, output_tokens: u32) -> InferenceResponse {
             InferenceResponse {
                 text: text.to_owned(),
@@ -1592,7 +1590,7 @@ mod tests {
             }
         }
 
-        /// Create a max_tokens response.
+        /// Create a `max_tokens` response.
         fn max_tokens_response(input_tokens: u32, output_tokens: u32) -> InferenceResponse {
             InferenceResponse {
                 text: "partial output...".to_owned(),
@@ -1704,7 +1702,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Hi there")
+            .execute_run(run_id, &agent_spec, "Hi there")
             .await
             .expect("execute_run");
 
@@ -1752,7 +1750,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Search for something")
+            .execute_run(run_id, &agent_spec, "Search for something")
             .await
             .expect("execute_run");
 
@@ -1789,7 +1787,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Read a file")
+            .execute_run(run_id, &agent_spec, "Read a file")
             .await
             .expect("execute_run");
 
@@ -1836,7 +1834,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Loop forever")
+            .execute_run(run_id, &agent_spec, "Loop forever")
             .await
             .expect("execute_run");
 
@@ -1865,7 +1863,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Fail please")
+            .execute_run(run_id, &agent_spec, "Fail please")
             .await
             .expect("execute_run");
 
@@ -1915,7 +1913,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Accumulate tokens")
+            .execute_run(run_id, &agent_spec, "Accumulate tokens")
             .await
             .expect("execute_run");
 
@@ -1940,7 +1938,7 @@ mod tests {
 
         let _outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Hello")
+            .execute_run(run_id, &agent_spec, "Hello")
             .await
             .expect("execute_run");
 
@@ -1990,7 +1988,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Generate a novel")
+            .execute_run(run_id, &agent_spec, "Generate a novel")
             .await
             .expect("execute_run");
 
@@ -2019,7 +2017,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Be quick")
+            .execute_run(run_id, &agent_spec, "Be quick")
             .await
             .expect("execute_run");
 
@@ -2065,7 +2063,7 @@ mod tests {
             payload: serde_json::json!({
                 "pallet_name": "Balances",
                 "call_name": "transfer_keep_alive",
-                "args": {"dest": "5GrwvaEF", "value": 1000000},
+                "args": {"dest": "5GrwvaEF", "value": 1_000_000},
                 "estimated_fee": "0.0014 DOT"
             }),
             created_at: chrono::Utc::now(),
@@ -2237,7 +2235,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Hello")
+            .execute_run(run_id, &agent_spec, "Hello")
             .await
             .expect("execute_run");
 
@@ -2276,7 +2274,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Accumulate")
+            .execute_run(run_id, &agent_spec, "Accumulate")
             .await
             .expect("execute_run");
 
@@ -2305,7 +2303,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Short")
+            .execute_run(run_id, &agent_spec, "Short")
             .await
             .expect("execute_run");
 
@@ -2372,7 +2370,7 @@ mod tests {
         }
     }
 
-    /// Build a test harness with a CapturingExecutor for context assembly
+    /// Build a test harness with a `CapturingExecutor` for context assembly
     /// tests.
     #[cfg(feature = "context")]
     fn build_capturing_harness(
@@ -2435,7 +2433,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Hi there")
+            .execute_run(run_id, &agent_spec, "Hi there")
             .await
             .expect("execute_run");
 
@@ -2504,7 +2502,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Search for blockchain data")
+            .execute_run(run_id, &agent_spec, "Search for blockchain data")
             .await
             .expect("execute_run");
 
@@ -2567,7 +2565,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Hello agent")
+            .execute_run(run_id, &agent_spec, "Hello agent")
             .await
             .expect("execute_run");
 
@@ -2649,7 +2647,7 @@ mod tests {
         let outcome = harness
             .orchestrator
             .execute_run(
-                run_id.clone(),
+                run_id,
                 &agent_spec,
                 "Process multiple steps with lots of data",
             )
@@ -2719,7 +2717,7 @@ mod tests {
 
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Hello world")
+            .execute_run(run_id, &agent_spec, "Hello world")
             .await
             .expect("execute_run");
 
@@ -2786,7 +2784,7 @@ mod tests {
         // messages on assembly failure.
         let outcome = harness
             .orchestrator
-            .execute_run(run_id.clone(), &agent_spec, "Short prompt")
+            .execute_run(run_id, &agent_spec, "Short prompt")
             .await
             .expect("execute_run");
 

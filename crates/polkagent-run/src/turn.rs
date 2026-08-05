@@ -177,7 +177,7 @@ mod tests {
         let m = manager();
         let run_id = RunId::new();
         let input = TurnInput::user("Hello");
-        let turn = m.create_turn(run_id.clone(), 0, &input);
+        let turn = m.create_turn(run_id, 0, &input);
         assert_eq!(turn.run_id, run_id);
         assert_eq!(turn.sequence, 0);
         assert!(!turn.is_complete());
