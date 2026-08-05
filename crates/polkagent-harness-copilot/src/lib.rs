@@ -52,20 +52,31 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use polkagent_harness_trait::{
     process::ChildProcessRunner, CancelMode, CliOutputFormat, Harness, HarnessCapabilities,
     HarnessConfig, HarnessError, HarnessEvent, HarnessId, HarnessStatus, McpMode, SessionConfig,
     SessionId, SessionResumeMode, ToolInjection, TransportFlavor,
 };
+
+/// Recover harness state after a panic poisoned a standard mutex.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("Copilot harness state mutex was poisoned; recovering inner state");
+            poisoned.into_inner()
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // CopilotCommand
@@ -352,7 +363,7 @@ impl CopilotHarness {
     /// Return the number of active sessions.
     #[must_use]
     pub fn active_session_count(&self) -> usize {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.values().filter(|s| s.active).count()
     }
 
@@ -361,7 +372,7 @@ impl CopilotHarness {
     /// Returns `None` if the session does not exist.
     #[must_use]
     pub fn session_messages(&self, session_id: SessionId) -> Option<Vec<String>> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.get(&session_id).map(|s| s.messages.clone())
     }
 
@@ -370,7 +381,7 @@ impl CopilotHarness {
     /// Returns `None` if the session does not exist.
     #[must_use]
     pub fn session_responses(&self, session_id: SessionId) -> Option<Vec<String>> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.get(&session_id).map(|s| s.responses.clone())
     }
 
@@ -379,7 +390,7 @@ impl CopilotHarness {
     /// Returns `None` if the session does not exist.
     #[must_use]
     pub fn session_metadata(&self, session_id: SessionId) -> Option<SessionMetadata> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.get(&session_id).map(|s| SessionMetadata {
             session_id: s.id,
             binary_path: s.binary_path.clone(),
@@ -450,7 +461,7 @@ impl Harness for CopilotHarness {
     }
 
     fn status(&self) -> HarnessStatus {
-        let status = self.status.lock().expect("status mutex poisoned");
+        let status = lock_or_recover(&self.status);
         status.clone()
     }
 
@@ -476,12 +487,12 @@ impl Harness for CopilotHarness {
         };
 
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             sessions.insert(session_id, state);
         }
 
         {
-            let mut status = self.status.lock().expect("status mutex poisoned");
+            let mut status = lock_or_recover(&self.status);
             *status = HarnessStatus::Running {
                 since: Utc::now(),
                 run_id: None,
@@ -495,7 +506,7 @@ impl Harness for CopilotHarness {
     async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError> {
         // Validate session is active and record the message.
         let working_dir = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
                 .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -545,7 +556,7 @@ impl Harness for CopilotHarness {
 
         // Record the response.
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.responses.push(response_text);
             }
@@ -560,7 +571,7 @@ impl Harness for CopilotHarness {
     ) -> Result<Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>, HarnessError> {
         // For a one-shot harness, we return the collected responses as events.
         let responses = {
-            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get(&session_id)
                 .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -591,7 +602,7 @@ impl Harness for CopilotHarness {
 
     async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
                 .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -616,11 +627,11 @@ impl Harness for CopilotHarness {
 
         // If no more active sessions, return to Idle.
         {
-            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             let any_active = sessions.values().any(|s| s.active);
             if !any_active {
                 drop(sessions);
-                let mut status = self.status.lock().expect("status mutex poisoned");
+                let mut status = lock_or_recover(&self.status);
                 *status = HarnessStatus::Idle;
             }
         }
@@ -668,7 +679,7 @@ impl Harness for CopilotHarness {
         &self,
         session_id: SessionId,
     ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         let session = sessions
             .get(&session_id)
             .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -701,7 +712,7 @@ impl Harness for CopilotHarness {
             process_pid: None,
             started_at: chrono::Utc::now(),
             working_directory: session.working_dir.clone(),
-            turn_count: session.messages.len() as u32,
+            turn_count: u32::try_from(session.messages.len()).unwrap_or(u32::MAX),
             backend_state,
         };
 
@@ -742,6 +753,12 @@ impl Harness for CopilotHarness {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::field_reassign_with_default,
+        reason = "test fixtures use fail-fast assertions and mutate defaults to isolate precedence cases"
+    )]
+
     use super::*;
     use futures::StreamExt;
     use polkagent_harness_trait::{HarnessConfig, SessionConfig};
@@ -884,7 +901,7 @@ mod tests {
 
     #[test]
     fn envelope_parse_json_empty_object() {
-        let json = r#"{}"#;
+        let json = "{}";
         let envelope = CopilotEnvelope::parse(json).expect("parse should work");
         assert!(envelope.response.is_none());
         assert!(envelope.error.is_none());
