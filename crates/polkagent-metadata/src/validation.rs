@@ -64,6 +64,12 @@ fn hex_encode(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Validation tests intentionally panic when expected rejection fixtures are
+// accepted so validation regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "metadata validation assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

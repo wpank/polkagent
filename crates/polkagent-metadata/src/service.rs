@@ -172,6 +172,12 @@ impl Default for MetadataService {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Service tests intentionally panic at pinning and drift contract boundaries so
+// malformed metadata fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "metadata service assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::types::{ChainId, MetadataHash, MetadataVersion};

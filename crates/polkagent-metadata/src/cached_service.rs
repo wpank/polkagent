@@ -160,7 +160,7 @@ impl std::fmt::Debug for CachedMetadataService {
         f.debug_struct("CachedMetadataService")
             .field("inner", &self.inner)
             .field("ttl", &self.ttl)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -170,7 +170,7 @@ impl std::fmt::Debug for CachedMetadataService {
 
 /// Build a [`CacheKey`] from a chain ID and spec version.
 fn cache_key(chain_id: &ChainId, spec_version: u32) -> CacheKey {
-    CacheKey::new(CACHE_NAMESPACE, format!("{}:{}", chain_id, spec_version))
+    CacheKey::new(CACHE_NAMESPACE, format!("{chain_id}:{spec_version}"))
 }
 
 /// Serialize a [`MetadataSnapshot`] into a [`CachedValue`].
@@ -197,6 +197,12 @@ fn cached_value_to_snapshot(cached: &CachedValue) -> Option<MetadataSnapshot> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Cached-service tests intentionally panic at cache and snapshot contract
+// boundaries so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "cached metadata assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::types::{ChainId, MetadataVersion};

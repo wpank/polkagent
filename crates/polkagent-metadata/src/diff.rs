@@ -552,6 +552,12 @@ pub fn generate_impact_brief(diff: &MetadataDiff) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Diff tests intentionally panic at serialization boundaries so malformed
+// round-trip fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "metadata diff assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_codec::{

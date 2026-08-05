@@ -360,6 +360,12 @@ impl DecodeService {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Decoder tests intentionally panic at SCALE fixture and rejection boundaries
+// so wire-format regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "metadata decoder assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::types::{MetadataSnapshot, MetadataVersion};
@@ -390,7 +396,8 @@ mod tests {
         payload.extend_from_slice(args);
 
         let mut enc = ScaleEncoder::new();
-        enc.encode_compact_u32(payload.len() as u32);
+        let payload_len = u32::try_from(payload.len()).expect("test payload length fits in u32");
+        enc.encode_compact_u32(payload_len);
         let mut out = enc.finish();
         out.extend(payload);
         out
@@ -420,7 +427,8 @@ mod tests {
         payload.push(call);
 
         let mut enc = ScaleEncoder::new();
-        enc.encode_compact_u32(payload.len() as u32);
+        let payload_len = u32::try_from(payload.len()).expect("test payload length fits in u32");
+        enc.encode_compact_u32(payload_len);
         let mut out = enc.finish();
         out.extend(payload);
         out

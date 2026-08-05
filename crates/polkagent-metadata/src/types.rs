@@ -225,6 +225,12 @@ pub struct MetadataDrift {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Wire-type tests intentionally panic at serialization boundaries so malformed
+// metadata round-trip fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "metadata wire-type assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::now;

@@ -182,6 +182,12 @@ impl Default for MetadataCache {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Cache tests intentionally panic at concurrency and fixture boundaries so
+// poisoned or malformed test state remains easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "metadata cache assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::types::MetadataVersion;

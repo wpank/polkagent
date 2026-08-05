@@ -164,6 +164,13 @@ impl Default for PinStore {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Pin-store tests intentionally panic at mutation, concurrency, and rejection
+// boundaries so broken pin invariants remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "metadata pin assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

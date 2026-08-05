@@ -207,6 +207,12 @@ impl DriftDetector {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Drift tests intentionally panic when an expected drift fixture is absent so
+// detection regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "metadata drift assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::types::{ChainId, MetadataHash, MetadataVersion};
@@ -224,7 +230,7 @@ mod tests {
         )
     }
 
-    /// Create a snapshot whose raw_bytes are valid minimal v14 metadata.
+    /// Create a snapshot whose `raw_bytes` are valid minimal v14 metadata.
     fn make_valid_snapshot(chain: &str, pallets: &[(&str, u8)]) -> MetadataSnapshot {
         let raw = build_minimal_metadata_v14(pallets);
         MetadataSnapshot::new(ChainId::new(chain), MetadataVersion::V14, raw, now(), 1)
