@@ -2877,6 +2877,7 @@ dependencies = [
  "polkagent-marketplace",
  "polkagent-memory",
  "polkagent-metadata",
+ "polkagent-runtime",
  "polkagent-service",
  "polkagent-skill",
  "polkagent-store-sqlite",

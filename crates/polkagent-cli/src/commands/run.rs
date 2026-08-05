@@ -1,9 +1,10 @@
 //! `polkagent run` — submit a run and stream its output.
 //!
-//! When no daemon is running this command builds an inline [`AppService`]
-//! using the available executor, starts the run, subscribes to the event bus,
-//! and streams events to stdout until a terminal event arrives or the timeout
-//! expires.
+//! When no daemon is running the one-shot command builds a shared production
+//! runtime, starts the run, subscribes to its event bus, and streams events to
+//! stdout until a terminal event arrives or the timeout expires. The TUI's
+//! compatibility entry point still builds an inline [`AppService`] until its
+//! dedicated runtime-handle migration lands.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -25,6 +26,9 @@ use polkagent_executor_local::LocalExecutor;
 use polkagent_executor_openai::OpenAiExecutor;
 use polkagent_executor_openrouter::OpenRouterExecutor;
 use polkagent_executor_trait::{ExecutorError, ModelExecutor};
+use polkagent_runtime::{
+    AdapterPolicy, ComponentState, RuntimeFactory, RuntimeOptions, RuntimeReadiness, WarningCode,
+};
 use polkagent_service::{AppService, HarnessRegistry, ProviderRegistry};
 use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 
@@ -32,10 +36,11 @@ use crate::cli::RunCmd;
 use crate::commands::run_printer::RunPrinter;
 use crate::tui::theme::Theme;
 
-/// A started run plus the live resources needed by interactive surfaces.
+/// A started run plus the live resources needed by foreground surfaces.
 ///
-/// The one-shot CLI and the TUI deliberately share this bootstrap so provider,
-/// harness, store, event-recorder, and tool composition cannot drift.
+/// The one-shot command now obtains these resources from `RuntimeFactory`.
+/// The TUI retains its legacy bootstrap through `start_interactive_run` until
+/// its separate runtime-handle migration lands.
 pub(crate) struct StartedRun {
     pub(crate) service: Arc<AppService>,
     pub(crate) events: EventReceiver,
@@ -83,8 +88,8 @@ pub(crate) async fn start_interactive_run(
 
 /// Execute the `run` subcommand.
 ///
-/// Builds an [`AppService`] inline (no daemon required), starts the run, then
-/// subscribes to the event bus and streams events to stdout until the run
+/// Builds the shared production runtime (no daemon required), starts the run,
+/// then subscribes to its event bus and streams events to stdout until the run
 /// reaches a terminal state or the timeout expires.
 #[allow(
     clippy::too_many_lines,
@@ -115,20 +120,7 @@ pub async fn run(
         return Ok(());
     }
 
-    let config = load_config_from_path(config_path)?;
-    let started = start_run_inner(
-        pool,
-        &cmd.agent_id,
-        &cmd.prompt,
-        StartRunOptions {
-            provider: cmd.provider.as_deref(),
-            model: cmd.model.clone(),
-            harness: cmd.harness.as_deref(),
-            no_harness: cmd.no_harness,
-            config: Some(config),
-        },
-    )
-    .await?;
+    let started = start_one_shot_run(cmd, pool, config_path).await?;
     for note in &started.notes {
         eprintln!("{note}");
     }
@@ -316,16 +308,116 @@ pub async fn run(
     result
 }
 
-async fn start_run_inner(
+/// Start a one-shot command through the shared production runtime.
+async fn start_one_shot_run(
+    cmd: &RunCmd,
     pool: &SqlitePool,
-    agent_reference: &str,
-    prompt: &str,
-    options: StartRunOptions<'_>,
+    config_path: Option<&Path>,
 ) -> Result<StartedRun> {
+    validate_prompt(&cmd.prompt)?;
+    let agent = find_runnable_agent(pool, &cmd.agent_id)?;
+    let typed_agent_id: AgentId = agent
+        .id
+        .parse()
+        .with_context(|| format!("invalid agent ID in database: {}", agent.id))?;
+    let agent_spec = build_agent_spec(
+        typed_agent_id,
+        &agent.name,
+        &agent.spec_json,
+        cmd.model.clone(),
+    );
+    let agent_model = agent_spec.model;
+
+    let runtime_options = one_shot_runtime_options(cmd, pool, config_path)?;
+    let runtime = RuntimeFactory::build(runtime_options)
+        .await
+        .context("building shared Polkagent runtime")?;
+    let notes = one_shot_runtime_notes(runtime.readiness(), cmd.no_harness);
+    let events = runtime.subscribe_events();
+    let service = Arc::clone(runtime.app());
+    let run_id = service
+        .start_run(typed_agent_id, &cmd.prompt)
+        .await
+        .context("starting run")?;
+
+    info!(%run_id, agent_id = %agent.id, "run started through shared runtime");
+    Ok(StartedRun {
+        service,
+        events,
+        run_id,
+        agent_id: agent.id,
+        agent_name: agent.name,
+        agent_model,
+        notes,
+    })
+}
+
+fn one_shot_runtime_options(
+    cmd: &RunCmd,
+    pool: &SqlitePool,
+    config_path: Option<&Path>,
+) -> Result<RuntimeOptions> {
+    let workdir = std::env::current_dir().context("resolving current working directory")?;
+    let mut options = RuntimeOptions::new(workdir);
+    options.config_path = config_path.map(Path::to_path_buf);
+    // `main` still owns the command-family pool until all database commands
+    // migrate. Pin the runtime to the already-resolved file so config and env
+    // path resolution cannot select a different database mid-command.
+    options.database_path = Some(pool.path().to_path_buf());
+    options.provider_override.clone_from(&cmd.provider);
+    options.model_override.clone_from(&cmd.model);
+    options.harness_override.clone_from(&cmd.harness);
+    options.disable_harness = cmd.no_harness;
+    // Preserve the established local-first CLI behavior: without credentials
+    // the command executes a deterministic simulated response and reports it.
+    options.adapter_policy = AdapterPolicy::AllowSimulated;
+    Ok(options)
+}
+
+fn one_shot_runtime_notes(readiness: &RuntimeReadiness, no_harness: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    if readiness.executor.state == ComponentState::Degraded
+        && readiness
+            .warnings
+            .iter()
+            .any(|warning| warning.code == WarningCode::SimulatedExecutor)
+    {
+        notes.push("No API key or local model configured. Using simulated responses.".to_owned());
+    } else if readiness.executor.state == ComponentState::Ready {
+        notes.push(readiness.executor.detail.clone());
+    }
+
+    if !no_harness {
+        match readiness.harness.state {
+            ComponentState::Ready => notes.push(readiness.harness.detail.clone()),
+            ComponentState::Disabled => {
+                notes.push("No harness found. Running in executor-only mode.".to_owned());
+            }
+            ComponentState::Degraded | ComponentState::Unavailable => {
+                if let Some(warning) = readiness
+                    .warnings
+                    .iter()
+                    .find(|warning| warning.code == WarningCode::HarnessUnavailable)
+                {
+                    notes.push(warning.message.clone());
+                }
+            }
+        }
+    }
+    notes
+}
+
+fn validate_prompt(prompt: &str) -> Result<()> {
     if prompt.trim().is_empty() {
         anyhow::bail!("prompt cannot be empty");
     }
+    Ok(())
+}
 
+fn find_runnable_agent(
+    pool: &SqlitePool,
+    agent_reference: &str,
+) -> Result<polkagent_store_sqlite::AgentRow> {
     let store = SqliteRunStore::new(pool.clone());
     let agent = store
         .get_agent_by_name_or_id(agent_reference)
@@ -342,6 +434,17 @@ async fn start_run_inner(
             agent.state
         );
     }
+    Ok(agent)
+}
+
+async fn start_run_inner(
+    pool: &SqlitePool,
+    agent_reference: &str,
+    prompt: &str,
+    options: StartRunOptions<'_>,
+) -> Result<StartedRun> {
+    validate_prompt(prompt)?;
+    let agent = find_runnable_agent(pool, agent_reference)?;
 
     let typed_agent_id: AgentId = agent
         .id
@@ -1197,6 +1300,113 @@ mod tests {
         let durable = store.get_run(&run_id).expect("durable run");
         assert_eq!(durable.agent_id, agent.id);
         assert_eq!(durable.state, "completed");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_shot_run_uses_shared_runtime_and_durable_stores() {
+        let _guard = EnvGuard::new();
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("runtime.db");
+        let config_path = temp.path().join("polkagent.toml");
+        std::fs::write(&config_path, "").expect("write config");
+
+        let pool = SqlitePool::open(&database_path).expect("open database");
+        polkagent_store_sqlite::migrations::migrate(&pool.writer()).expect("migrate database");
+        let store = SqliteRunStore::new(pool.clone());
+        let timestamp = "2026-01-01T00:00:00Z";
+        let spec = serde_json::json!({
+            "name": "runtime-agent",
+            "description": null,
+            "model": "fake/default-model",
+            "tools": [],
+            "autonomy_level": "supervised",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        });
+        let agent = store
+            .create_agent("runtime-agent", None, &spec.to_string())
+            .expect("create agent");
+        let command = RunCmd {
+            agent_id: agent.id.clone(),
+            prompt: "hello through RuntimeFactory".to_owned(),
+            json: false,
+            wait: true,
+            provider: None,
+            model: None,
+            harness: None,
+            stream: true,
+            no_stream: false,
+            no_harness: true,
+            timeout: 10,
+        };
+
+        let mut started = start_one_shot_run(&command, &pool, Some(&config_path))
+            .await
+            .expect("start runtime-backed run");
+        assert!(started.service.has_timeout_enforcer());
+        assert!(started.service.conversation_store().is_some());
+        assert!(started.service.payment_store().is_some());
+        assert!(started
+            .notes
+            .iter()
+            .any(|note| note.contains("simulated responses")));
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let event = started.events.recv().await.expect("run event");
+                if event.run_id != started.run_id {
+                    continue;
+                }
+                match event.kind {
+                    EventKind::RunCompleted { .. } => break,
+                    EventKind::RunFailed { reason } => panic!("run failed: {reason}"),
+                    EventKind::RunCancelled { reason } => panic!("run cancelled: {reason}"),
+                    EventKind::RunTimedOut => panic!("run timed out"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("runtime-backed fake run should finish");
+
+        let durable = store
+            .get_run(&started.run_id.to_string())
+            .expect("durable run");
+        assert_eq!(durable.agent_id, agent.id);
+        assert_eq!(durable.state, "completed");
+    }
+
+    #[test]
+    fn one_shot_runtime_options_preserve_command_selection() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("runtime-options.db");
+        let pool = SqlitePool::open(&database_path).expect("open database");
+        let config_path = temp.path().join("selected.toml");
+        let command = RunCmd {
+            agent_id: "agent".to_owned(),
+            prompt: "prompt".to_owned(),
+            json: false,
+            wait: true,
+            provider: Some("anthropic".to_owned()),
+            model: Some("claude-opus-4-6".to_owned()),
+            harness: Some("codex".to_owned()),
+            stream: true,
+            no_stream: false,
+            no_harness: false,
+            timeout: 10,
+        };
+
+        let options =
+            one_shot_runtime_options(&command, &pool, Some(&config_path)).expect("runtime options");
+        assert_eq!(options.config_path.as_deref(), Some(config_path.as_path()));
+        assert_eq!(
+            options.database_path.as_deref(),
+            Some(database_path.as_path())
+        );
+        assert_eq!(options.provider_override.as_deref(), Some("anthropic"));
+        assert_eq!(options.model_override.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(options.harness_override.as_deref(), Some("codex"));
+        assert_eq!(options.adapter_policy, AdapterPolicy::AllowSimulated);
     }
 
     #[test]

@@ -35,6 +35,7 @@ polkagent-api             = { path = "../polkagent-api" }
 polkagent-identity        = { path = "../polkagent-identity" }
 polkagent-event           = { path = "../polkagent-event" }
 polkagent-service         = { path = "../polkagent-service" }
+polkagent-runtime         = { path = "../polkagent-runtime" }
 polkagent-codec           = { path = "../polkagent-codec" }
 polkagent-metadata        = { path = "../polkagent-metadata" }
 polkagent-card            = { path = "../polkagent-card" }
