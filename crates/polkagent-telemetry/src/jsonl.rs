@@ -1,6 +1,6 @@
 //! JSONL event writer for durable run event recording.
 //!
-//! [`JsonlWriter`] appends serialized [`RunEvent`](polkagent_core::RunEvent)
+//! [`JsonlWriter`] appends serialized [`RunEvent`]
 //! records to a `.jsonl` file, one JSON object per line. Each line is
 //! flushed immediately to ensure durability.
 

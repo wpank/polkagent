@@ -1,7 +1,7 @@
 //! Agent identity and signed metadata types.
 //!
 //! An [`AgentIdentity`] ties a Polkagent agent (identified by its
-//! [`AgentId`](polkagent_core::AgentId)) to one or more on-chain accounts.
+//! [`AgentId`]) to one or more on-chain accounts.
 //! An [`AgentCard`] wraps identity data with capabilities metadata and
 //! provides the foundation for future signature-based verification.
 

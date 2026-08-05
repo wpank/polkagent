@@ -416,7 +416,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Attempt to load the Polkagent config from standard locations via
-/// [`ConfigLoader`].
+/// [`polkagent_config::ConfigLoader`].
 ///
 /// Returns [`Config::default()`] if no config file is found or loading fails.
 fn load_config() -> Config {
@@ -544,7 +544,7 @@ fn build_provider_registry(config: &Config) -> ProviderRegistry {
     registry
 }
 
-/// Try to instantiate an executor from a [`ProviderConfig`].
+/// Try to instantiate an executor from a [`polkagent_config::schema::ProviderConfig`].
 ///
 /// Returns `None` if the required API key is not set in the environment.
 fn executor_from_provider_config(
@@ -888,8 +888,9 @@ fn build_agent_spec(
 /// Build a chain client for governance and treasury tools.
 ///
 /// When `POLKAGENT_CHAIN_RPC_URL` or `POLKAGENT_RPC_URL` is set, builds a
-/// [`SubxtChainClient`] that queries a live chain node.  `POLKAGENT_CHAIN_RPC_URL`
-/// takes precedence.  Otherwise falls back to a [`FakeChainClient`] so tools
+/// [`polkagent_chain_subxt::SubxtChainClient`] that queries a live chain node.
+/// `POLKAGENT_CHAIN_RPC_URL` takes precedence. Otherwise falls back to a
+/// [`polkagent_chain_fake::FakeChainClient`] so tools
 /// still work (returning representative offline data).
 fn build_chain_client() -> Arc<dyn ChainClient> {
     use polkagent_chain_trait::{ChainProfile, ChainProfileId, GenesisHash, NetworkType};

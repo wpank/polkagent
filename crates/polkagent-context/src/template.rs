@@ -19,7 +19,7 @@ use crate::error::{ContextError, ContextResult};
 ///
 /// Variables are registered with [`TemplateEngine::set`] and resolved by
 /// [`TemplateEngine::render`]. Unknown variables cause an error unless
-/// [`TemplateEngine::allow_unknown`] is enabled, in which case they are
+/// the `allow_unknown` setting is enabled, in which case they are
 /// left as-is.
 #[derive(Debug, Clone)]
 pub struct TemplateEngine {

@@ -1,7 +1,8 @@
 //! Goose harness adapter for the Polkagent platform.
 //!
 //! This crate provides [`GooseConfigurator`] -- an implementation of the
-//! [`AcpConfigurator`] trait that configures the shared [`AcpHarness`] for
+//! [`AcpConfigurator`] trait that configures the shared
+//! [`AcpHarness`](polkagent_harness_acp::AcpHarness) for
 //! the Goose CLI (`goose acp`).
 //!
 //! # Usage
@@ -124,8 +125,9 @@ impl GooseHarnessConfigBuilder {
 
 /// ACP configurator for the Goose CLI.
 ///
-/// Implements [`AcpConfigurator`] so that an [`AcpHarness<GooseConfigurator>`]
-/// can be used as a fully-featured [`Harness`] for Goose.
+/// Implements [`AcpConfigurator`] so that an
+/// [`AcpHarness`](polkagent_harness_acp::AcpHarness) can be used as a
+/// fully-featured [`Harness`](polkagent_harness_trait::Harness) for Goose.
 #[derive(Debug, Clone, Default)]
 pub struct GooseConfigurator {
     /// Goose-specific configuration.

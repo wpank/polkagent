@@ -1,4 +1,4 @@
-//! SQLite [`FeedStore`] implementation for the Polkagent platform.
+//! SQLite [`polkagent_feed::FeedStore`] implementation for the Polkagent platform.
 //!
 //! This crate provides a durable, SQLite-backed implementation of
 //! [`polkagent_feed::FeedStore`] via the [`SqliteFeedStore`] newtype wrapper
@@ -31,7 +31,7 @@
 //! # Architecture
 //!
 //! - **[`feed_store_impl`]** -- Defines [`SqliteFeedStore`] and implements all
-//!   14 [`FeedStore`] methods by wrapping synchronous `rusqlite` calls in
+//!   14 [`polkagent_feed::FeedStore`] methods by wrapping synchronous `rusqlite` calls in
 //!   `tokio::task::spawn_blocking`.
 //! - **[`migrations`]** -- `CREATE TABLE IF NOT EXISTS` DDL for the four
 //!   feed-related tables.  Safe to call even if the main store's V7 migration

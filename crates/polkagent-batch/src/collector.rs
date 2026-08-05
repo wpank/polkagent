@@ -25,7 +25,7 @@ use crate::item::BatchItem;
 /// 1. The buffer reaches `max_size`, **or**
 /// 2. `max_wait` elapses since the first item was added.
 ///
-/// Use [`start`](Self::start) to spawn the background timer task, and
+/// Use [`start_timer`](Self::start_timer) to spawn the background timer task, and
 /// consume flushed batches from the returned receiver.
 pub struct BatchCollector<T> {
     config: BatchConfig,

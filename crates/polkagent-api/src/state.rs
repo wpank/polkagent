@@ -77,7 +77,7 @@ pub trait SkillRegistry: Send + Sync {
 
 /// In-memory implementation of [`SkillRegistry`] backed by an `RwLock<Vec>`.
 ///
-/// Skills are loaded from the filesystem via [`SkillLoader`] and cached in
+/// Skills are loaded from the filesystem via [`polkagent_skill::loader::SkillLoader`] and cached in
 /// memory. Install/uninstall mutations modify the in-memory cache only; they
 /// do not persist across process restarts.
 #[derive(Debug)]

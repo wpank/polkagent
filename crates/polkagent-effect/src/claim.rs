@@ -1,6 +1,6 @@
 //! Lease-based claim guard for effect intents.
 //!
-//! A [`ClaimGuard`] wraps a successfully claimed [`EffectIntent`] and
+//! A [`ClaimGuard`] wraps a successfully claimed effect intent and
 //! guarantees that the lease is released — returning the intent to `Pending`
 //! — if the guard is dropped before [`ClaimGuard::complete`] is called.
 //!
@@ -22,7 +22,7 @@
 //! | `SignatureRequest`, `Broadcast`, `FinalityWatch` | 120 s |
 //! | All others | 60 s |
 //!
-//! Callers may override via [`ClaimGuard::with_lease_duration`].
+//! Callers may override via [`crate::pipeline::EffectPipeline::claim_with_duration`].
 
 use std::sync::Arc;
 

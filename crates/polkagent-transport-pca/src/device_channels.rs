@@ -25,8 +25,8 @@ pub struct DeviceChannelSnapshot {
 
 /// Thread-safe set that tracks which channels each device is subscribed to.
 ///
-/// Designed to survive restarts: call [`snapshot`] to persist the current
-/// state and [`restore`] to reload it.
+/// Designed to survive restarts: call [`DeviceChannelSet::snapshot`] to persist
+/// the current state and [`DeviceChannelSet::restore`] to reload it.
 pub struct DeviceChannelSet {
     inner: RwLock<HashMap<DeviceId, HashSet<ChannelId>>>,
 }

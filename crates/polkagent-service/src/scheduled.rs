@@ -2,8 +2,8 @@
 //!
 //! [`ScheduledTaskManager`] bridges the `polkagent-scheduler` crate and the
 //! service layer. It lets callers register recurring or one-shot agent runs
-//! (e.g. "run agent X with prompt Y every 10 minutes"), drives execution via
-//! [`AppService::start_run()`], and keeps a history of every execution.
+//! (e.g. "run agent X with prompt Y every 10 minutes") and keeps a history of
+//! due execution intents for the service layer to start.
 //!
 //! # Example
 //!
@@ -57,8 +57,8 @@ pub struct HistoryEntry {
 ///
 /// The manager owns a [`Scheduler`] backed by an [`InMemoryTaskStore`] and
 /// provides convenience methods for registering interval-based agent runs.
-/// When a task fires, the manager calls `AppService::start_run()` and records
-/// the result in an in-memory history log.
+/// When a task fires, the manager records the execution intent in an in-memory
+/// history log. The service composition layer is responsible for starting it.
 pub struct ScheduledTaskManager {
     /// The underlying scheduler.
     scheduler: Scheduler<InMemoryTaskStore, ServiceTaskExecutor>,
@@ -212,8 +212,8 @@ impl ScheduledTaskManager {
 
     /// Run a single poll cycle: find due tasks and execute them.
     ///
-    /// This is primarily useful for testing. In production, use
-    /// [`start`](Self::start) to run the poll loop in the background.
+    /// This is primarily useful for testing. Production composition should
+    /// call it from its background polling loop.
     ///
     /// Returns the number of tasks that were executed.
     ///

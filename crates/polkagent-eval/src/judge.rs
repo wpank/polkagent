@@ -283,8 +283,9 @@ Respond with ONLY the JSON array. Do not include any other text."#,
     /// Parse a raw judge model response into a [`JudgeResponse`].
     ///
     /// The response must contain a JSON array of objects matching the schema
-    /// described in [`build_judge_prompt`].  Extraneous text outside the
-    /// JSON array is tolerated; the parser searches for the first `[…]` block.
+    /// described in [`ModelAsJudgeScorer::build_judge_prompt`]. Extraneous
+    /// text outside the JSON array is tolerated; the parser searches for the
+    /// first `[…]` block.
     pub fn parse_judge_response(
         &self,
         raw_response: &str,

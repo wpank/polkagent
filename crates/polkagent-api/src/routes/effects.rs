@@ -133,7 +133,7 @@ pub async fn get_effect(
 /// - Verifies it is in `"awaiting_approval"` state — returns 409 for any
 ///   other state, including already-decided (`"approved"` / `"denied"`).
 /// - Transitions the intent to `"approved"` via the store.
-/// - Creates an [`ApprovalRecord`](polkagent_effect::ApprovalRecord) and
+/// - Creates an `ApprovalRecord` and
 ///   emits an [`EventKind::ApprovalGranted`] event on the bus.
 /// - Returns 200 with the updated effect state and the approval record.
 ///
@@ -234,7 +234,7 @@ pub async fn approve_effect(
 /// - Verifies it is in `"awaiting_approval"` state — returns 409 for any
 ///   other state, including already-decided (`"approved"` / `"denied"`).
 /// - Transitions the intent to `"denied"` via the store.
-/// - Creates an [`ApprovalRecord`](polkagent_effect::ApprovalRecord) and
+/// - Creates an `ApprovalRecord` and
 ///   emits an [`EventKind::ApprovalDenied`] event on the bus.
 /// - Returns 200 with the updated effect state and the denial record.
 ///

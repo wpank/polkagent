@@ -9,7 +9,8 @@
 //! - **[`RunEvent`]** — the fully-typed, timestamped event record.
 //! - **[`EventBus`]** — a `tokio::sync::broadcast`-based in-process fan-out
 //!   channel (PRD-10 §9.1).
-//! - **[`EventRecorder`]** — appends events to an [`EventStore`], enforces
+//! - **[`EventRecorder`]** — appends events to an
+//!   [`polkagent_store_trait::event::EventStore`], enforces
 //!   ordering invariants, then broadcasts on the bus.
 //! - **[`Projection`] / [`ProjectionEngine`]** — trait-based projection
 //!   framework for deriving read models from the event stream.

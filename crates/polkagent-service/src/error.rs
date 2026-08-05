@@ -103,7 +103,7 @@ pub enum ServiceError {
 
     /// The maximum number of concurrent runs has been reached.
     ///
-    /// Returned by [`AppService::start_run`] when `config.execution.max_concurrent_runs > 0`
+    /// Returned by [`crate::AppService::start_run`] when `config.execution.max_concurrent_runs > 0`
     /// and the number of runs currently in the `"running"` state equals the limit.
     #[error("maximum concurrent runs reached ({active}/{limit})")]
     ConcurrentRunLimitReached {

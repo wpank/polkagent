@@ -1,6 +1,6 @@
 //! Batch type — a collection of items to be processed together.
 //!
-//! A [`Batch`] groups multiple [`BatchItem`](crate::item::BatchItem) values
+//! A [`Batch`] groups multiple [`BatchItem`] values
 //! under a single identity, configuration, and status.
 
 use std::fmt;

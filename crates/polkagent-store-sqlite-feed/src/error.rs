@@ -2,7 +2,7 @@
 //!
 //! This module provides conversion helpers so that `rusqlite`, `serde_json`,
 //! `uuid`, and timestamp-parsing errors are transparently mapped to the
-//! [`FeedError`] variants expected by the [`FeedStore`] trait.
+//! [`FeedError`] variants expected by the [`polkagent_feed::FeedStore`] trait.
 
 use polkagent_feed::FeedError;
 

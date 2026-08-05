@@ -274,7 +274,7 @@ impl ToolRegistry {
     /// Convert all registered tool specs into executor-compatible
     /// [`ToolDefinition`]s.
     ///
-    /// This is used when building an [`InferenceRequest`] to present the
+    /// This is used when building an [`polkagent_executor_trait::InferenceRequest`] to present the
     /// available tools to the model.
     #[must_use]
     pub fn to_tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -295,10 +295,10 @@ impl ToolRegistry {
 impl ToolRegistry {
     /// Execute a batch of tool invocations using the given mode and context.
     ///
-    /// This is a convenience method that creates a [`BatchToolExecutor`],
+    /// This is a convenience method that creates a [`crate::batch::BatchToolExecutor`],
     /// dispatches all invocations, and returns the aggregate result. It
     /// requires wrapping `self` in an `Arc` first; prefer constructing a
-    /// [`BatchToolExecutor`] directly if you already have an `Arc<ToolRegistry>`.
+    /// [`crate::batch::BatchToolExecutor`] directly if you already have an `Arc<ToolRegistry>`.
     ///
     /// See [`crate::batch::BatchToolExecutor::execute`] for full documentation.
     pub async fn execute_batch(

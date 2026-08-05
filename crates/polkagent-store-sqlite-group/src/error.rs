@@ -1,7 +1,7 @@
 //! Error mapping between `rusqlite` errors and [`GroupError`].
 //!
 //! This module provides helpers that translate SQLite-level failures into the
-//! domain error types expected by the [`GroupStore`] trait.
+//! domain error types expected by the [`polkagent_group::GroupStore`] trait.
 
 use polkagent_group::GroupError;
 

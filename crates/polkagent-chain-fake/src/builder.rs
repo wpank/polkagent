@@ -63,7 +63,7 @@ pub struct FakeChainClientBuilder {
 impl FakeChainClientBuilder {
     /// Create a builder for the given network name.
     ///
-    /// The network name populates [`ChainProfile::name`] fields in returned
+    /// The network name populates [`polkagent_chain_trait::ChainProfile::name`] fields in returned
     /// data. It is also used to pick sensible defaults when `.build()` is
     /// called via the pre-defined network constructors.
     #[must_use]
@@ -116,7 +116,7 @@ impl FakeChainClientBuilder {
         self
     }
 
-    /// Set the metadata digest that will be embedded in [`PinnedMetadata`].
+    /// Set the metadata digest that will be embedded in [`polkagent_chain_trait::PinnedMetadata`].
     #[must_use]
     pub fn with_metadata_hash(mut self, hash: [u8; 32]) -> Self {
         self.metadata_hash = hash;
@@ -132,7 +132,7 @@ impl FakeChainClientBuilder {
 
     /// Seed a raw storage key → value pair.
     ///
-    /// Calling [`ChainClient::query_storage`] with this key will return
+    /// Calling [`polkagent_chain_trait::ChainClient::query_storage`] with this key will return
     /// `Some(value)`.
     #[must_use]
     pub fn with_storage_value(mut self, key: Vec<u8>, value: Vec<u8>) -> Self {
@@ -142,7 +142,7 @@ impl FakeChainClientBuilder {
 
     /// Seed an extrinsic result for a specific tx hash.
     ///
-    /// When [`ChainClient::watch_finality`] is called for a tx whose first
+    /// When [`polkagent_chain_trait::ChainClient::watch_finality`] is called for a tx whose first
     /// 32-byte hash matches `hash`, the fake returns either `Finalized` or
     /// `Failed` depending on `success`.
     #[must_use]
@@ -155,7 +155,7 @@ impl FakeChainClientBuilder {
     ///
     /// The balance is stored as a raw storage value in a format that mirrors
     /// the Substrate `System::Account` storage key. Tests may query it via
-    /// [`ChainClient::query_storage`] using the account bytes as the key.
+    /// [`polkagent_chain_trait::ChainClient::query_storage`] using the account bytes as the key.
     #[must_use]
     pub fn with_balance(mut self, account: [u8; 32], free: u128, reserved: u128) -> Self {
         self.balances.insert(account, (free, reserved));
@@ -188,7 +188,7 @@ impl FakeChainClientBuilder {
 
     /// Simulate a disconnected client.
     ///
-    /// All calls return [`ChainError::Rpc`] with `retryable: true`, as if the
+    /// All calls return [`polkagent_chain_trait::ChainError::Rpc`] with `retryable: true`, as if the
     /// node were unreachable.
     #[must_use]
     pub fn disconnected(mut self) -> Self {

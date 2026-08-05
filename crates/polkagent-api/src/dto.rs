@@ -791,7 +791,7 @@ pub struct DenyEffectResponse {
     pub denied_at: DateTime<Utc>,
 }
 
-/// DTO for an [`ApprovalRecord`](polkagent_effect::ApprovalRecord) in API responses.
+/// DTO for an `ApprovalRecord` in API responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRecordDto {
     /// Stable identifier for this record.

@@ -33,10 +33,14 @@
 //!
 //! - [`types`] — [`Fault`], [`Corruption`], [`FaultSchedule`], [`FaultPoint`].
 //! - [`injector`] — [`FaultInjector`]: the central registry.
-//! - [`executor`] — [`FaultExecutor`]: wraps any [`ModelExecutor`].
-//! - [`signer`] — [`FaultSigner`]: wraps any [`Signer`].
-//! - [`transport`] — [`FaultTransport`]: wraps any [`Transport`].
-//! - [`store`] — [`FaultStore`]: wraps any [`EffectStore`].
+//! - [`executor`] — [`executor::FaultExecutor`]: wraps any
+//!   [`polkagent_executor_trait::ModelExecutor`].
+//! - [`signer`] — [`signer::FaultSigner`]: wraps any
+//!   [`polkagent_signer_trait::Signer`].
+//! - [`transport`] — [`transport::FaultTransport`]: wraps any
+//!   [`polkagent_transport_trait::Transport`].
+//! - [`store`] — [`store::FaultStore`]: wraps any
+//!   [`polkagent_store_trait::EffectStore`].
 
 pub mod executor;
 pub mod injector;

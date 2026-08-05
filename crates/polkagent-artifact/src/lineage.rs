@@ -8,8 +8,9 @@
 //! # Invariants
 //!
 //! - The graph is a DAG; callers are responsible for avoiding cycles.  Adding
-//!   a cycle does not cause undefined behaviour but will cause [`ancestors`]
-//!   and [`descendants`] to loop forever on naïve implementations, so this
+//!   a cycle does not cause undefined behaviour but will cause
+//!   [`LineageGraph::ancestors`] and [`LineageGraph::descendants`] to loop
+//!   forever on naïve implementations, so this
 //!   module uses a `visited` set in each traversal.
 //! - The graph is in-memory only.  Persistent lineage is stored by the
 //!   [`ArtifactStore`](crate::store::ArtifactStore) backend.

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// Retry policy for failed webhook deliveries.
 ///
-/// Uses exponential backoff with full jitter, capped at [`max_delay`].
+/// Uses exponential backoff with full jitter, capped at [`RetryPolicy::max_delay`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryPolicy {
     /// Maximum number of delivery attempts (including the initial attempt).

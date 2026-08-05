@@ -6,7 +6,7 @@
 //! | `GET` | `/tools/:tool_id` | [`get_tool`] |
 //! | `GET` | `/tools/:tool_id/grants` | [`get_tool_grants`] |
 //!
-//! All endpoints return 501 Not Implemented when no [`ToolRegistryStore`] has
+//! All endpoints return 501 Not Implemented when no [`crate::state::ToolRegistryStore`] has
 //! been configured in [`AppState`].
 
 use axum::{

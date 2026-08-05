@@ -1,10 +1,12 @@
 //! `polkagent eval` — run, list, report, and compare evaluation suites.
 //!
 //! Subcommands:
-//!   eval run <suite-path>         — run a suite against the fake executor
-//!   eval list [dir]               — list available suites under fixtures/evals/
-//!   eval report <report-path>     — display a saved report
-//!   eval compare <baseline> <cur> — compare two reports for regressions
+//! ```text
+//! eval run <suite-path>         — run a suite against the fake executor
+//! eval list [dir]               — list available suites under fixtures/evals/
+//! eval report <report-path>     — display a saved report
+//! eval compare <baseline> <cur> — compare two reports for regressions
+//! ```
 
 use std::path::Path;
 

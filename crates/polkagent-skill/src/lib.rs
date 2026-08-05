@@ -15,7 +15,7 @@
 //! | [`resolver`] | Dependency resolution with topological sort and semver checking. |
 //! | [`runner`] | [`SkillRunner`] and [`PreparedSkill`] for execution preparation. |
 //! | [`reward`] | **EXPERIMENTAL** — [`SkillReward`], [`RewardPolicy`] (PRD-08 §5.2 prototype). |
-//! | [`evolutionary`] | **EXPERIMENTAL** (`evolutionary` feature) — [`EvolutionarySelector`], [`SkillVariant`] (PRD-09 §6.5). |
+//! | `evolutionary` | **EXPERIMENTAL** (`evolutionary` feature) — `EvolutionarySelector`, `SkillVariant` (PRD-09 §6.5). |
 //! | [`error`] | [`SkillError`] enum covering all failure modes. |
 //!
 //! # Quick start

@@ -2,7 +2,7 @@
 //!
 //! [`CostTracker`] accumulates LLM usage costs across turns of a single run
 //! and enforces per-run budget limits. It integrates with
-//! `polkagent-payment`'s [`BudgetConfig`] and [`CostEstimator`] to:
+//! `polkagent-payment`'s `BudgetConfig` and `CostEstimator` to:
 //!
 //! 1. **Pre-turn budget check** — Estimate the cost of the *upcoming* turn
 //!    (using the requested `max_tokens`) and reject it if the run budget

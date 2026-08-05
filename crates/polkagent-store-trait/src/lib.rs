@@ -10,7 +10,7 @@
 //! - [`EffectStore`] — Durable storage for the effect pipeline (intents,
 //!   attempts, outcomes).
 //! - [`ArtifactStore`] — Content-addressed artifact storage.
-//! - [`EventStore`] — Append-only ordered event log (see [`event`] module).
+//! - [`event::EventStore`] — Append-only ordered event log (see [`event`] module).
 
 pub mod event;
 

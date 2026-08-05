@@ -1,6 +1,6 @@
 //! Turn management helpers for the run lifecycle.
 //!
-//! A [`Run`] is decomposed into sequential [`Turn`]s. Each turn represents
+//! A [`polkagent_core::Run`] is decomposed into sequential [`Turn`]s. Each turn represents
 //! one request/response cycle through the reducer: context assembly →
 //! model inference → output parsing → effect dispatch.
 //!
@@ -104,7 +104,7 @@ impl TurnOutput {
 /// Creates and completes turns within a run.
 ///
 /// Callers use this to:
-/// 1. Start a new turn with [`TurnManager::start_turn`].
+/// 1. Start a new turn with [`TurnManager::create_turn`].
 /// 2. Process the turn (model inference, effects, etc.).
 /// 3. Complete it with [`TurnManager::complete_turn`].
 ///

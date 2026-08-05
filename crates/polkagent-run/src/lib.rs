@@ -2,7 +2,7 @@
 //!
 //! This crate owns the [`RunManager`], which coordinates creating, starting,
 //! cancelling, and querying runs. All state transitions are validated by
-//! [`RunStateMachine`] and recorded durably via an [`EventRecorder`].
+//! [`RunStateMachine`] and recorded durably via an [`polkagent_event::EventRecorder`].
 //!
 //! # Module layout
 //!
@@ -11,7 +11,7 @@
 //! | [`dag`] | [`ExecutionDag`], [`DagExecutor`]: DAG-based workflow composition |
 //! | [`manager`] | [`RunManager`]: create, enqueue, start, fail, cancel, complete runs |
 //! | [`orchestrator`] | [`RunOrchestrator`]: connects RunManager to ModelExecutor for turn loop |
-//! | [`state_machine`] | [`RunStateMachine`]: exhaustive transition table for [`RunState`] |
+//! | [`state_machine`] | [`RunStateMachine`]: exhaustive transition table for [`polkagent_core::RunState`] |
 //! | [`turn`] | [`TurnManager`], [`TurnInput`], [`TurnOutput`]: turn helpers |
 //! | [`timeout`] | [`TimeoutEnforcer`], [`TimeoutConfig`]: deadline enforcement |
 //! | [`error`] | [`RunError`], [`TransitionError`]: error types |

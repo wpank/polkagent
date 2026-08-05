@@ -2,7 +2,7 @@
 //!
 //! This module provides a self-contained metrics registry that renders
 //! metrics in the [Prometheus text exposition format][prom-fmt]. It is
-//! designed to be used alongside the existing [`MetricRecorder`] tracing-
+//! designed to be used alongside the existing [`crate::metrics::MetricRecorder`] tracing-
 //! based metrics, giving operators a familiar `/metrics` endpoint they
 //! can scrape with any Prometheus-compatible collector.
 //!

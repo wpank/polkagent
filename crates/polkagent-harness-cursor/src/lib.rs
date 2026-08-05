@@ -1,7 +1,8 @@
 //! Cursor harness adapter for the Polkagent platform.
 //!
 //! This crate provides [`CursorConfigurator`] -- an implementation of the
-//! [`AcpConfigurator`] trait that configures the shared [`AcpHarness`] for
+//! [`AcpConfigurator`] trait that configures the shared
+//! [`AcpHarness`](polkagent_harness_acp::AcpHarness) for
 //! the Cursor CLI (`cursor agent acp`).
 //!
 //! # Usage
@@ -136,8 +137,9 @@ impl CursorHarnessConfigBuilder {
 
 /// ACP configurator for the Cursor CLI.
 ///
-/// Implements [`AcpConfigurator`] so that an [`AcpHarness<CursorConfigurator>`]
-/// can be used as a fully-featured [`Harness`] for Cursor.
+/// Implements [`AcpConfigurator`] so that an
+/// [`AcpHarness`](polkagent_harness_acp::AcpHarness) can be used as a
+/// fully-featured [`Harness`](polkagent_harness_trait::Harness) for Cursor.
 #[derive(Debug, Clone)]
 pub struct CursorConfigurator {
     /// Cursor-specific configuration.

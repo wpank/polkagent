@@ -55,7 +55,7 @@ pub fn minimal_request() -> InferenceRequest {
 
 /// Contract: `complete()` returns a non-empty response.
 ///
-/// A well-behaved executor must return an [`InferenceResponse`] whose `text`
+/// A well-behaved executor must return an [`crate::InferenceResponse`] whose `text`
 /// field is non-empty, or whose `tool_calls` field is non-empty, or both.
 /// The response must also contain a `stop_reason`.
 pub async fn test_complete_returns_response(executor: &dyn ModelExecutor) {

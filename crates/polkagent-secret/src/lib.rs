@@ -24,8 +24,8 @@
 //!
 //! | Module | Backend | Read | Write |
 //! |--------|---------|------|-------|
-//! | [`env`] | Environment variables | Yes | No |
-//! | [`file`] | `~/.polkagent/secrets/` | Yes | Yes |
+//! | [`mod@env`] | Environment variables | Yes | No |
+//! | [`mod@file`] | `~/.polkagent/secrets/` | Yes | Yes |
 //! | [`chain`] | Composite (env -> file) | Yes | Yes |
 //!
 //! All access is recorded by the [`audit`] module to a JSONL log.

@@ -50,7 +50,7 @@ pub fn valid_sign_request(account: AccountRef) -> CanonicalSignRequest {
 /// Contract: `describe()` returns at least one account.
 ///
 /// A well-configured signer must report at least one account it can sign for.
-/// The returned [`SignerCapabilities`] must contain a non-empty `accounts`
+/// The returned [`crate::SignerCapabilities`] must contain a non-empty `accounts`
 /// list and a non-empty `display_name`.
 pub async fn test_describe_returns_accounts(signer: &dyn Signer) {
     let caps = signer
@@ -69,7 +69,7 @@ pub async fn test_describe_returns_accounts(signer: &dyn Signer) {
     );
 }
 
-/// Contract: `sign()` returns a [`SignedPayload`] with a non-empty signature.
+/// Contract: `sign()` returns a [`crate::SignedPayload`] with a non-empty signature.
 ///
 /// When given a valid, non-expired request for a known account, `sign()` must
 /// produce a signed payload containing a non-empty `signature` and a

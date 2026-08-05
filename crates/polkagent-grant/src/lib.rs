@@ -51,15 +51,15 @@
 //!
 //! # Security invariants
 //!
-//! - **Deny by default.** A [`PolicySet`](policy::PolicySet) with no matching
-//!   rules returns [`PolicyDecision::Deny`](policy::PolicyDecision::Deny).
+//! - **Deny by default.** A [`PolicySet`] with no matching
+//!   rules returns [`PolicyDecision::Deny`].
 //! - **Deny overrides allow.** Any matching `Deny` rule beats all `Allow`
 //!   rules regardless of rule order.
 //! - **Expired grants denied immediately.** [`grant::ResolvedGrant::is_valid`]
 //!   checks the expiry; the resolver never returns a stale grant as valid.
 //! - **Budget checked before permit.** When a [`budget::BudgetTracker`] is
 //!   attached, a spend that would exceed the ceiling produces
-//!   [`GrantDecision::Deny`](grant::GrantDecision::Deny).
+//!   [`GrantDecision::Deny`].
 
 pub mod budget;
 pub mod gate;

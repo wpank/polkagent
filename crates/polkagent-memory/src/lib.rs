@@ -12,10 +12,10 @@
 //! | Layer | Module | Purpose |
 //! |-------|--------|---------|
 //! | Types | [`types`] | Core data structures: entries, queries, episodes |
-//! | Trait | [`store`] | Abstract [`MemoryStore`](store::MemoryStore) trait |
+//! | Trait | [`store`] | Abstract [`MemoryStore`] trait |
 //! | `SQLite` | [`sqlite`] | Concrete implementation with FTS5 full-text search |
-//! | Facade | [`service`] | High-level [`MemoryService`](service::MemoryService) API |
-//! | Errors | [`error`] | [`MemoryError`](error::MemoryError) enum |
+//! | Facade | [`service`] | High-level [`MemoryService`] API |
+//! | Errors | [`error`] | [`MemoryError`] enum |
 //!
 //! # Quickstart
 //!

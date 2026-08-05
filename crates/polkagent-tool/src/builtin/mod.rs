@@ -2,7 +2,7 @@
 //!
 //! This module provides the default tool set available to every Polkagent agent:
 //!
-//! - **File tools** ([`file`]): read, write, and list directory contents.
+//! - **File tools** ([`mod@file`]): read, write, and list directory contents.
 //! - **Shell tool** ([`shell`]): execute shell commands with timeout enforcement.
 //! - **Search tool** ([`search`]): search agent memory.
 //!

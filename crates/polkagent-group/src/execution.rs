@@ -18,7 +18,7 @@
 //! - [`GroupTask`] — a single task: target agent, input payload, and grant spec.
 //! - [`TaskResult`] — the outcome of a single task.
 //! - [`ExecutionResult`] — the aggregated outcome of an entire plan.
-//! - [`GroupEvidence`] (re-exported from [`crate::propagation`]) — bundles
+//! - [`crate::propagation::GroupEvidence`] — bundles
 //!   the `ExecutionResult` with child artifacts and a human-readable summary.
 
 use std::collections::HashMap;

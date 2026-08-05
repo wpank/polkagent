@@ -364,11 +364,11 @@ impl AgentSpec {
     ///
     /// Checks:
     ///
-    /// - `name` is non-empty, at most [`MAX_NAME_LEN`] bytes, and contains no
+    /// - `name` is non-empty, at most `MAX_NAME_LEN` bytes, and contains no
     ///   ASCII control characters.
-    /// - `description`, when present, is at most [`MAX_DESCRIPTION_LEN`] bytes
+    /// - `description`, when present, is at most `MAX_DESCRIPTION_LEN` bytes
     ///   and contains no control characters other than tab / LF / CR.
-    /// - `model` is non-empty and at most [`MAX_MODEL_LEN`] bytes.
+    /// - `model` is non-empty and at most `MAX_MODEL_LEN` bytes.
     ///
     /// Returns `Ok(())` on success.  Returns [`PolkagentError::Validation`] on
     /// the first failure encountered.

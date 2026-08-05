@@ -1,7 +1,7 @@
 //! Convenience query helpers over an [`EventStore`].
 //!
 //! These functions are thin wrappers that avoid callers having to construct
-//! [`EventFilter`] and parse the results manually.
+//! [`polkagent_store_trait::event::EventFilter`] and parse the results manually.
 //!
 //! # Available helpers
 //!

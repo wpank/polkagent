@@ -10,7 +10,7 @@ const HASH_THRESHOLD: usize = 128;
 ///
 /// Keys are composed of a `namespace` and a `name`, which together form a
 /// unique identifier.  When the combined string representation exceeds
-/// [`HASH_THRESHOLD`] bytes the key is transparently hashed with BLAKE3 so
+/// `HASH_THRESHOLD` bytes the key is transparently hashed with BLAKE3 so
 /// that internal data-structure comparisons stay cheap.
 #[derive(Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct CacheKey {

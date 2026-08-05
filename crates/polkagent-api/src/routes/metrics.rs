@@ -5,7 +5,7 @@
 //! | `GET` | `/metrics` | [`prometheus_metrics`] |
 //!
 //! The endpoint renders all registered metric families from the
-//! [`PrometheusRegistry`] in the standard Prometheus text exposition format.
+//! [`polkagent_telemetry::PrometheusRegistry`] in the standard Prometheus text exposition format.
 //! It is intended to be scraped by Prometheus, Grafana Agent, or any other
 //! OpenMetrics-compatible collector.
 
@@ -31,7 +31,7 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 ///
 /// Returns a `200 OK` response with `Content-Type: text/plain; version=0.0.4;
 /// charset=utf-8`. The body is the full rendering of every metric family
-/// registered in the [`PrometheusRegistry`] attached to `AppState`.
+/// registered in the [`polkagent_telemetry::PrometheusRegistry`] attached to `AppState`.
 pub async fn prometheus_metrics(State(state): State<AppState>) -> impl IntoResponse {
     let body = state.prometheus.render();
 

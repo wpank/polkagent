@@ -3,7 +3,7 @@
 //!
 //! [`WebhookDispatcher`] bridges the internal event system with the
 //! [`polkagent_surface_webhook`] delivery engine. It runs as a background
-//! Tokio task, converting each [`RunEvent`] into a webhook-compatible event
+//! Tokio task, converting each [`polkagent_core::RunEvent`] into a webhook-compatible event
 //! type string, checking the [`WebhookRegistry`] for matching subscriptions,
 //! and dispatching deliveries through the [`WebhookService`].
 //!
@@ -12,7 +12,7 @@
 //! Failed deliveries are recorded in the [`DeliveryStore`] with a
 //! `next_retry_at` timestamp. The dispatcher spawns a periodic retry task
 //! that re-attempts pending deliveries according to each subscription's
-//! [`RetryPolicy`].
+//! [`polkagent_surface_webhook::RetryPolicy`].
 
 use std::sync::Arc;
 use std::time::Duration;

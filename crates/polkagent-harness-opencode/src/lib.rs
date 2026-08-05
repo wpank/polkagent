@@ -1,7 +1,8 @@
 //! OpenCode harness adapter for the Polkagent platform.
 //!
 //! This crate provides [`OpenCodeConfigurator`] -- an implementation of the
-//! [`AcpConfigurator`] trait that configures the shared [`AcpHarness`] for
+//! [`AcpConfigurator`] trait that configures the shared
+//! [`AcpHarness`](polkagent_harness_acp::AcpHarness) for
 //! the OpenCode CLI (`opencode acp`).
 //!
 //! # Usage
@@ -120,8 +121,9 @@ impl OpenCodeHarnessConfigBuilder {
 
 /// ACP configurator for the OpenCode CLI.
 ///
-/// Implements [`AcpConfigurator`] so that an [`AcpHarness<OpenCodeConfigurator>`]
-/// can be used as a fully-featured [`Harness`] for OpenCode.
+/// Implements [`AcpConfigurator`] so that an
+/// [`AcpHarness`](polkagent_harness_acp::AcpHarness) can be used as a
+/// fully-featured [`Harness`](polkagent_harness_trait::Harness) for OpenCode.
 #[derive(Debug, Clone, Default)]
 pub struct OpenCodeConfigurator {
     /// OpenCode-specific configuration.

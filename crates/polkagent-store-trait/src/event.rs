@@ -207,7 +207,7 @@ pub trait EventStore: Send + Sync {
 
     /// Return `true` if the run already has a terminal event.
     ///
-    /// Used by [`crate::event::EventRecorder`] before writing a new terminal
+    /// Used by the event recorder before writing a new terminal
     /// event (PRD-10 REQ-EVT-004).
     async fn has_terminal_event(&self, run_id: RunId) -> Result<bool, EventStoreError>;
 }

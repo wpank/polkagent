@@ -4,7 +4,7 @@
 //! - [`KeyPair`] — an X25519 key pair for Diffie-Hellman key agreement.
 //! - [`SharedSecret`] — the derived shared secret from a key exchange.
 //! - [`encrypt`] / [`decrypt`] — ChaCha20-Poly1305 AEAD operations.
-//! - [`Nonce`] — a monotonically increasing nonce counter.
+//! - [`NonceCounter`] — a monotonically increasing nonce counter.
 
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce as AeadNonce};

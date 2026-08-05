@@ -8,9 +8,9 @@
 //! | `POST` | `/skills/:skill_id/uninstall` | [`uninstall_skill`] |
 //! | `PUT` | `/skills/:skill_id/config` | [`update_skill_config`] |
 //!
-//! All endpoints return 501 Not Implemented when no [`SkillRegistry`] has been
+//! All endpoints return 501 Not Implemented when no [`crate::state::SkillRegistry`] has been
 //! configured in [`AppState`]. When a registry is configured, all endpoints
-//! delegate to the trait methods on [`SkillRegistry`].
+//! delegate to the trait methods on [`crate::state::SkillRegistry`].
 
 use axum::{
     extract::{Path, State},

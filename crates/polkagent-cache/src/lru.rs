@@ -22,7 +22,7 @@ struct Entry<K, V> {
 
 /// A generic LRU cache with per-entry TTL and eviction callbacks.
 ///
-/// This is a building-block used internally by [`InMemoryCache`].  It is **not**
+/// This is a building-block used internally by [`crate::memory::InMemoryCache`]. It is **not**
 /// thread-safe on its own -- the caller is expected to wrap it in a lock.
 pub struct LruCache<K, V> {
     /// Maximum number of entries before eviction kicks in.

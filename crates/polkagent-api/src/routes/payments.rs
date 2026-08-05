@@ -7,7 +7,7 @@
 //! | `GET` | `/payments/receipts` | [`list_receipts`] |
 //! | `GET` | `/payments/receipts/:receipt_id` | [`get_receipt`] |
 //!
-//! All endpoints return 501 Not Implemented when no [`PaymentStore`] has been
+//! All endpoints return 501 Not Implemented when no [`polkagent_payment::PaymentStore`] has been
 //! configured in [`AppState`].
 
 use axum::{

@@ -113,7 +113,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// `GET /api/v1alpha1/events/stream` — WebSocket upgrade for real-time event
 /// streaming.
 ///
-/// Subscribes to the in-process [`EventBus`] and forwards matching events as
+/// Subscribes to the in-process [`polkagent_event::EventBus`] and forwards matching events as
 /// JSON text frames. The connection remains open until the client disconnects,
 /// the bus is closed, or the server shuts down.
 pub async fn event_stream(

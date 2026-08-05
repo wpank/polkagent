@@ -129,7 +129,7 @@ impl FakeTransportHandle {
 ///
 /// - **Delay:** call [`FakeTransport::set_send_delay`] to inject latency on
 ///   [`send`] calls.
-/// - **Errors:** call [`FakeTransport::set_send_error`] to make the next
+/// - **Errors:** call [`FakeTransport::set_next_send_error`] to make the next
 ///   `send` call fail with a specific error.
 /// - **Disconnection:** call [`FakeTransport::disconnect`] to make
 ///   [`receive`] return [`TransportError::ConnectionLost`].

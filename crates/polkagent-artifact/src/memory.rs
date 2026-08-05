@@ -5,7 +5,7 @@
 //!
 //! - `artifacts`: ArtifactId → Artifact metadata
 //! - `bodies`: ArtifactId → raw body bytes
-//! - `lineage`: ArtifactId → Vec<ArtifactId> (parent list, insertion order)
+//! - `lineage`: `ArtifactId` → `Vec<ArtifactId>` (parent list, insertion order)
 //!
 //! **Do not use in production.**  There is no persistence, no size limit, and
 //! no support for large bodies.

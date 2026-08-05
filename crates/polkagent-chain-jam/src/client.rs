@@ -1,7 +1,7 @@
 //! JAM testnet RPC client.
 //!
 //! Provides [`JamClient`] which can query blocks from a JAM testnet node or
-//! from a [`MockJamBackend`](crate::mock::MockJamBackend) for offline testing.
+//! from a [`MockJamBackend`] for offline testing.
 
 use tracing::debug;
 

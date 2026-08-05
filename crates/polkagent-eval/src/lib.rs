@@ -16,8 +16,8 @@
 //! | [`corpus_manifest`] | [`CorpusManifest`](corpus_manifest::CorpusManifest), [`compute_corpus_digest`](corpus_manifest::compute_corpus_digest), [`verify_corpus_integrity`](corpus_manifest::verify_corpus_integrity), [`load_corpus_from_toml`](corpus_manifest::load_corpus_from_toml) |
 //! | [`judge`] | [`ModelAsJudgeScorer`](judge::ModelAsJudgeScorer), [`JudgeConfig`](judge::JudgeConfig), [`JudgeCriterion`](judge::JudgeCriterion), [`JudgeScore`](judge::JudgeScore) |
 //! | [`promotion`] | [`PromotionCandidate`](promotion::PromotionCandidate) |
-//! | [`variant_runner`] | **EXPERIMENTAL** (`evolutionary` feature) — multi-variant evaluation comparison |
-//! | [`thompson`] | **EXPERIMENTAL** (`evolutionary` feature) — Thompson sampling selector |
+//! | `variant_runner` | **EXPERIMENTAL** (`evolutionary` feature) — multi-variant evaluation comparison |
+//! | `thompson` | **EXPERIMENTAL** (`evolutionary` feature) — Thompson sampling selector |
 
 #![forbid(unsafe_code)]
 #![warn(

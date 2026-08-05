@@ -6,7 +6,7 @@
 //!
 //! # Adding a new migration
 //!
-//! 1. Add a new entry to [`MIGRATIONS`] with the next version number and a
+//! 1. Add a new entry to `MIGRATIONS` with the next version number and a
 //!    description string.  The SQL is the full DDL/DML for that migration.
 //! 2. Do **not** modify existing entries — migrations are forward-only.
 //! 3. Run the test suite to verify the migration applies cleanly.

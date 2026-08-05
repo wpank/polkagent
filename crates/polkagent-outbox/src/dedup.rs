@@ -7,8 +7,9 @@
 //! without re-executing side effects.
 //!
 //! Entries are retained for a configurable window (default 24 hours). Entries
-//! older than the window are pruned lazily during [`record_processed`] and
-//! [`is_duplicate`] calls to avoid unbounded memory growth.
+//! older than the window are pruned lazily during
+//! [`DeduplicationLog::record_processed`] and [`DeduplicationLog::is_duplicate`]
+//! calls to avoid unbounded memory growth.
 
 use std::collections::HashMap;
 

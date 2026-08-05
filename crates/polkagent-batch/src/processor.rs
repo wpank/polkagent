@@ -2,7 +2,7 @@
 //!
 //! The [`BatchProcessor`] supports both sequential and parallel execution,
 //! controlled by [`BatchConfig::concurrency`](crate::config::BatchConfig::concurrency).
-//! Error handling respects the configured [`ErrorPolicy`](crate::config::ErrorPolicy).
+//! Error handling respects the configured [`ErrorPolicy`].
 
 use std::future::Future;
 use std::sync::Arc;

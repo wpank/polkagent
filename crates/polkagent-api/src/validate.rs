@@ -103,9 +103,9 @@ pub fn validate_hex(hex: &str) -> Result<Vec<u8>, ApiError> {
 
 /// Clamp an optional page-size parameter to a safe range.
 ///
-/// - `None` → [`DEFAULT_PAGE_SIZE`] (20)
-/// - Below [`MIN_PAGE_SIZE`] → [`MIN_PAGE_SIZE`] (1)
-/// - Above [`MAX_PAGE_SIZE`] → [`MAX_PAGE_SIZE`] (100)
+/// - `None` → `DEFAULT_PAGE_SIZE` (20)
+/// - Below `MIN_PAGE_SIZE` → `MIN_PAGE_SIZE` (1)
+/// - Above `MAX_PAGE_SIZE` → `MAX_PAGE_SIZE` (100)
 ///
 /// Never fails; always returns a usable value.
 pub fn validate_page_size(limit: Option<usize>) -> usize {
@@ -125,7 +125,7 @@ pub fn validate_page_size(limit: Option<usize>) -> usize {
 /// (`U+000A`), and carriage return (`U+000D`) are preserved because they are
 /// commonly legitimate in prose fields.
 ///
-/// After stripping, the string is truncated to at most [`MAX_STRING_BYTES`]
+/// After stripping, the string is truncated to at most `MAX_STRING_BYTES`
 /// UTF-8 bytes.  Truncation respects character boundaries.
 pub fn sanitize_string(s: &str) -> String {
     let cleaned: String = s

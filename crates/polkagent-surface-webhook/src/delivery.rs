@@ -3,7 +3,7 @@
 //! [`WebhookDelivery`] handles the actual HTTP POST of JSON payloads to webhook
 //! endpoints. It signs every request with HMAC (via [`crate::signature`]),
 //! tracks delivery attempts in a [`DeliveryStore`], and retries failed
-//! deliveries according to the configured [`RetryPolicy`].
+//! deliveries according to the configured [`crate::RetryPolicy`].
 
 use std::sync::Arc;
 

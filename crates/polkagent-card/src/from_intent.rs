@@ -1,8 +1,8 @@
-//! Conversion from [`EffectIntent`] to [`ActionCard`].
+//! Conversion from [`IntentCardSpec`] to [`ActionCard`].
 //!
-//! This module provides the [`ActionCard::from_effect_intent`] constructor
-//! which derives the canonical card fields directly from a durable
-//! [`EffectIntent`].  Because every field is pulled from kernel-owned data
+//! This module provides [`IntentCardSpec::build_card`], which derives the
+//! canonical card fields from a projection of a durable effect intent.
+//! Because every field is pulled from kernel-owned data
 //! (not from model output), the resulting card satisfies the canonical-section
 //! invariants defined in PRD-13-UX-SURFACES §2.2.
 //!
@@ -57,7 +57,7 @@ use crate::sections::SectionSource;
 // Concretely, this module defines:
 //   - `EffectKindTag` — a mirror enum that callers fill in.
 //   - `IntentCardSpec` — the minimal struct that the orchestrator populates
-//     from an EffectIntent and passes to `ActionCard::from_spec`.
+//     from an EffectIntent and passes to `IntentCardSpec::build_card`.
 //
 // This keeps polkagent-card dependency-free of polkagent-effect.
 
@@ -69,7 +69,7 @@ use crate::sections::SectionSource;
 /// that `polkagent-card` does not need to depend on `polkagent-effect`.
 ///
 /// Callers (e.g. the orchestrator in `polkagent-run`) convert from the real
-/// `EffectKind` before calling [`ActionCard::from_spec`].
+/// `EffectKind` before calling [`IntentCardSpec::build_card`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectKindTag {
     ModelCall,
@@ -125,7 +125,7 @@ impl EffectKindTag {
 // ---------------------------------------------------------------------------
 
 /// The minimal set of fields the orchestrator extracts from an
-/// [`EffectIntent`](polkagent_effect::EffectIntent) to build an
+/// effect intent to build an
 /// [`ActionCard`].
 ///
 /// Using this intermediate struct keeps `polkagent-card` free of any

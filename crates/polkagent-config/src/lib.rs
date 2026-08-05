@@ -29,12 +29,12 @@
 //! # Environment variable overrides
 //!
 //! All settings can be overridden via `POLKAGENT_*` environment variables.
-//! See the [`env`] module for the full mapping.
+//! See the [`mod@env`] module for the full mapping.
 //!
 //! # Secrets
 //!
 //! API keys and database credentials must **never** appear in config files.
-//! Use the environment variables listed in the [`env`] module instead.
+//! Use the environment variables listed in the [`mod@env`] module instead.
 
 pub mod env;
 pub mod error;

@@ -11,7 +11,8 @@
 //!
 //! # Duplicate handling
 //!
-//! During import, entries whose [`MemoryId`] or [`EpisodeId`] already exist
+//! During import, entries whose [`crate::types::MemoryId`] or
+//! [`crate::types::EpisodeId`] already exist
 //! in the store are silently skipped and counted in
 //! [`ImportResult::skipped_count`]. This makes imports idempotent.
 

@@ -3,8 +3,7 @@
 //! This module defines [`RunProgressEvent`] — the public, client-facing event
 //! type that API consumers observe while a run executes — and
 //! [`RunProgressStream`] — a transformer that converts internal
-//! [`RunEvent`](polkagent_core::event::RunEvent) sequences from the
-//! [`EventBus`](polkagent_event::EventBus) into ordered
+//! [`RunEvent`] sequences from the [`EventBus`] into ordered
 //! `RunProgressEvent` values.
 //!
 //! # Guarantees

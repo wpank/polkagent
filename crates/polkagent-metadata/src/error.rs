@@ -79,7 +79,7 @@ pub enum MetadataError {
 
     /// The cached metadata is too old to be used for safe decoding.
     ///
-    /// Returned by [`DecodeService`] when `is_stale` returns `true` for the
+    /// Returned by [`crate::DecodeService`] when `is_stale` returns `true` for the
     /// chain (AC-P2-004).
     #[error("metadata for chain \"{chain_name}\" is stale; refresh metadata before decoding")]
     StaleMetadata {

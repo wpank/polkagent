@@ -10,15 +10,15 @@
 //! | Module | Contents |
 //! |--------|----------|
 //! | [`ids`] | Typed UUID newtypes for every domain entity |
-//! | [`config`] | [`AutonomyLevel`](config::AutonomyLevel) and [`DataClassification`](config::DataClassification) |
-//! | [`agent`] | [`AgentState`](agent::AgentState), [`DegradationStage`](agent::DegradationStage), [`AgentSpec`](agent::AgentSpec) |
-//! | [`run`] | [`RunState`](run::RunState), [`Run`](run::Run) |
-//! | [`turn`] | [`Turn`](turn::Turn), [`Step`](turn::Step), [`TokenUsage`](turn::TokenUsage) |
-//! | [`effect`] | [`EffectIntent`](effect::EffectIntent), [`EffectAttempt`](effect::EffectAttempt), [`EffectOutcome`](effect::EffectOutcome), [`EffectKind`](effect::EffectKind) |
-//! | [`event`] | [`RunEvent`](event::RunEvent), [`EventKind`](event::EventKind), [`Durability`](event::Durability) |
-//! | [`artifact`] | [`Artifact`](artifact::Artifact), [`ArtifactKind`](artifact::ArtifactKind), [`BlobRef`](artifact::BlobRef) |
-//! | [`error`] | [`PolkagentError`](error::PolkagentError) |
-//! | [`types`] | Low-level primitives: [`Timestamp`](types::Timestamp), [`DurabilityClass`](types::DurabilityClass) |
+//! | [`config`] | [`AutonomyLevel`] and [`DataClassification`] |
+//! | [`agent`] | [`AgentState`], [`DegradationStage`], [`AgentSpec`] |
+//! | [`run`] | [`RunState`], [`Run`] |
+//! | [`turn`] | [`Turn`], [`Step`], [`TokenUsage`] |
+//! | [`effect`] | [`EffectIntent`], [`EffectAttempt`], [`EffectOutcome`], [`EffectKind`] |
+//! | [`event`] | [`RunEvent`], [`EventKind`], [`Durability`] |
+//! | [`artifact`] | [`Artifact`], [`ArtifactKind`], [`BlobRef`] |
+//! | [`error`] | [`PolkagentError`] |
+//! | [`types`] | Low-level primitives: [`Timestamp`], [`DurabilityClass`] |
 
 #![forbid(unsafe_code)]
 #![warn(

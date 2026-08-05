@@ -147,7 +147,7 @@ impl RunManager {
 
     /// Create a new run for `agent_id` in the `Created` state.
     ///
-    /// Persists the run to the store and emits a [`RunCreated`] event.
+    /// Persists the run to the store and emits an [`EventKind::RunCreated`] event.
     ///
     /// # Errors
     ///

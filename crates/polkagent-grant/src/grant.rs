@@ -12,7 +12,7 @@
 //! ```
 //!
 //! The [`GrantResolver`] is the entry-point. It holds a [`PolicySet`], a
-//! collection of active [`ActiveGrant`]s, and an optional [`BudgetGate`].
+//! collection of active [`ActiveGrant`]s, and an optional [`crate::gate::BudgetGate`].
 //!
 //! # Default deny
 //!

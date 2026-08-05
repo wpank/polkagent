@@ -52,6 +52,6 @@ pub trait AuditStore: Send + Sync {
     /// Verify the integrity of the hash chain over all entries.
     ///
     /// Returns `Ok(())` if the chain is valid, or an
-    /// [`AuditError::IntegrityViolation`] on the first mismatch.
+    /// [`crate::AuditError::IntegrityViolation`] on the first mismatch.
     async fn verify_integrity(&self) -> AuditResult<()>;
 }

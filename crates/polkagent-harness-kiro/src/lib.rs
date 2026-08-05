@@ -1,7 +1,8 @@
 //! Kiro harness adapter for the Polkagent platform.
 //!
 //! This crate provides [`KiroConfigurator`] -- an implementation of the
-//! [`AcpConfigurator`] trait that configures the shared [`AcpHarness`] for
+//! [`AcpConfigurator`] trait that configures the shared
+//! [`AcpHarness`](polkagent_harness_acp::AcpHarness) for
 //! the Kiro CLI (`kiro-cli acp`).
 //!
 //! # Usage
@@ -134,8 +135,9 @@ impl KiroHarnessConfigBuilder {
 
 /// ACP configurator for the Kiro CLI.
 ///
-/// Implements [`AcpConfigurator`] so that an [`AcpHarness<KiroConfigurator>`]
-/// can be used as a fully-featured [`Harness`] for Kiro.
+/// Implements [`AcpConfigurator`] so that an
+/// [`AcpHarness`](polkagent_harness_acp::AcpHarness) can be used as a
+/// fully-featured [`Harness`](polkagent_harness_trait::Harness) for Kiro.
 #[derive(Debug, Clone)]
 pub struct KiroConfigurator {
     /// Kiro-specific configuration.

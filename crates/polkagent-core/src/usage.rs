@@ -156,7 +156,7 @@ impl std::fmt::Display for BudgetScope {
 /// Resource limits for a run or turn.
 ///
 /// All limits are optional; `None` means no limit for that resource.
-/// The [`BudgetEnforcer`](in polkagent-run) checks these before and after
+/// The `BudgetEnforcer` in `polkagent-run` checks these before and after
 /// each executor call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Budget {

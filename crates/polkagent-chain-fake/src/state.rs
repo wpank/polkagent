@@ -14,9 +14,9 @@ use crate::builder::FakeChainClientBuilder;
 // Call record
 // ---------------------------------------------------------------------------
 
-/// A single recorded invocation of a [`ChainClient`] trait method.
+/// A single recorded invocation of a [`polkagent_chain_trait::ChainClient`] trait method.
 ///
-/// Collected by [`FakeChainClient::calls`] for assertion in tests.
+/// Collected by [`crate::FakeChainClient::calls`] for assertion in tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallRecord {
     FetchMetadata {

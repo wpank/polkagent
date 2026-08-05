@@ -2,7 +2,7 @@
 //!
 //! The [`ChainSecretStore`] tries each backend in order for reads. The first
 //! backend that returns a value wins. Writes are directed to the
-//! [`FileSecretStore`](crate::file::FileSecretStore).
+//! [`FileSecretStore`].
 //!
 //! Default chain order: `EnvSecretStore` -> `FileSecretStore`.
 

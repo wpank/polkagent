@@ -1,4 +1,4 @@
-//! Fluent builder for [`PaymentIntent`](crate::types::PaymentIntent).
+//! Fluent builder for [`PaymentIntent`].
 
 use chrono::Utc;
 use uuid::Uuid;

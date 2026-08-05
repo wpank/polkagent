@@ -2,7 +2,7 @@
 //!
 //! Provides [`ChildProcessRunner`] for spawning and managing harness
 //! subprocesses, [`kill_tree`] for graceful process tree teardown, and
-//! [`scrub_env`] for removing nested-session detector variables.
+//! [`scrub_env_keys`] for removing nested-session detector variables.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
