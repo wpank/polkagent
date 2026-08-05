@@ -168,6 +168,10 @@ pub async fn get_receipt(
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "payment route tests intentionally fail fast when fixture operations violate expectations"
+)]
 mod tests {
     use super::*;
 
@@ -199,7 +203,7 @@ mod tests {
     // In-memory PaymentStore for testing
     // -----------------------------------------------------------------------
 
-    /// A minimal in-memory PaymentStore for route tests.
+    /// A minimal in-memory `PaymentStore` for route tests.
     #[derive(Debug, Default)]
     struct MockPaymentStore {
         receipts: RwLock<HashMap<Uuid, PaymentReceipt>>,
@@ -303,7 +307,7 @@ mod tests {
         async fn list_receipts(&self) -> Result<Vec<PaymentReceipt>, PaymentError> {
             let receipts = self.receipts.read().await;
             let mut list: Vec<PaymentReceipt> = receipts.values().cloned().collect();
-            list.sort_by(|a, b| b.confirmed_at.cmp(&a.confirmed_at));
+            list.sort_by_key(|receipt| std::cmp::Reverse(receipt.confirmed_at));
             Ok(list)
         }
 

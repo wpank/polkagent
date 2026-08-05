@@ -47,6 +47,10 @@ pub async fn prometheus_metrics(State(state): State<AppState>) -> impl IntoRespo
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "metrics tests intentionally fail fast when requests or response bodies are malformed"
+)]
 mod tests {
     use super::*;
 

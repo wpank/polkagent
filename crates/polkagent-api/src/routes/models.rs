@@ -47,9 +47,10 @@ fn model_response_for_provider(provider_id: &str, model_id: &str) -> ModelRespon
 /// Static capability/context-window lookup by model name prefix.
 fn model_capabilities(model_id: &str) -> (u32, ModelCapabilities) {
     if model_id.contains("claude") {
-        let context_window = if model_id.contains("opus") {
-            200_000
-        } else if model_id.contains("sonnet") || model_id.contains("haiku") {
+        let context_window = if model_id.contains("opus")
+            || model_id.contains("sonnet")
+            || model_id.contains("haiku")
+        {
             200_000
         } else {
             100_000

@@ -133,7 +133,7 @@ pub async fn event_stream(
     ws.on_upgrade(move |socket| handle_socket(socket, receiver, filter))
 }
 
-/// Drive the WebSocket connection: read from the EventBus, write JSON frames
+/// Drive the WebSocket connection: read from the `EventBus`, write JSON frames
 /// to the client, and send periodic pings.
 async fn handle_socket(
     socket: WebSocket,
@@ -218,6 +218,10 @@ async fn handle_socket(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "unit tests intentionally fail fast when an expected parsed filter is absent"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{
@@ -228,7 +232,7 @@ mod tests {
     fn make_event(run_id: RunId, kind: EventKind) -> RunEvent {
         RunEvent::new_durable(
             EventId::new(),
-            run_id.clone(),
+            run_id,
             1,
             kind,
             EventCorrelation {
@@ -270,14 +274,14 @@ mod tests {
         let run_id = RunId::new();
         let kinds: HashSet<String> = ["run_created", "run_started"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect();
         let filter = StreamFilter {
             run_id: None,
             kinds: Some(kinds),
         };
 
-        let event_match = make_event(run_id.clone(), EventKind::RunCreated);
+        let event_match = make_event(run_id, EventKind::RunCreated);
         let event_miss = make_event(run_id, EventKind::RunQueued);
 
         assert!(filter.matches(&event_match));
@@ -288,7 +292,7 @@ mod tests {
     fn filter_combined_run_id_and_kinds() {
         let target = RunId::new();
         let other = RunId::new();
-        let kinds: HashSet<String> = ["run_created"].iter().map(|s| s.to_string()).collect();
+        let kinds: HashSet<String> = ["run_created"].iter().map(ToString::to_string).collect();
         let filter = StreamFilter {
             run_id: Some(target),
             kinds: Some(kinds),

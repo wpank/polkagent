@@ -143,12 +143,9 @@ pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let limiter = match &state.limiter {
-        Some(l) => l,
-        None => {
-            // Rate limiting disabled — pass through.
-            return next.run(req).await;
-        }
+    let Some(limiter) = &state.limiter else {
+        // Rate limiting disabled — pass through.
+        return next.run(req).await;
     };
 
     let key = extract_key(&req);
@@ -186,7 +183,8 @@ pub async fn rate_limit_middleware(
 
         let mut response = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
         let headers = response.headers_mut();
-        headers.insert("retry-after", HeaderValue::from(retry_secs as u32));
+        let retry_secs = u32::try_from(retry_secs).unwrap_or(u32::MAX);
+        headers.insert("retry-after", HeaderValue::from(retry_secs));
         headers.insert("x-ratelimit-limit", HeaderValue::from(state.limit));
         headers.insert("x-ratelimit-remaining", HeaderValue::from(0u32));
         response
@@ -198,6 +196,11 @@ pub async fn rate_limit_middleware(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "test fixtures intentionally fail fast when requests or responses are malformed"
+)]
 mod tests {
     use super::*;
     use axum::{

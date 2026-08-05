@@ -306,6 +306,10 @@ pub async fn delete_conversation(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "route tests intentionally fail fast when response fixtures have an invalid shape"
+)]
 mod tests {
     use super::*;
     use polkagent_api_test_helpers::*;
@@ -314,7 +318,7 @@ mod tests {
     /// Module providing shared test infrastructure.
     ///
     /// We define this as a child module so that the integration test helpers
-    /// (AppState construction, etc.) are self-contained.
+    /// (`AppState` construction, etc.) are self-contained.
     mod polkagent_api_test_helpers {
         use super::*;
         use std::sync::Arc;
@@ -562,10 +566,7 @@ mod tests {
         }
 
         let resp = server
-            .get(&format!(
-                "/api/v1alpha1/conversations?agent_id={}",
-                agent_id
-            ))
+            .get(&format!("/api/v1alpha1/conversations?agent_id={agent_id}"))
             .await;
 
         resp.assert_status(StatusCode::OK);
@@ -730,10 +731,7 @@ mod tests {
 
         // GET /conversations
         let resp = server
-            .get(&format!(
-                "/api/v1alpha1/conversations?agent_id={}",
-                agent_id
-            ))
+            .get(&format!("/api/v1alpha1/conversations?agent_id={agent_id}"))
             .await;
         resp.assert_status(StatusCode::NOT_IMPLEMENTED);
 
@@ -768,8 +766,7 @@ mod tests {
         // Request with limit=2.
         let resp = server
             .get(&format!(
-                "/api/v1alpha1/conversations?agent_id={}&limit=2",
-                agent_id
+                "/api/v1alpha1/conversations?agent_id={agent_id}&limit=2"
             ))
             .await;
         resp.assert_status(StatusCode::OK);
@@ -783,8 +780,7 @@ mod tests {
         // Request second page with offset=2, limit=2.
         let resp = server
             .get(&format!(
-                "/api/v1alpha1/conversations?agent_id={}&limit=2&offset=2",
-                agent_id
+                "/api/v1alpha1/conversations?agent_id={agent_id}&limit=2&offset=2"
             ))
             .await;
         let body: serde_json::Value = resp.json();
@@ -795,8 +791,7 @@ mod tests {
         // Last page with offset=4, limit=2.
         let resp = server
             .get(&format!(
-                "/api/v1alpha1/conversations?agent_id={}&limit=2&offset=4",
-                agent_id
+                "/api/v1alpha1/conversations?agent_id={agent_id}&limit=2&offset=4"
             ))
             .await;
         let body: serde_json::Value = resp.json();

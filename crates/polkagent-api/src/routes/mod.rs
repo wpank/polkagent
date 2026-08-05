@@ -147,7 +147,6 @@ const BODY_LIMIT_ARTIFACT: usize = 10_485_760;
 /// A default body limit of 1 MiB is applied to all routes via
 /// [`DefaultBodyLimit::max`].  The `/artifacts/{id}/content` route allows up
 /// to 10 MiB to accommodate larger artifact payloads.
-#[must_use]
 pub fn register(state: AppState) -> Router {
     // -----------------------------------------------------------------------
     // Health routes (no version prefix — reachable by load balancer probes)

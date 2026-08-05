@@ -37,8 +37,7 @@ use crate::{
 fn manifest_to_response(manifest: &polkagent_skill::SkillManifest) -> SkillResponse {
     let id = manifest
         .id()
-        .map(|id| id.to_string())
-        .unwrap_or_else(|_| manifest.skill.name.clone());
+        .map_or_else(|_| manifest.skill.name.clone(), |id| id.to_string());
 
     SkillResponse {
         version: API_VERSION.to_owned(),

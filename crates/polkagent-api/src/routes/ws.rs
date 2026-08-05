@@ -379,8 +379,7 @@ pub async fn ws_handler(
     let pre_authenticated = query
         .token
         .as_deref()
-        .map(|t| validate_ws_token(t, &state))
-        .unwrap_or(false);
+        .is_some_and(|t| validate_ws_token(t, &state));
 
     debug!(pre_authenticated, "WebSocket v1alpha1 upgrade accepted");
 
@@ -394,7 +393,7 @@ pub async fn ws_handler(
 }
 
 /// Drive a single WebSocket connection: handle subscribe/unsubscribe messages,
-/// forward matching events from the EventBus, and maintain keepalive.
+/// forward matching events from the `EventBus`, and maintain keepalive.
 async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
     let mut event_rx = state.event_bus.subscribe();
@@ -431,21 +430,18 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(reply) =
-                            handle_client_text(&text, &mut session, &|t| {
-                                validate_ws_token(t, &state)
-                            })
-                        {
-                            let json = match reply.to_json() {
-                                Ok(j) => j,
-                                Err(e) => {
-                                    warn!(error = %e, "failed to serialize WsMessage");
-                                    continue;
-                                }
-                            };
-                            if sender.send(Message::Text(json.into())).await.is_err() {
-                                break;
+                        let reply = handle_client_text(&text, &mut session, &|t| {
+                            validate_ws_token(t, &state)
+                        });
+                        let json = match reply.to_json() {
+                            Ok(j) => j,
+                            Err(e) => {
+                                warn!(error = %e, "failed to serialize WsMessage");
+                                continue;
                             }
+                        };
+                        if sender.send(Message::Text(json.into())).await.is_err() {
+                            break;
                         }
                     }
                     Some(Ok(Message::Binary(_))) => {
@@ -535,8 +531,7 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
 
 /// Parse and dispatch a client text frame.
 ///
-/// Returns an optional reply message. Returns `None` if no reply is needed
-/// (e.g. the message was an event acknowledgement).
+/// Returns the reply message to send to the client.
 ///
 /// `token_valid` is a predicate that returns `true` when a given token string
 /// should be accepted.  Pass `|t| validate_ws_token(t, &state)` in production
@@ -545,49 +540,49 @@ fn handle_client_text(
     text: &str,
     session: &mut WsSession,
     token_valid: &dyn Fn(&str) -> bool,
-) -> Option<WsMessage> {
+) -> WsMessage {
     let client_msg: ClientMessage = match serde_json::from_str(text) {
         Ok(m) => m,
         Err(e) => {
             debug!(error = %e, "WS: failed to parse client message");
-            return Some(WsMessage::error(None, "invalid JSON or unknown msg_type"));
+            return WsMessage::error(None, "invalid JSON or unknown msg_type");
         }
     };
 
     match client_msg {
         ClientMessage::Auth { token } => {
-            let valid = token.as_deref().map(token_valid).unwrap_or(false);
+            let valid = token.as_deref().is_some_and(token_valid);
             if valid {
                 session.authenticate();
-                Some(WsMessage::ack(None, None))
+                WsMessage::ack(None, None)
             } else {
-                Some(WsMessage::error(None, "invalid or missing token"))
+                WsMessage::error(None, "invalid or missing token")
             }
         }
 
         ClientMessage::Subscribe { id, channel } => {
             if !session.is_authenticated() {
-                return Some(WsMessage::error(id, "not authenticated"));
+                return WsMessage::error(id, "not authenticated");
             }
             match Channel::parse(&channel) {
                 Some(ch) => {
                     session.subscribe(ch);
-                    Some(WsMessage::ack(id, Some(channel)))
+                    WsMessage::ack(id, Some(channel))
                 }
-                None => Some(WsMessage::error(id, format!("unknown channel: {channel}"))),
+                None => WsMessage::error(id, format!("unknown channel: {channel}")),
             }
         }
 
         ClientMessage::Unsubscribe { id, channel } => {
             if !session.is_authenticated() {
-                return Some(WsMessage::error(id, "not authenticated"));
+                return WsMessage::error(id, "not authenticated");
             }
             match Channel::parse(&channel) {
                 Some(ch) => {
                     session.unsubscribe(&ch);
-                    Some(WsMessage::ack(id, Some(channel)))
+                    WsMessage::ack(id, Some(channel))
                 }
-                None => Some(WsMessage::error(id, format!("unknown channel: {channel}"))),
+                None => WsMessage::error(id, format!("unknown channel: {channel}")),
             }
         }
 
@@ -595,7 +590,7 @@ fn handle_client_text(
             // Application-level ping; send a pong.
             let mut pong = WsMessage::pong();
             pong.id = id;
-            Some(pong)
+            pong
         }
     }
 }
@@ -605,6 +600,11 @@ fn handle_client_text(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "WebSocket protocol tests intentionally fail fast on malformed fixture data"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{AgentId, RunId};
@@ -840,9 +840,7 @@ mod tests {
     #[test]
     fn handle_text_invalid_json_returns_error() {
         let mut session = WsSession::authenticated();
-        let reply = handle_client_text("not json", &mut session, &any_nonempty);
-        assert!(reply.is_some());
-        let msg = reply.unwrap();
+        let msg = handle_client_text("not json", &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "error");
     }
 
@@ -851,9 +849,8 @@ mod tests {
         let mut session = WsSession::new();
         assert!(!session.is_authenticated());
         let json = r#"{"msg_type":"auth","token":"mytoken"}"#;
-        let reply = handle_client_text(json, &mut session, &only_mytoken);
+        let msg = handle_client_text(json, &mut session, &only_mytoken);
         assert!(session.is_authenticated());
-        let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "ack");
     }
 
@@ -861,9 +858,8 @@ mod tests {
     fn handle_text_auth_with_empty_token_fails() {
         let mut session = WsSession::new();
         let json = r#"{"msg_type":"auth","token":""}"#;
-        let reply = handle_client_text(json, &mut session, &any_nonempty);
+        let msg = handle_client_text(json, &mut session, &any_nonempty);
         assert!(!session.is_authenticated());
-        let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "error");
     }
 
@@ -872,9 +868,8 @@ mod tests {
         let mut session = WsSession::new();
         let json = r#"{"msg_type":"auth","token":"wrong-token"}"#;
         // Validator only accepts "mytoken"; "wrong-token" should fail.
-        let reply = handle_client_text(json, &mut session, &only_mytoken);
+        let msg = handle_client_text(json, &mut session, &only_mytoken);
         assert!(!session.is_authenticated());
-        let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "error");
     }
 
@@ -882,8 +877,7 @@ mod tests {
     fn handle_text_subscribe_without_auth_returns_error() {
         let mut session = WsSession::new();
         let json = r#"{"msg_type":"subscribe","channel":"system"}"#;
-        let reply = handle_client_text(json, &mut session, &any_nonempty);
-        let msg = reply.unwrap();
+        let msg = handle_client_text(json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "error");
         assert!(!session.is_subscribed(&Channel::System));
     }
@@ -892,8 +886,7 @@ mod tests {
     fn handle_text_subscribe_to_system_channel() {
         let mut session = WsSession::authenticated();
         let json = r#"{"msg_type":"subscribe","id":"req-1","channel":"system"}"#;
-        let reply = handle_client_text(json, &mut session, &any_nonempty);
-        let msg = reply.unwrap();
+        let msg = handle_client_text(json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "ack");
         assert_eq!(msg.id, Some("req-1".into()));
         assert!(session.is_subscribed(&Channel::System));
@@ -905,8 +898,7 @@ mod tests {
         let run_id = RunId::new();
         let channel = format!("runs:{run_id}");
         let json = format!(r#"{{"msg_type":"subscribe","channel":"{channel}"}}"#);
-        let reply = handle_client_text(&json, &mut session, &any_nonempty);
-        let msg = reply.unwrap();
+        let msg = handle_client_text(&json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "ack");
         assert!(session.is_subscribed(&Channel::Run(run_id)));
     }
@@ -917,8 +909,7 @@ mod tests {
         let agent_id = AgentId::new();
         let channel = format!("agents:{agent_id}");
         let json = format!(r#"{{"msg_type":"subscribe","channel":"{channel}"}}"#);
-        let reply = handle_client_text(&json, &mut session, &any_nonempty);
-        let msg = reply.unwrap();
+        let msg = handle_client_text(&json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "ack");
         assert!(session.is_subscribed(&Channel::Agent(agent_id)));
     }
@@ -927,8 +918,7 @@ mod tests {
     fn handle_text_subscribe_to_unknown_channel_returns_error() {
         let mut session = WsSession::authenticated();
         let json = r#"{"msg_type":"subscribe","channel":"bogus:channel"}"#;
-        let reply = handle_client_text(json, &mut session, &any_nonempty);
-        let msg = reply.unwrap();
+        let msg = handle_client_text(json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "error");
         assert_eq!(session.subscription_count(), 0);
     }
@@ -938,8 +928,7 @@ mod tests {
         let mut session = WsSession::authenticated();
         session.subscribe(Channel::System);
         let json = r#"{"msg_type":"unsubscribe","channel":"system"}"#;
-        let reply = handle_client_text(json, &mut session, &any_nonempty);
-        let msg = reply.unwrap();
+        let msg = handle_client_text(json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "ack");
         assert!(!session.is_subscribed(&Channel::System));
     }
@@ -948,8 +937,7 @@ mod tests {
     fn handle_text_ping_returns_pong() {
         let mut session = WsSession::authenticated();
         let json = r#"{"msg_type":"ping","id":"ping-1"}"#;
-        let reply = handle_client_text(json, &mut session, &any_nonempty);
-        let msg = reply.unwrap();
+        let msg = handle_client_text(json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "pong");
         assert_eq!(msg.id, Some("ping-1".into()));
     }

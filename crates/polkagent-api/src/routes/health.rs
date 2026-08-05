@@ -156,13 +156,13 @@ where
         Ok(()) => ComponentHealth {
             name: "database".to_owned(),
             status: "ok",
-            latency_ms: Some(start.elapsed().as_millis() as u64),
+            latency_ms: Some(u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)),
             message: None,
         },
         Err(err) => ComponentHealth {
             name: "database".to_owned(),
             status: "error",
-            latency_ms: Some(start.elapsed().as_millis() as u64),
+            latency_ms: Some(u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)),
             message: Some(err),
         },
     }
@@ -314,7 +314,6 @@ pub async fn startup(AxumState(state): AxumState<Arc<HealthState>>) -> impl Into
 /// GET /health/ready
 /// GET /health/startup
 /// ```
-#[must_use]
 pub fn health_router(state: Arc<HealthState>) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -355,6 +354,11 @@ fn aggregate_status(checks: &[ComponentHealth]) -> &'static str {
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "health route tests intentionally fail fast when fixture responses are malformed"
+)]
 mod tests {
     use super::*;
 
@@ -656,7 +660,9 @@ mod tests {
     #[tokio::test]
     async fn uptime_advances_with_time() {
         let state = Arc::new(HealthState {
-            startup_time: Instant::now() - std::time::Duration::from_secs(42),
+            startup_time: Instant::now()
+                .checked_sub(std::time::Duration::from_secs(42))
+                .expect("42 seconds must be representable before the current instant"),
             ready: AtomicBool::new(true),
             component_status: RwLock::new(HashMap::new()),
         });

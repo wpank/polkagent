@@ -43,14 +43,14 @@ pub async fn list_events(
 
     let limit = query.limit.unwrap_or(50).min(200) as usize;
 
-    let mut filter = polkagent_store_trait::event::EventFilter::default();
-    filter.run_id = query.run_id;
-    if let Some(ref et) = query.event_type {
-        filter.event_types = vec![et.clone()];
-    }
-    filter.since_global_sequence = query.since;
-    // Fetch one extra to detect has_more.
-    filter.limit = Some(limit + 1);
+    let filter = polkagent_store_trait::event::EventFilter {
+        run_id: query.run_id,
+        event_types: query.event_type.into_iter().collect(),
+        since_global_sequence: query.since,
+        // Fetch one extra to detect has_more.
+        limit: Some(limit + 1),
+        ..Default::default()
+    };
 
     let events = event_store
         .query(filter)

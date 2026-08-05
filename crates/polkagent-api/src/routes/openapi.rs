@@ -1,4 +1,4 @@
-//! `GET /openapi.json` — serve the OpenAPI 3.1 specification as JSON.
+//! `GET /openapi.json` — serve the `OpenAPI` 3.1 specification as JSON.
 //!
 //! The YAML spec file is embedded at compile time via `include_str!` so the
 //! binary is fully self-contained (no runtime file I/O required). On the
@@ -24,7 +24,7 @@ use std::sync::OnceLock;
 // Embedded spec
 // ---------------------------------------------------------------------------
 
-/// The raw OpenAPI YAML, embedded at compile time.
+/// The raw `OpenAPI` YAML, embedded at compile time.
 ///
 /// The path is relative to the crate root (`polkagent-api/`), which means
 /// `../../../../openapi.yaml` resolves to the workspace root `openapi.yaml`.
@@ -34,7 +34,7 @@ const OPENAPI_YAML: &str = include_str!("../../../../openapi.yaml");
 // Cached JSON conversion
 // ---------------------------------------------------------------------------
 
-/// Lazily computed JSON representation of the OpenAPI spec.
+/// Lazily computed JSON representation of the `OpenAPI` spec.
 static OPENAPI_JSON: OnceLock<Result<String, String>> = OnceLock::new();
 
 /// Parse the embedded YAML and serialise it as a compact JSON string.
@@ -55,7 +55,7 @@ fn openapi_json() -> &'static Result<String, String> {
 
 /// `GET /openapi.json`
 ///
-/// Returns the OpenAPI 3.1 specification as a JSON document.
+/// Returns the `OpenAPI` 3.1 specification as a JSON document.
 /// The YAML is embedded at compile time and converted to JSON on first access.
 ///
 /// This endpoint deliberately has no authentication requirement so that

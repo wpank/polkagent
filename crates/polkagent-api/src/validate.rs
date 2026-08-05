@@ -78,7 +78,7 @@ pub fn validate_hex(hex: &str) -> Result<Vec<u8>, ApiError> {
         ));
     }
 
-    if stripped.len() % 2 != 0 {
+    if !stripped.len().is_multiple_of(2) {
         return Err(ApiError::ValidationError(
             "hex string has odd length".to_owned(),
         ));
@@ -153,6 +153,10 @@ pub fn sanitize_string(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "validation tests intentionally fail fast when expected success or error values are absent"
+)]
 mod tests {
     use super::*;
 

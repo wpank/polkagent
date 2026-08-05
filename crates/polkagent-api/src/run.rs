@@ -290,8 +290,7 @@ impl RunManagerTrait for InMemoryRunManager {
                 id: run_id,
                 reason: format!(
                     "can only resume a run in AwaitingApproval state, \
-                     current state is {:?}",
-                    other
+                     current state is {other:?}"
                 ),
             }),
         }
@@ -327,8 +326,7 @@ impl RunManagerTrait for InMemoryRunManager {
             Some(cursor) => filtered
                 .iter()
                 .position(|r| r.id == cursor)
-                .map(|p| p + 1)
-                .unwrap_or(0),
+                .map_or(0, |p| p + 1),
             None => 0,
         };
 
@@ -390,11 +388,11 @@ impl RunManagerTrait for InMemoryRunManager {
         let mut guard = self.runs.write().await;
         let mut count = 0u32;
         for record in guard.values_mut() {
-            if record.agent_id == agent_id {
-                if matches!(&record.state, RunState::AwaitingApproval { .. }) {
-                    record.state = RunState::Running;
-                    count += 1;
-                }
+            if record.agent_id == agent_id
+                && matches!(&record.state, RunState::AwaitingApproval { .. })
+            {
+                record.state = RunState::Running;
+                count += 1;
             }
         }
         Ok(count)

@@ -153,6 +153,10 @@ fn unauthorized_response(reason: &str) -> Response {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test fixtures intentionally fail fast when constructing invalid requests"
+)]
 mod tests {
     use super::*;
     use axum::{

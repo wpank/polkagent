@@ -38,7 +38,7 @@ const DEFAULT_LIMIT: usize = 100;
 ///
 /// Query parameters:
 /// - `actor` — filter by actor ID (exact match).
-/// - `action` — filter by action type (snake_case, e.g. `"run_started"`).
+/// - `action` — filter by action type (`snake_case`, e.g. `"run_started"`).
 /// - `since` — only include entries at or after this RFC-3339 timestamp.
 /// - `until` — only include entries at or before this RFC-3339 timestamp.
 /// - `limit` — maximum number of entries to return (default 100).
@@ -180,6 +180,10 @@ pub async fn get_audit_entry(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "route tests intentionally fail fast when fixture operations violate expectations"
+)]
 mod tests {
     use super::*;
     use axum::{routing::get, Router};

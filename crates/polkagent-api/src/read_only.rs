@@ -74,6 +74,10 @@ pub async fn read_only_middleware(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test fixtures intentionally fail fast when constructing invalid requests"
+)]
 mod tests {
     use super::*;
     use axum::{

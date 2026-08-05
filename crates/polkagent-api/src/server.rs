@@ -151,7 +151,6 @@ impl ApiServer {
     ///
     /// Exposed so that tests can construct the router and pass it to an
     /// `axum_test::TestServer` without opening a real TCP socket.
-    #[must_use]
     pub fn into_router(self) -> Router {
         // ---------------------------------------------------------------
         // CORS

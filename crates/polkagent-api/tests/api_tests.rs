@@ -4,6 +4,12 @@
 //! `ApiServer::into_router`, and drives it with `axum_test::TestServer`.
 //! No real TCP sockets or database files are opened.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "this integration-test target intentionally fails fast on malformed fixture responses"
+)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -253,7 +259,7 @@ impl EffectStore for InMemoryEffectStore {
             });
         }
 
-        intent.state = new_state.to_owned();
+        new_state.clone_into(&mut intent.state);
         Ok(intent.clone())
     }
 }
@@ -443,8 +449,7 @@ async fn error_request_id_is_valid_uuid() {
         .expect("request_id must be a string");
     assert!(
         uuid::Uuid::parse_str(request_id).is_ok(),
-        "request_id '{}' should be a valid UUID",
-        request_id
+        "request_id '{request_id}' should be a valid UUID"
     );
 }
 
@@ -1376,29 +1381,31 @@ async fn list_providers_with_no_providers_configured() {
 
 #[tokio::test]
 async fn list_providers_returns_configured_providers() {
-    let mut config = Config::default();
-    config.providers = vec![
-        ProviderConfig {
-            id: "anthropic-default".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "ANTHROPIC_API_KEY".to_owned(),
-            base_url: "https://api.anthropic.com".to_owned(),
-            default_model: "claude-sonnet-4-6".to_owned(),
-            timeout_secs: 120,
-            max_retries: 3,
-            ..Default::default()
-        },
-        ProviderConfig {
-            id: "openai-compat".to_owned(),
-            provider_type: "openai_compatible".to_owned(),
-            api_key_env: "OPENAI_API_KEY".to_owned(),
-            base_url: "https://api.openai.com/v1".to_owned(),
-            default_model: "gpt-4o".to_owned(),
-            timeout_secs: 60,
-            max_retries: 2,
-            ..Default::default()
-        },
-    ];
+    let config = Config {
+        providers: vec![
+            ProviderConfig {
+                id: "anthropic-default".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "ANTHROPIC_API_KEY".to_owned(),
+                base_url: "https://api.anthropic.com".to_owned(),
+                default_model: "claude-sonnet-4-6".to_owned(),
+                timeout_secs: 120,
+                max_retries: 3,
+                ..Default::default()
+            },
+            ProviderConfig {
+                id: "openai-compat".to_owned(),
+                provider_type: "openai_compatible".to_owned(),
+                api_key_env: "OPENAI_API_KEY".to_owned(),
+                base_url: "https://api.openai.com/v1".to_owned(),
+                default_model: "gpt-4o".to_owned(),
+                timeout_secs: 60,
+                max_retries: 2,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
 
     let server = test_server_with_config(config);
     let resp = server.get("/api/v1alpha1/providers").await;
@@ -1425,17 +1432,19 @@ async fn list_providers_returns_configured_providers() {
 
 #[tokio::test]
 async fn get_provider_by_id() {
-    let mut config = Config::default();
-    config.providers = vec![ProviderConfig {
-        id: "test-provider".to_owned(),
-        provider_type: "anthropic".to_owned(),
-        api_key_env: "TEST_KEY".to_owned(),
-        base_url: "https://example.com".to_owned(),
-        default_model: "test-model".to_owned(),
-        timeout_secs: 30,
-        max_retries: 1,
+    let config = Config {
+        providers: vec![ProviderConfig {
+            id: "test-provider".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "TEST_KEY".to_owned(),
+            base_url: "https://example.com".to_owned(),
+            default_model: "test-model".to_owned(),
+            timeout_secs: 30,
+            max_retries: 1,
+            ..Default::default()
+        }],
         ..Default::default()
-    }];
+    };
 
     let server = test_server_with_config(config);
     let resp = server.get("/api/v1alpha1/providers/test-provider").await;
@@ -1686,29 +1695,31 @@ async fn list_all_models_empty_without_providers() {
 
 #[tokio::test]
 async fn list_all_models_returns_one_per_provider() {
-    let mut config = Config::default();
-    config.providers = vec![
-        ProviderConfig {
-            id: "anthropic-1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            base_url: "https://api.anthropic.com".to_owned(),
-            default_model: "claude-opus-4-6".to_owned(),
-            timeout_secs: 60,
-            max_retries: 2,
-            ..Default::default()
-        },
-        ProviderConfig {
-            id: "openai-1".to_owned(),
-            provider_type: "openai_compatible".to_owned(),
-            api_key_env: "KEY2".to_owned(),
-            base_url: "https://api.openai.com/v1".to_owned(),
-            default_model: "gpt-4o".to_owned(),
-            timeout_secs: 60,
-            max_retries: 2,
-            ..Default::default()
-        },
-    ];
+    let config = Config {
+        providers: vec![
+            ProviderConfig {
+                id: "anthropic-1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                base_url: "https://api.anthropic.com".to_owned(),
+                default_model: "claude-opus-4-6".to_owned(),
+                timeout_secs: 60,
+                max_retries: 2,
+                ..Default::default()
+            },
+            ProviderConfig {
+                id: "openai-1".to_owned(),
+                provider_type: "openai_compatible".to_owned(),
+                api_key_env: "KEY2".to_owned(),
+                base_url: "https://api.openai.com/v1".to_owned(),
+                default_model: "gpt-4o".to_owned(),
+                timeout_secs: 60,
+                max_retries: 2,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
     let server = test_server_with_config(config);
     let resp = server.get("/api/v1alpha1/models").await;
     resp.assert_status_ok();
@@ -1729,17 +1740,19 @@ async fn list_all_models_returns_one_per_provider() {
 
 #[tokio::test]
 async fn get_model_by_id_returns_correct_details() {
-    let mut config = Config::default();
-    config.providers = vec![ProviderConfig {
-        id: "anthropic-default".to_owned(),
-        provider_type: "anthropic".to_owned(),
-        api_key_env: "KEY".to_owned(),
-        base_url: "https://api.anthropic.com".to_owned(),
-        default_model: "claude-opus-4-6".to_owned(),
-        timeout_secs: 60,
-        max_retries: 2,
+    let config = Config {
+        providers: vec![ProviderConfig {
+            id: "anthropic-default".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            base_url: "https://api.anthropic.com".to_owned(),
+            default_model: "claude-opus-4-6".to_owned(),
+            timeout_secs: 60,
+            max_retries: 2,
+            ..Default::default()
+        }],
         ..Default::default()
-    }];
+    };
     let server = test_server_with_config(config);
     let resp = server.get("/api/v1alpha1/models/claude-opus-4-6").await;
     resp.assert_status_ok();
@@ -1766,17 +1779,19 @@ async fn get_model_not_found_returns_404() {
 
 #[tokio::test]
 async fn list_provider_models_returns_models_for_provider() {
-    let mut config = Config::default();
-    config.providers = vec![ProviderConfig {
-        id: "test-provider".to_owned(),
-        provider_type: "anthropic".to_owned(),
-        api_key_env: "KEY".to_owned(),
-        base_url: "https://api.anthropic.com".to_owned(),
-        default_model: "claude-sonnet-4-6".to_owned(),
-        timeout_secs: 60,
-        max_retries: 2,
+    let config = Config {
+        providers: vec![ProviderConfig {
+            id: "test-provider".to_owned(),
+            provider_type: "anthropic".to_owned(),
+            api_key_env: "KEY".to_owned(),
+            base_url: "https://api.anthropic.com".to_owned(),
+            default_model: "claude-sonnet-4-6".to_owned(),
+            timeout_secs: 60,
+            max_retries: 2,
+            ..Default::default()
+        }],
         ..Default::default()
-    }];
+    };
     let server = test_server_with_config(config);
     let resp = server
         .get("/api/v1alpha1/providers/test-provider/models")
@@ -2145,10 +2160,8 @@ impl EventStore for InMemoryEventStore {
                         return false;
                     }
                 }
-                if !filter.event_types.is_empty() {
-                    if !filter.event_types.contains(&e.event_type) {
-                        return false;
-                    }
+                if !filter.event_types.is_empty() && !filter.event_types.contains(&e.event_type) {
+                    return false;
                 }
                 if let Some(since) = filter.since_global_sequence {
                     if e.global_sequence < since {
@@ -2189,7 +2202,7 @@ impl EventStore for InMemoryEventStore {
 
 struct InMemoryArtifactStore {
     artifacts: RwLock<HashMap<ArtifactId, (ArtifactSummary, Vec<u8>)>>,
-    /// child_id -> set of parent_ids (for lineage tracking)
+    /// `child_id` -> set of `parent_ids` (for lineage tracking)
     lineage: RwLock<HashMap<ArtifactId, HashSet<ArtifactId>>>,
 }
 
@@ -2309,7 +2322,7 @@ impl ArtifactStore for InMemoryArtifactStore {
 // Test helpers with optional stores
 // ===========================================================================
 
-/// Build a `TestServer` with an in-memory EventStore attached.
+/// Build a `TestServer` with an in-memory `EventStore` attached.
 fn test_server_with_event_store(store: Arc<InMemoryEventStore>) -> TestServer {
     let agents = Arc::new(InMemoryAgentStore::new());
     let run_manager = Arc::new(InMemoryRunManager::new());
@@ -2327,7 +2340,7 @@ fn test_server_with_event_store(store: Arc<InMemoryEventStore>) -> TestServer {
     TestServer::new(server.into_router())
 }
 
-/// Build a `TestServer` with an in-memory ArtifactStore attached.
+/// Build a `TestServer` with an in-memory `ArtifactStore` attached.
 fn test_server_with_artifact_store(store: Arc<InMemoryArtifactStore>) -> TestServer {
     let agents = Arc::new(InMemoryAgentStore::new());
     let run_manager = Arc::new(InMemoryRunManager::new());
@@ -2648,9 +2661,9 @@ async fn event_bus_publishes_to_subscribers() {
 
     bus.publish(event);
 
-    let received = receiver.recv().await.expect("should receive event");
-    assert_eq!(received.id, event_id);
-    assert_eq!(received.run_id, run_id);
+    let delivered_event = receiver.recv().await.expect("should receive event");
+    assert_eq!(delivered_event.id, event_id);
+    assert_eq!(delivered_event.run_id, run_id);
 }
 
 #[tokio::test]
@@ -2710,8 +2723,8 @@ async fn event_bus_subscribe_before_publish_receives_event() {
 
     bus.publish(event.clone());
 
-    let received = receiver.recv().await.expect("should receive");
-    assert_eq!(received.id, event.id);
+    let delivered_event = receiver.recv().await.expect("should receive");
+    assert_eq!(delivered_event.id, event.id);
 }
 
 #[tokio::test]
@@ -2752,9 +2765,9 @@ async fn event_bus_no_events_before_subscribe_are_replayed() {
     let new_event_id = new_event.id;
     bus.publish(new_event);
 
-    let received = receiver.recv().await.expect("should receive new event");
+    let delivered_event = receiver.recv().await.expect("should receive new event");
     assert_eq!(
-        received.id, new_event_id,
+        delivered_event.id, new_event_id,
         "should only receive the post-subscribe event"
     );
 }
@@ -2763,7 +2776,7 @@ async fn event_bus_no_events_before_subscribe_are_replayed() {
 // Effect approval / denial tests
 // ===========================================================================
 
-/// POST /effects/:id/approve on an existing awaiting_approval intent returns 200
+/// `POST /effects/:id/approve` on an existing `awaiting_approval` intent returns 200
 /// with the updated state set to "approved" and an approval record.
 #[tokio::test]
 async fn approve_effect_pending_returns_200_with_approved_state() {
@@ -2823,7 +2836,7 @@ async fn approve_effect_already_resolved_returns_409() {
     assert_eq!(body["error"]["code"], "INVALID_STATE");
 }
 
-/// POST /effects/:id/approve on an awaiting_approval intent with comment and conditions.
+/// `POST /effects/:id/approve` on an `awaiting_approval` intent with comment and conditions.
 #[tokio::test]
 async fn approve_effect_waiting_approval_returns_200() {
     let (server, store) = test_server_with_effect_store();
@@ -2843,7 +2856,7 @@ async fn approve_effect_waiting_approval_returns_200() {
     assert_eq!(body["approval"]["conditions"][0], "max_value:500");
 }
 
-/// POST /effects/:id/deny on an existing awaiting_approval intent returns 200
+/// `POST /effects/:id/deny` on an existing `awaiting_approval` intent returns 200
 /// with the updated state set to "denied" and a denial record.
 #[tokio::test]
 async fn deny_effect_pending_returns_200_with_denied_state() {
@@ -2949,8 +2962,8 @@ async fn resume_run_nonexistent_returns_404() {
     assert_eq!(body["error"]["code"], "RUN_NOT_FOUND");
 }
 
-/// POST /runs/:id/resume on a run that is not in AwaitingApproval returns
-/// 409 Conflict with INVALID_STATE code.
+/// `POST /runs/:id/resume` on a run that is not in `AwaitingApproval` returns
+/// 409 Conflict with `INVALID_STATE` code.
 #[tokio::test]
 async fn resume_run_not_in_awaiting_approval_returns_409() {
     let server = test_server();
@@ -2966,10 +2979,10 @@ async fn resume_run_not_in_awaiting_approval_returns_409() {
     assert_eq!(body["error"]["code"], "INVALID_STATE");
 }
 
-/// POST /runs/:id/resume returns the full RunResponse with correct version.
+/// `POST /runs/:id/resume` returns the full `RunResponse` with correct version.
 ///
-/// We verify the 200 path by using an InMemoryRunManager whose state we
-/// set directly to AwaitingApproval before calling resume.
+/// We verify the 200 path by using an `InMemoryRunManager` whose state we
+/// set directly to `AwaitingApproval` before calling resume.
 #[tokio::test]
 async fn resume_run_awaiting_approval_returns_200_with_running_state() {
     use polkagent_api::InMemoryRunManager;

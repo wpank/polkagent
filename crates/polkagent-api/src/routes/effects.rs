@@ -83,7 +83,7 @@ pub async fn list_effects(
 
     let data: Vec<serde_json::Value> = intents
         .into_iter()
-        .map(|intent| serde_json::to_value(&intent).unwrap_or_else(|_| serde_json::Value::Null))
+        .map(|intent| serde_json::to_value(&intent).unwrap_or(serde_json::Value::Null))
         .collect();
 
     Ok(Json(ListEffectsResponse {
@@ -333,6 +333,10 @@ pub async fn deny_effect(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "route tests intentionally fail fast when response fixtures have an invalid shape"
+)]
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;

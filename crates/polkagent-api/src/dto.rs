@@ -422,7 +422,7 @@ pub struct ListEventsQuery {
     pub run_id: Option<RunId>,
     /// Filter by event type string.
     pub event_type: Option<String>,
-    /// Return events with global_sequence >= since.
+    /// Return events with `global_sequence >= since`.
     pub since: Option<u64>,
     /// Maximum items per page (default 50, max 200).
     pub limit: Option<u32>,
@@ -841,7 +841,7 @@ pub struct AuditListParams {
     /// Filter by actor ID (exact match).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
-    /// Filter by action type (snake_case, e.g. `"run_started"`).
+    /// Filter by action type (`snake_case`, e.g. `"run_started"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     /// Only include entries at or after this RFC-3339 timestamp.
@@ -978,6 +978,10 @@ pub struct BridgeTransportInfo {
 }
 
 /// Capabilities section of [`BridgeHealthResponse`].
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the bridge wire format represents five independent capability flags"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeCapabilities {
     pub send: bool,

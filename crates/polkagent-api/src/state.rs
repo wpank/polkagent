@@ -186,10 +186,8 @@ fn json_value_to_toml(v: &serde_json::Value) -> Option<toml::Value> {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Some(toml::Value::Integer(i))
-            } else if let Some(f) = n.as_f64() {
-                Some(toml::Value::Float(f))
             } else {
-                None
+                n.as_f64().map(toml::Value::Float)
             }
         }
         serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
@@ -312,8 +310,7 @@ impl AgentStore for InMemoryAgentStore {
             Some(cursor) => sorted
                 .iter()
                 .position(|s| s.id == cursor)
-                .map(|p| p + 1)
-                .unwrap_or(0),
+                .map_or(0, |p| p + 1),
             None => 0,
         };
 

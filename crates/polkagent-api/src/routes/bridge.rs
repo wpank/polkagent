@@ -1,7 +1,7 @@
 //! PCA C1 bridge compatibility endpoints (PRD-06 §12, §20.4).
 //!
 //! These routes expose a PCA-compatible HTTP API so that existing harness
-//! integrations (Hermes, OpenClaw, custom) can interact with a Polkagent
+//! integrations (`Hermes`, `OpenClaw`, custom) can interact with a `Polkagent`
 //! instance through the familiar bridge wire format.
 //!
 //! | Method | Path | Handler |

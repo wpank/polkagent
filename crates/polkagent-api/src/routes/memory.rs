@@ -48,7 +48,7 @@ pub async fn query_memory(
     let results = store
         .search(&body.query, body.limit as usize, body.namespace.as_deref())
         .await
-        .map_err(|e| ApiError::InternalError(e.to_string()))?;
+        .map_err(|e| ApiError::InternalError(e.clone()))?;
 
     Ok(Json(MemoryQueryResponse {
         version: API_VERSION.to_owned(),
@@ -65,21 +65,21 @@ pub async fn query_memory(
 /// Returns 501 Not Implemented when no memory store is configured.
 #[instrument(skip(state))]
 pub async fn memory_stats(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
-    let store = state
+    let backend = state
         .memory_store
         .as_ref()
         .ok_or_else(|| ApiError::NotImplemented("memory store not configured".to_owned()))?;
 
-    let stats = store
+    let summary = backend
         .stats()
         .await
-        .map_err(|e| ApiError::InternalError(e.to_string()))?;
+        .map_err(|e| ApiError::InternalError(e.clone()))?;
 
     Ok(Json(MemoryStatsResponse {
         version: API_VERSION.to_owned(),
-        total_memories: stats.total_memories,
-        total_bytes: stats.total_bytes,
-        namespaces: stats.namespaces,
+        total_memories: summary.total_memories,
+        total_bytes: summary.total_bytes,
+        namespaces: summary.namespaces,
     }))
 }
 
@@ -103,7 +103,7 @@ pub async fn forget_memory(
     let deleted = store
         .delete_entries(&body.entry_ids)
         .await
-        .map_err(|e| ApiError::InternalError(e.to_string()))?;
+        .map_err(|e| ApiError::InternalError(e.clone()))?;
 
     Ok(Json(MemoryForgetResponse {
         version: API_VERSION.to_owned(),
@@ -132,7 +132,7 @@ pub async fn get_memory_entry(
     let entry = store
         .get_entry(&entry_id)
         .await
-        .map_err(|e| ApiError::InternalError(e.to_string()))?
+        .map_err(|e| ApiError::InternalError(e.clone()))?
         .ok_or_else(|| ApiError::NotFound(format!("memory entry '{entry_id}'")))?;
 
     Ok(Json(MemoryEntryResponse {
