@@ -3,8 +3,11 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use polkagent_core::ConversationId;
-use polkagent_transport_pca::network::{TcpPcaConfig, TcpPcaTransport, TcpPeer};
+use polkagent_core::{ConversationId, RunId};
+use polkagent_transport_pca::network::{
+    PcaCancellationFrame, PcaErrorReplyFrame, PcaReplyStatus, PcaStatusReplyFrame, TcpPcaConfig,
+    TcpPcaTransport, TcpPeer, PCA_CANCELLATION_COMMAND, PCA_ERROR_COMMAND, PCA_STATUS_COMMAND,
+};
 use polkagent_transport_pca::PcaWireMessage;
 use polkagent_transport_trait::{
     Classification, MessageBody, OutgoingBody, OutgoingMessage, Transport, TransportError,
@@ -49,6 +52,21 @@ async fn wait_for_outbox_empty(transport: &TcpPcaTransport) {
     })
     .await
     .expect("outbox should receive a durable peer ACK");
+}
+
+fn structured_payload<T: serde::de::DeserializeOwned>(
+    body: &MessageBody,
+    expected_command: &str,
+) -> T {
+    let MessageBody::StructuredCommand {
+        command_type,
+        payload_json,
+    } = body
+    else {
+        panic!("expected structured command, got {body:?}");
+    };
+    assert_eq!(command_type, expected_command);
+    serde_json::from_str(payload_json).expect("decode structured PCA frame")
 }
 
 #[tokio::test]
@@ -220,11 +238,14 @@ async fn abandoned_application_lease_redelivers_without_process_restart() {
 #[tokio::test]
 async fn unacknowledged_head_delivery_blocks_later_messages() {
     let temp = TempDir::new().expect("temp dir");
-    let receiver = TcpPcaTransport::bind(config(
-        "5Receiver",
-        loopback_any(),
-        &temp.path().join("receiver.json"),
-    ))
+    let receiver = TcpPcaTransport::bind(
+        config(
+            "5Receiver",
+            loopback_any(),
+            &temp.path().join("receiver.json"),
+        )
+        .with_application_lease_timeout(Duration::from_secs(1)),
+    )
     .await
     .expect("bind receiver");
     let sender = TcpPcaTransport::bind(
@@ -345,6 +366,295 @@ async fn duplicate_delivery_is_wire_acked_without_second_application_message() {
 }
 
 #[tokio::test]
+async fn cancellation_reconnects_from_durable_outbox_and_deduplicates_retry() {
+    let temp = TempDir::new().expect("temp dir");
+    let receiver_addr = reserve_loopback_addr();
+    let sender_path = temp.path().join("cancel-sender.json");
+    let sender = TcpPcaTransport::bind(
+        config("5Sender", loopback_any(), &sender_path)
+            .with_peer(TcpPeer::new(receiver_addr, "5Receiver")),
+    )
+    .await
+    .expect("bind offline cancellation sender");
+    let conversation_id = ConversationId::new();
+    let run_id = RunId::new();
+    let cancellation =
+        PcaCancellationFrame::run(conversation_id, run_id, Some("user requested stop".into()));
+    let receipt = sender
+        .send_cancellation(cancellation.clone())
+        .await
+        .expect("persist cancellation while peer offline");
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    assert_eq!(sender.pending_outbox_count().await, 1);
+    sender.shutdown().await;
+    let pre_ack_state = std::fs::read(&sender_path).expect("read pre-ACK cancellation state");
+
+    let receiver = TcpPcaTransport::bind(config(
+        "5Receiver",
+        receiver_addr,
+        &temp.path().join("cancel-receiver.json"),
+    ))
+    .await
+    .expect("bind cancellation receiver");
+    let restarted_sender = TcpPcaTransport::bind(
+        config("5Sender", loopback_any(), &sender_path)
+            .with_peer(TcpPeer::new(receiver_addr, "5Receiver")),
+    )
+    .await
+    .expect("restart cancellation sender");
+    let received = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
+        .await
+        .expect("cancellation receive timeout")
+        .expect("receive cancellation");
+    assert_eq!(received.delivery_id, receipt.delivery_id);
+    assert_eq!(
+        structured_payload::<PcaCancellationFrame>(&received.body, PCA_CANCELLATION_COMMAND),
+        cancellation
+    );
+    wait_for_outbox_empty(&restarted_sender).await;
+    restarted_sender.shutdown().await;
+
+    // Restore the sender's exact pre-wire-ACK state. The duplicate traverses
+    // a fresh connection but is ACKed from the receiver's durable dedup marker.
+    std::fs::write(&sender_path, pre_ack_state).expect("restore pre-ACK sender state");
+    let duplicate_sender = TcpPcaTransport::bind(
+        config("5Sender", loopback_any(), &sender_path)
+            .with_peer(TcpPeer::new(receiver_addr, "5Receiver")),
+    )
+    .await
+    .expect("restart duplicate cancellation sender");
+    wait_for_outbox_empty(&duplicate_sender).await;
+    assert_eq!(receiver.pending_inbox_count().await, 1);
+    assert_eq!(receiver.dedup_marker_count().await, 1);
+    receiver
+        .ack(received.delivery_id)
+        .await
+        .expect("ack cancel");
+
+    duplicate_sender.shutdown().await;
+    receiver.shutdown().await;
+}
+
+#[tokio::test]
+async fn structured_status_survives_receiver_restart_with_same_delivery_id() {
+    let temp = TempDir::new().expect("temp dir");
+    let receiver_path = temp.path().join("status-receiver.json");
+    let receiver = TcpPcaTransport::bind(config("5Receiver", loopback_any(), &receiver_path))
+        .await
+        .expect("bind status receiver");
+    let receiver_addr = receiver.listen_addr();
+    let sender = TcpPcaTransport::bind(
+        config(
+            "5Sender",
+            loopback_any(),
+            &temp.path().join("status-sender.json"),
+        )
+        .with_peer(TcpPeer::new(receiver_addr, "5Receiver")),
+    )
+    .await
+    .expect("bind status sender");
+    let mut status = PcaStatusReplyFrame::new(
+        ConversationId::new(),
+        Some(RunId::new()),
+        PcaReplyStatus::Running,
+    );
+    status.message = Some("executing tools".into());
+    status.progress_percent = Some(40);
+    status.metadata_json = Some(r#"{"step":2}"#.into());
+    sender
+        .send_status_reply(status.clone())
+        .await
+        .expect("send status");
+    let first = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
+        .await
+        .expect("status timeout")
+        .expect("receive status");
+    assert_eq!(
+        structured_payload::<PcaStatusReplyFrame>(&first.body, PCA_STATUS_COMMAND),
+        status
+    );
+    wait_for_outbox_empty(&sender).await;
+
+    receiver.shutdown().await;
+    drop(receiver);
+    let restarted = TcpPcaTransport::bind(config("5Receiver", receiver_addr, &receiver_path))
+        .await
+        .expect("restart status receiver");
+    let recovered = tokio::time::timeout(Duration::from_secs(2), restarted.receive())
+        .await
+        .expect("status recovery timeout")
+        .expect("recover status");
+    assert_eq!(recovered.delivery_id, first.delivery_id);
+    assert_eq!(
+        structured_payload::<PcaStatusReplyFrame>(&recovered.body, PCA_STATUS_COMMAND),
+        status
+    );
+    restarted
+        .ack(recovered.delivery_id)
+        .await
+        .expect("ack status");
+
+    sender.shutdown().await;
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
+async fn control_frames_enforce_fields_total_size_and_shared_backpressure() {
+    let temp = TempDir::new().expect("temp dir");
+    let transport = TcpPcaTransport::bind(
+        config(
+            "5Sender",
+            loopback_any(),
+            &temp.path().join("control-limits.json"),
+        )
+        .with_peer(TcpPeer::new(reserve_loopback_addr(), "5Offline"))
+        .with_max_in_flight(1)
+        .with_max_message_bytes(512)
+        .with_max_control_field_bytes(32),
+    )
+    .await
+    .expect("bind limited control sender");
+    let conversation_id = ConversationId::new();
+
+    let too_long = PcaCancellationFrame::active_conversation(conversation_id, Some("x".repeat(33)));
+    assert!(matches!(
+        transport.send_cancellation(too_long).await,
+        Err(TransportError::DeliveryFailed { .. })
+    ));
+
+    let mut invalid_status =
+        PcaStatusReplyFrame::new(conversation_id, None, PcaReplyStatus::Running);
+    invalid_status.progress_percent = Some(101);
+    assert!(matches!(
+        transport.send_status_reply(invalid_status).await,
+        Err(TransportError::DeliveryFailed { .. })
+    ));
+    let mut invalid_metadata =
+        PcaStatusReplyFrame::new(conversation_id, None, PcaReplyStatus::Running);
+    invalid_metadata.metadata_json = Some("not-json".into());
+    assert!(matches!(
+        transport.send_status_reply(invalid_metadata).await,
+        Err(TransportError::DeliveryFailed { .. })
+    ));
+
+    let invalid_code = PcaErrorReplyFrame::new(conversation_id, None, "bad-code", "failed");
+    assert!(matches!(
+        transport.send_error_reply(invalid_code).await,
+        Err(TransportError::DeliveryFailed { .. })
+    ));
+    let mut invalid_retry =
+        PcaErrorReplyFrame::new(conversation_id, None, "PROVIDER_DOWN", "failed");
+    invalid_retry.retry_after_ms = Some(500);
+    assert!(matches!(
+        transport.send_error_reply(invalid_retry).await,
+        Err(TransportError::DeliveryFailed { .. })
+    ));
+    assert_eq!(transport.pending_outbox_count().await, 0);
+
+    transport
+        .send_cancellation(PcaCancellationFrame::active_conversation(
+            conversation_id,
+            Some("stop".into()),
+        ))
+        .await
+        .expect("valid cancellation occupies offline outbox");
+    let full = transport
+        .send_status_reply(PcaStatusReplyFrame::new(
+            conversation_id,
+            None,
+            PcaReplyStatus::Cancelled,
+        ))
+        .await
+        .expect_err("control frames share bounded outbox");
+    assert!(matches!(full, TransportError::RateLimit { .. }));
+    transport.shutdown().await;
+
+    let total_limited = TcpPcaTransport::bind(
+        config(
+            "5Sender",
+            loopback_any(),
+            &temp.path().join("total-limit.json"),
+        )
+        .with_max_message_bytes(256)
+        .with_max_control_field_bytes(128),
+    )
+    .await
+    .expect("bind total-size sender");
+    let mut large_status = PcaStatusReplyFrame::new(conversation_id, None, PcaReplyStatus::Running);
+    large_status.metadata_json = Some(format!(r#"{{"value":"{}"}}"#, "x".repeat(100)));
+    assert!(matches!(
+        total_limited.send_status_reply(large_status).await,
+        Err(TransportError::DeliveryFailed { .. })
+    ));
+    assert_eq!(total_limited.pending_outbox_count().await, 0);
+    total_limited.shutdown().await;
+}
+
+#[tokio::test]
+async fn receiver_rejects_invalid_persisted_control_frame_without_wire_ack() {
+    let temp = TempDir::new().expect("temp dir");
+    let receiver_addr = reserve_loopback_addr();
+    let sender_path = temp.path().join("invalid-control-sender.json");
+    let sender = TcpPcaTransport::bind(
+        config("5Sender", loopback_any(), &sender_path)
+            .with_peer(TcpPeer::new(receiver_addr, "5Receiver")),
+    )
+    .await
+    .expect("bind offline sender");
+    sender
+        .send_error_reply(PcaErrorReplyFrame::new(
+            ConversationId::new(),
+            None,
+            "VALID_CODE",
+            "valid before state corruption",
+        ))
+        .await
+        .expect("persist valid error reply");
+    sender.shutdown().await;
+
+    // Model a corrupted or malicious durable producer by changing the opaque
+    // encrypted-application payload after sender-side validation.
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sender_path).expect("read sender state"))
+            .expect("decode sender state");
+    let payload: Vec<u8> = serde_json::from_value(state["outbox"][0]["payload"].clone())
+        .expect("decode durable payload bytes");
+    let mut application: serde_json::Value =
+        serde_json::from_slice(&payload).expect("decode application frame");
+    application["frame"]["code"] = serde_json::Value::String("invalid-code".into());
+    state["outbox"][0]["payload"] = serde_json::to_value(
+        serde_json::to_vec(&application).expect("encode corrupt application frame"),
+    )
+    .expect("encode corrupt payload bytes");
+    std::fs::write(
+        &sender_path,
+        serde_json::to_vec_pretty(&state).expect("encode corrupt sender state"),
+    )
+    .expect("write corrupt sender state");
+
+    let receiver = TcpPcaTransport::bind(config(
+        "5Receiver",
+        receiver_addr,
+        &temp.path().join("invalid-control-receiver.json"),
+    ))
+    .await
+    .expect("bind strict receiver");
+    let restarted_sender = TcpPcaTransport::bind(
+        config("5Sender", loopback_any(), &sender_path)
+            .with_peer(TcpPeer::new(receiver_addr, "5Receiver")),
+    )
+    .await
+    .expect("restart corrupted sender");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(receiver.pending_inbox_count().await, 0);
+    assert_eq!(receiver.dedup_marker_count().await, 0);
+    assert_eq!(restarted_sender.pending_outbox_count().await, 1);
+
+    restarted_sender.shutdown().await;
+    receiver.shutdown().await;
+}
+
+#[tokio::test]
 async fn offline_outbox_enforces_backpressure_and_message_limit() {
     let temp = TempDir::new().expect("temp dir");
     let transport = TcpPcaTransport::bind(
@@ -451,6 +761,158 @@ async fn child_process_receives_one_message() {
     std::fs::write(&result_path, content).expect("write child result");
     transport.ack(message.delivery_id).await.expect("child ack");
     transport.shutdown().await;
+}
+
+/// Subprocess helper for typed status/error interoperability coverage.
+#[tokio::test]
+#[ignore]
+async fn child_process_receives_control_replies() {
+    let Ok(listen_addr) = std::env::var("PCA_CONTROL_CHILD_LISTEN") else {
+        return;
+    };
+    let state_path = std::env::var("PCA_CONTROL_CHILD_STATE").expect("child state path");
+    let ready_path = std::env::var("PCA_CONTROL_CHILD_READY").expect("child ready path");
+    let result_path = std::env::var("PCA_CONTROL_CHILD_RESULT").expect("child result path");
+    let transport = TcpPcaTransport::bind(config(
+        "5ControlChild",
+        listen_addr.parse().expect("child listen address"),
+        Path::new(&state_path),
+    ))
+    .await
+    .expect("bind control child transport");
+    std::fs::write(&ready_path, b"ready").expect("write child ready marker");
+
+    let mut captured = Vec::new();
+    for _ in 0..2 {
+        let message = tokio::time::timeout(Duration::from_secs(10), transport.receive())
+            .await
+            .expect("child control receive timeout")
+            .expect("child control receive");
+        let MessageBody::StructuredCommand {
+            command_type,
+            payload_json,
+        } = message.body
+        else {
+            panic!("expected child structured command");
+        };
+        captured.push(serde_json::json!({
+            "command_type": command_type,
+            "payload": serde_json::from_str::<serde_json::Value>(&payload_json)
+                .expect("decode child control payload"),
+        }));
+        transport.ack(message.delivery_id).await.expect("child ack");
+    }
+    std::fs::write(
+        &result_path,
+        serde_json::to_vec_pretty(&captured).expect("encode child control result"),
+    )
+    .expect("write child control result");
+    transport.shutdown().await;
+}
+
+#[tokio::test]
+async fn status_and_error_replies_cross_process_boundary() {
+    let temp = TempDir::new().expect("temp dir");
+    let child_addr = reserve_loopback_addr();
+    let ready_path = temp.path().join("control-ready");
+    let result_path = temp.path().join("control-result.json");
+    let child_state = temp.path().join("control-child-state.json");
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "child_process_receives_control_replies",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("PCA_CONTROL_CHILD_LISTEN", child_addr.to_string())
+        .env("PCA_CONTROL_CHILD_STATE", &child_state)
+        .env("PCA_CONTROL_CHILD_READY", &ready_path)
+        .env("PCA_CONTROL_CHILD_RESULT", &result_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn PCA control child process");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !ready_path.exists() {
+            if let Some(status) = child.try_wait().expect("poll control child") {
+                panic!("control child exited before readiness: {status}");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("control child readiness timeout");
+
+    let sender = TcpPcaTransport::bind(
+        config(
+            "5ControlParent",
+            loopback_any(),
+            &temp.path().join("control-parent-state.json"),
+        )
+        .with_peer(TcpPeer::new(child_addr, "5ControlChild")),
+    )
+    .await
+    .expect("bind control parent");
+    let conversation_id = ConversationId::new();
+    let run_id = RunId::new();
+    let mut status = PcaStatusReplyFrame::new(
+        conversation_id,
+        Some(run_id),
+        PcaReplyStatus::WaitingForApproval,
+    );
+    status.message = Some("approval required".into());
+    status.metadata_json = Some(r#"{"approval_id":"a-1"}"#.into());
+    sender
+        .send_status_reply(status.clone())
+        .await
+        .expect("send cross-process status");
+    let mut error = PcaErrorReplyFrame::new(
+        conversation_id,
+        Some(run_id),
+        "PROVIDER_UNAVAILABLE",
+        "provider is temporarily unavailable",
+    );
+    error.retryable = true;
+    error.retry_after_ms = Some(250);
+    error.details_json = Some(r#"{"provider":"test"}"#.into());
+    sender
+        .send_error_reply(error.clone())
+        .await
+        .expect("send cross-process error");
+    wait_for_outbox_empty(&sender).await;
+
+    let child_status = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(status) = child.try_wait().expect("poll control child exit") {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("control child exit timeout");
+    assert!(
+        child_status.success(),
+        "control child failed: {child_status}"
+    );
+    let captured: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(&result_path).expect("read child control result"))
+            .expect("decode child control result");
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0]["command_type"], PCA_STATUS_COMMAND);
+    assert_eq!(captured[1]["command_type"], PCA_ERROR_COMMAND);
+    assert_eq!(
+        serde_json::from_value::<PcaStatusReplyFrame>(captured[0]["payload"].clone())
+            .expect("decode captured status"),
+        status
+    );
+    assert_eq!(
+        serde_json::from_value::<PcaErrorReplyFrame>(captured[1]["payload"].clone())
+            .expect("decode captured error"),
+        error
+    );
+    sender.shutdown().await;
 }
 
 #[tokio::test]

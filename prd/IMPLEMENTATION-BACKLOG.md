@@ -295,11 +295,18 @@ produce a reply.
   `tcp_network.rs` covers socket delivery, delayed-peer reconnect, duplicate
   retry, lease expiry, receiver restart, limits/backpressure, and a separate
   child process.
+- [x] Add typed cancellation, status, and error reply application frames on the
+  same encrypted durable lane. Sender and receiver enforce control-field,
+  total-message, JSON, progress, retry-metadata, shared-backpressure, and
+  sender-identity validation before persistence/wire ACK. Evidence:
+  `tcp_network.rs` covers offline cancellation restart/reconnect and duplicate
+  retry, status receiver restart, structured status/error exchange across a
+  child process, corrupted inbound rejection, and size/backpressure failures.
 - [ ] Replace the bounded TCP protocol with (or adapt it behind) the pinned PCA
   reference application's Statement Store/Polkadot App wire protocol; add
   cryptographic SS58 authentication rather than trusting a configured identity
   string, multi-process state-file exclusion, dedup retention/compaction, and
-  attachment/cancellation/error-reply frames.
+  attachment/file frames.
 - [ ] Connect delivery to shared interaction/runtime and map replies/status.
 - [ ] Add compatibility fixtures against the PCA reference implementation.
 

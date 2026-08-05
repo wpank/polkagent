@@ -43,7 +43,7 @@ startup still has a wiring gap.
 | Groups/feeds/evals | Significant libraries/tests | Mostly unsurfaced | No production caller creates durable child runs or evaluates the real composed runtime. |
 | Polkadot reads | RPC/metadata/codec components exist | Partially usable | Pinned live metadata and network behavior need real-path validation. |
 | Polkadot writes | Effect/signing/finality components exist | Not end-to-end proven | Real signer, exact bytes, transaction matching, finality, dry-run/XCM, and local-chain tests remain. |
-| PCA compatibility | Crypto/queue/sync building blocks plus durable TCP peer I/O exist | Cross-process transport slice; not yet PCA-reference compatible or runtime-composed | The TCP adapter needs Statement Store/Polkadot App protocol adaptation, signed identity, runtime reply mapping, attachments/cancellation, and reference fixtures. |
+| PCA compatibility | Crypto/queue/sync building blocks plus durable TCP text, cancellation, status, and error peer I/O exist | Cross-process protocol slice; not yet PCA-reference compatible or runtime-composed | The TCP adapter needs Statement Store/Polkadot App adaptation, signed identity, runtime cancellation/reply mapping, attachments, and reference fixtures. |
 | Security | Grants, tests, redaction, signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, and unused policy runtime. |
 | Payments | Intent/store/budget components exist | Not value-moving | Store/runtime integration, real signature/settlement, and failure reconciliation remain. |
 | Marketplace/plugins | Durable local plugin/kit lifecycle, operator CLI, and listing components | Local install/list/get/update/rollback/uninstall is actionable; package execution is missing | Manifest/lock format remains split; no API/runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
@@ -58,7 +58,7 @@ startup still has a wiring gap.
 | 03 Execution | Strong libraries | Blocked at central loop | No | Active P0 |
 | 04/04a Providers/tools/harnesses | Strong adapters | Partial | Partial one-shot only | Active P0/P1 |
 | 05 Polkadot | Strong read/action components | Partial | No real write proof | Active P1 + PRD-17 |
-| 06 PCA | Strong primitives plus tested cross-process TCP delivery | Transport not composed into runtime or PCA reference network | No reference-client E2E | Active P1 |
+| 06 PCA | Strong primitives plus tested cross-process TCP/control delivery | Transport not composed into runtime or PCA reference network | No runtime or reference-client E2E | Active P1 |
 | 07 Security | Strong primitives/tests | Partial/unsafe defaults | No production security proof | Active P1 |
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Strong components | Mostly missing | No orchestration proof | Active P1 |
@@ -94,9 +94,11 @@ startup still has a wiring gap.
   harnesses, not a Polkagent ACP agent server.
 - `crates/polkagent-transport-pca::network::TcpPcaTransport` now exercises
   encrypted OS-socket I/O across separate processes with a durable inbox,
-  outbox, deduplication, reconnect retry, and restart redelivery. This is a
-  bounded transport seam, not yet the pinned PCA Statement Store/Polkadot App
-  protocol or a shared-runtime surface.
+  outbox, deduplication, reconnect retry, restart redelivery, and typed
+  cancellation/status/error frames with strict validation. This is a bounded
+  transport seam, not yet the pinned PCA Statement Store/Polkadot App protocol
+  or a shared-runtime surface; receiving a cancellation frame does not yet
+  cancel a runtime run.
 - `crates/polkagent-payment/src/ledger.rs` labels its signature as an
   experimental placeholder.
 - PRD-17 now has an honest live-node target that queries relay/Asset Hub RPC and

@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use polkagent_core::{now, ConversationId};
+use polkagent_core::{now, ConversationId, RunId, Timestamp};
 use polkagent_transport_trait::{
     AuthenticatedSender, DeliveryId, DeliveryReceipt, IncomingMessage, MessageBody, OutgoingBody,
     OutgoingMessage, SenderTrustTier, Transport, TransportCapabilities, TransportError, UserId,
@@ -47,6 +47,160 @@ use crate::PcaWireMessage;
 const PROTOCOL_VERSION: u16 = 1;
 const STATE_VERSION: u16 = 1;
 const FRAME_OVERHEAD_BYTES: u64 = 64 * 1024;
+const DEFAULT_MAX_CONTROL_FIELD_BYTES: u64 = 16 * 1024;
+
+/// [`MessageBody::StructuredCommand`] type for PCA cancellation frames.
+pub const PCA_CANCELLATION_COMMAND: &str = "pca.cancel";
+/// [`MessageBody::StructuredCommand`] type for PCA status reply frames.
+pub const PCA_STATUS_COMMAND: &str = "pca.status";
+/// [`MessageBody::StructuredCommand`] type for PCA error reply frames.
+pub const PCA_ERROR_COMMAND: &str = "pca.error";
+
+/// The target of an encrypted PCA cancellation request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PcaCancellationTarget {
+    /// Cancel the currently active work for the conversation.
+    ActiveConversation,
+    /// Cancel one exact run without affecting later conversation work.
+    Run {
+        /// Run to cancel.
+        run_id: RunId,
+    },
+}
+
+/// A typed cancellation request carried through the durable PCA data lane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcaCancellationFrame {
+    /// Conversation whose active work or exact run should be cancelled.
+    pub conversation_id: ConversationId,
+    /// Scope of the cancellation.
+    pub target: PcaCancellationTarget,
+    /// Optional human-readable reason.
+    pub reason: Option<String>,
+    /// Sender timestamp for audit display. It is not used for ordering.
+    pub requested_at: Timestamp,
+}
+
+impl PcaCancellationFrame {
+    /// Cancel the active work in a conversation.
+    pub fn active_conversation(conversation_id: ConversationId, reason: Option<String>) -> Self {
+        Self {
+            conversation_id,
+            target: PcaCancellationTarget::ActiveConversation,
+            reason,
+            requested_at: now(),
+        }
+    }
+
+    /// Cancel one exact run.
+    pub fn run(conversation_id: ConversationId, run_id: RunId, reason: Option<String>) -> Self {
+        Self {
+            conversation_id,
+            target: PcaCancellationTarget::Run { run_id },
+            reason,
+            requested_at: now(),
+        }
+    }
+}
+
+/// Stable status vocabulary for PCA progress replies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PcaReplyStatus {
+    /// Work was durably accepted but has not started.
+    Accepted,
+    /// Work is actively executing.
+    Running,
+    /// Work is blocked on a human approval.
+    WaitingForApproval,
+    /// Work completed successfully.
+    Completed,
+    /// Work was cancelled.
+    Cancelled,
+    /// Work failed; a structured error reply may follow.
+    Failed,
+}
+
+/// A typed status/progress reply carried through the durable PCA data lane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcaStatusReplyFrame {
+    /// Conversation whose status changed.
+    pub conversation_id: ConversationId,
+    /// Exact run, when one has been assigned.
+    pub run_id: Option<RunId>,
+    /// Stable machine-readable status.
+    pub status: PcaReplyStatus,
+    /// Optional human-readable status text.
+    pub message: Option<String>,
+    /// Optional progress value in the inclusive range 0..=100.
+    pub progress_percent: Option<u8>,
+    /// Optional valid JSON metadata for client-specific display.
+    pub metadata_json: Option<String>,
+    /// Sender timestamp for audit display. It is not used for ordering.
+    pub observed_at: Timestamp,
+}
+
+impl PcaStatusReplyFrame {
+    /// Create a status reply with optional run identity.
+    pub fn new(
+        conversation_id: ConversationId,
+        run_id: Option<RunId>,
+        status: PcaReplyStatus,
+    ) -> Self {
+        Self {
+            conversation_id,
+            run_id,
+            status,
+            message: None,
+            progress_percent: None,
+            metadata_json: None,
+            observed_at: now(),
+        }
+    }
+}
+
+/// A typed failure reply carried through the durable PCA data lane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcaErrorReplyFrame {
+    /// Conversation in which the failure occurred.
+    pub conversation_id: ConversationId,
+    /// Exact run, when one has been assigned.
+    pub run_id: Option<RunId>,
+    /// Stable uppercase machine code such as `PROVIDER_UNAVAILABLE`.
+    pub code: String,
+    /// Human-readable failure explanation safe for the peer.
+    pub message: String,
+    /// Whether retrying the operation may succeed.
+    pub retryable: bool,
+    /// Suggested delay. Valid only when `retryable` is true.
+    pub retry_after_ms: Option<u64>,
+    /// Optional valid JSON details safe for the peer.
+    pub details_json: Option<String>,
+    /// Sender timestamp for audit display. It is not used for ordering.
+    pub observed_at: Timestamp,
+}
+
+impl PcaErrorReplyFrame {
+    /// Create an error reply.
+    pub fn new(
+        conversation_id: ConversationId,
+        run_id: Option<RunId>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            conversation_id,
+            run_id,
+            code: code.into(),
+            message: message.into(),
+            retryable: false,
+            retry_after_ms: None,
+            details_json: None,
+            observed_at: now(),
+        }
+    }
+}
 
 /// A TCP peer and the identity expected during the encrypted handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +236,8 @@ pub struct TcpPcaConfig {
     pub max_in_flight: usize,
     /// Maximum decrypted PCA wire-message size.
     pub max_message_bytes: u64,
+    /// Maximum UTF-8 byte length of any control-frame text or JSON field.
+    pub max_control_field_bytes: u64,
     /// Delay between reconnect attempts while the durable outbox is non-empty.
     pub retry_interval: Duration,
     /// Timeout for TCP connection and peer wire acknowledgements.
@@ -107,6 +263,7 @@ impl TcpPcaConfig {
             state_path: state_path.into(),
             max_in_flight: 1_024,
             max_message_bytes: 1024 * 1024,
+            max_control_field_bytes: DEFAULT_MAX_CONTROL_FIELD_BYTES,
             retry_interval: Duration::from_millis(250),
             io_timeout: Duration::from_secs(5),
             application_lease_timeout: Duration::from_secs(30),
@@ -149,6 +306,13 @@ impl TcpPcaConfig {
         self
     }
 
+    /// Configure the maximum size of one cancellation/status/error field.
+    #[must_use]
+    pub fn with_max_control_field_bytes(mut self, max: u64) -> Self {
+        self.max_control_field_bytes = max;
+        self
+    }
+
     /// Configure the maximum inbox/outbox depth.
     #[must_use]
     pub fn with_max_in_flight(mut self, max: usize) -> Self {
@@ -170,6 +334,11 @@ impl TcpPcaConfig {
         if self.max_message_bytes == 0 {
             return Err(PcaError::ConfigError {
                 reason: "max_message_bytes must be greater than zero".into(),
+            });
+        }
+        if self.max_control_field_bytes == 0 {
+            return Err(PcaError::ConfigError {
+                reason: "max_control_field_bytes must be greater than zero".into(),
             });
         }
         if self.retry_interval.is_zero()
@@ -314,6 +483,35 @@ enum WireFrame {
     },
 }
 
+/// Encrypted application payload. The outer [`WireFrame::Data`] supplies a
+/// stable delivery ID and encrypted session envelope for every variant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PcaApplicationPayload {
+    Message {
+        wire: PcaWireMessage,
+    },
+    Cancellation {
+        sender_address: String,
+        frame: PcaCancellationFrame,
+    },
+    StatusReply {
+        sender_address: String,
+        frame: PcaStatusReplyFrame,
+    },
+    ErrorReply {
+        sender_address: String,
+        frame: PcaErrorReplyFrame,
+    },
+}
+
+struct DecodedApplicationPayload {
+    conversation_id: ConversationId,
+    sender_address: String,
+    sender_display_name: Option<String>,
+    body: MessageBody,
+}
+
 /// A cross-process TCP PCA transport with a durable inbox and outbox.
 pub struct TcpPcaTransport {
     config: TcpPcaConfig,
@@ -423,6 +621,60 @@ impl TcpPcaTransport {
         self.state.lock().await.dedup_markers.len()
     }
 
+    /// Durably enqueue a typed cancellation request for encrypted delivery.
+    pub async fn send_cancellation(
+        &self,
+        frame: PcaCancellationFrame,
+    ) -> Result<DeliveryReceipt, TransportError> {
+        validate_cancellation(&frame, self.config.max_control_field_bytes)
+            .map_err(|message| control_delivery_error(frame.conversation_id, message))?;
+        let conversation_id = frame.conversation_id;
+        self.enqueue_application_payload(
+            conversation_id,
+            PcaApplicationPayload::Cancellation {
+                sender_address: self.config.local_ss58_address.clone(),
+                frame,
+            },
+        )
+        .await
+    }
+
+    /// Durably enqueue a typed status reply for encrypted delivery.
+    pub async fn send_status_reply(
+        &self,
+        frame: PcaStatusReplyFrame,
+    ) -> Result<DeliveryReceipt, TransportError> {
+        validate_status_reply(&frame, self.config.max_control_field_bytes)
+            .map_err(|message| control_delivery_error(frame.conversation_id, message))?;
+        let conversation_id = frame.conversation_id;
+        self.enqueue_application_payload(
+            conversation_id,
+            PcaApplicationPayload::StatusReply {
+                sender_address: self.config.local_ss58_address.clone(),
+                frame,
+            },
+        )
+        .await
+    }
+
+    /// Durably enqueue a typed failure reply for encrypted delivery.
+    pub async fn send_error_reply(
+        &self,
+        frame: PcaErrorReplyFrame,
+    ) -> Result<DeliveryReceipt, TransportError> {
+        validate_error_reply(&frame, self.config.max_control_field_bytes)
+            .map_err(|message| control_delivery_error(frame.conversation_id, message))?;
+        let conversation_id = frame.conversation_id;
+        self.enqueue_application_payload(
+            conversation_id,
+            PcaApplicationPayload::ErrorReply {
+                sender_address: self.config.local_ss58_address.clone(),
+                frame,
+            },
+        )
+        .await
+    }
+
     /// Stop listener/reconnect tasks and release the bound socket.
     pub async fn shutdown(&self) {
         if self.shutdown.swap(true, Ordering::SeqCst) {
@@ -471,6 +723,7 @@ impl TcpPcaTransport {
         let current = transport.upgrade().ok_or(PcaError::Shutdown)?;
         let max_frame_bytes = current.max_frame_bytes();
         let max_message_bytes = current.config.max_message_bytes;
+        let max_control_field_bytes = current.config.max_control_field_bytes;
         let local_address = current.config.local_ss58_address.clone();
         let session_timeout = current.config.session_timeout;
         let shutdown = Arc::clone(&current.shutdown);
@@ -564,7 +817,12 @@ impl TcpPcaTransport {
                     ),
                 });
             }
-            validate_wire_payload(&payload, &peer_address)?;
+            validate_application_payload(
+                &payload,
+                &peer_address,
+                max_message_bytes,
+                max_control_field_bytes,
+            )?;
 
             // This commit is the network ACK boundary. Duplicates are ACKed
             // again, but are never appended to the application inbox twice.
@@ -799,6 +1057,60 @@ impl TcpPcaTransport {
         Ok(())
     }
 
+    async fn enqueue_application_payload(
+        &self,
+        conversation_id: ConversationId,
+        payload: PcaApplicationPayload,
+    ) -> Result<DeliveryReceipt, TransportError> {
+        let payload = serde_json::to_vec(&payload).map_err(|error| TransportError::Internal {
+            message: format!("failed to serialize PCA application frame: {error}"),
+        })?;
+        self.enqueue_encoded_payload(conversation_id, payload).await
+    }
+
+    async fn enqueue_encoded_payload(
+        &self,
+        conversation_id: ConversationId,
+        payload: Vec<u8>,
+    ) -> Result<DeliveryReceipt, TransportError> {
+        if self.shutdown.load(Ordering::SeqCst) {
+            return Err(TransportError::ConnectionLost);
+        }
+        if payload.len() as u64 > self.config.max_message_bytes {
+            return Err(TransportError::DeliveryFailed {
+                conversation_id: conversation_id.to_string(),
+                message: format!(
+                    "message size {} exceeds max {}",
+                    payload.len(),
+                    self.config.max_message_bytes
+                ),
+            });
+        }
+
+        let delivery_id = format!("pca-tcp-{}", Uuid::now_v7());
+        let mut state = self.state.lock().await;
+        if state.outbox.len() >= self.config.max_in_flight {
+            return Err(TransportError::RateLimit {
+                retry_after: Some(self.config.retry_interval),
+            });
+        }
+        let mut next = state.clone();
+        next.outbox.push(DurableDelivery {
+            delivery_id: delivery_id.clone(),
+            payload,
+        });
+        self.state_file
+            .commit(&next)
+            .map_err(TransportError::from)?;
+        *state = next;
+        drop(state);
+        self.outbox_notify.notify_one();
+        Ok(DeliveryReceipt {
+            delivery_id: DeliveryId::new(delivery_id),
+            delivered_at: now(),
+        })
+    }
+
     fn max_frame_bytes(&self) -> u64 {
         self.config
             .max_message_bytes
@@ -828,27 +1140,20 @@ impl Transport for TcpPcaTransport {
         loop {
             let notified = self.inbox_notify.notified();
             if let Some(delivery) = self.next_inbox().await {
-                let wire: PcaWireMessage =
-                    serde_json::from_slice(&delivery.payload).map_err(|error| {
-                        TransportError::Internal {
-                            message: format!("persisted PCA wire message is invalid: {error}"),
-                        }
-                    })?;
-                let conversation_id =
-                    ConversationId::from_str(&wire.conversation_id).map_err(|error| {
-                        TransportError::Internal {
-                            message: format!("persisted conversation ID is invalid: {error}"),
-                        }
-                    })?;
+                let decoded = decode_application_payload(
+                    &delivery.payload,
+                    self.config.max_control_field_bytes,
+                )
+                .map_err(TransportError::from)?;
                 return Ok(IncomingMessage {
                     delivery_id: DeliveryId::new(delivery.delivery_id),
-                    conversation_id,
+                    conversation_id: decoded.conversation_id,
                     sender: AuthenticatedSender {
-                        user_id: UserId::new(wire.sender_address),
-                        display_name: wire.sender_display_name,
+                        user_id: UserId::new(decoded.sender_address),
+                        display_name: decoded.sender_display_name,
                         trust_tier: SenderTrustTier::Authenticated,
                     },
-                    body: decode_wire_body(wire.body_json),
+                    body: decoded.body,
                     received_at: now(),
                 });
             }
@@ -882,42 +1187,14 @@ impl Transport for TcpPcaTransport {
             sender_display_name: None,
             body_json,
         };
+        // Preserve the original v1 bare-message encoding on the wire. New
+        // typed control variants use `PcaApplicationPayload`; receivers accept
+        // both so existing durable text outboxes need no migration.
         let payload = serde_json::to_vec(&wire).map_err(|error| TransportError::Internal {
             message: format!("failed to serialize PCA wire message: {error}"),
         })?;
-        if payload.len() as u64 > self.config.max_message_bytes {
-            return Err(TransportError::DeliveryFailed {
-                conversation_id: message.conversation_id.to_string(),
-                message: format!(
-                    "message size {} exceeds max {}",
-                    payload.len(),
-                    self.config.max_message_bytes
-                ),
-            });
-        }
-
-        let delivery_id = format!("pca-tcp-{}", Uuid::now_v7());
-        let mut state = self.state.lock().await;
-        if state.outbox.len() >= self.config.max_in_flight {
-            return Err(TransportError::RateLimit {
-                retry_after: Some(self.config.retry_interval),
-            });
-        }
-        let mut next = state.clone();
-        next.outbox.push(DurableDelivery {
-            delivery_id: delivery_id.clone(),
-            payload,
-        });
-        self.state_file
-            .commit(&next)
-            .map_err(TransportError::from)?;
-        *state = next;
-        drop(state);
-        self.outbox_notify.notify_one();
-        Ok(DeliveryReceipt {
-            delivery_id: DeliveryId::new(delivery_id),
-            delivered_at: now(),
-        })
+        self.enqueue_encoded_payload(message.conversation_id, payload)
+            .await
     }
 
     fn capabilities(&self) -> TransportCapabilities {
@@ -934,21 +1211,232 @@ impl Transport for TcpPcaTransport {
     }
 }
 
-fn validate_wire_payload(payload: &[u8], peer_address: &str) -> Result<(), PcaError> {
-    let wire: PcaWireMessage =
-        serde_json::from_slice(payload).map_err(|error| PcaError::ProtocolError {
-            reason: format!("invalid PCA wire message: {error}"),
-        })?;
-    if wire.sender_address != peer_address {
-        return Err(PcaError::PeerAuthenticationFailed {
-            peer_address: wire.sender_address,
-            reason: "message sender differs from handshake identity".into(),
+enum ParsedApplicationPayload {
+    Current(PcaApplicationPayload),
+    Legacy(PcaWireMessage),
+}
+
+fn parse_application_payload(payload: &[u8]) -> Result<ParsedApplicationPayload, PcaError> {
+    if let Ok(current) = serde_json::from_slice::<PcaApplicationPayload>(payload) {
+        return Ok(ParsedApplicationPayload::Current(current));
+    }
+    serde_json::from_slice::<PcaWireMessage>(payload)
+        .map(ParsedApplicationPayload::Legacy)
+        .map_err(|error| PcaError::ProtocolError {
+            reason: format!("invalid PCA application payload: {error}"),
+        })
+}
+
+fn validate_application_payload(
+    payload: &[u8],
+    peer_address: &str,
+    max_message_bytes: u64,
+    max_control_field_bytes: u64,
+) -> Result<(), PcaError> {
+    if byte_len(payload) > max_message_bytes {
+        return Err(PcaError::ProtocolError {
+            reason: format!(
+                "application payload size {} exceeds maximum {max_message_bytes}",
+                payload.len()
+            ),
         });
     }
+    match parse_application_payload(payload)? {
+        ParsedApplicationPayload::Current(PcaApplicationPayload::Message { wire })
+        | ParsedApplicationPayload::Legacy(wire) => validate_wire_identity(&wire, peer_address),
+        ParsedApplicationPayload::Current(PcaApplicationPayload::Cancellation {
+            sender_address,
+            frame,
+        }) => {
+            validate_sender_identity(&sender_address, peer_address)?;
+            validate_cancellation(&frame, max_control_field_bytes)
+                .map_err(protocol_validation_error)
+        }
+        ParsedApplicationPayload::Current(PcaApplicationPayload::StatusReply {
+            sender_address,
+            frame,
+        }) => {
+            validate_sender_identity(&sender_address, peer_address)?;
+            validate_status_reply(&frame, max_control_field_bytes)
+                .map_err(protocol_validation_error)
+        }
+        ParsedApplicationPayload::Current(PcaApplicationPayload::ErrorReply {
+            sender_address,
+            frame,
+        }) => {
+            validate_sender_identity(&sender_address, peer_address)?;
+            validate_error_reply(&frame, max_control_field_bytes).map_err(protocol_validation_error)
+        }
+    }
+}
+
+fn decode_application_payload(
+    payload: &[u8],
+    max_control_field_bytes: u64,
+) -> Result<DecodedApplicationPayload, PcaError> {
+    match parse_application_payload(payload)? {
+        ParsedApplicationPayload::Current(PcaApplicationPayload::Message { wire })
+        | ParsedApplicationPayload::Legacy(wire) => decode_legacy_wire(wire),
+        ParsedApplicationPayload::Current(PcaApplicationPayload::Cancellation {
+            sender_address,
+            frame,
+        }) => {
+            validate_cancellation(&frame, max_control_field_bytes)
+                .map_err(protocol_validation_error)?;
+            Ok(DecodedApplicationPayload {
+                conversation_id: frame.conversation_id,
+                sender_address,
+                sender_display_name: None,
+                body: structured_command(PCA_CANCELLATION_COMMAND, &frame)?,
+            })
+        }
+        ParsedApplicationPayload::Current(PcaApplicationPayload::StatusReply {
+            sender_address,
+            frame,
+        }) => {
+            validate_status_reply(&frame, max_control_field_bytes)
+                .map_err(protocol_validation_error)?;
+            Ok(DecodedApplicationPayload {
+                conversation_id: frame.conversation_id,
+                sender_address,
+                sender_display_name: None,
+                body: structured_command(PCA_STATUS_COMMAND, &frame)?,
+            })
+        }
+        ParsedApplicationPayload::Current(PcaApplicationPayload::ErrorReply {
+            sender_address,
+            frame,
+        }) => {
+            validate_error_reply(&frame, max_control_field_bytes)
+                .map_err(protocol_validation_error)?;
+            Ok(DecodedApplicationPayload {
+                conversation_id: frame.conversation_id,
+                sender_address,
+                sender_display_name: None,
+                body: structured_command(PCA_ERROR_COMMAND, &frame)?,
+            })
+        }
+    }
+}
+
+fn decode_legacy_wire(wire: PcaWireMessage) -> Result<DecodedApplicationPayload, PcaError> {
+    let conversation_id = ConversationId::from_str(&wire.conversation_id).map_err(|error| {
+        PcaError::ProtocolError {
+            reason: format!("invalid conversation ID: {error}"),
+        }
+    })?;
+    Ok(DecodedApplicationPayload {
+        conversation_id,
+        sender_address: wire.sender_address,
+        sender_display_name: wire.sender_display_name,
+        body: decode_wire_body(wire.body_json),
+    })
+}
+
+fn validate_wire_identity(wire: &PcaWireMessage, peer_address: &str) -> Result<(), PcaError> {
+    validate_sender_identity(&wire.sender_address, peer_address)?;
     ConversationId::from_str(&wire.conversation_id).map_err(|error| PcaError::ProtocolError {
         reason: format!("invalid conversation ID: {error}"),
     })?;
     Ok(())
+}
+
+fn validate_sender_identity(sender_address: &str, peer_address: &str) -> Result<(), PcaError> {
+    if sender_address == peer_address {
+        return Ok(());
+    }
+    Err(PcaError::PeerAuthenticationFailed {
+        peer_address: sender_address.to_owned(),
+        reason: "message sender differs from handshake identity".into(),
+    })
+}
+
+fn validate_cancellation(frame: &PcaCancellationFrame, max: u64) -> Result<(), String> {
+    if let Some(reason) = &frame.reason {
+        validate_nonempty_field("cancellation reason", reason, max)?;
+    }
+    Ok(())
+}
+
+fn validate_status_reply(frame: &PcaStatusReplyFrame, max: u64) -> Result<(), String> {
+    if frame
+        .progress_percent
+        .is_some_and(|progress| progress > 100)
+    {
+        return Err("status progress_percent must be in 0..=100".into());
+    }
+    if let Some(message) = &frame.message {
+        validate_nonempty_field("status message", message, max)?;
+    }
+    if let Some(metadata) = &frame.metadata_json {
+        validate_json_field("status metadata_json", metadata, max)?;
+    }
+    Ok(())
+}
+
+fn validate_error_reply(frame: &PcaErrorReplyFrame, max: u64) -> Result<(), String> {
+    validate_nonempty_field("error code", &frame.code, max.min(128))?;
+    let mut code = frame.code.bytes();
+    if !code.next().is_some_and(|byte| byte.is_ascii_uppercase())
+        || !code.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(
+            "error code must start with ASCII A-Z and contain only A-Z, 0-9, or underscore".into(),
+        );
+    }
+    validate_nonempty_field("error message", &frame.message, max)?;
+    if frame.retry_after_ms.is_some() && !frame.retryable {
+        return Err("retry_after_ms requires retryable=true".into());
+    }
+    if let Some(details) = &frame.details_json {
+        validate_json_field("error details_json", details, max)?;
+    }
+    Ok(())
+}
+
+fn validate_nonempty_field(name: &str, value: &str, max: u64) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{name} must not be empty"));
+    }
+    if byte_len(value.as_bytes()) > max {
+        return Err(format!("{name} size {} exceeds maximum {max}", value.len()));
+    }
+    Ok(())
+}
+
+fn validate_json_field(name: &str, value: &str, max: u64) -> Result<(), String> {
+    validate_nonempty_field(name, value, max)?;
+    serde_json::from_str::<serde_json::Value>(value)
+        .map(|_| ())
+        .map_err(|error| format!("{name} must be valid JSON: {error}"))
+}
+
+fn structured_command<T: Serialize>(
+    command_type: &str,
+    frame: &T,
+) -> Result<MessageBody, PcaError> {
+    let payload_json = serde_json::to_string(frame).map_err(|error| PcaError::ProtocolError {
+        reason: format!("failed to decode persisted control frame: {error}"),
+    })?;
+    Ok(MessageBody::StructuredCommand {
+        command_type: command_type.into(),
+        payload_json,
+    })
+}
+
+fn byte_len(value: &[u8]) -> u64 {
+    u64::try_from(value.len()).unwrap_or(u64::MAX)
+}
+
+fn protocol_validation_error(reason: String) -> PcaError {
+    PcaError::ProtocolError { reason }
+}
+
+fn control_delivery_error(conversation_id: ConversationId, message: String) -> TransportError {
+    TransportError::DeliveryFailed {
+        conversation_id: conversation_id.to_string(),
+        message,
+    }
 }
 
 fn decode_wire_body(body_json: String) -> MessageBody {
