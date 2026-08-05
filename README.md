@@ -58,11 +58,15 @@ polkagent tui
 ### Docker
 
 ```bash
-# Production
-docker compose up -d
+# Default single-instance SQLite deployment
+docker compose up --detach --build --wait
+curl --fail http://127.0.0.1:8080/health/ready
 
 # Development (with hot-reload and cargo caching)
 docker compose -f docker-compose.dev.yml up
+
+# Reproduce the CI boot/health smoke test
+./scripts/container-smoke.sh
 ```
 
 ### Multi-Provider Setup

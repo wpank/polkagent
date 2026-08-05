@@ -322,7 +322,10 @@ separate files.
 
 ### OPS-01 — Deployable self-hosted and managed runtime
 
-- [ ] Fix Docker command/port/config drift and add container health smoke test.
+- [x] Fix Docker command/port/config drift and add a CI container health smoke
+  test. Delivered by `scripts/container-smoke.sh`: locked image build,
+  unprivileged boot, all three HTTP probes, and SQLite file creation. This is
+  single-instance boot evidence, not durable API or production-ops proof.
 - [ ] Prove Postgres conformance and tenant isolation.
 - [ ] Define migrations, backup/restore, upgrade/rollback, resource limits,
   graceful shutdown, and release artifacts.

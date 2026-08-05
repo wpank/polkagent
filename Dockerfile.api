@@ -1,19 +1,28 @@
-# Similar but runs the API server
-FROM rust:1.80-bookworm as builder
+# syntax=docker/dockerfile:1
+
+# Backward-compatible API-specific image. Dockerfile is the canonical image;
+# keep this file for callers that already build with `-f Dockerfile.api`.
+FROM rust:1.91-bookworm AS builder
 WORKDIR /build
 COPY . .
-RUN cargo build --release -p polkagent-cli
+RUN --mount=type=cache,id=polkagent-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=polkagent-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=polkagent-target,target=/build/target,sharing=locked \
+    cargo build --release --locked -p polkagent-cli \
+    && install -D /build/target/release/polkagent /out/polkagent
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /build/target/release/polkagent /usr/local/bin/polkagent
-RUN useradd -r -s /bin/false polkagent
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /out/polkagent /usr/local/bin/polkagent
+RUN useradd --system --create-home --home-dir /home/polkagent --shell /usr/sbin/nologin polkagent \
+    && install -d -o polkagent -g polkagent /data
 USER polkagent
 VOLUME /data
 ENV POLKAGENT_DATABASE_SQLITE_PATH=/data/polkagent.db
-ENV POLKAGENT_API_ENABLED=true
-ENV POLKAGENT_API_BIND=0.0.0.0:9090
-EXPOSE 9090
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["/usr/local/bin/polkagent", "doctor"]
-ENTRYPOINT ["polkagent"]
-CMD ["serve", "--api"]
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=6 \
+    CMD ["curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health/ready"]
+ENTRYPOINT ["/usr/local/bin/polkagent"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]

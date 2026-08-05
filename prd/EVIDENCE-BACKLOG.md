@@ -22,6 +22,18 @@ reports.
 | EVD-11 | Compare TUI, terminal chat, API, and ACP views of the same active/restarted interaction. | FND-02, TUI-01, ACP-01, API-01 | Cross-surface conformance test using stable interaction/run/event IDs |
 | EVD-12 | Validate real provider/harness readiness, streaming, tool protocol, cancellation, retry, billing/usage, context limits, and redaction. | PRD-04a maturity claims | Per-adapter conformance report; unsupported features explicitly labeled |
 
+## Partial evidence captured
+
+- **EVD-08 / OPS-01 container boot slice (2026-08-05):**
+  `scripts/container-smoke.sh`, invoked by the `container-smoke` CI job,
+  validates the Compose model, builds the canonical image with `Cargo.lock`,
+  waits for Docker readiness, probes live/ready/startup through the published
+  port, verifies a configured non-root user and process UID, and verifies
+  SQLite creation in the data volume. EVD-08 remains open for durable API
+  data, restart and graceful-shutdown behavior, Postgres, backup/restore,
+  upgrade/rollback,
+  auth, tenant isolation, and resource-pressure evidence.
+
 ## Evidence quality rules
 
 - Record the commit/worktree state, configuration, real/fake adapters, command,

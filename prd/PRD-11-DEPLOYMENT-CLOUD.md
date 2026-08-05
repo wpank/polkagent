@@ -4,7 +4,10 @@
 > but its embedded implementation statements and checklists are not current
 > status evidence. Use [STATUS.md](STATUS.md) and
 > [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
-> the dependency-ordered execution queue.
+> the dependency-ordered execution queue. The first OPS-01 slice now verifies
+> the canonical single-instance image/Compose boot, non-root user, SQLite
+> creation, and HTTP health probes in CI. Durable API composition, Postgres,
+> tenant isolation, recovery, release, and managed-cloud claims remain open.
 
 **Status:** definitive PRD
 **Owner:** unassigned

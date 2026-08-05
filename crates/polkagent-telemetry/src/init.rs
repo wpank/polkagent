@@ -126,7 +126,10 @@ fn build_otel_provider(
 ///
 /// # Errors
 ///
-/// Returns an error if OTLP exporter setup fails.
+/// Returns an error if OTLP exporter setup fails or a global subscriber has
+/// already been installed. It never panics merely because initialization was
+/// attempted twice; callers that treat duplicate initialization as non-fatal
+/// can fall back to [`TelemetryGuard::no_op`].
 pub fn init_telemetry(
     config: TelemetryConfig,
 ) -> Result<TelemetryGuard, Box<dyn std::error::Error + Send + Sync>> {
@@ -149,8 +152,7 @@ pub fn init_telemetry(
                         .with_ansi(ansi)
                         .with_writer(std::io::stderr),
                 )
-                .try_init()
-                .ok();
+                .try_init()?;
             Some(provider)
         }
         (LogFormat::Json, Some(endpoint)) => {
@@ -165,8 +167,7 @@ pub fn init_telemetry(
                         .with_ansi(ansi)
                         .with_writer(std::io::stderr),
                 )
-                .try_init()
-                .ok();
+                .try_init()?;
             Some(provider)
         }
         (LogFormat::Pretty, None) => {
@@ -178,8 +179,7 @@ pub fn init_telemetry(
                         .with_ansi(ansi)
                         .with_writer(std::io::stderr),
                 )
-                .try_init()
-                .ok();
+                .try_init()?;
             None
         }
         (LogFormat::Json, None) => {
@@ -191,8 +191,7 @@ pub fn init_telemetry(
                         .with_ansi(ansi)
                         .with_writer(std::io::stderr),
                 )
-                .try_init()
-                .ok();
+                .try_init()?;
             None
         }
     };

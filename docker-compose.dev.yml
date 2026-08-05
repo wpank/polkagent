@@ -1,18 +1,20 @@
-version: '3.8'
 services:
   polkagent:
     build:
       context: .
       dockerfile: Dockerfile
       target: builder
-    command: cargo run -p polkagent-cli -- serve --api
+    command: cargo run -p polkagent-cli -- serve --host 0.0.0.0 --port 8080
+    ports:
+      - "${POLKAGENT_HTTP_PORT:-8080}:8080"
     volumes:
       - .:/build
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/build/target
     environment:
-      - RUST_LOG=debug
-      - POLKAGENT_LOG_FORMAT=pretty
+      POLKAGENT_DATABASE_SQLITE_PATH: /tmp/polkagent-dev.db
+      RUST_LOG: debug
+      POLKAGENT_LOG_FORMAT: pretty
 
 volumes:
   cargo-cache:

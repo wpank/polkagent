@@ -44,8 +44,8 @@ cargo install --path crates/polkagent-cli
 # Run the CLI
 polkagent run -a my-agent -p "Hello"
 
-# Start the API server
-polkagent serve --port 9090
+# Start the API server (the CLI default is port 8080)
+polkagent serve --host 127.0.0.1 --port 8080
 
 # Launch the TUI
 polkagent tui
@@ -53,110 +53,94 @@ polkagent tui
 
 ## Docker
 
-### Dockerfile
+The canonical image starts the current CLI contract explicitly:
 
-The project includes two Dockerfiles.
+```text
+polkagent serve --host 0.0.0.0 --port 8080
+```
 
-**`Dockerfile`** (general purpose):
-- Build stage: `rust:1.80-bookworm`, builds `polkagent-cli` in release mode
-- Runtime stage: `debian:bookworm-slim` with `ca-certificates`
-- Runs as non-root `polkagent` user
-- Data volume at `/data`
-- Default SQLite path: `/data/polkagent.db`
-- Exposes port 9090
-- Default command: `polkagent serve`
+It runs as the unprivileged `polkagent` user, writes SQLite state to
+`/data/polkagent.db`, exposes container port `8080`, and uses
+`GET /health/ready` for its Docker healthcheck. `Dockerfile.api` is retained
+for compatibility with existing build commands and has the same runtime
+contract. New deployments should use `Dockerfile`. Builds use Rust 1.91 and
+`cargo build --locked`; this is compatible with the current dependency lock.
+The older workspace-wide Rust 1.80 MSRV declaration is not validated by this
+container slice and currently conflicts with dependencies that require newer
+Rust.
+
+### Docker Compose
+
+Start the default single-instance SQLite deployment and wait for readiness:
 
 ```bash
-docker build -t polkagent .
-docker run -p 9090:9090 -v polkagent-data:/data polkagent
+docker compose up --detach --build --wait
+curl --fail http://127.0.0.1:8080/health/ready
 ```
 
-**`Dockerfile.api`** (API-focused):
-- Same build process
-- Enables API by default (`POLKAGENT_API_ENABLED=true`, `POLKAGENT_API_BIND=0.0.0.0:9090`)
-- Includes health check: `polkagent doctor` every 30s
-- Default command: `polkagent serve --api`
-
-### docker-compose.yml
-
-```yaml
-services:
-  polkagent:
-    build: .
-    ports:
-      - "9090:9090"
-    volumes:
-      - polkagent-data:/data
-      - ./fixtures:/fixtures:ro
-    environment:
-      - POLKAGENT_LOG_LEVEL=info
-      - POLKAGENT_API_ENABLED=true
-      - POLKAGENT_API_BIND=0.0.0.0:9090
-    restart: unless-stopped
-
-volumes:
-  polkagent-data:
-```
+The host port can be changed without changing the port inside the container:
 
 ```bash
-docker compose up -d
+POLKAGENT_HTTP_PORT=9090 docker compose up --detach --build --wait
+curl --fail http://127.0.0.1:9090/health/ready
 ```
+
+Stop the service without deleting its named data volume:
+
+```bash
+docker compose down
+```
+
+Delete the named volume only when its SQLite data is intentionally disposable:
+
+```bash
+docker compose down --volumes
+```
+
+### Container smoke validation
+
+Run the same automated smoke path used by CI:
+
+```bash
+./scripts/container-smoke.sh
+```
+
+The script validates the Compose model, builds and starts the image, waits for
+the container healthcheck, probes `/health/live`, `/health/ready`, and
+`/health/startup` through the published port, verifies that the configured
+user and running process UID are non-root, and verifies that SQLite created
+`/data/polkagent.db`. It uses an isolated Compose project and removes its test
+container, volume, network, and locally tagged image on exit.
+
+This is deliberately a boot/health smoke test. It does **not** prove that all
+API routes use durable stores, that PostgreSQL works, or that auth, HA,
+backup/restore, upgrades, and crash recovery are production-ready.
 
 ### Development Compose
 
-`docker-compose.dev.yml` mounts the source directory and uses cargo caching:
-
-```yaml
-services:
-  polkagent:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: builder
-    command: cargo run -p polkagent-cli -- serve --api
-    volumes:
-      - .:/build
-      - cargo-cache:/usr/local/cargo/registry
-      - target-cache:/build/target
-    environment:
-      - RUST_LOG=debug
-      - POLKAGENT_LOG_FORMAT=pretty
-```
+`docker-compose.dev.yml` mounts the source directory and uses Cargo registry
+and target caches. It serves the API on host port `8080` by default:
 
 ```bash
 docker compose -f docker-compose.dev.yml up
 ```
 
-## Environment Variables for Production
+Use `POLKAGENT_HTTP_PORT=9090` when another process already owns port `8080`.
+
+### Current configuration contract
+
+For the current `serve` implementation, bind host and port are explicit CLI
+arguments. The container sets the one deployment environment variable that
+the command directly resolves today:
 
 ```bash
-# Logging
-POLKAGENT_LOG_LEVEL=info
-POLKAGENT_LOG_FORMAT=json
-
-# Database
-POLKAGENT_DATABASE_BACKEND=postgres
-POLKAGENT_DATABASE_POSTGRES_URL=postgresql://user:pass@host:5432/polkagent
-
-# Server
-POLKAGENT_SERVER_BIND=0.0.0.0:9090
-POLKAGENT_AUTH_ENABLED=true
-
-# API keys (at least one provider)
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Budget limits
-POLKAGENT_EXECUTION_BUDGET_MAX_USD_PER_RUN=5.00
-POLKAGENT_EXECUTION_BUDGET_MAX_USD_PER_DAY=50.00
-
-# Rate limiting
-POLKAGENT_SERVER_RATE_LIMIT_RPS=100
-POLKAGENT_SERVER_RATE_LIMIT_BURST=200
-
-# Observability
-POLKAGENT_OTLP_ENDPOINT=http://otel-collector:4317
-POLKAGENT_OBSERVABILITY_SERVICE_NAME=polkagent-prod
+POLKAGENT_DATABASE_SQLITE_PATH=/data/polkagent.db
 ```
+
+Do not rely on the retired `serve --api` flag or on
+`POLKAGENT_API_BIND`/`POLKAGENT_SERVER_BIND` to override the listener in this
+image. Runtime-wide configuration and durable production composition remain
+tracked by FND-01 and API-01 in the implementation backlog.
 
 ## Database Options
 
@@ -216,11 +200,12 @@ Three health endpoints are available without authentication:
 | `GET /health/ready` | Readiness — can serve requests |
 | `GET /health/startup` | Startup — initialization complete |
 
-Use in Docker:
+The shipped Dockerfiles and Compose service probe readiness over HTTP:
 
 ```dockerfile
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD ["/usr/local/bin/polkagent", "doctor"]
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=6 \
+  CMD ["curl", "--fail", "--silent", "--show-error", \
+       "http://127.0.0.1:8080/health/ready"]
 ```
 
 Or with HTTP probes in Kubernetes:
@@ -229,15 +214,15 @@ Or with HTTP probes in Kubernetes:
 livenessProbe:
   httpGet:
     path: /health/live
-    port: 9090
+    port: 8080
 readinessProbe:
   httpGet:
     path: /health/ready
-    port: 9090
+    port: 8080
 startupProbe:
   httpGet:
     path: /health/startup
-    port: 9090
+    port: 8080
 ```
 
 ## Monitoring

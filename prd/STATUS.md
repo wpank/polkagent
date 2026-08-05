@@ -11,13 +11,16 @@ The current worktree passed:
 ```text
 cargo check --workspace
 cargo test --workspace --no-fail-fast
+./scripts/container-smoke.sh
 ```
 
 The workspace test run exited 0 and includes extensive unit, property,
 contract, integration, security, TUI rendering, API, and doc tests. This is a
-strong component baseline. It does not prove production composition, a real
-chain action, a container deployment, an interactive TUI prompt, or an ACP
-server session.
+strong component baseline. The container smoke additionally proves that the
+locked canonical image builds, starts unprivileged, creates its SQLite file,
+and answers the three HTTP probes through Compose. It does not prove durable
+API composition, Postgres, recovery, auth, HA, a real chain action, an
+interactive TUI prompt, or an ACP server session.
 
 The audit intentionally treats tests such as “returns 501 when store is not
 configured” as contract coverage and simultaneous evidence that production
@@ -44,7 +47,7 @@ startup still has a wiring gap.
 | Security | Grants, tests, redaction, signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, and unused policy runtime. |
 | Payments | Intent/store/budget components exist | Not value-moving | Store/runtime integration, real signature/settlement, and failure reconciliation remain. |
 | Marketplace/plugins | Durable local plugin/kit lifecycle plus listing components | Install/update/rollback/uninstall library exists; no user surface or execution | Manifest/lock format remains split; no CLI/API runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
-| Deployment/cloud | Docker/cloud/Postgres artifacts exist | Not operationally proven | Current container command/port drift; no deployment smoke, HA, or production control/worker path. |
+| Deployment/cloud | Canonical image/Compose boot and health smoke pass | Single-instance boot only | Durable API stores, Postgres/tenant isolation, recovery, auth, release, HA, and control/worker paths remain unproven. |
 
 ## PRD implementation posture
 
@@ -60,7 +63,7 @@ startup still has a wiring gap.
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Strong components | Mostly missing | No orchestration proof | Active P1 |
 | 10 Observability | Strong components | Partial | No recovery/replay proof | Active P1 |
-| 11 Deployment/cloud | Scaffolding/components | Missing/broken smoke path | No | Active P2 |
+| 11 Deployment/cloud | Container boot verified; broader scaffolding exists | Single-instance SQLite only | Boot/health smoke only | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle/components | Library only; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | CLI/TUI exist | Partial | Interactive experience missing | Active P0/P1 + PRD-19 |
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
@@ -93,6 +96,9 @@ startup still has a wiring gap.
 - PRD-17 now has an honest live-node target that queries relay/Asset Hub RPC and
   requires relay finality to advance. The actual CI network run is still needed
   as evidence, and no bytes are yet signed, submitted, matched, or reconciled.
+- `scripts/container-smoke.sh` builds the locked canonical image and verifies
+  Compose boot, non-root configuration, `/health/{live,ready,startup}`, and
+  SQLite creation. The CI job runs independently of the stale Rust 1.80 matrix.
 
 ## Completion gate for future status updates
 
