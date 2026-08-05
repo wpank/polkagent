@@ -45,6 +45,7 @@
 //! | [`dto`] | Request/response data transfer objects |
 //! | [`error`] | `ApiError` with `IntoResponse` impl |
 
+mod access_policy;
 pub mod auth;
 pub mod dto;
 pub mod durable;

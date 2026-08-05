@@ -174,7 +174,8 @@ pub fn register(state: AppState) -> Router {
         .route("/health/startup", get(health::startup));
 
     // -----------------------------------------------------------------------
-    // Prometheus metrics (no version prefix — scrapeable by collectors)
+    // Prometheus metrics (no version prefix; protected like the API because
+    // the exposition can reveal deployment topology and workload details)
     // -----------------------------------------------------------------------
     let metrics_route = Router::new().route("/metrics", get(metrics::prometheus_metrics));
 

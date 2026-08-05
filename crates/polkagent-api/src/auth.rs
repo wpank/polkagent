@@ -1,7 +1,7 @@
 //! API authentication middleware.
 //!
-//! When `config.auth.enabled` is `true`, every request must carry a valid API
-//! key as either:
+//! When `config.auth.enabled` is `true`, protected requests must carry a valid
+//! API key as either:
 //!
 //! - `Authorization: Bearer <token>` header, or
 //! - `X-Api-Key: <token>` header.
@@ -11,8 +11,10 @@
 //! any entry grants access; otherwise the request is rejected with
 //! `401 Unauthorized`.
 //!
-//! When `config.auth.enabled` is `false` the middleware is a no-op
-//! pass-through (suitable for local development).
+//! The exact probe and discovery paths in the crate's access policy remain
+//! public so orchestrators and API tooling can reach them. When
+//! `config.auth.enabled` is `false` the middleware is a no-op pass-through
+//! (suitable for local development).
 //!
 //! # Hash format
 //!
@@ -36,6 +38,8 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use polkagent_config::AuthConfig;
+
+use crate::access_policy::is_public_operational_path;
 
 // ---------------------------------------------------------------------------
 // AuthState
@@ -109,17 +113,17 @@ fn extract_token<B>(req: &Request<B>) -> Option<String> {
 
 /// Axum middleware that enforces API key authentication.
 ///
-/// When auth is disabled (`config.auth.enabled = false`), all requests pass
-/// through unchanged. When enabled, the request must carry a valid API key via
-/// `Authorization: Bearer` or `X-Api-Key`; invalid or missing keys produce a
-/// `401 Unauthorized` response.
+/// Public operational paths and all requests made while auth is disabled
+/// (`config.auth.enabled = false`) pass through unchanged. Otherwise the
+/// request must carry a valid API key via `Authorization: Bearer` or
+/// `X-Api-Key`; invalid or missing keys produce a `401 Unauthorized` response.
 pub async fn auth_middleware(
     axum::extract::State(state): axum::extract::State<Arc<AuthState>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    // Auth disabled — unconditional pass-through.
-    if !state.enabled {
+    // Public probes/tooling and auth-disabled deployments pass through.
+    if is_public_operational_path(req.uri().path()) || !state.enabled {
         return next.run(req).await;
     }
 

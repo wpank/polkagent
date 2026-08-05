@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 const OPENAPI_SOURCE: &str = include_str!("../../../openapi.yaml");
+const REDOCLY_IGNORE_SOURCE: &str = include_str!("../../../.redocly.lint-ignore.yaml");
 
 fn assert_no_legacy_nullable(value: &Value, pointer: &str) {
     match value {
@@ -37,6 +38,15 @@ fn schema<'a>(root: &'a Value, pointer: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing representative schema at {pointer}"))
 }
 
+fn string_set(value: &Value) -> BTreeSet<&str> {
+    value
+        .as_array()
+        .expect("string array")
+        .iter()
+        .map(|entry| entry.as_str().expect("string array entry"))
+        .collect()
+}
+
 fn assert_primitive_null_union(schema: &Value, primitive: &str) {
     let types = schema["type"]
         .as_array()
@@ -54,6 +64,132 @@ fn assert_reference_null_union(schema: &Value, reference: &str) {
     assert_eq!(variants.len(), 2);
     assert!(variants.iter().any(|variant| variant["$ref"] == reference));
     assert!(variants.iter().any(|variant| variant["type"] == "null"));
+}
+
+#[test]
+fn operational_access_contract_and_lint_exceptions_are_exact() {
+    let source: Value = serde_yaml::from_str(OPENAPI_SOURCE).expect("parse OpenAPI YAML");
+
+    assert_eq!(source["info"]["license"]["name"], "Apache License 2.0");
+    assert_eq!(source["info"]["license"]["identifier"], "Apache-2.0");
+    assert_eq!(source["servers"][0]["url"], "/");
+    assert!(!OPENAPI_SOURCE.contains("localhost"));
+
+    let security = source["security"]
+        .as_array()
+        .expect("global authentication alternatives");
+    assert_eq!(security.len(), 2);
+    assert!(security
+        .iter()
+        .any(|entry| entry.get("ApiKeyAuth").is_some()));
+    assert!(security
+        .iter()
+        .any(|entry| entry.get("BearerAuth").is_some()));
+
+    let public_paths = BTreeSet::from([
+        "/openapi.json",
+        "/health/live",
+        "/health/ready",
+        "/health/startup",
+        "/v1/compat/pca/health",
+    ]);
+    for path in &public_paths {
+        assert_eq!(
+            source["paths"][*path]["get"]["security"],
+            serde_json::json!([]),
+            "{path} must explicitly override global authentication"
+        );
+    }
+
+    let http_methods = BTreeSet::from([
+        "get", "post", "put", "patch", "delete", "options", "head", "trace",
+    ]);
+    let mut discovered_public_paths = BTreeSet::new();
+    let mut protected_operation_count = 0_usize;
+    for (path, item) in source["paths"].as_object().expect("OpenAPI paths") {
+        for (method, operation) in item.as_object().expect("path item") {
+            if !http_methods.contains(method.as_str()) {
+                continue;
+            }
+            if operation["security"] == serde_json::json!([]) {
+                discovered_public_paths.insert(path.as_str());
+                continue;
+            }
+
+            protected_operation_count += 1;
+            let operation_name = format!("{} {path}", method.to_uppercase());
+            assert_eq!(
+                operation["responses"]["401"]["$ref"], "#/components/responses/Unauthorized",
+                "{operation_name}"
+            );
+            assert_eq!(
+                operation["responses"]["429"]["$ref"], "#/components/responses/RateLimited",
+                "{operation_name}"
+            );
+        }
+    }
+    assert_eq!(discovered_public_paths, public_paths);
+    assert_eq!(protected_operation_count, 75);
+
+    let ignore: Value =
+        serde_yaml::from_str(REDOCLY_IGNORE_SOURCE).expect("parse Redocly ignore YAML");
+    let ignored_rules = ignore["openapi.yaml"]
+        .as_object()
+        .expect("ignore rules scoped to openapi.yaml");
+    assert_eq!(
+        ignored_rules.keys().collect::<Vec<_>>(),
+        vec!["operation-4xx-response"]
+    );
+    let ignored_pointers = ignored_rules["operation-4xx-response"]
+        .as_array()
+        .expect("operation-specific ignore pointers")
+        .iter()
+        .map(|value| value.as_str().expect("ignore pointer"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        ignored_pointers,
+        BTreeSet::from([
+            "#/paths/~1health~1live/get/responses",
+            "#/paths/~1health~1ready/get/responses",
+            "#/paths/~1health~1startup/get/responses",
+            "#/paths/~1openapi.json/get/responses",
+            "#/paths/~1v1~1compat~1pca~1health/get/responses",
+        ])
+    );
+}
+
+#[test]
+fn middleware_and_health_schemas_match_runtime_shapes() {
+    let source: Value = serde_yaml::from_str(OPENAPI_SOURCE).expect("parse OpenAPI YAML");
+
+    let auth = schema(
+        &source,
+        "/components/schemas/AuthMiddlewareErrorResponse/properties/error",
+    );
+    assert_eq!(auth["additionalProperties"], false);
+    assert_eq!(auth["properties"]["code"]["const"], "UNAUTHORIZED");
+    assert_eq!(
+        string_set(&auth["properties"]["message"]["enum"]),
+        BTreeSet::from(["invalid API key", "missing credentials"])
+    );
+
+    let rate = schema(
+        &source,
+        "/components/schemas/RateLimitMiddlewareErrorResponse/properties/error",
+    );
+    assert_eq!(rate["properties"]["code"]["const"], "RATE_LIMIT_EXCEEDED");
+    assert_eq!(rate["properties"]["message"]["const"], "too many requests");
+    assert_eq!(rate["properties"]["retry_after"]["minimum"], 1);
+
+    assert_eq!(
+        source["paths"]["/health/startup"]["get"]["responses"]["503"]["content"]
+            ["application/json"]["schema"]["$ref"],
+        "#/components/schemas/HealthStartupResponse"
+    );
+    assert_eq!(
+        source["components"]["schemas"]["HealthReadinessResponse"]["properties"]["checks"]["type"],
+        "array"
+    );
 }
 
 #[test]

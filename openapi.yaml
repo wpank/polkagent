@@ -3,16 +3,21 @@ openapi: 3.1.0
 info:
   title: Polkagent API
   version: "0.1.0"
+  license:
+    name: Apache License 2.0
+    identifier: Apache-2.0
   description: |
     The Polkagent REST API provides programmatic access to the Polkagent
-    platform. All endpoints are versioned under `/api/v1alpha1`. Health
-    probes are available at the root (no version prefix) for load-balancer
-    compatibility.
+    platform. Resource endpoints are versioned under `/api/v1alpha1`.
+    Health probes, metrics, OpenAPI discovery, and the PCA compatibility
+    bridge use explicit root-level paths.
 
     ## Versioning
 
-    The current version string is `v1alpha1`. Every response body includes
-    a top-level `"version"` field set to this value.
+    The current version string is `v1alpha1`. Resource envelopes returned by
+    the versioned REST API include a top-level `"version"` field set to this
+    value. Root-level operational endpoints and pre-handler middleware errors
+    use their endpoint-specific schemas instead.
 
     ## Pagination
 
@@ -21,9 +26,16 @@ info:
     next page. When `cursor.has_more` is `false` you have reached the last
     page.
 
-    ## Errors
+    ## Access policy
 
-    All non-2xx responses use the standard error envelope:
+    Operations inherit API-key or bearer authentication unless they declare
+    `security: []`. Public probe and discovery operations also bypass the
+    per-client rate limiter. Protected operations can return compact `401` or
+    `429` middleware errors before a route handler runs.
+
+    ## Handler errors
+
+    Errors produced after a request reaches a route handler use this envelope:
     ```json
     {
       "error": {
@@ -44,11 +56,12 @@ info:
     operation would be an incomplete contract.
 
 servers:
-  - url: http://localhost:9090
-    description: Local development server
+  - url: /
+    description: Current Polkagent deployment origin.
 
 security:
   - ApiKeyAuth: []
+  - BearerAuth: []
 
 tags:
   - name: agents
@@ -121,6 +134,10 @@ paths:
               tools: ["polkagent.file.read"]
               system_prompt: "You are a helpful assistant."
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Agent created.
           content:
@@ -152,6 +169,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListAgentsResponse"
+        "400":
+          $ref: "#/components/responses/BadQueryParameters"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -165,6 +188,10 @@ paths:
       tags: [agents]
       description: Returns the full spec and status for a single agent.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Agent found.
           content:
@@ -182,6 +209,10 @@ paths:
       tags: [agents]
       description: Removes the agent from the registry. Returns `204 No Content`.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "204":
           description: Agent deleted.
         "404":
@@ -200,6 +231,10 @@ paths:
         Requests the agent to transition to the running state. Currently
         returns a lifecycle acknowledgement; full lifecycle wiring is pending.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Lifecycle action acknowledged.
           content:
@@ -220,6 +255,10 @@ paths:
       tags: [agents]
       description: Requests the agent to halt all activity.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Lifecycle action acknowledged.
           content:
@@ -240,6 +279,10 @@ paths:
       tags: [agents]
       description: Requests the agent to suspend execution without terminating.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Lifecycle action acknowledged.
           content:
@@ -260,6 +303,10 @@ paths:
       tags: [agents]
       description: Requests a paused agent to resume execution.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Lifecycle action acknowledged.
           content:
@@ -303,6 +350,10 @@ paths:
               input: "Summarise the attached document."
               idempotency_key: "req-20260101-abc123"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Run created and queued.
           content:
@@ -348,6 +399,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListRunsResponse"
+        "400":
+          $ref: "#/components/responses/BadQueryParameters"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -360,6 +417,10 @@ paths:
       tags: [runs]
       description: Returns full details for a single run.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Run found.
           content:
@@ -383,6 +444,10 @@ paths:
         Returns `409 Conflict` if the run has already completed, failed, or
         been cancelled.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Run cancellation accepted; updated run returned.
           content:
@@ -408,6 +473,10 @@ paths:
         one model invocation cycle. Currently returns an empty list; turn
         persistence is pending.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: List of turn summaries (may be empty).
           content:
@@ -430,6 +499,10 @@ paths:
         Returns all durable events associated with the specified run.
         Returns `501 Not Implemented` when no event store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: List of events for the run.
           content:
@@ -463,6 +536,10 @@ paths:
         Returns metadata for all artifacts produced during the specified run.
         Returns `501 Not Implemented` when no artifact store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: List of artifact metadata.
           content:
@@ -485,6 +562,10 @@ paths:
       tags: [runs]
       description: Returns all effect intents associated with the specified run.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: List of effect intents.
           content:
@@ -508,6 +589,10 @@ paths:
         Currently returns `501 Not Implemented`; pause/resume wiring is
         pending.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Run resumed; updated run returned.
           content:
@@ -534,6 +619,10 @@ paths:
       tags: [effects]
       description: Returns the stored intent payload for a single effect.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Effect found.
           content:
@@ -556,6 +645,10 @@ paths:
         Approves a pending effect intent, allowing the agent to execute it.
         Returns `501 Not Implemented`; approval wiring is pending.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Effect approved.
           content:
@@ -580,6 +673,10 @@ paths:
         Denies a pending effect intent, preventing the agent from executing it.
         Returns `501 Not Implemented`; denial wiring is pending.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Effect denied.
           content:
@@ -609,6 +706,10 @@ paths:
         single artifact. Returns `501 Not Implemented` when no artifact
         store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Artifact metadata.
           content:
@@ -635,6 +736,10 @@ paths:
         Returns `500 Internal Server Error` if the content integrity check
         fails.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Raw artifact bytes.
           content:
@@ -662,6 +767,10 @@ paths:
         traversal is pending.
         Returns `501 Not Implemented` when no artifact store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Artifact provenance chain.
           content:
@@ -723,6 +832,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListEventsResponse"
+        "400":
+          $ref: "#/components/responses/BadQueryParameters"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":
@@ -744,6 +859,10 @@ paths:
         Returns a single durable event by its ID.
         Returns `501 Not Implemented` when no event store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Event found.
           content:
@@ -776,6 +895,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListProvidersResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -793,6 +916,10 @@ paths:
       tags: [providers]
       description: Returns configuration details for a single provider.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Provider found.
           content:
@@ -818,6 +945,10 @@ paths:
       tags: [providers]
       description: Returns models available under the specified provider.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: List of models for this provider.
           content:
@@ -848,6 +979,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListModelsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -867,6 +1002,10 @@ paths:
         Returns metadata for a single model. Searches all configured
         providers for a matching `default_model`.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Model found.
           content:
@@ -897,6 +1036,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListSkillsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":
@@ -919,6 +1062,10 @@ paths:
             example:
               path: "/opt/polkagent/skills/my-skill"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Skill installed.
           content:
@@ -943,6 +1090,10 @@ paths:
         Returns the manifest and status for a single skill by package name.
         Returns `501 Not Implemented` when no skill registry is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Skill found.
           content:
@@ -967,6 +1118,10 @@ paths:
         Uninstalls a skill by package name.
         Returns `501 Not Implemented`; dynamic uninstallation is pending.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Skill uninstalled.
         "404":
@@ -998,6 +1153,10 @@ paths:
                 api_endpoint: "https://example.com/api"
                 timeout_secs: 30
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Skill configuration updated.
           content:
@@ -1032,6 +1191,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListToolsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":
@@ -1048,6 +1211,10 @@ paths:
         Returns the definition and JSON Schema for a single tool.
         Returns `501 Not Implemented` when no tool registry is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Tool found.
           content:
@@ -1072,6 +1239,10 @@ paths:
         Returns the required grant pattern for a single tool.
         Returns `501 Not Implemented` when no tool registry is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Tool grant information.
           content:
@@ -1104,6 +1275,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PaymentBalanceResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":
@@ -1125,6 +1300,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PaymentUsageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":
@@ -1145,6 +1324,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListPaymentReceiptsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":
@@ -1167,6 +1350,10 @@ paths:
         Returns `501 Not Implemented` when no payment store is configured.
         Returns `404 Not Found` when receipt lookup is not yet implemented.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Payment receipt.
           content:
@@ -1204,6 +1391,10 @@ paths:
               limit: 5
               namespace: "code-context"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Memory search results.
           content:
@@ -1233,6 +1424,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MemoryStatsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":
@@ -1258,6 +1453,10 @@ paths:
                 - "mem_01j1abc"
                 - "mem_01j1def"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Memory entries deleted.
           content:
@@ -1287,6 +1486,10 @@ paths:
         Returns a single memory entry by its ID.
         Returns `501 Not Implemented` when no memory store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Memory entry found.
           content:
@@ -1343,6 +1546,10 @@ paths:
             minimum: 0
             default: 100
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Matching entries and returned count.
           content:
@@ -1372,6 +1579,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuditVerifyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "500":
@@ -1392,6 +1603,10 @@ paths:
       tags: [audit]
       description: Returns `501 Not Implemented` when no audit store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Audit entry found.
           content:
@@ -1428,6 +1643,10 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateConversationRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Transcript container created.
           content:
@@ -1472,6 +1691,10 @@ paths:
             minimum: 0
             default: 0
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Page of transcript summaries.
           content:
@@ -1500,6 +1723,10 @@ paths:
       tags: [conversations]
       description: Returns `501 Not Implemented` when no conversation store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Transcript and up to its first 100 messages.
           content:
@@ -1521,6 +1748,10 @@ paths:
       tags: [conversations]
       description: Returns `501 Not Implemented` when no conversation store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "204":
           description: Transcript deleted; no response body.
         "404":
@@ -1556,6 +1787,10 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateMessageRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Transcript message appended.
           content:
@@ -1588,6 +1823,10 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateServiceListingRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Service listing published.
           content:
@@ -1616,6 +1855,10 @@ paths:
       tags: [registry]
       description: Returns `501 Not Implemented` when no service-registry store is configured.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Service listing found.
           content:
@@ -1671,6 +1914,10 @@ paths:
             format: int32
             minimum: 0
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Matching service listings.
           content:
@@ -1704,6 +1951,10 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateHttpInteractionRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Interaction created.
           content:
@@ -1749,6 +2000,10 @@ paths:
           schema:
             $ref: "#/components/schemas/InteractionState"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Page of durable interactions.
           content:
@@ -1775,6 +2030,10 @@ paths:
       summary: Get a durable interaction
       tags: [interactions]
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Durable interaction projection.
           content:
@@ -1800,6 +2059,10 @@ paths:
         Marks the interaction archived while retaining its transcript, turns,
         and events. An interaction with active work cannot be archived.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "204":
           description: Interaction archived; no response body.
         "404":
@@ -1824,6 +2087,10 @@ paths:
       summary: List durable interaction turns
       tags: [interactions]
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Turns in monotonic ordinal order.
           content:
@@ -1861,6 +2128,10 @@ paths:
             schema:
               $ref: "#/components/schemas/PromptHttpInteractionRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "202":
           description: Turn is durable and execution has been accepted.
           content:
@@ -1896,6 +2167,10 @@ paths:
         cancellation through the shared interaction service. Repeated
         cancellation of a terminal turn is idempotent.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Current cancelled or terminal turn projection.
           content:
@@ -1928,6 +2203,10 @@ paths:
         runtime. The model is `null` when execution inherits the selected
         agent's registered model.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Effective supported durable configuration.
           content:
@@ -1964,6 +2243,10 @@ paths:
             schema:
               $ref: "#/components/schemas/UpdateHttpInteractionConfigRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Effective supported durable configuration.
           content:
@@ -2006,6 +2289,10 @@ paths:
             schema:
               $ref: "#/components/schemas/UpdateHttpInteractionTargetRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Full effective interaction configuration.
           content:
@@ -2066,6 +2353,10 @@ paths:
             maximum: 999
             default: 100
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Ordered finite replay page and durable checkpoint.
           content:
@@ -2136,6 +2427,10 @@ paths:
             format: int64
             minimum: 0
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: |
             Open SSE connection. Each `interaction_event` data field is a
@@ -2178,6 +2473,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SystemInfoResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2186,7 +2485,10 @@ paths:
       operationId: getPrometheusMetrics
       summary: Export Prometheus metrics
       tags: [metrics]
-      description: Renders all registered metric families in Prometheus text format.
+      description: |
+        Renders all registered metric families in Prometheus text format.
+        This operational endpoint is authenticated and rate-limited because
+        metrics can reveal deployment and workload details.
       responses:
         "200":
           description: Prometheus text exposition, version 0.0.4.
@@ -2194,13 +2496,19 @@ paths:
             text/plain:
               schema:
                 type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /openapi.json:
     get:
       operationId: getOpenApiSpec
       summary: Get OpenAPI specification
       tags: [system]
-      description: Returns this OpenAPI specification as a JSON document.
+      description: |
+        Returns this OpenAPI specification as a JSON document. This discovery
+        endpoint is public and is not rate-limited.
       security: []
       responses:
         "200":
@@ -2231,7 +2539,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HealthResponse"
+                $ref: "#/components/schemas/HealthLivenessResponse"
 
   /health/ready:
     get:
@@ -2240,22 +2548,22 @@ paths:
       tags: [health]
       security: []
       description: |
-        Returns `200 OK` when all backend dependencies (effect store, etc.)
-        are reachable. Returns `503 Service Unavailable` when any dependency
-        is unavailable.
+        Returns `200 OK` after startup when no tracked critical component is
+        in an error state. Returns `503 Service Unavailable` before startup
+        completes or when a tracked critical component reports an error.
       responses:
         "200":
           description: Server is ready to serve traffic.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HealthResponse"
+                $ref: "#/components/schemas/HealthReadinessResponse"
         "503":
-          description: One or more dependencies are unavailable.
+          description: Startup is incomplete or a tracked component is unavailable.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HealthResponse"
+                $ref: "#/components/schemas/HealthReadinessResponse"
 
   /health/startup:
     get:
@@ -2273,7 +2581,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HealthResponse"
+                $ref: "#/components/schemas/HealthStartupResponse"
+        "503":
+          description: Initialisation is still in progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStartupResponse"
 
   # ==========================================================================
   # PCA C1 Bridge (PRD-06)
@@ -2303,7 +2617,8 @@ paths:
       tags: [bridge]
       description: |
         Long-poll for pending inbound deliveries. Each delivery includes a
-        lease that must be ACKed or renewed before it expires.
+        lease that must be ACKed or renewed before it expires. Unlike bridge
+        health discovery, the PCA data plane is authenticated and rate-limited.
       responses:
         "200":
           description: Zero or more pending deliveries.
@@ -2311,6 +2626,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BridgeInboundResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /v1/compat/pca/inbound/ack:
     post:
@@ -2327,6 +2646,10 @@ paths:
             schema:
               $ref: "#/components/schemas/BridgeAckRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Delivery acknowledged.
           content:
@@ -2354,6 +2677,10 @@ paths:
             schema:
               $ref: "#/components/schemas/BridgeRenewRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Lease renewed.
           content:
@@ -2382,6 +2709,10 @@ paths:
             schema:
               $ref: "#/components/schemas/BridgeSendRequest"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "201":
           description: Message sent.
           content:
@@ -2411,6 +2742,10 @@ components:
       in: header
       name: X-API-Key
       description: API key for authenticating requests to the Polkagent API.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key supplied as an Authorization bearer token.
 
   # --------------------------------------------------------------------------
   # Reusable parameters
@@ -2504,6 +2839,59 @@ components:
   # --------------------------------------------------------------------------
 
   responses:
+
+    BadQueryParameters:
+      description: Query-string deserialization failed before the handler ran.
+      content:
+        text/plain:
+          schema:
+            type: string
+
+    Unauthorized:
+      description: Authentication is enabled and credentials are missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthMiddlewareErrorResponse"
+          examples:
+            missingCredentials:
+              value:
+                error:
+                  code: UNAUTHORIZED
+                  message: missing credentials
+            invalidApiKey:
+              value:
+                error:
+                  code: UNAUTHORIZED
+                  message: invalid API key
+
+    RateLimited:
+      description: The protected request exceeded its per-client token bucket.
+      headers:
+        Retry-After:
+          description: Whole seconds to wait before retrying (minimum one).
+          schema:
+            type: integer
+            minimum: 1
+        X-RateLimit-Limit:
+          description: Configured token-bucket burst capacity.
+          schema:
+            type: integer
+            minimum: 1
+        X-RateLimit-Remaining:
+          description: Remaining tokens; always zero on this response.
+          schema:
+            type: integer
+            const: 0
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RateLimitMiddlewareErrorResponse"
+          example:
+            error:
+              code: RATE_LIMIT_EXCEEDED
+              message: too many requests
+              retry_after: 1
 
     ValidationError:
       description: Request body or query parameters failed validation.
@@ -2601,6 +2989,46 @@ components:
   # --------------------------------------------------------------------------
 
   schemas:
+
+    AuthMiddlewareErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: Compact error emitted before a request reaches a route handler.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              const: UNAUTHORIZED
+            message:
+              type: string
+              enum: [missing credentials, invalid API key]
+
+    RateLimitMiddlewareErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: Compact error emitted before a request reaches a route handler.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, retry_after]
+          properties:
+            code:
+              type: string
+              const: RATE_LIMIT_EXCEEDED
+            message:
+              type: string
+              const: too many requests
+            retry_after:
+              type: integer
+              format: int64
+              minimum: 1
 
     # ---- Enums ---------------------------------------------------------------
 
@@ -3084,34 +3512,68 @@ components:
     ErrorResponse:
       type: object
       required: [error]
-      description: Standard error envelope returned on all non-2xx responses.
+      description: Standard error envelope returned by API route handlers.
       properties:
         error:
           $ref: "#/components/schemas/ErrorDetail"
 
     # ---- Health --------------------------------------------------------------
 
-    HealthResponse:
+    HealthLivenessResponse:
       type: object
       required: [status]
-      description: Response body for health probe endpoints.
+      additionalProperties: false
+      description: Stateless liveness response.
       properties:
         status:
           type: string
-          description: '"ok" or "degraded".'
-          enum: [ok, degraded]
-          example: ok
-        detail:
-          type: [string, "null"]
-          description: Optional human-readable detail.
-          example: "initialisation complete"
+          const: ok
+
+    HealthReadinessResponse:
+      type: object
+      required: [status, ready, checks]
+      additionalProperties: false
+      description: Readiness result and the critical component snapshot.
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        ready:
+          type: boolean
         checks:
-          type: object
-          description: Per-dependency health check results.
-          additionalProperties:
-            type: string
-          example:
-            effect_store: "ok"
+          type: array
+          items:
+            $ref: "#/components/schemas/ComponentHealth"
+
+    HealthStartupResponse:
+      type: object
+      required: [status, detail]
+      additionalProperties: false
+      description: One-time initialization status.
+      properties:
+        status:
+          type: string
+          enum: [ok, starting]
+        detail:
+          type: string
+          enum: [initialisation complete, initialisation in progress]
+
+    ComponentHealth:
+      type: object
+      additionalProperties: false
+      required: [name, status]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [ok, degraded, error]
+        latency_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        message:
+          type: string
 
     # ---- Agents --------------------------------------------------------------
 

@@ -32,6 +32,7 @@ use tokio::sync::RwLock;
 use polkagent_api::{server::ApiServer, InMemoryAgentStore, InMemoryRunManager};
 use polkagent_config::{Config, ProviderConfig};
 use polkagent_event::EventBus;
+use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
 // In-memory EffectStore for tests
@@ -3136,6 +3137,117 @@ async fn bridge_inbound_returns_empty_deliveries() {
     let body: serde_json::Value = resp.json();
     let deliveries = body["deliveries"].as_array().expect("deliveries array");
     assert!(deliveries.is_empty());
+}
+
+#[tokio::test]
+async fn assembled_router_enforces_the_documented_operational_access_policy() {
+    let token = "production-access-policy-token";
+    let mut config = Config::default();
+    config.auth.enabled = true;
+    config.auth.api_keys = vec![format!("{:x}", Sha256::digest(token.as_bytes()))];
+    config.api.read_only = true;
+    config.server.rate_limit.enabled = true;
+    config.server.rate_limit.requests_per_second = 0;
+    config.server.rate_limit.burst = 1;
+    let server = test_server_with_config(config);
+
+    // Every public path is both authentication-free and outside the shared
+    // anonymous token bucket. Repetition catches a route that bypasses auth
+    // but accidentally remains rate-limited.
+    for path in [
+        "/openapi.json",
+        "/health/live",
+        "/health/ready",
+        "/health/startup",
+        "/v1/compat/pca/health",
+    ] {
+        server.get(path).await.assert_status_ok();
+        server.get(path).await.assert_status_ok();
+    }
+
+    let missing_credentials = server.get("/metrics").await;
+    missing_credentials.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        missing_credentials.json::<serde_json::Value>(),
+        json!({
+            "error": {
+                "code": "UNAUTHORIZED",
+                "message": "missing credentials"
+            }
+        })
+    );
+
+    let invalid_credentials = server
+        .get("/v1/compat/pca/inbound")
+        .add_header("X-Api-Key", "invalid-pca-key")
+        .await;
+    invalid_credentials.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        invalid_credentials.json::<serde_json::Value>(),
+        json!({
+            "error": {
+                "code": "UNAUTHORIZED",
+                "message": "invalid API key"
+            }
+        })
+    );
+
+    let first_protected = server
+        .get("/api/v1alpha1/system/info")
+        .add_header("X-Api-Key", token)
+        .await;
+    first_protected.assert_status_ok();
+    first_protected.assert_header("x-ratelimit-limit", "1");
+    first_protected.assert_header("x-ratelimit-remaining", "0");
+
+    let rate_limited = server
+        .get("/api/v1alpha1/system/info")
+        .add_header("X-Api-Key", token)
+        .await;
+    rate_limited.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+    rate_limited.assert_header("retry-after", "3600");
+    rate_limited.assert_header("x-ratelimit-limit", "1");
+    rate_limited.assert_header("x-ratelimit-remaining", "0");
+    assert_eq!(
+        rate_limited.json::<serde_json::Value>(),
+        json!({
+            "error": {
+                "code": "RATE_LIMIT_EXCEEDED",
+                "message": "too many requests",
+                "retry_after": 3600
+            }
+        })
+    );
+
+    // Axum's query extractor rejects malformed values before the handler and
+    // uses a plain-text 400, matching the reusable OpenAPI response.
+    let bad_query = server
+        .get("/api/v1alpha1/agents?limit=not-an-integer")
+        .authorization_bearer(token)
+        .add_header("X-Api-Key", "query-client")
+        .await;
+    bad_query.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    bad_query.assert_header("content-type", "text/plain; charset=utf-8");
+    assert!(bad_query
+        .text()
+        .contains("Failed to deserialize query string"));
+
+    // Read-only remains an independent method policy. A unique rate key keeps
+    // this assertion focused on the guard rather than token-bucket state.
+    let read_only = server
+        .post("/api/v1alpha1/agents")
+        .authorization_bearer(token)
+        .add_header("X-Api-Key", "read-only-client")
+        .json(&json!({
+            "name": "blocked",
+            "model": "anthropic/claude-opus-4-6"
+        }))
+        .await;
+    read_only.assert_status(axum::http::StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        read_only.json::<serde_json::Value>(),
+        json!({"error": "server is in read-only mode"})
+    );
 }
 
 #[tokio::test]

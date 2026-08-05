@@ -182,19 +182,20 @@ impl ApiServer {
             .on_failure(DefaultOnFailure::new().level(Level::ERROR));
 
         // Per-client rate limiting middleware, configured via
-        // `config.server.rate_limit`. When `enabled` is false the middleware
-        // is a no-op pass-through (no performance overhead).
+        // `config.server.rate_limit`. Explicit public operational paths bypass
+        // it; when `enabled` is false it is a no-op for every path.
         let rate_limit_state = Arc::new(RateLimitState::from_config(
             &self.state.config.server.rate_limit,
         ));
 
-        // Auth middleware — validates Bearer / X-Api-Key headers when
-        // `config.auth.enabled = true`.  No-op when disabled.
+        // Auth middleware — validates Bearer / X-Api-Key headers on protected
+        // paths when `config.auth.enabled = true`. Public operational paths
+        // bypass it; it is a no-op everywhere when disabled.
         let auth_state = Arc::new(AuthState::from_config(&self.state.config.auth));
 
         // Read-only guard: when `config.api.read_only` is true, any request
         // that is not GET/HEAD/OPTIONS is rejected with 405 Method Not Allowed
-        // before it reaches any route handler or the rate limiter.
+        // before it reaches a route handler.
         let read_only = self.state.config.api.read_only;
 
         routes::register(self.state)

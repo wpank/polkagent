@@ -1,9 +1,9 @@
 //! Axum middleware for per-client rate limiting.
 //!
 //! This module bridges [`polkagent_rate_limit`] into the API server as Axum
-//! middleware.  Each inbound request is keyed by client IP (or an
-//! `X-Api-Key` header when present) and checked against a shared
-//! [`KeyedRateLimiter`].
+//! middleware. Each protected request is keyed by client IP (or an `X-Api-Key`
+//! header when present) and checked against a shared [`KeyedRateLimiter`].
+//! Exact public probe and discovery paths bypass the limiter.
 //!
 //! # HTTP behaviour
 //!
@@ -36,6 +36,8 @@ use polkagent_config::RateLimitConfig;
 use polkagent_rate_limit::keyed::{KeyedRateLimiter, TokenBucketFactory};
 use serde_json::json;
 use tracing::warn;
+
+use crate::access_policy::is_public_operational_path;
 
 // ---------------------------------------------------------------------------
 // RateLimitState
@@ -143,6 +145,12 @@ pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    // Public probes and discovery must not fail because another endpoint used
+    // the same client's token bucket.
+    if is_public_operational_path(req.uri().path()) {
+        return next.run(req).await;
+    }
+
     let Some(limiter) = &state.limiter else {
         // Rate limiting disabled — pass through.
         return next.run(req).await;

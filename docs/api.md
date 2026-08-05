@@ -323,7 +323,8 @@ stateDiagram-v2
 
 ## Authentication
 
-When authentication is enabled, configure it in `polkagent.toml`:
+When authentication is enabled, protected routes accept either `X-API-Key`
+or `Authorization: Bearer <key>`. Configure hashed keys in `polkagent.toml`:
 
 ```toml
 [auth]
@@ -331,6 +332,17 @@ enabled = true
 api_keys = ["hashed-key-digest"]
 session_timeout_secs = 3600
 ```
+
+The operational access boundary is exact-path based:
+
+| Access | Endpoints | Rate limit |
+|--------|-----------|------------|
+| Public | `/openapi.json`, `/health/live`, `/health/ready`, `/health/startup`, `/v1/compat/pca/health` | Bypassed |
+| Protected | `/metrics`, `/v1/compat/pca/inbound` and its write routes, `/api/v1alpha1/*` | Applied when enabled |
+
+Public paths are limited to this explicit list; a new route does not become
+public by sharing a prefix. Read-only mode is independent: it rejects
+mutating methods but does not affect these `GET` endpoints.
 
 Manage credentials with the `auth` subcommand:
 

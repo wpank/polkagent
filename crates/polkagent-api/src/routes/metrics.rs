@@ -7,7 +7,8 @@
 //! The endpoint renders all registered metric families from the
 //! [`polkagent_telemetry::PrometheusRegistry`] in the standard Prometheus text exposition format.
 //! It is intended to be scraped by Prometheus, Grafana Agent, or any other
-//! OpenMetrics-compatible collector.
+//! OpenMetrics-compatible collector. It inherits the server authentication
+//! and rate-limit policy; production collectors must send an API key.
 
 use axum::{
     extract::State,

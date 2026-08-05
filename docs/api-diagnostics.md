@@ -8,7 +8,7 @@
 
 ## Overview
 
-The Polkagent API provides comprehensive diagnostic endpoints for monitoring system health, collecting metrics, gathering system information, auditing operations, and streaming real-time events. All diagnostic endpoints expose operational telemetry safe for authenticated clients.
+The Polkagent API provides diagnostic endpoints for monitoring system health, collecting metrics, gathering system information, auditing operations, and streaming real-time events. The three orchestrator health probes and PCA bridge health discovery are public and bypass rate limiting. Metrics and versioned diagnostic APIs remain authenticated and rate-limited because they expose operational details.
 
 ---
 
@@ -183,7 +183,9 @@ polkagent_effects_total{status="denied"} 8
 ```
 
 **Status Code:**
-- `200 OK` — always (returns empty body if no metrics registered)
+- `200 OK` — authenticated scrape (returns an empty body if no metrics are registered)
+- `401 Unauthorized` — authentication is enabled and credentials are missing or invalid
+- `429 Too Many Requests` — the collector exceeded its configured token bucket
 
 **Content-Type:**
 - `text/plain; version=0.0.4; charset=utf-8`
