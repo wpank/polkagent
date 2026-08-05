@@ -9,13 +9,14 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification,
-    SessionUpdate, StopReason, TextContent,
-};
 use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::schema::v1::{
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, SessionConfigKind,
+    SessionConfigOption, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, TextContent,
+};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, LineDirection};
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 
 #[derive(Default)]
 struct ObservedUpdates {
@@ -36,6 +37,12 @@ struct FailingProvider {
     task: tokio::task::JoinHandle<()>,
 }
 
+struct RecordingProvider {
+    base_url: String,
+    requests: tokio::sync::mpsc::Receiver<serde_json::Value>,
+    task: tokio::task::JoinHandle<()>,
+}
+
 fn write_local_provider_config(path: &std::path::Path, id: &str, base_url: &str) {
     std::fs::write(
         path,
@@ -49,6 +56,25 @@ fn write_local_provider_config(path: &std::path::Path, id: &str, base_url: &str)
         ),
     )
     .expect("write local provider config");
+}
+
+fn write_model_selection_config(path: &std::path::Path, base_url: &str) {
+    std::fs::write(
+        path,
+        format!(
+            "[[providers]]\n\
+             id = \"dynamic-provider\"\n\
+             provider_type = \"local\"\n\
+             base_url = \"{base_url}\"\n\
+             api_key_env = \"POLKAGENT_ACP_FIXTURE_KEY\"\n\
+             default_model = \"fixture-default\"\n\
+             \n\
+             [[models]]\n\
+             slug = \"fixture-alternate\"\n\
+             provider = \"dynamic-provider\"\n"
+        ),
+    )
+    .expect("write dynamic model provider config");
 }
 
 #[cfg(debug_assertions)]
@@ -322,6 +348,215 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
     assert_safe_success_diagnostics(&log_path);
 }
 
+#[tokio::test]
+async fn official_client_configures_agent_and_model_for_the_next_real_run() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let config_path = temp.path().join("polkagent.toml");
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    let first_id = create_active_agent(binary, &db_path, "config-first", "fixture-default");
+    let second_id = create_active_agent(binary, &db_path, "config-second", "fixture-default");
+    let mut provider = recording_provider(2).await;
+    write_model_selection_config(&config_path, &provider.base_url);
+
+    let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let observed_by_client = Arc::clone(&observed);
+    let second_id_for_client = second_id.clone();
+    let project_path = temp.path().to_path_buf();
+    let config_arg = config_path.to_string_lossy().into_owned();
+    let agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args([
+                "--config",
+                config_arg.as_str(),
+                "acp",
+                "--agent",
+                "config-first",
+                "--provider",
+                "dynamic-provider",
+            ])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            )
+            .env("POLKAGENT_ACP_FIXTURE_KEY", "fixture-key"),
+        Arc::clone(&observed),
+    );
+
+    agent_client_protocol::Client
+        .builder()
+        .on_receive_notification(
+            async move |notification: SessionNotification, _connection| {
+                if let SessionUpdate::AgentMessageChunk(chunk) = notification.update {
+                    if let ContentBlock::Text(text) = chunk.content {
+                        observed_by_client
+                            .lock()
+                            .expect("observed updates lock")
+                            .messages
+                            .push(text.text);
+                    }
+                }
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(
+            agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                exercise_session_configuration(
+                    &connection,
+                    project_path,
+                    &first_id,
+                    second_id_for_client,
+                )
+                .await
+            },
+        )
+        .await
+        .expect("official ACP client configured a real subprocess session");
+
+    let first_request = provider
+        .requests
+        .recv()
+        .await
+        .expect("first recorded request");
+    let second_request = provider
+        .requests
+        .recv()
+        .await
+        .expect("second recorded request");
+    provider.task.await.expect("recording provider completed");
+    assert_request_model(
+        [&first_request, &second_request],
+        "Use the native model option.",
+        "fixture-alternate",
+    );
+    assert_request_model(
+        [&first_request, &second_request],
+        "Use the slash model option.",
+        "fixture-default",
+    );
+    assert_runs_used_agent(&db_path, &second_id, 2);
+    let observed = observed.lock().expect("observed updates lock");
+    assert_protocol_stdout(&observed.stdout_lines);
+    assert!(
+        observed
+            .messages
+            .iter()
+            .any(|message| message.contains("Configured model 'missing-model' is unavailable"))
+    );
+    assert!(
+        observed
+            .messages
+            .iter()
+            .any(|message| message.contains("Selected model 'fixture-default'"))
+    );
+}
+
+async fn exercise_session_configuration(
+    connection: &agent_client_protocol::ConnectionTo<Agent>,
+    project_path: std::path::PathBuf,
+    first_id: &str,
+    second_id: String,
+) -> Result<(), agent_client_protocol::Error> {
+    connection
+        .send_request(InitializeRequest::new(ProtocolVersion::V1))
+        .block_task()
+        .await?;
+    let native_session = connection
+        .send_request(NewSessionRequest::new(project_path.clone()))
+        .block_task()
+        .await?;
+    let options = native_session
+        .config_options
+        .as_deref()
+        .expect("ACP config options are advertised");
+    assert_config_discovery(options, first_id, &second_id);
+
+    assert_config_rejected(
+        connection,
+        &native_session.session_id,
+        "provider",
+        "dynamic-provider",
+        "unsupported session config option",
+    )
+    .await;
+    assert_config_rejected(
+        connection,
+        &native_session.session_id,
+        "polkagent.agent",
+        "missing-agent",
+        "active agent config value",
+    )
+    .await;
+    let changed_agent = connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            native_session.session_id.clone(),
+            "polkagent.agent",
+            agent_client_protocol::schema::v1::SessionConfigValueId::new(second_id.clone()),
+        ))
+        .block_task()
+        .await?;
+    assert_eq!(
+        config_current(&changed_agent.config_options, "polkagent.agent"),
+        second_id
+    );
+    assert_config_rejected(
+        connection,
+        &native_session.session_id,
+        "model",
+        "missing-model",
+        "model config value",
+    )
+    .await;
+    connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            native_session.session_id.clone(),
+            "model",
+            "fixture-alternate",
+        ))
+        .block_task()
+        .await?;
+
+    let slash_session = connection
+        .send_request(NewSessionRequest::new(project_path))
+        .block_task()
+        .await?;
+    connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            slash_session.session_id.clone(),
+            "polkagent.agent",
+            agent_client_protocol::schema::v1::SessionConfigValueId::new(second_id),
+        ))
+        .block_task()
+        .await?;
+    send_text_prompt(
+        connection,
+        &slash_session.session_id,
+        "/model missing-model",
+    )
+    .await?;
+    send_text_prompt(
+        connection,
+        &slash_session.session_id,
+        "/model fixture-default",
+    )
+    .await?;
+    tokio::try_join!(
+        send_text_prompt(
+            connection,
+            &native_session.session_id,
+            "Use the native model option.",
+        ),
+        send_text_prompt(
+            connection,
+            &slash_session.session_id,
+            "Use the slash model option.",
+        ),
+    )?;
+    Ok(())
+}
+
 fn assert_safe_success_diagnostics(log_path: &std::path::Path) {
     let content = std::fs::read_to_string(log_path).expect("read successful ACP diagnostics");
     assert!(content.contains("\"event\":\"acp.server_ready\""));
@@ -336,7 +571,7 @@ fn assert_safe_success_diagnostics(log_path: &std::path::Path) {
 fn assert_editor_command_updates(observed: &ObservedUpdates) {
     assert_eq!(
         observed.command_names,
-        vec!["help", "status", "agents", "agent", "cancel"]
+        vec!["help", "status", "agents", "agent", "model", "cancel"]
     );
     assert!(
         observed
@@ -824,6 +1059,127 @@ fn unavailable_explicit_provider_fails_before_protocol_stdout() {
     assert!(stderr.contains("could not be found"));
 }
 
+fn create_active_agent(binary: &str, db_path: &std::path::Path, name: &str, model: &str) -> String {
+    assert_cli_success(
+        binary,
+        db_path,
+        &["agent", "create", name, "--model", model],
+    );
+    assert_cli_success(binary, db_path, &["agent", "start", name]);
+    rusqlite::Connection::open(db_path)
+        .expect("open agent fixture database")
+        .query_row("SELECT id FROM agents WHERE name = ?1", [name], |row| {
+            row.get(0)
+        })
+        .expect("load active agent fixture ID")
+}
+
+fn assert_config_discovery(options: &[SessionConfigOption], first_id: &str, second_id: &str) {
+    let ids = options
+        .iter()
+        .map(|option| option.id.0.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["polkagent.agent", "model"]);
+    assert_eq!(config_current(options, "polkagent.agent"), first_id);
+    assert_eq!(config_current(options, "model"), "_polkagent_agent_model");
+    let agent_values = config_values(options, "polkagent.agent");
+    assert!(agent_values.iter().any(|value| value == first_id));
+    assert!(agent_values.iter().any(|value| value == second_id));
+    let model_values = config_values(options, "model");
+    assert!(model_values.iter().any(|value| value == "fixture-default"));
+    assert!(
+        model_values
+            .iter()
+            .any(|value| value == "fixture-alternate")
+    );
+}
+
+fn config_current(options: &[SessionConfigOption], id: &str) -> String {
+    let option = options
+        .iter()
+        .find(|option| option.id.0.as_ref() == id)
+        .expect("advertised config option");
+    let SessionConfigKind::Select(select) = &option.kind else {
+        panic!("expected select config option")
+    };
+    select.current_value.0.to_string()
+}
+
+fn config_values(options: &[SessionConfigOption], id: &str) -> Vec<String> {
+    let option = options
+        .iter()
+        .find(|option| option.id.0.as_ref() == id)
+        .expect("advertised config option");
+    let SessionConfigKind::Select(select) = &option.kind else {
+        panic!("expected select config option")
+    };
+    let SessionConfigSelectOptions::Ungrouped(values) = &select.options else {
+        panic!("expected ungrouped config choices")
+    };
+    values
+        .iter()
+        .map(|option| option.value.0.to_string())
+        .collect()
+}
+
+async fn assert_config_rejected(
+    connection: &agent_client_protocol::ConnectionTo<Agent>,
+    session_id: &agent_client_protocol::schema::v1::SessionId,
+    config_id: &str,
+    value: &str,
+    expected: &str,
+) {
+    let error = connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            session_id.clone(),
+            config_id.to_owned(),
+            agent_client_protocol::schema::v1::SessionConfigValueId::new(value.to_owned()),
+        ))
+        .block_task()
+        .await
+        .expect_err("invalid session config value must be rejected");
+    let detail = error
+        .data
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        detail.contains(expected),
+        "unexpected config error: {detail}"
+    );
+}
+
+async fn send_text_prompt(
+    connection: &agent_client_protocol::ConnectionTo<Agent>,
+    session_id: &agent_client_protocol::schema::v1::SessionId,
+    prompt: &str,
+) -> Result<(), agent_client_protocol::Error> {
+    let response = connection
+        .send_request(PromptRequest::new(
+            session_id.clone(),
+            vec![ContentBlock::Text(TextContent::new(prompt))],
+        ))
+        .block_task()
+        .await?;
+    assert_eq!(response.stop_reason, StopReason::EndTurn);
+    Ok(())
+}
+
+fn assert_runs_used_agent(db_path: &std::path::Path, agent_id: &str, expected: i64) {
+    let connection = rusqlite::Connection::open(db_path).expect("open durable ACP database");
+    let total: i64 = connection
+        .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+        .expect("count ACP runs");
+    let matching: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .expect("count configured-agent runs");
+    assert_eq!((total, matching), (expected, expected));
+}
+
 fn observed_agent(config: AcpAgentConfig, observed: Arc<Mutex<ObservedUpdates>>) -> AcpAgent {
     AcpAgent::new(config).with_debug(move |line, direction| {
         let mut observed = observed.lock().expect("observed updates lock");
@@ -919,6 +1275,96 @@ async fn failing_provider(raw_secret: &str) -> FailingProvider {
         base_url: format!("http://{address}/v1"),
         task,
     }
+}
+
+async fn recording_provider(request_count: usize) -> RecordingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind recording provider");
+    let address = listener.local_addr().expect("recording provider address");
+    let (requests_tx, requests_rx) = tokio::sync::mpsc::channel(request_count);
+    let task = tokio::spawn(async move {
+        for index in 0..request_count {
+            let (stream, _) = listener.accept().await.expect("accept provider request");
+            let mut reader = BufReader::new(stream);
+            let request = read_http_json_request(&mut reader).await;
+            let model = request
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .expect("provider request model")
+                .to_owned();
+            requests_tx.send(request).await.expect("record request");
+            let body = serde_json::json!({
+                "id": format!("chatcmpl-acp-{index}"),
+                "object": "chat.completion",
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "configured response"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            reader
+                .get_mut()
+                .write_all(response.as_bytes())
+                .await
+                .expect("write provider response");
+            reader
+                .get_mut()
+                .shutdown()
+                .await
+                .expect("close provider response");
+        }
+    });
+    RecordingProvider {
+        base_url: format!("http://{address}/v1"),
+        requests: requests_rx,
+        task,
+    }
+}
+
+async fn read_http_json_request(
+    reader: &mut BufReader<tokio::net::TcpStream>,
+) -> serde_json::Value {
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .expect("read provider request header");
+        assert!(!line.is_empty(), "provider request closed before headers");
+        if line == "\r\n" {
+            break;
+        }
+        let lowercase = line.to_ascii_lowercase();
+        if let Some(value) = lowercase.strip_prefix("content-length:").map(str::trim) {
+            content_length = Some(value.parse::<usize>().expect("content length"));
+        }
+    }
+    let mut body = vec![0; content_length.expect("provider request content length")];
+    reader
+        .read_exact(&mut body)
+        .await
+        .expect("read provider request body");
+    serde_json::from_slice(&body).expect("parse provider request JSON")
+}
+
+fn assert_request_model(requests: [&serde_json::Value; 2], prompt: &str, expected_model: &str) {
+    let request = requests
+        .into_iter()
+        .find(|request| request.to_string().contains(prompt))
+        .unwrap_or_else(|| panic!("no provider request contained prompt {prompt:?}"));
+    assert_eq!(
+        request.get("model").and_then(serde_json::Value::as_str),
+        Some(expected_model)
+    );
 }
 
 fn assert_cli_success(binary: &str, db_path: &std::path::Path, args: &[&str]) {

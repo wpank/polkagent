@@ -7,9 +7,10 @@ SQLite pool, event bus, provider registry, and startup lifecycle.
 
 This is an executable protocol slice, not a claim of complete Zed support. The
 repository tests launch the real binary through the official ACP Rust client,
-including cancellation while a provider request is active. A manual Zed smoke
-test, durable thread import/resume, structured tool and permission updates, and
-session configuration are still open.
+including cancellation while a provider request is active and session-scoped
+agent/model configuration across concurrent sessions. A manual Zed smoke test,
+durable thread import/resume, and structured tool and permission updates are
+still open.
 
 ## Prerequisites
 
@@ -53,8 +54,11 @@ The editor-provided absolute `session/new` working directory is authoritative
 for ACP session metadata; there is no separate `--workdir` flag. Runtime config
 discovery and relative config/database paths are rooted at the subprocess launch
 directory because the runtime must be ready before the editor sends
-`session/new`. You may omit `--agent` and select one in the conversation with
-`/agents` followed by `/agent <name-or-id>`.
+`session/new`. You may omit `--agent`; clients that render ACP configuration
+options can select an active agent in their native UI, and `/agents` followed by
+`/agent <name-or-id>` remains available in the conversation. `--model` is an
+optional initial per-session override; it must name one of the configured
+models advertised by Polkagent.
 
 ACP file diagnostics are disabled by default. To opt in, add the global
 `--log-file` option before `acp` and use a path dedicated to one Polkagent ACP
@@ -84,6 +88,7 @@ The server publishes these through ACP `available_commands_update`:
 | `/status` | Show the session ID, workspace, selected agent, and prompt activity (`/st`). |
 | `/agents` | List active agents from the configured SQLite database. |
 | `/agent <name-or-id>` | Select the agent used for subsequent prompts (`/use`). |
+| `/model [id]` | Show or select the session model; use `default` or `inherit` to return to the selected agent's model. |
 | `/cancel` | Cancel the active editor prompt (`/stop`). |
 
 Normal text prompts start a real Polkagent run and return its accumulated text
@@ -93,12 +98,43 @@ normal prompt may be active per ACP session. Native `session/cancel` and the
 all-session cancellation are not advertised because durable ACP interactions
 are not implemented. Token-by-token ACP forwarding is still open.
 
+## Session configuration
+
+Each `session/new` response advertises exactly two select options supported by
+the pinned stable ACP v1 SDK:
+
+| Configuration ID | Category | Values | Effect |
+|---|---|---|---|
+| `polkagent.agent` | `_polkagent_agent` | No agent, plus active agent IDs | Selects the active Polkagent agent for later prompts. |
+| `model` | ACP `model` | Agent default, plus configured model IDs | Overrides the selected agent's model for later prompts. |
+
+`session/set_config_option` validates values against current active agents and
+configured models, rejects unknown values and changes during an active prompt,
+and returns the refreshed option list. The choice is scoped to that ACP session
+and affects the next real runtime run; it does not rebuild the process-wide
+runtime. Starts are serialized only across the short agent-spec replacement and
+run-start boundary because the shared `AppService` currently stores one live
+spec per agent. Runs execute concurrently after that boundary.
+
+`/agent` and `/model` write the same in-memory session fields as native ACP
+configuration. ACP v1 has no server-to-client configuration-change
+notification, so a slash-command change cannot proactively refresh an editor's
+native selector; the next prompt still uses the changed value. Session choices
+are process-local and disappear when the ACP subprocess exits because
+session load/resume is not implemented.
+
+Provider, target, and autonomy controls are intentionally not advertised. The
+server cannot currently guarantee that changing those values would be isolated
+to one session without rebuilding or mutating shared runtime state.
+
 ## Current protocol boundary
 
 Implemented and covered by executable protocol evidence:
 
 - official `agent-client-protocol` v2.0 SDK using its stable ACP v1 schema;
 - stdio initialize, new-session, prompt, session-update, and cancel handlers;
+- native `polkagent.agent` and standard `model` select-option discovery and
+  `session/set_config_option`, with validated session-scoped changes;
 - absolute-cwd validation and protocol errors for unknown/busy sessions;
 - text and resource-link prompts;
 - shared-registry slash-command discovery, aliases, detailed help, agent
@@ -122,6 +158,10 @@ Implemented and covered by executable protocol evidence:
 - an official-client restart test that seeds an abandoned durable run, starts
   ACP, and verifies that the shared runtime factory recovered it to a terminal
   state through the same database used by the editor surface;
+- an official-client subprocess test that changes two sessions through native
+  configuration and `/model`, overlaps their real prompts, and proves that each
+  provider request receives its own model while both durable runs use the
+  selected agent;
 - an official-client subprocess test that holds a real provider request open,
   cancels it, receives `Cancelled`, and verifies the durable run state and
   terminal timestamp in SQLite.
@@ -129,7 +169,7 @@ Implemented and covered by executable protocol evidence:
 Not implemented yet:
 
 - `session/list`, `session/load`, thread persistence/import, or restart resume;
-- dynamic model/provider/target/autonomy configuration options;
+- dynamic provider, target, or autonomy configuration options;
 - structured tool calls, plans, usage, and permission request/response;
 - client filesystem/terminal support and MCP-server passthrough;
 - additional workspace roots (rejected explicitly) and use of cwd as model or
@@ -162,8 +202,9 @@ Run the executable conformance slice locally:
 cargo test -p polkagent-cli --test acp_stdio_e2e -- --nocapture
 ```
 
-For a manual smoke, verify in order: agent appears, session opens, slash-command
-completion is visible, `/status` responds, a normal prompt returns a message,
-cancellation stops active work, and Zed's ACP log contains only JSON-RPC frames
-on the server's stdout channel. This manual matrix remains unverified in the
-repository status.
+For a manual smoke, verify in order: agent appears, session opens, the native
+agent/model selectors and slash-command completion are visible, changing each
+selector affects the next prompt, `/model` affects a later prompt, `/status`
+responds, cancellation stops active work, and Zed's ACP log contains only
+JSON-RPC frames on the server's stdout channel. This manual matrix remains
+unverified in the repository status.

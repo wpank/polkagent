@@ -1,6 +1,6 @@
 //! `polkagent acp` — expose Polkagent as an ACP stdio agent.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +13,9 @@ use polkagent_runtime::{
     AdapterPolicy, PolkagentRuntime, RuntimeError, RuntimeFactory, RuntimeOptions, WarningCode,
 };
 use polkagent_store_sqlite::SqliteRunStore;
-use polkagent_surface_acp::{AcpBackend, AgentSummary, BackendError, BackendTurn, ServerConfig};
+use polkagent_surface_acp::{
+    AcpBackend, AgentSummary, BackendError, BackendTurn, ModelSummary, ServerConfig,
+};
 use tokio::sync::Mutex;
 
 use crate::acp_diagnostics::AcpDiagnostics;
@@ -58,6 +60,7 @@ pub async fn run(
         Arc::new(backend),
         ServerConfig {
             default_agent: cmd.agent.clone(),
+            default_model: cmd.model.clone(),
         },
     )
     .await
@@ -74,8 +77,9 @@ pub async fn run(
 
 struct PolkagentAcpBackend {
     runtime: PolkagentRuntime,
-    model_override: Option<String>,
+    startup_model: Option<String>,
     prompt_timeout: Option<Duration>,
+    start_runs: Mutex<()>,
     active_runs: Mutex<HashMap<String, RunId>>,
     diagnostics: AcpDiagnostics,
 }
@@ -109,8 +113,9 @@ impl PolkagentAcpBackend {
 
         Ok(Self {
             runtime,
-            model_override: cmd.model.clone(),
+            startup_model: cmd.model.clone(),
             prompt_timeout: (cmd.timeout > 0).then(|| Duration::from_secs(cmd.timeout)),
+            start_runs: Mutex::new(()),
             active_runs: Mutex::new(HashMap::new()),
             diagnostics,
         })
@@ -131,10 +136,59 @@ impl PolkagentAcpBackend {
         Ok(agent)
     }
 
+    fn configured_models(&self) -> Result<Vec<ModelSummary>> {
+        let mut models = BTreeSet::new();
+        if let Some(model) = self
+            .startup_model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+        {
+            models.insert(model.to_owned());
+        }
+        for provider in self.runtime.app().provider_registry().list_providers() {
+            models.extend(
+                provider
+                    .models
+                    .into_iter()
+                    .filter(|model| !model.is_empty()),
+            );
+        }
+        models.extend(
+            self.runtime
+                .config()
+                .models
+                .iter()
+                .map(|model| model.slug.clone())
+                .filter(|model| !model.is_empty()),
+        );
+        let store = SqliteRunStore::new(self.runtime.pool().clone());
+        for agent in store
+            .list_agents(Some("active"), false)
+            .context("reading active agents for model discovery")?
+        {
+            let agent_id: AgentId = agent
+                .id
+                .parse()
+                .with_context(|| format!("invalid stored agent ID: {}", agent.id))?;
+            let model = build_agent_spec(agent_id, &agent.name, &agent.spec_json, None).model;
+            if !model.is_empty() {
+                models.insert(model);
+            }
+        }
+        Ok(models
+            .into_iter()
+            .map(|model| ModelSummary {
+                name: model.clone(),
+                id: model,
+            })
+            .collect())
+    }
+
     async fn execute_prompt(
         &self,
         session_id: &str,
         selector: &str,
+        model: Option<&str>,
         prompt: &str,
     ) -> Result<BackendTurn> {
         self.diagnostics.record(
@@ -151,8 +205,12 @@ impl PolkagentAcpBackend {
             agent_id,
             &agent.name,
             &agent.spec_json,
-            self.model_override.clone(),
+            model.map(str::to_owned),
         );
+        // `AppService` stores one live spec per agent. Keep replacement and
+        // start atomic across concurrent ACP sessions so another session
+        // cannot substitute its model before `start_run` clones this spec.
+        let start_guard = self.start_runs.lock().await;
         self.runtime
             .app()
             .create_agent(spec)
@@ -165,6 +223,7 @@ impl PolkagentAcpBackend {
             .start_run(agent_id, prompt)
             .await
             .context("starting ACP-backed run")?;
+        drop(start_guard);
         self.active_runs
             .lock()
             .await
@@ -255,14 +314,26 @@ impl AcpBackend for PolkagentAcpBackend {
             })
     }
 
+    async fn list_models(&self) -> Result<Vec<ModelSummary>, BackendError> {
+        self.configured_models().map_err(|error| {
+            self.diagnostics.record(
+                "error",
+                "acp.model_list_failed",
+                "Listing configured models failed",
+            );
+            BackendError::new(format!("listing configured models: {error:#}"))
+        })
+    }
+
     async fn prompt(
         &self,
         session_id: &str,
         _cwd: &Path,
         agent: &str,
+        model: Option<&str>,
         prompt: &str,
     ) -> Result<BackendTurn, BackendError> {
-        self.execute_prompt(session_id, agent, prompt)
+        self.execute_prompt(session_id, agent, model, prompt)
             .await
             .map_err(|error| {
                 self.diagnostics.record(
