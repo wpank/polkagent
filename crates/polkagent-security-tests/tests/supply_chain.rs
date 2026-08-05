@@ -8,6 +8,12 @@
 //! polkagent-metadata, polkagent-core, polkagent-signer-trait,
 //! polkagent-store-trait.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "supply-chain security tests intentionally fail fast when expected fixture outcomes are absent"
+)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +45,10 @@ struct InMemoryStore {
 #[async_trait::async_trait]
 impl EffectStore for InMemoryStore {
     async fn propose_intent(&self, intent: StoredIntent) -> Result<(), StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if intents.contains_key(&intent.id) {
             return Err(StoreError::Conflict {
                 resource_type: "EffectIntent",
@@ -55,7 +64,10 @@ impl EffectStore for InMemoryStore {
         worker_id: WorkerId,
         lease_duration: Duration,
     ) -> Result<Option<StoredIntent>, StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Utc::now();
         let pending_id = intents
             .values()
@@ -82,7 +94,10 @@ impl EffectStore for InMemoryStore {
         worker_id: WorkerId,
         lease_duration: Duration,
     ) -> Result<StoredIntent, StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Utc::now();
         match intents.get_mut(&intent_id) {
             None => Err(StoreError::NotFound {
@@ -106,7 +121,10 @@ impl EffectStore for InMemoryStore {
         intent_id: EffectId,
         worker_id: WorkerId,
     ) -> Result<(), StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(intent) = intents.get_mut(&intent_id) {
             if intent.lease_owner == Some(worker_id) {
                 intent.state = "pending".to_string();
@@ -118,7 +136,10 @@ impl EffectStore for InMemoryStore {
     }
 
     async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
-        let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         intents
             .get(&intent_id)
             .cloned()
@@ -129,7 +150,10 @@ impl EffectStore for InMemoryStore {
     }
 
     async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
-        let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(intents
             .values()
             .filter(|i| i.run_id == run_id)
@@ -141,12 +165,15 @@ impl EffectStore for InMemoryStore {
         &self,
         cutoff: polkagent_core::Timestamp,
     ) -> Result<Vec<StoredIntent>, StoreError> {
-        let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(intents
             .values()
             .filter(|i| {
                 i.state.eq_ignore_ascii_case("claimed")
-                    && i.lease_expires.map(|exp| exp < cutoff).unwrap_or(false)
+                    && i.lease_expires.is_some_and(|exp| exp < cutoff)
             })
             .cloned()
             .collect())
@@ -161,20 +188,26 @@ impl EffectStore for InMemoryStore {
     ) -> Result<(), StoreError> {
         self.attempts
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(payload);
         Ok(())
     }
 
     async fn record_outcome(&self, outcome: StoredOutcome) -> Result<(), StoreError> {
-        let mut outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut outcomes = self
+            .outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if outcomes.iter().any(|o| o.id == outcome.id) {
             return Err(StoreError::Conflict {
                 resource_type: "EffectOutcome",
                 id: outcome.id.to_string(),
             });
         }
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(intent) = intents.get_mut(&outcome.intent_id) {
             intent.state = "resolved".to_string();
             intent.lease_owner = None;
@@ -185,7 +218,10 @@ impl EffectStore for InMemoryStore {
     }
 
     async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
-        let outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
+        let outcomes = self
+            .outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(outcomes
             .iter()
             .filter(|o| o.run_id == run_id && !o.consumed)
@@ -197,7 +233,10 @@ impl EffectStore for InMemoryStore {
         &self,
         outcome_ids: &[EffectOutcomeId],
     ) -> Result<(), StoreError> {
-        let mut outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut outcomes = self
+            .outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for o in outcomes.iter_mut() {
             if outcome_ids.contains(&o.id) {
                 o.consumed = true;
@@ -211,7 +250,10 @@ impl EffectStore for InMemoryStore {
         intent_id: EffectId,
         new_state: &str,
     ) -> Result<StoredIntent, StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match intents.get_mut(&intent_id) {
             None => Err(StoreError::NotFound {
                 resource_type: "EffectIntent",
@@ -265,9 +307,9 @@ fn allow_rule(id: &str, actions: &[&str], resources: &[&str]) -> PolicyRule {
     PolicyRule {
         id: id.to_string(),
         effect: Effect::Allow,
-        action_patterns: actions.iter().map(|s| s.to_string()).collect(),
-        resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
-        conditions: Default::default(),
+        action_patterns: actions.iter().map(ToString::to_string).collect(),
+        resource_patterns: resources.iter().map(ToString::to_string).collect(),
+        conditions: std::collections::HashMap::default(),
         abac_condition: None,
     }
 }
@@ -367,7 +409,7 @@ mod policy_bypass {
             effect: Effect::Allow,
             action_patterns: vec![], // missing required field
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 
@@ -387,7 +429,7 @@ mod policy_bypass {
             effect: Effect::Allow,
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec![], // missing required field
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 
@@ -408,7 +450,7 @@ mod policy_bypass {
             effect: Effect::Allow,
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         };
         rule.conditions
@@ -431,7 +473,7 @@ mod policy_bypass {
             effect: Effect::Allow,
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
         set.add_rule(PolicyRule {
@@ -439,7 +481,7 @@ mod policy_bypass {
             effect: Effect::Deny,
             action_patterns: vec!["chain/submit".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 
@@ -468,7 +510,7 @@ mod policy_bypass {
             effect: Effect::Allow,
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
         set.add_rule(PolicyRule {
@@ -476,7 +518,7 @@ mod policy_bypass {
             effect: Effect::Deny,
             action_patterns: vec!["pallet/system/**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 
@@ -508,7 +550,7 @@ mod policy_bypass {
             effect: Effect::Allow,
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         };
         rule.conditions
@@ -1150,14 +1192,18 @@ mod replay_protection {
             .unwrap_or_else(|e| panic!("record_outcome failed: {e}"));
 
         // Verify the intent is in "resolved" state.
-        let stored = inner.intents.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(
-            stored[&intent_id].state, "resolved",
-            "completed intent must be in resolved state"
-        );
+        {
+            let stored = inner
+                .intents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(
+                stored[&intent_id].state, "resolved",
+                "completed intent must be in resolved state"
+            );
+        }
 
         // No pending intents should be claimable.
-        drop(stored);
         let second_claim = pipeline
             .claim_with_duration(Duration::from_secs(60))
             .await
@@ -1391,7 +1437,7 @@ mod cross_cutting {
             effect: Effect::Allow,
             action_patterns: vec!["chain/query".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
         set.add_rule(PolicyRule {
@@ -1399,7 +1445,7 @@ mod cross_cutting {
             effect: Effect::Deny,
             action_patterns: vec!["chain/submit".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 

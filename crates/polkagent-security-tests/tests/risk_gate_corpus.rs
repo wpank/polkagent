@@ -1,20 +1,20 @@
 //! Phase 4 Acceptance Tests — Risk Gate Fixture Corpus
 //!
-//! Exercises the risk gate pipeline (BatchHidingDetector, HomoglyphDetector,
-//! HighValueDetector, CompositeRiskGate) against 10+ dangerous-call patterns
+//! Exercises the risk gate pipeline (`BatchHidingDetector`, `HomoglyphDetector`,
+//! `HighValueDetector`, `CompositeRiskGate`) against 10+ dangerous-call patterns
 //! combining batch, proxy, multisig, and governance pallets.
 //!
 //! - RG-01: Batch hiding a `System.set_code` call.
 //! - RG-02: Batch hiding a `Proxy.add_proxy` call.
 //! - RG-03: Batch hiding a `Multisig.as_multi` call.
-//! - RG-04: Proxy call wrapping a transfer (ProxyCall risk code).
+//! - RG-04: Proxy call wrapping a transfer (`ProxyCall` risk code).
 //! - RG-05: Batch with nested `Utility.batch_all` (recursive batch).
 //! - RG-06: Batch hiding `Staking.nominate` among transfers.
 //! - RG-07: Batch hiding `Democracy.vote` among transfers.
 //! - RG-08: Homoglyph + batch hiding combined.
 //! - RG-09: High value + batch hiding + homoglyph triple trigger.
 //! - RG-10: Batch with only `Balances.transfer_all` calls is clean.
-//! - RG-11: Empty metadata with high value triggers only HighValue.
+//! - RG-11: Empty metadata with high value triggers only `HighValue`.
 //! - RG-12: Batch hiding `Sudo.sudo` call.
 
 use chrono::Utc;
@@ -53,7 +53,9 @@ fn make_intent_with_calls(
     calls: serde_json::Value,
 ) -> PaymentIntent {
     let mut intent = make_intent(recipient, planck);
-    intent.metadata = Some(serde_json::json!({ "calls": calls }));
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("calls".to_string(), calls);
+    intent.metadata = Some(serde_json::Value::Object(metadata));
     intent
 }
 

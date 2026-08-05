@@ -7,6 +7,12 @@
 //!
 //! Crates under test: polkagent-metadata, polkagent-card.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "metadata safety tests intentionally fail fast when expected validation outcomes are absent"
+)]
+
 use polkagent_core::now;
 use polkagent_metadata::error::MetadataError;
 use polkagent_metadata::types::{

@@ -1,7 +1,7 @@
 //! PRD-15 Security Tests: Data classification enforcement.
 //!
-//! These tests verify that the DataClassification system enforces access
-//! boundaries correctly, including the critical SecretForbidden tier.
+//! These tests verify that the `DataClassification` system enforces access
+//! boundaries correctly, including the critical `SecretForbidden` tier.
 
 use polkagent_core::artifact::{Artifact, ArtifactKind};
 use polkagent_core::config::DataClassification;

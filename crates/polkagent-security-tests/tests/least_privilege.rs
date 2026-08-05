@@ -6,11 +6,17 @@
 //! - E5-03: Child grant intersection is enforced (child ⊆ parent).
 //! - E5-04: Grant revocation is immediate; revoked capability is denied.
 //! - E5-05: Tool capability scoping — wrong capability type is denied.
-//! - E5-06: ModelExecutor interface never exposes API keys in InferenceRequest.
+//! - E5-06: `ModelExecutor` interface never exposes API keys in `InferenceRequest`.
 //! - E5-07: Grant widening by model text is rejected.
 //! - E5-08: Restricted operation without isolation emits an event (not silent).
 //! - E5-09: Budget enforcement across multiple attempts (cumulative > 100%).
 //! - E5-10: Grant provenance is recorded for every grant decision.
+
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "least-privilege tests intentionally fail fast when expected grants or denials are absent"
+)]
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -43,9 +49,9 @@ fn allow_rule(id: &str, actions: &[&str], resources: &[&str]) -> PolicyRule {
     PolicyRule {
         id: id.to_string(),
         effect: Effect::Allow,
-        action_patterns: actions.iter().map(|s| s.to_string()).collect(),
-        resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
-        conditions: Default::default(),
+        action_patterns: actions.iter().map(ToString::to_string).collect(),
+        resource_patterns: resources.iter().map(ToString::to_string).collect(),
+        conditions: std::collections::HashMap::default(),
         abac_condition: None,
     }
 }
@@ -80,10 +86,10 @@ fn tool_ctx(grants: Vec<ResolvedGrant>) -> ToolContext {
 // E5-03: Child grant intersection enforced (child ⊆ parent)
 // ===========================================================================
 
-/// Create a parent grant set [file:read, file:write, net:connect].
-/// Create a child requesting [file:write, net:connect, shell:exec].
-/// The child's effective grant must be exactly [file:write, net:connect] — the
-/// intersection — and must NOT include shell:exec (not in parent).
+/// Create a parent grant set [`file:read`, `file:write`, `net:connect`].
+/// Create a child requesting [`file:write`, `net:connect`, `shell:exec`].
+/// The child's effective grant must be exactly [`file:write`, `net:connect`] — the
+/// intersection — and must NOT include `shell:exec` (not in parent).
 ///
 /// This enforces the invariant: child capabilities ⊆ parent capabilities.
 #[test]
@@ -286,7 +292,7 @@ async fn e5_04_tiny_ttl_grant_expires_immediately() {
 // E5-05: Tool capability scoping
 // ===========================================================================
 
-/// A tool requiring "file:read" capability.
+/// A tool requiring `file:read` capability.
 struct FileReadTool;
 
 #[async_trait]
@@ -310,7 +316,53 @@ impl ToolHandler for FileReadTool {
     }
 }
 
-/// An agent with only "file:write" cannot execute the "file:read" tool.
+struct ShellExecTool;
+
+#[async_trait]
+impl ToolHandler for ShellExecTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "test.shell_exec".to_string(),
+            description: "Executes a shell command (highly privileged)".to_string(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            required_grant: Some("shell:exec".to_string()),
+            output_classification: DataClassification::Sensitive,
+        }
+    }
+
+    async fn execute(&self, _input: Value, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult {
+            output: serde_json::json!({ "stdout": "" }),
+            classification: DataClassification::Sensitive,
+            artifacts: vec![],
+        })
+    }
+}
+
+struct PublicInfoTool;
+
+#[async_trait]
+impl ToolHandler for PublicInfoTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "test.public_info".to_string(),
+            description: "Returns public information; no grant required.".to_string(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            required_grant: None,
+            output_classification: DataClassification::Public,
+        }
+    }
+
+    async fn execute(&self, _input: Value, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        Ok(ToolResult {
+            output: serde_json::json!({ "info": "public" }),
+            classification: DataClassification::Public,
+            artifacts: vec![],
+        })
+    }
+}
+
+/// An agent with only `file:write` cannot execute the `file:read` tool.
 #[tokio::test]
 async fn e5_05_tool_capability_scoping_wrong_cap_denied() {
     let mut registry = ToolRegistry::new();
@@ -330,7 +382,7 @@ async fn e5_05_tool_capability_scoping_wrong_cap_denied() {
     );
 }
 
-/// An agent with the correct "file:read" capability CAN execute the tool.
+/// An agent with the correct `file:read` capability CAN execute the tool.
 #[tokio::test]
 async fn e5_05_tool_capability_scoping_correct_cap_allowed() {
     let mut registry = ToolRegistry::new();
@@ -417,8 +469,7 @@ fn e5_06_inference_request_has_no_api_key_field() {
         for field in &suspicious_fields {
             assert!(
                 !map.contains_key(*field),
-                "InferenceRequest must not contain field '{}' (potential secret exposure)",
-                field
+                "InferenceRequest must not contain field '{field}' (potential secret exposure)"
             );
         }
     }
@@ -427,11 +478,10 @@ fn e5_06_inference_request_has_no_api_key_field() {
     // JSON field names (i.e., quoted before a colon).
     let json_lower = json.to_lowercase();
     for field in &suspicious_fields {
-        let pattern = format!("\"{}\":", field);
+        let pattern = format!("\"{field}\":");
         assert!(
             !json_lower.contains(&pattern),
-            "InferenceRequest JSON must not contain '{}' as a field name",
-            field
+            "InferenceRequest JSON must not contain '{field}' as a field name"
         );
     }
 }
@@ -462,8 +512,8 @@ fn e5_06_inference_request_system_prompt_is_optional() {
 // E5-07: Grant widening by model text rejected
 // ===========================================================================
 
-/// The model outputs text containing "GRANT: all_capabilities". Verify that
-/// the grant evaluator (GrantResolver) ignores this entirely — only typed
+/// The model outputs text containing `GRANT: all_capabilities`. Verify that
+/// the grant evaluator (`GrantResolver`) ignores this entirely — only typed
 /// Rust values from the policy engine determine authorization.
 ///
 /// The invariant is enforced structurally: the `GrantResolver::resolve` API
@@ -498,8 +548,7 @@ async fn e5_07_grant_widening_by_model_text_rejected() {
 
         assert!(
             matches!(d, GrantDecision::Deny(_)),
-            "model-text-injected action '{}' must be denied by the grant evaluator: {d:?}",
-            attempted_action
+            "model-text-injected action '{attempted_action}' must be denied by the grant evaluator: {d:?}"
         );
     }
 
@@ -555,10 +604,10 @@ async fn e5_07_grant_widening_by_model_text_rejected() {
 /// When a restricted operation is attempted without proper isolation, the
 /// system must emit an observable event/error — not silently succeed.
 ///
-/// We model this using the ToolRegistry: a tool requiring a grant, called
+/// We model this using the `ToolRegistry`: a tool requiring a grant, called
 /// without the grant, must return a `ToolError::PermissionDenied` error.
 /// This error is the "event" (in a real system it would also emit a
-/// PolicyDenial audit event).
+/// `PolicyDenial` audit event).
 ///
 /// The critical invariant: no silent pass-through.
 #[tokio::test]
@@ -566,33 +615,6 @@ async fn e5_08_restricted_operation_without_isolation_emits_error() {
     let mut registry = ToolRegistry::new();
 
     // Register a "shell exec" tool that requires a strict grant.
-    struct ShellExecTool;
-
-    #[async_trait]
-    impl ToolHandler for ShellExecTool {
-        fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: "test.shell_exec".to_string(),
-                description: "Executes a shell command (highly privileged)".to_string(),
-                input_schema: serde_json::json!({ "type": "object" }),
-                required_grant: Some("shell:exec".to_string()),
-                output_classification: DataClassification::Sensitive,
-            }
-        }
-
-        async fn execute(
-            &self,
-            _input: Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult {
-                output: serde_json::json!({ "stdout": "" }),
-                classification: DataClassification::Sensitive,
-                artifacts: vec![],
-            })
-        }
-    }
-
     registry.register(Box::new(ShellExecTool));
 
     // Agent with NO isolation capability attempts a restricted op.
@@ -620,38 +642,11 @@ async fn e5_08_restricted_operation_without_isolation_emits_error() {
     }
 }
 
-/// A tool with no required_grant runs unconditionally — this is NOT a silent
+/// A tool with no `required_grant` runs unconditionally — this is NOT a silent
 /// downgrade; it is explicitly declared open access.
 #[tokio::test]
 async fn e5_08_open_access_tool_is_explicit_not_silent() {
     let mut registry = ToolRegistry::new();
-
-    struct PublicInfoTool;
-
-    #[async_trait]
-    impl ToolHandler for PublicInfoTool {
-        fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: "test.public_info".to_string(),
-                description: "Returns public information; no grant required.".to_string(),
-                input_schema: serde_json::json!({ "type": "object" }),
-                required_grant: None, // explicitly open
-                output_classification: DataClassification::Public,
-            }
-        }
-
-        async fn execute(
-            &self,
-            _input: Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult {
-                output: serde_json::json!({ "info": "public" }),
-                classification: DataClassification::Public,
-                artifacts: vec![],
-            })
-        }
-    }
 
     registry.register(Box::new(PublicInfoTool));
 
@@ -746,7 +741,7 @@ async fn e5_09_budget_enforcement_across_multiple_attempts() {
     );
 }
 
-/// Budget enforcement via the GrantResolver: three sequential resolves,
+/// Budget enforcement via the `GrantResolver`: three sequential resolves,
 /// third one is denied because cumulative spend exceeds ceiling.
 #[tokio::test]
 async fn e5_09_budget_enforcement_via_grant_resolver() {
@@ -849,6 +844,44 @@ impl AuditLog {
     }
 }
 
+async fn resolve_and_audit(
+    resolver: &GrantResolver,
+    audit: &Arc<AuditLog>,
+    principal: &str,
+    action: &str,
+    resource: &str,
+    policy_matched: &str,
+) {
+    let decision = resolver
+        .resolve(
+            principal,
+            action,
+            resource,
+            &EvaluationContext::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("resolve");
+
+    let outcome = match &decision {
+        GrantDecision::Permit(_) => "allow",
+        GrantDecision::Deny(_) => "deny",
+        GrantDecision::RequireApproval(_) => "approval_required",
+        GrantDecision::Defer(_) => "deferred",
+    };
+
+    audit
+        .record(GrantAuditRecord {
+            requester: principal.to_string(),
+            action: action.to_string(),
+            resource: resource.to_string(),
+            policy_matched: policy_matched.to_string(),
+            decision: outcome,
+        })
+        .await;
+}
+
 /// Every grant decision must record who requested it, what was requested,
 /// what policy matched, and whether it was allowed or denied.
 #[tokio::test]
@@ -858,45 +891,6 @@ async fn e5_10_grant_provenance_recorded_for_every_decision() {
 
     let resolver = GrantResolver::new(set.clone(), ResolverConfig::default());
     let audit = Arc::new(AuditLog::default());
-
-    // Helper: resolve and record audit provenance.
-    async fn resolve_and_audit(
-        resolver: &GrantResolver,
-        audit: &Arc<AuditLog>,
-        principal: &str,
-        action: &str,
-        resource: &str,
-        policy_matched: &str,
-    ) {
-        let decision = resolver
-            .resolve(
-                principal,
-                action,
-                resource,
-                &EvaluationContext::default(),
-                None,
-                None,
-            )
-            .await
-            .expect("resolve");
-
-        let outcome = match &decision {
-            GrantDecision::Permit(_) => "allow",
-            GrantDecision::Deny(_) => "deny",
-            GrantDecision::RequireApproval(_) => "approval_required",
-            GrantDecision::Defer(_) => "deferred",
-        };
-
-        audit
-            .record(GrantAuditRecord {
-                requester: principal.to_string(),
-                action: action.to_string(),
-                resource: resource.to_string(),
-                policy_matched: policy_matched.to_string(),
-                decision: outcome,
-            })
-            .await;
-    }
 
     // Decision 1: Alice requests chain/transfer → allowed by "allow-chain".
     resolve_and_audit(

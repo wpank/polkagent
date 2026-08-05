@@ -31,9 +31,9 @@ fn allow_rule(id: &str, actions: &[&str], resources: &[&str]) -> PolicyRule {
     PolicyRule {
         id: id.to_string(),
         effect: Effect::Allow,
-        action_patterns: actions.iter().map(|s| s.to_string()).collect(),
-        resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
-        conditions: Default::default(),
+        action_patterns: actions.iter().map(ToString::to_string).collect(),
+        resource_patterns: resources.iter().map(ToString::to_string).collect(),
+        conditions: std::collections::HashMap::default(),
         abac_condition: None,
     }
 }
@@ -42,9 +42,9 @@ fn deny_rule(id: &str, actions: &[&str], resources: &[&str]) -> PolicyRule {
     PolicyRule {
         id: id.to_string(),
         effect: Effect::Deny,
-        action_patterns: actions.iter().map(|s| s.to_string()).collect(),
-        resource_patterns: resources.iter().map(|s| s.to_string()).collect(),
-        conditions: Default::default(),
+        action_patterns: actions.iter().map(ToString::to_string).collect(),
+        resource_patterns: resources.iter().map(ToString::to_string).collect(),
+        conditions: std::collections::HashMap::default(),
         abac_condition: None,
     }
 }
@@ -220,7 +220,7 @@ async fn rate_limit_prevents_burst() {
         action: "chain/transfer".to_string(),
         resource: "account/bob".to_string(),
         amount: None,
-        metadata: Default::default(),
+        metadata: std::collections::HashMap::default(),
     };
 
     // Exhaust all 3 tokens.
@@ -400,7 +400,7 @@ async fn empty_allowlist_denies_all() {
         action: "chain/transfer".to_string(),
         resource: "any-address".to_string(),
         amount: None,
-        metadata: Default::default(),
+        metadata: std::collections::HashMap::default(),
     };
     let result = gate.check(&req).await;
     assert!(
@@ -421,7 +421,7 @@ async fn budget_gate_tracks_cumulative_spend() {
         action: "chain/transfer".to_string(),
         resource: "account/bob".to_string(),
         amount: Some(amount),
-        metadata: Default::default(),
+        metadata: std::collections::HashMap::default(),
     };
 
     // Spend 60, then 50 -- cumulative 110 > 100.
@@ -458,8 +458,8 @@ async fn stale_context_produces_denial() {
     let stale_ts = (Utc::now() - chrono::Duration::minutes(10))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let ctx = EvaluationContext {
-        attributes: Default::default(),
-        typed_attributes: Default::default(),
+        attributes: std::collections::HashMap::default(),
+        typed_attributes: std::collections::HashMap::default(),
         evaluated_at: Some(stale_ts),
     };
 

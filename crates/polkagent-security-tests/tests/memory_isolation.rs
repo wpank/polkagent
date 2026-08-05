@@ -14,6 +14,11 @@
 //! - MI-17..MI-20: Content search isolation.
 //! - MI-21..MI-22: Mixed type + classification isolation.
 
+#![allow(
+    clippy::expect_used,
+    reason = "memory-isolation tests intentionally fail fast when fixture storage operations violate expectations"
+)]
+
 use std::sync::Arc;
 
 use polkagent_core::AgentId;

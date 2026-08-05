@@ -1,6 +1,6 @@
-//! PRD-15 Security Tests: ActionCard safety.
+//! PRD-15 Security Tests: `ActionCard` safety.
 //!
-//! These tests verify that ActionCards maintain the canonical/narrative
+//! These tests verify that `ActionCard`s maintain the canonical/narrative
 //! separation, properly label AI-generated content, handle malicious content
 //! safely, and calculate risk levels consistently.
 

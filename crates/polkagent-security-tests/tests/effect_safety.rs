@@ -4,6 +4,11 @@
 //! idempotency key deduplication, outcome immutability, unknown outcome
 //! preservation, expired lease recovery, and claim exclusivity.
 
+#![allow(
+    clippy::expect_used,
+    reason = "effect safety tests intentionally fail fast when an expected pipeline rejection is absent"
+)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,7 +36,10 @@ struct InMemoryStore {
 #[async_trait::async_trait]
 impl EffectStore for InMemoryStore {
     async fn propose_intent(&self, intent: StoredIntent) -> Result<(), StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if intents.contains_key(&intent.id) {
             return Err(StoreError::Conflict {
                 resource_type: "EffectIntent",
@@ -47,7 +55,10 @@ impl EffectStore for InMemoryStore {
         worker_id: WorkerId,
         lease_duration: Duration,
     ) -> Result<Option<StoredIntent>, StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Utc::now();
         let pending_id = intents
             .values()
@@ -76,7 +87,10 @@ impl EffectStore for InMemoryStore {
         worker_id: WorkerId,
         lease_duration: Duration,
     ) -> Result<StoredIntent, StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Utc::now();
         match intents.get_mut(&intent_id) {
             None => Err(StoreError::NotFound {
@@ -100,7 +114,10 @@ impl EffectStore for InMemoryStore {
         intent_id: EffectId,
         worker_id: WorkerId,
     ) -> Result<(), StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(intent) = intents.get_mut(&intent_id) {
             if intent.lease_owner == Some(worker_id) {
                 intent.state = "pending".to_string();
@@ -116,7 +133,10 @@ impl EffectStore for InMemoryStore {
         intent_id: EffectId,
         new_state: &str,
     ) -> Result<StoredIntent, StoreError> {
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match intents.get_mut(&intent_id) {
             None => Err(StoreError::NotFound {
                 resource_type: "EffectIntent",
@@ -130,7 +150,10 @@ impl EffectStore for InMemoryStore {
     }
 
     async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
-        let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         intents
             .get(&intent_id)
             .cloned()
@@ -141,7 +164,10 @@ impl EffectStore for InMemoryStore {
     }
 
     async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
-        let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(intents
             .values()
             .filter(|i| i.run_id == run_id)
@@ -153,12 +179,15 @@ impl EffectStore for InMemoryStore {
         &self,
         cutoff: polkagent_core::Timestamp,
     ) -> Result<Vec<StoredIntent>, StoreError> {
-        let intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(intents
             .values()
             .filter(|i| {
                 i.state.eq_ignore_ascii_case("claimed")
-                    && i.lease_expires.map(|exp| exp < cutoff).unwrap_or(false)
+                    && i.lease_expires.is_some_and(|exp| exp < cutoff)
             })
             .cloned()
             .collect())
@@ -173,20 +202,26 @@ impl EffectStore for InMemoryStore {
     ) -> Result<(), StoreError> {
         self.attempts
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(payload);
         Ok(())
     }
 
     async fn record_outcome(&self, outcome: StoredOutcome) -> Result<(), StoreError> {
-        let mut outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut outcomes = self
+            .outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if outcomes.iter().any(|o| o.id == outcome.id) {
             return Err(StoreError::Conflict {
                 resource_type: "EffectOutcome",
                 id: outcome.id.to_string(),
             });
         }
-        let mut intents = self.intents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut intents = self
+            .intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(intent) = intents.get_mut(&outcome.intent_id) {
             intent.state = "resolved".to_string();
             intent.lease_owner = None;
@@ -197,7 +232,10 @@ impl EffectStore for InMemoryStore {
     }
 
     async fn unconsumed_outcomes(&self, run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
-        let outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
+        let outcomes = self
+            .outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(outcomes
             .iter()
             .filter(|o| o.run_id == run_id && !o.consumed)
@@ -209,7 +247,10 @@ impl EffectStore for InMemoryStore {
         &self,
         outcome_ids: &[EffectOutcomeId],
     ) -> Result<(), StoreError> {
-        let mut outcomes = self.outcomes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut outcomes = self
+            .outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for o in outcomes.iter_mut() {
             if outcome_ids.contains(&o.id) {
                 o.consumed = true;
@@ -433,6 +474,8 @@ fn all_outcome_variants_survive_serde_round_trip() {
 
 #[tokio::test]
 async fn claim_exclusivity_only_one_worker() {
+    const N: usize = 8;
+
     let (store, _) = make_store();
     let pipeline = EffectPipeline::new(Arc::clone(&store), WorkerId::new());
 
@@ -443,7 +486,6 @@ async fn claim_exclusivity_only_one_worker() {
         .unwrap_or_else(|e| panic!("propose failed: {e}"));
 
     // Attempt concurrent claims from 8 workers.
-    const N: usize = 8;
     let mut join_set = tokio::task::JoinSet::new();
     for _ in 0..N {
         let s = Arc::clone(&store);
@@ -493,7 +535,10 @@ async fn guard_drop_returns_intent_to_pending() {
 
         // Verify it's claimed.
         {
-            let intents = store.intents.lock().unwrap_or_else(|e| e.into_inner());
+            let intents = store
+                .intents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert_eq!(intents[&intent_id].state, "claimed");
         }
 
@@ -504,7 +549,10 @@ async fn guard_drop_returns_intent_to_pending() {
     // Allow the async drop task to run.
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let intents = store.intents.lock().unwrap_or_else(|e| e.into_inner());
+    let intents = store
+        .intents
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert_eq!(
         intents[&intent_id].state, "pending",
         "dropping the guard must return intent to pending"

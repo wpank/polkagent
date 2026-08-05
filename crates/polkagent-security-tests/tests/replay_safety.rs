@@ -10,6 +10,12 @@
 //! - E4-05: All events have monotonically increasing timestamps.
 //! - E4-06: Debug-mode events are tagged and do not affect live state.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "replay-safety tests intentionally fail fast when expected fixture states or failures are absent"
+)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
@@ -48,7 +54,7 @@ impl EventStore for InMemoryStore {
         let current = seqs.get(&event.run_id).copied().unwrap_or(0);
         if event.sequence <= current {
             return Err(EventStoreError::NonMonotonicSequence {
-                run_id: event.run_id.clone(),
+                run_id: event.run_id,
                 current,
                 proposed: event.sequence,
             });
@@ -56,12 +62,11 @@ impl EventStore for InMemoryStore {
         seqs.insert(event.run_id.clone(), event.sequence);
 
         let mut term = self.terminal.lock().expect("lock");
-        if TERMINAL_TYPES.contains(&event.event_type.as_str()) {
-            if !term.insert(event.run_id.clone()) {
-                return Err(EventStoreError::DuplicateTerminalEvent {
-                    run_id: event.run_id.clone(),
-                });
-            }
+        if TERMINAL_TYPES.contains(&event.event_type.as_str()) && !term.insert(event.run_id.clone())
+        {
+            return Err(EventStoreError::DuplicateTerminalEvent {
+                run_id: event.run_id,
+            });
         }
 
         let mut durable = self.durable.lock().expect("lock");
@@ -111,7 +116,7 @@ impl EventStore for InMemoryStore {
                 filter
                     .run_id
                     .as_ref()
-                    .map_or(true, |rid| e.run_id == rid.to_string())
+                    .is_none_or(|rid| e.run_id == rid.to_string())
             })
             .cloned()
             .collect())
@@ -153,7 +158,7 @@ fn make_recorder() -> (EventRecorder, Arc<InMemoryStore>) {
 
 fn run_event(run_id: RunId, kind: EventKind) -> RunEvent {
     let correlation = EventCorrelation {
-        run_id: run_id.clone(),
+        run_id,
         ..Default::default()
     };
     RunEvent::new_durable(EventId::new(), run_id, 0, kind, correlation)
@@ -187,7 +192,7 @@ async fn e4_01_deterministic_replay_produces_same_sequence() {
     // --- Record pass ---
     let mut recorded_seqs: Vec<u64> = Vec::new();
     for kind in &kinds {
-        let evt = run_event(run_id.clone(), kind.clone());
+        let evt = run_event(run_id, kind.clone());
         let returned = recorder.record(evt).await.expect("record");
         recorded_seqs.push(returned.sequence);
     }
@@ -201,7 +206,7 @@ async fn e4_01_deterministic_replay_produces_same_sequence() {
 
     // --- Replay pass: read from store and verify order ---
     let stored = store
-        .read_run_events(run_id.clone())
+        .read_run_events(run_id)
         .await
         .expect("read run events");
 
@@ -246,12 +251,12 @@ async fn e4_01_replay_content_matches_original_run() {
 
     for kind in &kinds {
         recorder_a
-            .record(run_event(run_id.clone(), kind.clone()))
+            .record(run_event(run_id, kind.clone()))
             .await
             .expect("record");
     }
 
-    let original_events = store_a.read_run_events(run_id.clone()).await.expect("read");
+    let original_events = store_a.read_run_events(run_id).await.expect("read");
     let original_types: Vec<&str> = original_events
         .iter()
         .map(|e| e.event_type.as_str())
@@ -263,7 +268,7 @@ async fn e4_01_replay_content_matches_original_run() {
 
     for kind in &kinds {
         recorder_b
-            .record(run_event(replay_run_id.clone(), kind.clone()))
+            .record(run_event(replay_run_id, kind.clone()))
             .await
             .expect("replay record");
     }
@@ -287,9 +292,9 @@ async fn e4_01_replay_content_matches_original_run() {
 // E4-02: Replay doesn't re-send effects
 // ===========================================================================
 
-/// When an EffectOutcomeRecorded event is already in the store (meaning the
+/// When an `EffectOutcomeRecorded` event is already in the store (meaning the
 /// effect completed), a replay of those events must not produce a new
-/// EffectIntentCreated event for that same effect.
+/// `EffectIntentCreated` event for that same effect.
 ///
 /// This test models idempotency: during crash-recovery replay, the system
 /// reads the event log and detects which effects already completed.
@@ -302,26 +307,26 @@ async fn e4_02_replay_does_not_re_emit_completed_effects() {
 
     // Record the full effect lifecycle: intent created → outcome recorded.
     recorder
-        .record(run_event(run_id.clone(), EventKind::RunCreated))
+        .record(run_event(run_id, EventKind::RunCreated))
         .await
         .expect("e1");
     recorder
         .record(run_event(
-            run_id.clone(),
+            run_id,
             EventKind::EffectIntentCreated { intent_id },
         ))
         .await
         .expect("e2");
     recorder
         .record(run_event(
-            run_id.clone(),
+            run_id,
             EventKind::EffectOutcomeRecorded { outcome_id },
         ))
         .await
         .expect("e3");
 
     // Read back and check: the effect appears exactly once (no duplication).
-    let events = store.read_run_events(run_id.clone()).await.expect("read");
+    let events = store.read_run_events(run_id).await.expect("read");
 
     let intent_count = events
         .iter()
@@ -347,10 +352,10 @@ async fn e4_02_replay_does_not_re_emit_completed_effects() {
     let completed_intent_ids: HashSet<String> = events
         .iter()
         .filter(|e| e.event_type == "effect_outcome_recorded")
-        .flat_map(|_e| {
+        .map(|_e| {
             // In a real system, the payload would carry the intent_id.
             // Here we verify the outcome event exists (idempotency satisfied).
-            Some(intent_id.to_string())
+            intent_id.to_string()
         })
         .collect();
 
@@ -360,7 +365,7 @@ async fn e4_02_replay_does_not_re_emit_completed_effects() {
     );
 }
 
-/// Attempting to record a second EffectIntentCreated for the same effect
+/// Attempting to record a second `EffectIntentCreated` for the same effect
 /// should be detectable as a duplicate (replay idempotency guard).
 #[tokio::test]
 async fn e4_02_replay_idempotency_guard_detects_duplicates() {
@@ -369,12 +374,12 @@ async fn e4_02_replay_idempotency_guard_detects_duplicates() {
     let intent_id = EffectId::new();
 
     recorder
-        .record(run_event(run_id.clone(), EventKind::RunCreated))
+        .record(run_event(run_id, EventKind::RunCreated))
         .await
         .expect("e1");
     recorder
         .record(run_event(
-            run_id.clone(),
+            run_id,
             EventKind::EffectIntentCreated { intent_id },
         ))
         .await
@@ -383,7 +388,7 @@ async fn e4_02_replay_idempotency_guard_detects_duplicates() {
     // Simulate what a replay-aware system would do: before re-proposing an
     // intent, check the event log for a prior EffectIntentCreated with the
     // same intent_id. If found, skip re-proposal.
-    let events = store.read_run_events(run_id.clone()).await.expect("read");
+    let events = store.read_run_events(run_id).await.expect("read");
 
     let already_proposed: bool = events
         .iter()
@@ -421,10 +426,7 @@ async fn e4_03_nondeterminism_flagged_by_sequence_comparison() {
             output_tokens: 0,
         },
     ] {
-        recorder_a
-            .record(run_event(run_a.clone(), kind))
-            .await
-            .expect("a");
+        recorder_a.record(run_event(run_a, kind)).await.expect("a");
     }
 
     // Run B: nondeterministic path — RunCreated → RunQueued → RunFailed (different outcome)
@@ -435,10 +437,7 @@ async fn e4_03_nondeterminism_flagged_by_sequence_comparison() {
             reason: "model chose different path".to_string(),
         },
     ] {
-        recorder_b
-            .record(run_event(run_b.clone(), kind))
-            .await
-            .expect("b");
+        recorder_b.record(run_event(run_b, kind)).await.expect("b");
     }
 
     let events_a = store_a.read_run_events(run_a).await.expect("read a");
@@ -491,11 +490,11 @@ async fn e4_03_identical_runs_show_no_divergence() {
 
     for kind in &kinds {
         recorder_a
-            .record(run_event(run_a.clone(), kind.clone()))
+            .record(run_event(run_a, kind.clone()))
             .await
             .expect("a");
         recorder_b
-            .record(run_event(run_b.clone(), kind.clone()))
+            .record(run_event(run_b, kind.clone()))
             .await
             .expect("b");
     }
@@ -533,15 +532,15 @@ async fn e4_04_crash_recover_resumes_from_last_durable_event() {
 
     // Phase 1: record events before the "crash" point.
     recorder
-        .record(run_event(run_id.clone(), EventKind::RunCreated))
+        .record(run_event(run_id, EventKind::RunCreated))
         .await
         .expect("e1");
     recorder
-        .record(run_event(run_id.clone(), EventKind::RunQueued))
+        .record(run_event(run_id, EventKind::RunQueued))
         .await
         .expect("e2");
     recorder
-        .record(run_event(run_id.clone(), EventKind::RunStarted))
+        .record(run_event(run_id, EventKind::RunStarted))
         .await
         .expect("e3");
 
@@ -549,10 +548,7 @@ async fn e4_04_crash_recover_resumes_from_last_durable_event() {
     // In a real system: process exits; the above 3 events are durably persisted.
 
     // Phase 2: "restart" — read events from the store to determine where we are.
-    let recovered_events = store
-        .read_run_events(run_id.clone())
-        .await
-        .expect("recovery read");
+    let recovered_events = store.read_run_events(run_id).await.expect("recovery read");
 
     assert_eq!(
         recovered_events.len(),
@@ -573,7 +569,7 @@ async fn e4_04_crash_recover_resumes_from_last_durable_event() {
     // Simulate recovery: record the next event after the crash point.
     recorder
         .record(run_event(
-            run_id.clone(),
+            run_id,
             EventKind::RunCompleted {
                 output_artifact_id: None,
                 input_tokens: 0,
@@ -608,19 +604,19 @@ async fn e4_04_post_recovery_sequences_are_correct() {
         EventKind::RunStarted,
     ] {
         recorder
-            .record(run_event(run_id.clone(), kind))
+            .record(run_event(run_id, kind))
             .await
             .expect("pre-crash");
     }
 
     // Check max sequence after "restart".
-    let max_seq = store.max_sequence(run_id.clone()).await.expect("max seq");
+    let max_seq = store.max_sequence(run_id).await.expect("max seq");
     assert_eq!(max_seq, 3, "max sequence before recovery must be 3");
 
     // Record post-crash event — must get sequence 4.
     let post_crash = recorder
         .record(run_event(
-            run_id.clone(),
+            run_id,
             EventKind::RunCompleted {
                 output_artifact_id: None,
                 input_tokens: 0,
@@ -662,7 +658,7 @@ async fn e4_05_event_timestamps_are_monotonically_increasing() {
 
     let mut recorded_timestamps: Vec<DateTime<Utc>> = Vec::new();
     for kind in &kinds {
-        let evt = run_event(run_id.clone(), kind.clone());
+        let evt = run_event(run_id, kind.clone());
         let ts = evt.timestamp;
         recorder.record(evt).await.expect("record");
         recorded_timestamps.push(ts);
@@ -709,7 +705,7 @@ async fn e4_05_timestamps_are_valid_rfc3339_and_nonzero() {
 
     for kind in [EventKind::RunCreated, EventKind::RunQueued] {
         recorder
-            .record(run_event(run_id.clone(), kind))
+            .record(run_event(run_id, kind))
             .await
             .expect("record");
     }
@@ -747,18 +743,18 @@ async fn e4_06_debug_events_do_not_appear_in_durable_log() {
     let run_id = RunId::new();
 
     // Record a normal durable lifecycle event.
-    let live_evt = run_event(run_id.clone(), EventKind::RunCreated);
+    let live_evt = run_event(run_id, EventKind::RunCreated);
     recorder.record(live_evt).await.expect("live event");
 
     // Record a diagnostic event (debug mode simulation).
     let debug_evt = {
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
         RunEvent {
             id: EventId::new(),
-            run_id: run_id.clone(),
+            run_id,
             sequence: 0, // recorder assigns
             kind: EventKind::DiagnosticLog {
                 level: polkagent_core::event::LogLevel::Debug,
@@ -773,10 +769,7 @@ async fn e4_06_debug_events_do_not_appear_in_durable_log() {
     recorder.record(debug_evt).await.expect("debug event");
 
     // The durable log must contain only the live event.
-    let durable_events = store
-        .read_run_events(run_id.clone())
-        .await
-        .expect("read durable");
+    let durable_events = store.read_run_events(run_id).await.expect("read durable");
     assert_eq!(
         durable_events.len(),
         1,
@@ -808,12 +801,12 @@ async fn e4_06_debug_mode_events_do_not_affect_live_state() {
     // Record several diagnostic debug events simulating a debug session.
     for i in 0..5u32 {
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
         let debug_evt = RunEvent {
             id: EventId::new(),
-            run_id: run_id.clone(),
+            run_id,
             sequence: 0,
             kind: EventKind::DiagnosticLog {
                 level: LogLevel::Debug,
@@ -828,7 +821,7 @@ async fn e4_06_debug_mode_events_do_not_affect_live_state() {
     }
 
     // The durable log must be completely empty — debug events are isolated.
-    let durable = store.read_run_events(run_id.clone()).await.expect("read");
+    let durable = store.read_run_events(run_id).await.expect("read");
     assert!(
         durable.is_empty(),
         "durable event log must be empty after debug-only events; found {} events",
@@ -836,7 +829,7 @@ async fn e4_06_debug_mode_events_do_not_affect_live_state() {
     );
 
     // Max sequence for the run in the durable store must still be 0.
-    let max_seq = store.max_sequence(run_id.clone()).await.expect("max seq");
+    let max_seq = store.max_sequence(run_id).await.expect("max seq");
     assert_eq!(
         max_seq, 0,
         "debug events must not increment the durable sequence counter"
@@ -855,12 +848,12 @@ async fn e4_06_live_events_after_debug_session_get_correct_sequence() {
     // Simulate a debug session (5 diagnostic events).
     for _ in 0..5 {
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
         let debug_evt = RunEvent {
             id: EventId::new(),
-            run_id: run_id.clone(),
+            run_id,
             sequence: 0,
             kind: EventKind::DiagnosticLog {
                 level: LogLevel::Debug,
@@ -876,7 +869,7 @@ async fn e4_06_live_events_after_debug_session_get_correct_sequence() {
 
     // Now record the first live event — must get sequence 1 (not 6).
     let live = recorder
-        .record(run_event(run_id.clone(), EventKind::RunCreated))
+        .record(run_event(run_id, EventKind::RunCreated))
         .await
         .expect("live");
     assert_eq!(

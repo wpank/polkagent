@@ -10,7 +10,13 @@
 //! - XR-05: Asset accepted for fees but not for transfer.
 //! - XR-06: Version incompatibility error construction.
 //! - XR-07: Fee estimation failure error construction.
-//! - XR-08: XcmError::AssetNotAccepted construction.
+//! - XR-08: `XcmError::AssetNotAccepted` construction.
+
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "security refusal tests intentionally fail fast when expected fixture outcomes are absent"
+)]
 
 use async_trait::async_trait;
 
@@ -250,8 +256,8 @@ fn xr_06_version_incompatible_error() {
         supported: 3,
     };
     let msg = format!("{err}");
-    assert!(msg.contains("5"));
-    assert!(msg.contains("3"));
+    assert!(msg.contains('5'));
+    assert!(msg.contains('3'));
     assert!(msg.contains("not compatible"));
 }
 

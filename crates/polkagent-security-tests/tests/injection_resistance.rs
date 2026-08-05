@@ -4,6 +4,11 @@
 //! safely: script injection, path traversal, extremely long strings, null
 //! bytes, and malformed UUIDs.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "injection tests intentionally fail fast when an expected rejection is absent"
+)]
+
 use polkagent_core::ids::AgentId;
 use polkagent_core::PolkagentError;
 
@@ -43,14 +48,16 @@ mod config_injection {
     fn config_with_sql_injection_in_provider_id_is_not_executed() {
         // This verifies that provider IDs are treated as opaque strings, not
         // interpolated into any query.
-        let mut cfg = Config::default();
-        cfg.providers = vec![polkagent_config::schema::ProviderConfig {
-            id: "'; DROP TABLE providers; --".to_string(),
-            provider_type: "anthropic".to_string(),
-            api_key_env: "KEY".to_string(),
-            timeout_secs: 30,
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![polkagent_config::schema::ProviderConfig {
+                id: "'; DROP TABLE providers; --".to_string(),
+                provider_type: "anthropic".to_string(),
+                api_key_env: "KEY".to_string(),
+                timeout_secs: 30,
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
 
         // Validation should still work (or fail gracefully) -- no panics.
         let _result = validate::validate(&cfg);
@@ -77,7 +84,7 @@ mod path_traversal {
             effect: Effect::Allow,
             action_patterns: vec!["chain/**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 
@@ -110,7 +117,7 @@ mod path_traversal {
             effect: Effect::Allow,
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 
@@ -155,14 +162,16 @@ mod string_limits {
 
     #[test]
     fn long_provider_id_does_not_crash() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![polkagent_config::schema::ProviderConfig {
-            id: "p".repeat(10_000),
-            provider_type: "anthropic".to_string(),
-            api_key_env: "KEY".to_string(),
-            timeout_secs: 30,
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![polkagent_config::schema::ProviderConfig {
+                id: "p".repeat(10_000),
+                provider_type: "anthropic".to_string(),
+                api_key_env: "KEY".to_string(),
+                timeout_secs: 30,
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
 
         // Must not OOM or panic.
         let _result = validate::validate(&cfg);
@@ -178,7 +187,7 @@ mod string_limits {
             effect: Effect::Allow,
             action_patterns: vec!["**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 
@@ -228,7 +237,7 @@ mod null_bytes {
             effect: Effect::Allow,
             action_patterns: vec!["chain/**".to_string()],
             resource_patterns: vec!["**".to_string()],
-            conditions: Default::default(),
+            conditions: std::collections::HashMap::default(),
             abac_condition: None,
         });
 

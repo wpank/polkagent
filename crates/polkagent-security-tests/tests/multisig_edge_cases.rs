@@ -4,15 +4,15 @@
 //! pipeline and action card builder. Verifies threshold changes, pure-proxy
 //! revocation, and multisig-in-batch scenarios.
 //!
-//! - MS-01: Multisig.as_multi hidden in batch triggers BatchHiding.
-//! - MS-02: Multisig.approve_as_multi hidden in batch triggers BatchHiding.
-//! - MS-03: Multisig.cancel_as_multi hidden in batch triggers BatchHiding.
-//! - MS-04: Proxy.remove_proxies (revoke all) hidden in batch is critical.
-//! - MS-05: Proxy.kill_pure (pure-proxy kill) hidden in batch.
+//! - MS-01: `Multisig.as_multi` hidden in batch triggers `BatchHiding`.
+//! - MS-02: `Multisig.approve_as_multi` hidden in batch triggers `BatchHiding`.
+//! - MS-03: `Multisig.cancel_as_multi` hidden in batch triggers `BatchHiding`.
+//! - MS-04: `Proxy.remove_proxies` (revoke all) hidden in batch is critical.
+//! - MS-05: `Proxy.kill_pure` (pure-proxy kill) hidden in batch.
 //! - MS-06: Threshold change via multisig wrapping multisig config.
 //! - MS-07: Pure-proxy creation hidden in batch.
 //! - MS-08: Multiple proxy operations in single batch.
-//! - MS-09: ActionCard correctly tags multisig-related risk flags.
+//! - MS-09: `ActionCard` correctly tags multisig-related risk flags.
 //! - MS-10: Batch of only multisig approvals with no hidden calls is still flagged.
 
 use chrono::Utc;
@@ -34,6 +34,8 @@ use polkagent_card::{
 const ALICE: &str = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 
 fn make_intent_with_calls(calls: serde_json::Value) -> PaymentIntent {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("calls".to_string(), calls);
     PaymentIntent {
         id: Uuid::now_v7(),
         agent_id: "agent-multisig-test".into(),
@@ -43,7 +45,7 @@ fn make_intent_with_calls(calls: serde_json::Value) -> PaymentIntent {
         idempotency_key: Uuid::now_v7().to_string(),
         created_at: Utc::now(),
         status: PaymentStatus::Pending,
-        metadata: Some(serde_json::json!({ "calls": calls })),
+        metadata: Some(serde_json::Value::Object(metadata)),
     }
 }
 
@@ -149,8 +151,7 @@ fn ms_06_threshold_change_via_nested_multisig() {
     let hidden_count = evidence
         .get("hidden_calls")
         .and_then(|h| h.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+        .map_or(0, Vec::len);
     assert_eq!(hidden_count, 2, "both multisig and proxy calls are hidden");
 }
 
