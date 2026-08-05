@@ -269,15 +269,17 @@ mod tests {
     };
     use std::sync::Arc;
 
-    /// Helper: build an event bus, registry, service, and dispatcher for
-    /// testing. Returns all components so tests can interact with them.
-    fn setup() -> (
+    type TestSetup = (
         EventBus,
         Arc<WebhookRegistry>,
         Arc<InMemoryDeliveryStore>,
         Arc<WebhookService<InMemoryDeliveryStore>>,
         WebhookDispatcher<InMemoryDeliveryStore>,
-    ) {
+    );
+
+    /// Helper: build an event bus, registry, service, and dispatcher for
+    /// testing. Returns all components so tests can interact with them.
+    fn setup() -> TestSetup {
         let bus = EventBus::new(64);
         let registry = Arc::new(WebhookRegistry::new());
         let store = Arc::new(InMemoryDeliveryStore::new());
@@ -289,12 +291,12 @@ mod tests {
         (bus, registry, store, service, dispatcher)
     }
 
-    /// Helper: create a RunEvent with a given EventKind.
+    /// Helper: create a `RunEvent` with a given `EventKind`.
     fn make_event(kind: EventKind) -> RunEvent {
         let run_id = RunId::new();
         RunEvent::new_durable(
             EventId::new(),
-            run_id.clone(),
+            run_id,
             1,
             kind,
             EventCorrelation {

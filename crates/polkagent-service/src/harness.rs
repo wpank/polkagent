@@ -171,16 +171,13 @@ impl HarnessRegistry {
                 // Already has an explicit path; skip probing.
                 continue;
             }
-            match which_binary(&entry.binary) {
-                Some(path) => {
-                    info!(harness_id = %id, path = %path, "harness binary found");
-                    entry.binary_path = Some(path);
-                    entry.available = true;
-                }
-                None => {
-                    entry.binary_path = None;
-                    entry.available = false;
-                }
+            if let Some(path) = which_binary(&entry.binary) {
+                info!(harness_id = %id, path = %path, "harness binary found");
+                entry.binary_path = Some(path);
+                entry.available = true;
+            } else {
+                entry.binary_path = None;
+                entry.available = false;
             }
         }
     }
@@ -191,17 +188,14 @@ impl HarnessRegistry {
             if entry.binary_path.is_some() {
                 return entry.available;
             }
-            match which_binary(&entry.binary) {
-                Some(path) => {
-                    entry.binary_path = Some(path);
-                    entry.available = true;
-                    true
-                }
-                None => {
-                    entry.binary_path = None;
-                    entry.available = false;
-                    false
-                }
+            if let Some(path) = which_binary(&entry.binary) {
+                entry.binary_path = Some(path);
+                entry.available = true;
+                true
+            } else {
+                entry.binary_path = None;
+                entry.available = false;
+                false
             }
         } else {
             // Unknown harness — try probing the name directly as a binary.
@@ -212,7 +206,7 @@ impl HarnessRegistry {
     /// Check if a harness is available (previously probed).
     #[must_use]
     pub fn is_available(&self, harness_id: &str) -> bool {
-        self.entries.get(harness_id).map_or(false, |e| e.available)
+        self.entries.get(harness_id).is_some_and(|e| e.available)
     }
 
     /// Get the binary path for a harness, if probed and found.
@@ -244,7 +238,7 @@ impl HarnessRegistry {
     pub fn first_available(&self) -> Option<&str> {
         self.probe_order
             .iter()
-            .find(|id| self.entries.get(id.as_str()).map_or(false, |e| e.available))
+            .find(|id| self.entries.get(id.as_str()).is_some_and(|e| e.available))
             .map(String::as_str)
     }
 

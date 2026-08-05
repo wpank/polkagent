@@ -9,7 +9,7 @@
 //!
 //! 1. Load and validate configuration.
 //! 2. Initialize telemetry/logging.
-//! 3. Open / migrate the database (future: SQLite / Postgres).
+//! 3. Open / migrate the database (future: `SQLite` / Postgres).
 //! 4. Register configured providers.
 //! 5. Initialize event bus and recorder.
 //! 6. Construct [`AppService`].
@@ -42,7 +42,7 @@ use crate::provider::ProviderRegistry;
 /// External dependencies injected into the startup process.
 ///
 /// In production, these are created from the configuration (e.g. opening a
-/// SQLite database). In tests, they are fake in-memory implementations.
+/// `SQLite` database). In tests, they are fake in-memory implementations.
 pub struct StartupContext {
     /// The run store implementation.
     pub run_store: Arc<dyn RunStore>,
@@ -89,7 +89,10 @@ pub fn startup(config: Config, context: StartupContext) -> Result<AppService, Se
 
     // Step 1: Validate config.
     polkagent_config::validate::validate(&config).map_err(|errors| {
-        let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        let messages: Vec<String> = errors
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         ServiceError::Config {
             message: format!("configuration validation failed: {}", messages.join("; ")),
         }
@@ -383,12 +386,12 @@ mod tests {
             seqs.insert(event.run_id.clone(), event.sequence);
 
             let mut term = self.terminal.lock().expect("lock");
-            if TERMINAL_TYPES.contains(&event.event_type.as_str()) {
-                if !term.insert(event.run_id.clone()) {
-                    return Err(EventStoreError::DuplicateTerminalEvent {
-                        run_id: event.run_id.clone(),
-                    });
-                }
+            if TERMINAL_TYPES.contains(&event.event_type.as_str())
+                && !term.insert(event.run_id.clone())
+            {
+                return Err(EventStoreError::DuplicateTerminalEvent {
+                    run_id: event.run_id.clone(),
+                });
             }
 
             let mut durable = self.durable.lock().expect("lock");

@@ -7,7 +7,7 @@
 //! CLI, TUI) use to drive the platform.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -39,6 +39,14 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::error::ServiceError;
 use crate::explain::{ExplainRequest, SignAndSubmitResult};
 use crate::provider::ProviderRegistry;
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "CostRecord stores an approximate display/telemetry value as f64; Amount retains the authoritative integer value"
+)]
+fn approximate_amount_for_cost_record(value: u128) -> f64 {
+    value as f64
+}
 
 // ---------------------------------------------------------------------------
 // NoopEffectStore — a minimal stub used when no real effect store is provided
@@ -547,23 +555,15 @@ impl std::fmt::Debug for AppService {
             .field("provider_count", &self.provider_registry.len())
             .field(
                 "has_webhook_dispatcher",
-                &self
-                    .webhook_dispatcher
-                    .lock()
-                    .map(|g| g.is_some())
-                    .unwrap_or(false),
+                &self.webhook_dispatcher.lock().is_ok_and(|g| g.is_some()),
             )
             .field("has_scheduler", &self.scheduler.is_some())
             .field(
                 "has_metadata_watcher",
-                &self
-                    .metadata_watcher
-                    .lock()
-                    .map(|g| g.is_some())
-                    .unwrap_or(false),
+                &self.metadata_watcher.lock().is_ok_and(|g| g.is_some()),
             )
             .field("has_timeout_enforcer", &self.has_timeout_enforcer())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -649,7 +649,7 @@ impl AppService {
         let path_for_log = config_path.clone();
 
         tokio::task::spawn_blocking(move || {
-            Self::watcher_loop(config_path, poll_interval, atomic, shutdown_rx);
+            Self::watcher_loop(&config_path, poll_interval, &atomic, &shutdown_rx);
         });
 
         info!(path = %path_for_log.display(), "config watcher started");
@@ -658,12 +658,12 @@ impl AppService {
 
     /// The polling loop executed inside `spawn_blocking`.
     fn watcher_loop(
-        config_path: PathBuf,
+        config_path: &Path,
         poll_interval: Duration,
-        atomic: Arc<AtomicConfig<Config>>,
-        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        atomic: &AtomicConfig<Config>,
+        shutdown_rx: &tokio::sync::watch::Receiver<bool>,
     ) {
-        let watcher = ConfigWatcher::new(&config_path, poll_interval, ReloadPolicy::Immediate);
+        let watcher = ConfigWatcher::new(config_path, poll_interval, ReloadPolicy::Immediate);
 
         loop {
             // Check for shutdown signal (non-blocking).
@@ -682,7 +682,7 @@ impl AppService {
                         );
 
                         // Load and parse the new config.
-                        let new_config = match ConfigLoader::new().with_path(&config_path).load() {
+                        let new_config = match ConfigLoader::new().with_path(config_path).load() {
                             Ok(cfg) => cfg,
                             Err(err) => {
                                 error!(
@@ -863,7 +863,7 @@ impl AppService {
                 .map_err(|e| ServiceError::Store {
                     message: format!("failed to count running runs: {e}"),
                 })?;
-            let active_count = active_runs.len() as u32;
+            let active_count = u32::try_from(active_runs.len()).unwrap_or(u32::MAX);
             if active_count >= max_concurrent {
                 return Err(ServiceError::ConcurrentRunLimitReached {
                     active: active_count,
@@ -894,7 +894,7 @@ impl AppService {
             // and the reaper provides a safer recovery path.
             tokio::spawn(async move {
                 match orchestrator
-                    .execute_run(run_id.clone(), &agent_spec, &prompt_owned)
+                    .execute_run(run_id, &agent_spec, &prompt_owned)
                     .await
                 {
                     Ok(outcome) => {
@@ -921,24 +921,21 @@ impl AppService {
                         // the run is still non-terminal to avoid duplicates.
                         warn!(%run_id, %err, "orchestrator task failed");
                         let already_terminal = run_manager
-                            .get_state(run_id.clone())
+                            .get_state(run_id)
                             .await
-                            .map(|s| s.is_terminal())
-                            .unwrap_or(false);
-                        if !already_terminal {
-                            if let Err(fail_err) =
-                                run_manager.fail_run(run_id.clone(), &err.to_string()).await
-                            {
-                                error!(
-                                    %run_id,
-                                    %fail_err,
-                                    "failed to transition run to Failed state"
-                                );
-                            }
-                        } else {
+                            .is_ok_and(|s| s.is_terminal());
+                        if already_terminal {
                             debug!(
                                 %run_id,
                                 "run already terminal; skipping duplicate fail_run"
+                            );
+                        } else if let Err(fail_err) =
+                            run_manager.fail_run(run_id, &err.to_string()).await
+                        {
+                            error!(
+                                %run_id,
+                                %fail_err,
+                                "failed to transition run to Failed state"
                             );
                         }
                     }
@@ -1210,7 +1207,7 @@ impl AppService {
             model: "unknown".to_owned(),
             input_tokens: 0,
             output_tokens: 0,
-            estimated_usd: amount.value as f64,
+            estimated_usd: approximate_amount_for_cost_record(amount.value),
             recorded_at: chrono::Utc::now(),
         };
         store
@@ -1365,10 +1362,7 @@ impl AppService {
     /// Return `true` if a webhook dispatcher is configured.
     #[must_use]
     pub fn has_webhook_dispatcher(&self) -> bool {
-        self.webhook_dispatcher
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
+        self.webhook_dispatcher.lock().is_ok_and(|g| g.is_some())
     }
 
     /// Return a reference to the scheduled task manager, if configured.
@@ -1392,13 +1386,12 @@ impl AppService {
     pub fn start_timeout_enforcer(&self, config: TimeoutConfig, interval: Duration) {
         let run_store = Arc::clone(&self.run_store);
         let run_manager = self.run_manager.clone();
-        let enforcer = TimeoutEnforcer::new(config.clone());
-
         info!(
             global_max_secs = config.global_max_duration.map(|d| d.as_secs()),
             interval_secs = interval.as_secs(),
             "timeout enforcer started"
         );
+        let enforcer = TimeoutEnforcer::new(config);
 
         let handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -1461,8 +1454,7 @@ impl AppService {
     pub fn has_timeout_enforcer(&self) -> bool {
         self.timeout_enforcer_handle
             .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
+            .is_ok_and(|g| g.is_some())
     }
 }
 
@@ -1481,7 +1473,7 @@ mod tests {
     use polkagent_core::event::EventKind;
     use polkagent_core::ids::ConversationId;
     use polkagent_executor_trait::{
-        ExecutorError, InferenceRequest, InferenceResponse, StreamEvent,
+        ExecutorError, InferenceRequest, InferenceResponse, StreamEvent, TokenUsage,
     };
     use polkagent_memory::{
         types::{Episode, EpisodeId, MemoryEntry, MemoryId, MemoryQuery, MemoryType},
@@ -1512,7 +1504,7 @@ mod tests {
                 text: "fake response".into(),
                 tool_calls: vec![],
                 stop_reason: "end_turn".into(),
-                usage: Default::default(),
+                usage: TokenUsage::default(),
                 provider_request_id: None,
             })
         }
@@ -1611,7 +1603,7 @@ mod tests {
                 .filter(|r| r.agent_id == agent_id)
                 .cloned()
                 .collect();
-            runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            runs.sort_by_key(|run| std::cmp::Reverse(run.created_at));
             runs.truncate(limit as usize);
             Ok(runs)
         }
@@ -1628,7 +1620,7 @@ mod tests {
                 .filter(|r| r.status == status)
                 .cloned()
                 .collect();
-            runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            runs.sort_by_key(|run| std::cmp::Reverse(run.created_at));
             runs.truncate(limit as usize);
             Ok(runs)
         }
@@ -1682,12 +1674,12 @@ mod tests {
             seqs.insert(event.run_id.clone(), event.sequence);
 
             let mut term = self.terminal.lock().expect("lock");
-            if TERMINAL_TYPES.contains(&event.event_type.as_str()) {
-                if !term.insert(event.run_id.clone()) {
-                    return Err(EventStoreError::DuplicateTerminalEvent {
-                        run_id: event.run_id.clone(),
-                    });
-                }
+            if TERMINAL_TYPES.contains(&event.event_type.as_str())
+                && !term.insert(event.run_id.clone())
+            {
+                return Err(EventStoreError::DuplicateTerminalEvent {
+                    run_id: event.run_id.clone(),
+                });
             }
 
             let mut durable = self.durable.lock().expect("lock");
@@ -1738,7 +1730,7 @@ mod tests {
                     filter
                         .run_id
                         .as_ref()
-                        .map_or(true, |rid| e.run_id == rid.to_string())
+                        .is_none_or(|rid| e.run_id == rid.to_string())
                 })
                 .cloned()
                 .collect())
@@ -1787,7 +1779,7 @@ mod tests {
             let results: Vec<MemoryEntry> = guard
                 .values()
                 .filter(|e| {
-                    query.agent_id.map_or(true, |aid| e.agent_id == aid)
+                    query.agent_id.is_none_or(|aid| e.agent_id == aid)
                         && e.content.contains(&query.query_text)
                 })
                 .take(query.limit)
@@ -1805,7 +1797,7 @@ mod tests {
             let results: Vec<MemoryEntry> = guard
                 .values()
                 .filter(|e| {
-                    query.agent_id.map_or(true, |aid| e.agent_id == aid)
+                    query.agent_id.is_none_or(|aid| e.agent_id == aid)
                         && e.content.contains(&query.query_text)
                         && e.classification <= max_classification
                 })
@@ -2517,7 +2509,7 @@ mod tests {
 
         let run_a1 = service.start_run(agent_a, "a-1").await.expect("a1");
         let run_a2 = service.start_run(agent_a, "a-2").await.expect("a2");
-        let run_b1 = service.start_run(agent_b, "b-1").await.expect("b1");
+        let only_b_run = service.start_run(agent_b, "b-1").await.expect("b1");
 
         let runs_a = service.list_runs(agent_a).await.expect("list a");
         let runs_b = service.list_runs(agent_b).await.expect("list b");
@@ -2526,7 +2518,7 @@ mod tests {
         assert_eq!(runs_b.len(), 1);
 
         // All runs are in Queued state.
-        for run_id in [run_a1, run_a2, run_b1] {
+        for run_id in [run_a1, run_a2, only_b_run] {
             let state = service.get_run_status(run_id).await.expect("status");
             assert_eq!(state, RunState::Queued);
         }
@@ -2819,7 +2811,7 @@ mod tests {
 
     // ── Explain-Before-Sign pipeline tests ─────────────────────────────
 
-    /// Test 1: Builder accepts signer and chain_client, accessors return Some.
+    /// Test 1: Builder accepts signer and `chain_client`, accessors return Some.
     #[test]
     fn builder_accepts_signer_and_chain_client() {
         let service = build_service_with_signer_and_chain();
@@ -2827,7 +2819,7 @@ mod tests {
         assert!(service.chain_client().is_some());
     }
 
-    /// Test 2: Signer and chain_client are None by default.
+    /// Test 2: Signer and `chain_client` are None by default.
     #[test]
     fn signer_and_chain_client_none_by_default() {
         let service = build_service();
@@ -2835,7 +2827,7 @@ mod tests {
         assert!(service.chain_client().is_none());
     }
 
-    /// Test 3: explain_and_sign errors with NotInitialized when signer is
+    /// Test 3: `explain_and_sign` errors with `NotInitialized` when signer is
     /// not configured.
     #[tokio::test]
     async fn explain_and_sign_errors_without_signer() {
@@ -2868,7 +2860,7 @@ mod tests {
         ));
     }
 
-    /// Test 4: explain_and_sign errors with NotInitialized when chain_client
+    /// Test 4: `explain_and_sign` errors with `NotInitialized` when `chain_client`
     /// is not configured.
     #[tokio::test]
     async fn explain_and_sign_errors_without_chain_client() {
@@ -2901,7 +2893,7 @@ mod tests {
         ));
     }
 
-    /// Test 5: explain_and_sign succeeds when both signer and chain_client
+    /// Test 5: `explain_and_sign` succeeds when both signer and `chain_client`
     /// are configured, delegating to the full pipeline.
     #[tokio::test]
     async fn explain_and_sign_full_pipeline_succeeds() {
@@ -2926,8 +2918,8 @@ mod tests {
         ));
     }
 
-    /// Test 6: explain_and_sign propagates signer rejection as
-    /// ExplainPipeline error.
+    /// Test 6: `explain_and_sign` propagates signer rejection as
+    /// `ExplainPipeline` error.
     #[tokio::test]
     async fn explain_and_sign_signer_rejection_propagates() {
         let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
@@ -2958,7 +2950,7 @@ mod tests {
         assert!(err_msg.contains("rejected"));
     }
 
-    /// Test 7: Debug format includes signer and chain_client fields.
+    /// Test 7: Debug format includes signer and `chain_client` fields.
     #[test]
     fn debug_format_includes_signer_and_chain_client() {
         let service = build_service_with_signer_and_chain();
@@ -2980,8 +2972,7 @@ mod tests {
     /// Write a minimal valid TOML config to a file path.
     fn write_valid_config(path: &std::path::Path, log_level: &str) {
         let content = format!(
-            "[meta]\napi_version = \"polkagent.dev/v1alpha1\"\nschema_version = 1\n\n[log]\nlevel = \"{}\"\n",
-            log_level,
+            "[meta]\napi_version = \"polkagent.dev/v1alpha1\"\nschema_version = 1\n\n[log]\nlevel = \"{log_level}\"\n",
         );
         std::fs::write(path, content).expect("write config");
     }
@@ -3001,7 +2992,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    /// Test 9: Initial config is available via atomic_config / config().
+    /// Test 9: Initial config is available via `atomic_config` / `config()`.
     #[test]
     fn initial_config_is_available() {
         let service = build_service();
@@ -3161,7 +3152,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    /// Test 16: stop_config_watcher is idempotent.
+    /// Test 16: `stop_config_watcher` is idempotent.
     #[test]
     fn stop_config_watcher_is_idempotent() {
         let service = build_service();
@@ -3169,7 +3160,7 @@ mod tests {
         service.stop_config_watcher();
     }
 
-    /// Test 17: atomic_config returns a clonable Arc handle.
+    /// Test 17: `atomic_config` returns a clonable Arc handle.
     #[test]
     fn atomic_config_handle_is_shareable_across_threads() {
         let service = build_service();

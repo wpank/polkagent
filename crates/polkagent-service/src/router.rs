@@ -70,10 +70,12 @@ pub enum RouteError {
 /// The policy used to score and rank candidate models.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RoutingPolicy {
     /// Use the exact model specified; fail if unavailable.
     Exact,
     /// Minimize cost per million tokens.
+    #[default]
     CostOptimized,
     /// Prefer models with lower latency (based on health metrics).
     LatencyOptimized,
@@ -82,12 +84,6 @@ pub enum RoutingPolicy {
     /// A named custom policy. The router treats this the same as
     /// `CostOptimized` unless a custom scorer is registered.
     Custom(String),
-}
-
-impl Default for RoutingPolicy {
-    fn default() -> Self {
-        Self::CostOptimized
-    }
 }
 
 impl fmt::Display for RoutingPolicy {
@@ -298,6 +294,10 @@ impl DefaultModelRouter {
     }
 
     /// Score a model candidate according to the routing policy.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "routing scores are approximate ordering values; source latency and capability counts remain exact"
+    )]
     fn score_candidate(
         &self,
         desc: &ModelDescriptor,
@@ -350,6 +350,10 @@ impl DefaultModelRouter {
 
 #[async_trait]
 impl ModelRouter for DefaultModelRouter {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the routing transaction stays contiguous so filtering, health fallback, ranking, and audit recording cannot diverge"
+    )]
     async fn route(&self, request: &RouteRequest) -> Result<RouteDecision, RouteError> {
         // Step 1: Handle Exact policy.
         if request.policy == RoutingPolicy::Exact {
@@ -434,7 +438,7 @@ impl ModelRouter for DefaultModelRouter {
 
         // Step 4: Filter by budget constraint.
         if let Some(max_cost) = request.max_cost_input_per_m {
-            candidates.retain(|(desc, _)| desc.cost_input_per_m.map_or(false, |c| c <= max_cost));
+            candidates.retain(|(desc, _)| desc.cost_input_per_m.is_some_and(|c| c <= max_cost));
             if candidates.is_empty() {
                 return Err(RouteError::NoCapableModel { missing: vec![] });
             }
@@ -447,14 +451,14 @@ impl ModelRouter for DefaultModelRouter {
             .collect();
 
         let effective: Vec<(&ModelDescriptor, &NegotiatedCapabilities)> =
-            if !healthy_candidates.is_empty() {
+            if healthy_candidates.is_empty() {
+                // All unhealthy — use all candidates anyway.
+                candidates.iter().map(|(desc, neg)| (*desc, neg)).collect()
+            } else {
                 healthy_candidates
                     .iter()
                     .map(|(desc, neg)| (*desc, neg))
                     .collect()
-            } else {
-                // All unhealthy — use all candidates anyway.
-                candidates.iter().map(|(desc, neg)| (*desc, neg)).collect()
             };
 
         // Step 6: Prefer the requested model/provider if available.
@@ -544,7 +548,7 @@ impl fmt::Debug for DefaultModelRouter {
         f.debug_struct("DefaultModelRouter")
             .field("health_entries", &self.health.read().len())
             .field("recorded_decisions", &self.decisions.read().len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -739,7 +743,7 @@ mod tests {
         // Gemini models have the most capabilities (tools, thinking, vision,
         // streaming, caching, structured_output, web_search = 7)
         let cap_count = capabilities_from_descriptor(
-            &BuiltInModelCatalog::new()
+            BuiltInModelCatalog::new()
                 .get(&decision.selected.model)
                 .expect("exists"),
         )
@@ -1007,7 +1011,7 @@ mod tests {
                 capability_count: 7
             }
         )
-        .contains("7"));
+        .contains('7'));
         assert!(format!("{}", RouteReason::PreferredAndHealthy).contains("preferred"));
         assert!(format!("{}", RouteReason::OnlyOption).contains("only"));
     }

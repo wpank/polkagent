@@ -46,6 +46,8 @@
     clippy::missing_errors_doc,
     clippy::missing_panics_doc
 )]
+// Assertion-heavy unit tests unwrap controlled fixtures to preserve failure context.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
 
 pub mod app;
 pub mod error;

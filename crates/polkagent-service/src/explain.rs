@@ -2,7 +2,7 @@
 //!
 //! Orchestrates the full flow:
 //! 1. Decode the SCALE-encoded extrinsic call using pinned metadata
-//! 2. Build a human-readable ActionCard from the decoded call
+//! 2. Build a human-readable `ActionCard` from the decoded call
 //! 3. Present the card for approval (via approval channel)
 //! 4. On approval, hand the EXACT original bytes to the signer
 //! 5. Submit the signed extrinsic to the chain
@@ -345,7 +345,7 @@ pub fn build_action_card(decoded: &DecodedCall, metadata: &PinnedMetadata) -> Ac
         )
         .add_canonical(
             "Spec version",
-            &metadata.spec_version.to_string(),
+            metadata.spec_version.to_string(),
             SectionSource::Metadata,
         )
         .add_canonical(
@@ -355,7 +355,7 @@ pub fn build_action_card(decoded: &DecodedCall, metadata: &PinnedMetadata) -> Ac
         )
         .add_canonical(
             "Pinned at block",
-            &format!(
+            format!(
                 "#{} ({})",
                 metadata.block_ref.number, metadata.block_ref.hash
             ),
@@ -409,11 +409,11 @@ pub async fn sign_and_submit(
 
     // Sign the payload. The signer never sees conversation history, model
     // output, or any data from the untrusted execution boundary.
-    let signed = signer.sign(sign_request).await?;
+    let signed_payload = signer.sign(sign_request).await?;
 
     // Submit the signed extrinsic to the chain.
     let tx_hash = chain
-        .submit_extrinsic(&signed.signed_extrinsic, profile.clone())
+        .submit_extrinsic(&signed_payload.signed_extrinsic, profile.clone())
         .await?;
 
     // Watch for finality.
@@ -806,7 +806,7 @@ mod tests {
         fn captured_payload(&self) -> Option<Vec<u8>> {
             self.captured_payload
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         }
     }
@@ -829,7 +829,7 @@ mod tests {
                 let mut guard = self
                     .captured_payload
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 *guard = Some(request.payload.clone());
             }
 
@@ -906,7 +906,7 @@ mod tests {
         assert_eq!(result.action_card.title, "Balances.transfer_keep_alive");
     }
 
-    /// AC-P2-001: Decode failure produces ExplainError::DecodeFailure.
+    /// AC-P2-001: Decode failure produces `ExplainError::DecodeFailure`.
     #[tokio::test]
     async fn decode_and_explain_decode_failure() {
         let chain = MockChainClient::new().with_decode_error(ChainError::DecodeFailed {
@@ -973,7 +973,7 @@ mod tests {
         assert!(validate_metadata(&metadata, &genesis).is_ok());
     }
 
-    /// AC-P2-004: Empty metadata digest → StaleMetadata.
+    /// AC-P2-004: Empty metadata digest → `StaleMetadata`.
     #[test]
     fn validate_metadata_empty_digest() {
         let metadata = PinnedMetadata {
@@ -993,7 +993,7 @@ mod tests {
         assert!(matches!(err, ExplainError::StaleMetadata { .. }));
     }
 
-    /// AC-P2-004: Empty block hash → StaleMetadata.
+    /// AC-P2-004: Empty block hash → `StaleMetadata`.
     #[test]
     fn validate_metadata_empty_block_hash() {
         let metadata = PinnedMetadata {
@@ -1013,7 +1013,7 @@ mod tests {
         assert!(matches!(err, ExplainError::StaleMetadata { .. }));
     }
 
-    /// AC-P2-004: Empty metadata bytes → StaleMetadata.
+    /// AC-P2-004: Empty metadata bytes → `StaleMetadata`.
     #[test]
     fn validate_metadata_empty_bytes() {
         let metadata = PinnedMetadata {
@@ -1033,7 +1033,7 @@ mod tests {
         assert!(matches!(err, ExplainError::StaleMetadata { .. }));
     }
 
-    /// AC-P2-005: Empty chain profile id → WrongNetwork.
+    /// AC-P2-005: Empty chain profile id → `WrongNetwork`.
     #[test]
     fn validate_metadata_empty_profile() {
         let metadata = PinnedMetadata {
@@ -1187,7 +1187,7 @@ mod tests {
         ));
     }
 
-    /// Signer rejection produces ExplainError::SignerRejected.
+    /// Signer rejection produces `ExplainError::SignerRejected`.
     #[tokio::test]
     async fn sign_and_submit_signer_rejected() {
         let chain = MockChainClient::new();
@@ -1201,7 +1201,7 @@ mod tests {
         assert!(err.to_string().contains("rejected"));
     }
 
-    /// Submission failure produces ExplainError::SubmissionFailed.
+    /// Submission failure produces `ExplainError::SubmissionFailed`.
     #[tokio::test]
     async fn sign_and_submit_submission_failed() {
         let chain = MockChainClient::new().with_submit_error(ChainError::ExtrinsicRejected {
@@ -1216,7 +1216,7 @@ mod tests {
         assert!(matches!(err, ExplainError::SubmissionFailed { .. }));
     }
 
-    /// Finality timeout produces ExplainError::FinalityTimeout.
+    /// Finality timeout produces `ExplainError::FinalityTimeout`.
     #[tokio::test]
     async fn sign_and_submit_finality_timeout() {
         let chain = MockChainClient::new().with_finality_error(ChainError::FinalityTimeout {
@@ -1347,7 +1347,7 @@ mod tests {
     // Tests: error conversions and display
     // -----------------------------------------------------------------------
 
-    /// ChainError::DecodeFailed converts to ExplainError::DecodeFailure.
+    /// `ChainError::DecodeFailed` converts to `ExplainError::DecodeFailure`.
     #[test]
     fn chain_error_to_decode_failure() {
         let chain_err = ChainError::DecodeFailed {
@@ -1358,7 +1358,7 @@ mod tests {
         assert!(explain_err.to_string().contains("unknown pallet index 99"));
     }
 
-    /// ChainError::GenesisHashMismatch converts to ExplainError::WrongNetwork.
+    /// `ChainError::GenesisHashMismatch` converts to `ExplainError::WrongNetwork`.
     #[test]
     fn chain_error_to_wrong_network() {
         let chain_err = ChainError::GenesisHashMismatch {
@@ -1369,7 +1369,7 @@ mod tests {
         assert!(matches!(explain_err, ExplainError::WrongNetwork { .. }));
     }
 
-    /// SignerError::UserRejected converts to ExplainError::SignerRejected.
+    /// `SignerError::UserRejected` converts to `ExplainError::SignerRejected`.
     #[test]
     fn signer_error_to_signer_rejected() {
         let signer_err = SignerError::UserRejected;
@@ -1378,7 +1378,7 @@ mod tests {
         assert!(explain_err.to_string().contains("rejected"));
     }
 
-    /// ExplainError display includes the message context.
+    /// `ExplainError` display includes the message context.
     #[test]
     fn explain_error_display_decode_failure() {
         let err = ExplainError::DecodeFailure {
@@ -1387,7 +1387,7 @@ mod tests {
         assert_eq!(err.to_string(), "decode failure: corrupt bytes");
     }
 
-    /// ExplainError::StaleMetadata display includes expected and actual.
+    /// `ExplainError::StaleMetadata` display includes expected and actual.
     #[test]
     fn explain_error_display_stale_metadata() {
         let err = ExplainError::StaleMetadata {
@@ -1399,7 +1399,7 @@ mod tests {
         assert!(msg.contains("digest-B"));
     }
 
-    /// ExplainError::WrongNetwork display includes both genesis hashes.
+    /// `ExplainError::WrongNetwork` display includes both genesis hashes.
     #[test]
     fn explain_error_display_wrong_network() {
         let err = ExplainError::WrongNetwork {
@@ -1426,7 +1426,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// ExplainRequest fields are preserved and accessible.
+    /// `ExplainRequest` fields are preserved and accessible.
     #[test]
     fn explain_request_fields() {
         let req = test_request();
@@ -1434,7 +1434,7 @@ mod tests {
         assert_eq!(req.call_bytes, test_call_bytes());
     }
 
-    /// ExplainResult fields are correctly populated.
+    /// `ExplainResult` fields are correctly populated.
     #[tokio::test]
     async fn explain_result_fields() {
         let chain = MockChainClient::new();
@@ -1447,7 +1447,7 @@ mod tests {
         assert_eq!(result.decoded_call.pallet, "Balances");
     }
 
-    /// SignAndSubmitResult carries both tx_hash and finality.
+    /// `SignAndSubmitResult` carries both `tx_hash` and finality.
     #[tokio::test]
     async fn sign_and_submit_result_fields() {
         let chain = MockChainClient::new();

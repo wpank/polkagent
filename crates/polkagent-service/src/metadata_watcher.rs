@@ -174,7 +174,7 @@ fn publish_drift_event(event_bus: &EventBus, drift: &MetadataDrift) {
     let run_id = RunId::new();
     let event = RunEvent {
         id: EventId::new(),
-        run_id: run_id.clone(),
+        run_id,
         sequence: 0,
         kind: EventKind::MetadataDriftDetected {
             chain_id: drift.chain_id.to_string(),

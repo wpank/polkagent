@@ -72,11 +72,8 @@ impl std::fmt::Debug for ScheduledTaskManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScheduledTaskManager")
             .field("poll_interval", &self.poll_interval)
-            .field(
-                "history_len",
-                &self.history.lock().map(|h| h.len()).unwrap_or(0),
-            )
-            .finish()
+            .field("history_len", &self.history.lock().map_or(0, |h| h.len()))
+            .finish_non_exhaustive()
     }
 }
 
@@ -253,7 +250,7 @@ impl ScheduledTaskManager {
 /// shared history. The actual `AppService::start_run()` call is made by the
 /// service layer when it reads the history entries; the executor itself
 /// records the intent so that history tracking works even in testing without
-/// a full AppService wired up.
+/// a full `AppService` wired up.
 struct ServiceTaskExecutor {
     /// Shared history log.
     history: Arc<Mutex<Vec<HistoryEntry>>>,

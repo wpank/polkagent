@@ -201,7 +201,7 @@ impl Default for ProviderRegistry {
 mod tests {
     use super::*;
     use polkagent_executor_trait::{
-        ExecutorError, InferenceRequest, InferenceResponse, StreamEvent,
+        ExecutorError, InferenceRequest, InferenceResponse, StreamEvent, TokenUsage,
     };
 
     // ── Fake executor ────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ mod tests {
                 text: "fake".into(),
                 tool_calls: vec![],
                 stop_reason: "end_turn".into(),
-                usage: Default::default(),
+                usage: TokenUsage::default(),
                 provider_request_id: None,
             })
         }

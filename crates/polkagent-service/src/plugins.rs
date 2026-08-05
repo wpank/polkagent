@@ -526,7 +526,7 @@ required = ["network.http"]
         let manager = ServicePluginManager::new(dir.path().to_path_buf());
 
         let event_store: Arc<dyn EventStore + Send + Sync> = Arc::new(FakeEventStore);
-        let recorder = EventRecorder::new(event_store, Default::default());
+        let recorder = EventRecorder::new(event_store, polkagent_event::EventBus::default());
 
         let app = AppServiceBuilder::new()
             .with_config(Config::default())

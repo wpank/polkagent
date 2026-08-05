@@ -89,11 +89,8 @@ impl std::fmt::Debug for WatcherAgentManager {
         f.debug_struct("WatcherAgentManager")
             .field("registered_count", &self.registered.len())
             .field("timeout_enforcer_active", &self.timeout_enforcer_active)
-            .field(
-                "history_len",
-                &self.history.lock().map(|h| h.len()).unwrap_or(0),
-            )
-            .finish()
+            .field("history_len", &self.history.lock().map_or(0, |h| h.len()))
+            .finish_non_exhaustive()
     }
 }
 
@@ -343,10 +340,15 @@ fn build_watcher_policy(cedar_policy_name: &str, read_only: bool) -> PolicySet {
 /// Returns [`ServiceError::Config`] if a cron expression cannot be parsed.
 fn to_scheduler_schedule(ws: &WatcherSchedule) -> Result<Schedule, ServiceError> {
     match ws {
-        WatcherSchedule::Interval { every_secs } => Ok(Schedule::Interval {
-            every: chrono::Duration::seconds(*every_secs as i64),
-            start: Utc::now(),
-        }),
+        WatcherSchedule::Interval { every_secs } => {
+            let seconds = i64::try_from(*every_secs).map_err(|_| ServiceError::Config {
+                message: format!("watcher interval {every_secs} exceeds the supported range"),
+            })?;
+            Ok(Schedule::Interval {
+                every: chrono::Duration::seconds(seconds),
+                start: Utc::now(),
+            })
+        }
         WatcherSchedule::Cron { expr } => {
             let cron = CronExpr::parse(expr).map_err(|e| ServiceError::Config {
                 message: format!("invalid cron expression '{expr}': {e}"),
@@ -394,7 +396,7 @@ impl polkagent_scheduler::TaskExecutor for WatcherTaskExecutor {
             .to_owned();
         let read_only = input
             .get("read_only")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
 
         let entry = WatcherHistoryEntry {

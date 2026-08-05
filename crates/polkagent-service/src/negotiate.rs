@@ -215,7 +215,7 @@ fn descriptor_has_capability(desc: &ModelDescriptor, cap: &Capability) -> bool {
         Capability::StructuredOutput => desc.supports_structured_output,
         Capability::WebSearch => desc.supports_web_search,
         Capability::MinContextWindow(min) => desc.context_window >= *min,
-        Capability::MinMaxOutput(min) => desc.max_output.map_or(true, |max| max >= *min),
+        Capability::MinMaxOutput(min) => desc.max_output.is_none_or(|max| max >= *min),
     }
 }
 
@@ -239,28 +239,25 @@ pub fn negotiate(
     restrictions: Option<&ProviderRestrictions>,
 ) -> NegotiatedCapabilities {
     // Step 1: Look up the model in the catalog.
-    let desc = match catalog.get(model_slug) {
-        Some(d) => d,
-        None => {
-            // Model not found — all hard requirements are missing.
-            let missing: Vec<MissingCapability> = requirements
-                .iter()
-                .map(|r| MissingCapability {
-                    capability: r.capability.clone(),
-                    required_by: r.required_by.clone(),
-                    hard: r.hard,
-                })
-                .collect();
-            let has_hard = missing.iter().any(|m| m.hard);
-            return NegotiatedCapabilities {
-                model: model_slug.to_string(),
-                provider: String::new(),
-                available: vec![],
-                missing,
-                satisfied: !has_hard,
-                warnings: vec![format!("model '{model_slug}' not found in catalog")],
-            };
-        }
+    let Some(desc) = catalog.get(model_slug) else {
+        // Model not found — all hard requirements are missing.
+        let missing: Vec<MissingCapability> = requirements
+            .iter()
+            .map(|r| MissingCapability {
+                capability: r.capability.clone(),
+                required_by: r.required_by.clone(),
+                hard: r.hard,
+            })
+            .collect();
+        let has_hard = missing.iter().any(|m| m.hard);
+        return NegotiatedCapabilities {
+            model: model_slug.to_string(),
+            provider: String::new(),
+            available: vec![],
+            missing,
+            satisfied: !has_hard,
+            warnings: vec![format!("model '{model_slug}' not found in catalog")],
+        };
     };
 
     let mut warnings = Vec::new();
@@ -298,8 +295,7 @@ pub fn negotiate(
 
     for req in requirements {
         // Check if the capability is denied by provider restrictions.
-        let denied =
-            restrictions.map_or(false, |r| r.denied_capabilities.contains(&req.capability));
+        let denied = restrictions.is_some_and(|r| r.denied_capabilities.contains(&req.capability));
 
         if denied || !descriptor_has_capability(desc, &req.capability) {
             let m = MissingCapability {
