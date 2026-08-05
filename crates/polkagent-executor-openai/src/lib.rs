@@ -1,13 +1,13 @@
 //! OpenAI-compatible Chat Completions API adapter for the [`ModelExecutor`] trait.
 //!
 //! This crate provides [`OpenAiExecutor`] -- a production adapter that
-//! translates the provider-agnostic [`InferenceRequest`] into the OpenAI
+//! translates the provider-agnostic [`InferenceRequest`] into the `OpenAI`
 //! Chat Completions API wire format, handles authentication, rate-limit
 //! retries with exponential backoff, and maps responses back to
 //! [`InferenceResponse`].
 //!
-//! Compatible with OpenAI, Azure OpenAI, vLLM, Ollama, and any other
-//! provider that exposes the OpenAI Chat Completions API.
+//! Compatible with `OpenAI`, `Azure OpenAI`, `vLLM`, Ollama, and any other
+//! provider that exposes the `OpenAI` Chat Completions API.
 //!
 //! # Quick start
 //!
@@ -47,7 +47,7 @@ use tracing::{debug, warn};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default OpenAI API base URL.
+/// Default `OpenAI` API base URL.
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 
 /// Default request timeout.
@@ -63,7 +63,7 @@ const BACKOFF_BASE_MS: u64 = 500;
 // OpenAI API types (private)
 // ---------------------------------------------------------------------------
 
-/// Request body for the OpenAI Chat Completions API.
+/// Request body for the `OpenAI` Chat Completions API.
 #[derive(Debug, Clone, Serialize)]
 struct ChatCompletionRequest {
     model: String,
@@ -82,7 +82,7 @@ struct ChatCompletionRequest {
     stream: Option<bool>,
 }
 
-/// A message in the OpenAI conversation format.
+/// A message in the `OpenAI` conversation format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiMessage {
     role: String,
@@ -94,7 +94,7 @@ struct ApiMessage {
     tool_call_id: Option<String>,
 }
 
-/// A tool definition in the OpenAI wire format.
+/// A tool definition in the `OpenAI` wire format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiTool {
     #[serde(rename = "type")]
@@ -102,7 +102,7 @@ struct ApiTool {
     function: ApiFunction,
 }
 
-/// A function definition within an OpenAI tool.
+/// A function definition within an `OpenAI` tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiFunction {
     name: String,
@@ -110,7 +110,7 @@ struct ApiFunction {
     parameters: serde_json::Value,
 }
 
-/// A tool call in the OpenAI wire format.
+/// A tool call in the `OpenAI` wire format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiToolCall {
     id: String,
@@ -119,14 +119,14 @@ struct ApiToolCall {
     function: ApiFunctionCall,
 }
 
-/// A function call within an OpenAI tool call.
+/// A function call within an `OpenAI` tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiFunctionCall {
     name: String,
     arguments: String,
 }
 
-/// Top-level response from the OpenAI Chat Completions API.
+/// Top-level response from the `OpenAI` Chat Completions API.
 #[derive(Debug, Clone, Deserialize)]
 struct ChatCompletionResponse {
     id: String,
@@ -136,7 +136,7 @@ struct ChatCompletionResponse {
     model: Option<String>,
 }
 
-/// A single choice in the OpenAI response.
+/// A single choice in the `OpenAI` response.
 #[derive(Debug, Clone, Deserialize)]
 struct Choice {
     message: ChoiceMessage,
@@ -152,22 +152,25 @@ struct ChoiceMessage {
     tool_calls: Option<Vec<ApiToolCall>>,
 }
 
-/// Token usage from the OpenAI API response.
+/// Token usage from the `OpenAI` API response.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiUsage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
+    #[serde(rename = "prompt_tokens")]
+    prompt: u32,
+    #[serde(rename = "completion_tokens")]
+    completion: u32,
     #[allow(dead_code)]
-    total_tokens: u32,
+    #[serde(rename = "total_tokens")]
+    total: u32,
 }
 
-/// Error response body from the OpenAI API.
+/// Error response body from the `OpenAI` API.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiErrorResponse {
     error: ApiErrorDetail,
 }
 
-/// Inner error detail from the OpenAI API.
+/// Inner error detail from the `OpenAI` API.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiErrorDetail {
     message: String,
@@ -182,7 +185,7 @@ struct ApiErrorDetail {
 // SSE / streaming types
 // ---------------------------------------------------------------------------
 
-/// A single chunk from the OpenAI streaming API.
+/// A single chunk from the `OpenAI` streaming API.
 #[derive(Debug, Clone, Deserialize)]
 struct StreamChunk {
     #[allow(dead_code)]
@@ -226,14 +229,14 @@ struct StreamFunctionCall {
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a provider-agnostic `InferenceMessage` to the OpenAI wire format.
+/// Convert a provider-agnostic `InferenceMessage` to the `OpenAI` wire format.
 ///
-/// OpenAI uses a different message structure than Anthropic:
+/// `OpenAI` uses a different message structure than Anthropic:
 /// - User messages have `role: "user"` and `content` as a string.
 /// - Assistant messages have `role: "assistant"` with optional `tool_calls`.
 /// - Tool results are sent as `role: "tool"` messages with `tool_call_id`.
 ///
-/// A single `InferenceMessage` may expand into multiple OpenAI messages
+/// A single `InferenceMessage` may expand into multiple `OpenAI` messages
 /// when it contains mixed content blocks (e.g., text + tool results).
 fn to_api_messages(msg: &InferenceMessage) -> Vec<ApiMessage> {
     let role_str = match msg.role {
@@ -312,7 +315,7 @@ fn to_api_messages(msg: &InferenceMessage) -> Vec<ApiMessage> {
     messages
 }
 
-/// Convert a provider-agnostic `ToolDefinition` to the OpenAI wire format.
+/// Convert a provider-agnostic `ToolDefinition` to the `OpenAI` wire format.
 fn to_api_tool(tool: &ToolDefinition) -> ApiTool {
     let parameters: serde_json::Value = serde_json::from_str(&tool.input_schema_json)
         .unwrap_or_else(|_| {
@@ -357,10 +360,10 @@ fn build_request_body(
 
     let tools: Vec<ApiTool> = request.tools.iter().map(to_api_tool).collect();
 
-    let tool_choice = if !tools.is_empty() {
-        Some("auto".to_string())
-    } else {
+    let tool_choice = if tools.is_empty() {
         None
+    } else {
+        Some("auto".to_string())
     };
 
     // For reasoning models (o3, o4-mini, gpt-5.x, codex-mini) use
@@ -386,8 +389,8 @@ fn build_request_body(
 /// Convert an `ApiUsage` to the trait-level `TokenUsage`.
 fn to_token_usage(api_usage: &ApiUsage) -> TokenUsage {
     TokenUsage {
-        input_tokens: api_usage.prompt_tokens,
-        output_tokens: api_usage.completion_tokens,
+        input_tokens: api_usage.prompt,
+        output_tokens: api_usage.completion,
         cache_read_tokens: None,
         cache_write_tokens: None,
     }
@@ -432,14 +435,13 @@ fn to_inference_response(resp: &ChatCompletionResponse) -> InferenceResponse {
     }
 }
 
-/// Map OpenAI `finish_reason` to the normalized stop reason values
+/// Map `OpenAI` `finish_reason` to the normalized stop reason values
 /// used by the executor trait.
 fn map_finish_reason(finish_reason: &str) -> String {
     match finish_reason {
-        "stop" => "end_turn".to_string(),
+        "stop" | "content_filter" => "end_turn".to_string(),
         "length" => "max_tokens".to_string(),
         "tool_calls" => "tool_use".to_string(),
-        "content_filter" => "end_turn".to_string(),
         other => other.to_string(),
     }
 }
@@ -462,8 +464,7 @@ fn map_api_error(
     model_id: &str,
 ) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
-        .map(|e| e.error.message)
-        .unwrap_or_else(|_| body.to_string());
+        .map_or_else(|_| body.to_string(), |e| e.error.message);
 
     ProviderError::classify(status, &detail, retry_after_secs, model_id).into()
 }
@@ -505,7 +506,7 @@ struct ToolCallAssembler {
 /// This function handles text deltas, tool call assembly from partial
 /// function call deltas, usage tracking, and produces the terminal
 /// `Completed` event.
-fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, ExecutorError>> {
+fn process_sse_chunks(chunks: &[StreamChunk]) -> Vec<Result<StreamEvent, ExecutorError>> {
     let mut stream_events: Vec<Result<StreamEvent, ExecutorError>> = Vec::new();
     let mut accumulated_text = String::new();
     let mut tool_assemblers: Vec<ToolCallAssembler> = Vec::new();
@@ -513,7 +514,7 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
     let mut usage = TokenUsage::default();
     let mut stop_reason = String::from("end_turn");
 
-    for chunk in &chunks {
+    for chunk in chunks {
         // Track usage if present.
         if let Some(api_usage) = &chunk.usage {
             usage = to_token_usage(api_usage);
@@ -550,7 +551,7 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
 
                     // Capture id if present (first delta for this call).
                     if let Some(id) = &tc.id {
-                        assembler.id = id.clone();
+                        assembler.id.clone_from(id);
                     }
 
                     if let Some(func) = &tc.function {
@@ -611,10 +612,10 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
 // OpenAiExecutor
 // ---------------------------------------------------------------------------
 
-/// A [`ModelExecutor`] adapter for the OpenAI Chat Completions API.
+/// A [`ModelExecutor`] adapter for the `OpenAI` Chat Completions API.
 ///
-/// Compatible with OpenAI, Azure OpenAI, vLLM, Ollama, and any other
-/// service that exposes the OpenAI Chat Completions API.
+/// Compatible with `OpenAI`, `Azure OpenAI`, `vLLM`, Ollama, and any other
+/// service that exposes the `OpenAI` Chat Completions API.
 ///
 /// Handles authentication, request/response mapping, rate-limit retries with
 /// exponential backoff, and streaming via SSE.
@@ -631,7 +632,7 @@ pub struct OpenAiExecutor {
 impl OpenAiExecutor {
     /// Create a new `OpenAiExecutor` with the given API key and model.
     ///
-    /// Uses the default OpenAI API base URL (`https://api.openai.com`),
+    /// Uses the default `OpenAI` API base URL (`https://api.openai.com`),
     /// a 120-second timeout, and up to 3 retries for retryable errors.
     pub fn new(api_key: String, model: String) -> Arc<Self> {
         let client = Client::builder()
@@ -650,7 +651,7 @@ impl OpenAiExecutor {
         })
     }
 
-    /// Override the base URL (for Azure OpenAI, Ollama, vLLM, etc.).
+    /// Override the base URL (for `Azure OpenAI`, Ollama, `vLLM`, etc.).
     ///
     /// # Examples
     ///
@@ -686,7 +687,7 @@ impl OpenAiExecutor {
 
     /// Use `max_completion_tokens` instead of `max_tokens` in the request.
     ///
-    /// Required for OpenAI reasoning models (o3, o4-mini, gpt-5.x, codex-mini)
+    /// Required for `OpenAI` reasoning models (o3, o4-mini, gpt-5.x, codex-mini)
     /// which use the newer parameter name.
     #[must_use]
     pub fn with_use_max_completion_tokens(mut self, val: bool) -> Self {
@@ -756,7 +757,8 @@ impl OpenAiExecutor {
                 Err(e) => {
                     if e.is_timeout() {
                         let err = ExecutorError::Timeout {
-                            elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
+                            elapsed_ms: u64::try_from(DEFAULT_TIMEOUT.as_millis())
+                                .unwrap_or(u64::MAX),
                         };
                         if attempt < self.max_retries {
                             warn!(attempt, "request timed out, will retry");
@@ -834,7 +836,7 @@ impl OpenAiExecutor {
             .map_err(|e| {
                 if e.is_timeout() {
                     ExecutorError::Timeout {
-                        elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
+                        elapsed_ms: u64::try_from(DEFAULT_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
                     }
                 } else {
                     ExecutorError::Transport {
@@ -859,7 +861,7 @@ impl OpenAiExecutor {
             })?;
 
         let sse_chunks = parse_sse_chunks(&full_body);
-        Ok(process_sse_chunks(sse_chunks))
+        Ok(process_sse_chunks(&sse_chunks))
     }
 }
 
@@ -961,6 +963,13 @@ impl ModelExecutor for OpenAiExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Adapter unit tests intentionally panic at the exact wire-contract boundary
+// that failed so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "provider adapter test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{RunId, StepId};
@@ -1049,7 +1058,7 @@ mod tests {
         serde_json::json!({
             "id": "chatcmpl-abc123",
             "object": "chat.completion",
-            "created": 1677858242,
+            "created": 1_677_858_242,
             "model": "gpt-4o",
             "choices": [
                 {
@@ -1074,7 +1083,7 @@ mod tests {
         serde_json::json!({
             "id": "chatcmpl-def456",
             "object": "chat.completion",
-            "created": 1677858242,
+            "created": 1_677_858_242,
             "model": "gpt-4o",
             "choices": [
                 {
@@ -1109,7 +1118,7 @@ mod tests {
         serde_json::json!({
             "id": "chatcmpl-ghi012",
             "object": "chat.completion",
-            "created": 1677858242,
+            "created": 1_677_858_242,
             "model": "gpt-4o",
             "choices": [
                 {
@@ -1144,7 +1153,7 @@ mod tests {
         serde_json::json!({
             "id": "chatcmpl-multi",
             "object": "chat.completion",
-            "created": 1677858242,
+            "created": 1_677_858_242,
             "model": "gpt-4o",
             "choices": [
                 {
@@ -1387,9 +1396,9 @@ mod tests {
         );
         assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
         let usage = parsed.usage.as_ref().expect("usage");
-        assert_eq!(usage.prompt_tokens, 25);
-        assert_eq!(usage.completion_tokens, 12);
-        assert_eq!(usage.total_tokens, 37);
+        assert_eq!(usage.prompt, 25);
+        assert_eq!(usage.completion, 12);
+        assert_eq!(usage.total, 37);
     }
 
     #[test]
@@ -1699,7 +1708,7 @@ mod tests {
     fn process_sse_text_stream_produces_correct_events() {
         let raw = sample_sse_text_stream();
         let chunks = parse_sse_chunks(&raw);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         // Should have: TextDelta("Hello"), TextDelta(" world"), UsageUpdate, Completed
         // (The empty content delta at the start is skipped.)
@@ -1731,7 +1740,7 @@ mod tests {
     fn process_sse_tool_stream_produces_correct_events() {
         let raw = sample_sse_tool_stream();
         let chunks = parse_sse_chunks(&raw);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         let mut tool_deltas = Vec::new();
         let mut has_tool_complete = false;

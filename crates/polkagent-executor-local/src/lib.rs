@@ -1,7 +1,7 @@
 //! Local model executor adapter for Ollama and OpenAI-compatible local APIs.
 //!
 //! This crate provides [`LocalExecutor`] -- a thin adapter that translates the
-//! provider-agnostic [`InferenceRequest`] into the OpenAI Chat Completions wire
+//! provider-agnostic [`InferenceRequest`] into the `OpenAI` Chat Completions wire
 //! format, targeting Ollama's OpenAI-compatible endpoint or any other local
 //! server that speaks the same protocol.
 //!
@@ -60,7 +60,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 // OpenAI Chat Completions API types (private)
 // ---------------------------------------------------------------------------
 
-/// Request body for the OpenAI Chat Completions API.
+/// Request body for the `OpenAI` Chat Completions API.
 #[derive(Debug, Clone, Serialize)]
 struct ChatCompletionRequest {
     model: String,
@@ -74,7 +74,7 @@ struct ChatCompletionRequest {
     stream: Option<bool>,
 }
 
-/// A message in the OpenAI conversation format.
+/// A message in the `OpenAI` conversation format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiMessage {
     role: String,
@@ -86,7 +86,7 @@ struct ApiMessage {
     tool_call_id: Option<String>,
 }
 
-/// A tool call in the OpenAI wire format.
+/// A tool call in the `OpenAI` wire format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiToolCall {
     id: String,
@@ -102,7 +102,7 @@ struct ApiFunction {
     arguments: String,
 }
 
-/// A tool definition in the OpenAI wire format.
+/// A tool definition in the `OpenAI` wire format.
 #[derive(Debug, Clone, Serialize)]
 struct ApiTool {
     #[serde(rename = "type")]
@@ -118,7 +118,7 @@ struct ApiFunctionDefinition {
     parameters: serde_json::Value,
 }
 
-/// Top-level response from the OpenAI Chat Completions API.
+/// Top-level response from the `OpenAI` Chat Completions API.
 #[derive(Debug, Clone, Deserialize)]
 struct ChatCompletionResponse {
     id: String,
@@ -143,7 +143,7 @@ struct ChoiceMessage {
     tool_calls: Option<Vec<ApiToolCall>>,
 }
 
-/// Token usage from the OpenAI API response.
+/// Token usage from the `OpenAI` API response.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiUsage {
     #[serde(default)]
@@ -221,7 +221,7 @@ struct StreamFunction {
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a provider-agnostic `InferenceMessage` to the OpenAI wire format.
+/// Convert a provider-agnostic `InferenceMessage` to the `OpenAI` wire format.
 fn to_api_message(msg: &InferenceMessage, system: Option<&str>) -> Vec<ApiMessage> {
     let mut result = Vec::new();
 
@@ -323,7 +323,7 @@ fn to_api_message(msg: &InferenceMessage, system: Option<&str>) -> Vec<ApiMessag
     result
 }
 
-/// Convert a provider-agnostic `ToolDefinition` to the OpenAI wire format.
+/// Convert a provider-agnostic `ToolDefinition` to the `OpenAI` wire format.
 fn to_api_tool(tool: &ToolDefinition) -> ApiTool {
     let parameters: serde_json::Value = serde_json::from_str(&tool.input_schema_json)
         .unwrap_or_else(|_| {
@@ -394,14 +394,13 @@ fn to_token_usage(api_usage: Option<&ApiUsage>) -> TokenUsage {
     }
 }
 
-/// Map an OpenAI finish_reason to a normalized stop reason.
+/// Map an `OpenAI` `finish_reason` to a normalized stop reason.
 fn normalize_stop_reason(finish_reason: Option<&str>) -> String {
     match finish_reason {
-        Some("stop") => "end_turn".to_string(),
+        Some("stop") | None => "end_turn".to_string(),
         Some("length") => "max_tokens".to_string(),
         Some("tool_calls") => "tool_use".to_string(),
         Some(other) => other.to_string(),
-        None => "end_turn".to_string(),
     }
 }
 
@@ -443,8 +442,7 @@ fn to_inference_response(resp: &ChatCompletionResponse) -> InferenceResponse {
 /// via [`ProviderError`] classification.
 fn map_api_error(status: u16, body: &str, model_id: &str) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
-        .map(|e| e.error.message)
-        .unwrap_or_else(|_| body.to_string());
+        .map_or_else(|_| body.to_string(), |e| e.error.message);
 
     // Local models do not use authentication or rate limits, so no
     // retry_after_secs is applicable.
@@ -478,7 +476,7 @@ fn parse_sse_chunks(body: &str) -> Vec<StreamChunk> {
 ///
 /// This function handles text deltas, tool call assembly from partial deltas,
 /// usage tracking, and produces the terminal `Completed` event.
-fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, ExecutorError>> {
+fn process_sse_chunks(chunks: &[StreamChunk]) -> Vec<Result<StreamEvent, ExecutorError>> {
     let mut stream_events: Vec<Result<StreamEvent, ExecutorError>> = Vec::new();
     let mut accumulated_text = String::new();
 
@@ -488,7 +486,7 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
     let mut usage = TokenUsage::default();
     let mut stop_reason = String::from("end_turn");
 
-    for chunk in &chunks {
+    for chunk in chunks {
         // Capture usage if present.
         if let Some(ref u) = chunk.usage {
             usage = to_token_usage(Some(u));
@@ -522,7 +520,7 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
 
                     // If this chunk provides an id, store it.
                     if let Some(ref id) = tc.id {
-                        tool_call_builders[idx].0 = id.clone();
+                        tool_call_builders[idx].0.clone_from(id);
                     }
 
                     // If this chunk provides a function name, store it and
@@ -530,7 +528,7 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
                     let mut emitted_name: Option<String> = None;
                     if let Some(ref func) = tc.function {
                         if let Some(ref name) = func.name {
-                            tool_call_builders[idx].1 = name.clone();
+                            tool_call_builders[idx].1.clone_from(name);
                             emitted_name = Some(name.clone());
                         }
                         if let Some(ref args) = func.arguments {
@@ -710,7 +708,7 @@ impl LocalExecutor {
             .map_err(|e| {
                 if e.is_timeout() {
                     ExecutorError::Timeout {
-                        elapsed_ms: self.timeout.as_millis() as u64,
+                        elapsed_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
                     }
                 } else if e.is_connect() {
                     ExecutorError::Transport {
@@ -769,7 +767,7 @@ impl LocalExecutor {
             .map_err(|e| {
                 if e.is_timeout() {
                     ExecutorError::Timeout {
-                        elapsed_ms: self.timeout.as_millis() as u64,
+                        elapsed_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
                     }
                 } else if e.is_connect() {
                     ExecutorError::Transport {
@@ -801,7 +799,7 @@ impl LocalExecutor {
             })?;
 
         let chunks = parse_sse_chunks(&full_body);
-        Ok(process_sse_chunks(chunks))
+        Ok(process_sse_chunks(&chunks))
     }
 }
 
@@ -885,9 +883,6 @@ impl ModelExecutor for LocalExecutor {
 
         match result {
             Ok(resp) if resp.status().is_success() => return Ok(()),
-            Ok(_) => {
-                // Ollama endpoint returned non-success; try generic.
-            }
             Err(e) if e.is_connect() => {
                 return Err(ExecutorError::Transport {
                     message: format!(
@@ -899,12 +894,10 @@ impl ModelExecutor for LocalExecutor {
             }
             Err(e) if e.is_timeout() => {
                 return Err(ExecutorError::Timeout {
-                    elapsed_ms: self.timeout.as_millis() as u64,
+                    elapsed_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
                 });
             }
-            Err(_) => {
-                // Try generic endpoint as fallback.
-            }
+            Ok(_) | Err(_) => {}
         }
 
         // Try generic OpenAI-compatible models endpoint.
@@ -926,7 +919,7 @@ impl ModelExecutor for LocalExecutor {
                 retryable: false,
             }),
             Err(e) if e.is_timeout() => Err(ExecutorError::Timeout {
-                elapsed_ms: self.timeout.as_millis() as u64,
+                elapsed_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
             }),
             Err(e) => Err(ExecutorError::Transport {
                 message: format!("health check failed: {e}"),
@@ -941,6 +934,13 @@ impl ModelExecutor for LocalExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Adapter unit tests intentionally panic at the exact wire-contract boundary
+// that failed so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "provider adapter test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{RunId, StepId};
@@ -1517,7 +1517,7 @@ mod tests {
     fn process_sse_text_stream_produces_text_deltas() {
         let body = sample_sse_text_stream();
         let chunks = parse_sse_chunks(&body);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         // Count text deltas.
         let text_deltas: Vec<_> = events
@@ -1541,7 +1541,7 @@ mod tests {
     fn process_sse_text_stream_has_correct_stop_reason() {
         let body = sample_sse_text_stream();
         let chunks = parse_sse_chunks(&body);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         let completed = events.iter().find_map(|e| match e {
             Ok(StreamEvent::Completed { result }) => Some(result),
@@ -1554,7 +1554,7 @@ mod tests {
     fn process_sse_tool_stream_produces_tool_events() {
         let body = sample_sse_tool_stream();
         let chunks = parse_sse_chunks(&body);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         // Should have ToolCallDelta events.
         let tool_deltas: Vec<_> = events
@@ -1582,7 +1582,7 @@ mod tests {
     fn process_sse_tool_stream_has_tool_use_stop_reason() {
         let body = sample_sse_tool_stream();
         let chunks = parse_sse_chunks(&body);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         let completed = events.iter().find_map(|e| match e {
             Ok(StreamEvent::Completed { result }) => Some(result),
@@ -1595,7 +1595,7 @@ mod tests {
     fn process_sse_stream_has_usage_update() {
         let body = sample_sse_text_stream();
         let chunks = parse_sse_chunks(&body);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         let usage_update = events
             .iter()
@@ -1607,7 +1607,7 @@ mod tests {
     fn process_sse_stream_always_ends_with_completed() {
         let body = sample_sse_text_stream();
         let chunks = parse_sse_chunks(&body);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         let last = events.last().expect("should have events");
         assert!(

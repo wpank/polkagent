@@ -118,12 +118,16 @@ struct MessageResponse {
 /// Token usage from the Anthropic API response.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiUsage {
-    input_tokens: u32,
-    output_tokens: u32,
+    #[serde(rename = "input_tokens")]
+    input: u32,
+    #[serde(rename = "output_tokens")]
+    output: u32,
     #[serde(default)]
-    cache_read_input_tokens: Option<u32>,
+    #[serde(rename = "cache_read_input_tokens")]
+    cache_read_input: Option<u32>,
     #[serde(default)]
-    cache_creation_input_tokens: Option<u32>,
+    #[serde(rename = "cache_creation_input_tokens")]
+    cache_creation_input: Option<u32>,
 }
 
 /// Error response body from the Anthropic API.
@@ -286,10 +290,10 @@ fn build_request_body(request: &InferenceRequest, stream: bool) -> CreateMessage
 /// Convert an `ApiUsage` to the trait-level `TokenUsage`.
 fn to_token_usage(api_usage: &ApiUsage) -> TokenUsage {
     TokenUsage {
-        input_tokens: api_usage.input_tokens,
-        output_tokens: api_usage.output_tokens,
-        cache_read_tokens: api_usage.cache_read_input_tokens,
-        cache_write_tokens: api_usage.cache_creation_input_tokens,
+        input_tokens: api_usage.input,
+        output_tokens: api_usage.output,
+        cache_read_tokens: api_usage.cache_read_input,
+        cache_write_tokens: api_usage.cache_creation_input,
     }
 }
 
@@ -335,8 +339,7 @@ fn map_api_error(
     model_id: &str,
 ) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
-        .map(|e| e.error.message)
-        .unwrap_or_else(|_| body.to_string());
+        .map_or_else(|_| body.to_string(), |e| e.error.message);
 
     ProviderError::classify(status, &detail, retry_after_secs, model_id).into()
 }
@@ -419,12 +422,7 @@ fn process_sse_events(sse_events: Vec<SseEvent>) -> Vec<Result<StreamEvent, Exec
                         input_delta: String::new(),
                     }));
                 }
-                ApiContentBlock::Text { .. } => {
-                    // Text block started; deltas will follow.
-                }
-                ApiContentBlock::ToolResult { .. } => {
-                    // Should not appear in streaming responses.
-                }
+                ApiContentBlock::Text { .. } | ApiContentBlock::ToolResult { .. } => {}
             },
             SseEvent::ContentBlockDelta { delta, .. } => match delta {
                 DeltaBlock::TextDelta { text } => {
@@ -613,7 +611,8 @@ impl AnthropicExecutor {
                 Err(e) => {
                     if e.is_timeout() {
                         let err = ExecutorError::Timeout {
-                            elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
+                            elapsed_ms: u64::try_from(DEFAULT_TIMEOUT.as_millis())
+                                .unwrap_or(u64::MAX),
                         };
                         if attempt < self.max_retries {
                             warn!(attempt, "request timed out, will retry");
@@ -692,7 +691,7 @@ impl AnthropicExecutor {
             .map_err(|e| {
                 if e.is_timeout() {
                     ExecutorError::Timeout {
-                        elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
+                        elapsed_ms: u64::try_from(DEFAULT_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
                     }
                 } else {
                     ExecutorError::Transport {
@@ -839,6 +838,13 @@ impl ModelExecutor for AnthropicExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Adapter unit tests intentionally panic at the exact wire-contract boundary
+// that failed so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "provider adapter test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{RunId, StepId};
@@ -1218,8 +1224,8 @@ mod tests {
             matches!(&parsed.content[0], ApiContentBlock::Text { text } if text == "Hello! How can I help you today?")
         );
         assert_eq!(parsed.stop_reason, Some("end_turn".to_string()));
-        assert_eq!(parsed.usage.input_tokens, 25);
-        assert_eq!(parsed.usage.output_tokens, 12);
+        assert_eq!(parsed.usage.input, 25);
+        assert_eq!(parsed.usage.output, 12);
     }
 
     #[test]
@@ -1252,8 +1258,8 @@ mod tests {
         let json = sample_tool_use_response_json();
         let parsed: MessageResponse = serde_json::from_str(&json).expect("parse");
 
-        assert_eq!(parsed.usage.cache_read_input_tokens, Some(10));
-        assert_eq!(parsed.usage.cache_creation_input_tokens, Some(5));
+        assert_eq!(parsed.usage.cache_read_input, Some(10));
+        assert_eq!(parsed.usage.cache_creation_input, Some(5));
     }
 
     #[test]
@@ -1544,7 +1550,7 @@ mod tests {
 
         // Input tokens from message_start.
         if let SseEvent::MessageStart { message } = &events[0] {
-            assert_eq!(message.usage.input_tokens, 20);
+            assert_eq!(message.usage.input, 20);
         }
 
         // Output tokens from message_delta.
@@ -1719,10 +1725,10 @@ mod tests {
     #[test]
     fn token_usage_mapped_from_api_usage() {
         let api_usage = ApiUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_read_input_tokens: Some(20),
-            cache_creation_input_tokens: Some(10),
+            input: 100,
+            output: 50,
+            cache_read_input: Some(20),
+            cache_creation_input: Some(10),
         };
         let usage = to_token_usage(&api_usage);
 
@@ -1735,10 +1741,10 @@ mod tests {
     #[test]
     fn token_usage_handles_missing_cache_fields() {
         let api_usage = ApiUsage {
-            input_tokens: 42,
-            output_tokens: 17,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
+            input: 42,
+            output: 17,
+            cache_read_input: None,
+            cache_creation_input: None,
         };
         let usage = to_token_usage(&api_usage);
 
@@ -1903,10 +1909,10 @@ mod tests {
             model: "test".into(),
             stop_reason: None,
             usage: ApiUsage {
-                input_tokens: 1,
-                output_tokens: 1,
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
+                input: 1,
+                output: 1,
+                cache_read_input: None,
+                cache_creation_input: None,
             },
         };
         let inference = to_inference_response(&resp);
@@ -1928,10 +1934,10 @@ mod tests {
             model: "test".into(),
             stop_reason: Some("end_turn".into()),
             usage: ApiUsage {
-                input_tokens: 5,
-                output_tokens: 3,
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
+                input: 5,
+                output: 3,
+                cache_read_input: None,
+                cache_creation_input: None,
             },
         };
         let inference = to_inference_response(&resp);
@@ -1955,10 +1961,10 @@ mod tests {
             model: "test".into(),
             stop_reason: Some("tool_use".into()),
             usage: ApiUsage {
-                input_tokens: 10,
-                output_tokens: 8,
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
+                input: 10,
+                output: 8,
+                cache_read_input: None,
+                cache_creation_input: None,
             },
         };
         let inference = to_inference_response(&resp);

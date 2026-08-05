@@ -145,13 +145,16 @@ struct GeminiCandidate {
 
 /// Token usage metadata from the Gemini API.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct UsageMetadata {
-    prompt_token_count: Option<u32>,
-    candidates_token_count: Option<u32>,
+    #[serde(rename = "promptTokenCount")]
+    prompt: Option<u32>,
+    #[serde(rename = "candidatesTokenCount")]
+    candidates: Option<u32>,
     #[allow(dead_code)]
-    total_token_count: Option<u32>,
-    cached_content_token_count: Option<u32>,
+    #[serde(rename = "totalTokenCount")]
+    total: Option<u32>,
+    #[serde(rename = "cachedContentTokenCount")]
+    cached_content: Option<u32>,
 }
 
 /// Error response body from the Gemini API.
@@ -339,9 +342,9 @@ fn build_request_body(request: &InferenceRequest) -> GenerateContentRequest {
 /// Convert `UsageMetadata` to the trait-level `TokenUsage`.
 fn to_token_usage(usage: &UsageMetadata) -> TokenUsage {
     TokenUsage {
-        input_tokens: usage.prompt_token_count.unwrap_or(0),
-        output_tokens: usage.candidates_token_count.unwrap_or(0),
-        cache_read_tokens: usage.cached_content_token_count,
+        input_tokens: usage.prompt.unwrap_or(0),
+        output_tokens: usage.candidates.unwrap_or(0),
+        cache_read_tokens: usage.cached_content,
         cache_write_tokens: None,
     }
 }
@@ -396,10 +399,8 @@ fn to_inference_response(resp: &GenerateContentResponse) -> InferenceResponse {
 /// used by the executor trait.
 fn map_finish_reason(finish_reason: &str) -> String {
     match finish_reason {
-        "STOP" => "end_turn".to_string(),
+        "STOP" | "SAFETY" | "RECITATION" => "end_turn".to_string(),
         "MAX_TOKENS" => "max_tokens".to_string(),
-        "SAFETY" => "end_turn".to_string(),
-        "RECITATION" => "end_turn".to_string(),
         // Gemini does not use a separate finish reason for tool use.
         // When function calls are present the finish_reason is typically "STOP".
         // We handle this at the response level by checking for tool calls.
@@ -416,8 +417,7 @@ fn map_api_error(
     model_id: &str,
 ) -> ExecutorError {
     let detail = serde_json::from_str::<GeminiErrorResponse>(body)
-        .map(|e| e.error.message)
-        .unwrap_or_else(|_| body.to_string());
+        .map_or_else(|_| body.to_string(), |e| e.error.message);
 
     ProviderError::classify(status, &detail, retry_after_secs, model_id).into()
 }
@@ -478,7 +478,7 @@ fn parse_streaming_response(body: &str) -> Vec<GenerateContentResponse> {
 
 /// Process streaming response chunks into a list of `StreamEvent` values.
 fn process_streaming_chunks(
-    chunks: Vec<GenerateContentResponse>,
+    chunks: &[GenerateContentResponse],
 ) -> Vec<Result<StreamEvent, ExecutorError>> {
     let mut stream_events: Vec<Result<StreamEvent, ExecutorError>> = Vec::new();
     let mut accumulated_text = String::new();
@@ -487,7 +487,7 @@ fn process_streaming_chunks(
     let mut stop_reason = String::from("end_turn");
     let mut tool_call_counter: usize = 0;
 
-    for chunk in &chunks {
+    for chunk in chunks {
         // Track usage if present.
         if let Some(usage_metadata) = &chunk.usage_metadata {
             usage = to_token_usage(usage_metadata);
@@ -700,7 +700,8 @@ impl GeminiExecutor {
                 Err(e) => {
                     if e.is_timeout() {
                         let err = ExecutorError::Timeout {
-                            elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
+                            elapsed_ms: u64::try_from(DEFAULT_TIMEOUT.as_millis())
+                                .unwrap_or(u64::MAX),
                         };
                         if attempt < self.max_retries {
                             warn!(attempt, "request timed out, will retry");
@@ -776,7 +777,7 @@ impl GeminiExecutor {
             .map_err(|e| {
                 if e.is_timeout() {
                     ExecutorError::Timeout {
-                        elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
+                        elapsed_ms: u64::try_from(DEFAULT_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
                     }
                 } else {
                     ExecutorError::Transport {
@@ -801,7 +802,7 @@ impl GeminiExecutor {
             })?;
 
         let chunks = parse_streaming_response(&full_body);
-        Ok(process_streaming_chunks(chunks))
+        Ok(process_streaming_chunks(&chunks))
     }
 }
 
@@ -907,6 +908,13 @@ impl ModelExecutor for GeminiExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Adapter unit tests intentionally panic at the exact wire-contract boundary
+// that failed so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "provider adapter test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{RunId, StepId};
@@ -1364,8 +1372,8 @@ mod tests {
         );
         assert_eq!(candidates[0].finish_reason.as_deref(), Some("STOP"));
         let usage = parsed.usage_metadata.as_ref().expect("usage");
-        assert_eq!(usage.prompt_token_count, Some(25));
-        assert_eq!(usage.candidates_token_count, Some(12));
+        assert_eq!(usage.prompt, Some(25));
+        assert_eq!(usage.candidates, Some(12));
     }
 
     #[test]
@@ -1639,7 +1647,7 @@ mod tests {
     fn process_sse_text_stream_produces_correct_events() {
         let raw = sample_sse_text_stream();
         let chunks = parse_streaming_response(&raw);
-        let events = process_streaming_chunks(chunks);
+        let events = process_streaming_chunks(&chunks);
 
         let mut text_deltas = Vec::new();
         let mut has_usage_update = false;
@@ -1669,7 +1677,7 @@ mod tests {
     fn process_sse_tool_stream_produces_correct_events() {
         let raw = sample_sse_tool_stream();
         let chunks = parse_streaming_response(&raw);
-        let events = process_streaming_chunks(chunks);
+        let events = process_streaming_chunks(&chunks);
 
         let mut has_tool_delta = false;
         let mut has_tool_complete = false;
@@ -1709,7 +1717,7 @@ mod tests {
     fn process_json_array_stream_produces_correct_events() {
         let raw = sample_json_array_stream();
         let chunks = parse_streaming_response(&raw);
-        let events = process_streaming_chunks(chunks);
+        let events = process_streaming_chunks(&chunks);
 
         let mut text_deltas = Vec::new();
         let mut has_completed = false;

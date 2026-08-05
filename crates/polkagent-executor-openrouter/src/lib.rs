@@ -1,8 +1,8 @@
-//! OpenRouter adapter for the [`ModelExecutor`] trait.
+//! `OpenRouter` adapter for the [`ModelExecutor`] trait.
 //!
 //! This crate provides [`OpenRouterExecutor`] -- a production adapter that
-//! translates the provider-agnostic [`InferenceRequest`] into the OpenAI-compatible
-//! Chat Completions API wire format used by OpenRouter, adds OpenRouter-specific
+//! translates the provider-agnostic [`InferenceRequest`] into the `OpenAI`-compatible
+//! Chat Completions API wire format used by `OpenRouter`, adds `OpenRouter`-specific
 //! routing headers (`X-Title`, `HTTP-Referer`) and provider preferences, and maps
 //! responses back to [`InferenceResponse`].
 //!
@@ -51,7 +51,7 @@ use tracing::{debug, warn};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default OpenRouter API base URL.
+/// Default `OpenRouter` API base URL.
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 /// Default request timeout.
@@ -63,16 +63,16 @@ const DEFAULT_MAX_RETRIES: u32 = 3;
 /// Base delay for exponential backoff in milliseconds.
 const BACKOFF_BASE_MS: u64 = 500;
 
-/// Default concurrency limit for OpenRouter requests.
+/// Default concurrency limit for `OpenRouter` requests.
 const DEFAULT_MAX_CONCURRENT: u32 = 10;
 
 // ---------------------------------------------------------------------------
 // OpenRouter-specific types
 // ---------------------------------------------------------------------------
 
-/// Provider preferences for OpenRouter routing.
+/// Provider preferences for `OpenRouter` routing.
 ///
-/// Controls which upstream providers OpenRouter routes to, fallback behavior,
+/// Controls which upstream providers `OpenRouter` routes to, fallback behavior,
 /// and data handling policies.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderPreferences {
@@ -101,7 +101,7 @@ pub struct ProviderPreferences {
 // OpenAI-compatible API types (private)
 // ---------------------------------------------------------------------------
 
-/// Request body for the OpenAI Chat Completions API (OpenRouter-extended).
+/// Request body for the `OpenAI` Chat Completions API (`OpenRouter`-extended).
 #[derive(Debug, Clone, Serialize)]
 struct ChatCompletionRequest {
     model: String,
@@ -116,12 +116,12 @@ struct ChatCompletionRequest {
     tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
-    /// OpenRouter-specific: provider routing preferences.
+    /// `OpenRouter`-specific: provider routing preferences.
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<ProviderPreferences>,
 }
 
-/// A message in the OpenAI conversation format.
+/// A message in the `OpenAI` conversation format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiMessage {
     role: String,
@@ -133,7 +133,7 @@ struct ApiMessage {
     tool_call_id: Option<String>,
 }
 
-/// A tool definition in the OpenAI wire format.
+/// A tool definition in the `OpenAI` wire format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiTool {
     #[serde(rename = "type")]
@@ -141,7 +141,7 @@ struct ApiTool {
     function: ApiFunction,
 }
 
-/// A function definition within an OpenAI tool.
+/// A function definition within an `OpenAI` tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiFunction {
     name: String,
@@ -149,7 +149,7 @@ struct ApiFunction {
     parameters: serde_json::Value,
 }
 
-/// A tool call in the OpenAI wire format.
+/// A tool call in the `OpenAI` wire format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiToolCall {
     id: String,
@@ -158,7 +158,7 @@ struct ApiToolCall {
     function: ApiFunctionCall,
 }
 
-/// A function call within an OpenAI tool call.
+/// A function call within an `OpenAI` tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiFunctionCall {
     name: String,
@@ -173,7 +173,7 @@ struct ChatCompletionResponse {
     usage: Option<ApiUsage>,
     #[allow(dead_code)]
     model: Option<String>,
-    /// OpenRouter-specific: upstream provider that served the request.
+    /// `OpenRouter`-specific: upstream provider that served the request.
     #[allow(dead_code)]
     #[serde(default)]
     provider: Option<String>,
@@ -198,10 +198,13 @@ struct ChoiceMessage {
 /// Token usage from the API response.
 #[derive(Debug, Clone, Deserialize)]
 struct ApiUsage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
+    #[serde(rename = "prompt_tokens")]
+    prompt: u32,
+    #[serde(rename = "completion_tokens")]
+    completion: u32,
     #[allow(dead_code)]
-    total_tokens: u32,
+    #[serde(rename = "total_tokens")]
+    total: u32,
 }
 
 /// Error response body from the API.
@@ -219,7 +222,7 @@ struct ApiErrorDetail {
     error_type: Option<String>,
     #[allow(dead_code)]
     code: Option<serde_json::Value>,
-    /// OpenRouter-specific: metadata about the upstream provider error.
+    /// `OpenRouter`-specific: metadata about the upstream provider error.
     #[allow(dead_code)]
     #[serde(default)]
     metadata: Option<serde_json::Value>,
@@ -273,7 +276,7 @@ struct StreamFunctionCall {
 // Provider error classification
 // ---------------------------------------------------------------------------
 
-/// Classification of an OpenRouter provider error.
+/// Classification of an `OpenRouter` provider error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderErrorKind {
     /// The upstream provider is temporarily unavailable.
@@ -282,7 +285,7 @@ pub enum ProviderErrorKind {
     ProviderRateLimit,
     /// The upstream provider rejected the request content.
     ContentModeration,
-    /// Authentication failed at the OpenRouter layer.
+    /// Authentication failed at the `OpenRouter` layer.
     Authentication,
     /// The requested model or provider was not found.
     NotFound,
@@ -294,7 +297,7 @@ pub enum ProviderErrorKind {
     Unknown,
 }
 
-/// Classify an OpenRouter error body into a provider error kind.
+/// Classify an `OpenRouter` error body into a provider error kind.
 #[cfg(test)]
 fn classify_provider_error(status: u16, body: &str) -> ProviderErrorKind {
     match status {
@@ -325,7 +328,7 @@ fn classify_provider_error(status: u16, body: &str) -> ProviderErrorKind {
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a provider-agnostic `InferenceMessage` to the OpenAI wire format.
+/// Convert a provider-agnostic `InferenceMessage` to the `OpenAI` wire format.
 fn to_api_messages(msg: &InferenceMessage) -> Vec<ApiMessage> {
     let role_str = match msg.role {
         MessageRole::User => "user",
@@ -400,7 +403,7 @@ fn to_api_messages(msg: &InferenceMessage) -> Vec<ApiMessage> {
     messages
 }
 
-/// Convert a provider-agnostic `ToolDefinition` to the OpenAI wire format.
+/// Convert a provider-agnostic `ToolDefinition` to the `OpenAI` wire format.
 fn to_api_tool(tool: &ToolDefinition) -> ApiTool {
     let parameters: serde_json::Value = serde_json::from_str(&tool.input_schema_json)
         .unwrap_or_else(|_| {
@@ -424,7 +427,7 @@ fn to_api_tool(tool: &ToolDefinition) -> ApiTool {
 fn build_request_body(
     request: &InferenceRequest,
     stream: bool,
-    provider_prefs: &Option<ProviderPreferences>,
+    provider_prefs: Option<&ProviderPreferences>,
 ) -> ChatCompletionRequest {
     let mut messages: Vec<ApiMessage> = Vec::new();
 
@@ -443,10 +446,10 @@ fn build_request_body(
 
     let tools: Vec<ApiTool> = request.tools.iter().map(to_api_tool).collect();
 
-    let tool_choice = if !tools.is_empty() {
-        Some("auto".to_string())
-    } else {
+    let tool_choice = if tools.is_empty() {
         None
+    } else {
+        Some("auto".to_string())
     };
 
     ChatCompletionRequest {
@@ -457,15 +460,15 @@ fn build_request_body(
         tools,
         tool_choice,
         stream: if stream { Some(true) } else { None },
-        provider: provider_prefs.clone(),
+        provider: provider_prefs.cloned(),
     }
 }
 
 /// Convert an `ApiUsage` to the trait-level `TokenUsage`.
 fn to_token_usage(api_usage: &ApiUsage) -> TokenUsage {
     TokenUsage {
-        input_tokens: api_usage.prompt_tokens,
-        output_tokens: api_usage.completion_tokens,
+        input_tokens: api_usage.prompt,
+        output_tokens: api_usage.completion,
         cache_read_tokens: None,
         cache_write_tokens: None,
     }
@@ -509,13 +512,12 @@ fn to_inference_response(resp: &ChatCompletionResponse) -> InferenceResponse {
     }
 }
 
-/// Map OpenAI `finish_reason` to the normalized stop reason values.
+/// Map `OpenAI` `finish_reason` to the normalized stop reason values.
 fn map_finish_reason(finish_reason: &str) -> String {
     match finish_reason {
-        "stop" => "end_turn".to_string(),
+        "stop" | "content_filter" => "end_turn".to_string(),
         "length" => "max_tokens".to_string(),
         "tool_calls" => "tool_use".to_string(),
-        "content_filter" => "end_turn".to_string(),
         other => other.to_string(),
     }
 }
@@ -538,8 +540,7 @@ fn map_api_error(
     model_id: &str,
 ) -> ExecutorError {
     let detail = serde_json::from_str::<ApiErrorResponse>(body)
-        .map(|e| e.error.message)
-        .unwrap_or_else(|_| body.to_string());
+        .map_or_else(|_| body.to_string(), |e| e.error.message);
 
     ProviderError::classify(status, &detail, retry_after_secs, model_id).into()
 }
@@ -573,7 +574,7 @@ struct ToolCallAssembler {
 }
 
 /// Process raw SSE chunks into a list of `StreamEvent` values.
-fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, ExecutorError>> {
+fn process_sse_chunks(chunks: &[StreamChunk]) -> Vec<Result<StreamEvent, ExecutorError>> {
     let mut stream_events: Vec<Result<StreamEvent, ExecutorError>> = Vec::new();
     let mut accumulated_text = String::new();
     let mut tool_assemblers: Vec<ToolCallAssembler> = Vec::new();
@@ -581,7 +582,7 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
     let mut usage = TokenUsage::default();
     let mut stop_reason = String::from("end_turn");
 
-    for chunk in &chunks {
+    for chunk in chunks {
         if let Some(api_usage) = &chunk.usage {
             usage = to_token_usage(api_usage);
         }
@@ -612,7 +613,7 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
                     let assembler = &mut tool_assemblers[idx];
 
                     if let Some(id) = &tc.id {
-                        assembler.id = id.clone();
+                        assembler.id.clone_from(id);
                     }
 
                     if let Some(func) = &tc.function {
@@ -668,9 +669,9 @@ fn process_sse_chunks(chunks: Vec<StreamChunk>) -> Vec<Result<StreamEvent, Execu
 // OpenRouterExecutor
 // ---------------------------------------------------------------------------
 
-/// A [`ModelExecutor`] adapter for the OpenRouter API.
+/// A [`ModelExecutor`] adapter for the `OpenRouter` API.
 ///
-/// Wraps the OpenAI-compatible Chat Completions API with OpenRouter-specific
+/// Wraps the `OpenAI`-compatible Chat Completions API with `OpenRouter`-specific
 /// routing headers (`X-Title`, `HTTP-Referer`) and provider preferences.
 ///
 /// Handles authentication via `OPENROUTER_API_KEY`, request/response mapping,
@@ -682,9 +683,9 @@ pub struct OpenRouterExecutor {
     base_url: String,
     max_retries: u32,
     concurrency_semaphore: Arc<Semaphore>,
-    /// OpenRouter `X-Title` header value (app name).
+    /// `OpenRouter` `X-Title` header value (app name).
     app_title: Option<String>,
-    /// OpenRouter `HTTP-Referer` header value (site URL).
+    /// `OpenRouter` `HTTP-Referer` header value (site URL).
     site_url: Option<String>,
     /// Provider routing preferences sent in the request body.
     provider_preferences: Option<ProviderPreferences>,
@@ -693,7 +694,7 @@ pub struct OpenRouterExecutor {
 impl OpenRouterExecutor {
     /// Create a new `OpenRouterExecutor` with the given API key and model.
     ///
-    /// Uses the default OpenRouter API base URL, a 120-second timeout,
+    /// Uses the default `OpenRouter` API base URL, a 120-second timeout,
     /// up to 3 retries, and a concurrency limit of 10.
     pub fn new(api_key: String, model: String) -> Arc<Self> {
         let client = Client::builder()
@@ -765,7 +766,8 @@ impl OpenRouterExecutor {
                 Err(e) => {
                     if e.is_timeout() {
                         let err = ExecutorError::Timeout {
-                            elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
+                            elapsed_ms: u64::try_from(DEFAULT_TIMEOUT.as_millis())
+                                .unwrap_or(u64::MAX),
                         };
                         if attempt < self.max_retries {
                             warn!(attempt, "request timed out, will retry");
@@ -848,7 +850,7 @@ impl OpenRouterExecutor {
         let response = req.json(body).send().await.map_err(|e| {
             if e.is_timeout() {
                 ExecutorError::Timeout {
-                    elapsed_ms: DEFAULT_TIMEOUT.as_millis() as u64,
+                    elapsed_ms: u64::try_from(DEFAULT_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
                 }
             } else {
                 ExecutorError::Transport {
@@ -873,7 +875,7 @@ impl OpenRouterExecutor {
             })?;
 
         let sse_chunks = parse_sse_chunks(&full_body);
-        Ok(process_sse_chunks(sse_chunks))
+        Ok(process_sse_chunks(&sse_chunks))
     }
 }
 
@@ -923,14 +925,14 @@ impl OpenRouterBuilder {
         self
     }
 
-    /// Set the `X-Title` header for OpenRouter app identification.
+    /// Set the `X-Title` header for `OpenRouter` app identification.
     #[must_use]
     pub fn with_app_title(mut self, title: String) -> Self {
         self.app_title = Some(title);
         self
     }
 
-    /// Set the `HTTP-Referer` header for OpenRouter site identification.
+    /// Set the `HTTP-Referer` header for `OpenRouter` site identification.
     #[must_use]
     pub fn with_site_url(mut self, url: String) -> Self {
         self.site_url = Some(url);
@@ -984,7 +986,7 @@ impl ModelExecutor for OpenRouterExecutor {
             "executing openrouter inference"
         );
 
-        let body = build_request_body(&request, false, &self.provider_preferences);
+        let body = build_request_body(&request, false, self.provider_preferences.as_ref());
 
         // Acquire concurrency permit, held for the request duration.
         let _permit = self
@@ -1020,7 +1022,7 @@ impl ModelExecutor for OpenRouterExecutor {
             "starting openrouter streaming inference"
         );
 
-        let body = build_request_body(&request, true, &self.provider_preferences);
+        let body = build_request_body(&request, true, self.provider_preferences.as_ref());
 
         let _permit = self
             .concurrency_semaphore
@@ -1070,6 +1072,13 @@ impl ModelExecutor for OpenRouterExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Adapter unit tests intentionally panic at the exact wire-contract boundary
+// that failed so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "provider adapter test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use polkagent_core::{RunId, StepId};
@@ -1158,7 +1167,7 @@ mod tests {
         serde_json::json!({
             "id": "gen-abc123",
             "object": "chat.completion",
-            "created": 1677858242,
+            "created": 1_677_858_242,
             "model": "anthropic/claude-opus-4-6",
             "provider": "Anthropic",
             "choices": [
@@ -1184,7 +1193,7 @@ mod tests {
         serde_json::json!({
             "id": "gen-def456",
             "object": "chat.completion",
-            "created": 1677858242,
+            "created": 1_677_858_242,
             "model": "openai/gpt-4o",
             "choices": [
                 {
@@ -1219,7 +1228,7 @@ mod tests {
         serde_json::json!({
             "id": "gen-ghi012",
             "object": "chat.completion",
-            "created": 1677858242,
+            "created": 1_677_858_242,
             "model": "openai/gpt-4o",
             "choices": [
                 {
@@ -1254,7 +1263,7 @@ mod tests {
         serde_json::json!({
             "id": "gen-multi",
             "object": "chat.completion",
-            "created": 1677858242,
+            "created": 1_677_858_242,
             "model": "openai/gpt-4o",
             "choices": [
                 {
@@ -1388,7 +1397,7 @@ mod tests {
     #[test]
     fn request_body_includes_model_and_max_tokens() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize request body");
 
         assert_eq!(json["model"], "anthropic/claude-opus-4-6");
@@ -1399,7 +1408,7 @@ mod tests {
     #[test]
     fn request_body_includes_system_as_first_message() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages array");
@@ -1411,7 +1420,7 @@ mod tests {
     fn request_body_omits_system_message_when_none() {
         let mut req = minimal_request();
         req.system = None;
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
@@ -1421,7 +1430,7 @@ mod tests {
     #[test]
     fn request_body_includes_temperature_when_set() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let temp = json["temperature"]
@@ -1437,7 +1446,7 @@ mod tests {
     fn request_body_omits_temperature_when_none() {
         let mut req = minimal_request();
         req.temperature = None;
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert!(json.get("temperature").is_none());
@@ -1446,7 +1455,7 @@ mod tests {
     #[test]
     fn request_body_sets_stream_flag() {
         let req = minimal_request();
-        let body = build_request_body(&req, true, &None);
+        let body = build_request_body(&req, true, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert_eq!(json["stream"], true);
@@ -1455,7 +1464,7 @@ mod tests {
     #[test]
     fn request_body_maps_user_message_correctly() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages array");
@@ -1466,7 +1475,7 @@ mod tests {
     #[test]
     fn request_body_maps_tools_correctly() {
         let req = request_with_tools();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let tools = json["tools"].as_array().expect("tools array");
@@ -1480,7 +1489,7 @@ mod tests {
     #[test]
     fn request_body_omits_tools_when_empty() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert!(json.get("tools").is_none());
@@ -1489,7 +1498,7 @@ mod tests {
     #[test]
     fn request_body_sets_tool_choice_auto_when_tools_present() {
         let req = request_with_tools();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert_eq!(json["tool_choice"], "auto");
@@ -1498,7 +1507,7 @@ mod tests {
     #[test]
     fn request_body_omits_tool_choice_when_no_tools() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert!(json.get("tool_choice").is_none());
@@ -1512,7 +1521,7 @@ mod tests {
             ..Default::default()
         };
         let req = minimal_request();
-        let body = build_request_body(&req, false, &Some(prefs));
+        let body = build_request_body(&req, false, Some(&prefs));
         let json = serde_json::to_value(&body).expect("serialize");
 
         let provider = &json["provider"];
@@ -1523,7 +1532,7 @@ mod tests {
     #[test]
     fn request_body_omits_provider_when_none() {
         let req = minimal_request();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         assert!(json.get("provider").is_none());
@@ -1532,7 +1541,7 @@ mod tests {
     #[test]
     fn request_body_maps_tool_use_as_assistant_tool_calls() {
         let req = request_with_tool_result();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
@@ -1548,7 +1557,7 @@ mod tests {
     #[test]
     fn request_body_maps_tool_result_as_tool_role_message() {
         let req = request_with_tool_result();
-        let body = build_request_body(&req, false, &None);
+        let body = build_request_body(&req, false, None);
         let json = serde_json::to_value(&body).expect("serialize");
 
         let messages = json["messages"].as_array().expect("messages");
@@ -1575,8 +1584,8 @@ mod tests {
         );
         assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
         let usage = parsed.usage.as_ref().expect("usage");
-        assert_eq!(usage.prompt_tokens, 25);
-        assert_eq!(usage.completion_tokens, 12);
+        assert_eq!(usage.prompt, 25);
+        assert_eq!(usage.completion, 12);
     }
 
     #[test]
@@ -1960,7 +1969,7 @@ mod tests {
     fn process_sse_text_stream_produces_correct_events() {
         let sse = sample_sse_text_stream();
         let chunks = parse_sse_chunks(&sse);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         // Should have: text deltas + usage + completed
         let text_deltas: Vec<_> = events
@@ -1978,7 +1987,7 @@ mod tests {
     fn process_sse_text_stream_accumulates_text() {
         let sse = sample_sse_text_stream();
         let chunks = parse_sse_chunks(&sse);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         let completed = events.iter().find_map(|e| match e {
             Ok(StreamEvent::Completed { result }) => Some(result),
@@ -1993,7 +2002,7 @@ mod tests {
     fn process_sse_tool_stream_assembles_tool_call() {
         let sse = sample_sse_tool_stream();
         let chunks = parse_sse_chunks(&sse);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         let tool_complete: Vec<_> = events
             .iter()
@@ -2016,7 +2025,7 @@ mod tests {
     fn process_sse_stream_extracts_usage() {
         let sse = sample_sse_text_stream();
         let chunks = parse_sse_chunks(&sse);
-        let events = process_sse_chunks(chunks);
+        let events = process_sse_chunks(&chunks);
 
         let usage_event = events.iter().find_map(|e| match e {
             Ok(StreamEvent::UsageUpdate { usage }) => Some(usage),
