@@ -278,6 +278,13 @@ These endpoints are served without the `/api/v1alpha1` prefix.
 
 Connect to `/api/v1alpha1/events/stream` to receive real-time events. The stream delivers run lifecycle events including `RunStarted`, `TurnCompleted`, `EffectResolved`, `TokensStreamed`, and others.
 
+The WebSocket upgrade endpoints `/api/v1alpha1/events/stream` and
+`/ws/v1alpha1` are intentionally excluded from `openapi.yaml`. OpenAPI can
+describe their HTTP upgrade handshakes but not their bidirectional frame
+protocols, so a handshake-only operation would be an incomplete contract.
+This section and the protocol-specific documentation are authoritative for
+those transports.
+
 This WebSocket remains a run-event protocol and is not reused for durable
 interaction delivery. Interaction clients use the separate checkpointed SSE
 route documented above, or finite JSON replay when streaming is unsuitable.

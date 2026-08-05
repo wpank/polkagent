@@ -35,12 +35,13 @@ info:
     }
     ```
 
-    ## WebSocket streaming
+    ## Streaming
 
-    Real-time events are available at `GET /api/v1alpha1/events/stream` via
-    a WebSocket upgrade. Each frame is a JSON-encoded `RunEvent` object. That
-    run-event protocol is distinct from checkpointed durable interaction SSE
-    at `GET /api/v1alpha1/interactions/{id}/events/stream`.
+    Checkpointed durable interaction events are available over SSE at
+    `GET /api/v1alpha1/interactions/{id}/events/stream`. WebSocket transports
+    are documented separately because OpenAPI can describe their HTTP upgrade
+    handshake, but not their bidirectional frame protocols; a handshake-only
+    operation would be an incomplete contract.
 
 servers:
   - url: http://localhost:9090
@@ -72,10 +73,18 @@ tags:
     description: Budget tracking, usage statistics, and payment receipts.
   - name: memory
     description: Semantic memory search and management.
+  - name: audit
+    description: Optional durable audit-log queries and integrity verification.
+  - name: conversations
+    description: Optional low-level transcript storage compatibility API.
+  - name: registry
+    description: Optional service-listing publication and discovery.
   - name: interactions
     description: Durable, idempotent agent prompting and checkpointed event replay.
   - name: system
     description: Platform version and configuration summary.
+  - name: metrics
+    description: Prometheus text exposition for operational telemetry.
   - name: health
     description: Liveness, readiness, and startup probes.
   - name: bridge
@@ -748,50 +757,6 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  /api/v1alpha1/events/stream:
-    get:
-      operationId: eventStream
-      summary: Real-time event stream (WebSocket)
-      tags: [events]
-      description: |
-        Upgrades the HTTP connection to a WebSocket. The server subscribes to
-        the internal event bus and forwards matching `RunEvent` objects as
-        JSON text frames.
-
-        **Keepalive:** The server sends a WebSocket Ping frame every 30 seconds.
-        Clients should respond with Pong to keep the connection open.
-
-        **Filtering:** Both query parameters are optional. When omitted, all
-        events are forwarded.
-
-        **Frame format:** Each frame is a JSON object conforming to the
-        `RunEvent` schema.
-
-        **Error handling:** If the client lags behind the server's broadcast
-        buffer, some events may be skipped. The server logs a warning but
-        continues streaming from the current tail.
-      parameters:
-        - name: run_id
-          in: query
-          description: Forward only events belonging to this run UUID.
-          schema:
-            type: string
-            format: uuid
-        - name: kinds
-          in: query
-          description: |
-            Comma-separated list of event kind names to include. Unknown
-            names are silently ignored. Example: `run_created,turn_started`.
-          schema:
-            type: string
-      responses:
-        "101":
-          description: Switching Protocols — WebSocket connection established.
-        "400":
-          $ref: "#/components/responses/ValidationError"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
   # ==========================================================================
   # Providers
   # ==========================================================================
@@ -1336,6 +1301,390 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   # ==========================================================================
+  # Audit (optional store)
+  # ==========================================================================
+
+  /api/v1alpha1/audit:
+    get:
+      operationId: listAuditEntries
+      summary: List durable audit entries
+      tags: [audit]
+      description: |
+        Queries the configured audit store. Returns `501 Not Implemented` when
+        the server was started without an audit store.
+      parameters:
+        - name: actor
+          in: query
+          description: Exact actor ID to match.
+          schema:
+            type: string
+        - name: action
+          in: query
+          description: Audit action in snake_case (for example `run_started`).
+          schema:
+            type: string
+        - name: since
+          in: query
+          description: Include entries at or after this RFC 3339 timestamp.
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: Include entries at or before this RFC 3339 timestamp.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          description: Maximum entries to return (default 100).
+          schema:
+            type: integer
+            minimum: 0
+            default: 100
+      responses:
+        "200":
+          description: Matching entries and returned count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditListResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/audit/verify:
+    get:
+      operationId: verifyAuditIntegrity
+      summary: Verify the audit hash chain
+      tags: [audit]
+      description: |
+        Verifies every configured audit-store entry. Returns a successful JSON
+        result with `valid: false` for an integrity violation, and returns
+        `501 Not Implemented` when no audit store is configured.
+      responses:
+        "200":
+          description: Integrity verification result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditVerifyResponse"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/audit/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Audit-entry UUID.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getAuditEntry
+      summary: Get a durable audit entry
+      tags: [audit]
+      description: Returns `501 Not Implemented` when no audit store is configured.
+      responses:
+        "200":
+          description: Audit entry found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEntryResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Conversation transcripts (optional store; no agent execution)
+  # ==========================================================================
+
+  /api/v1alpha1/conversations:
+    post:
+      operationId: createConversation
+      summary: Create a transcript container
+      tags: [conversations]
+      description: |
+        Creates low-level transcript storage only. It does not start an agent
+        run or durable interaction. Use `POST /interactions` and its prompt
+        operation for agent execution. Returns `501 Not Implemented` when no
+        conversation store is configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateConversationRequest"
+      responses:
+        "201":
+          description: Transcript container created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateConversationResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listConversations
+      summary: List transcript containers for an agent
+      tags: [conversations]
+      description: Returns `501 Not Implemented` when no conversation store is configured.
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          description: Owning agent UUID.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          description: Maximum records to return (default 50, maximum 100).
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          description: Number of records to skip.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Page of transcript summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListConversationsResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/conversations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Conversation UUID.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getConversation
+      summary: Get a transcript and its messages
+      tags: [conversations]
+      description: Returns `501 Not Implemented` when no conversation store is configured.
+      responses:
+        "200":
+          description: Transcript and up to its first 100 messages.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: deleteConversation
+      summary: Delete a transcript and its messages
+      tags: [conversations]
+      description: Returns `501 Not Implemented` when no conversation store is configured.
+      responses:
+        "204":
+          description: Transcript deleted; no response body.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/conversations/{id}/messages:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Conversation UUID.
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: addConversationMessage
+      summary: Append a transcript message
+      tags: [conversations]
+      description: |
+        Appends storage only and does not initiate agent execution. Use
+        `POST /interactions/{id}/prompt` for an actionable durable prompt.
+        Returns `501 Not Implemented` when no conversation store is configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMessageRequest"
+      responses:
+        "201":
+          description: Transcript message appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateMessageResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
+  # Service registry (optional store)
+  # ==========================================================================
+
+  /api/v1alpha1/registry/listings:
+    post:
+      operationId: createServiceListing
+      summary: Publish a service listing
+      tags: [registry]
+      description: Returns `501 Not Implemented` when no service-registry store is configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceListingRequest"
+      responses:
+        "201":
+          description: Service listing published.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceListingResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/registry/listings/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Service-listing UUID.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getServiceListing
+      summary: Get a service listing
+      tags: [registry]
+      description: Returns `501 Not Implemented` when no service-registry store is configured.
+      responses:
+        "200":
+          description: Service listing found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceListingResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/registry/search:
+    get:
+      operationId: searchServiceListings
+      summary: Search service listings
+      tags: [registry]
+      description: Returns `501 Not Implemented` when no service-registry store is configured.
+      parameters:
+        - name: q
+          in: query
+          description: Free-text search query.
+          schema:
+            type: string
+        - name: capability
+          in: query
+          description: Comma-separated capability filters.
+          schema:
+            type: string
+        - name: tag
+          in: query
+          description: Comma-separated tag filters.
+          schema:
+            type: string
+        - name: author
+          in: query
+          description: Exact listing author filter.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+      responses:
+        "200":
+          description: Matching service listings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListServiceListingsResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ==========================================================================
   # Durable interactions
   # ==========================================================================
 
@@ -1759,6 +2108,20 @@ paths:
                 $ref: "#/components/schemas/SystemInfoResponse"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /metrics:
+    get:
+      operationId: getPrometheusMetrics
+      summary: Export Prometheus metrics
+      tags: [metrics]
+      description: Renders all registered metric families in Prometheus text format.
+      responses:
+        "200":
+          description: Prometheus text exposition, version 0.0.4.
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /openapi.json:
     get:
@@ -2245,6 +2608,371 @@ components:
           type: integer
           description: Number of items in this response.
           example: 50
+
+    # ---- Audit ---------------------------------------------------------------
+
+    AuditEntry:
+      type: object
+      description: |
+        Append-only audit record serialized by the audit subsystem. The action
+        and actor payloads vary by audited operation; the stable envelope fields
+        are listed here and subsystem-specific object fields remain extensible.
+      required: [id, timestamp, actor, action, resource, outcome, context, integrity_hash]
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          additionalProperties: true
+        action:
+          description: Snake-case audit action discriminator.
+        resource:
+          type: object
+          required: [resource_type, resource_id]
+          properties:
+            resource_type:
+              type: string
+            resource_id:
+              type: string
+            description:
+              type: [string, "null"]
+        outcome:
+          type: string
+          enum: [success, failure, denied, error]
+        context:
+          description: Arbitrary JSON context captured with the action.
+        integrity_hash:
+          type: string
+
+    AuditEntryResponse:
+      type: object
+      required: [version, data]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        data:
+          $ref: "#/components/schemas/AuditEntry"
+
+    AuditListResponse:
+      type: object
+      required: [version, data, count]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEntry"
+        count:
+          type: integer
+          minimum: 0
+
+    AuditVerifyResponse:
+      type: object
+      required: [version, valid, entries_checked]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        valid:
+          type: boolean
+        entries_checked:
+          type: integer
+          minimum: 0
+        error:
+          type: string
+          description: First integrity error; omitted when the chain is valid.
+
+    # ---- Conversation transcripts -------------------------------------------
+
+    CreateConversationRequest:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    CreateConversationResponse:
+      type: object
+      required: [version, id, agent_id, created_at]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ConversationSummary:
+      type: object
+      required: [id, agent_id, message_count, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        message_count:
+          type: integer
+          format: int32
+          minimum: 0
+        last_message_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ListConversationsResponse:
+      type: object
+      required: [version, data, cursor, meta]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationSummary"
+        cursor:
+          $ref: "#/components/schemas/CursorInfo"
+        meta:
+          $ref: "#/components/schemas/PageMeta"
+
+    ConversationMessage:
+      type: object
+      required: [id, conversation_id, role, content, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [user, assistant, system, tool]
+        content:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        token_count:
+          type: integer
+          format: int32
+          minimum: 0
+
+    ConversationResponse:
+      type: object
+      required: [version, id, agent_id, message_count, created_at, updated_at, messages]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        message_count:
+          type: integer
+          format: int32
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationMessage"
+
+    CreateMessageRequest:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system, tool]
+        content:
+          type: string
+
+    CreateMessageResponse:
+      type: object
+      required: [version, id, conversation_id, role, content, created_at]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [user, assistant, system, tool]
+        content:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    # ---- Service registry ----------------------------------------------------
+
+    ServicePricing:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+          description: Pricing model such as free, usage_metered, subscription, or one_time.
+        unit:
+          type: string
+        price:
+          type: string
+          description: Decimal price encoded as a string.
+        currency:
+          type: string
+
+    CreateServiceListingRequest:
+      type: object
+      required: [name, description, author, version, pricing]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        author:
+          type: string
+        version:
+          type: string
+        capabilities:
+          type: array
+          default: []
+          items:
+            type: string
+        tags:
+          type: array
+          default: []
+          items:
+            type: string
+        pricing:
+          $ref: "#/components/schemas/ServicePricing"
+        availability:
+          type: string
+          default: available
+          enum: [available, maintenance, deprecated, offline]
+        protocols:
+          type: array
+          default: []
+          items:
+            type: string
+        sla_tier:
+          type: string
+        api_schema:
+          description: API schema URL or inline JSON schema.
+
+    ServiceListingResponse:
+      type: object
+      required:
+        - version
+        - id
+        - name
+        - description
+        - author
+        - service_version
+        - capabilities
+        - tags
+        - pricing
+        - availability
+        - protocols
+        - created_at
+        - updated_at
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        author:
+          type: string
+        service_version:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        pricing:
+          $ref: "#/components/schemas/ServicePricing"
+        availability:
+          type: string
+          enum: [available, maintenance, deprecated, offline]
+        protocols:
+          type: array
+          items:
+            type: string
+        sla_tier:
+          type: string
+        api_schema:
+          description: API schema URL or inline JSON schema.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ListServiceListingsResponse:
+      type: object
+      required: [version, data]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceListingResponse"
 
     # ---- Errors --------------------------------------------------------------
 
