@@ -55,12 +55,15 @@ supported commands execute through its shared service executor:
   startup agent.
 - `/resume <conversation-id>` — select a compatible durable interaction and
   print its persisted transcript.
+- `/model [model-id]` — show the current effective conversation model, or
+  validate and persist a same-provider model for this conversation. The
+  selection survives process restart and resume without changing the agent.
 
 The following capabilities are explicitly unavailable rather than simulated:
 
 - Agent changes (`/agent`, `/agents`): restart with `--agent <name-or-id>`.
-- Model, provider, or autonomy changes: configure the agent/runtime and
-  restart. `/model`, `/provider`, and `/autonomy` return an error.
+- Provider, harness, or autonomy changes: configure the runtime or agent and
+  restart. `/provider`, `/harness`, and `/autonomy` return an error.
 - Approvals (`/approve`, `/deny`): use the durable `polkagent inbox` commands.
 - Run listing/inspection and run-ID cancellation: use the top-level inspection
   surfaces. Terminal `/cancel` is turn-scoped.
@@ -68,6 +71,14 @@ The following capabilities are explicitly unavailable rather than simulated:
 
 Approval visibility is also reported as unavailable in `/status`; a synthetic
 zero is not presented as authoritative.
+
+Model selection goes through the interaction service's typed configuration
+path. Unknown models, models belonging to another provider, and dynamic model
+changes under a harness backend are refused with typed errors. Successful
+selection is scoped to the selected durable conversation, does not mutate the
+shared agent specification, and never creates a transcript turn. `/model`
+without an argument reports the persisted selection (or the runtime/agent
+default when no override exists).
 
 ## Pipes and output contract
 
@@ -95,9 +106,12 @@ interaction service after its last delivered checkpoint and replays the gap.
 It does not abandon still-active work merely because a live receiver fell
 behind.
 
-The transcript is a durable UI projection only. Polkagent does not currently
-claim that earlier transcript turns are automatically supplied to the model as
-context for a later prompt.
+For executor-backed follow-ups, Polkagent scans at most the latest 1,000 prior
+turn records, retains the newest 32 completed user/assistant pairs, and sends
+those pairs in chronological order before the current prompt. Failed,
+cancelled, timed-out, pending, and partial turns are omitted as whole pairs.
+Contextual history for harness execution remains unsupported rather than being
+inferred from the rendered transcript.
 
 For Zed and other ACP-capable editors, use `polkagent acp`; see
 [`acp-zed.md`](acp-zed.md). ACP owns stdout as JSON-RPC transport, whereas

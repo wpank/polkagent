@@ -70,8 +70,9 @@ polkagent acp --agent my-agent
 ```
 
 See [durable terminal chat](docs/chat.md) for resume, slash-command, stream,
-and cancellation behavior. Its transcript is durable UI history; prior turns
-are not yet automatically supplied to the model as later-prompt context.
+model-selection, and cancellation behavior. Executor-backed follow-ups include
+the newest 32 completed user/assistant pairs from the latest 1,000 prior turn
+records; contextual harness history remains unsupported.
 
 ### Docker
 
@@ -186,7 +187,7 @@ multi-turn Console:
 | `F8` | **Audit** | System audit log with severity filtering |
 | `F9` | **Console** | Select an active agent, keep durable session/transcript history, stream typed updates, and cancel the active turn |
 
-Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, and `q` to quit. In the Console, `p` opens the composer, `s` opens the bounded same-agent durable session selector, `Enter` submits a durable prompt or supported command, and `x` cancels the exact active turn and its linked run. Follow-up prompts share the selected durable session, and transcript/composer history reloads after restart; prior turns are not yet assembled into the next model prompt, so model execution remains one-shot. `/help`, `/status`, `/new [title]`, and `/resume <conversation-id>` execute through the shared command service and render structured results. `/cancel` remains unavailable because the composer closes during an active turn; use `x`. Agent/model/provider/autonomy, approval, group, and run-inspection commands remain unavailable in this Console path. The separate legacy Approvals tab retains its existing approve/deny actions.
+Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, and `q` to quit. In the Console, `p` opens the composer, `s` opens the bounded same-agent durable session selector, `Enter` submits a durable prompt or supported command, and `x` cancels the exact active turn and its linked run. Follow-up prompts share the selected durable session, and transcript/composer history reloads after restart. Executor-backed follow-ups use the newest 32 completed user/assistant pairs found in the latest 1,000 prior turn records; contextual harness history remains unsupported. `/help`, `/status`, `/new [title]`, `/resume <conversation-id>`, and `/model [model-id]` execute through the shared command service and render structured results. `/model` shows the current conversation model; an argument validates and persists a same-provider model for that conversation without changing the agent or creating a turn. `/cancel` remains unavailable because the composer closes during an active turn; use `x`. Agent/provider/harness/autonomy, approval, group, and run-inspection commands remain unavailable in this Console path. The separate legacy Approvals tab retains its existing approve/deny actions.
 
 ### Coding Harness Integrations
 

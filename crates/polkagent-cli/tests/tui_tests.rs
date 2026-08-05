@@ -1313,6 +1313,7 @@ fn test_console_renders_prompt_and_live_output() {
     state.interaction.submit().unwrap();
     state.interaction.apply(ControllerEvent::Started {
         conversation_id: "87654321-4321-4321-4321-cba987654321".to_owned(),
+        model: Some("fake/model-a".to_owned()),
         turn_id: "abcdefab-cdef-cdef-cdef-abcdefabcdef".to_owned(),
         run_id: "12345678-1234-1234-1234-123456789abc".to_owned(),
         agent_name: "Treasury Agent".to_owned(),
@@ -1327,6 +1328,7 @@ fn test_console_renders_prompt_and_live_output() {
         .expect("draw console");
     let text = buffer_text(&terminal);
     assert!(text.contains("Treasury Agent"), "{text}");
+    assert!(text.contains("fake/model-a"), "{text}");
     assert!(text.contains("summarize proposals"), "{text}");
     assert!(text.contains("Three active proposals"), "{text}");
     assert!(text.contains("12345678"), "{text}");
@@ -1401,6 +1403,7 @@ fn test_console_renders_registry_slash_completions_and_truthful_scope() {
     assert!(text.contains("/status"), "{text}");
     assert!(text.contains("/new [title]"), "{text}");
     assert!(text.contains("/resume <conversation-id>"), "{text}");
+    assert!(text.contains("/model [id]"), "{text}");
     assert!(!text.contains("/agent <name-or-id>"), "{text}");
     assert!(text.contains("Executable Console commands"), "{text}");
     assert!(text.contains("x cancels the active turn"), "{text}");
@@ -1520,10 +1523,10 @@ fn test_console_renders_structured_command_failure_over_completed_turn_status() 
     });
     interaction.command_result = Some(ConsoleCommandResult {
         request_id: "request-id".to_owned(),
-        line: "/model unsupported".to_owned(),
+        line: "/model missing-model".to_owned(),
         status: ConsoleCommandStatus::Failed,
-        title: "Command unavailable".to_owned(),
-        lines: vec!["model selection is unavailable in the Console".to_owned()],
+        title: "Command failed".to_owned(),
+        lines: vec!["invalid_request: unknown model `missing-model`".to_owned()],
     });
     let state = TuiState {
         interaction,
@@ -1536,8 +1539,8 @@ fn test_console_renders_structured_command_failure_over_completed_turn_status() 
     let text = buffer_text(&terminal);
     assert!(text.contains("Action"), "{text}");
     assert!(text.contains("failed"), "{text}");
-    assert!(text.contains("Command unavailable"), "{text}");
-    assert!(text.contains("model selection is unavailable"), "{text}");
+    assert!(text.contains("Command failed"), "{text}");
+    assert!(text.contains("invalid_request: unknown model"), "{text}");
 }
 
 #[test]

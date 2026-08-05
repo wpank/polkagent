@@ -172,9 +172,9 @@ polkagent chat --agent <AGENT> --resume <CONVERSATION_ID>
 The session supports a truthful subset of shared slash commands and streams
 assistant text on stdout while lifecycle and correlation details stay on
 stderr. See the [durable terminal chat guide](chat.md) for input, resume,
-cancellation, and output contracts. Transcript continuity is a durable UI
-projection only; prior turns are not yet automatically supplied to the model
-as context for a later prompt.
+cancellation, model selection, and output contracts. Executor-backed follow-up
+context retains the newest 32 completed user/assistant pairs from the latest
+1,000 prior turn records. Contextual harness history remains unsupported.
 
 ---
 
@@ -391,22 +391,31 @@ durable multi-turn surface:
 | `/status` | Show structured durable interaction status |
 | `/new [title]` | Create and select a new durable single-agent interaction |
 | `/resume <conversation-id>` | Select a same-agent interaction and reload its transcript |
+| `/model [model-id]` | Show or persist the selected conversation's effective model |
 
 The Console creates one durable interaction for the selected agent and keeps
-follow-up turns in that session. This is durable transcript and composer-history
-continuity, not contextual model follow-up: prior turns are not yet assembled
-into the next model prompt, so each model execution remains one-shot. The
-Console consumes typed interaction events, shows correlated
+follow-up turns in that session. Executor-backed follow-ups scan at most the
+latest 1,000 prior turn records and retain the newest 32 completed
+user/assistant pairs in chronological order; failed, cancelled, timed-out,
+pending, and partial turns are omitted as whole pairs. Contextual harness
+history remains unsupported. The Console consumes typed interaction events,
+shows correlated
 conversation/turn/run IDs, reloads history after restart, and keeps one active
 turn at a time so cancellation has an exact target. The slash picker advertises
-only `/help`, `/status`, `/new`, and `/resume`; those commands use the shared
-registry and service executor, render structured success/error output, and are
-never sent to the model. `/new` and `/resume` switch the selected durable
-conversation before the next prompt. `/cancel` is not accepted because the
-composer is closed while a turn is active; `x` remains the exact current-turn
-cancellation path. Agent, model, provider, autonomy, harness, group
-orchestration, approval, and run-inspection commands are explicitly refused in
-the Console. Approval events are displayed as unavailable rather than mutating
+only `/help`, `/status`, `/new`, `/resume`, and `/model`; those commands use the
+shared registry and service executor, render structured success/error output,
+and are never sent to the model. `/new` and `/resume` switch the selected
+durable conversation before the next prompt. `/model` without an argument
+shows the effective conversation model; `/model <model-id>` validates and
+persists a same-provider selection for that conversation without changing the
+shared agent specification. Unknown, cross-provider, and harness-backed
+dynamic selections fail with typed errors. Async model results are correlated
+to the initiating request, agent, and conversation before updating the session
+header. `/cancel` is not accepted because the composer is closed while a turn
+is active; `x` remains the exact current-turn cancellation path. Agent,
+provider, autonomy, harness, group orchestration, approval, and run-inspection
+commands are explicitly refused in the Console. Approval events are displayed
+as unavailable rather than mutating
 effect rows directly. The separate legacy Approvals tab retains its existing
 direct approve/deny behavior. Transcript reloads use the interaction service's
 turn-correlated, bounded projection, and all Console prompt-path mutations also

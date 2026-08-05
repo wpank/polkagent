@@ -94,6 +94,11 @@ fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme
         |(kind, (status, color))| (kind, status, color),
     );
     let conversation_id = short_id(state.interaction.conversation_id.as_deref());
+    let model = state
+        .interaction
+        .selected_model
+        .as_deref()
+        .unwrap_or("runtime/agent default");
     let turn_id = short_id(
         state
             .interaction
@@ -133,6 +138,8 @@ fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme
             ),
             Span::styled("   Chat  ", Style::default().fg(theme.text_dim)),
             Span::styled(conversation_id, Style::default().fg(theme.text_primary)),
+            Span::styled("   Model  ", Style::default().fg(theme.text_dim)),
+            Span::styled(model, Style::default().fg(theme.text_primary)),
             Span::styled("   Turn  ", Style::default().fg(theme.text_dim)),
             Span::styled(turn_id, Style::default().fg(theme.text_primary)),
             Span::styled("   Run  ", Style::default().fg(theme.text_dim)),

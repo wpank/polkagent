@@ -292,10 +292,145 @@ fn chat_help_does_not_claim_unsupported_commands() {
     let output = run_with_stdin(command, "/help\n");
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for command in ["/help", "/status", "/cancel", "/new", "/resume"] {
+    for command in ["/help", "/status", "/cancel", "/new", "/resume", "/model"] {
         assert!(stdout.contains(command), "missing {command}: {stdout}");
     }
-    for command in ["  /agent ", "  /model", "  /approve", "  /runs"] {
+    for command in ["  /agent ", "  /approve", "  /runs"] {
         assert!(!stdout.contains(command), "advertised {command}: {stdout}");
     }
+}
+
+#[test]
+fn model_command_is_conversation_scoped_persists_across_process_resume_and_creates_no_turn() {
+    let temp = tempfile::tempdir().expect("chat tempdir");
+    let database_path = temp.path().join("chat.db");
+    let log_path = temp.path().join("chat.jsonl");
+    let config_path = temp.path().join("polkagent.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[[providers]]
+id = "fake"
+provider_type = "fake"
+api_key_env = "POLKAGENT_TEST_FAKE_KEY_UNSET"
+default_model = "default-model"
+
+[[providers]]
+id = "other"
+provider_type = "fake"
+api_key_env = "POLKAGENT_TEST_OTHER_KEY_UNSET"
+default_model = "other-default"
+
+[[models]]
+slug = "model-a"
+provider = "fake"
+
+[[models]]
+slug = "other-model"
+provider = "other"
+"#,
+    )
+    .expect("write isolated model config");
+    seed_agent(&database_path, "chat-fixture", "fake/default-model");
+
+    let mut select = chat_command(&database_path, &log_path, &config_path);
+    select.args(["chat", "--agent", "chat-fixture"]);
+    let select = run_with_stdin(select, "/model model-a\n");
+    assert_success(&select);
+    let select_stdout = String::from_utf8_lossy(&select.stdout);
+    assert!(
+        select_stdout.contains("model: fake/model-a"),
+        "{select_stdout}"
+    );
+    assert!(
+        select_stdout.contains("updated for this durable conversation"),
+        "{select_stdout}"
+    );
+    let select_stderr = String::from_utf8_lossy(&select.stderr);
+    let conversation_id = session_id(&select_stderr).to_owned();
+
+    let mut query = chat_command(&database_path, &log_path, &config_path);
+    query.args([
+        "chat",
+        "--agent",
+        "chat-fixture",
+        "--resume",
+        &conversation_id,
+    ]);
+    let query = run_with_stdin(query, "/model\n");
+    assert_success(&query);
+    assert!(
+        String::from_utf8_lossy(&query.stdout).contains("model: fake/model-a"),
+        "{}",
+        String::from_utf8_lossy(&query.stdout)
+    );
+
+    for (model, code) in [
+        ("missing-model", "invalid_request"),
+        ("other-model", "unsupported"),
+    ] {
+        let mut refused = chat_command(&database_path, &log_path, &config_path);
+        refused.args([
+            "chat",
+            "--agent",
+            "chat-fixture",
+            "--resume",
+            &conversation_id,
+        ]);
+        let refused = run_with_stdin(refused, &format!("/model {model}\n"));
+        assert!(!refused.status.success(), "{model} unexpectedly succeeded");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains(code), "missing {code} refusal: {stderr}");
+        assert!(stderr.contains(model), "missing refused model: {stderr}");
+    }
+
+    let connection = rusqlite::Connection::open(&database_path).expect("open durable chat DB");
+    let (config_json, turn_count): (String, i64) = connection
+        .query_row(
+            "SELECT s.config_json,
+                    (SELECT COUNT(*) FROM interaction_turns t
+                     WHERE t.conversation_id = s.conversation_id)
+             FROM interaction_sessions s WHERE s.conversation_id = ?1",
+            [&conversation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("load persisted interaction config");
+    let config: serde_json::Value = serde_json::from_str(&config_json).expect("decode config");
+    assert_eq!(config["model"], "fake/model-a");
+    assert_eq!(
+        turn_count, 0,
+        "model commands must never become transcript turns"
+    );
+
+    let agent_spec_json: String = connection
+        .query_row(
+            "SELECT spec_json FROM agents WHERE name = 'chat-fixture'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("load unchanged agent spec");
+    let agent_spec: serde_json::Value =
+        serde_json::from_str(&agent_spec_json).expect("decode agent spec");
+    assert_eq!(agent_spec["model"], "fake/default-model");
+
+    let mut prompt = chat_command(&database_path, &log_path, &config_path);
+    prompt.args([
+        "chat",
+        "--agent",
+        "chat-fixture",
+        "--resume",
+        &conversation_id,
+    ]);
+    let prompt = run_with_stdin(prompt, "use persisted model\n");
+    assert_success(&prompt);
+    let turn_config_json: String = connection
+        .query_row(
+            "SELECT config_json FROM interaction_turns WHERE conversation_id = ?1",
+            [&conversation_id],
+            |row| row.get(0),
+        )
+        .expect("load effective turn config");
+    let turn_config: serde_json::Value =
+        serde_json::from_str(&turn_config_json).expect("decode turn config");
+    assert_eq!(turn_config["model"], "fake/model-a");
 }

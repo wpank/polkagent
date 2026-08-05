@@ -24,12 +24,13 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader, Lines, Stdin
 
 use crate::cli::ChatCmd;
 
-const SUPPORTED_COMMANDS: [CommandName; 5] = [
+const SUPPORTED_COMMANDS: [CommandName; 6] = [
     CommandName::Help,
     CommandName::Status,
     CommandName::Cancel,
     CommandName::New,
     CommandName::Resume,
+    CommandName::Model,
 ];
 
 /// Run a durable terminal chat session.
@@ -103,8 +104,8 @@ async fn build_runtime(pool: &SqlitePool, config_path: Option<&Path>) -> Result<
     options.database_path = Some(pool.path().to_path_buf());
     options.disable_harness = true;
     // Match the established local-first CLI path while reporting simulation
-    // explicitly on stderr. Explicit provider/model selection is intentionally
-    // absent from this surface until the durable interaction service supports it.
+    // explicitly on stderr. Durable interaction-scoped model selection is
+    // handled by the shared interaction service after composition.
     options.adapter_policy = AdapterPolicy::AllowSimulated;
     RuntimeFactory::build(options)
         .await
@@ -429,13 +430,17 @@ impl ChatSession {
                             Some("[all]"),
                             "Cancel the current durable turn (or all active turns)",
                         ),
+                        CommandName::Model => (
+                            Some("[model-id]"),
+                            "Show or persist the model for this durable conversation",
+                        ),
                         _ => (command.input_hint.as_deref(), command.description.as_str()),
                     };
                     let hint = input_hint.map_or(String::new(), |hint| format!(" {hint}"));
                     println!("  /{}{hint} — {description}", command.name);
                 }
                 println!(
-                    "Agent/model/provider/autonomy, approval, run-inspection, and group commands are not available in terminal chat."
+                    "Agent/provider/harness/autonomy, approval, run-inspection, and group commands are not available in terminal chat."
                 );
             }
             CommandOutput::Status {
@@ -450,12 +455,15 @@ impl ChatSession {
                 println!("active turns: {}", active_turns.len());
                 println!("pending approvals: visibility unavailable in terminal chat");
                 println!(
-                    "model/provider: {}/{} (read-only status; selection is unsupported here)",
+                    "model: {} (durable conversation selection)",
                     interaction
                         .config
                         .model
                         .as_deref()
-                        .unwrap_or("runtime default"),
+                        .unwrap_or("runtime/agent default")
+                );
+                println!(
+                    "provider: {} (selection unavailable in terminal chat)",
                     interaction
                         .config
                         .provider
@@ -480,6 +488,21 @@ impl ChatSession {
                 self.conversation_id = interaction.conversation_id;
                 self.announce_session();
                 self.render_transcript().await?;
+            }
+            CommandOutput::Model { model, changed } => {
+                println!(
+                    "model: {}",
+                    model.as_deref().unwrap_or("runtime/agent default")
+                );
+                println!("conversation: {}", self.conversation_id);
+                println!(
+                    "persistence: {}",
+                    if changed {
+                        "updated for this durable conversation"
+                    } else {
+                        "current durable conversation selection"
+                    }
+                );
             }
             _ => anyhow::bail!("terminal chat received an unsupported command result"),
         }
@@ -549,6 +572,9 @@ fn refuse_unregistered_configuration_command(line: &str) -> Result<()> {
         "/autonomy" => anyhow::bail!(
             "terminal chat does not support autonomy changes; configure the agent outside chat"
         ),
+        "/harness" => anyhow::bail!(
+            "terminal chat does not support harness selection; configure the runtime and restart"
+        ),
         _ => Ok(()),
     }
 }
@@ -574,9 +600,6 @@ fn refuse_unsupported_command(command: &InteractionCommand) -> Result<()> {
         InteractionCommand::Approve { .. } | InteractionCommand::Deny { .. } => {
             anyhow::bail!("terminal chat cannot resolve approvals; use the durable inbox commands")
         }
-        InteractionCommand::Model { .. } => anyhow::bail!(
-            "terminal chat does not support model selection; configure the agent and restart"
-        ),
         _ => Ok(()),
     }
 }
@@ -787,10 +810,271 @@ fn chat_unsupported(capability: &str) -> InteractionError {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
     use clap::Parser as _;
+    use futures::Stream;
+    use polkagent_config::{Config, ModelOverrideConfig};
+    use polkagent_core::AgentSpec;
+    use polkagent_event::{EventBus, EventRecorder};
+    use polkagent_executor_trait::{
+        ExecutorError, InferenceRequest, InferenceResponse, ModelExecutor, StreamEvent, TokenUsage,
+    };
+    use polkagent_harness_trait::{
+        CancelMode, Harness, HarnessCapabilities, HarnessError, HarnessEvent, HarnessId,
+        HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
+    };
+    use polkagent_runtime::DurableInteractionService;
+    use polkagent_service::AppService;
+    use polkagent_store_sqlite::migrations;
 
     use super::*;
     use crate::cli::{Cli, Commands};
+
+    #[derive(Default)]
+    struct CapturingExecutor {
+        requests: Mutex<Vec<InferenceRequest>>,
+    }
+
+    struct FixedHarness {
+        id: HarnessId,
+    }
+
+    impl FixedHarness {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                id: HarnessId::new("fixed-test-harness"),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Harness for FixedHarness {
+        fn id(&self) -> &HarnessId {
+            &self.id
+        }
+
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                supports_streaming: false,
+                supports_tools: false,
+                supports_sessions: true,
+                max_context_tokens: 1_000,
+                models: vec!["fake/model-a".to_owned()],
+                transport: None,
+                model_override: None,
+                session_resume: SessionResumeMode::default(),
+                mcp_passthrough: McpMode::default(),
+                tool_injection: ToolInjection::default(),
+                cancel: CancelMode::default(),
+                multiplex_safe: false,
+            }
+        }
+
+        fn status(&self) -> HarnessStatus {
+            HarnessStatus::Idle
+        }
+
+        async fn start_session(
+            &self,
+            _config: SessionConfig,
+        ) -> std::result::Result<SessionId, HarnessError> {
+            Err(HarnessError::Internal {
+                message: "fixed harness must not execute".to_owned(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            _session_id: SessionId,
+            _message: &str,
+        ) -> std::result::Result<(), HarnessError> {
+            Err(HarnessError::Internal {
+                message: "fixed harness must not execute".to_owned(),
+            })
+        }
+
+        async fn receive_events(
+            &self,
+            _session_id: SessionId,
+        ) -> std::result::Result<
+            std::pin::Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>,
+            HarnessError,
+        > {
+            Err(HarnessError::Internal {
+                message: "fixed harness must not execute".to_owned(),
+            })
+        }
+
+        async fn end_session(
+            &self,
+            _session_id: SessionId,
+        ) -> std::result::Result<(), HarnessError> {
+            Ok(())
+        }
+
+        async fn health(&self) -> std::result::Result<bool, HarnessError> {
+            Ok(true)
+        }
+    }
+
+    impl CapturingExecutor {
+        fn requests(&self) -> Vec<InferenceRequest> {
+            self.requests.lock().expect("capture lock").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ModelExecutor for CapturingExecutor {
+        async fn complete(
+            &self,
+            request: InferenceRequest,
+        ) -> std::result::Result<InferenceResponse, ExecutorError> {
+            self.requests.lock().expect("capture lock").push(request);
+            Ok(InferenceResponse {
+                text: "captured assistant".to_owned(),
+                tool_calls: Vec::new(),
+                stop_reason: "end_turn".to_owned(),
+                usage: TokenUsage::default(),
+                provider_request_id: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> std::result::Result<
+            Box<dyn Stream<Item = std::result::Result<StreamEvent, ExecutorError>> + Send + Unpin>,
+            ExecutorError,
+        > {
+            Err(ExecutorError::Internal {
+                message: "chat interaction tests use non-streaming execution".to_owned(),
+            })
+        }
+
+        async fn health(&self) -> std::result::Result<(), ExecutorError> {
+            Ok(())
+        }
+    }
+
+    fn model_config() -> Config {
+        Config {
+            models: [
+                ("model-a", "fake"),
+                ("model-b", "fake"),
+                ("other-model", "other"),
+            ]
+            .into_iter()
+            .map(|(slug, provider)| ModelOverrideConfig {
+                slug: slug.to_owned(),
+                provider: provider.to_owned(),
+                ..ModelOverrideConfig::default()
+            })
+            .collect(),
+            ..Config::default()
+        }
+    }
+
+    fn persist_agent(pool: &SqlitePool, spec: &AgentSpec) {
+        pool.writer()
+            .execute(
+                "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at)
+                 VALUES (?1, ?2, 'active', ?3, ?4, ?4)",
+                rusqlite::params![
+                    spec.id.to_string(),
+                    &spec.name,
+                    serde_json::to_string(spec).expect("encode model command agent"),
+                    "2026-01-01T00:00:00Z"
+                ],
+            )
+            .expect("persist model command agent");
+    }
+
+    fn model_service(
+        pool: &SqlitePool,
+        spec: AgentSpec,
+        executor: Arc<dyn ModelExecutor>,
+    ) -> (Arc<AppService>, Arc<DurableInteractionService>) {
+        persist_agent(pool, &spec);
+        let bus = EventBus::new(32);
+        let shared = Arc::new(pool.clone());
+        let recorder = EventRecorder::new(shared.clone(), bus.clone());
+        let app = Arc::new(
+            AppService::builder()
+                .with_config(model_config())
+                .with_executor(executor)
+                .with_run_store(shared.clone())
+                .with_effect_store(shared.clone())
+                .with_conversation_store(shared.clone())
+                .with_payment_store(shared)
+                .with_event_bus(bus)
+                .with_event_recorder(recorder)
+                .build()
+                .expect("build model command service"),
+        );
+        app.create_agent(spec)
+            .expect("register model command agent");
+        let service = Arc::new(DurableInteractionService::new(
+            Arc::clone(&app),
+            pool.clone(),
+        ));
+        (app, service)
+    }
+
+    fn harness_model_service(
+        pool: &SqlitePool,
+        spec: AgentSpec,
+        executor: Arc<dyn ModelExecutor>,
+        harness: Arc<dyn Harness>,
+    ) -> Arc<DurableInteractionService> {
+        persist_agent(pool, &spec);
+        let bus = EventBus::new(32);
+        let shared = Arc::new(pool.clone());
+        let recorder = EventRecorder::new(shared.clone(), bus.clone());
+        let app = Arc::new(
+            AppService::builder()
+                .with_config(model_config())
+                .with_executor(executor)
+                .with_harness(harness)
+                .with_run_store(shared.clone())
+                .with_effect_store(shared.clone())
+                .with_conversation_store(shared.clone())
+                .with_payment_store(shared)
+                .with_event_bus(bus)
+                .with_event_recorder(recorder)
+                .build()
+                .expect("build harness model command service"),
+        );
+        app.create_agent(spec)
+            .expect("register harness model command agent");
+        Arc::new(DurableInteractionService::new(app, pool.clone()))
+    }
+
+    fn chat_session(
+        service: Arc<dyn InteractionService>,
+        agent_id: AgentId,
+        conversation_id: ConversationId,
+    ) -> ChatSession {
+        let registry = CommandRegistry::mvp();
+        let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(ChatCommandRuntime {
+            service: Arc::clone(&service),
+            agent_id,
+        });
+        let executor =
+            ServiceCommandExecutor::new(registry.clone(), Arc::clone(&service), command_runtime)
+                .expect("compose chat command executor");
+        ChatSession {
+            service,
+            registry,
+            executor,
+            client_context: ClientContext::new(PathBuf::from("/tmp/chat-model-test"))
+                .expect("chat client context"),
+            agent_id,
+            agent_name: "model-agent".to_owned(),
+            conversation_id,
+        }
+    }
 
     #[test]
     fn chat_cli_parses_agent_resume_and_title_conflict() {
@@ -840,9 +1124,203 @@ mod tests {
     fn unsupported_surface_commands_are_explicit() {
         assert!(refuse_unregistered_configuration_command("/provider openai").is_err());
         assert!(refuse_unregistered_configuration_command("/autonomy autonomous").is_err());
+        assert!(refuse_unregistered_configuration_command("/harness codex").is_err());
         assert!(refuse_unsupported_command(&InteractionCommand::Agents).is_err());
-        assert!(refuse_unsupported_command(&InteractionCommand::Model { model: None }).is_err());
+        assert!(refuse_unsupported_command(&InteractionCommand::Model { model: None }).is_ok());
         assert!(refuse_unsupported_command(&InteractionCommand::Status).is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::too_many_lines)]
+    async fn model_commands_persist_isolate_and_drive_real_executor_requests_without_turns() {
+        let pool = SqlitePool::open_in_memory().expect("open model command database");
+        migrations::migrate(&pool.writer()).expect("migrate model command database");
+        let agent_id = AgentId::new();
+        let agent_spec = AgentSpec::new(agent_id, "model-agent", "fake/default-model");
+        let capture = Arc::new(CapturingExecutor::default());
+        let erased: Arc<dyn ModelExecutor> = capture.clone();
+        let (app, service) = model_service(&pool, agent_spec, erased);
+        let client_context =
+            ClientContext::new(PathBuf::from("/tmp/chat-model-test")).expect("client context");
+        let first = service
+            .new_interaction(CreateInteractionRequest {
+                title: Some("first model session".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                client_context: client_context.clone(),
+            })
+            .await
+            .expect("create first model session");
+        let second = service
+            .new_interaction(CreateInteractionRequest {
+                title: Some("second model session".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                client_context,
+            })
+            .await
+            .expect("create second model session");
+
+        let first_service: Arc<dyn InteractionService> = service.clone();
+        let second_service: Arc<dyn InteractionService> = service.clone();
+        let mut first_session = chat_session(first_service, agent_id, first.conversation_id);
+        let mut second_session = chat_session(second_service, agent_id, second.conversation_id);
+        first_session
+            .execute_command_line("/model model-a", false)
+            .await
+            .expect("select first model");
+        second_session
+            .execute_command_line("/model model-b", false)
+            .await
+            .expect("select second model");
+
+        for (line, code, detail) in [
+            ("/model missing-model", "invalid_request", "unknown model"),
+            ("/model other-model", "unsupported", "provider switching"),
+        ] {
+            let error = first_session
+                .execute_command_line(line, false)
+                .await
+                .expect_err("invalid model must be refused by interaction service");
+            let rendered = format!("{error:#}");
+            assert!(rendered.contains(code), "{rendered}");
+            assert!(rendered.contains(detail), "{rendered}");
+        }
+        first_session
+            .execute_command_line("/help model", false)
+            .await
+            .expect("model help is truthful");
+        assert_eq!(
+            service
+                .list_turns(first.conversation_id)
+                .await
+                .expect("first command-only transcript")
+                .len(),
+            0
+        );
+        assert_eq!(
+            service
+                .list_turns(second.conversation_id)
+                .await
+                .expect("second command-only transcript")
+                .len(),
+            0
+        );
+
+        drop(first_session);
+        drop(second_session);
+        drop(service);
+        let restarted = Arc::new(DurableInteractionService::new(app, pool.clone()));
+        assert_eq!(
+            restarted
+                .load_interaction(first.conversation_id)
+                .await
+                .expect("reload first interaction")
+                .config
+                .model
+                .as_deref(),
+            Some("fake/model-a")
+        );
+        assert_eq!(
+            restarted
+                .load_interaction(second.conversation_id)
+                .await
+                .expect("reload second interaction")
+                .config
+                .model
+                .as_deref(),
+            Some("fake/model-b")
+        );
+
+        let first_service: Arc<dyn InteractionService> = restarted.clone();
+        let second_service: Arc<dyn InteractionService> = restarted.clone();
+        let mut first_session = chat_session(first_service, agent_id, first.conversation_id);
+        let mut second_session = chat_session(second_service, agent_id, second.conversation_id);
+        first_session
+            .execute_command_line("/model", false)
+            .await
+            .expect("query persisted first model");
+        assert_eq!(
+            first_session
+                .run_turn_non_interactive("first captured prompt".to_owned())
+                .await
+                .expect("run first captured prompt"),
+            TurnTerminal::Completed
+        );
+        assert_eq!(
+            second_session
+                .run_turn_non_interactive("second captured prompt".to_owned())
+                .await
+                .expect("run second captured prompt"),
+            TurnTerminal::Completed
+        );
+
+        let requests = capture.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].model_id, "fake/model-a");
+        assert_eq!(requests[1].model_id, "fake/model-b");
+        assert_eq!(
+            restarted
+                .list_turns(first.conversation_id)
+                .await
+                .expect("first transcript")
+                .len(),
+            1
+        );
+        assert_eq!(
+            restarted
+                .list_turns(second.conversation_id)
+                .await
+                .expect("second transcript")
+                .len(),
+            1
+        );
+        let stored_agent = SqliteRunStore::new(pool)
+            .get_agent_by_name_or_id("model-agent")
+            .expect("load unchanged agent");
+        let stored_spec: AgentSpec =
+            serde_json::from_str(&stored_agent.spec_json).expect("decode unchanged agent spec");
+        assert_eq!(stored_spec.model, "fake/default-model");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_command_surfaces_typed_harness_refusal_without_a_turn() {
+        let pool = SqlitePool::open_in_memory().expect("open harness command database");
+        migrations::migrate(&pool.writer()).expect("migrate harness command database");
+        let agent_id = AgentId::new();
+        let capture: Arc<dyn ModelExecutor> = Arc::new(CapturingExecutor::default());
+        let harness: Arc<dyn Harness> = FixedHarness::new();
+        let service = harness_model_service(
+            &pool,
+            AgentSpec::new(agent_id, "harness-agent", "fake/default-model"),
+            capture,
+            harness,
+        );
+        let interaction = service
+            .new_interaction(CreateInteractionRequest {
+                title: Some("harness model refusal".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                client_context: ClientContext::new(PathBuf::from("/tmp/chat-harness-test"))
+                    .expect("harness client context"),
+            })
+            .await
+            .expect("create harness interaction");
+        let erased: Arc<dyn InteractionService> = service.clone();
+        let mut session = chat_session(erased, agent_id, interaction.conversation_id);
+        let error = session
+            .execute_command_line("/model model-a", false)
+            .await
+            .expect_err("dynamic harness model selection must be refused");
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("unsupported"), "{rendered}");
+        assert!(rendered.contains("fixed-test-harness"), "{rendered}");
+        assert!(
+            rendered.contains("cannot apply a dynamic model"),
+            "{rendered}"
+        );
+        assert!(service
+            .list_turns(interaction.conversation_id)
+            .await
+            .expect("harness command-only transcript")
+            .is_empty());
     }
 
     #[test]

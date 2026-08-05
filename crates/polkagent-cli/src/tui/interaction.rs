@@ -38,11 +38,12 @@ const MAX_SESSION_SELECTOR_SCAN: u32 = 1_000;
 const MAX_SESSION_TITLE_BYTES: usize = 256;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
-const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 4] = [
+const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 5] = [
     CommandName::Help,
     CommandName::Status,
     CommandName::New,
     CommandName::Resume,
+    CommandName::Model,
 ];
 
 /// One canonical entry in the Console's shared slash-command picker.
@@ -138,8 +139,15 @@ pub enum ConsoleCommandSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConsoleModelUpdate {
+    Unchanged,
+    Selected(Option<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsoleConversationSelection {
     pub conversation_id: String,
+    pub model: Option<String>,
     pub turns: Vec<ConsoleRun>,
 }
 
@@ -251,6 +259,7 @@ pub struct InteractionState {
     slash_completion_selection: usize,
     slash_completion_dismissed: bool,
     pub conversation_id: Option<String>,
+    pub selected_model: Option<String>,
     pub transcript: Vec<ConsoleRun>,
     pub run: Option<ConsoleRun>,
     pub command_result: Option<ConsoleCommandResult>,
@@ -262,6 +271,7 @@ impl InteractionState {
         let agent_id = agent_id.into();
         if self.agent_id.as_deref() != Some(agent_id.as_str()) {
             self.conversation_id = None;
+            self.selected_model = None;
             self.transcript.clear();
             self.run = None;
             self.prompt_history.clear();
@@ -834,6 +844,7 @@ impl InteractionState {
             ControllerEvent::HistoryLoaded {
                 agent_id,
                 conversation_id,
+                model,
                 turns,
             } => {
                 if self.agent_id.as_deref() != Some(agent_id.as_str())
@@ -843,16 +854,19 @@ impl InteractionState {
                 {
                     return;
                 }
-                self.replace_conversation(conversation_id, turns);
+                self.replace_conversation(conversation_id, model, turns);
             }
             ControllerEvent::HistoryFailed { .. } => {}
             ControllerEvent::CommandCompleted {
                 agent_id,
+                conversation_id,
                 request_id,
                 result,
                 selection,
+                model_update,
             } => {
                 if self.agent_id.as_deref() != Some(agent_id.as_str())
+                    || self.conversation_id != conversation_id
                     || self
                         .command_result
                         .as_ref()
@@ -863,15 +877,23 @@ impl InteractionState {
                 }
                 self.command_result = Some(result);
                 if let Some(selection) = selection {
-                    self.replace_conversation(Some(selection.conversation_id), selection.turns);
+                    self.replace_conversation(
+                        Some(selection.conversation_id),
+                        selection.model,
+                        selection.turns,
+                    );
+                } else if let ConsoleModelUpdate::Selected(model) = model_update {
+                    self.selected_model = model;
                 }
             }
             ControllerEvent::CommandFailed {
                 agent_id,
+                conversation_id,
                 request_id,
                 result,
             } => {
                 if self.agent_id.as_deref() == Some(agent_id.as_str())
+                    && self.conversation_id == conversation_id
                     && self
                         .command_result
                         .as_ref()
@@ -936,7 +958,11 @@ impl InteractionState {
                 }
                 self.session_picker = None;
                 self.command_result = None;
-                self.replace_conversation(Some(selection.conversation_id), selection.turns);
+                self.replace_conversation(
+                    Some(selection.conversation_id),
+                    selection.model,
+                    selection.turns,
+                );
             }
             event => self.apply_run_event(event),
         }
@@ -945,9 +971,11 @@ impl InteractionState {
     fn replace_conversation(
         &mut self,
         conversation_id: Option<String>,
+        model: Option<String>,
         mut turns: Vec<ConsoleRun>,
     ) {
         self.conversation_id = conversation_id;
+        self.selected_model = model;
         self.prompt_history = turns
             .iter()
             .map(|turn| bounded_grapheme_prefix(&turn.prompt, MAX_COMPOSER_BYTES).to_owned())
@@ -966,6 +994,7 @@ impl InteractionState {
         match event {
             ControllerEvent::Started {
                 conversation_id,
+                model,
                 turn_id,
                 run_id,
                 agent_name,
@@ -975,6 +1004,7 @@ impl InteractionState {
                 run.turn_id = Some(turn_id);
                 run.run_id = Some(run_id);
                 self.conversation_id = Some(conversation_id);
+                self.selected_model = model;
                 run.status = ConsoleRunStatus::Running;
                 self.agent_name = Some(agent_name);
                 run.detail = if notes.is_empty() {
@@ -1080,10 +1110,6 @@ fn validate_console_command(command: &InteractionCommand) -> Result<(), String> 
             "approval commands are unavailable in the Console prompt path; use an authorized approval surface"
                 .to_owned(),
         ),
-        InteractionCommand::Model { .. } => Err(
-            "model selection is unavailable in the Console; configure the selected agent outside this surface"
-                .to_owned(),
-        ),
         _ => Ok(()),
     }
 }
@@ -1106,6 +1132,10 @@ fn console_parse_error(line: &str, shared_error: &str) -> String {
         }
         "autonomy" => {
             "autonomy changes are unavailable in the Console; configure the agent outside this surface"
+                .to_owned()
+        }
+        "harness" => {
+            "harness selection is unavailable in the Console; configure the runtime and restart"
                 .to_owned()
         }
         _ => shared_error.to_owned(),
@@ -1233,6 +1263,7 @@ pub enum ControllerEvent {
     HistoryLoaded {
         agent_id: String,
         conversation_id: Option<String>,
+        model: Option<String>,
         turns: Vec<ConsoleRun>,
     },
     HistoryFailed {
@@ -1241,12 +1272,15 @@ pub enum ControllerEvent {
     },
     CommandCompleted {
         agent_id: String,
+        conversation_id: Option<String>,
         request_id: String,
         result: ConsoleCommandResult,
         selection: Option<ConsoleConversationSelection>,
+        model_update: ConsoleModelUpdate,
     },
     CommandFailed {
         agent_id: String,
+        conversation_id: Option<String>,
         request_id: String,
         result: ConsoleCommandResult,
     },
@@ -1272,6 +1306,7 @@ pub enum ControllerEvent {
     },
     Started {
         conversation_id: String,
+        model: Option<String>,
         turn_id: String,
         run_id: String,
         agent_name: String,
@@ -1424,15 +1459,13 @@ impl RunController {
             };
             let mut events = started.events;
             let notes = runtime_notes(polkagent_runtime.readiness());
-
-            let _ = event_tx.send(ControllerEvent::Started {
-                conversation_id: interaction.conversation_id.to_string(),
-                turn_id: turn_id.to_string(),
-                run_id: run_id.to_string(),
+            let _ = event_tx.send(started_controller_event(
+                &interaction,
+                turn_id,
+                run_id,
                 agent_name,
                 notes,
-            });
-
+            ));
             if cancellation_requested {
                 request_turn_cancellation(service.as_ref(), turn_id, &event_tx).await;
             }
@@ -1515,12 +1548,14 @@ impl RunController {
                 line,
                 invocation,
             } = request;
+            let selected_conversation_id = conversation_id.clone();
             let typed_agent_id = match agent_id.parse::<AgentId>() {
                 Ok(agent_id) => agent_id,
                 Err(error) => {
                     send_command_failure(
                         &event_tx,
                         agent_id,
+                        selected_conversation_id,
                         request_id,
                         line,
                         format!("invalid selected agent ID: {error}"),
@@ -1529,6 +1564,7 @@ impl RunController {
                 }
             };
             let conversation_id = match conversation_id
+                .as_deref()
                 .map(|id| {
                     id.parse::<ConversationId>().map_err(|error| {
                         format!("invalid selected Console conversation ID '{id}': {error}")
@@ -1538,7 +1574,14 @@ impl RunController {
             {
                 Ok(conversation_id) => conversation_id,
                 Err(error) => {
-                    send_command_failure(&event_tx, agent_id, request_id, line, error);
+                    send_command_failure(
+                        &event_tx,
+                        agent_id,
+                        selected_conversation_id,
+                        request_id,
+                        line,
+                        error,
+                    );
                     return;
                 }
             };
@@ -1554,14 +1597,28 @@ impl RunController {
             ) {
                 Ok(executor) => executor,
                 Err(error) => {
-                    send_command_failure(&event_tx, agent_id, request_id, line, error.to_string());
+                    send_command_failure(
+                        &event_tx,
+                        agent_id,
+                        selected_conversation_id,
+                        request_id,
+                        line,
+                        error.to_string(),
+                    );
                     return;
                 }
             };
             let client_context = match tui_client_context(&polkagent_runtime) {
                 Ok(context) => context,
                 Err(error) => {
-                    send_command_failure(&event_tx, agent_id, request_id, line, error.to_string());
+                    send_command_failure(
+                        &event_tx,
+                        agent_id,
+                        selected_conversation_id,
+                        request_id,
+                        line,
+                        error.to_string(),
+                    );
                     return;
                 }
             };
@@ -1600,13 +1657,22 @@ impl RunController {
                     };
                     let _ = event_tx.send(ControllerEvent::CommandCompleted {
                         agent_id,
+                        conversation_id: selected_conversation_id,
                         request_id,
                         result,
                         selection: outcome.selection,
+                        model_update: outcome.model_update,
                     });
                 }
                 Err(error) => {
-                    send_command_failure(&event_tx, agent_id, request_id, line, error);
+                    send_command_failure(
+                        &event_tx,
+                        agent_id,
+                        selected_conversation_id,
+                        request_id,
+                        line,
+                        error,
+                    );
                 }
             }
         });
@@ -1704,6 +1770,7 @@ impl RunController {
                 let (_, turns) = load_interaction_history(&polkagent_runtime, &interaction).await?;
                 Ok::<_, String>(ConsoleConversationSelection {
                     conversation_id: interaction.conversation_id.to_string(),
+                    model: interaction.config.model.clone(),
                     turns,
                 })
             }
@@ -1748,10 +1815,11 @@ impl RunController {
                 }
             };
             match load_console_history(&polkagent_runtime, typed_agent_id).await {
-                Ok((conversation_id, turns)) => {
+                Ok((conversation_id, model, turns)) => {
                     let _ = event_tx.send(ControllerEvent::HistoryLoaded {
                         agent_id,
                         conversation_id: conversation_id.map(|id| id.to_string()),
+                        model,
                         turns,
                     });
                 }
@@ -1795,6 +1863,23 @@ fn tui_interaction_title(agent_name: &str) -> String {
     format!("{TUI_INTERACTION_TITLE_PREFIX} · {agent_name}")
 }
 
+fn started_controller_event(
+    interaction: &InteractionSummary,
+    turn_id: InteractionTurnId,
+    run_id: RunId,
+    agent_name: String,
+    notes: Vec<String>,
+) -> ControllerEvent {
+    ControllerEvent::Started {
+        conversation_id: interaction.conversation_id.to_string(),
+        model: interaction.config.model.clone(),
+        turn_id: turn_id.to_string(),
+        run_id: run_id.to_string(),
+        agent_name,
+        notes,
+    }
+}
+
 fn parse_selected_agent_id(agent_id: &str) -> Result<AgentId, String> {
     agent_id
         .parse::<AgentId>()
@@ -1812,6 +1897,7 @@ fn tui_client_context(
 fn send_command_failure(
     event_tx: &mpsc::Sender<ControllerEvent>,
     agent_id: String,
+    conversation_id: Option<String>,
     request_id: String,
     line: String,
     error: String,
@@ -1825,6 +1911,7 @@ fn send_command_failure(
     };
     let _ = event_tx.send(ControllerEvent::CommandFailed {
         agent_id,
+        conversation_id,
         request_id,
         result,
     });
@@ -1870,6 +1957,7 @@ struct ProjectedConsoleCommand {
     title: String,
     lines: Vec<String>,
     selection: Option<ConsoleConversationSelection>,
+    model_update: ConsoleModelUpdate,
 }
 
 async fn project_console_command_output(
@@ -1897,13 +1985,14 @@ async fn project_console_command_output(
                 .collect::<Vec<_>>();
             lines.push("x — cancel the exact current turn (not a slash command)".to_owned());
             lines.push(
-                "Agent/model/provider/autonomy, approval, group, and run-inspection commands are unavailable in Console."
+                "Agent/provider/harness/autonomy, approval, group, and run-inspection commands are unavailable in Console."
                     .to_owned(),
             );
             Ok(ProjectedConsoleCommand {
                 title: "Supported Console commands".to_owned(),
                 lines,
                 selection: None,
+                model_update: ConsoleModelUpdate::Unchanged,
             })
         }
         CommandOutput::Status {
@@ -1923,12 +2012,15 @@ async fn project_console_command_output(
                 format!("active turns: {}", active_turns.len()),
                 "pending approvals: visibility unavailable in Console".to_owned(),
                 format!(
-                    "model/provider: {}/{} (read-only; selection unsupported)",
+                    "model: {} (durable conversation selection)",
                     interaction
                         .config
                         .model
                         .as_deref()
-                        .unwrap_or("runtime default"),
+                        .unwrap_or("runtime/agent default")
+                ),
+                format!(
+                    "provider: {} (selection unavailable in Console)",
                     interaction
                         .config
                         .provider
@@ -1937,6 +2029,7 @@ async fn project_console_command_output(
                 ),
             ],
             selection: None,
+            model_update: ConsoleModelUpdate::Selected(interaction.config.model),
         }),
         CommandOutput::InteractionCreated { interaction } => {
             validate_console_target(&interaction, agent_id).map_err(|error| error.to_string())?;
@@ -1953,8 +2046,10 @@ async fn project_console_command_output(
                 ],
                 selection: Some(ConsoleConversationSelection {
                     conversation_id: interaction.conversation_id.to_string(),
+                    model: interaction.config.model.clone(),
                     turns,
                 }),
+                model_update: ConsoleModelUpdate::Unchanged,
             })
         }
         CommandOutput::InteractionResumed { interaction } => {
@@ -1969,17 +2064,38 @@ async fn project_console_command_output(
                 ],
                 selection: Some(ConsoleConversationSelection {
                     conversation_id: interaction.conversation_id.to_string(),
+                    model: interaction.config.model.clone(),
                     turns,
                 }),
+                model_update: ConsoleModelUpdate::Unchanged,
             })
         }
+        CommandOutput::Model { model, changed } => Ok(ProjectedConsoleCommand {
+            title: if changed {
+                "Updated durable Console model"
+            } else {
+                "Durable Console model"
+            }
+            .to_owned(),
+            lines: vec![
+                format!(
+                    "model: {}",
+                    model.as_deref().unwrap_or("runtime/agent default")
+                ),
+                format!(
+                    "scope: selected conversation ({})",
+                    if changed { "persisted" } else { "current" }
+                ),
+            ],
+            selection: None,
+            model_update: ConsoleModelUpdate::Selected(model),
+        }),
         CommandOutput::Agents { .. }
         | CommandOutput::TargetChanged { .. }
         | CommandOutput::Runs { .. }
         | CommandOutput::RunInspected { .. }
         | CommandOutput::CancellationRequested { .. }
-        | CommandOutput::ApprovalResolved { .. }
-        | CommandOutput::Model { .. } => {
+        | CommandOutput::ApprovalResolved { .. } => {
             Err("shared command returned an output unsupported by Console".to_owned())
         }
     }
@@ -2156,15 +2272,16 @@ fn validate_console_target(
 async fn load_console_history(
     runtime: &PolkagentRuntime,
     agent_id: AgentId,
-) -> Result<(Option<ConversationId>, Vec<ConsoleRun>), String> {
+) -> Result<(Option<ConversationId>, Option<String>, Vec<ConsoleRun>), String> {
     let service = runtime.interactions();
     let Some(interaction) = find_console_interaction(service.as_ref(), agent_id)
         .await
         .map_err(|error| error.to_string())?
     else {
-        return Ok((None, Vec::new()));
+        return Ok((None, None, Vec::new()));
     };
-    load_interaction_history(runtime, &interaction).await
+    let (conversation_id, turns) = load_interaction_history(runtime, &interaction).await?;
+    Ok((conversation_id, interaction.config.model, turns))
 }
 
 async fn load_interaction_history(
@@ -2383,6 +2500,7 @@ mod tests {
 
         state.apply(ControllerEvent::Started {
             conversation_id: "conversation-id".to_owned(),
+            model: Some("fake/model-a".to_owned()),
             turn_id: "turn-id".to_owned(),
             run_id: "run-id".to_owned(),
             agent_name: "Alice".to_owned(),
@@ -2397,6 +2515,7 @@ mod tests {
         });
 
         let run = state.run.as_ref().unwrap();
+        assert_eq!(state.selected_model.as_deref(), Some("fake/model-a"));
         assert_eq!(run.run_id.as_deref(), Some("run-id"));
         assert_eq!(run.output, "hello world");
         assert_eq!(run.status, ConsoleRunStatus::Completed);
@@ -2442,10 +2561,12 @@ mod tests {
         state.apply(ControllerEvent::HistoryLoaded {
             agent_id: "agent-id".to_owned(),
             conversation_id: Some("conversation-id".to_owned()),
+            model: Some("fake/model-a".to_owned()),
             turns: vec![restored(1), restored(2)],
         });
 
         assert_eq!(state.conversation_id.as_deref(), Some("conversation-id"));
+        assert_eq!(state.selected_model.as_deref(), Some("fake/model-a"));
         assert_eq!(state.transcript.len(), 1);
         assert_eq!(
             state.run.as_ref().map(|run| run.prompt.as_str()),
@@ -2472,6 +2593,7 @@ mod tests {
         state.apply(ControllerEvent::HistoryLoaded {
             agent_id: "agent-id".to_owned(),
             conversation_id: Some("stale-conversation".to_owned()),
+            model: Some("fake/stale".to_owned()),
             turns: Vec::new(),
         });
 
@@ -2700,7 +2822,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["help", "status", "new", "resume"]
+            vec!["help", "status", "new", "resume", "model"]
         );
         assert_eq!(menu.selected, 0);
 
@@ -2738,6 +2860,15 @@ mod tests {
         assert!(result.lines[0].contains("run inspection commands"));
         assert!(state.run.is_none());
         assert!(state.prompt_buffer.is_empty());
+
+        type_prompt(&mut state, "/harness codex");
+        assert_eq!(
+            state.submit_command(),
+            Ok(ConsoleCommandSubmission::Rejected)
+        );
+        let result = state.command_result.as_ref().expect("harness refusal");
+        assert_eq!(result.status, ConsoleCommandStatus::Failed);
+        assert!(result.lines[0].contains("harness selection is unavailable"));
     }
 
     #[test]
@@ -2765,6 +2896,61 @@ mod tests {
     }
 
     #[test]
+    fn model_command_updates_only_its_request_agent_and_conversation() {
+        let first_id = ConversationId::new().to_string();
+        let second_id = ConversationId::new().to_string();
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        state.conversation_id = Some(first_id.clone());
+        state.selected_model = Some("fake/default-model".to_owned());
+        type_prompt(&mut state, "/model model-a");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("typed model command")
+        else {
+            panic!("model command was rejected")
+        };
+        assert!(matches!(
+            request.invocation.command,
+            InteractionCommand::Model {
+                model: Some(ref model)
+            } if model == "model-a"
+        ));
+        assert!(state.run.is_none());
+
+        let completed = ControllerEvent::CommandCompleted {
+            agent_id: request.agent_id.clone(),
+            conversation_id: request.conversation_id.clone(),
+            request_id: request.request_id.clone(),
+            result: ConsoleCommandResult {
+                request_id: request.request_id,
+                line: request.line,
+                status: ConsoleCommandStatus::Completed,
+                title: "Updated durable Console model".to_owned(),
+                lines: vec!["model: fake/model-a".to_owned()],
+            },
+            selection: None,
+            model_update: ConsoleModelUpdate::Selected(Some("fake/model-a".to_owned())),
+        };
+
+        state.conversation_id = Some(second_id);
+        state.apply(completed.clone());
+        assert_eq!(
+            state.selected_model.as_deref(),
+            Some("fake/default-model"),
+            "stale conversation result must be ignored"
+        );
+
+        state.conversation_id = Some(first_id);
+        state.apply(completed);
+        assert_eq!(state.selected_model.as_deref(), Some("fake/model-a"));
+        assert_eq!(
+            state.command_result.as_ref().map(|result| result.status),
+            Some(ConsoleCommandStatus::Completed)
+        );
+        assert!(state.run.is_none(), "model commands never become turns");
+    }
+
+    #[test]
     fn command_reducer_switches_conversation_and_ignores_stale_results() {
         let mut state = InteractionState::default();
         state.select_agent("agent-id", "Alice");
@@ -2777,6 +2963,7 @@ mod tests {
         let selected_id = ConversationId::new().to_string();
         state.apply(ControllerEvent::CommandCompleted {
             agent_id: "agent-id".to_owned(),
+            conversation_id: None,
             request_id: "stale-request".to_owned(),
             result: ConsoleCommandResult {
                 request_id: "stale-request".to_owned(),
@@ -2787,13 +2974,16 @@ mod tests {
             },
             selection: Some(ConsoleConversationSelection {
                 conversation_id: "stale-conversation".to_owned(),
+                model: Some("fake/stale".to_owned()),
                 turns: Vec::new(),
             }),
+            model_update: ConsoleModelUpdate::Unchanged,
         });
         assert_ne!(state.conversation_id.as_deref(), Some("stale-conversation"));
 
         state.apply(ControllerEvent::CommandCompleted {
             agent_id: "agent-id".to_owned(),
+            conversation_id: None,
             request_id: request.request_id.clone(),
             result: ConsoleCommandResult {
                 request_id: request.request_id,
@@ -2804,10 +2994,13 @@ mod tests {
             },
             selection: Some(ConsoleConversationSelection {
                 conversation_id: selected_id.clone(),
+                model: Some("fake/model-a".to_owned()),
                 turns: Vec::new(),
             }),
+            model_update: ConsoleModelUpdate::Unchanged,
         });
         assert_eq!(state.conversation_id.as_deref(), Some(selected_id.as_str()));
+        assert_eq!(state.selected_model.as_deref(), Some("fake/model-a"));
         assert_eq!(
             state.command_result.as_ref().map(|result| result.status),
             Some(ConsoleCommandStatus::Completed)
@@ -2877,6 +3070,7 @@ mod tests {
             request_id: "stale-load".to_owned(),
             selection: ConsoleConversationSelection {
                 conversation_id: "stale-conversation".to_owned(),
+                model: Some("fake/stale".to_owned()),
                 turns: Vec::new(),
             },
         });
@@ -2900,10 +3094,12 @@ mod tests {
             request_id: retry.request_id,
             selection: ConsoleConversationSelection {
                 conversation_id: second_id.clone(),
+                model: Some("fake/model-b".to_owned()),
                 turns: Vec::new(),
             },
         });
         assert_eq!(state.conversation_id.as_deref(), Some(second_id.as_str()));
+        assert_eq!(state.selected_model.as_deref(), Some("fake/model-b"));
         assert!(state.session_picker.is_none());
     }
 
@@ -3007,11 +3203,26 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::too_many_lines)]
     async fn console_commands_create_prompt_resume_after_restart_and_report_status() {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let database_path = temp.path().join("tui-command-runtime.db");
         let config_path = temp.path().join("selected.toml");
-        std::fs::write(&config_path, "").expect("write config");
+        std::fs::write(
+            &config_path,
+            r#"
+[[providers]]
+id = "fake"
+provider_type = "fake"
+api_key_env = "POLKAGENT_TEST_FAKE_KEY_UNSET"
+default_model = "default-model"
+
+[[models]]
+slug = "model-a"
+provider = "fake"
+"#,
+        )
+        .expect("write config");
         let seed_pool = SqlitePool::open(&database_path).expect("open database");
         migrations::migrate(&seed_pool.writer()).expect("migrate database");
         let store = SqliteRunStore::new(seed_pool.clone());
@@ -3068,6 +3279,28 @@ mod tests {
             Some("Created durable interaction")
         );
 
+        type_prompt(&mut state, "/model model-a");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("model command")
+        else {
+            panic!("model command rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute model command");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            state.apply(event);
+        }
+        assert_eq!(state.selected_model.as_deref(), Some("fake/model-a"));
+        assert_eq!(
+            state
+                .command_result
+                .as_ref()
+                .map(|result| result.title.as_str()),
+            Some("Updated durable Console model")
+        );
+
         type_prompt(&mut state, "prompt in explicitly selected session");
         let prompt = state.submit().expect("prompt after new command");
         assert_eq!(
@@ -3109,12 +3342,35 @@ mod tests {
             resumed.conversation_id.as_deref(),
             Some(conversation_id.as_str())
         );
+        assert_eq!(resumed.selected_model.as_deref(), Some("fake/model-a"));
         assert_eq!(
             resumed.run.as_ref().map(|run| run.prompt.as_str()),
             Some("prompt in explicitly selected session")
         );
 
-        for command in ["/status", "/help"] {
+        type_prompt(&mut resumed, "/model missing-model");
+        let ConsoleCommandSubmission::Execute(request) =
+            resumed.submit_command().expect("unknown model command")
+        else {
+            panic!("unknown model command rejected before service validation")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute unknown model command");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            resumed.apply(event);
+        }
+        let refusal = resumed
+            .command_result
+            .as_ref()
+            .expect("typed model refusal");
+        assert_eq!(refusal.status, ConsoleCommandStatus::Failed);
+        assert!(refusal.lines[0].contains("invalid_request"));
+        assert!(refusal.lines[0].contains("unknown model"));
+        assert_eq!(resumed.selected_model.as_deref(), Some("fake/model-a"));
+
+        for command in ["/model", "/status", "/help"] {
             type_prompt(&mut resumed, command);
             let ConsoleCommandSubmission::Execute(request) =
                 resumed.submit_command().expect("query command")
@@ -3136,6 +3392,7 @@ mod tests {
         let help = resumed.command_result.as_ref().expect("help result");
         assert!(help.lines.iter().any(|line| line.starts_with("/new")));
         assert!(help.lines.iter().any(|line| line.starts_with("/resume")));
+        assert!(help.lines.iter().any(|line| line.starts_with("/model")));
         assert!(help.lines.iter().any(|line| line.starts_with("x —")));
         let turns = restarted
             .interactions()
