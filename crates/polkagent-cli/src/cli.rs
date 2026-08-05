@@ -45,7 +45,8 @@ pub struct Cli {
 
     /// Override the log file path. Use `-` for stderr only (no file logging).
     ///
-    /// Default: `~/.polkagent/logs/events.jsonl`
+    /// ACP diagnostics are disabled unless this option names a file explicitly.
+    /// Other commands default to `~/.polkagent/logs/events.jsonl`.
     #[arg(long, global = true, value_name = "PATH")]
     pub log_file: Option<String>,
 

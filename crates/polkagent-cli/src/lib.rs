@@ -18,6 +18,8 @@
     )
 )]
 
+#[doc(hidden)]
+pub mod acp_diagnostics;
 pub mod cli;
 pub mod commands;
 pub mod error_explainer;

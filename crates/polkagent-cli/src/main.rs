@@ -27,6 +27,7 @@ use std::io::{IsTerminal as _, Write as _};
 use polkagent_store_sqlite::SqlitePool;
 use polkagent_telemetry::{LogFormat, MetricRecorder, TelemetryConfig, TelemetryGuard};
 
+mod acp_diagnostics;
 mod cli;
 mod commands;
 mod error_explainer;
@@ -34,7 +35,8 @@ mod exit_codes;
 mod output;
 mod tui;
 
-use cli::{Cli, Commands};
+use acp_diagnostics::AcpDiagnostics;
+use cli::{AcpCmd, Cli, Commands};
 use output::OutputFormat;
 
 const ACP_PANIC_DIAGNOSTIC: &str =
@@ -47,16 +49,21 @@ struct AcpPanicHookGuard {
 }
 
 impl AcpPanicHookGuard {
-    fn install_and_probe() -> Self {
+    fn install() -> Self {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {
             let _ = writeln!(std::io::stderr().lock(), "{ACP_PANIC_DIAGNOSTIC}");
         }));
-        let guard = Self {
+        Self {
             previous: Some(previous),
-        };
-        run_acp_panic_probe();
-        guard
+        }
+    }
+
+    fn attach_diagnostics(diagnostics: AcpDiagnostics) {
+        std::panic::set_hook(Box::new(move |_| {
+            let _ = writeln!(std::io::stderr().lock(), "{ACP_PANIC_DIAGNOSTIC}");
+            diagnostics.record("error", "acp.panic", ACP_PANIC_DIAGNOSTIC);
+        }));
     }
 }
 
@@ -76,14 +83,15 @@ impl Drop for AcpPanicHookGuard {
 }
 
 #[cfg(debug_assertions)]
-fn run_acp_panic_probe() {
+fn run_acp_panic_probe(diagnostics: &AcpDiagnostics) {
     if let Ok(payload) = std::env::var("POLKAGENT_INTERNAL_ACP_PANIC_PROBE") {
+        diagnostics.record("error", "acp.panic_probe", &payload);
         assert!(payload.is_empty(), "{payload}");
     }
 }
 
 #[cfg(not(debug_assertions))]
-fn run_acp_panic_probe() {}
+fn run_acp_panic_probe(_diagnostics: &AcpDiagnostics) {}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -108,8 +116,8 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
     // ACP runs before telemetry and owns stdout. Install its fixed, payload-
     // suppressing panic hook for the entire ACP-only path; every other command
     // retains the process's existing hook.
-    let _hook =
-        matches!(&cli.command, Some(Commands::Acp(_))).then(AcpPanicHookGuard::install_and_probe);
+    let acp_panic_hook =
+        matches!(&cli.command, Some(Commands::Acp(_))).then(AcpPanicHookGuard::install);
 
     // Honour `--no-color` / `NO_COLOR` globally before any output.
     // Propagate --no-color into the NO_COLOR env var so that the Theme and
@@ -134,15 +142,13 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
     // ACP owns stdout as its JSON-RPC transport. Dispatch it before telemetry
     // or any shared command setup can emit human-readable output.
     if let Some(Commands::Acp(cmd)) = &cli.command {
-        let db_path = resolve_db_path(config_path.as_deref());
-        let pool = match open_pool(&db_path) {
-            Ok(pool) => pool,
-            Err(error) => return (exit_codes::CONFIG_ERROR, Some(error)),
-        };
-        return match commands::acp::run(cmd, pool, config_path.as_deref()).await {
-            Ok(()) => (exit_codes::SUCCESS, None),
-            Err(error) => (classify_exit_code(&error), Some(error)),
-        };
+        return run_acp_command(
+            cmd,
+            config_path.as_deref(),
+            cli.log_file.as_deref(),
+            acp_panic_hook.as_ref(),
+        )
+        .await;
     }
 
     // Load config to extract observability settings.
@@ -531,6 +537,62 @@ fn try_load_config(
     }
 
     None
+}
+
+async fn run_acp_command(
+    cmd: &AcpCmd,
+    config_path: Option<&std::path::Path>,
+    log_file: Option<&str>,
+    panic_hook: Option<&AcpPanicHookGuard>,
+) -> (i32, Option<anyhow::Error>) {
+    let diagnostics = match open_acp_diagnostics(log_file) {
+        Ok(diagnostics) => diagnostics,
+        Err(error) => return (exit_codes::CONFIG_ERROR, Some(error)),
+    };
+    if panic_hook.is_some() {
+        AcpPanicHookGuard::attach_diagnostics(diagnostics.clone());
+    }
+    diagnostics.record(
+        "info",
+        "acp.server_starting",
+        "ACP stdio server startup requested",
+    );
+    run_acp_panic_probe(&diagnostics);
+
+    let db_path = resolve_db_path(config_path);
+    let pool = match open_pool(&db_path) {
+        Ok(pool) => pool,
+        Err(error) => {
+            diagnostics.record(
+                "error",
+                "acp.database_open_failed",
+                "ACP database initialization failed",
+            );
+            return (exit_codes::CONFIG_ERROR, Some(error));
+        }
+    };
+    match commands::acp::run(cmd, pool, config_path, diagnostics.clone()).await {
+        Ok(()) => (exit_codes::SUCCESS, None),
+        Err(error) => {
+            diagnostics.record(
+                "error",
+                "acp.server_failed",
+                "ACP server stopped with an error",
+            );
+            (classify_exit_code(&error), Some(error))
+        }
+    }
+}
+
+fn open_acp_diagnostics(flag: Option<&str>) -> Result<AcpDiagnostics> {
+    match flag {
+        None | Some("-") => Ok(AcpDiagnostics::disabled()),
+        Some(path) => {
+            let path = expand_tilde(path);
+            AcpDiagnostics::open(&path)
+                .with_context(|| format!("opening ACP diagnostic file {path}"))
+        }
+    }
 }
 
 /// Resolve the JSONL log file path from the `--log-file` flag.

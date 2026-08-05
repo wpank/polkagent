@@ -16,6 +16,7 @@ use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 use polkagent_surface_acp::{AcpBackend, AgentSummary, BackendError, BackendTurn, ServerConfig};
 use tokio::sync::Mutex;
 
+use crate::acp_diagnostics::AcpDiagnostics;
 use crate::cli::AcpCmd;
 use crate::commands::run::{
     build_agent_spec, build_chain_client, build_provider_registry, load_config_from_path,
@@ -23,22 +24,53 @@ use crate::commands::run::{
 };
 
 /// Start a protocol-safe ACP stdio server.
-pub async fn run(cmd: &AcpCmd, pool: SqlitePool, config_path: Option<&Path>) -> Result<()> {
+pub async fn run(
+    cmd: &AcpCmd,
+    pool: SqlitePool,
+    config_path: Option<&Path>,
+    diagnostics: AcpDiagnostics,
+) -> Result<()> {
+    diagnostics.record(
+        "info",
+        "acp.backend_initializing",
+        "ACP runtime backend initialization started",
+    );
     let backend = PolkagentAcpBackend::build(
         pool,
         config_path,
         cmd.provider.as_deref(),
         cmd.model.clone(),
         cmd.timeout,
-    )?;
-    polkagent_surface_acp::serve_stdio(
+        diagnostics.clone(),
+    )
+    .inspect_err(|_| {
+        diagnostics.record(
+            "error",
+            "acp.backend_initialization_failed",
+            "ACP runtime backend initialization failed",
+        );
+    })?;
+    diagnostics.record(
+        "info",
+        "acp.server_ready",
+        "ACP stdio server is ready for protocol input",
+    );
+    let result = polkagent_surface_acp::serve_stdio(
         Arc::new(backend),
         ServerConfig {
             default_agent: cmd.agent.clone(),
         },
     )
     .await
-    .map_err(|error| anyhow::anyhow!("ACP transport failed: {error}"))
+    .map_err(|error| anyhow::anyhow!("ACP transport failed: {error}"));
+    if result.is_ok() {
+        diagnostics.record(
+            "info",
+            "acp.server_stopped",
+            "ACP client disconnected and the stdio server stopped",
+        );
+    }
+    result
 }
 
 struct PolkagentAcpBackend {
@@ -48,6 +80,7 @@ struct PolkagentAcpBackend {
     model_override: Option<String>,
     prompt_timeout: Option<Duration>,
     active_runs: Mutex<HashMap<String, RunId>>,
+    diagnostics: AcpDiagnostics,
 }
 
 impl PolkagentAcpBackend {
@@ -57,6 +90,7 @@ impl PolkagentAcpBackend {
         provider: Option<&str>,
         model_override: Option<String>,
         timeout_secs: u64,
+        diagnostics: AcpDiagnostics,
     ) -> Result<Self> {
         let config = load_config_from_path(config_path).context("loading ACP configuration")?;
         let registry = build_provider_registry(&config);
@@ -99,6 +133,7 @@ impl PolkagentAcpBackend {
             model_override,
             prompt_timeout: (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs)),
             active_runs: Mutex::new(HashMap::new()),
+            diagnostics,
         })
     }
 
@@ -123,6 +158,11 @@ impl PolkagentAcpBackend {
         selector: &str,
         prompt: &str,
     ) -> Result<BackendTurn> {
+        self.diagnostics.record(
+            "info",
+            "acp.prompt_started",
+            "Editor prompt execution started",
+        );
         let agent = self.active_agent(selector)?;
         let agent_id: AgentId = agent
             .id
@@ -194,6 +234,17 @@ impl PolkagentAcpBackend {
             wait_for_result.await
         };
         self.active_runs.lock().await.remove(session_id);
+        if let Ok(turn) = &result {
+            let (event, detail) = if turn.cancelled {
+                (
+                    "acp.prompt_cancelled",
+                    "Editor prompt execution was cancelled",
+                )
+            } else {
+                ("acp.prompt_completed", "Editor prompt execution completed")
+            };
+            self.diagnostics.record("info", event, detail);
+        }
         result
     }
 }
@@ -213,7 +264,14 @@ impl AcpBackend for PolkagentAcpBackend {
                     })
                     .collect()
             })
-            .map_err(|error| BackendError::new(format!("listing active agents: {error}")))
+            .map_err(|error| {
+                self.diagnostics.record(
+                    "error",
+                    "acp.agent_list_failed",
+                    "Listing active agents failed",
+                );
+                BackendError::new(format!("listing active agents: {error}"))
+            })
     }
 
     async fn prompt(
@@ -225,16 +283,32 @@ impl AcpBackend for PolkagentAcpBackend {
     ) -> Result<BackendTurn, BackendError> {
         self.execute_prompt(session_id, agent, prompt)
             .await
-            .map_err(|error| BackendError::new(format!("{error:#}")))
+            .map_err(|error| {
+                self.diagnostics.record(
+                    "error",
+                    "acp.prompt_failed",
+                    "Editor prompt execution failed",
+                );
+                BackendError::new(format!("{error:#}"))
+            })
     }
 
     async fn cancel(&self, session_id: &str) -> Result<(), BackendError> {
         let run_id = self.active_runs.lock().await.get(session_id).copied();
         if let Some(run_id) = run_id {
-            self.app
-                .cancel_run(run_id)
-                .await
-                .map_err(|error| BackendError::new(format!("cancelling run: {error}")))?;
+            self.app.cancel_run(run_id).await.map_err(|error| {
+                self.diagnostics.record(
+                    "error",
+                    "acp.cancel_failed",
+                    "Cancelling the active editor prompt failed",
+                );
+                BackendError::new(format!("cancelling run: {error}"))
+            })?;
+            self.diagnostics.record(
+                "info",
+                "acp.cancel_requested",
+                "Cancellation was requested for the active editor prompt",
+            );
         }
         Ok(())
     }

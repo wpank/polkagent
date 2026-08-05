@@ -3,6 +3,8 @@
 // End-to-end assertions unwrap controlled process and protocol fixtures.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -42,12 +44,7 @@ fn acp_panic_hook_suppresses_payload_and_keeps_stdout_empty() {
     let binary = env!("CARGO_BIN_EXE_polkagent");
     let raw_secret = "sk-acpPanicHookFixture123";
 
-    let output = Command::new(binary)
-        .arg("acp")
-        .env("POLKAGENT_DATABASE_SQLITE_PATH", &db_path)
-        .env("POLKAGENT_INTERNAL_ACP_PANIC_PROBE", raw_secret)
-        .output()
-        .expect("run the debug-only ACP panic probe");
+    let output = run_acp_panic_probe(binary, &db_path, temp.path(), None, raw_secret);
 
     assert!(!output.status.success());
     assert!(
@@ -67,6 +64,105 @@ fn acp_panic_hook_suppresses_payload_and_keeps_stdout_empty() {
         !stderr.contains("panicked at") && !stderr.contains("main.rs"),
         "default panic location leaked: {stderr}"
     );
+    assert!(
+        !temp.path().join(".polkagent/logs").exists(),
+        "ACP diagnostics must remain disabled without an explicit --log-file"
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn acp_file_diagnostics_are_redacted_restrictive_rotated_and_stdout_safe() {
+    const MAX_BYTES: usize = 1024 * 1024;
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let log_path = temp.path().join("private/acp.jsonl");
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    let first_secret = "sk-acpFileDiagnosticFixture123";
+
+    let first = run_acp_panic_probe(binary, &db_path, temp.path(), Some(&log_path), first_secret);
+    assert!(!first.status.success());
+    assert!(first.stdout.is_empty());
+    let first_log = std::fs::read_to_string(&log_path).expect("read ACP diagnostic file");
+    assert!(first_log.contains("\"event\":\"acp.panic_probe\""));
+    assert!(first_log.contains("sk-***REDACTED***"));
+    assert!(!first_log.contains(first_secret));
+    for line in first_log.lines() {
+        serde_json::from_str::<serde_json::Value>(line).expect("valid ACP diagnostic JSONL");
+    }
+
+    OpenOptions::new()
+        .append(true)
+        .open(&log_path)
+        .expect("open diagnostic file for rotation fixture")
+        .write_all(&vec![b'x'; MAX_BYTES])
+        .expect("grow diagnostic file beyond rotation threshold");
+
+    let second_secret = "sk-acpRotatedDiagnosticFixture456";
+    let second = run_acp_panic_probe(
+        binary,
+        &db_path,
+        temp.path(),
+        Some(&log_path),
+        second_secret,
+    );
+    assert!(!second.status.success());
+    assert!(second.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&second.stderr).contains(second_secret));
+    let rotated_path = std::path::PathBuf::from(format!("{}.1", log_path.display()));
+    assert!(
+        rotated_path.exists(),
+        "oversized active log was not rotated"
+    );
+    assert!(
+        std::fs::metadata(&log_path)
+            .expect("active diagnostic metadata")
+            .len()
+            < u64::try_from(MAX_BYTES).expect("rotation threshold fits u64")
+    );
+    let second_log = std::fs::read_to_string(&log_path).expect("read rotated active log");
+    assert!(second_log.contains("sk-***REDACTED***"));
+    assert!(!second_log.contains(second_secret));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let file_mode = std::fs::metadata(&log_path)
+            .expect("diagnostic file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let dir_mode = std::fs::metadata(log_path.parent().expect("diagnostic parent"))
+            .expect("diagnostic directory metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600);
+        assert_eq!(dir_mode, 0o700);
+    }
+}
+
+#[cfg(debug_assertions)]
+fn run_acp_panic_probe(
+    binary: &str,
+    db_path: &std::path::Path,
+    home: &std::path::Path,
+    log_path: Option<&std::path::Path>,
+    payload: &str,
+) -> std::process::Output {
+    let mut command = Command::new(binary);
+    if let Some(log_path) = log_path {
+        command.args(["--log-file", log_path.to_string_lossy().as_ref()]);
+    }
+    command
+        .arg("acp")
+        .env("HOME", home)
+        .env("POLKAGENT_DATABASE_SQLITE_PATH", db_path)
+        .env("POLKAGENT_INTERNAL_ACP_PANIC_PROBE", payload)
+        .output()
+        .expect("run the debug-only ACP panic probe")
 }
 
 #[cfg(debug_assertions)]
@@ -95,6 +191,9 @@ fn acp_panic_probe_is_ignored_by_non_acp_commands() {
 async fn official_client_drives_editor_commands_and_a_real_run() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let db_path = temp.path().join("polkagent.db");
+    let log_path = temp.path().join("acp-success.jsonl");
+    let log_arg = log_path.to_string_lossy().into_owned();
+    let project_path = temp.path().to_path_buf();
     let binary = env!("CARGO_BIN_EXE_polkagent");
 
     assert_cli_success(
@@ -108,7 +207,15 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
     let observed_by_client = Arc::clone(&observed);
     let agent = observed_agent(
         AcpAgentConfig::new(binary)
-            .args(["acp", "--agent", "editor-fixture", "--timeout", "20"])
+            .args([
+                "--log-file",
+                log_arg.as_str(),
+                "acp",
+                "--agent",
+                "editor-fixture",
+                "--timeout",
+                "20",
+            ])
             .env(
                 "POLKAGENT_DATABASE_SQLITE_PATH",
                 db_path.to_string_lossy().into_owned(),
@@ -158,7 +265,7 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
                 );
 
                 let session = connection
-                    .send_request(NewSessionRequest::new(temp.path()))
+                    .send_request(NewSessionRequest::new(project_path))
                     .block_task()
                     .await?;
 
@@ -197,6 +304,18 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
 
     let observed = observed.lock().expect("observed updates lock");
     assert_editor_command_updates(&observed);
+    assert_safe_success_diagnostics(&log_path);
+}
+
+fn assert_safe_success_diagnostics(log_path: &std::path::Path) {
+    let content = std::fs::read_to_string(log_path).expect("read successful ACP diagnostics");
+    assert!(content.contains("\"event\":\"acp.server_ready\""));
+    assert!(content.contains("\"event\":\"acp.prompt_completed\""));
+    assert!(!content.contains("Return a short editor integration greeting."));
+    assert!(!content.contains("I am a fake assistant"));
+    for line in content.lines() {
+        serde_json::from_str::<serde_json::Value>(line).expect("valid ACP diagnostic JSONL");
+    }
 }
 
 fn assert_editor_command_updates(observed: &ObservedUpdates) {
@@ -549,10 +668,17 @@ fn explicit_config_startup_failure_keeps_stdout_empty() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let db_path = temp.path().join("polkagent.db");
     let missing_config = temp.path().join("missing-polkagent.toml");
+    let log_path = temp.path().join("startup-failure.jsonl");
     let binary = env!("CARGO_BIN_EXE_polkagent");
 
     let output = Command::new(binary)
-        .args(["--config", missing_config.to_string_lossy().as_ref(), "acp"])
+        .args([
+            "--log-file",
+            log_path.to_string_lossy().as_ref(),
+            "--config",
+            missing_config.to_string_lossy().as_ref(),
+            "acp",
+        ])
         .env("POLKAGENT_DATABASE_SQLITE_PATH", &db_path)
         .output()
         .expect("run ACP with a missing explicit config");
@@ -566,6 +692,10 @@ fn explicit_config_startup_failure_keeps_stdout_empty() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Error: loading ACP configuration"));
     assert!(stderr.contains("loading config from"));
+    let diagnostics = std::fs::read_to_string(log_path).expect("read startup diagnostics");
+    assert!(diagnostics.contains("\"event\":\"acp.backend_initialization_failed\""));
+    assert!(diagnostics.contains("\"event\":\"acp.server_failed\""));
+    assert!(!diagnostics.contains("missing-polkagent.toml"));
 }
 
 #[test]

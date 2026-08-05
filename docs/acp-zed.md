@@ -52,21 +52,42 @@ The editor-provided absolute `session/new` working directory is authoritative;
 there is no separate `--workdir` flag. You may omit `--agent` and select one in
 the conversation with `/agents` followed by `/agent <name-or-id>`.
 
+ACP file diagnostics are disabled by default. To opt in, add the global
+`--log-file` option before `acp` and use a path dedicated to one Polkagent ACP
+process:
+
+```json
+"args": [
+  "--log-file", "/absolute/private/path/polkagent-acp.jsonl",
+  "acp", "--agent", "editor-agent"
+]
+```
+
+The file is structured JSONL, rotates before an append would take it past 1
+MiB, and retains three generations total (the active file plus `.1` and `.2`).
+On Unix, Polkagent sets the file to `0600` and a newly-created immediate parent
+directory to `0700`; it does not change permissions on an existing parent.
+Symlink and other non-regular destinations are rejected. Use `--log-file -` or
+omit the option to keep ACP file diagnostics disabled.
+
 ## Available commands
 
 The server publishes these through ACP `available_commands_update`:
 
 | Command | Effect |
 |---|---|
-| `/help` | Show the ACP command summary. |
-| `/status` | Show the session ID, workspace, and selected agent. |
+| `/help [command]` | Show registry-backed ACP command help (`/commands`). |
+| `/status` | Show the session ID, workspace, selected agent, and prompt activity (`/st`). |
 | `/agents` | List active agents from the configured SQLite database. |
-| `/agent <name-or-id>` | Select the agent used for subsequent prompts. |
+| `/agent <name-or-id>` | Select the agent used for subsequent prompts (`/use`). |
+| `/cancel` | Cancel the active editor prompt (`/stop`). |
 
 Normal text prompts start a real Polkagent run and return its accumulated text
 as an ACP agent-message update before the terminal prompt response. Only one
-normal prompt may be active per ACP session. `session/cancel` is mapped to the
-active `AppService` run. Token-by-token ACP forwarding is still open.
+normal prompt may be active per ACP session. Native `session/cancel` and the
+`/cancel` command are mapped to the active `AppService` run. Run-ID and
+all-session cancellation are not advertised because durable ACP interactions
+are not implemented. Token-by-token ACP forwarding is still open.
 
 ## Current protocol boundary
 
@@ -76,8 +97,13 @@ Implemented and covered by executable protocol evidence:
 - stdio initialize, new-session, prompt, session-update, and cancel handlers;
 - absolute-cwd validation and protocol errors for unknown/busy sessions;
 - text and resource-link prompts;
-- slash-command discovery and handling;
+- shared-registry slash-command discovery, aliases, detailed help, agent
+  selection, status, and active-prompt cancellation;
 - CLI early dispatch before telemetry so stdout belongs to ACP;
+- opt-in JSONL file diagnostics with bounded rotation, restrictive Unix file
+  permissions, non-regular-path refusal, and known-pattern secret redaction;
+- controlled diagnostic categories that omit the exercised prompt and response
+  bodies, plus executable redaction and rotation probes;
 - subprocess stdout-line assertions that reject anything other than JSON-RPC;
 - fail-closed startup for a missing explicit config: exit code 4, an empty
   stdout channel, and the diagnostic on stderr;
@@ -96,7 +122,6 @@ Not implemented yet:
 - additional workspace roots (rejected explicitly) and use of cwd as model or
   filesystem context beyond session metadata;
 - durable multi-turn conversation history and a shared `RuntimeFactory`;
-- ACP-safe file logging plus panic and secret-redaction evidence;
 - manual Zed validation, including approval, cancellation, restart, and logs.
 
 Supplied MCP servers and additional workspace roots are rejected instead of
@@ -107,8 +132,15 @@ being silently ignored.
 ACP owns stdout. Provider-selection notices go to stderr, and the tested
 missing-explicit-config failure exits before writing stdout. Do not wrap the
 command in a script that prints banners to stdout. In Zed, use `dev: open acp
-logs` to inspect the subprocess exchange. Polkagent does not yet implement a
-separate ACP file log.
+logs` to inspect the subprocess exchange; when `--log-file` is configured,
+inspect Polkagent's separate JSONL file for controlled lifecycle categories.
+
+The file sink applies Polkagent's known-pattern redactor for API-key-like
+values, 64-byte hex seeds, and 12/24-word lowercase mnemonic-shaped strings.
+It is not an arbitrary sensitive-data classifier. Current call sites therefore
+record fixed lifecycle descriptions rather than raw prompts, responses,
+provider bodies, workspace paths, agent names, or command arguments. Future
+diagnostic fields must preserve that boundary.
 
 Run the executable conformance slice locally:
 
