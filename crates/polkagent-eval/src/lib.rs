@@ -48,12 +48,55 @@ pub mod thompson;
 #[cfg(feature = "evolutionary")]
 pub mod variant_runner;
 
+/// Convert a `u64` to `f64` without an unchecked precision-losing cast.
+///
+/// Each 32-bit half is exactly representable as `f64`; combining the halves
+/// retains the conversion's expected final IEEE-754 rounding for large values.
+pub(crate) fn u64_to_f64(value: u64) -> f64 {
+    let bytes = value.to_be_bytes();
+    let high = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let low = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+}
+
 /// Convert a platform-sized count to `f64` without an unchecked precision-
 /// losing cast. Large values are composed from exactly representable 32-bit
 /// halves; the final floating-point rounding is appropriate for ratios.
 pub(crate) fn usize_to_f64(value: usize) -> f64 {
     let value = u64::try_from(value).unwrap_or(u64::MAX);
-    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
-    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+    u64_to_f64(value)
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::u64_to_f64;
+
+    #[test]
+    fn u64_conversion_preserves_exact_integer_range() {
+        assert_eq!(u64_to_f64(0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            u64_to_f64(u64::from(u32::MAX)).to_bits(),
+            4_294_967_295.0_f64.to_bits()
+        );
+        assert_eq!(
+            u64_to_f64(1_u64 << 32).to_bits(),
+            4_294_967_296.0_f64.to_bits()
+        );
+        assert_eq!(
+            u64_to_f64((1_u64 << 53) - 1).to_bits(),
+            9_007_199_254_740_991.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn u64_conversion_uses_expected_ieee754_rounding() {
+        assert_eq!(
+            u64_to_f64((1_u64 << 53) + 1).to_bits(),
+            9_007_199_254_740_992.0_f64.to_bits()
+        );
+        assert_eq!(
+            u64_to_f64(u64::MAX).to_bits(),
+            18_446_744_073_709_551_616.0_f64.to_bits()
+        );
+    }
 }

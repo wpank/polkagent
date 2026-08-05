@@ -17,6 +17,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::u64_to_f64;
+
 // ---------------------------------------------------------------------------
 // SimpleRng — minimal PRNG to avoid a `rand` dependency
 // ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ impl SimpleRng {
 
     /// Uniform f64 in `[0, 1)`.
     fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
+        u64_to_f64(self.next_u64() >> 11) / u64_to_f64(1_u64 << 53)
     }
 
     /// Approximate sample from Beta(alpha, beta) using the Jöhnk algorithm
@@ -77,24 +79,29 @@ impl SimpleRng {
         }
 
         // Marsaglia & Tsang for shape >= 1
-        let d = shape - 1.0 / 3.0;
-        let c = 1.0 / (9.0 * d).sqrt();
+        let adjusted_shape = shape - 1.0 / 3.0;
+        let scale = 1.0 / (9.0 * adjusted_shape).sqrt();
 
         loop {
-            let x = self.standard_normal();
-            let v_base = 1.0 + c * x;
-            if v_base <= 0.0 {
+            let normal_sample = self.standard_normal();
+            let candidate_base = 1.0 + scale * normal_sample;
+            if candidate_base <= 0.0 {
                 continue;
             }
-            let v = v_base * v_base * v_base;
-            let u = self.next_f64().max(1e-30);
+            let candidate_cube = candidate_base * candidate_base * candidate_base;
+            let uniform_sample = self.next_f64().max(1e-30);
 
             // Accept/reject
-            if u < 1.0 - 0.0331 * (x * x) * (x * x) {
-                return d * v;
+            if uniform_sample
+                < 1.0 - 0.0331 * (normal_sample * normal_sample) * (normal_sample * normal_sample)
+            {
+                return adjusted_shape * candidate_cube;
             }
-            if u.ln() < 0.5 * x * x + d * (1.0 - v + v.ln()) {
-                return d * v;
+            if uniform_sample.ln()
+                < 0.5 * normal_sample * normal_sample
+                    + adjusted_shape * (1.0 - candidate_cube + candidate_cube.ln())
+            {
+                return adjusted_shape * candidate_cube;
             }
         }
     }
@@ -129,11 +136,11 @@ impl BetaArm {
     }
 
     fn alpha(&self) -> f64 {
-        self.successes as f64 + 1.0 // +1 for uniform prior
+        u64_to_f64(self.successes) + 1.0 // +1 for uniform prior
     }
 
     fn beta_param(&self) -> f64 {
-        self.failures as f64 + 1.0
+        u64_to_f64(self.failures) + 1.0
     }
 
     fn mean(&self) -> f64 {
@@ -217,7 +224,6 @@ impl ThompsonSelector {
         let mut rng = SimpleRng::new(self.seed);
         // Advance seed for next call
         self.seed = rng.next_u64();
-
         let mut best_variant = None;
         let mut best_sample = f64::NEG_INFINITY;
 
@@ -264,6 +270,10 @@ impl ThompsonSelector {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "unit tests fail immediately when required selector fixtures are absent"
+)]
 mod tests {
     use super::*;
 

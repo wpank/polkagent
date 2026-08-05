@@ -1,6 +1,6 @@
 //! **EXPERIMENTAL** — Multi-variant evaluation runner (PRD-09 §6.5).
 //!
-//! Runs the same [`EvalSuite`] against multiple "skill variants" so that
+//! Runs the same [`EvalSuite`](crate::types::EvalSuite) against multiple "skill variants" so that
 //! their scores can be compared side-by-side. This module only *reads* from
 //! the evaluation framework — it never modifies Cedar grants or safety gates.
 //!
@@ -61,7 +61,7 @@ pub struct VariantComparison {
     pub reports: HashMap<String, VariantReport>,
     /// Variant id with the highest mean score.
     pub best_variant: VariantId,
-    /// Sorted ranking: (variant_id, mean_score) from best to worst.
+    /// Sorted ranking: (`variant_id`, `mean_score`) from best to worst.
     pub ranking: Vec<(VariantId, f64)>,
 }
 
@@ -124,6 +124,10 @@ impl VariantComparison {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "unit tests fail immediately when required comparison fixtures are absent"
+)]
 mod tests {
     use super::*;
     use crate::report::{CaseResult, EvalReport};
