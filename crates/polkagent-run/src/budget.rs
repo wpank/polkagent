@@ -23,6 +23,19 @@
 
 use polkagent_core::usage::{Budget, BudgetLimits, Cost, UsageRecord, UsageSummary};
 
+/// Convert a token count for diagnostic display only.
+///
+/// Budget decisions are made with the original integer values before this
+/// conversion, so values above `f64`'s exact integer range cannot affect
+/// enforcement.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "BudgetViolation exposes diagnostic limit/actual values as f64"
+)]
+fn token_count_for_diagnostic(value: u64) -> f64 {
+    value as f64
+}
+
 // ---------------------------------------------------------------------------
 // BudgetViolation
 // ---------------------------------------------------------------------------
@@ -134,8 +147,8 @@ impl BudgetEnforcer {
             if self.run_summary.total_tokens > limit {
                 return Err(BudgetViolation {
                     resource: "total_tokens".into(),
-                    limit: limit as f64,
-                    actual: self.run_summary.total_tokens as f64,
+                    limit: token_count_for_diagnostic(limit),
+                    actual: token_count_for_diagnostic(self.run_summary.total_tokens),
                     message: format!(
                         "run tokens {} exceed budget {limit}",
                         self.run_summary.total_tokens
@@ -183,8 +196,8 @@ impl BudgetEnforcer {
             if self.run_summary.total_tokens > limit {
                 return Err(BudgetViolation {
                     resource: "total_tokens".into(),
-                    limit: limit as f64,
-                    actual: self.run_summary.total_tokens as f64,
+                    limit: token_count_for_diagnostic(limit),
+                    actual: token_count_for_diagnostic(self.run_summary.total_tokens),
                     message: format!(
                         "run tokens {} exceed budget {limit}",
                         self.run_summary.total_tokens
@@ -256,12 +269,15 @@ impl BudgetEnforcer {
     /// Check whether projected tokens would exceed the run budget.
     pub fn check_projected_tokens(&self, projected_tokens: u64) -> Result<(), BudgetViolation> {
         if let Some(limit) = self.budget.max_tokens {
-            let projected = self.run_summary.total_tokens + projected_tokens;
+            let projected = self
+                .run_summary
+                .total_tokens
+                .saturating_add(projected_tokens);
             if projected > limit {
                 return Err(BudgetViolation {
                     resource: "total_tokens".into(),
-                    limit: limit as f64,
-                    actual: projected as f64,
+                    limit: token_count_for_diagnostic(limit),
+                    actual: token_count_for_diagnostic(projected),
                     message: format!("projected tokens {projected} would exceed budget {limit}"),
                 });
             }
@@ -309,8 +325,8 @@ fn check_limits(
         if summary.total_tokens > limit {
             return Err(BudgetViolation {
                 resource: format!("{scope}.total_tokens"),
-                limit: limit as f64,
-                actual: summary.total_tokens as f64,
+                limit: token_count_for_diagnostic(limit),
+                actual: token_count_for_diagnostic(summary.total_tokens),
                 message: format!(
                     "{scope} tokens {} exceed limit {limit}",
                     summary.total_tokens
@@ -322,8 +338,8 @@ fn check_limits(
         if summary.total_input_tokens > limit {
             return Err(BudgetViolation {
                 resource: format!("{scope}.input_tokens"),
-                limit: limit as f64,
-                actual: summary.total_input_tokens as f64,
+                limit: token_count_for_diagnostic(limit),
+                actual: token_count_for_diagnostic(summary.total_input_tokens),
                 message: format!(
                     "{scope} input tokens {} exceed limit {limit}",
                     summary.total_input_tokens
@@ -335,8 +351,8 @@ fn check_limits(
         if summary.total_output_tokens > limit {
             return Err(BudgetViolation {
                 resource: format!("{scope}.output_tokens"),
-                limit: limit as f64,
-                actual: summary.total_output_tokens as f64,
+                limit: token_count_for_diagnostic(limit),
+                actual: token_count_for_diagnostic(summary.total_output_tokens),
                 message: format!(
                     "{scope} output tokens {} exceed limit {limit}",
                     summary.total_output_tokens
@@ -665,6 +681,18 @@ mod tests {
         let _ = enforcer.record(&make_record(5_000, 3_000, 0.0));
         let result = enforcer.check_projected_tokens(5_000);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn projected_tokens_overflow_is_treated_as_over_budget() {
+        let budget = Budget {
+            max_tokens: Some(u64::MAX - 1),
+            ..Budget::UNLIMITED
+        };
+        let mut enforcer = BudgetEnforcer::new(budget);
+        enforcer.run_summary.total_tokens = u64::MAX - 10;
+
+        assert!(enforcer.check_projected_tokens(100).is_err());
     }
 
     // ---- Remaining budget ---------------------------------------------------

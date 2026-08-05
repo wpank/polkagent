@@ -22,8 +22,18 @@ use crate::pool::SqlitePool;
 // ---------------------------------------------------------------------------
 
 /// Map a `rusqlite::Error` to `ConversationError`.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used directly as Result::map_err callback, which transfers ownership"
+)]
 fn map_err(e: rusqlite::Error) -> ConversationError {
     ConversationError::Internal(format!("sqlite error: {e}"))
+}
+
+fn invalid_integer(field: &str, value: impl std::fmt::Display) -> ConversationError {
+    ConversationError::Internal(format!(
+        "{field} value {value} is outside the supported integer range"
+    ))
 }
 
 /// Parse an ISO-8601 timestamp string.
@@ -33,7 +43,7 @@ fn parse_ts(s: &str) -> ConversationResult<chrono::DateTime<chrono::Utc>> {
         .map_err(|e| ConversationError::Internal(format!("invalid timestamp '{s}': {e}")))
 }
 
-/// Encode a `MessageRole` as its snake_case string.
+/// Encode a `MessageRole` as its `snake_case` string.
 fn encode_role(role: MessageRole) -> &'static str {
     match role {
         MessageRole::User => "user",
@@ -81,7 +91,7 @@ impl ConversationStore for SqlitePool {
                         id_str,
                         agent_id_str,
                         conversation.title,
-                        conversation.message_count as i64,
+                        i64::from(conversation.message_count),
                         metadata_json,
                         conversation.created_at.to_rfc3339(),
                         conversation.updated_at.to_rfc3339(),
@@ -161,7 +171,8 @@ impl ConversationStore for SqlitePool {
                 title,
                 created_at,
                 updated_at,
-                message_count: message_count as u32,
+                message_count: u32::try_from(message_count)
+                    .map_err(|_| invalid_integer("message_count", message_count))?,
                 metadata,
             })
         })
@@ -177,6 +188,8 @@ impl ConversationStore for SqlitePool {
     ) -> ConversationResult<Vec<ConversationSummary>> {
         let pool = self.clone();
         let agent_id_str = agent_id.to_string();
+        let limit = i64::try_from(limit).map_err(|_| invalid_integer("limit", limit))?;
+        let offset = i64::try_from(offset).map_err(|_| invalid_integer("offset", offset))?;
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
@@ -191,19 +204,16 @@ impl ConversationStore for SqlitePool {
                 .map_err(map_err)?;
 
             let rows = stmt
-                .query_map(
-                    rusqlite::params![agent_id_str, limit as i64, offset as i64],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, Option<String>>(2)?,
-                            row.get::<_, i64>(3)?,
-                            row.get::<_, String>(4)?,
-                            row.get::<_, String>(5)?,
-                        ))
-                    },
-                )
+                .query_map(rusqlite::params![agent_id_str, limit, offset], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
                 .map_err(map_err)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(map_err)?;
@@ -226,7 +236,8 @@ impl ConversationStore for SqlitePool {
                             id: conv_id,
                             agent_id: ag_id,
                             title,
-                            message_count: message_count as u32,
+                            message_count: u32::try_from(message_count)
+                                .map_err(|_| invalid_integer("message_count", message_count))?,
                             last_message_at,
                             created_at,
                         })
@@ -299,7 +310,7 @@ impl ConversationStore for SqlitePool {
                         conv_id_str,
                         role_str,
                         content_json,
-                        message.token_count.map(|c| c as i64),
+                        message.token_count.map(i64::from),
                         message.created_at.to_rfc3339(),
                     ],
                 )
@@ -329,6 +340,8 @@ impl ConversationStore for SqlitePool {
     ) -> ConversationResult<Vec<Message>> {
         let pool = self.clone();
         let conv_id_str = conversation_id.to_string();
+        let limit = i64::try_from(limit).map_err(|_| invalid_integer("limit", limit))?;
+        let offset = i64::try_from(offset).map_err(|_| invalid_integer("offset", offset))?;
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
@@ -343,76 +356,7 @@ impl ConversationStore for SqlitePool {
                 .map_err(map_err)?;
 
             let rows = stmt
-                .query_map(
-                    rusqlite::params![conv_id_str, limit as i64, offset as i64],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                            row.get::<_, Option<i64>>(4)?,
-                            row.get::<_, String>(5)?,
-                        ))
-                    },
-                )
-                .map_err(map_err)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(map_err)?;
-
-            rows.into_iter()
-                .map(
-                    |(id_s, conv_s, role_s, content_s, token_count, created_at_s)| {
-                        let msg_id = id_s.parse::<Uuid>().map_err(ConversationError::InvalidId)?;
-                        let conv_id_parsed: ConversationId =
-                            conv_s.parse().map_err(ConversationError::InvalidId)?;
-                        let role = decode_role(&role_s)?;
-                        let content: MessageContent =
-                            serde_json::from_str(&content_s).map_err(ConversationError::Json)?;
-                        let created_at = parse_ts(&created_at_s)?;
-                        Ok(Message {
-                            id: msg_id,
-                            conversation_id: conv_id_parsed,
-                            role,
-                            content,
-                            created_at,
-                            token_count: token_count.map(|n| n as u32),
-                        })
-                    },
-                )
-                .collect()
-        })
-        .await
-        .map_err(|e| ConversationError::Internal(format!("blocking task panicked: {e}")))?
-    }
-
-    async fn get_recent_messages(
-        &self,
-        conversation_id: ConversationId,
-        limit: usize,
-    ) -> ConversationResult<Vec<Message>> {
-        let pool = self.clone();
-        let conv_id_str = conversation_id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let writer = pool.writer();
-            // Fetch the last `limit` rows ordered by created_at DESC, then re-sort ASC.
-            let mut stmt = writer
-                .prepare(
-                    "SELECT id, conversation_id, role, content_json, token_count, created_at
-                     FROM (
-                         SELECT id, conversation_id, role, content_json, token_count, created_at
-                         FROM conversation_messages
-                         WHERE conversation_id = ?1
-                         ORDER BY created_at DESC
-                         LIMIT ?2
-                     ) sub
-                     ORDER BY created_at ASC",
-                )
-                .map_err(map_err)?;
-
-            let rows = stmt
-                .query_map(rusqlite::params![conv_id_str, limit as i64], |row| {
+                .query_map(rusqlite::params![conv_id_str, limit, offset], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -442,7 +386,84 @@ impl ConversationStore for SqlitePool {
                             role,
                             content,
                             created_at,
-                            token_count: token_count.map(|n| n as u32),
+                            token_count: token_count
+                                .map(|value| {
+                                    u32::try_from(value)
+                                        .map_err(|_| invalid_integer("token_count", value))
+                                })
+                                .transpose()?,
+                        })
+                    },
+                )
+                .collect()
+        })
+        .await
+        .map_err(|e| ConversationError::Internal(format!("blocking task panicked: {e}")))?
+    }
+
+    async fn get_recent_messages(
+        &self,
+        conversation_id: ConversationId,
+        limit: usize,
+    ) -> ConversationResult<Vec<Message>> {
+        let pool = self.clone();
+        let conv_id_str = conversation_id.to_string();
+        let limit = i64::try_from(limit).map_err(|_| invalid_integer("limit", limit))?;
+
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            // Fetch the last `limit` rows ordered by created_at DESC, then re-sort ASC.
+            let mut stmt = writer
+                .prepare(
+                    "SELECT id, conversation_id, role, content_json, token_count, created_at
+                     FROM (
+                         SELECT id, conversation_id, role, content_json, token_count, created_at
+                         FROM conversation_messages
+                         WHERE conversation_id = ?1
+                         ORDER BY created_at DESC
+                         LIMIT ?2
+                     ) sub
+                     ORDER BY created_at ASC",
+                )
+                .map_err(map_err)?;
+
+            let rows = stmt
+                .query_map(rusqlite::params![conv_id_str, limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
+                .map_err(map_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_err)?;
+
+            rows.into_iter()
+                .map(
+                    |(id_s, conv_s, role_s, content_s, token_count, created_at_s)| {
+                        let msg_id = id_s.parse::<Uuid>().map_err(ConversationError::InvalidId)?;
+                        let conv_id_parsed: ConversationId =
+                            conv_s.parse().map_err(ConversationError::InvalidId)?;
+                        let role = decode_role(&role_s)?;
+                        let content: MessageContent =
+                            serde_json::from_str(&content_s).map_err(ConversationError::Json)?;
+                        let created_at = parse_ts(&created_at_s)?;
+                        Ok(Message {
+                            id: msg_id,
+                            conversation_id: conv_id_parsed,
+                            role,
+                            content,
+                            created_at,
+                            token_count: token_count
+                                .map(|value| {
+                                    u32::try_from(value)
+                                        .map_err(|_| invalid_integer("token_count", value))
+                                })
+                                .transpose()?,
                         })
                     },
                 )

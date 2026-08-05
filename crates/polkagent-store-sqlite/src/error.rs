@@ -1,8 +1,8 @@
-//! Error types for the SQLite storage adapter.
+//! Error types for the `SQLite` storage adapter.
 
 use thiserror::Error;
 
-/// All errors that can be produced by the SQLite store.
+/// All errors that can be produced by the `SQLite` store.
 #[derive(Debug, Error)]
 pub enum StoreError {
     /// A rusqlite database error.
@@ -39,7 +39,7 @@ pub enum StoreError {
     #[error("invalid timestamp: {0}")]
     InvalidTimestamp(String),
 
-    /// The pool writer lock was poisoned (should never happen with parking_lot).
+    /// The pool writer lock was poisoned (should never happen with `parking_lot`).
     #[error("pool error: {0}")]
     Pool(String),
 }
@@ -49,11 +49,11 @@ pub type StoreResult<T> = Result<T, StoreError>;
 
 impl StoreError {
     /// Returns `true` if this error represents a UNIQUE or PRIMARY KEY
-    /// constraint violation from SQLite.
+    /// constraint violation from `SQLite`.
     ///
     /// This checks the `extended_code` to distinguish uniqueness violations
     /// from other constraint errors such as FOREIGN KEY violations
-    /// (extended code 787 = SQLITE_CONSTRAINT_FOREIGNKEY).
+    /// (extended code 787 = `SQLITE_CONSTRAINT_FOREIGNKEY`).
     ///
     /// Matched extended codes:
     /// - 2067 = `SQLITE_CONSTRAINT_UNIQUE`
@@ -73,7 +73,7 @@ impl StoreError {
     }
 
     /// Returns `true` if this error represents a FOREIGN KEY constraint
-    /// violation from SQLite (extended code 787 = SQLITE_CONSTRAINT_FOREIGNKEY).
+    /// violation from `SQLite` (extended code 787 = `SQLITE_CONSTRAINT_FOREIGNKEY`).
     #[must_use]
     pub fn is_fk_violation(err: &rusqlite::Error) -> bool {
         matches!(

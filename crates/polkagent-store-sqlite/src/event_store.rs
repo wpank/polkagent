@@ -14,7 +14,7 @@
 //! Diagnostic events are stored in the same table; the `kind` column value
 //! distinguishes them (prefixed with `diagnostic:` by convention).
 //!
-//! Global ordering uses SQLite's `rowid` as a monotonic proxy since no
+//! Global ordering uses `SQLite`'s `rowid` as a monotonic proxy since no
 //! dedicated `global_sequence` column exists in the production schema.
 //!
 //! ## Terminal-event invariant
@@ -66,8 +66,8 @@ fn is_terminal(event_type: &str) -> bool {
 /// Read a single `StoredEvent` from the current row of a `rusqlite::Row`.
 ///
 /// Expected column order (matching `RUN_EVENTS_COLS`):
-///   0: id, 1: run_id, 2: sequence, 3: kind, 4: data_json,
-///   5: timestamp, 6: correlation_id, 7: schema_version, 8: rowid
+///   0: id, 1: `run_id`, 2: sequence, 3: kind, 4: `data_json`,
+///   5: timestamp, 6: `correlation_id`, 7: `schema_version`, 8: rowid
 fn row_to_stored_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent> {
     let data_json_str: String = row.get(4)?;
     let payload: serde_json::Value = serde_json::from_str(&data_json_str).unwrap_or_default();
@@ -202,7 +202,13 @@ impl EventStore for SqlitePool {
                 })?;
 
             // 5. Retrieve the rowid assigned by SQLite to use as global_sequence.
-            let rowid = writer.last_insert_rowid() as u64;
+            let raw_rowid = writer.last_insert_rowid();
+            let rowid = u64::try_from(raw_rowid).map_err(|_| {
+                EventStoreError::Backend(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("SQLite returned invalid rowid {raw_rowid}"),
+                )))
+            })?;
 
             // 6. Return the completed event with assigned global_sequence.
             Ok(StoredEvent {
@@ -378,8 +384,10 @@ impl EventStore for SqlitePool {
                  {where_clause} ORDER BY rowid ASC {limit_clause}"
             );
 
-            let params_for_query: Vec<&dyn rusqlite::types::ToSql> =
-                param_values.iter().map(|b| b.as_ref()).collect();
+            let params_for_query: Vec<&dyn rusqlite::types::ToSql> = param_values
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect();
 
             let mut stmt = writer.prepare(&sql).map_err(map_rusqlite)?;
 

@@ -317,7 +317,7 @@ impl ExecutionDag {
             let all_deps_done = node.dependencies.iter().all(|dep_id| {
                 self.nodes
                     .get(dep_id)
-                    .map_or(false, |dep| dep.state.is_terminal())
+                    .is_some_and(|dep| dep.state.is_terminal())
             });
             if all_deps_done {
                 ready.push(node.id);

@@ -1,4 +1,4 @@
-//! Forward-only schema migrations for the Polkagent SQLite store.
+//! Forward-only schema migrations for the Polkagent `SQLite` store.
 //!
 //! Each migration is a numbered SQL batch.  The `schema_migrations` table
 //! tracks which migrations have been applied; the version is the migration
@@ -24,35 +24,35 @@ use crate::error::{StoreError, StoreResult};
 /// The full text of the initial schema.  Embedded as a compile-time constant.
 const SCHEMA_V1: &str = include_str!("schema.sql");
 
-/// V2: Event store tables (durable_events, diagnostic_events, global counter).
+/// V2: Event store tables (`durable_events`, `diagnostic_events`, global counter).
 const SCHEMA_V2: &str = include_str!("v2_event_store.sql");
 
-/// V3: Columns required by the `EffectStore` trait (state, retry_class,
-/// worker_id, payload_json, attempt_id, run_id, consumed).
+/// V3: Columns required by the `EffectStore` trait (state, `retry_class`,
+/// `worker_id`, `payload_json`, `attempt_id`, `run_id`, consumed).
 const SCHEMA_V3: &str = include_str!("v3_effect_store.sql");
 
-/// V4: Payment store tables (payment_intents, payment_receipts, cost_records).
+/// V4: Payment store tables (`payment_intents`, `payment_receipts`, `cost_records`).
 const SCHEMA_V4: &str = include_str!("v4_payment_store.sql");
 
-/// V5: Conversation store tables (conversations, conversation_messages).
+/// V5: Conversation store tables (conversations, `conversation_messages`).
 const SCHEMA_V5: &str = include_str!("v5_conversation_store.sql");
 
-/// V6: Group store tables (groups, group_members).
+/// V6: Group store tables (groups, `group_members`).
 const SCHEMA_V6: &str = include_str!("v6_group_store.sql");
 
-/// V7: Feed store tables (feeds, feed_triggers, feed_recipes, feed_items).
+/// V7: Feed store tables (feeds, `feed_triggers`, `feed_recipes`, `feed_items`).
 const SCHEMA_V7: &str = include_str!("v7_feed_store.sql");
 
 /// V8: Skill registry table (skills).
 const SCHEMA_V8: &str = include_str!("v8_skill_store.sql");
 
-/// V9: Add priority column to effect_intents for claim ordering.
+/// V9: Add priority column to `effect_intents` for claim ordering.
 const SCHEMA_V9: &str = include_str!("v9_intent_priority.sql");
 
-/// V10: Add deadline_at column to runs table for persistent timeout deadlines.
+/// V10: Add `deadline_at` column to runs table for persistent timeout deadlines.
 const SCHEMA_V10: &str = include_str!("v10_run_deadline.sql");
 
-/// V11: Add started_at column to runs table (missing from early databases).
+/// V11: Add `started_at` column to runs table (missing from early databases).
 const SCHEMA_V11: &str = include_str!("v11_run_started_at.sql");
 
 /// V12: Enforce unique agent names with a UNIQUE index on agents(name).
@@ -144,8 +144,7 @@ pub fn current_version(conn: &Connection) -> StoreResult<u32> {
             [],
             |row| row.get::<_, i64>(0),
         )
-        .map(|n| n > 0)
-        .unwrap_or(false);
+        .is_ok_and(|n| n > 0);
 
     if !exists {
         return Ok(0);

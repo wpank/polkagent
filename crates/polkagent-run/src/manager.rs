@@ -160,12 +160,11 @@ impl RunManager {
 
         let agent_id_str = agent_id.to_string();
         self.store
-            .create(run_id.clone(), &agent_id_str, status)
+            .create(run_id, &agent_id_str, status)
             .await
             .map_err(|e| RunError::Store(e.to_string()))?;
 
-        self.emit_event(run_id.clone(), EventKind::RunCreated)
-            .await?;
+        self.emit_event(run_id, EventKind::RunCreated).await?;
 
         info!(%run_id, "run created");
         Ok(run_id)
@@ -180,10 +179,10 @@ impl RunManager {
     /// / [`RunError::Event`] for persistence failures.
     #[instrument(skip(self), fields(run_id = %run_id))]
     pub async fn enqueue_run(&self, run_id: RunId) -> Result<(), RunError> {
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self.machine.transition(&current, RunTransition::Start)?;
 
-        self.apply_transition(run_id.clone(), next, EventKind::RunQueued)
+        self.apply_transition(run_id, next, EventKind::RunQueued)
             .await?;
 
         info!(%run_id, "run enqueued");
@@ -197,12 +196,12 @@ impl RunManager {
     /// Returns [`RunError::Transition`] if the run is not in `Queued` state.
     #[instrument(skip(self), fields(run_id = %run_id))]
     pub async fn start_run(&self, run_id: RunId) -> Result<(), RunError> {
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self
             .machine
             .transition(&current, RunTransition::WorkerClaimed)?;
 
-        self.apply_transition(run_id.clone(), next, EventKind::RunStarted)
+        self.apply_transition(run_id, next, EventKind::RunStarted)
             .await?;
 
         info!(%run_id, "run started");
@@ -217,10 +216,10 @@ impl RunManager {
     /// Returns [`RunError::Transition`] if the run is not in `Running` state.
     #[instrument(skip(self), fields(run_id = %run_id))]
     pub async fn completing_run(&self, run_id: RunId) -> Result<(), RunError> {
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self.machine.transition(&current, RunTransition::Complete)?;
 
-        self.apply_transition(run_id.clone(), next, EventKind::RunCompleting)
+        self.apply_transition(run_id, next, EventKind::RunCompleting)
             .await?;
 
         info!(%run_id, "run completing");
@@ -240,11 +239,11 @@ impl RunManager {
         input_tokens: u64,
         output_tokens: u64,
     ) -> Result<(), RunError> {
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self.machine.transition(&current, RunTransition::Complete)?;
 
         self.apply_transition(
-            run_id.clone(),
+            run_id,
             next,
             EventKind::RunCompleted {
                 output_artifact_id,
@@ -266,13 +265,13 @@ impl RunManager {
     #[instrument(skip(self), fields(run_id = %run_id, %reason))]
     pub async fn fail_run(&self, run_id: RunId, reason: &str) -> Result<(), RunError> {
         let reason = reason.to_owned();
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self
             .machine
             .transition(&current, RunTransition::Fail(reason.clone()))?;
 
         self.apply_transition(
-            run_id.clone(),
+            run_id,
             next,
             EventKind::RunFailed {
                 reason: reason.clone(),
@@ -292,13 +291,13 @@ impl RunManager {
     #[instrument(skip(self), fields(run_id = %run_id, %reason))]
     pub async fn cancel_run(&self, run_id: RunId, reason: &str) -> Result<(), RunError> {
         let reason = reason.to_owned();
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self
             .machine
             .transition(&current, RunTransition::Cancel(reason.clone()))?;
 
         self.apply_transition(
-            run_id.clone(),
+            run_id,
             next,
             EventKind::RunCancelled {
                 reason: reason.clone(),
@@ -317,10 +316,10 @@ impl RunManager {
     /// Returns [`RunError::Transition`] if the run is already terminal.
     #[instrument(skip(self), fields(run_id = %run_id))]
     pub async fn timeout_run(&self, run_id: RunId) -> Result<(), RunError> {
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self.machine.transition(&current, RunTransition::Timeout)?;
 
-        self.apply_transition(run_id.clone(), next, EventKind::RunTimedOut)
+        self.apply_transition(run_id, next, EventKind::RunTimedOut)
             .await?;
 
         warn!(%run_id, "run timed out");
@@ -335,7 +334,7 @@ impl RunManager {
     #[instrument(skip(self), fields(run_id = %run_id, %request_id))]
     pub async fn request_approval(&self, run_id: RunId, request_id: &str) -> Result<(), RunError> {
         let request_id = request_id.to_owned();
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let _next = self
             .machine
             .transition(&current, RunTransition::RequestApproval)?;
@@ -344,7 +343,7 @@ impl RunManager {
         };
 
         self.apply_transition(
-            run_id.clone(),
+            run_id,
             next,
             EventKind::ApprovalRequested {
                 request_id: request_id.clone(),
@@ -364,13 +363,13 @@ impl RunManager {
     #[instrument(skip(self), fields(run_id = %run_id, %approval_id))]
     pub async fn grant_approval(&self, run_id: RunId, approval_id: &str) -> Result<(), RunError> {
         let approval_id = approval_id.to_owned();
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self
             .machine
             .transition(&current, RunTransition::GrantApproval)?;
 
         self.apply_transition(
-            run_id.clone(),
+            run_id,
             next,
             EventKind::ApprovalGranted {
                 approval_id: approval_id.clone(),
@@ -390,13 +389,13 @@ impl RunManager {
     #[instrument(skip(self), fields(run_id = %run_id, %reason))]
     pub async fn deny_approval(&self, run_id: RunId, reason: &str) -> Result<(), RunError> {
         let reason = reason.to_owned();
-        let current = self.current_state(run_id.clone()).await?;
+        let current = self.current_state(run_id).await?;
         let next = self
             .machine
             .transition(&current, RunTransition::DenyApproval(reason.clone()))?;
 
         self.apply_transition(
-            run_id.clone(),
+            run_id,
             next,
             EventKind::ApprovalDenied {
                 reason: reason.clone(),
@@ -493,15 +492,13 @@ impl RunManager {
     /// Fetch the current state string from the store and parse it into
     /// [`RunState`].
     async fn current_state(&self, run_id: RunId) -> Result<RunState, RunError> {
-        let summary = self.store.get(run_id.clone()).await.map_err(|e| match e {
-            polkagent_store_trait::StoreError::NotFound { .. } => {
-                RunError::NotFound(run_id.clone())
-            }
+        let summary = self.store.get(run_id).await.map_err(|e| match e {
+            polkagent_store_trait::StoreError::NotFound { .. } => RunError::NotFound(run_id),
             other => RunError::Store(other.to_string()),
         })?;
 
         // Parse the RunStatus string back into a RunState.
-        parse_run_state(summary.status.as_str()).map_err(|e| RunError::Store(e))
+        parse_run_state(summary.status.as_str()).map_err(RunError::Store)
     }
 
     /// Atomically apply a state transition:
@@ -516,7 +513,7 @@ impl RunManager {
         let status = RunStatus::new(new_state.to_string());
 
         self.store
-            .update_state(run_id.clone(), status)
+            .update_state(run_id, status)
             .await
             .map_err(|e| RunError::Store(e.to_string()))?;
 
@@ -528,14 +525,17 @@ impl RunManager {
     /// Build a minimal [`RunEvent`] and record it via the [`EventRecorder`].
     async fn emit_event(&self, run_id: RunId, kind: EventKind) -> Result<(), RunError> {
         let sequence = {
-            let mut seqs = self.sequences.lock().expect("sequence lock poisoned");
+            let mut seqs = self
+                .sequences
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let entry = seqs.entry(run_id.to_string()).or_insert(0);
             *entry += 1;
             *entry
         };
 
         let correlation = EventCorrelation {
-            run_id: run_id.clone(),
+            run_id,
             ..Default::default()
         };
         let event = RunEvent::new_durable(EventId::new(), run_id, sequence, kind, correlation);
@@ -592,7 +592,7 @@ fn parse_run_state(s: &str) -> Result<RunState, String> {
             } else {
                 ids_str
                     .split(',')
-                    .map(|id| id.parse::<polkagent_core::EffectId>())
+                    .map(str::parse::<polkagent_core::EffectId>)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("invalid effect id in waiting_effect state: {e}"))?
             };

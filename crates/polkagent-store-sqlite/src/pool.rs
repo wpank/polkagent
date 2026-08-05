@@ -1,7 +1,7 @@
-//! SQLite connection pool with WAL mode.
+//! `SQLite` connection pool with WAL mode.
 //!
 //! Polkagent uses a single-writer / multiple-reader model that maps cleanly
-//! to SQLite's WAL mode:
+//! to `SQLite`'s WAL mode:
 //!
 //! - **One writer** — guarded by a `parking_lot::Mutex`.  Callers call
 //!   [`SqlitePool::writer`] to obtain an exclusive-writer guard.  Only one

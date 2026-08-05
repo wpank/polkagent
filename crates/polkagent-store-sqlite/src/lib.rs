@@ -1,7 +1,7 @@
 #![recursion_limit = "2048"]
-//! SQLite storage adapter for the Polkagent platform.
+//! `SQLite` storage adapter for the Polkagent platform.
 //!
-//! This crate provides durable, local-first storage backed by SQLite with
+//! This crate provides durable, local-first storage backed by `SQLite` with
 //! [WAL mode](https://www.sqlite.org/wal.html) for concurrent read/write access.
 //!
 //! # Quickstart

@@ -1,4 +1,4 @@
-//! SQLite implementations of the Polkagent store traits.
+//! `SQLite` implementations of the Polkagent store traits.
 //!
 //! Four stores are defined here, each wrapping [`SqlitePool`]:
 //!
@@ -209,7 +209,7 @@ impl SqliteRunStore {
             )
             .map_err(|e| {
                 if StoreError::is_unique_violation(&e) {
-                    StoreError::Duplicate(format!("agent name '{}' already exists", name))
+                    StoreError::Duplicate(format!("agent name '{name}' already exists"))
                 } else {
                     StoreError::Sqlite(e)
                 }
@@ -298,7 +298,7 @@ impl SqliteRunStore {
 
         let mut stmt = writer.prepare(&sql)?;
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+            params.iter().map(std::convert::AsRef::as_ref).collect();
         let rows = stmt
             .query_map(param_refs.as_slice(), |r| {
                 Ok(AgentRow {
@@ -540,7 +540,7 @@ impl SqliteRunStore {
             })
     }
 
-    /// Complete a turn (set completed_at, input_tokens, output_tokens).
+    /// Complete a turn (set `completed_at`, `input_tokens`, `output_tokens`).
     pub fn complete_turn(
         &self,
         id: &str,
@@ -723,17 +723,16 @@ impl SqliteEffectStore {
     /// Retrieve an intent by ID.
     pub fn get_intent(&self, id: &str) -> StoreResult<EffectIntentRow> {
         let writer = self.pool.writer();
-        self.query_intent_by(&writer, "id = ?1", [id])
+        Self::query_intent_by(&writer, "id = ?1", [id])
     }
 
     /// Retrieve an intent by idempotency key.
     pub fn get_intent_by_key(&self, key: &str) -> StoreResult<EffectIntentRow> {
         let writer = self.pool.writer();
-        self.query_intent_by(&writer, "idempotency_key = ?1", [key])
+        Self::query_intent_by(&writer, "idempotency_key = ?1", [key])
     }
 
     fn query_intent_by(
-        &self,
         conn: &rusqlite::Connection,
         where_clause: &str,
         params: impl rusqlite::Params,
@@ -799,7 +798,7 @@ impl SqliteEffectStore {
             )));
         }
 
-        self.query_intent_by(&writer, "id = ?1", [intent_id])
+        Self::query_intent_by(&writer, "id = ?1", [intent_id])
     }
 
     /// Release the claim on an intent (set `claimed_by` and `claimed_until`
@@ -1370,6 +1369,10 @@ fn parse_id<T: From<Uuid>>(s: &str, resource_type: &'static str) -> Result<T, Tr
 }
 
 /// Map a `rusqlite::Error` to the appropriate `TraitStoreError` variant.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used directly as Result::map_err callback, which transfers ownership"
+)]
 fn map_sqlite_err(e: rusqlite::Error) -> TraitStoreError {
     TraitStoreError::Internal {
         message: format!("sqlite error: {e}"),
@@ -1468,7 +1471,7 @@ impl StoredIntentRaw {
 ///   - NULL                   => "pending"
 ///   - 'resolved'             => "resolved"
 ///   - 'failed'               => "failed"
-///   - 'permanently_failed'   => "permanently_failed"
+///   - `permanently_failed`     => `permanently_failed`
 ///   - anything else          => "claimed"  (a real worker UUID holds the lease)
 const INTENT_SELECT: &str = "SELECT id, run_id, step_id, \
             CASE \
@@ -1525,7 +1528,6 @@ impl EffectStore for SqlitePool {
                     serde_json::Value::Number(n) => n.as_i64(),
                     serde_json::Value::String(s) => match s.as_str() {
                         "low" => Some(0),
-                        "normal" => Some(1),
                         "high" => Some(2),
                         "critical" => Some(3),
                         _ => Some(1),

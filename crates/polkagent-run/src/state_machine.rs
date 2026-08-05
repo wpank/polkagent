@@ -51,15 +51,15 @@ pub enum RunTransition {
     /// A turn completed; request effects or continue (no state change on its
     /// own; used internally, but can be used to signal step completion).
     CompleteStep,
-    /// Dispatch one or more effect intents (Running → WaitingEffect).
+    /// Dispatch one or more effect intents (Running → `WaitingEffect`).
     DispatchEffects,
-    /// All required effects resolved; resume execution (WaitingEffect → Running).
+    /// All required effects resolved; resume execution (`WaitingEffect` → Running).
     EffectsResolved,
-    /// Approval is required before the next action (Running → AwaitingApproval).
+    /// Approval is required before the next action (Running → `AwaitingApproval`).
     RequestApproval,
-    /// Approval was granted; resume execution (AwaitingApproval → Running).
+    /// Approval was granted; resume execution (`AwaitingApproval` → Running).
     GrantApproval,
-    /// Approval was denied; cancel the run (AwaitingApproval → Cancelled).
+    /// Approval was denied; cancel the run (`AwaitingApproval` → Cancelled).
     DenyApproval(String),
     /// The run completed all turns successfully (Completing → Completed).
     Complete,
@@ -67,7 +67,7 @@ pub enum RunTransition {
     Fail(String),
     /// The run was cancelled (Running|WaitingEffect|AwaitingApproval → Cancelled).
     Cancel(String),
-    /// The run exceeded its deadline (any non-terminal → TimedOut).
+    /// The run exceeded its deadline (any non-terminal → `TimedOut`).
     Timeout,
 }
 
@@ -120,14 +120,12 @@ impl RunStateMachine {
     ) -> Result<RunState, TransitionError> {
         // Terminal states block all transitions.
         if current.is_terminal() {
-            return Err(TransitionError::new(
-                current.clone(),
-                event.clone(),
-                format!("run is in terminal state `{current}`; no further transitions are allowed"),
-            ));
+            let reason =
+                format!("run is in terminal state `{current}`; no further transitions are allowed");
+            return Err(TransitionError::new(current.clone(), event, reason));
         }
 
-        match (current, &event) {
+        match (current, event) {
             // -----------------------------------------------------------------
             // Created
             // -----------------------------------------------------------------
@@ -139,13 +137,6 @@ impl RunStateMachine {
             (RunState::Queued, RunTransition::WorkerClaimed) => Ok(RunState::Running),
 
             // Cancel from Queued is allowed (operator/user pre-start cancel).
-            (RunState::Queued, RunTransition::Cancel(reason)) => Ok(RunState::Cancelled {
-                reason: reason.clone(),
-            }),
-
-            // Timeout from Queued (waited too long in queue).
-            (RunState::Queued, RunTransition::Timeout) => Ok(RunState::TimedOut),
-
             // -----------------------------------------------------------------
             // Running
             // -----------------------------------------------------------------
@@ -163,73 +154,56 @@ impl RunStateMachine {
                 Ok(RunState::Running)
             }
             (RunState::Running, RunTransition::Complete) => Ok(RunState::Completing),
-            (RunState::Running, RunTransition::Fail(reason)) => Ok(RunState::Failed {
-                reason: reason.clone(),
-            }),
-            (RunState::Running, RunTransition::Cancel(reason)) => Ok(RunState::Cancelled {
-                reason: reason.clone(),
-            }),
-            (RunState::Running, RunTransition::Timeout) => Ok(RunState::TimedOut),
-
-            // -----------------------------------------------------------------
-            // AwaitingApproval
-            // -----------------------------------------------------------------
-            (RunState::AwaitingApproval { .. }, RunTransition::GrantApproval) => {
+            (RunState::AwaitingApproval { .. }, RunTransition::GrantApproval)
+            | (RunState::WaitingEffect { .. }, RunTransition::EffectsResolved) => {
                 Ok(RunState::Running)
             }
-            (RunState::AwaitingApproval { .. }, RunTransition::DenyApproval(reason)) => {
-                Ok(RunState::Cancelled {
-                    reason: reason.clone(),
-                })
-            }
-            (RunState::AwaitingApproval { .. }, RunTransition::Cancel(reason)) => {
-                Ok(RunState::Cancelled {
-                    reason: reason.clone(),
-                })
-            }
-            (RunState::AwaitingApproval { .. }, RunTransition::Timeout) => Ok(RunState::TimedOut),
-            (RunState::AwaitingApproval { .. }, RunTransition::Fail(reason)) => {
-                Ok(RunState::Failed {
-                    reason: reason.clone(),
-                })
-            }
-
-            // -----------------------------------------------------------------
-            // WaitingEffect
-            // -----------------------------------------------------------------
-            (RunState::WaitingEffect { .. }, RunTransition::EffectsResolved) => {
-                Ok(RunState::Running)
-            }
-            (RunState::WaitingEffect { .. }, RunTransition::Fail(reason)) => Ok(RunState::Failed {
-                reason: reason.clone(),
-            }),
-            (RunState::WaitingEffect { .. }, RunTransition::Cancel(reason)) => {
-                Ok(RunState::Cancelled {
-                    reason: reason.clone(),
-                })
-            }
-            (RunState::WaitingEffect { .. }, RunTransition::Timeout) => Ok(RunState::TimedOut),
-
             // -----------------------------------------------------------------
             // Completing
             // -----------------------------------------------------------------
             (RunState::Completing, RunTransition::Complete) => Ok(RunState::Completed),
-            (RunState::Completing, RunTransition::Fail(reason)) => Ok(RunState::Failed {
-                reason: reason.clone(),
-            }),
-            (RunState::Completing, RunTransition::Cancel(reason)) => Ok(RunState::Cancelled {
-                reason: reason.clone(),
-            }),
-            (RunState::Completing, RunTransition::Timeout) => Ok(RunState::TimedOut),
+
+            // Shared transitions with identical terminal results.
+            (
+                RunState::Queued
+                | RunState::Running
+                | RunState::AwaitingApproval { .. }
+                | RunState::WaitingEffect { .. }
+                | RunState::Completing,
+                RunTransition::Cancel(reason),
+            )
+            | (RunState::AwaitingApproval { .. }, RunTransition::DenyApproval(reason)) => {
+                Ok(RunState::Cancelled { reason })
+            }
+            (
+                RunState::Running
+                | RunState::AwaitingApproval { .. }
+                | RunState::WaitingEffect { .. }
+                | RunState::Completing,
+                RunTransition::Fail(reason),
+            ) => Ok(RunState::Failed { reason }),
+            (
+                RunState::Queued
+                | RunState::Running
+                | RunState::AwaitingApproval { .. }
+                | RunState::WaitingEffect { .. }
+                | RunState::Completing,
+                RunTransition::Timeout,
+            ) => Ok(RunState::TimedOut),
 
             // -----------------------------------------------------------------
             // Any state not covered above is invalid.
             // -----------------------------------------------------------------
-            _ => Err(TransitionError::new(
-                current.clone(),
-                event.clone(),
-                format!("transition `{event:?}` is not defined for state `{current}`"),
-            )),
+            (_, attempted_transition) => {
+                let reason = format!(
+                    "transition `{attempted_transition:?}` is not defined for state `{current}`"
+                );
+                Err(TransitionError::new(
+                    current.clone(),
+                    attempted_transition,
+                    reason,
+                ))
+            }
         }
     }
 

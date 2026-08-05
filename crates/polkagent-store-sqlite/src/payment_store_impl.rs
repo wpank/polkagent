@@ -23,8 +23,46 @@ use crate::pool::SqlitePool;
 // ---------------------------------------------------------------------------
 
 /// Map a `rusqlite::Error` to `PaymentError`.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used directly as Result::map_err callback, which transfers ownership"
+)]
 fn map_err(e: rusqlite::Error) -> PaymentError {
     PaymentError::store(format!("sqlite error: {e}"))
+}
+
+fn integer_out_of_range(field: &str, value: impl std::fmt::Display) -> PaymentError {
+    PaymentError::store(format!(
+        "{field} value {value} is outside the supported integer range"
+    ))
+}
+
+fn to_i64(field: &str, value: u64) -> Result<i64, PaymentError> {
+    i64::try_from(value).map_err(|_| integer_out_of_range(field, value))
+}
+
+fn to_u64(field: &str, value: i64) -> Result<u64, PaymentError> {
+    u64::try_from(value).map_err(|_| integer_out_of_range(field, value))
+}
+
+fn to_u8(field: &str, value: i64) -> Result<u8, PaymentError> {
+    u8::try_from(value).map_err(|_| integer_out_of_range(field, value))
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value is checked as finite, non-negative, and within u128 range before conversion"
+)]
+fn usd_to_microdollars(value: f64) -> Result<u128, PaymentError> {
+    let scaled = value * 1_000_000.0;
+    if !scaled.is_finite() || scaled < 0.0 || scaled >= u128::MAX as f64 {
+        return Err(PaymentError::store(format!(
+            "USD total {value} cannot be represented as microdollars"
+        )));
+    }
+    Ok(scaled as u128)
 }
 
 /// Map a `rusqlite::Error` that may be a UNIQUE violation.
@@ -50,7 +88,7 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>, PaymentError> {
         .map_err(|e| PaymentError::store(format!("invalid timestamp '{s}': {e}")))
 }
 
-/// Encode `u128` as a decimal string (SQLite has no native 128-bit integer).
+/// Encode `u128` as a decimal string (`SQLite` has no native 128-bit integer).
 fn encode_u128(v: u128) -> String {
     v.to_string()
 }
@@ -100,6 +138,8 @@ fn decode_status(s: &str) -> Result<PaymentStatus, PaymentError> {
 impl PaymentStore for SqlitePool {
     async fn record_cost(&self, cost_record: CostRecord) -> Result<(), PaymentError> {
         let pool = self.clone();
+        let input_tokens = to_i64("input_tokens", cost_record.input_tokens)?;
+        let output_tokens = to_i64("output_tokens", cost_record.output_tokens)?;
 
         tokio::task::spawn_blocking(move || {
             let id = Uuid::now_v7().to_string();
@@ -115,8 +155,8 @@ impl PaymentStore for SqlitePool {
                         cost_record.run_id,
                         cost_record.provider,
                         cost_record.model,
-                        cost_record.input_tokens as i64,
-                        cost_record.output_tokens as i64,
+                        input_tokens,
+                        output_tokens,
                         cost_record.estimated_usd,
                         cost_record.recorded_at.to_rfc3339(),
                     ],
@@ -176,8 +216,8 @@ impl PaymentStore for SqlitePool {
                             run_id,
                             provider,
                             model,
-                            input_tokens: input_tokens as u64,
-                            output_tokens: output_tokens as u64,
+                            input_tokens: to_u64("input_tokens", input_tokens)?,
+                            output_tokens: to_u64("output_tokens", output_tokens)?,
                             estimated_usd,
                             recorded_at,
                         })
@@ -228,8 +268,8 @@ impl PaymentStore for SqlitePool {
                 .map_err(map_err)?;
 
             Ok(UsageSummary {
-                total_runs: row.0 as u64,
-                total_tokens: row.1 as u64,
+                total_runs: to_u64("total_runs", row.0)?,
+                total_tokens: to_u64("total_tokens", row.1)?,
                 estimated_usd: row.2,
                 period_start: since,
                 period_end: until,
@@ -264,7 +304,7 @@ impl PaymentStore for SqlitePool {
                         intent.run_id,
                         amount_value,
                         amount_asset,
-                        amount_decimals as i64,
+                        i64::from(amount_decimals),
                         intent.recipient,
                         intent.idempotency_key,
                         status,
@@ -336,7 +376,7 @@ impl PaymentStore for SqlitePool {
                 id: intent_id,
                 agent_id,
                 run_id,
-                amount: Amount::new(value, asset, amt_dec as u8),
+                amount: Amount::new(value, asset, to_u8("amount_decimals", amt_dec)?),
                 recipient,
                 idempotency_key,
                 created_at,
@@ -385,6 +425,7 @@ impl PaymentStore for SqlitePool {
         let fee_asset = encode_asset(&receipt.fee_paid.asset)?;
         let fee_decimals = receipt.fee_paid.decimals;
         let intent_id_str = receipt.intent_id.to_string();
+        let block_number = to_i64("block_number", receipt.block_number)?;
 
         tokio::task::spawn_blocking(move || {
             let id = Uuid::now_v7().to_string();
@@ -399,10 +440,10 @@ impl PaymentStore for SqlitePool {
                         id,
                         intent_id_str,
                         receipt.tx_hash,
-                        receipt.block_number as i64,
+                        block_number,
                         fee_value,
                         fee_asset,
-                        fee_decimals as i64,
+                        i64::from(fee_decimals),
                         receipt.confirmed_at.to_rfc3339(),
                     ],
                 )
@@ -478,8 +519,8 @@ impl PaymentStore for SqlitePool {
                         Ok(PaymentReceipt {
                             intent_id,
                             tx_hash,
-                            block_number: block_number as u64,
-                            fee_paid: Amount::new(value, asset, fee_dec as u8),
+                            block_number: to_u64("block_number", block_number)?,
+                            fee_paid: Amount::new(value, asset, to_u8("fee_decimals", fee_dec)?),
                             confirmed_at,
                         })
                     },
@@ -532,8 +573,8 @@ impl PaymentStore for SqlitePool {
             Ok(PaymentReceipt {
                 intent_id: id,
                 tx_hash,
-                block_number: block_number as u64,
-                fee_paid: Amount::new(value, asset, fee_dec as u8),
+                block_number: to_u64("block_number", block_number)?,
+                fee_paid: Amount::new(value, asset, to_u8("fee_decimals", fee_dec)?),
                 confirmed_at,
             })
         })
@@ -557,7 +598,7 @@ impl PaymentStore for SqlitePool {
                 .map_err(map_err)?;
 
             // Convert USD to micro-dollars for the integer field.
-            let total_spent_micro = (total_usd * 1_000_000.0) as u128;
+            let total_spent_micro = usd_to_microdollars(total_usd)?;
 
             Ok(BalanceSummary {
                 available: None,
@@ -581,6 +622,22 @@ mod tests {
     use super::*;
     use crate::migrations;
     use chrono::Utc;
+
+    #[test]
+    fn integer_conversions_reject_out_of_range_storage_values() {
+        assert!(to_i64("tokens", u64::MAX).is_err());
+        assert!(to_u64("tokens", -1).is_err());
+        assert!(to_u8("decimals", -1).is_err());
+        assert!(to_u8("decimals", 256).is_err());
+    }
+
+    #[test]
+    fn microdollar_conversion_rejects_invalid_totals() {
+        assert!(usd_to_microdollars(f64::NAN).is_err());
+        assert!(usd_to_microdollars(f64::INFINITY).is_err());
+        assert!(usd_to_microdollars(-0.01).is_err());
+        assert!(matches!(usd_to_microdollars(1.25), Ok(1_250_000)));
+    }
 
     fn test_pool() -> SqlitePool {
         let pool = SqlitePool::open_in_memory().expect("open in-memory pool");

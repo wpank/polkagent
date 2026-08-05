@@ -275,7 +275,10 @@ impl RunOrchestrator {
         if let Some(ref requirements) = self.task_requirements {
             let caps = harness.capabilities();
             if let Err(mismatches) = validate_for_task(&caps, requirements) {
-                let reasons: Vec<String> = mismatches.iter().map(|m| m.to_string()).collect();
+                let reasons: Vec<String> = mismatches
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect();
                 let msg = format!(
                     "harness {:?} does not meet task requirements: {}",
                     harness.id(),
@@ -287,11 +290,11 @@ impl RunOrchestrator {
         }
 
         // Transition to Running.
-        let current_state = self.run_manager.get_state(run_id.clone()).await?;
+        let current_state = self.run_manager.get_state(run_id).await?;
         if current_state == RunState::Created {
-            self.run_manager.enqueue_run(run_id.clone()).await?;
+            self.run_manager.enqueue_run(run_id).await?;
         }
-        self.run_manager.start_run(run_id.clone()).await?;
+        self.run_manager.start_run(run_id).await?;
 
         // Build session config from agent spec.
         let session_config = SessionConfig {
@@ -370,7 +373,7 @@ impl RunOrchestrator {
         // Transition to terminal state.
         if had_error && response_text.is_empty() {
             let reason = format!("harness error: {error_message}");
-            self.run_manager.fail_run(run_id.clone(), &reason).await?;
+            self.run_manager.fail_run(run_id, &reason).await?;
             Ok(RunOutcome {
                 run_id,
                 final_state: RunState::Failed { reason },
@@ -380,10 +383,8 @@ impl RunOrchestrator {
                 duration: start.elapsed(),
             })
         } else {
-            self.run_manager.completing_run(run_id.clone()).await?;
-            self.run_manager
-                .complete_run(run_id.clone(), None, 0, 0)
-                .await?;
+            self.run_manager.completing_run(run_id).await?;
+            self.run_manager.complete_run(run_id, None, 0, 0).await?;
 
             info!(
                 %run_id,
@@ -429,6 +430,10 @@ impl RunOrchestrator {
     /// Returns [`RunError`] if state transitions, store operations, or event
     /// recording fails. Executor errors are caught and transition the run to
     /// `Failed`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the execution loop keeps ordered durable transitions and early terminal paths together"
+    )]
     #[instrument(skip(self, agent_spec, initial_prompt), fields(%run_id))]
     pub async fn execute_run(
         &self,
@@ -478,15 +483,11 @@ impl RunOrchestrator {
             .resource_limits
             .as_ref()
             .and_then(|rl| rl.timeout_secs)
-            .map(|secs| chrono::Utc::now() + chrono::Duration::seconds(secs as i64));
+            .map(deadline_from_timeout);
 
         // Persist the deadline to the store so it can be restored after a crash.
         if let Some(deadline) = run_deadline {
-            if let Err(e) = self
-                .run_manager
-                .set_deadline(run_id.clone(), Some(deadline))
-                .await
-            {
+            if let Err(e) = self.run_manager.set_deadline(run_id, Some(deadline)).await {
                 warn!(%run_id, error = %e, "failed to persist run deadline");
             }
         }
@@ -497,22 +498,24 @@ impl RunOrchestrator {
             .model_preference
             .as_ref()
             .and_then(|mp| mp.model_id.as_deref())
-            .map(|mid| {
-                // If the spec.model has a provider prefix and the preference
-                // has only a bare model ID, re-attach the provider prefix from
-                // the spec so the executor gets a fully-qualified id.
-                if mid.contains('/') {
-                    mid.to_owned()
-                } else {
-                    let prefix = agent_spec.model.split('/').next().unwrap_or("");
-                    if prefix.is_empty() {
+            .map_or_else(
+                || agent_spec.model.clone(),
+                |mid| {
+                    // If the spec.model has a provider prefix and the preference
+                    // has only a bare model ID, re-attach the provider prefix from
+                    // the spec so the executor gets a fully-qualified id.
+                    if mid.contains('/') {
                         mid.to_owned()
                     } else {
-                        format!("{prefix}/{mid}")
+                        let prefix = agent_spec.model.split('/').next().unwrap_or("");
+                        if prefix.is_empty() {
+                            mid.to_owned()
+                        } else {
+                            format!("{prefix}/{mid}")
+                        }
                     }
-                }
-            })
-            .unwrap_or_else(|| agent_spec.model.clone());
+                },
+            );
 
         // Temperature from model_preference (None means executor default).
         // InferenceRequest uses f32; we store f64 in the spec for precision in
@@ -521,7 +524,7 @@ impl RunOrchestrator {
             .model_preference
             .as_ref()
             .and_then(|mp| mp.temperature)
-            .map(|t| t as f32);
+            .map(temperature_as_f32);
 
         // System prompt: model_preference.system_prompt overrides
         // agent_spec.system_prompt when present.
@@ -536,14 +539,14 @@ impl RunOrchestrator {
         // (Created → Queued), so we just claim (Queued → Running).
         // In tests, execute_run is called directly on a Created run, so
         // we enqueue first if needed.
-        let current_state = self.run_manager.get_state(run_id.clone()).await?;
+        let current_state = self.run_manager.get_state(run_id).await?;
         if current_state == RunState::Created {
-            self.run_manager.enqueue_run(run_id.clone()).await?;
+            self.run_manager.enqueue_run(run_id).await?;
         }
-        self.run_manager.start_run(run_id.clone()).await?;
+        self.run_manager.start_run(run_id).await?;
 
         // Step 2: Build initial message list.
-        let mut messages = self.build_initial_messages(agent_spec, initial_prompt);
+        let mut messages = Self::build_initial_messages(agent_spec, initial_prompt);
 
         // Build a CostTracker for this run.
         //
@@ -573,7 +576,7 @@ impl RunOrchestrator {
                 }
             }
             #[cfg(not(feature = "payment"))]
-            CostTracker::unbounded(run_id.clone())
+            CostTracker::unbounded(run_id)
         };
 
         // Step 3: Turn loop.
@@ -582,9 +585,9 @@ impl RunOrchestrator {
             if let Some(deadline) = run_deadline {
                 if chrono::Utc::now() >= deadline {
                     warn!(%run_id, "run deadline exceeded — transitioning to TimedOut");
-                    self.run_manager.timeout_run(run_id.clone()).await?;
+                    self.run_manager.timeout_run(run_id).await?;
                     break RunOutcome {
-                        run_id: run_id.clone(),
+                        run_id,
                         final_state: RunState::TimedOut,
                         total_tokens: total_usage,
                         turn_count,
@@ -598,10 +601,10 @@ impl RunOrchestrator {
             if turn_count >= effective_max_turns {
                 warn!(%run_id, turn_count, max = effective_max_turns, "max turns exceeded");
                 self.run_manager
-                    .fail_run(run_id.clone(), "max turns exceeded")
+                    .fail_run(run_id, "max turns exceeded")
                     .await?;
                 break RunOutcome {
-                    run_id: run_id.clone(),
+                    run_id,
                     final_state: RunState::Failed {
                         reason: "max turns exceeded".to_owned(),
                     },
@@ -623,9 +626,9 @@ impl RunOrchestrator {
                 {
                     let reason = format!("BudgetExceeded: {}", exceeded.reason);
                     warn!(%run_id, %reason, "budget exceeded before turn");
-                    self.run_manager.fail_run(run_id.clone(), &reason).await?;
+                    self.run_manager.fail_run(run_id, &reason).await?;
                     break RunOutcome {
-                        run_id: run_id.clone(),
+                        run_id,
                         final_state: RunState::Failed { reason },
                         total_tokens: total_usage,
                         turn_count,
@@ -648,7 +651,7 @@ impl RunOrchestrator {
             let assembled_messages = messages.clone();
 
             let request = InferenceRequest {
-                run_id: run_id.clone(),
+                run_id,
                 step_id: StepId::new(),
                 messages: assembled_messages,
                 system: effective_system.clone(),
@@ -663,9 +666,9 @@ impl RunOrchestrator {
                 Err(err) => {
                     let reason = format!("executor error: {err}");
                     warn!(%run_id, %reason, "executor failed");
-                    self.run_manager.fail_run(run_id.clone(), &reason).await?;
+                    self.run_manager.fail_run(run_id, &reason).await?;
                     break RunOutcome {
-                        run_id: run_id.clone(),
+                        run_id,
                         final_state: RunState::Failed { reason },
                         total_tokens: total_usage,
                         turn_count,
@@ -694,9 +697,9 @@ impl RunOrchestrator {
                 {
                     let reason = format!("BudgetExceeded: {}", exceeded.reason);
                     warn!(%run_id, %reason, "budget exceeded after turn");
-                    self.run_manager.fail_run(run_id.clone(), &reason).await?;
+                    self.run_manager.fail_run(run_id, &reason).await?;
                     break RunOutcome {
-                        run_id: run_id.clone(),
+                        run_id,
                         final_state: RunState::Failed { reason },
                         total_tokens: total_usage,
                         turn_count,
@@ -713,7 +716,7 @@ impl RunOrchestrator {
             });
             let turn = self
                 .turn_manager
-                .create_turn(run_id.clone(), turn_count - 1, &turn_input);
+                .create_turn(run_id, turn_count - 1, &turn_input);
             let turn_output =
                 if response.stop_reason == "end_turn" && response.tool_calls.is_empty() {
                     TurnOutput::terminal(&response.text).with_usage(turn_usage)
@@ -736,7 +739,7 @@ impl RunOrchestrator {
                     .event_recorder
                     .record(RunEvent::new_ephemeral(
                         EventId::new(),
-                        run_id.clone(),
+                        run_id,
                         0,
                         EventKind::StreamingToken {
                             text: response.text.clone(),
@@ -757,9 +760,9 @@ impl RunOrchestrator {
             // 3c: Process response.
             if response.stop_reason == "max_tokens" {
                 let reason = "context window exceeded (max_tokens)".to_owned();
-                self.run_manager.fail_run(run_id.clone(), &reason).await?;
+                self.run_manager.fail_run(run_id, &reason).await?;
                 break RunOutcome {
-                    run_id: run_id.clone(),
+                    run_id,
                     final_state: RunState::Failed { reason },
                     total_tokens: total_usage,
                     turn_count,
@@ -778,10 +781,10 @@ impl RunOrchestrator {
                 });
 
                 // Transition: Running -> Completing -> Completed.
-                self.run_manager.completing_run(run_id.clone()).await?;
+                self.run_manager.completing_run(run_id).await?;
                 self.run_manager
                     .complete_run(
-                        run_id.clone(),
+                        run_id,
                         None,
                         u64::from(total_usage.input_tokens),
                         u64::from(total_usage.output_tokens),
@@ -790,7 +793,7 @@ impl RunOrchestrator {
 
                 info!(%run_id, turn_count, "run completed successfully");
                 break RunOutcome {
-                    run_id: run_id.clone(),
+                    run_id,
                     final_state: RunState::Completed,
                     total_tokens: total_usage,
                     turn_count,
@@ -840,10 +843,10 @@ impl RunOrchestrator {
                         // WaitingEffect and resume later. For the
                         // orchestrator's Phase 1 implementation, treat
                         // this as a completion point.
-                        self.run_manager.completing_run(run_id.clone()).await?;
+                        self.run_manager.completing_run(run_id).await?;
                         self.run_manager
                             .complete_run(
-                                run_id.clone(),
+                                run_id,
                                 None,
                                 u64::from(total_usage.input_tokens),
                                 u64::from(total_usage.output_tokens),
@@ -893,7 +896,6 @@ impl RunOrchestrator {
 
     /// Build the initial message list from the agent spec and user prompt.
     fn build_initial_messages(
-        &self,
         _agent_spec: &AgentSpec,
         initial_prompt: &str,
     ) -> Vec<InferenceMessage> {
@@ -1115,8 +1117,13 @@ pub fn build_card_for_effect(
     let arguments_summary = intent
         .payload
         .get("args")
-        .map(|a| a.to_string())
-        .or_else(|| intent.payload.get("arguments").map(|a| a.to_string()));
+        .map(std::string::ToString::to_string)
+        .or_else(|| {
+            intent
+                .payload
+                .get("arguments")
+                .map(std::string::ToString::to_string)
+        });
 
     // Estimated cost from the payload, if provided.
     let estimated_cost = intent
@@ -1166,6 +1173,22 @@ fn split_model_id(model_id: &str) -> (&str, &str) {
     } else {
         ("unknown", model_id)
     }
+}
+
+/// Narrow a validated model temperature to the executor protocol's `f32`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "executor requests encode temperature as f32 while configuration uses f64"
+)]
+fn temperature_as_f32(value: f64) -> f32 {
+    value as f32
+}
+
+fn deadline_from_timeout(seconds: u64) -> chrono::DateTime<chrono::Utc> {
+    let seconds = i64::try_from(seconds).unwrap_or(i64::MAX);
+    chrono::Duration::try_seconds(seconds)
+        .and_then(|duration| chrono::Utc::now().checked_add_signed(duration))
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC)
 }
 
 // ---------------------------------------------------------------------------
@@ -2185,6 +2208,14 @@ mod tests {
         let (provider, model) = split_model_id("openai/gpt-4o/2024");
         assert_eq!(provider, "openai");
         assert_eq!(model, "gpt-4o/2024");
+    }
+
+    #[test]
+    fn extreme_timeout_saturates_to_maximum_deadline() {
+        assert_eq!(
+            deadline_from_timeout(u64::MAX),
+            chrono::DateTime::<chrono::Utc>::MAX_UTC
+        );
     }
 
     // ── CostTracker integration via orchestrator turn loop ─────────────────

@@ -33,6 +33,10 @@ fn parse_run_id(s: &str) -> Result<RunId, StoreError> {
 }
 
 /// Map a `rusqlite::Error` to the appropriate `StoreError` variant.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used directly as Result::map_err callback, which transfers ownership"
+)]
 fn map_sqlite_err(e: rusqlite::Error) -> StoreError {
     match &e {
         rusqlite::Error::SqliteFailure(
@@ -52,6 +56,10 @@ fn map_sqlite_err(e: rusqlite::Error) -> StoreError {
 }
 
 /// Map a `rusqlite::Error` to `StoreError`, with a richer Conflict message.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "callers transfer the database error while adding resource context"
+)]
 fn map_sqlite_err_with_id(e: rusqlite::Error, id: &str) -> StoreError {
     match &e {
         rusqlite::Error::SqliteFailure(
@@ -72,8 +80,8 @@ fn map_sqlite_err_with_id(e: rusqlite::Error, id: &str) -> StoreError {
 
 /// Extract a `RunSummary` from a `rusqlite::Row`.
 ///
-/// Expected column order: id, agent_id, state, created_at, started_at,
-/// completed_at, deadline_at
+/// Expected column order: id, `agent_id`, state, `created_at`, `started_at`,
+/// `completed_at`, `deadline_at`
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRunSummary> {
     Ok(RawRunSummary {
         id: row.get(0)?,
@@ -202,7 +210,7 @@ impl RunStore for SqlitePool {
                      WHERE id = ?5",
                     rusqlite::params![status_str, now, started_at, completed_at, id_str],
                 )
-                .map_err(|e| map_sqlite_err(e))?;
+                .map_err(map_sqlite_err)?;
 
             if n == 0 {
                 return Err(StoreError::NotFound {

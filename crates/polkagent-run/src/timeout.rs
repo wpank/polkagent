@@ -109,7 +109,7 @@ impl TimeoutEnforcer {
                     now = %now,
                     "Run exceeded per-run deadline"
                 );
-                return Err(RunError::DeadlineExceeded(run.id.clone()));
+                return Err(RunError::DeadlineExceeded(run.id));
             }
         }
 
@@ -128,7 +128,7 @@ impl TimeoutEnforcer {
                         max_secs = max_dur.as_secs(),
                         "Run exceeded global max duration"
                     );
-                    return Err(RunError::DeadlineExceeded(run.id.clone()));
+                    return Err(RunError::DeadlineExceeded(run.id));
                 }
             }
         }

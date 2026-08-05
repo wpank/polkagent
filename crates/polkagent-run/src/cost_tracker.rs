@@ -175,6 +175,13 @@ impl CostTracker {
     /// When the `payment` feature is disabled, only the in-memory totals are
     /// updated; no `PaymentStore` persistence occurs.
     #[allow(unused_variables)]
+    #[cfg_attr(
+        not(feature = "payment"),
+        allow(
+            clippy::unused_async,
+            reason = "the feature-independent API remains async because payment persistence awaits"
+        )
+    )]
     pub async fn record_turn_cost(
         &mut self,
         provider: &str,

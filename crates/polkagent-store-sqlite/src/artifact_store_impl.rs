@@ -47,6 +47,13 @@ fn parse_ts(s: &str) -> Result<chrono::DateTime<chrono::Utc>, StoreError> {
         .map_err(|e| StoreError::Backend(Box::new(e)))
 }
 
+fn invalid_integer(field: &str, value: impl std::fmt::Display) -> StoreError {
+    StoreError::Backend(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("{field} value {value} is outside the supported integer range"),
+    )))
+}
+
 /// Reconstruct an [`Artifact`] from raw column values.
 fn row_to_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawArtifactRow> {
     Ok(RawArtifactRow {
@@ -88,7 +95,8 @@ impl RawArtifactRow {
             blob_ref: BlobRef {
                 blake3_hex: self.digest_hex,
                 sha256_hex: None,
-                size_bytes: self.size_bytes as u64,
+                size_bytes: u64::try_from(self.size_bytes)
+                    .map_err(|_| invalid_integer("artifact size_bytes", self.size_bytes))?,
             },
             classification: DataClassification::default(),
             parents: Vec::new(),
@@ -109,7 +117,8 @@ impl ArtifactStore for SqlitePool {
         let run_id_str = artifact.run_id.map(|r| r.to_string());
         let kind_json = serde_json::to_string(&artifact.kind).map_err(map_json)?;
         let digest_hex = artifact.blob_ref.blake3_hex.clone();
-        let size_bytes = artifact.blob_ref.size_bytes as i64;
+        let size_bytes = i64::try_from(artifact.blob_ref.size_bytes)
+            .map_err(|_| invalid_integer("artifact size_bytes", artifact.blob_ref.size_bytes))?;
         let metadata_json = serde_json::to_string(&artifact.metadata).map_err(map_json)?;
         let created_at = artifact.created_at.to_rfc3339();
         let body = body.to_vec();
