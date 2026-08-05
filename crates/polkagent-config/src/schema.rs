@@ -1216,6 +1216,10 @@ allow_cross_region = false
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "schema tests fail immediately when required serialization round trips or parsed fixture values are absent"
+)]
 mod tests {
     use super::*;
 
@@ -1684,6 +1688,11 @@ max_retries = 3
 
     #[test]
     fn models_array_parses_from_toml() {
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            models: Vec<ModelOverrideConfig>,
+        }
+
         let toml_str = r#"
 [[models]]
 slug = "model-a"
@@ -1696,10 +1705,6 @@ provider = "p2"
 supports_tools = false
 cost_input_per_m = 1.5
 "#;
-        #[derive(Debug, Deserialize)]
-        struct Wrapper {
-            models: Vec<ModelOverrideConfig>,
-        }
         let w: Wrapper = toml::from_str(toml_str).expect("parse");
         assert_eq!(w.models.len(), 2);
         assert_eq!(w.models[0].slug, "model-a");
@@ -1785,19 +1790,21 @@ max_concurrent = 1
 
     #[test]
     fn full_config_with_models_toml_round_trip() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            ..Default::default()
-        }];
-        cfg.models = vec![ModelOverrideConfig {
-            slug: "custom-model".to_owned(),
-            provider: "p1".to_owned(),
-            context_window: Some(200_000),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                ..Default::default()
+            }],
+            models: vec![ModelOverrideConfig {
+                slug: "custom-model".to_owned(),
+                provider: "p1".to_owned(),
+                context_window: Some(200_000),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         let serialized = toml::to_string_pretty(&cfg).expect("serialize");
         let back: Config = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(cfg, back);
@@ -1866,16 +1873,18 @@ every_secs = 60
 
     #[test]
     fn full_config_with_watchers_toml_round_trip() {
-        let mut cfg = Config::default();
-        cfg.watchers = vec![WatcherConfig {
-            name: "w1".to_owned(),
-            agent_id: "agent-w1".to_owned(),
-            schedule: WatcherSchedule::Interval { every_secs: 60 },
-            cedar_policy: "watch-policy".to_owned(),
-            enabled: true,
-            read_only: true,
-            timeout_secs: 120,
-        }];
+        let cfg = Config {
+            watchers: vec![WatcherConfig {
+                name: "w1".to_owned(),
+                agent_id: "agent-w1".to_owned(),
+                schedule: WatcherSchedule::Interval { every_secs: 60 },
+                cedar_policy: "watch-policy".to_owned(),
+                enabled: true,
+                read_only: true,
+                timeout_secs: 120,
+            }],
+            ..Config::default()
+        };
         let serialized = toml::to_string_pretty(&cfg).expect("serialize");
         let back: Config = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(cfg, back);

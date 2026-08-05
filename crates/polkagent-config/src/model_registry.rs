@@ -595,6 +595,10 @@ where
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "model registry tests fail immediately when required catalog entries or serialization fixtures are absent"
+)]
 mod tests {
     use super::*;
 

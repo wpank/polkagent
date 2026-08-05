@@ -698,6 +698,11 @@ impl std::error::Error for WatchError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "watcher tests fail immediately when temporary file events or expected validation states are absent"
+)]
 mod tests {
     use super::*;
     use serde::Deserialize;

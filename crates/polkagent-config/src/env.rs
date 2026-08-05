@@ -621,6 +621,10 @@ where
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "environment override tests fail immediately when required serialized fixtures are invalid"
+)]
 mod tests {
     use std::sync::Mutex;
 

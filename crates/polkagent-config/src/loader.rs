@@ -267,6 +267,11 @@ pub fn merge(base: Config, overlay_toml: &str) -> Result<Config> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "loader tests fail immediately when temporary filesystem fixtures or expected configuration states are absent"
+)]
 mod tests {
     use std::fs;
 
@@ -433,8 +438,7 @@ backend = "postgres"
                 .as_ref()
                 .unwrap()
                 .ends_with(".polkagent/polkagent.toml"),
-            "unexpected path: {:?}",
-            found
+            "unexpected path: {found:?}"
         );
     }
 
@@ -471,8 +475,7 @@ backend = "postgres"
         let found = find_project_config_from(&nested);
         assert!(
             found.is_none(),
-            "should not walk past .git boundary, but found: {:?}",
-            found,
+            "should not walk past .git boundary, but found: {found:?}",
         );
     }
 
@@ -520,8 +523,7 @@ backend = "postgres"
         let found = find_project_config_from(&nested);
         assert!(
             found.is_none(),
-            "should not walk past .git file boundary (worktree), but found: {:?}",
-            found,
+            "should not walk past .git file boundary (worktree), but found: {found:?}",
         );
     }
 

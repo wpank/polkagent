@@ -820,6 +820,11 @@ fn validate_watchers(config: &Config, errors: &mut Vec<ValidationError>) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "validation tests fail immediately when expected acceptance or rejection invariants do not hold"
+)]
 mod tests {
     use std::sync::Mutex;
 
@@ -969,14 +974,16 @@ mod tests {
 
     #[test]
     fn provider_with_zero_timeout_is_rejected() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            timeout_secs: 0,
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                timeout_secs: 0,
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         let errs = validate(&cfg).unwrap_err();
         assert!(
             errs.iter().any(|e| e.field.ends_with("timeout_secs")),
@@ -1380,27 +1387,31 @@ mod tests {
 
     #[test]
     fn provider_valid_kind_is_accepted() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            kind: Some(crate::model_registry::ProviderKind::AnthropicApi),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                kind: Some(crate::model_registry::ProviderKind::AnthropicApi),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         validate(&cfg).expect("valid provider kind should pass");
     }
 
     #[test]
     fn provider_zero_max_concurrent_is_rejected() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            max_concurrent: Some(0),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                max_concurrent: Some(0),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         let errs = validate(&cfg).unwrap_err();
         assert!(
             errs.iter().any(|e| e.field.ends_with(".max_concurrent")),
@@ -1414,33 +1425,38 @@ mod tests {
 
     #[test]
     fn model_empty_slug_is_rejected() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            ..Default::default()
-        }];
-        cfg.models = vec![ModelOverrideConfig {
-            slug: String::new(),
-            provider: "p1".to_owned(),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                ..Default::default()
+            }],
+            models: vec![ModelOverrideConfig {
+                slug: String::new(),
+                provider: "p1".to_owned(),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         let errs = validate(&cfg).unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field.ends_with(".slug")),
+            errs.iter()
+                .any(|e| e.field.rsplit('.').next() == Some("slug")),
             "expected model slug error, got: {errs:?}"
         );
     }
 
     #[test]
     fn model_empty_provider_is_rejected() {
-        let mut cfg = Config::default();
-        cfg.models = vec![ModelOverrideConfig {
-            slug: "my-model".to_owned(),
-            provider: String::new(),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            models: vec![ModelOverrideConfig {
+                slug: "my-model".to_owned(),
+                provider: String::new(),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         let errs = validate(&cfg).unwrap_err();
         assert!(
             errs.iter().any(|e| e.field.ends_with(".provider")),
@@ -1450,18 +1466,20 @@ mod tests {
 
     #[test]
     fn model_unknown_provider_is_rejected() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            ..Default::default()
-        }];
-        cfg.models = vec![ModelOverrideConfig {
-            slug: "my-model".to_owned(),
-            provider: "nonexistent".to_owned(),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                ..Default::default()
+            }],
+            models: vec![ModelOverrideConfig {
+                slug: "my-model".to_owned(),
+                provider: "nonexistent".to_owned(),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         let errs = validate(&cfg).unwrap_err();
         assert!(
             errs.iter().any(|e| e.message.contains("unknown provider")),
@@ -1471,19 +1489,21 @@ mod tests {
 
     #[test]
     fn model_duplicate_slugs_are_rejected() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            ..Default::default()
-        }];
         let m = ModelOverrideConfig {
             slug: "dup-model".to_owned(),
             provider: "p1".to_owned(),
             ..Default::default()
         };
-        cfg.models = vec![m.clone(), m];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                ..Default::default()
+            }],
+            models: vec![m.clone(), m],
+            ..Config::default()
+        };
         let errs = validate(&cfg).unwrap_err();
         assert!(
             errs.iter().any(|e| e.message.contains("duplicate")),
@@ -1493,19 +1513,21 @@ mod tests {
 
     #[test]
     fn model_negative_cost_is_rejected() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            ..Default::default()
-        }];
-        cfg.models = vec![ModelOverrideConfig {
-            slug: "m1".to_owned(),
-            provider: "p1".to_owned(),
-            cost_input_per_m: Some(-1.0),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                ..Default::default()
+            }],
+            models: vec![ModelOverrideConfig {
+                slug: "m1".to_owned(),
+                provider: "p1".to_owned(),
+                cost_input_per_m: Some(-1.0),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         let errs = validate(&cfg).unwrap_err();
         assert!(
             errs.iter().any(|e| e.field.ends_with(".cost_input_per_m")),
@@ -1515,19 +1537,21 @@ mod tests {
 
     #[test]
     fn model_invalid_tool_format_is_rejected() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            ..Default::default()
-        }];
-        cfg.models = vec![ModelOverrideConfig {
-            slug: "m1".to_owned(),
-            provider: "p1".to_owned(),
-            tool_format: Some("binary".to_owned()),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                ..Default::default()
+            }],
+            models: vec![ModelOverrideConfig {
+                slug: "m1".to_owned(),
+                provider: "p1".to_owned(),
+                tool_format: Some("binary".to_owned()),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         let errs = validate(&cfg).unwrap_err();
         assert!(
             errs.iter().any(|e| e.field.ends_with(".tool_format")),
@@ -1537,24 +1561,26 @@ mod tests {
 
     #[test]
     fn model_valid_config_is_accepted() {
-        let mut cfg = Config::default();
-        cfg.providers = vec![crate::schema::ProviderConfig {
-            id: "p1".to_owned(),
-            provider_type: "anthropic".to_owned(),
-            api_key_env: "KEY".to_owned(),
-            ..Default::default()
-        }];
-        cfg.models = vec![ModelOverrideConfig {
-            slug: "my-model".to_owned(),
-            provider: "p1".to_owned(),
-            context_window: Some(200_000),
-            max_output: Some(8192),
-            supports_tools: Some(true),
-            tool_format: Some("native".to_owned()),
-            cost_input_per_m: Some(3.0),
-            cost_output_per_m: Some(15.0),
-            ..Default::default()
-        }];
+        let cfg = Config {
+            providers: vec![crate::schema::ProviderConfig {
+                id: "p1".to_owned(),
+                provider_type: "anthropic".to_owned(),
+                api_key_env: "KEY".to_owned(),
+                ..Default::default()
+            }],
+            models: vec![ModelOverrideConfig {
+                slug: "my-model".to_owned(),
+                provider: "p1".to_owned(),
+                context_window: Some(200_000),
+                max_output: Some(8192),
+                supports_tools: Some(true),
+                tool_format: Some("native".to_owned()),
+                cost_input_per_m: Some(3.0),
+                cost_output_per_m: Some(15.0),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
         validate(&cfg).expect("valid model config should pass");
     }
 
