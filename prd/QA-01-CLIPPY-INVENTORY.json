@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-05",
+  "code_commit": "97a9147",
+  "command": "cargo clippy --workspace --message-format=json -- -D warnings",
+  "exit_code": 101,
+  "total_diagnostics": 465,
+  "scope_note": "Inventory reflects the exact default-target CI command after the completed QA-01 batches. Counts are compiler error messages grouped by workspace package.",
+  "packages": [
+    {
+      "package": "polkagent-chain-subxt",
+      "diagnostics": 1,
+      "owner_hint": "safe_parallel",
+      "lints": ["clippy::manual_is_multiple_of"]
+    },
+    {
+      "package": "polkagent-eval",
+      "diagnostics": 42,
+      "owner_hint": "safe_parallel",
+      "lints": [
+        "clippy::cast_lossless",
+        "clippy::cast_possible_truncation",
+        "clippy::cast_precision_loss",
+        "clippy::collapsible_str_replace",
+        "clippy::default_trait_access",
+        "clippy::derivable_impls",
+        "clippy::format_collect",
+        "clippy::format_push_string",
+        "clippy::items_after_statements",
+        "clippy::manual_range_contains",
+        "clippy::needless_raw_string_hashes",
+        "clippy::redundant_closure_for_method_calls",
+        "clippy::too_many_lines",
+        "clippy::unnecessary_map_or",
+        "clippy::useless_format"
+      ]
+    },
+    {
+      "package": "polkagent-executor-anthropic",
+      "diagnostics": 5,
+      "owner_hint": "executor_adapter_batch",
+      "lints": [
+        "clippy::cast_possible_truncation",
+        "clippy::map_unwrap_or",
+        "clippy::match_same_arms",
+        "clippy::struct_field_names"
+      ]
+    },
+    {
+      "package": "polkagent-executor-gemini",
+      "diagnostics": 6,
+      "owner_hint": "executor_adapter_batch",
+      "lints": [
+        "clippy::cast_possible_truncation",
+        "clippy::map_unwrap_or",
+        "clippy::match_same_arms",
+        "clippy::needless_pass_by_value",
+        "clippy::struct_field_names"
+      ]
+    },
+    {
+      "package": "polkagent-executor-local",
+      "diagnostics": 21,
+      "owner_hint": "executor_adapter_batch",
+      "lints": [
+        "clippy::assigning_clones",
+        "clippy::cast_possible_truncation",
+        "clippy::doc_markdown",
+        "clippy::map_unwrap_or",
+        "clippy::match_same_arms",
+        "clippy::needless_pass_by_value"
+      ]
+    },
+    {
+      "package": "polkagent-executor-openai",
+      "diagnostics": 37,
+      "owner_hint": "executor_adapter_batch",
+      "lints": [
+        "clippy::assigning_clones",
+        "clippy::cast_possible_truncation",
+        "clippy::doc_markdown",
+        "clippy::if_not_else",
+        "clippy::map_unwrap_or",
+        "clippy::match_same_arms",
+        "clippy::needless_pass_by_value",
+        "clippy::struct_field_names"
+      ]
+    },
+    {
+      "package": "polkagent-executor-openrouter",
+      "diagnostics": 32,
+      "owner_hint": "executor_adapter_batch",
+      "lints": [
+        "clippy::assigning_clones",
+        "clippy::cast_possible_truncation",
+        "clippy::doc_markdown",
+        "clippy::if_not_else",
+        "clippy::map_unwrap_or",
+        "clippy::match_same_arms",
+        "clippy::needless_pass_by_value",
+        "clippy::ref_option",
+        "clippy::struct_field_names"
+      ]
+    },
+    {
+      "package": "polkagent-group",
+      "diagnostics": 17,
+      "owner_hint": "safe_parallel",
+      "lints": [
+        "clippy::cast_possible_truncation",
+        "clippy::cast_precision_loss",
+        "clippy::cast_sign_loss",
+        "clippy::doc_markdown",
+        "clippy::map_unwrap_or",
+        "clippy::match_same_arms"
+      ]
+    },
+    {
+      "package": "polkagent-harness-acp",
+      "diagnostics": 19,
+      "owner_hint": "harness_adapter_batch",
+      "lints": [
+        "clippy::doc_markdown",
+        "clippy::expect_used",
+        "clippy::missing_fields_in_debug",
+        "clippy::needless_pass_by_value",
+        "clippy::unnecessary_lazy_evaluations"
+      ]
+    },
+    {
+      "package": "polkagent-harness-claude",
+      "diagnostics": 25,
+      "owner_hint": "harness_adapter_batch",
+      "lints": [
+        "clippy::cast_possible_truncation",
+        "clippy::cast_possible_wrap",
+        "clippy::expect_used",
+        "clippy::match_same_arms",
+        "clippy::missing_fields_in_debug",
+        "clippy::unnecessary_lazy_evaluations"
+      ]
+    },
+    {
+      "package": "polkagent-harness-codex",
+      "diagnostics": 46,
+      "owner_hint": "harness_adapter_batch",
+      "lints": [
+        "clippy::cast_possible_truncation",
+        "clippy::cast_possible_wrap",
+        "clippy::derivable_impls",
+        "clippy::doc_markdown",
+        "clippy::expect_used",
+        "clippy::manual_let_else",
+        "clippy::match_same_arms",
+        "clippy::missing_fields_in_debug",
+        "clippy::redundant_closure_for_method_calls",
+        "clippy::single_match_else",
+        "clippy::too_many_lines",
+        "clippy::unnecessary_lazy_evaluations"
+      ]
+    },
+    {
+      "package": "polkagent-run",
+      "diagnostics": 96,
+      "owner_hint": "integration_owner_only",
+      "lints": [
+        "clippy::cast_possible_truncation",
+        "clippy::cast_possible_wrap",
+        "clippy::cast_precision_loss",
+        "clippy::clone_on_copy",
+        "clippy::doc_markdown",
+        "clippy::expect_used",
+        "clippy::map_unwrap_or",
+        "clippy::match_same_arms",
+        "clippy::needless_pass_by_value",
+        "clippy::redundant_closure",
+        "clippy::redundant_closure_for_method_calls",
+        "clippy::too_many_lines",
+        "clippy::unnecessary_map_or",
+        "clippy::unused_async",
+        "clippy::unused_self"
+      ]
+    },
+    {
+      "package": "polkagent-store-sqlite",
+      "diagnostics": 97,
+      "owner_hint": "integration_owner_only",
+      "lints": [
+        "clippy::cast_lossless",
+        "clippy::cast_possible_truncation",
+        "clippy::cast_possible_wrap",
+        "clippy::cast_sign_loss",
+        "clippy::doc_markdown",
+        "clippy::map_unwrap_or",
+        "clippy::match_same_arms",
+        "clippy::needless_pass_by_value",
+        "clippy::redundant_closure",
+        "clippy::redundant_closure_for_method_calls",
+        "clippy::uninlined_format_args",
+        "clippy::unused_self"
+      ]
+    },
+    {
+      "package": "polkagent-tool",
+      "diagnostics": 21,
+      "owner_hint": "safe_parallel",
+      "lints": [
+        "clippy::cast_possible_truncation",
+        "clippy::derivable_impls",
+        "clippy::doc_markdown",
+        "clippy::expect_used",
+        "clippy::map_unwrap_or",
+        "clippy::redundant_closure_for_method_calls",
+        "clippy::similar_names",
+        "clippy::single_match",
+        "clippy::uninlined_format_args",
+        "clippy::unnecessary_map_or",
+        "clippy::unused_self"
+      ]
+    }
+  ]
+}

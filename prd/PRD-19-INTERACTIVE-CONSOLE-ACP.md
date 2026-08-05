@@ -1,7 +1,7 @@
 # PRD-19 — Interactive Polkagent: TUI, Terminal Sessions, Orchestration, and ACP
 
-**Status:** active architecture and implementation plan; initial ACP server and
-actionable TUI slices implemented
+**Status:** active architecture and implementation plan; initial ACP server,
+actionable TUI, and shared interaction-contract slices implemented
 
 **Prepared:** 2026-08-05
 
@@ -10,12 +10,13 @@ actionable TUI slices implemented
 **Implementation status:** `polkagent-surface-acp` and protocol-safe
 `polkagent acp` dispatch implement an ACP v1 initialize/new/prompt/cancel slice,
 slash-command discovery, agent selection, and `AppService`-backed prompts. An
-official-SDK subprocess test proves that wire path. The F9 Console now supports
-selecting an active agent, composing a prompt, starting a durable run through
-the same bootstrap as `polkagent run`, viewing live output/progress/usage, and
-cancelling it. Both remain bounded adapters: durable sessions, a shared
-interaction/runtime composition, structured tools and permissions, and manual
-Zed validation remain open.
+official-SDK subprocess suite proves prompt/run, active-request cancellation,
+durable terminal state, and protocol-stdout safety on that wire path. The F9
+Console now supports selecting an active agent, composing a prompt, starting a
+durable run through the same bootstrap as `polkagent run`, viewing live
+output/progress/usage, and cancelling it. Both remain bounded adapters: durable
+sessions, a shared interaction/runtime implementation, structured tools and
+permissions, and manual Zed validation remain open.
 
 The first bounded FND-02 contract slice is also implemented in the domain-only
 `polkagent-interaction` crate: shared IDs/config/requests/handles, structured

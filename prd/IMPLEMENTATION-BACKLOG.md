@@ -53,21 +53,31 @@ defects behind broad crate-level allowances.
 
 **Current evidence:** checks, tests, exact Rust 1.89 compilation, formatting,
 and strict rustdoc pass, but the mandatory Clippy job fails across many
-pre-existing crates. The first failure wave includes signer/executor
-conformance helpers, config, memory, metadata, payment, and rate-limit code;
-test-only `expect`/`unwrap` policy also needs an explicit consistent decision.
+pre-existing crates. Completed batches cover config,
+signer/executor/store/harness traits, identity, chain-fake, conversation,
+rate-limit, payment, metadata, event, audit, outbox, effect, scheduler,
+executor-fake, skill, memory, retry, and telemetry. The post-integration exact
+command now reaches 14 remaining packages and 465 diagnostics;
+[`QA-01-CLIPPY-INVENTORY.json`](QA-01-CLIPPY-INVENTORY.json) records the
+machine-readable crate/lint partition at commit `97a9147`.
+
+**Test/conformance lint policy:** production code must recover, propagate, or
+prove an invariant rather than panic. Assertion-oriented test and reusable
+conformance modules may use `expect`/`unwrap` only under a module- or
+target-local allowance with a concrete reason; never add a workspace- or
+crate-wide exception to make a batch green.
 
 **Checklist:**
 
 - [x] Align the declared and CI-tested MSRV at Rust 1.89.
 - [x] Clear current workspace rustdoc warnings.
-- [ ] Enforce `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` in
+- [x] Enforce `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` in
   CI.
-- [ ] Capture a machine-readable crate/lint inventory from the exact CI
+- [x] Capture a machine-readable crate/lint inventory from the exact CI
   command and partition it into independently owned crate batches.
 - [ ] Fix production-code correctness/style diagnostics rather than adding
   workspace-wide allowances.
-- [ ] Decide and document the narrow test/conformance policy for
+- [x] Decide and document the narrow test/conformance policy for
   `expect_used`/`unwrap_used`; scope any allowances to test or conformance
   modules with reasons.
 - [ ] Keep `cargo +1.89 check --workspace --locked`, strict rustdoc, and the
@@ -143,9 +153,9 @@ wiring, so this checkpoint is not FND-02 completion.
 - [x] Define one typed parser, catalog, availability model, and output contract
   for `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`,
   `/inspect`, `/cancel`, `/approve`, `/deny`, and `/model`.
-- [ ] Implement and wire the typed command handlers for `/help`, `/status`, `/agents`,
-  `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/cancel`, `/approve`,
-  `/deny`, and `/model`.
+- [ ] Implement and wire the typed command handlers for `/help`, `/status`,
+  `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/cancel`,
+  `/approve`, `/deny`, and `/model`.
 
 **Exit checks:** headless tests create, prompt, stream, cancel, restart, load,
 resume, approve, and deny without depending on CLI, Ratatui, Axum, or ACP types.

@@ -12,6 +12,8 @@ crate count as the current roadmap.
    current worktree.
 3. [`IMPLEMENTATION-BACKLOG.md`](IMPLEMENTATION-BACKLOG.md) — dependency-ordered
    work packets, acceptance gates, and parallel-agent lanes.
+   [`QA-01-CLIPPY-INVENTORY.json`](QA-01-CLIPPY-INVENTORY.json) is the current
+   machine-readable partition for the remaining mandatory lint work.
 4. The relevant normative PRD from PRD-01 through PRD-15.
 5. The active delivery PRDs:
    [`PRD-17-LOCAL-TESTNET-E2E.md`](PRD-17-LOCAL-TESTNET-E2E.md) and
