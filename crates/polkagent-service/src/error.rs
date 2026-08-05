@@ -76,6 +76,13 @@ pub enum ServiceError {
         message: String,
     },
 
+    /// The selected execution backend cannot preserve the requested input.
+    #[error("unsupported operation: {message}")]
+    Unsupported {
+        /// Human-readable description of the unsupported input or operation.
+        message: String,
+    },
+
     /// The event subsystem returned an error.
     #[error("event error: {message}")]
     Event {
@@ -145,6 +152,7 @@ impl From<polkagent_run::RunError> for ServiceError {
             polkagent_run::RunError::HarnessValidation(msg) => Self::Internal {
                 message: format!("harness validation error: {msg}"),
             },
+            polkagent_run::RunError::Unsupported(message) => Self::Unsupported { message },
         }
     }
 }

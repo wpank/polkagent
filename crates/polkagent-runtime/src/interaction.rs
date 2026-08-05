@@ -12,6 +12,9 @@ use polkagent_conversation::{
 };
 use polkagent_core::event::{EventCorrelation, EventKind, RunEvent};
 use polkagent_core::{AgentId, ConversationId, EventId, RunId, RunState};
+use polkagent_executor_trait::{
+    ContentBlock, InferenceMessage, MessageRole as InferenceMessageRole,
+};
 use polkagent_interaction::{
     BoxInteractionEventStream, ConfigOptionValue, ConfigUpdate, CreateInteractionRequest,
     InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
@@ -20,16 +23,20 @@ use polkagent_interaction::{
     InteractionTarget, InteractionTranscriptTurn, InteractionTurnId, ListInteractionsRequest,
     NewAssistantMessage, NewInteraction, NewInteractionEvent, NewInteractionTurn, OverrideValue,
     PromptRequest, RunRole, StartedTurn, StoredTranscriptMessage, StoredTranscriptRole,
-    StoredTranscriptTurn, SubscriptionRequest, TranscriptRequest, TurnResult, TurnSummary,
-    UsageView,
+    StoredTranscriptTurn, SubscriptionRequest, TranscriptRequest, TurnResult, TurnState,
+    TurnSummary, UsageView,
 };
-use polkagent_service::AppService;
+use polkagent_service::{AppService, ServiceError};
 use polkagent_store_sqlite::{SqliteInteractionStore, SqlitePool, SqliteRunStore};
 use polkagent_store_trait::event::{EventStore, StoredEvent};
 use polkagent_store_trait::RunStore;
 use uuid::Uuid;
 
 const INTERACTION_STREAM_CAPACITY: usize = 256;
+/// Maximum number of completed user/assistant pairs sent to a model executor.
+const MAX_MODEL_CONTEXT_TURNS: usize = 32;
+/// Maximum recent durable turn records inspected when selecting context.
+const MAX_MODEL_CONTEXT_SCAN_TURNS: u32 = 1_000;
 const USER_MESSAGE_DISCRIMINATOR: u8 = 0x31;
 const ASSISTANT_MESSAGE_DISCRIMINATOR: u8 = 0x52;
 const INITIAL_EVENT_DISCRIMINATOR: u8 = 0x73;
@@ -47,6 +54,7 @@ struct NewTurnStart {
     agent_id: AgentId,
     config: InteractionConfig,
     prompt: String,
+    messages: Vec<InferenceMessage>,
 }
 
 /// Production [`InteractionService`] backed by the shared `AppService`,
@@ -351,6 +359,64 @@ impl DurableInteractionService {
             .collect()
     }
 
+    /// Assemble bounded model context without rendering role-tagged strings.
+    ///
+    /// Only completed durable turns are eligible. Failed, cancelled, and
+    /// timed-out turns are omitted as whole user/assistant pairs, including
+    /// any partial assistant output. From the latest 1,000 prior records, the
+    /// newest 32 completed pairs are retained in chronological order. The
+    /// current user message is then appended exactly once.
+    async fn model_context_messages(
+        &self,
+        conversation_id: ConversationId,
+        prior_turn_count: usize,
+        current_prompt: &str,
+    ) -> Result<Vec<InferenceMessage>, InteractionError> {
+        let prior_turn_count = u32::try_from(prior_turn_count)
+            .map_err(|_| internal_error("interaction turn count exceeds supported range"))?;
+        let scan_count = prior_turn_count.min(MAX_MODEL_CONTEXT_SCAN_TURNS);
+        let transcript = if scan_count == 0 {
+            Vec::new()
+        } else {
+            self.transcript_page(TranscriptRequest {
+                conversation_id,
+                limit: scan_count,
+                offset: prior_turn_count.saturating_sub(scan_count),
+            })
+            .await?
+        };
+        let completed = transcript
+            .into_iter()
+            .filter(|turn| turn.turn.state == TurnState::Completed)
+            .collect::<Vec<_>>();
+        let retained_from = completed.len().saturating_sub(MAX_MODEL_CONTEXT_TURNS);
+        let mut messages = Vec::with_capacity(
+            completed
+                .len()
+                .saturating_sub(retained_from)
+                .saturating_mul(2)
+                .saturating_add(1),
+        );
+        for turn in completed.into_iter().skip(retained_from) {
+            let assistant_text = turn.assistant_text.ok_or_else(|| {
+                internal_error("completed interaction context is missing assistant output")
+            })?;
+            messages.push(inference_text_message(
+                InferenceMessageRole::User,
+                turn.user_text,
+            ));
+            messages.push(inference_text_message(
+                InferenceMessageRole::Assistant,
+                assistant_text,
+            ));
+        }
+        messages.push(inference_text_message(
+            InferenceMessageRole::User,
+            current_prompt.to_owned(),
+        ));
+        Ok(messages)
+    }
+
     async fn retry_existing_turn(
         &self,
         existing: &polkagent_interaction::StoredInteractionTurn,
@@ -484,7 +550,11 @@ impl DurableInteractionService {
             input.turn_id,
             run_id,
         ));
-        if let Err(error) = self.app.execute_prepared_run(prepared, &input.prompt).await {
+        if let Err(error) = self
+            .app
+            .execute_prepared_run_with_messages(prepared, input.messages)
+            .await
+        {
             match self
                 .app
                 .terminalize_run_failure(run_id, "interaction run activation failed")
@@ -873,6 +943,9 @@ impl InteractionService for DurableInteractionService {
         let ordinal = u32::try_from(turns.len())
             .map_err(|_| internal_error("interaction turn count exceeds supported range"))?
             .saturating_add(1);
+        let messages = self
+            .model_context_messages(request.conversation_id, turns.len(), &prompt)
+            .await?;
         self.start_new_turn(NewTurnStart {
             conversation_id: request.conversation_id,
             turn_id,
@@ -880,6 +953,7 @@ impl InteractionService for DurableInteractionService {
             agent_id,
             config,
             prompt,
+            messages,
         })
         .await
     }
@@ -1046,6 +1120,13 @@ fn correlated_plain_text(
     Ok((text, message.token_count))
 }
 
+fn inference_text_message(role: InferenceMessageRole, text: String) -> InferenceMessage {
+    InferenceMessage {
+        role,
+        content: vec![ContentBlock::Text { text }],
+    }
+}
+
 fn prompt_text(content: &[InteractionContent]) -> Result<String, InteractionError> {
     let mut text = Vec::with_capacity(content.len());
     for block in content {
@@ -1178,8 +1259,14 @@ fn conversation_error(context: &str, error: &impl std::fmt::Display) -> Interact
     internal_error(&format!("{context}: durable transcript operation failed"))
 }
 
-fn service_error(context: &str, error: &impl std::fmt::Display) -> InteractionError {
+fn service_error(context: &str, error: &ServiceError) -> InteractionError {
     tracing::error!(%error, context, "interaction runtime operation failed");
+    if let ServiceError::Unsupported { message } = error {
+        return InteractionError::new(
+            InteractionErrorCode::Unsupported,
+            format!("{context}: {message}"),
+        );
+    }
     InteractionError::new(
         InteractionErrorCode::Unavailable,
         format!("{context}: shared runtime operation failed"),
@@ -1193,20 +1280,118 @@ fn service_error(context: &str, error: &impl std::fmt::Display) -> InteractionEr
 )]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
+    use futures::Stream;
     use polkagent_config::Config;
     use polkagent_conversation::{types::Conversation, ConversationStore};
     use polkagent_core::{AgentSpec, ApprovalId, EventId};
     use polkagent_event::{EventBus, EventRecorder};
     use polkagent_executor_fake::FakeExecutor;
+    use polkagent_executor_trait::ModelExecutor;
+    use polkagent_harness_trait::{
+        CancelMode, Harness, HarnessCapabilities, HarnessError, HarnessEvent, HarnessId,
+        HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
+    };
     use polkagent_interaction::{
         ClientContext, ConfigOption, CreateInteractionRequest, InteractionOverrides,
-        InteractionTurnId, TurnState,
+        InteractionTurnId,
     };
     use polkagent_store_sqlite::migrations;
     use polkagent_store_trait::{RunStatus, StoreError};
 
     use super::*;
+
+    struct NeverCalledHarness {
+        id: HarnessId,
+        calls: AtomicU64,
+    }
+
+    impl NeverCalledHarness {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                id: HarnessId::new("never-called"),
+                calls: AtomicU64::new(0),
+            })
+        }
+
+        fn call_count(&self) -> u64 {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        fn called(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl Harness for NeverCalledHarness {
+        fn id(&self) -> &HarnessId {
+            &self.id
+        }
+
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                supports_streaming: false,
+                supports_tools: false,
+                supports_sessions: false,
+                max_context_tokens: 0,
+                models: Vec::new(),
+                transport: None,
+                model_override: None,
+                session_resume: SessionResumeMode::default(),
+                mcp_passthrough: McpMode::default(),
+                tool_injection: ToolInjection::default(),
+                cancel: CancelMode::default(),
+                multiplex_safe: false,
+            }
+        }
+
+        fn status(&self) -> HarnessStatus {
+            HarnessStatus::Idle
+        }
+
+        async fn start_session(&self, _config: SessionConfig) -> Result<SessionId, HarnessError> {
+            self.called();
+            Err(HarnessError::Internal {
+                message: "must not start contextual harness session".to_owned(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            _session_id: SessionId,
+            _message: &str,
+        ) -> Result<(), HarnessError> {
+            self.called();
+            Err(HarnessError::Internal {
+                message: "must not send contextual harness message".to_owned(),
+            })
+        }
+
+        async fn receive_events(
+            &self,
+            _session_id: SessionId,
+        ) -> Result<std::pin::Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>, HarnessError>
+        {
+            self.called();
+            Err(HarnessError::Internal {
+                message: "must not receive contextual harness events".to_owned(),
+            })
+        }
+
+        async fn end_session(&self, _session_id: SessionId) -> Result<(), HarnessError> {
+            self.called();
+            Err(HarnessError::Internal {
+                message: "must not end contextual harness session".to_owned(),
+            })
+        }
+
+        async fn health(&self) -> Result<bool, HarnessError> {
+            self.called();
+            Ok(true)
+        }
+    }
 
     fn test_pool() -> SqlitePool {
         let pool = SqlitePool::open_in_memory().expect("open SQLite fixture");
@@ -1259,6 +1444,94 @@ mod tests {
         app.create_agent(spec).expect("register agent");
         let service = DurableInteractionService::new(Arc::clone(&app), pool.clone());
         (app, service, bus)
+    }
+
+    fn test_service_with_executor(
+        pool: &SqlitePool,
+        spec: AgentSpec,
+        executor: Arc<dyn ModelExecutor>,
+    ) -> (Arc<AppService>, DurableInteractionService, EventBus) {
+        let bus = EventBus::new(32);
+        let shared = Arc::new(pool.clone());
+        let recorder = EventRecorder::new(shared.clone(), bus.clone());
+        let app = Arc::new(
+            AppService::builder()
+                .with_config(Config::default())
+                .with_executor(executor)
+                .with_run_store(shared.clone())
+                .with_effect_store(shared.clone())
+                .with_conversation_store(shared.clone())
+                .with_payment_store(shared)
+                .with_event_bus(bus.clone())
+                .with_event_recorder(recorder)
+                .build()
+                .expect("build app service"),
+        );
+        app.create_agent(spec).expect("register agent");
+        let service = DurableInteractionService::new(Arc::clone(&app), pool.clone());
+        (app, service, bus)
+    }
+
+    fn test_service_with_harness(
+        pool: &SqlitePool,
+        spec: AgentSpec,
+        harness: Arc<dyn Harness>,
+    ) -> (Arc<AppService>, DurableInteractionService, EventBus) {
+        let bus = EventBus::new(32);
+        let shared = Arc::new(pool.clone());
+        let recorder = EventRecorder::new(shared.clone(), bus.clone());
+        let app = Arc::new(
+            AppService::builder()
+                .with_config(Config::default())
+                .with_harness(harness)
+                .with_run_store(shared.clone())
+                .with_effect_store(shared.clone())
+                .with_conversation_store(shared.clone())
+                .with_payment_store(shared)
+                .with_event_bus(bus.clone())
+                .with_event_recorder(recorder)
+                .build()
+                .expect("build harness app service"),
+        );
+        app.create_agent(spec).expect("register agent");
+        let service = DurableInteractionService::new(Arc::clone(&app), pool.clone());
+        (app, service, bus)
+    }
+
+    fn prompt_request(
+        conversation_id: ConversationId,
+        turn_id: InteractionTurnId,
+        text: &str,
+    ) -> PromptRequest {
+        PromptRequest {
+            turn_id: Some(turn_id),
+            conversation_id,
+            content: vec![InteractionContent::Text {
+                text: text.to_owned(),
+            }],
+            config_overrides: InteractionOverrides::default(),
+            client_context: ClientContext::new(PathBuf::from("/tmp")).expect("client context"),
+        }
+    }
+
+    async fn wait_for_terminal(started: &mut StartedTurn) -> InteractionEvent {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let event = started.events.recv().await.expect("interaction event");
+                if event.event.is_terminal() {
+                    return event.event;
+                }
+            }
+        })
+        .await
+        .expect("terminal interaction event")
+    }
+
+    fn inference_message_text(message: &InferenceMessage) -> &str {
+        match message.content.as_slice() {
+            [ContentBlock::Text { text }] => text,
+            other => panic!("expected one text block, got {other:?}"),
+        }
     }
 
     async fn seed_interaction(
@@ -1395,6 +1668,252 @@ mod tests {
             }
         }
         store.load_turn(turn_id).await.expect("reload seeded turn")
+    }
+
+    #[tokio::test]
+    async fn follow_up_after_restart_preserves_roles_and_retry_does_not_duplicate_prompt() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let executor = FakeExecutor::new();
+        let erased: Arc<dyn ModelExecutor> = executor.clone();
+        let (app, service, _bus) = test_service_with_executor(&pool, spec, erased);
+        let conversation_id = ConversationId::new();
+        seed_interaction(&pool, agent_id, conversation_id).await;
+
+        let first_turn_id = InteractionTurnId::new();
+        let first_request = prompt_request(conversation_id, first_turn_id, "first user");
+        let mut first = service
+            .prompt(first_request.clone())
+            .await
+            .expect("start first prompt");
+        assert!(matches!(
+            wait_for_terminal(&mut first).await,
+            InteractionEvent::TurnCompleted { .. }
+        ));
+        assert_eq!(executor.call_count(), 1);
+
+        let restarted = DurableInteractionService::new(app, pool);
+        let retry = restarted
+            .prompt(first_request)
+            .await
+            .expect("retry completed prompt");
+        assert_eq!(retry.handle, first.handle);
+        assert_eq!(executor.call_count(), 1, "retry must not call the model");
+
+        let mut follow_up = restarted
+            .prompt(prompt_request(
+                conversation_id,
+                InteractionTurnId::new(),
+                "second user",
+            ))
+            .await
+            .expect("start follow-up");
+        assert!(matches!(
+            wait_for_terminal(&mut follow_up).await,
+            InteractionEvent::TurnCompleted { .. }
+        ));
+        assert_eq!(executor.call_count(), 2);
+        let request = executor.last_request().expect("captured follow-up request");
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .map(|message| message.role)
+                .collect::<Vec<_>>(),
+            vec![
+                InferenceMessageRole::User,
+                InferenceMessageRole::Assistant,
+                InferenceMessageRole::User,
+            ]
+        );
+        assert_eq!(inference_message_text(&request.messages[0]), "first user");
+        assert_eq!(
+            inference_message_text(&request.messages[1]),
+            "I am a fake assistant"
+        );
+        assert_eq!(inference_message_text(&request.messages[2]), "second user");
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .filter(|message| inference_message_text(message) == "second user")
+                .count(),
+            1,
+            "the current prompt must be appended exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn contextual_execution_excludes_failed_and_cancelled_partial_turns() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let executor = FakeExecutor::new();
+        let erased: Arc<dyn ModelExecutor> = executor.clone();
+        let (_app, service, _bus) = test_service_with_executor(&pool, spec, erased);
+        let conversation_id = ConversationId::new();
+        let store = seed_interaction(&pool, agent_id, conversation_id).await;
+        for (ordinal, outcome, assistant) in [
+            (1, TranscriptOutcome::Completed, "assistant-1"),
+            (2, TranscriptOutcome::Failed, "failed partial"),
+            (3, TranscriptOutcome::Cancelled, "cancelled partial"),
+            (4, TranscriptOutcome::Completed, "assistant-4"),
+        ] {
+            seed_transcript_turn(
+                &pool,
+                &store,
+                agent_id,
+                conversation_id,
+                ordinal,
+                outcome,
+                assistant,
+            )
+            .await;
+        }
+
+        let mut started = service
+            .prompt(prompt_request(
+                conversation_id,
+                InteractionTurnId::new(),
+                "current user",
+            ))
+            .await
+            .expect("start contextual prompt");
+        wait_for_terminal(&mut started).await;
+        let request = executor
+            .last_request()
+            .expect("captured contextual request");
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .map(inference_message_text)
+                .collect::<Vec<_>>(),
+            vec![
+                "user-1",
+                "assistant-1",
+                "user-4",
+                "assistant-4",
+                "current user",
+            ]
+        );
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .map(|message| message.role)
+                .collect::<Vec<_>>(),
+            vec![
+                InferenceMessageRole::User,
+                InferenceMessageRole::Assistant,
+                InferenceMessageRole::User,
+                InferenceMessageRole::Assistant,
+                InferenceMessageRole::User,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_follow_up_is_unsupported_and_terminalizes_without_invocation() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let harness = NeverCalledHarness::new();
+        let erased: Arc<dyn Harness> = harness.clone();
+        let (_app, service, _bus) = test_service_with_harness(&pool, spec, erased);
+        let conversation_id = ConversationId::new();
+        let store = seed_interaction(&pool, agent_id, conversation_id).await;
+        seed_transcript_turn(
+            &pool,
+            &store,
+            agent_id,
+            conversation_id,
+            1,
+            TranscriptOutcome::Completed,
+            "prior assistant",
+        )
+        .await;
+
+        let error = service
+            .prompt(prompt_request(
+                conversation_id,
+                InteractionTurnId::new(),
+                "contextual follow-up",
+            ))
+            .await
+            .expect_err("harness history must fail explicitly");
+        assert_eq!(error.code, InteractionErrorCode::Unsupported);
+        assert!(error.message.contains("role-safely"));
+        assert_eq!(harness.call_count(), 0, "harness must not be invoked");
+
+        let turns = store
+            .list_turns(conversation_id)
+            .await
+            .expect("load durable turns");
+        assert_eq!(turns.len(), 2);
+        let failed = &turns[1];
+        assert_eq!(failed.summary.state, TurnState::Failed);
+        let run = RunStore::get(&pool, failed.runs[0].run_id)
+            .await
+            .expect("load linked rejected run");
+        assert!(
+            run.status.as_str().starts_with("failed"),
+            "rejected run must not remain created: {:?}",
+            run.status
+        );
+    }
+
+    #[tokio::test]
+    async fn contextual_execution_truncates_only_on_complete_turn_boundaries() {
+        let pool = test_pool();
+        let (agent_id, spec) = seed_agent(&pool);
+        let executor = FakeExecutor::new();
+        let erased: Arc<dyn ModelExecutor> = executor.clone();
+        let (_app, service, _bus) = test_service_with_executor(&pool, spec, erased);
+        let conversation_id = ConversationId::new();
+        let store = seed_interaction(&pool, agent_id, conversation_id).await;
+        for ordinal in 1..=35 {
+            seed_transcript_turn(
+                &pool,
+                &store,
+                agent_id,
+                conversation_id,
+                ordinal,
+                TranscriptOutcome::Completed,
+                &format!("assistant-{ordinal}"),
+            )
+            .await;
+        }
+
+        let mut started = service
+            .prompt(prompt_request(
+                conversation_id,
+                InteractionTurnId::new(),
+                "current user",
+            ))
+            .await
+            .expect("start truncated prompt");
+        wait_for_terminal(&mut started).await;
+        let request = executor.last_request().expect("captured truncated request");
+        assert_eq!(request.messages.len(), MAX_MODEL_CONTEXT_TURNS * 2 + 1);
+        assert_eq!(inference_message_text(&request.messages[0]), "user-4");
+        assert_eq!(inference_message_text(&request.messages[1]), "assistant-4");
+        assert_eq!(
+            inference_message_text(&request.messages[request.messages.len() - 2]),
+            "assistant-35"
+        );
+        assert_eq!(
+            inference_message_text(&request.messages[request.messages.len() - 1]),
+            "current user"
+        );
+        assert!(request
+            .messages
+            .iter()
+            .enumerate()
+            .all(|(index, message)| message.role
+                == if index % 2 == 0 {
+                    InferenceMessageRole::User
+                } else {
+                    InferenceMessageRole::Assistant
+                }));
     }
 
     #[tokio::test]

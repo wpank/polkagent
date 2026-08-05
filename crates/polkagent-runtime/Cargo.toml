@@ -50,6 +50,7 @@ uuid       = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 rusqlite = { workspace = true }
+futures = { workspace = true }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 
 [lints]

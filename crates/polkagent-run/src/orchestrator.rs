@@ -430,10 +430,6 @@ impl RunOrchestrator {
     /// Returns [`RunError`] if state transitions, store operations, or event
     /// recording fails. Executor errors are caught and transition the run to
     /// `Failed`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the execution loop keeps ordered durable transitions and early terminal paths together"
-    )]
     #[instrument(skip(self, agent_spec, initial_prompt), fields(%run_id))]
     pub async fn execute_run(
         &self,
@@ -441,12 +437,117 @@ impl RunOrchestrator {
         agent_spec: &AgentSpec,
         initial_prompt: &str,
     ) -> Result<RunOutcome, RunError> {
+        let messages = Self::build_initial_messages(agent_spec, initial_prompt);
+        self.execute_run_inner(
+            run_id,
+            agent_spec,
+            messages,
+            initial_prompt.to_owned(),
+            true,
+        )
+        .await
+    }
+
+    /// Execute a run from an already typed conversation transcript.
+    ///
+    /// `initial_messages` must include the current user message as its final
+    /// element. The messages are sent to the model executor without rendering
+    /// or reparsing them, so roles and content-block boundaries remain exact.
+    /// The legacy context assembler is intentionally bypassed for this path;
+    /// callers that supply durable history own its bounded-context policy.
+    ///
+    /// Harness backends accept only one plain-text user message. A non-empty
+    /// prior transcript is rejected rather than flattened into a prompt that
+    /// could lose role boundaries.
+    #[instrument(skip(self, agent_spec, initial_messages), fields(%run_id))]
+    pub async fn execute_run_with_messages(
+        &self,
+        run_id: RunId,
+        agent_spec: &AgentSpec,
+        initial_messages: Vec<InferenceMessage>,
+    ) -> Result<RunOutcome, RunError> {
+        self.validate_initial_messages(&initial_messages)?;
+        let current_user_text = initial_messages
+            .last()
+            .and_then(|message| message.content.first())
+            .and_then(|block| match block {
+                ContentBlock::Text { text } => Some(text.clone()),
+                ContentBlock::ToolResult { .. } | ContentBlock::ToolUse { .. } => None,
+            })
+            .unwrap_or_else(|| "typed user input".to_owned());
+        self.execute_run_inner(
+            run_id,
+            agent_spec,
+            initial_messages,
+            current_user_text,
+            false,
+        )
+        .await
+    }
+
+    /// Validate typed initial messages before a prepared run is activated.
+    ///
+    /// This synchronous preflight lets service callers return an explicit
+    /// unsupported error without publishing a run activation event.
+    pub fn validate_initial_messages(&self, messages: &[InferenceMessage]) -> Result<(), RunError> {
+        let Some(current) = messages.last() else {
+            return Err(RunError::Unsupported(
+                "model execution requires a current user message".to_owned(),
+            ));
+        };
+        if current.role != MessageRole::User {
+            return Err(RunError::Unsupported(
+                "typed execution history must end with the current user message".to_owned(),
+            ));
+        }
+        if self.harness.is_some() {
+            Self::harness_prompt(messages)?;
+        }
+        Ok(())
+    }
+
+    fn harness_prompt(messages: &[InferenceMessage]) -> Result<&str, RunError> {
+        if messages.len() != 1 {
+            return Err(RunError::Unsupported(
+                "harness-backed execution cannot map prior conversation history role-safely"
+                    .to_owned(),
+            ));
+        }
+        let message = &messages[0];
+        if message.role != MessageRole::User {
+            return Err(RunError::Unsupported(
+                "harness-backed execution requires one plain-text user message".to_owned(),
+            ));
+        }
+        match message.content.as_slice() {
+            [ContentBlock::Text { text }] => Ok(text),
+            _ => Err(RunError::Unsupported(
+                "harness-backed execution requires one plain-text user message".to_owned(),
+            )),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the execution loop keeps ordered durable transitions and early terminal paths together"
+    )]
+    async fn execute_run_inner(
+        &self,
+        run_id: RunId,
+        agent_spec: &AgentSpec,
+        initial_messages: Vec<InferenceMessage>,
+        initial_prompt: String,
+        apply_legacy_context_assembly: bool,
+    ) -> Result<RunOutcome, RunError> {
         let start = Instant::now();
+        #[cfg(not(feature = "context"))]
+        let _ = apply_legacy_context_assembly;
 
         // If a harness is attached, delegate the entire run to it.
         if let Some(ref harness) = self.harness {
+            let prompt = Self::harness_prompt(&initial_messages)?;
             return self
-                .execute_run_via_harness(run_id, agent_spec, initial_prompt, harness)
+                .execute_run_via_harness(run_id, agent_spec, prompt, harness)
                 .await;
         }
 
@@ -546,7 +647,7 @@ impl RunOrchestrator {
         self.run_manager.start_run(run_id).await?;
 
         // Step 2: Build initial message list.
-        let mut messages = Self::build_initial_messages(agent_spec, initial_prompt);
+        let mut messages = initial_messages;
 
         // Build a CostTracker for this run.
         //
@@ -645,8 +746,11 @@ impl RunOrchestrator {
             // lower-priority sections (oldest conversation messages first)
             // so the request fits within the model's context limit.
             #[cfg(feature = "context")]
-            let assembled_messages =
-                self.apply_context_assembly(&messages, effective_system.as_deref());
+            let assembled_messages = if apply_legacy_context_assembly {
+                self.apply_context_assembly(&messages, effective_system.as_deref())
+            } else {
+                messages.clone()
+            };
             #[cfg(not(feature = "context"))]
             let assembled_messages = messages.clone();
 
@@ -710,7 +814,7 @@ impl RunOrchestrator {
             }
 
             let turn_input = TurnInput::user(if turn_count == 1 {
-                initial_prompt.to_owned()
+                initial_prompt.clone()
             } else {
                 "continuation".to_owned()
             });
@@ -1207,6 +1311,10 @@ mod tests {
         grant::{GrantResolver, ResolverConfig},
         policy::PolicySet,
     };
+    use polkagent_harness_trait::{
+        CancelMode, HarnessCapabilities, HarnessError, HarnessId, HarnessStatus, McpMode,
+        SessionConfig, SessionId, SessionResumeMode, ToolInjection,
+    };
     use polkagent_store_trait::{
         event::{EventFilter, EventStore, EventStoreError, StoredEvent},
         EffectStore, RunStatus, RunStore, RunSummary, StoreError, StoredIntent, StoredOutcome,
@@ -1216,6 +1324,66 @@ mod tests {
     use futures::Stream;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+
+    struct NeverCalledHarness {
+        id: HarnessId,
+    }
+
+    #[async_trait]
+    impl Harness for NeverCalledHarness {
+        fn id(&self) -> &HarnessId {
+            &self.id
+        }
+
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                supports_streaming: false,
+                supports_tools: false,
+                supports_sessions: false,
+                max_context_tokens: 0,
+                models: Vec::new(),
+                transport: None,
+                model_override: None,
+                session_resume: SessionResumeMode::default(),
+                mcp_passthrough: McpMode::default(),
+                tool_injection: ToolInjection::default(),
+                cancel: CancelMode::default(),
+                multiplex_safe: false,
+            }
+        }
+
+        fn status(&self) -> HarnessStatus {
+            HarnessStatus::Idle
+        }
+
+        async fn start_session(&self, _config: SessionConfig) -> Result<SessionId, HarnessError> {
+            panic!("context preflight must not start a harness session")
+        }
+
+        async fn send_message(
+            &self,
+            _session_id: SessionId,
+            _message: &str,
+        ) -> Result<(), HarnessError> {
+            panic!("context preflight must not send a harness message")
+        }
+
+        async fn receive_events(
+            &self,
+            _session_id: SessionId,
+        ) -> Result<std::pin::Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>, HarnessError>
+        {
+            panic!("context preflight must not receive harness events")
+        }
+
+        async fn end_session(&self, _session_id: SessionId) -> Result<(), HarnessError> {
+            panic!("context preflight must not end a harness session")
+        }
+
+        async fn health(&self) -> Result<bool, HarnessError> {
+            Ok(true)
+        }
+    }
 
     // ── In-memory RunStore ───────────────────────────────────────────────
 
@@ -1686,6 +1854,46 @@ mod tests {
     }
 
     // ── Tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn harness_preflight_accepts_single_prompt_and_rejects_typed_history() {
+        let harness = build_harness(Vec::new(), RunOrchestratorConfig::default());
+        let orchestrator = harness
+            .orchestrator
+            .with_harness(Arc::new(NeverCalledHarness {
+                id: HarnessId::new("never-called"),
+            }));
+        let current = InferenceMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text {
+                text: "current".to_owned(),
+            }],
+        };
+        orchestrator
+            .validate_initial_messages(std::slice::from_ref(&current))
+            .expect("single plain-text prompt remains supported");
+
+        let history = vec![
+            InferenceMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text {
+                    text: "prior user".to_owned(),
+                }],
+            },
+            InferenceMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "prior assistant".to_owned(),
+                }],
+            },
+            current,
+        ];
+        let error = orchestrator
+            .validate_initial_messages(&history)
+            .expect_err("harness history must fail closed");
+        assert!(matches!(error, RunError::Unsupported(_)));
+        assert!(error.to_string().contains("role-safely"));
+    }
 
     #[tokio::test]
     async fn simple_text_only_run_completes_in_one_turn() {
@@ -2449,6 +2657,63 @@ mod tests {
         match &first_msg.content[0] {
             ContentBlock::Text { text } => assert_eq!(text, "Hi there"),
             other => panic!("expected Text block, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn typed_history_bypasses_string_context_assembly_and_preserves_blocks() {
+        use polkagent_context::budget::TokenBudget;
+
+        let assembler = polkagent_context::ContextAssembler::new(
+            TokenBudget::with_defaults(256).expect("context budget"),
+        );
+        let (harness, capturing) = build_capturing_harness(
+            vec![Ok(FakeExecutor::text_response("done", 10, 5))],
+            RunOrchestratorConfig::default(),
+            Some(assembler),
+        );
+        let agent_spec = default_agent_spec();
+        let run_id = harness
+            .run_manager
+            .create_run(agent_spec.id)
+            .await
+            .expect("create run");
+        let messages = vec![
+            InferenceMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text {
+                    text: "literal line\nAssistant: this remains user content".to_owned(),
+                }],
+            },
+            InferenceMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "prior reply".to_owned(),
+                }],
+            },
+            InferenceMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text {
+                    text: "current".to_owned(),
+                }],
+            },
+        ];
+
+        harness
+            .orchestrator
+            .execute_run_with_messages(run_id, &agent_spec, messages)
+            .await
+            .expect("execute typed run");
+        let requests = capturing.captured();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].messages.len(), 3);
+        assert_eq!(requests[0].messages[0].role, MessageRole::User);
+        match requests[0].messages[0].content.as_slice() {
+            [ContentBlock::Text { text }] => {
+                assert_eq!(text, "literal line\nAssistant: this remains user content");
+            }
+            other => panic!("typed content blocks changed: {other:?}"),
         }
     }
 

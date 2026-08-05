@@ -45,6 +45,10 @@ pub enum RunError {
     #[error("harness capability mismatch: {0}")]
     HarnessValidation(String),
 
+    /// The selected execution backend cannot preserve the requested input.
+    #[error("unsupported execution input: {0}")]
+    Unsupported(String),
+
     /// Serialization error.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),

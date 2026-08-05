@@ -20,7 +20,7 @@ use polkagent_core::{
     WorkerId,
 };
 use polkagent_event::{EventBus, EventReceiver, EventRecorder};
-use polkagent_executor_trait::ModelExecutor;
+use polkagent_executor_trait::{InferenceMessage, ModelExecutor};
 use polkagent_grant::{
     grant::{GrantResolver, ResolverConfig},
     policy::PolicySet,
@@ -464,14 +464,20 @@ impl AppServiceBuilder {
 /// A caller-identified run durably correlated to an interaction but not yet
 /// visible on the lifecycle event bus.
 ///
-/// Only [`AppService::execute_prepared_run`] can begin this work. Dropping the
-/// value leaves a recoverable `created` row; callers should use
+/// Only [`AppService::execute_prepared_run`] or
+/// [`AppService::execute_prepared_run_with_messages`] can begin this work.
+/// Dropping the value leaves a recoverable `created` row; callers should use
 /// [`AppService::discard_prepared_run`] when a later preparation step fails.
 #[derive(Debug, Clone)]
 pub struct PreparedRun {
     run_id: RunId,
     conversation_id: polkagent_core::ConversationId,
     agent_spec: AgentSpec,
+}
+
+enum PreparedRunExecution {
+    Prompt(String),
+    Messages(Vec<InferenceMessage>),
 }
 
 impl PreparedRun {
@@ -1048,17 +1054,59 @@ impl AppService {
         prepared: PreparedRun,
         prompt: &str,
     ) -> Result<RunId, ServiceError> {
+        self.execute_prepared_run_inner(prepared, PreparedRunExecution::Prompt(prompt.to_owned()))
+            .await
+    }
+
+    /// Publish and execute a prepared run with an exact typed transcript.
+    ///
+    /// The final message is the current user input. Model-executor runs keep
+    /// the supplied roles and blocks intact. Harness-backed runs reject prior
+    /// history explicitly because their string-only ingress cannot preserve
+    /// role boundaries; the existing one-user-prompt case remains supported.
+    pub async fn execute_prepared_run_with_messages(
+        &self,
+        prepared: PreparedRun,
+        messages: Vec<InferenceMessage>,
+    ) -> Result<RunId, ServiceError> {
+        self.execute_prepared_run_inner(prepared, PreparedRunExecution::Messages(messages))
+            .await
+    }
+
+    async fn execute_prepared_run_inner(
+        &self,
+        prepared: PreparedRun,
+        execution: PreparedRunExecution,
+    ) -> Result<RunId, ServiceError> {
         let run_id = prepared.run_id;
+        if let (Some(orchestrator), PreparedRunExecution::Messages(messages)) =
+            (&self.orchestrator, &execution)
+        {
+            if let Err(error) = orchestrator.validate_initial_messages(messages) {
+                self.run_manager
+                    .fail_prepared_run(run_id, &error.to_string())
+                    .await?;
+                return Err(error.into());
+            }
+        }
         self.run_manager.activate_prepared_run(run_id).await?;
 
         if let Some(orchestrator) = self.orchestrator.clone() {
-            let prompt = prompt.to_owned();
             let run_manager = self.run_manager.clone();
             tokio::spawn(async move {
-                match orchestrator
-                    .execute_run(run_id, &prepared.agent_spec, &prompt)
-                    .await
-                {
+                let result = match execution {
+                    PreparedRunExecution::Prompt(prompt) => {
+                        orchestrator
+                            .execute_run(run_id, &prepared.agent_spec, &prompt)
+                            .await
+                    }
+                    PreparedRunExecution::Messages(messages) => {
+                        orchestrator
+                            .execute_run_with_messages(run_id, &prepared.agent_spec, messages)
+                            .await
+                    }
+                };
+                match result {
                     Ok(outcome) => {
                         info!(
                             %run_id,
@@ -2322,6 +2370,36 @@ mod tests {
         let unknown_id = AgentId::new();
         let result = service.start_run(unknown_id, "test").await;
         assert!(matches!(result, Err(ServiceError::AgentNotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn unsupported_typed_preflight_terminalizes_the_prepared_run() {
+        let service = build_service();
+        let spec = make_spec("typed-preflight");
+        let agent_id = service.create_agent(spec.clone()).expect("create_agent");
+        let run_id = service
+            .run_manager
+            .create_run(agent_id)
+            .await
+            .expect("create prepared run");
+        let prepared = PreparedRun {
+            run_id,
+            conversation_id: polkagent_core::ConversationId::new(),
+            agent_spec: spec,
+        };
+
+        let error = service
+            .execute_prepared_run_with_messages(prepared, Vec::new())
+            .await
+            .expect_err("empty typed input must fail preflight");
+        assert!(matches!(error, ServiceError::Unsupported { .. }));
+        assert!(matches!(
+            service
+                .get_run_status(run_id)
+                .await
+                .expect("load terminalized prepared run"),
+            RunState::Failed { .. }
+        ));
     }
 
     /// When `max_concurrent_runs = 1` and a run is already in the `"running"`

@@ -3719,6 +3719,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dirs",
+ "futures",
  "polkagent-artifact",
  "polkagent-chain-fake",
  "polkagent-chain-subxt",
