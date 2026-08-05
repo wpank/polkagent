@@ -19,9 +19,9 @@ pub mod store;
 pub mod types;
 
 pub use local::{
-    InstallOutcome, InstalledPackage, LocalInstallPolicy, LocalPackageError, LocalPackageStore,
-    PackageCandidate, PackageKind, PackageProvenance, PackageVersion, ProvenanceStatus,
-    RollbackOutcome, UninstallOutcome, UpdateOutcome,
+    inspect_local_package, InstallOutcome, InstalledPackage, LocalInstallPolicy, LocalPackageError,
+    LocalPackageStore, PackageCandidate, PackageKind, PackageProvenance, PackageVersion,
+    ProvenanceStatus, RollbackOutcome, UninstallOutcome, UpdateOutcome,
 };
 pub use store::ServiceRegistryStore;
 pub use types::{

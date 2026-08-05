@@ -51,6 +51,7 @@ polkagent-harness-codex   = { path = "../polkagent-harness-codex" }
 polkagent-harness-cursor  = { path = "../polkagent-harness-cursor" }
 polkagent-harness-claude  = { path = "../polkagent-harness-claude" }
 polkagent-harness-acp     = { path = "../polkagent-harness-acp" }
+polkagent-marketplace     = { path = "../polkagent-marketplace" }
 futures                   = { workspace = true }
 
 # CLI
@@ -90,6 +91,7 @@ twox-hash = { workspace = true }
 
 # IDs
 uuid = { workspace = true }
+semver = { workspace = true }
 
 # Database (direct SQLite access for TUI data queries)
 rusqlite    = { workspace = true }

@@ -121,6 +121,10 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
         Some(Commands::Auth(cmd)) => ("auth", commands::auth::run(cmd)),
         Some(Commands::Network(cmd)) => ("network", commands::network::run(cmd).await),
         Some(Commands::Serve(cmd)) => ("serve", commands::serve::run(cmd).await),
+        Some(Commands::Package(cmd)) => (
+            "package",
+            commands::package::run(cmd, format, config_path.as_deref(), dry_run, yes),
+        ),
         _ => {
             // Suppress unused variable warnings for global flags not yet threaded
             // into all handlers. They are available for future use.
@@ -187,7 +191,8 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                     | Commands::Inspect(_)
                     | Commands::Auth(_)
                     | Commands::Network(_)
-                    | Commands::Serve(_),
+                    | Commands::Serve(_)
+                    | Commands::Package(_),
                 ) => unreachable!(),
             };
             (name, res)
@@ -214,7 +219,9 @@ fn finish_command(
         Ok(()) => {
             // When the user asked for JSON output via `--format`, emit a
             // success envelope so scripts can parse a consistent shape.
-            if matches!(format, OutputFormat::Json | OutputFormat::JsonPretty) {
+            if cmd_name != "package"
+                && matches!(format, OutputFormat::Json | OutputFormat::JsonPretty)
+            {
                 let envelope = serde_json::json!({ "ok": true });
                 println!("{}", output::format_output(&envelope, format, cmd_name));
             }

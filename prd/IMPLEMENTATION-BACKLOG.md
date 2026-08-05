@@ -353,8 +353,11 @@ separate files.
 - [x] Build a durable local plugin/kit install/list/update/history/rollback/
   uninstall store with immutable version content, atomic state replacement,
   cross-process locking, restart validation, idempotency, and BLAKE3 integrity.
-- [ ] Expose the local lifecycle through CLI/API surfaces and connect installed
-  packages to real runtime execution (`run`).
+- [x] Expose local install/list/get/update/rollback/uninstall through
+  `polkagent package` with structured output, dry-run inspection, explicit
+  store selection, and strict-versus-development trust policy.
+- [ ] Expose the lifecycle through the API and connect installed packages to
+  real runtime execution (`run`).
 - [ ] Implement actual sandbox engine and capability boundary.
 - [ ] Add cryptographic signature/provenance verification plus advisory,
   malware, and reproducibility gates. The local store currently records

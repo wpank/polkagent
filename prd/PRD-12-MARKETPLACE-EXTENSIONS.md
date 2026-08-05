@@ -9,9 +9,27 @@
 **Status:** definitive PRD
 **Owner:** unassigned
 **Last updated:** 2026-08-05
-**Implementation status:** partial local lifecycle library; no CLI/runtime execution, cryptographic trust verification, public registry, or commercial path
+**Implementation status:** durable local lifecycle library and operator CLI; no API/runtime execution, cryptographic trust verification, public registry, or commercial path
 **Depends on:** PRD-02 (Vocabulary/Architecture), PRD-03 (Execution Model), PRD-04 (Providers/Tools/Skills), PRD-07 (Identity/Security), PRD-08 (Payments), PRD-11 (Cloud/Self-Hosting)
 **Depended on by:** PRD-13 (UX), PRD-15 (Testing/Assurance)
+
+The currently delivered local-only operator slice is:
+
+```bash
+# Strict is the default and currently fails closed because cryptographic
+# verification is not connected. Development is an explicit local-risk choice.
+polkagent package --trust-policy development install ./local-plugin
+polkagent package list
+polkagent package get local-plugin
+polkagent package --trust-policy development update ./local-plugin-v2
+polkagent package rollback local-plugin --to 1.0.0
+polkagent --yes package uninstall local-plugin
+```
+
+`--store PATH` or `POLKAGENT_PACKAGE_STORE` selects the durable store;
+`--format json` and `--format json-pretty` provide structured output. Later
+registry, resolver, signing, activation, and sandbox examples in this PRD remain
+normative design rather than implemented commands.
 
 ---
 

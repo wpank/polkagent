@@ -16,6 +16,7 @@ pub mod kit;
 pub mod logs;
 pub mod memory;
 pub mod network;
+pub mod package;
 pub mod run;
 pub mod run_printer;
 pub mod serve;

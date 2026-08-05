@@ -3,7 +3,7 @@
 //! All subcommands are documented here. When no subcommand is provided the
 //! binary defaults to launching the interactive TUI (see `main.rs`).
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 // ---------------------------------------------------------------------------
@@ -76,6 +76,9 @@ pub enum Commands {
     /// Manage product kits (install, uninstall, list).
     #[command(subcommand)]
     Kit(KitCmd),
+
+    /// Manage durable local extension packages (plugins and product kits).
+    Package(PackageArgs),
 
     /// Launch the interactive terminal UI.
     Tui(TuiCmd),
@@ -482,6 +485,84 @@ pub struct KitListCmd {
     /// Emit structured JSON output.
     #[arg(long)]
     pub json: bool,
+}
+
+// ---------------------------------------------------------------------------
+// package
+// ---------------------------------------------------------------------------
+
+/// Durable local extension-package management.
+#[derive(Debug, Args)]
+pub struct PackageArgs {
+    /// Package store root. Overrides POLKAGENT_PACKAGE_STORE and config-derived defaults.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub store: Option<std::path::PathBuf>,
+
+    /// Trust policy for install and update operations.
+    ///
+    /// Strict rejects unsigned packages and signature claims that have not
+    /// been cryptographically verified. Development accepts them explicitly
+    /// for local work while retaining integrity checks and warnings.
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        value_name = "POLICY",
+        default_value_t = PackageTrustPolicy::Strict
+    )]
+    pub trust_policy: PackageTrustPolicy,
+
+    #[command(subcommand)]
+    pub command: PackageCmd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PackageTrustPolicy {
+    /// Fail closed until cryptographic package verification is available.
+    Strict,
+    /// Explicitly permit unsigned/unverified local packages with warnings.
+    Development,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PackageCmd {
+    /// Install a plugin or product kit from a local directory.
+    Install(PackagePathCmd),
+    /// List installed local packages.
+    List,
+    /// Show an installed package and its retained history.
+    Get(PackageNameCmd),
+    /// Update an installed package from a newer local source directory.
+    Update(PackagePathCmd),
+    /// Select a retained version, or the most recent prior version.
+    Rollback(PackageRollbackCmd),
+    /// Uninstall a package and its retained content.
+    Uninstall(PackageNameCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct PackagePathCmd {
+    /// Directory containing exactly one plugin.toml or kit.toml manifest.
+    #[arg(value_name = "PATH")]
+    pub path: std::path::PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct PackageNameCmd {
+    /// Package name.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct PackageRollbackCmd {
+    /// Package name.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Retained version to select. Defaults to the most recent prior version.
+    #[arg(long, value_name = "VERSION")]
+    pub to: Option<semver::Version>,
 }
 
 // ---------------------------------------------------------------------------

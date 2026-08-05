@@ -46,7 +46,7 @@ startup still has a wiring gap.
 | PCA compatibility | Crypto/queue/sync building blocks plus durable TCP peer I/O exist | Cross-process transport slice; not yet PCA-reference compatible or runtime-composed | The TCP adapter needs Statement Store/Polkadot App protocol adaptation, signed identity, runtime reply mapping, attachments/cancellation, and reference fixtures. |
 | Security | Grants, tests, redaction, signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, and unused policy runtime. |
 | Payments | Intent/store/budget components exist | Not value-moving | Store/runtime integration, real signature/settlement, and failure reconciliation remain. |
-| Marketplace/plugins | Durable local plugin/kit lifecycle plus listing components | Install/update/rollback/uninstall library exists; no user surface or execution | Manifest/lock format remains split; no CLI/API runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
+| Marketplace/plugins | Durable local plugin/kit lifecycle, operator CLI, and listing components | Local install/list/get/update/rollback/uninstall is actionable; package execution is missing | Manifest/lock format remains split; no API/runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
 | Deployment/cloud | Canonical image/Compose boot and health smoke pass | Single-instance boot only | Durable API stores, Postgres/tenant isolation, recovery, auth, release, HA, and control/worker paths remain unproven. |
 
 ## PRD implementation posture
@@ -64,7 +64,7 @@ startup still has a wiring gap.
 | 09 Memory/groups/evals | Strong components | Mostly missing | No orchestration proof | Active P1 |
 | 10 Observability | Strong components | Partial | No recovery/replay proof | Active P1 |
 | 11 Deployment/cloud | Container boot verified; broader scaffolding exists | Single-instance SQLite only | Boot/health smoke only | Active P2 |
-| 12 Marketplace/extensions | Durable local lifecycle/components | Library only; execution missing | No install-to-run proof | Active P2 |
+| 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | CLI/TUI exist | Partial | Interactive experience missing | Active P0/P1 + PRD-19 |
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
 | 15 Testing | Broad green suite | Production paths under-tested | Live/client/ops gates missing | Active cross-cutting |
@@ -85,6 +85,9 @@ startup still has a wiring gap.
   versions and restart-safe selection/history with integrity checks. It
   explicitly records signature bundles as unverified claims because no
   cryptographic verifier or runtime sandbox is connected yet.
+- `crates/polkagent-cli/src/commands/package.rs` exposes that lifecycle through
+  restart-safe local commands with structured output. Strict trust fails
+  closed; development trust requires an explicit CLI selection.
 - `crates/polkagent-cli/src/tui/app.rs` owns a database pool and polls it; it
   does not own the application/interaction runtime or a live event receiver.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent

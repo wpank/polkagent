@@ -79,7 +79,7 @@ pub struct InstalledPackage {
 }
 
 /// A source tree after manifest validation and digest calculation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PackageCandidate {
     pub name: String,
     pub kind: PackageKind,
@@ -114,6 +114,27 @@ impl LocalInstallPolicy {
             allow_unverified_signature_claims: true,
             require_declared_digest: false,
         }
+    }
+
+    /// Validate a candidate against this trust policy without installing it.
+    pub fn validate(self, candidate: &PackageCandidate) -> Result<(), LocalPackageError> {
+        match candidate.provenance.status {
+            ProvenanceStatus::Unsigned if !self.allow_unsigned => {
+                return Err(LocalPackageError::UnsignedRejected(candidate.name.clone()));
+            }
+            ProvenanceStatus::SignatureClaimUnverified
+                if !self.allow_unverified_signature_claims =>
+            {
+                return Err(LocalPackageError::UnverifiedSignatureRejected(
+                    candidate.name.clone(),
+                ));
+            }
+            _ => {}
+        }
+        if self.require_declared_digest && !candidate.provenance.declared_digest_verified {
+            return Err(LocalPackageError::DigestRequired(candidate.name.clone()));
+        }
+        Ok(())
     }
 }
 
@@ -274,6 +295,29 @@ impl LocalPackageStore {
         } else {
             store.write_state(&LocalState::default())?;
         }
+        drop(lock);
+        Ok(store)
+    }
+
+    /// Open a previously initialized store without creating or cleaning any
+    /// files. This is useful for read-only inspection and dry-run callers.
+    pub fn open_existing(
+        root: impl AsRef<Path>,
+        policy: LocalInstallPolicy,
+    ) -> Result<Self, LocalPackageError> {
+        let supplied_root = root.as_ref();
+        if !supplied_root.is_dir() {
+            return Err(LocalPackageError::SourceNotDirectory(
+                supplied_root.to_path_buf(),
+            ));
+        }
+        let root = supplied_root
+            .canonicalize()
+            .map_err(|error| LocalPackageError::io(supplied_root, error))?;
+        let store = Self { root, policy };
+        let lock = store.lock()?;
+        let state = store.read_state()?;
+        store.validate_state(&state)?;
         drop(lock);
         Ok(store)
     }
@@ -466,23 +510,7 @@ impl LocalPackageStore {
     }
 
     fn enforce_policy(&self, candidate: &PackageCandidate) -> Result<(), LocalPackageError> {
-        match candidate.provenance.status {
-            ProvenanceStatus::Unsigned if !self.policy.allow_unsigned => {
-                return Err(LocalPackageError::UnsignedRejected(candidate.name.clone()));
-            }
-            ProvenanceStatus::SignatureClaimUnverified
-                if !self.policy.allow_unverified_signature_claims =>
-            {
-                return Err(LocalPackageError::UnverifiedSignatureRejected(
-                    candidate.name.clone(),
-                ));
-            }
-            _ => {}
-        }
-        if self.policy.require_declared_digest && !candidate.provenance.declared_digest_verified {
-            return Err(LocalPackageError::DigestRequired(candidate.name.clone()));
-        }
-        Ok(())
+        self.policy.validate(candidate)
     }
 
     fn reject_source_containing_store(
@@ -678,6 +706,13 @@ impl LocalPackageStore {
         }
         Ok(())
     }
+}
+
+/// Parse, validate, and hash a local package source without opening a store.
+pub fn inspect_local_package(
+    source: impl AsRef<Path>,
+) -> Result<PackageCandidate, LocalPackageError> {
+    inspect_source(source.as_ref())
 }
 
 fn inspect_source(source: &Path) -> Result<PackageCandidate, LocalPackageError> {
@@ -1260,5 +1295,16 @@ skill-a = { version = "^1.0", role = "primary" }
             LocalPackageStore::open(&root, LocalInstallPolicy::development()),
             Err(LocalPackageError::CorruptState(_))
         ));
+    }
+
+    #[test]
+    fn open_existing_does_not_create_a_missing_store() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("missing");
+        assert!(matches!(
+            LocalPackageStore::open_existing(&root, LocalInstallPolicy::development()),
+            Err(LocalPackageError::SourceNotDirectory(_))
+        ));
+        assert!(!root.exists());
     }
 }
