@@ -58,6 +58,9 @@ const SCHEMA_V11: &str = include_str!("v11_run_started_at.sql");
 /// V12: Enforce unique agent names with a UNIQUE index on agents(name).
 const SCHEMA_V12: &str = include_str!("v12_agents_unique_name.sql");
 
+/// V13: Durable interaction turns, run correlations, and replayable events.
+const SCHEMA_V13: &str = include_str!("v13_interaction_store.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -72,6 +75,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (10, "run deadline_at column", SCHEMA_V10),
     (11, "run started_at column", SCHEMA_V11),
     (12, "unique agent names index", SCHEMA_V12),
+    (13, "durable interaction turns and events", SCHEMA_V13),
 ];
 
 // ---------------------------------------------------------------------------
@@ -208,7 +212,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -217,7 +221,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -269,6 +273,9 @@ mod tests {
             "feed_recipes",
             "feed_items",
             "skills",
+            "interaction_turns",
+            "interaction_turn_runs",
+            "interaction_events",
         ];
 
         for table in &tables {
@@ -282,5 +289,94 @@ mod tests {
                 .expect("query");
             assert!(exists, "table '{table}' should exist after migration");
         }
+    }
+
+    #[test]
+    fn interaction_schema_enforces_ordinals_and_one_terminal_event() {
+        let conn = open_mem();
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        migrate(&conn).expect("migrate");
+
+        let now = Utc::now().to_rfc3339();
+        let agent_id = uuid::Uuid::now_v7().to_string();
+        let conversation_id = uuid::Uuid::now_v7().to_string();
+        let message_id = uuid::Uuid::now_v7().to_string();
+        let turn_id = uuid::Uuid::now_v7().to_string();
+        let run_id = uuid::Uuid::now_v7().to_string();
+
+        conn.execute(
+            "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at)
+             VALUES (?1, 'agent', 'active', '{}', ?2, ?2)",
+            rusqlite::params![agent_id, now],
+        )
+        .expect("insert agent");
+        conn.execute(
+            "INSERT INTO conversations
+                 (id, agent_id, message_count, metadata_json, created_at, updated_at)
+             VALUES (?1, ?2, 1, '{}', ?3, ?3)",
+            rusqlite::params![conversation_id, agent_id, now],
+        )
+        .expect("insert conversation");
+        conn.execute(
+            "INSERT INTO conversation_messages
+                 (id, conversation_id, role, content_json, created_at)
+             VALUES (?1, ?2, 'user', '{\"type\":\"text\",\"text\":\"hello\"}', ?3)",
+            rusqlite::params![message_id, conversation_id, now],
+        )
+        .expect("insert message");
+        conn.execute(
+            "INSERT INTO runs
+                 (id, agent_id, conversation_id, state, params_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'created', '{}', ?4, ?4)",
+            rusqlite::params![run_id, agent_id, conversation_id, now],
+        )
+        .expect("insert run");
+        conn.execute(
+            "INSERT INTO interaction_turns
+                 (id, conversation_id, ordinal, state, target_json, config_json,
+                  user_message_id, started_at)
+             VALUES (?1, ?2, 1, 'pending', '{}', '{}', ?3, ?4)",
+            rusqlite::params![turn_id, conversation_id, message_id, now],
+        )
+        .expect("insert interaction turn");
+        conn.execute(
+            "INSERT INTO interaction_turn_runs (turn_id, run_id, role_json, ordinal)
+             VALUES (?1, ?2, '\"primary\"', 1)",
+            rusqlite::params![turn_id, run_id],
+        )
+        .expect("link run");
+
+        let insert_terminal = |event_id: String, sequence: i64| {
+            conn.execute(
+                "INSERT INTO interaction_events
+                     (id, conversation_id, turn_id, sequence, kind, payload_json,
+                      is_terminal, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 'turn_completed', '{}', 1, ?5)",
+                rusqlite::params![event_id, conversation_id, turn_id, sequence, now],
+            )
+        };
+        insert_terminal(uuid::Uuid::now_v7().to_string(), 1).expect("insert first terminal event");
+        assert!(
+            insert_terminal(uuid::Uuid::now_v7().to_string(), 2).is_err(),
+            "a second terminal event for one turn must be rejected"
+        );
+
+        let duplicate_ordinal = conn.execute(
+            "INSERT INTO interaction_turns
+                 (id, conversation_id, ordinal, state, target_json, config_json,
+                  user_message_id, started_at)
+             VALUES (?1, ?2, 1, 'pending', '{}', '{}', ?3, ?4)",
+            rusqlite::params![
+                uuid::Uuid::now_v7().to_string(),
+                conversation_id,
+                message_id,
+                now
+            ],
+        );
+        assert!(
+            duplicate_ordinal.is_err(),
+            "turn ordinals must be unique within a conversation"
+        );
     }
 }
