@@ -281,7 +281,7 @@ pub async fn list_run_artifacts(
     let summaries = artifact_store
         .list_for_run(id)
         .await
-        .map_err(|e| ApiError::InternalError(e.to_string()))?;
+        .map_err(|error| crate::routes::artifacts::map_artifact_store_error(error, id))?;
 
     let data: Vec<crate::dto::ArtifactResponse> = summaries
         .into_iter()

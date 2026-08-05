@@ -62,6 +62,7 @@ pub use durable::{
     app_state_from_runtime, RuntimeAgentStore, RuntimeRunManager, UnavailableRuntimeRoute,
     RUNTIME_UNAVAILABLE_ROUTES,
 };
+pub use polkagent_store_sqlite::SqliteApiArtifactStore as RuntimeArtifactStore;
 pub use run::{InMemoryRunManager, RunManagerTrait};
 pub use server::ApiServer;
 pub use state::{AgentStore, AgentStoreError, AppState, InMemoryAgentStore};

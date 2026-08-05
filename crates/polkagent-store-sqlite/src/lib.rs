@@ -63,6 +63,7 @@
 //! - `cache_size = -65536` — 64 MiB page cache per connection.
 //! - `mmap_size = 268435456` — 256 MiB memory-mapped I/O.
 
+pub mod api_artifact_store_impl;
 pub mod artifact_store_impl;
 pub mod conversation_store_impl;
 pub mod error;
@@ -81,6 +82,7 @@ pub mod run_store_impl;
 pub mod store;
 
 // Re-export the most commonly used types at the crate root.
+pub use api_artifact_store_impl::SqliteApiArtifactStore;
 pub use error::{StoreError, StoreResult};
 pub use interaction_store_impl::SqliteInteractionStore;
 pub use pool::SqlitePool;

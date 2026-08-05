@@ -64,6 +64,9 @@ const SCHEMA_V13: &str = include_str!("v13_interaction_store.sql");
 /// V14: Safe durable interaction configuration and lifecycle.
 const SCHEMA_V14: &str = include_str!("v14_interaction_sessions.sql");
 
+/// V15: Preserve artifact digest algorithm and data classification.
+const SCHEMA_V15: &str = include_str!("v15_artifact_projection.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -80,6 +83,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (12, "unique agent names index", SCHEMA_V12),
     (13, "durable interaction turns and events", SCHEMA_V13),
     (14, "durable interaction sessions", SCHEMA_V14),
+    (15, "complete artifact projection", SCHEMA_V15),
 ];
 
 // ---------------------------------------------------------------------------
@@ -216,7 +220,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
     }
 
     #[test]
@@ -225,7 +229,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
     }
 
     #[test]
@@ -294,6 +298,57 @@ mod tests {
                 .expect("query");
             assert!(exists, "table '{table}' should exist after migration");
         }
+    }
+
+    #[test]
+    fn artifact_projection_columns_exist_with_legacy_defaults() {
+        let conn = open_mem();
+        migrate(&conn).expect("migrate");
+        let mut statement = conn
+            .prepare("PRAGMA table_info(artifacts)")
+            .expect("prepare artifact column query");
+        let columns = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, Option<String>>(4)?))
+            })
+            .expect("query artifact columns")
+            .collect::<Result<std::collections::HashMap<_, _>, _>>()
+            .expect("collect artifact columns");
+
+        assert_eq!(
+            columns.get("algorithm").and_then(Option::as_deref),
+            Some("'blake3'")
+        );
+        assert_eq!(
+            columns.get("classification").and_then(Option::as_deref),
+            Some("'public'")
+        );
+    }
+
+    #[test]
+    fn artifact_projection_migration_backfills_legacy_rows_truthfully() {
+        let conn = open_mem();
+        conn.execute_batch(SCHEMA_V1).expect("apply legacy schema");
+        let artifact_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artifacts
+                (id, kind, digest_hex, size_bytes, metadata_json, created_at)
+             VALUES (?1, 'legacy', ?2, 0, '{}', '2024-01-01T00:00:00Z')",
+            rusqlite::params![artifact_id, blake3::hash(b"").to_hex().to_string()],
+        )
+        .expect("insert legacy artifact");
+
+        conn.execute_batch(SCHEMA_V15)
+            .expect("apply artifact projection migration");
+        let (algorithm, classification): (String, String) = conn
+            .query_row(
+                "SELECT algorithm, classification FROM artifacts WHERE id = ?1",
+                [&artifact_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated artifact");
+        assert_eq!(algorithm, "blake3");
+        assert_eq!(classification, "public");
     }
 
     #[test]

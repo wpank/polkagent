@@ -28,6 +28,13 @@ fn map_json(e: serde_json::Error) -> StoreError {
     StoreError::Backend(Box::new(e))
 }
 
+fn invalid_data(message: impl Into<String>) -> StoreError {
+    StoreError::Backend(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.into(),
+    )))
+}
+
 /// Parse a `&str` into an `ArtifactId`.
 fn parse_artifact_id(s: &str) -> Result<ArtifactId, StoreError> {
     s.parse::<ArtifactId>()
@@ -64,6 +71,8 @@ fn row_to_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawArtifactRow> 
         size_bytes: row.get::<_, i64>(4)?,
         metadata_json: row.get(5)?,
         created_at: row.get(6)?,
+        algorithm: row.get(7)?,
+        classification: row.get(8)?,
     })
 }
 
@@ -76,13 +85,32 @@ struct RawArtifactRow {
     size_bytes: i64,
     metadata_json: String,
     created_at: String,
+    algorithm: String,
+    classification: String,
 }
 
 impl RawArtifactRow {
     fn into_artifact(self) -> Result<Artifact, StoreError> {
         let id = parse_artifact_id(&self.id)?;
         let run_id = self.run_id.as_deref().map(parse_run_id).transpose()?;
-        let kind: ArtifactKind = serde_json::from_str(&self.kind).map_err(map_json)?;
+        if self.algorithm != "blake3" {
+            return Err(invalid_data(format!(
+                "artifact {id} uses unsupported digest algorithm '{}'",
+                self.algorithm
+            )));
+        }
+        let kind = if self.kind.trim_start().starts_with('{') {
+            serde_json::from_str(&self.kind).map_err(map_json)?
+        } else if self.kind.is_empty() {
+            return Err(invalid_data(format!("artifact {id} has an empty kind")));
+        } else {
+            ArtifactKind::Custom {
+                type_uri: self.kind,
+            }
+        };
+        let classification: DataClassification =
+            serde_json::from_value(serde_json::Value::String(self.classification))
+                .map_err(map_json)?;
         let created_at = parse_ts(&self.created_at)?;
         let metadata: std::collections::HashMap<String, String> =
             serde_json::from_str(&self.metadata_json).map_err(map_json)?;
@@ -98,7 +126,7 @@ impl RawArtifactRow {
                 size_bytes: u64::try_from(self.size_bytes)
                     .map_err(|_| invalid_integer("artifact size_bytes", self.size_bytes))?,
             },
-            classification: DataClassification::default(),
+            classification,
             parents: Vec::new(),
             created_at,
             metadata,
@@ -112,6 +140,23 @@ impl RawArtifactRow {
 
 impl ArtifactStore for SqlitePool {
     async fn store(&self, artifact: &Artifact, body: &[u8]) -> Result<(), StoreError> {
+        if artifact.classification == DataClassification::SecretForbidden {
+            return Err(StoreError::Backend(Box::new(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "secret_forbidden artifacts require a secret-specific store",
+            ))));
+        }
+        if !artifact.verify_integrity(body) {
+            return Err(StoreError::DigestMismatch(artifact.id));
+        }
+        if artifact.blob_ref.size_bytes != body.len() as u64 {
+            return Err(invalid_data(format!(
+                "artifact {} declares {} bytes but received {}",
+                artifact.id,
+                artifact.blob_ref.size_bytes,
+                body.len()
+            )));
+        }
         let pool = self.clone();
         let id_str = artifact.id.to_string();
         let run_id_str = artifact.run_id.map(|r| r.to_string());
@@ -121,6 +166,8 @@ impl ArtifactStore for SqlitePool {
             .map_err(|_| invalid_integer("artifact size_bytes", artifact.blob_ref.size_bytes))?;
         let metadata_json = serde_json::to_string(&artifact.metadata).map_err(map_json)?;
         let created_at = artifact.created_at.to_rfc3339();
+        let algorithm = "blake3";
+        let classification = artifact.classification.to_string();
         let body = body.to_vec();
 
         tokio::task::spawn_blocking(move || {
@@ -132,8 +179,10 @@ impl ArtifactStore for SqlitePool {
             let result = (|| -> Result<(), rusqlite::Error> {
                 // Insert artifact metadata.
                 writer.execute(
-                    "INSERT INTO artifacts (id, run_id, kind, digest_hex, size_bytes, metadata_json, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO artifacts
+                        (id, run_id, kind, digest_hex, size_bytes, metadata_json,
+                         created_at, algorithm, classification)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     rusqlite::params![
                         id_str,
                         run_id_str,
@@ -142,6 +191,8 @@ impl ArtifactStore for SqlitePool {
                         size_bytes,
                         metadata_json,
                         created_at,
+                        algorithm,
+                        classification,
                     ],
                 )?;
 
@@ -178,7 +229,8 @@ impl ArtifactStore for SqlitePool {
             let writer = pool.writer();
             let raw = writer
                 .query_row(
-                    "SELECT id, run_id, kind, digest_hex, size_bytes, metadata_json, created_at
+                    "SELECT id, run_id, kind, digest_hex, size_bytes, metadata_json,
+                            created_at, algorithm, classification
                      FROM artifacts WHERE id = ?1",
                     [&id_str],
                     row_to_artifact,
@@ -283,7 +335,8 @@ impl ArtifactStore for SqlitePool {
             let writer = pool.writer();
             let mut stmt = writer
                 .prepare(
-                    "SELECT id, run_id, kind, digest_hex, size_bytes, metadata_json, created_at
+                    "SELECT id, run_id, kind, digest_hex, size_bytes, metadata_json,
+                            created_at, algorithm, classification
                      FROM artifacts WHERE run_id = ?1 ORDER BY created_at ASC",
                 )
                 .map_err(map_backend)?;

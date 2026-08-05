@@ -16,6 +16,7 @@ in-memory agent or run stores.
 | `RunManagerTrait` | `RuntimeRunManager` over the runtime pool and `AppService` | Run input and lifecycle survive restart; mutations use the service façade |
 | `EffectStore` | Runtime `SqlitePool` | Durable |
 | `EventStore` | Runtime `SqlitePool` | Durable |
+| `ArtifactStore` | `SqliteApiArtifactStore` over the runtime pool | Durable metadata, verified BLAKE3 content, classification, and lineage |
 | `PaymentStore` | Runtime `SqlitePool` | Durable |
 | `ConversationStore` | Runtime `SqlitePool` | Durable |
 | `EventBus` | Runtime event bus | Process-local live stream paired with the durable event recorder |
@@ -41,10 +42,6 @@ is `polkagent_api::RUNTIME_UNAVAILABLE_ROUTES`.
 
 | Dependency | Method | Route | Missing boundary |
 |---|---|---|---|
-| Artifacts | `GET` | `/api/v1alpha1/runs/{id}/artifacts` | Runtime SQLite implements `polkagent_artifact::ArtifactStore`, while the API requires the distinct `polkagent_store_trait::ArtifactStore` port |
-| Artifacts | `GET` | `/api/v1alpha1/artifacts/{id}` | Runtime SQLite implements `polkagent_artifact::ArtifactStore`, while the API requires the distinct `polkagent_store_trait::ArtifactStore` port |
-| Artifacts | `GET` | `/api/v1alpha1/artifacts/{id}/content` | Same missing adapter |
-| Artifacts | `GET` | `/api/v1alpha1/artifacts/{id}/provenance` | Same missing adapter |
 | Skills | `GET` | `/api/v1alpha1/skills` | Runtime skill runner has no API `SkillRegistry` adapter |
 | Skills | `POST` | `/api/v1alpha1/skills/install` | Same missing adapter |
 | Skills | `GET` | `/api/v1alpha1/skills/{skill_id}` | Same missing adapter |
@@ -66,18 +63,32 @@ is `polkagent_api::RUNTIME_UNAVAILABLE_ROUTES`.
 
 ## Next implementation slices
 
-1. Consolidate the two artifact traits or add a strict conversion adapter,
-   including classification, digest verification, not-found mapping, and
-   lineage contract tests.
-2. Add read-only query adapters for the runtime tool registry and skill
+1. Add read-only query adapters for the runtime tool registry and skill
    runner; decide separately whether install/config/uninstall belong in a
    production daemon.
-3. Define one memory port shared by the API and `polkagent-memory`, then add
+2. Define one memory port shared by the API and `polkagent-memory`, then add
    query, statistics, entry lookup, and deletion contract tests.
-4. Compose durable audit and service-registry stores in `RuntimeFactory` before
+3. Compose durable audit and service-registry stores in `RuntimeFactory` before
    enabling those routes.
-5. Expose explicit runtime shutdown and await background-task termination
+4. Expose explicit runtime shutdown and await background-task termination
    after HTTP connection draining.
+
+Artifact projection is now closed by a forward V15 migration and a strict
+adapter in `polkagent-store-sqlite`. Existing rows receive the only truthful
+legacy defaults (`blake3`, `public`). New rows preserve algorithm and
+classification. The adapter accepts only BLAKE3, validates the supplied digest
+before writing, verifies digest and byte length on every content read, rejects
+`secret_forbidden` writes/projections, and fails distinctly for absence,
+corrupt projections/content, conflicts, connection failures, and other backend
+errors. Lineage uses deterministic breadth-first traversal and survives
+restart. The current API artifact list contract is intentionally unpaginated;
+it returns the complete run-scoped list in creation order.
+
+Artifact metadata, content, provenance, and run-scoped listing are safe `GET`
+operations and remain available when `--read-only` is enabled. They still pass
+through the server's normal API-key middleware; enabling auth requires a valid
+Bearer or `X-Api-Key` credential before any artifact classification is
+projected.
 
 The black-box test `durable_runtime_api` constructs the server through the same
 runtime composition helper used by `serve`, creates an agent and a run over

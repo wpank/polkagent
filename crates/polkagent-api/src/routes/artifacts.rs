@@ -21,6 +21,37 @@ use crate::{
     state::AppState,
 };
 
+/// Map artifact persistence failures without exposing backend or corrupt-row
+/// details to HTTP clients. The full error remains available to operators via
+/// structured diagnostics.
+pub(crate) fn map_artifact_store_error(
+    error: polkagent_store_trait::StoreError,
+    id: impl std::fmt::Display,
+) -> ApiError {
+    use polkagent_store_trait::StoreError;
+    let id = id.to_string();
+
+    match error {
+        StoreError::NotFound { .. } => ApiError::NotFound(format!("artifact {id}")),
+        StoreError::IntegrityError { .. } => {
+            tracing::warn!(artifact_id = %id, "artifact integrity verification failed");
+            ApiError::InternalError("artifact content failed integrity verification".to_owned())
+        }
+        StoreError::Serialisation { message } => {
+            tracing::warn!(artifact_id = %id, error = %message, "invalid artifact projection");
+            ApiError::InternalError("stored artifact projection is invalid".to_owned())
+        }
+        StoreError::ConnectionError { message } => {
+            tracing::warn!(artifact_id = %id, error = %message, "artifact store unavailable");
+            ApiError::InternalError("artifact store is unavailable".to_owned())
+        }
+        other => {
+            tracing::warn!(artifact_id = %id, error = %other, "artifact store operation failed");
+            ApiError::InternalError("artifact store operation failed".to_owned())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GET /artifacts/:id
 // ---------------------------------------------------------------------------
@@ -39,12 +70,10 @@ pub async fn get_artifact(
         .as_ref()
         .ok_or_else(|| ApiError::NotImplemented("artifact store not configured".to_owned()))?;
 
-    let summary = store.get(id).await.map_err(|e| match e {
-        polkagent_store_trait::StoreError::NotFound { .. } => {
-            ApiError::NotFound(format!("artifact {id}"))
-        }
-        other => ApiError::InternalError(other.to_string()),
-    })?;
+    let summary = store
+        .get(id)
+        .await
+        .map_err(|error| map_artifact_store_error(error, id))?;
 
     Ok(Json(ArtifactResponse {
         version: API_VERSION.to_owned(),
@@ -77,15 +106,10 @@ pub async fn get_artifact_content(
         .as_ref()
         .ok_or_else(|| ApiError::NotImplemented("artifact store not configured".to_owned()))?;
 
-    let body = store.get_body(id).await.map_err(|e| match e {
-        polkagent_store_trait::StoreError::NotFound { .. } => {
-            ApiError::NotFound(format!("artifact {id}"))
-        }
-        polkagent_store_trait::StoreError::IntegrityError { .. } => {
-            ApiError::InternalError(format!("integrity check failed for artifact {id}"))
-        }
-        other => ApiError::InternalError(other.to_string()),
-    })?;
+    let body = store
+        .get_body(id)
+        .await
+        .map_err(|error| map_artifact_store_error(error, id))?;
 
     Ok((
         StatusCode::OK,
@@ -117,27 +141,26 @@ pub async fn get_artifact_provenance(
         .ok_or_else(|| ApiError::NotImplemented("artifact store not configured".to_owned()))?;
 
     // Fetch the requested artifact (also validates that it exists).
-    let summary = store.get(id).await.map_err(|e| match e {
-        polkagent_store_trait::StoreError::NotFound { .. } => {
-            ApiError::NotFound(format!("artifact {id}"))
-        }
-        other => ApiError::InternalError(other.to_string()),
-    })?;
+    let summary = store
+        .get(id)
+        .await
+        .map_err(|error| map_artifact_store_error(error, id))?;
 
     // Walk the ancestor lineage (BFS order: nearest parents first).
     let ancestor_ids = store
         .get_lineage(id)
         .await
-        .map_err(|e| ApiError::InternalError(format!("failed to retrieve lineage: {e}")))?;
+        .map_err(|error| map_artifact_store_error(error, id))?;
 
     // Fetch metadata for each ancestor. Errors on individual ancestors are
     // treated as internal errors (the lineage references them, so they
     // should exist).
     let mut ancestor_responses = Vec::with_capacity(ancestor_ids.len());
     for ancestor_id in &ancestor_ids {
-        let ancestor = store.get(*ancestor_id).await.map_err(|e| {
-            ApiError::InternalError(format!("failed to fetch ancestor {ancestor_id}: {e}"))
-        })?;
+        let ancestor = store
+            .get(*ancestor_id)
+            .await
+            .map_err(|error| map_artifact_store_error(error, *ancestor_id))?;
         ancestor_responses.push(ArtifactResponse {
             version: API_VERSION.to_owned(),
             id: ancestor.id.to_string(),

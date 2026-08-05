@@ -82,11 +82,11 @@ fn schema_creation_succeeds() {
             .unwrap_or_else(|e| panic!("table '{table}' not queryable: {e}"));
         assert_eq!(count, 0, "table '{table}' should be empty initially");
     }
-    // schema_migrations should have exactly one row (the v1 migration).
+    // Every forward migration should be recorded.
     let migration_count: i64 = writer
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .expect("schema_migrations query");
-    assert_eq!(migration_count, 12, "all migrations should be recorded");
+    assert_eq!(migration_count, 15, "all migrations should be recorded");
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn schema_creation_via_raw_pool_and_explicit_migrate() {
     assert_eq!(version, 0);
     migrations::migrate(&pool.writer()).expect("migrate");
     let version_after = migrations::current_version(&pool.writer()).expect("version after");
-    assert_eq!(version_after, 12);
+    assert_eq!(version_after, 15);
 }
 
 // ---------------------------------------------------------------------------

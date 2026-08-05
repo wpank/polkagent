@@ -9,8 +9,13 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use polkagent_api::{app_state_from_runtime, ApiServer, RUNTIME_UNAVAILABLE_ROUTES};
+use polkagent_api::{
+    app_state_from_runtime, ApiServer, RuntimeArtifactStore, RUNTIME_UNAVAILABLE_ROUTES,
+};
+use polkagent_core::{ArtifactId, BlobRef, RunId};
 use polkagent_runtime::{AdapterPolicy, PolkagentRuntime, RuntimeFactory, RuntimeOptions};
+use polkagent_store_trait::ArtifactStore;
+use sha2::{Digest, Sha256};
 
 async fn runtime_at(root: &std::path::Path) -> PolkagentRuntime {
     let config_path = root.join("polkagent.toml");
@@ -28,6 +33,29 @@ fn test_server(runtime: &PolkagentRuntime) -> TestServer {
     let state = app_state_from_runtime(runtime, runtime.config().as_ref().clone());
     let server = ApiServer::from_state(state);
     TestServer::new(server.into_router())
+}
+
+async fn store_runtime_artifact(
+    store: &RuntimeArtifactStore,
+    id: ArtifactId,
+    run_id: RunId,
+    kind: &str,
+    classification: &str,
+    body: &[u8],
+) {
+    let digest = BlobRef::from_bytes(body).blake3_hex;
+    store
+        .store(
+            id,
+            Some(run_id),
+            kind,
+            "blake3",
+            &digest,
+            classification,
+            body,
+        )
+        .await
+        .expect("store runtime artifact");
 }
 
 #[tokio::test]
@@ -152,7 +180,7 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
     assert!(state.event_store.is_some());
     assert!(state.payment_store.is_some());
     assert!(state.conversation_store.is_some());
-    assert!(state.artifact_store.is_none());
+    assert!(state.artifact_store.is_some());
     assert!(state.skill_registry.is_none());
     assert!(state.tool_registry.is_none());
     assert!(state.memory_store.is_none());
@@ -170,7 +198,7 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
         .await
         .assert_status_ok();
 
-    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 22);
+    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 18);
     for route in RUNTIME_UNAVAILABLE_ROUTES {
         let path = route
             .path
@@ -223,4 +251,139 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
             && !route.method.is_empty()
             && !route.reason.is_empty()
     }));
+}
+
+#[tokio::test]
+async fn artifact_content_provenance_and_policy_survive_runtime_restart() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let runtime = runtime_at(temp.path()).await;
+    let server = test_server(&runtime);
+    let created_agent = server
+        .post("/api/v1alpha1/agents")
+        .json(&serde_json::json!({
+            "name": "artifact-runtime-agent",
+            "model": "fake/default-model"
+        }))
+        .await;
+    created_agent.assert_status(StatusCode::CREATED);
+    let agent_id = created_agent.json::<serde_json::Value>()["id"]
+        .as_str()
+        .expect("agent id")
+        .to_owned();
+    let created_run = server
+        .post(&format!("/api/v1alpha1/agents/{agent_id}/runs"))
+        .json(&serde_json::json!({"input": "produce evidence"}))
+        .await;
+    created_run.assert_status(StatusCode::CREATED);
+    let run_id: RunId = created_run.json::<serde_json::Value>()["id"]
+        .as_str()
+        .expect("run id")
+        .parse()
+        .expect("typed run id");
+
+    let artifacts = RuntimeArtifactStore::new(runtime.pool().clone());
+    let root = ArtifactId::new();
+    let parent = ArtifactId::new();
+    let child = ArtifactId::new();
+    store_runtime_artifact(&artifacts, root, run_id, "evidence/root", "public", b"root").await;
+    store_runtime_artifact(
+        &artifacts,
+        parent,
+        run_id,
+        "evidence/parent",
+        "internal",
+        b"parent",
+    )
+    .await;
+    store_runtime_artifact(
+        &artifacts,
+        child,
+        run_id,
+        "evidence/child",
+        "private",
+        b"durable child content",
+    )
+    .await;
+    artifacts
+        .add_lineage(child, parent)
+        .await
+        .expect("child lineage");
+    artifacts
+        .add_lineage(parent, root)
+        .await
+        .expect("parent lineage");
+
+    let metadata = server
+        .get(&format!("/api/v1alpha1/artifacts/{child}"))
+        .await;
+    metadata.assert_status_ok();
+    let metadata = metadata.json::<serde_json::Value>();
+    assert_eq!(metadata["kind"], "evidence/child");
+    assert_eq!(metadata["classification"], "private");
+    let content = server
+        .get(&format!("/api/v1alpha1/artifacts/{child}/content"))
+        .await;
+    content.assert_status_ok();
+    assert_eq!(content.as_bytes().as_ref(), b"durable child content");
+
+    drop(server);
+    drop(runtime);
+    let restarted = runtime_at(temp.path()).await;
+    let restarted_server = test_server(&restarted);
+    let listed = restarted_server
+        .get(&format!("/api/v1alpha1/runs/{run_id}/artifacts"))
+        .await;
+    listed.assert_status_ok();
+    assert_eq!(
+        listed.json::<serde_json::Value>()["data"]
+            .as_array()
+            .expect("artifact list")
+            .len(),
+        3
+    );
+    let provenance = restarted_server
+        .get(&format!("/api/v1alpha1/artifacts/{child}/provenance"))
+        .await;
+    provenance.assert_status_ok();
+    let provenance = provenance.json::<serde_json::Value>();
+    let chain = provenance["chain"].as_array().expect("provenance chain");
+    assert_eq!(chain.len(), 3);
+    assert_eq!(chain[0]["id"], root.to_string());
+    assert_eq!(chain[1]["id"], parent.to_string());
+    assert_eq!(chain[2]["id"], child.to_string());
+    let restarted_content = restarted_server
+        .get(&format!("/api/v1alpha1/artifacts/{child}/content"))
+        .await;
+    restarted_content.assert_status_ok();
+    assert_eq!(
+        restarted_content.as_bytes().as_ref(),
+        b"durable child content"
+    );
+
+    let token = "artifact-reader-token";
+    let mut protected_config = restarted.config().as_ref().clone();
+    protected_config.auth.enabled = true;
+    protected_config.auth.api_keys = vec![format!("{:x}", Sha256::digest(token.as_bytes()))];
+    protected_config.api.read_only = true;
+    let protected = TestServer::new(
+        ApiServer::from_state(app_state_from_runtime(&restarted, protected_config)).into_router(),
+    );
+    protected
+        .get(&format!("/api/v1alpha1/artifacts/{child}"))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    protected
+        .get(&format!("/api/v1alpha1/artifacts/{child}"))
+        .authorization_bearer(token)
+        .await
+        .assert_status_ok();
+    protected
+        .post("/api/v1alpha1/agents")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({
+            "name": "blocked-by-read-only",
+            "model": "fake/default-model"
+        }))
+        .await
+        .assert_status(StatusCode::METHOD_NOT_ALLOWED);
 }

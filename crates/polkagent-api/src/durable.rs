@@ -19,7 +19,7 @@ use polkagent_core::run::RunState;
 use polkagent_core::{AgentId, EffectId, RunId};
 use polkagent_runtime::PolkagentRuntime;
 use polkagent_service::{AppService, ServiceError};
-use polkagent_store_sqlite::SqlitePool;
+use polkagent_store_sqlite::{SqliteApiArtifactStore, SqlitePool};
 use polkagent_store_trait::RunStore;
 use rusqlite::OptionalExtension;
 
@@ -48,35 +48,10 @@ pub struct UnavailableRuntimeRoute {
 ///
 /// Skills, tools, and memory exist inside [`AppService`], but their runtime
 /// contracts do not implement the query/mutation ports owned by the API
-/// crate. The runtime `SQLite` pool's artifact contract is also distinct from
-/// the API artifact port. Audit and service-registry persistence are not
-/// composed by [`polkagent_runtime::RuntimeFactory`] at all. No in-memory
-/// substitutes are installed for these routes.
+/// crate. Audit and service-registry persistence are not composed by
+/// [`polkagent_runtime::RuntimeFactory`] at all. No in-memory substitutes are
+/// installed for these routes.
 pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
-    UnavailableRuntimeRoute {
-        dependency: "artifacts",
-        method: "GET",
-        path: "/api/v1alpha1/runs/{id}/artifacts",
-        reason: "the runtime artifact store has no API ArtifactStore adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "artifacts",
-        method: "GET",
-        path: "/api/v1alpha1/artifacts/{id}",
-        reason: "the runtime artifact store has no API ArtifactStore adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "artifacts",
-        method: "GET",
-        path: "/api/v1alpha1/artifacts/{id}/content",
-        reason: "the runtime artifact store has no API ArtifactStore adapter",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "artifacts",
-        method: "GET",
-        path: "/api/v1alpha1/artifacts/{id}/provenance",
-        reason: "the runtime artifact store has no API ArtifactStore adapter",
-    },
     UnavailableRuntimeRoute {
         dependency: "skills",
         method: "GET",
@@ -191,9 +166,9 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
 ///
 /// The caller supplies a clone of the runtime config after applying
 /// surface-only overrides such as CORS. Agents and run lifecycle operations
-/// use the runtime's [`AppService`]; effects, events, conversations, and
-/// payments all use its single migrated `SQLite` pool; WebSocket streaming
-/// uses the runtime event bus.
+/// use the runtime's [`AppService`]; effects, events, artifacts,
+/// conversations, and payments all use its single migrated `SQLite` pool;
+/// WebSocket streaming uses the runtime event bus.
 ///
 /// Optional stores without a truthful adapter are deliberately left unset;
 /// their exact `501` boundary is published in
@@ -201,6 +176,7 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
 #[must_use]
 pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> AppState {
     let pool = Arc::new(runtime.pool().clone());
+    let artifacts = Arc::new(SqliteApiArtifactStore::new(runtime.pool().clone()));
     let agents = Arc::new(RuntimeAgentStore::from_runtime(runtime));
     let runs = Arc::new(RuntimeRunManager::from_runtime(runtime));
 
@@ -212,6 +188,7 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
         runtime.event_bus().clone(),
     )
     .with_event_store(pool.clone())
+    .with_artifact_store(artifacts)
     .with_payment_store(pool.clone())
     .with_conversation_store(pool)
 }
