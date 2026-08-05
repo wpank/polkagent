@@ -3,6 +3,14 @@
 //! These tests use `proptest` to verify invariants of the durable outbox,
 //! deduplication log, and exponential backoff across randomly generated inputs.
 
+// Property-test assertion boundaries intentionally panic with focused
+// diagnostics when a generated invariant fails.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "property-test assertions intentionally panic with focused diagnostics"
+)]
+
 use std::collections::HashSet;
 use std::time::Duration;
 

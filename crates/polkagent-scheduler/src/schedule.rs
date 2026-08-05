@@ -125,6 +125,12 @@ mod duration_secs {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify broken invariants.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test scheduler assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use chrono::TimeZone;

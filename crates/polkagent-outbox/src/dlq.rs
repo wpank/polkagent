@@ -16,7 +16,7 @@
 //! # Storage note
 //!
 //! The in-memory backend is suitable for tests and single-process deployments.
-//! A persistent backend (SQLite / Postgres) can be plugged in by implementing
+//! A persistent backend (`SQLite` / Postgres) can be plugged in by implementing
 //! [`DeadLetterQueue`] without changing consumer code.
 
 use std::collections::HashMap;
@@ -551,6 +551,12 @@ impl<Q: DeadLetterQueue> DlqMonitor<Q> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify broken invariants.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test outbox assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use serde_json::json;

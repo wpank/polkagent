@@ -205,6 +205,12 @@ impl std::fmt::Display for AuditEntry {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify broken invariants.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test audit assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::actor::ActorInfo;

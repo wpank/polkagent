@@ -41,7 +41,7 @@
 //!
 //! # Storage note
 //!
-//! The current backend is in-memory (`HashMap`/`BTreeMap`). A SQLite backend
+//! The current backend is in-memory (`HashMap`/`BTreeMap`). A `SQLite` backend
 //! will be added in a future iteration without changing this public API.
 
 pub mod dedup;

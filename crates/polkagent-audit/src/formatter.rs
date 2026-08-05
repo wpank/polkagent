@@ -48,8 +48,8 @@ pub fn format_text(entry: &AuditEntry) -> String {
 
 /// Format a single audit entry as a CSV row (no trailing newline).
 ///
-/// Fields: timestamp, actor_type, actor_id, actor_name, action, resource_type,
-/// resource_id, outcome, integrity_hash
+/// Fields: `timestamp`, `actor_type`, `actor_id`, `actor_name`, `action`,
+/// `resource_type`, `resource_id`, `outcome`, `integrity_hash`
 #[must_use]
 pub fn format_csv_row(entry: &AuditEntry) -> String {
     fn escape_csv(s: &str) -> String {
@@ -105,6 +105,12 @@ pub fn format_entries(entries: &[AuditEntry], format: OutputFormat) -> AuditResu
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify broken invariants.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test audit assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::action::AuditAction;

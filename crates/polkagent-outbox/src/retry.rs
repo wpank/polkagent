@@ -72,7 +72,7 @@ impl ExponentialBackoff {
         // Cap the exponent to avoid overflow on large attempt numbers.
         // u128 has 128 bits; we cap shift at 63 so 1 << shift fits in u64
         // (and the product fits in u128 after widening).
-        let shift = attempt.min(63) as u64;
+        let shift = u64::from(attempt.min(63));
         let cap_nanos = self.max_delay.as_nanos();
         let base_nanos = self.base_delay.as_nanos();
         // 2^shift as u128 — safe because shift ≤ 63 < 128.
@@ -86,7 +86,7 @@ impl ExponentialBackoff {
         // Lightweight jitter: mix SystemTime nanos with the attempt index.
         let seed = system_nanos() ^ (u128::from(attempt).wrapping_mul(0x9e37_79b9_7f4a_7c15));
         let jittered = seed % upper;
-        Duration::from_nanos(jittered as u64)
+        Duration::from_nanos(u64::try_from(jittered).unwrap_or(u64::MAX))
     }
 
     /// Returns `true` when `attempt_count` has exceeded the allowed maximum,

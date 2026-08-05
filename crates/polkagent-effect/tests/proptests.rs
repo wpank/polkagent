@@ -217,8 +217,6 @@ proptest! {
             prop_assert!(state.is_terminal(), "{state:?} must always be terminal");
             // Idempotency: calling is_terminal() again must return the same result.
             prop_assert!(state.is_terminal(), "{state:?} must stay terminal on second call");
-            // Extra: terminal states must also not report as non-terminal.
-            prop_assert!(!(!state.is_terminal()), "double-negation must hold");
         }
     }
 

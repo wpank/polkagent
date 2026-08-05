@@ -125,19 +125,16 @@ impl EffectKind {
 
 /// Scheduling priority for effect workers. Higher priority intents are claimed
 /// before lower priority ones when multiple intents are pending.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectPriority {
     Low = 0,
+    #[default]
     Normal = 1,
     High = 2,
     Critical = 3,
-}
-
-impl Default for EffectPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 // ---------------------------------------------------------------------------

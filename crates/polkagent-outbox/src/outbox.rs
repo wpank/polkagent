@@ -2,12 +2,12 @@
 //!
 //! # Design
 //!
-//! [`DurableOutbox`] uses an in-memory store (two `HashMap`s) — a SQLite
+//! [`DurableOutbox`] uses an in-memory store (two `HashMap`s) — a `SQLite`
 //! backend will be slotted in without changing the public API. The core
 //! invariants are:
 //!
 //! * **Durability** — a message is written before `enqueue` returns; it
-//!   survives any subsequent panic within the same process (SQLite: across
+//!   survives any subsequent panic within the same process (`SQLite`: across
 //!   restarts).
 //! * **At-least-once** — a message stays in the queue until a consumer calls
 //!   `acknowledge`. If the lease expires before that the message becomes
@@ -90,7 +90,7 @@ impl Default for OutboxConfig {
 // Internal partition state
 // ---------------------------------------------------------------------------
 
-/// Per-partition ordered queue (sequence → OutboxId).
+/// Per-partition ordered queue (sequence → [`OutboxId`]).
 type PartitionQueue = BTreeMap<u64, OutboxId>;
 
 // ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ type PartitionQueue = BTreeMap<u64, OutboxId>;
 /// Wrap in `Arc<tokio::sync::Mutex<DurableOutbox>>` for shared async access.
 pub struct DurableOutbox {
     config: OutboxConfig,
-    /// Live items indexed by their OutboxId.
+    /// Live items indexed by their [`OutboxId`].
     items: HashMap<OutboxId, OutboxItem>,
     /// Partition → ordered queue of live item ids (by sequence).
     partitions: HashMap<String, PartitionQueue>,
@@ -144,7 +144,7 @@ impl DurableOutbox {
     /// # Errors
     ///
     /// Currently infallible for the in-memory backend; errors will be added
-    /// when the SQLite backend is integrated.
+    /// when the `SQLite` backend is integrated.
     pub fn enqueue(&mut self, message: OutboxMessage) -> Result<OutboxId, OutboxError> {
         let id = OutboxId::new();
         let partition_key = message.partition_key.clone();
@@ -208,10 +208,9 @@ impl DurableOutbox {
         match candidate_id {
             None => Ok(None),
             Some(id) => {
-                let item = self
-                    .items
-                    .get_mut(&id)
-                    .expect("id came from live items map");
+                let Some(item) = self.items.get_mut(&id) else {
+                    return Ok(None);
+                };
 
                 item.claimed_by = Some(consumer_id.to_owned());
                 item.claimed_until = Some(lease_until);
@@ -297,19 +296,11 @@ impl DurableOutbox {
     /// * [`OutboxError::NotFound`] — no live item with this id.
     /// * [`OutboxError::DeadLettered`] — item has already been dead-lettered.
     pub fn nack(&mut self, outbox_id: OutboxId) -> Result<(), OutboxError> {
-        {
+        let should_dead_letter = {
             let item = self.get_live_item(outbox_id)?;
             item.message.retry_count += 1;
             item.claimed_by = None;
             item.claimed_until = None;
-        }
-
-        // Check again after mutation (borrow ends above).
-        let should_dead_letter = {
-            let item = self
-                .items
-                .get(&outbox_id)
-                .expect("just confirmed existence above");
             item.message.is_exhausted()
         };
 
@@ -361,9 +352,8 @@ impl DurableOutbox {
             // we find a claimable head item (earlier items might be actively
             // claimed, blocking the partition).
             for (&seq, &id) in queue {
-                let item = match self.items.get(&id) {
-                    Some(i) => i,
-                    None => continue,
+                let Some(item) = self.items.get(&id) else {
+                    continue;
                 };
 
                 if item.dead_lettered {
@@ -438,6 +428,12 @@ impl Default for DurableOutbox {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify broken invariants.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test outbox assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::message::OutboxMessage;

@@ -164,6 +164,12 @@ impl AuditLogger {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Test fixtures use explicit panic boundaries to identify broken invariants.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "unit-test audit assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 
@@ -267,9 +273,9 @@ mod tests {
         for i in 0..5 {
             logger
                 .log(
-                    ActorInfo::agent(&format!("a-{i}")),
+                    ActorInfo::agent(format!("a-{i}")),
                     AuditAction::RunStarted,
-                    ResourceInfo::new("run", &format!("r-{i}")),
+                    ResourceInfo::new("run", format!("r-{i}")),
                     ActionOutcome::Success,
                     serde_json::Value::Null,
                 )
@@ -291,9 +297,9 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 logger
                     .log(
-                        ActorInfo::agent(&format!("a-{i}")),
+                        ActorInfo::agent(format!("a-{i}")),
                         AuditAction::ToolInvoked,
-                        ResourceInfo::new("tool", &format!("t-{i}")),
+                        ResourceInfo::new("tool", format!("t-{i}")),
                         ActionOutcome::Success,
                         serde_json::Value::Null,
                     )
