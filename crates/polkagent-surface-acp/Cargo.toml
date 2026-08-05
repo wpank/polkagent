@@ -8,6 +8,7 @@ repository.workspace = true
 description = "ACP stdio server surface for Polkagent editor integrations"
 
 [dependencies]
+polkagent-interaction = { path = "../polkagent-interaction" }
 polkagent-telemetry = { path = "../polkagent-telemetry" }
 
 agent-client-protocol = { workspace = true }

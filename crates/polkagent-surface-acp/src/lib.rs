@@ -13,17 +13,28 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, AvailableCommand, AvailableCommandsUpdate, CancelNotification, ContentBlock,
-    ContentChunk, Implementation, InitializeRequest, InitializeResponse, NewSessionRequest,
-    NewSessionResponse, PromptRequest, PromptResponse, ResourceLink, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent,
+    AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+    CancelNotification, ContentBlock, ContentChunk, Implementation, InitializeRequest,
+    InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
+    ResourceLink, SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
+    UnstructuredCommandInput,
 };
 use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
 use futures::FutureExt as _;
+use polkagent_interaction::{
+    CancelTarget, CommandName, CommandRegistry, CommandSpec, InteractionCommand, ParsedLine,
+};
 use tokio::sync::Mutex;
 
 const BACKEND_PANIC_DETAIL: &str = "Polkagent's ACP backend panicked; the request was stopped";
+const ACP_COMMANDS: [CommandName; 5] = [
+    CommandName::Help,
+    CommandName::Status,
+    CommandName::Agents,
+    CommandName::Agent,
+    CommandName::Cancel,
+];
 
 /// A backend failure that is safe to return through an ACP error response.
 #[derive(Debug, thiserror::Error)]
@@ -295,37 +306,27 @@ async fn handle_prompt(
                 .data(format!("unknown session: {session_id}"))
         })?;
 
-    let outcome = if let Some(command) = SlashCommand::parse(&prompt) {
-        handle_slash_command(command, &session_id, snapshot, &sessions, backend.as_ref()).await?
-    } else if let Some(agent) = snapshot.selected_agent.as_deref() {
-        {
-            let mut all_sessions = sessions.lock().await;
-            let current = all_sessions.get_mut(&session_id).ok_or_else(|| {
-                agent_client_protocol::Error::invalid_params()
-                    .data(format!("unknown session: {session_id}"))
-            })?;
-            if current.busy {
-                return Err(agent_client_protocol::Error::invalid_request()
-                    .data(format!("session {session_id} already has an active prompt")));
-            }
-            current.busy = true;
+    let registry = CommandRegistry::mvp();
+    let outcome = match registry.parse(&prompt) {
+        Ok(ParsedLine::Command(invocation)) => {
+            handle_slash_command(
+                invocation.command,
+                &session_id,
+                &snapshot,
+                &sessions,
+                backend.as_ref(),
+                &registry,
+            )
+            .await?
         }
-        let turn = call_backend(backend.prompt(
-            session_id.0.as_ref(),
-            &snapshot.cwd,
-            agent,
-            prompt.trim(),
-        ))
-        .await
-        .map_err(|error| backend_protocol_error(&error));
-        if let Some(current) = sessions.lock().await.get_mut(&session_id) {
-            current.busy = false;
+        Ok(ParsedLine::Prompt(prompt)) => {
+            handle_regular_prompt(&prompt, &session_id, &snapshot, &sessions, backend.as_ref())
+                .await?
         }
-        turn?
-    } else {
-        BackendTurn::completed(
-            "No agent is selected. Use /agents to list active agents, then /agent <name-or-id> to select one.",
-        )
+        Err(error) => BackendTurn::completed(format!(
+            "Command error: {error}\n\n{}",
+            help_text(&registry, None)
+        )),
     };
 
     if !outcome.text.is_empty() {
@@ -366,47 +367,65 @@ fn prompt_text(blocks: &[ContentBlock]) -> Result<String, agent_client_protocol:
     Ok(prompt)
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SlashCommand<'a> {
-    name: &'a str,
-    argument: &'a str,
-}
-
-impl<'a> SlashCommand<'a> {
-    fn parse(prompt: &'a str) -> Option<Self> {
-        let trimmed = prompt.trim();
-        let command = trimmed.strip_prefix('/')?;
-        let (name, argument) = command
-            .split_once(char::is_whitespace)
-            .map_or((command, ""), |(name, argument)| (name, argument.trim()));
-        Some(Self { name, argument })
-    }
-}
-
-async fn handle_slash_command(
-    command: SlashCommand<'_>,
+async fn handle_regular_prompt(
+    prompt: &str,
     session_id: &SessionId,
-    session: EditorSession,
+    session: &EditorSession,
     sessions: &Sessions,
     backend: &dyn AcpBackend,
 ) -> Result<BackendTurn, agent_client_protocol::Error> {
-    match command.name {
-        "help" => Ok(BackendTurn::completed(help_text())),
-        "status" => Ok(BackendTurn::completed(format!(
-            "Session: {session_id}\nWorkspace: {}\nAgent: {}",
+    let Some(agent) = session.selected_agent.as_deref() else {
+        return Ok(BackendTurn::completed(
+            "No agent is selected. Use /agents to list active agents, then /agent <name-or-id> to select one.",
+        ));
+    };
+    {
+        let mut all_sessions = sessions.lock().await;
+        let current = all_sessions.get_mut(session_id).ok_or_else(|| {
+            agent_client_protocol::Error::invalid_params()
+                .data(format!("unknown session: {session_id}"))
+        })?;
+        if current.busy {
+            return Err(agent_client_protocol::Error::invalid_request()
+                .data(format!("session {session_id} already has an active prompt")));
+        }
+        current.busy = true;
+    }
+    let turn =
+        call_backend(backend.prompt(session_id.0.as_ref(), &session.cwd, agent, prompt.trim()))
+            .await
+            .map_err(|error| backend_protocol_error(&error));
+    if let Some(current) = sessions.lock().await.get_mut(session_id) {
+        current.busy = false;
+    }
+    turn
+}
+
+async fn handle_slash_command(
+    command: InteractionCommand,
+    session_id: &SessionId,
+    session: &EditorSession,
+    sessions: &Sessions,
+    backend: &dyn AcpBackend,
+    registry: &CommandRegistry,
+) -> Result<BackendTurn, agent_client_protocol::Error> {
+    match command {
+        InteractionCommand::Help { command } => {
+            Ok(BackendTurn::completed(help_text(registry, command)))
+        }
+        InteractionCommand::Status => Ok(BackendTurn::completed(format!(
+            "Session: {session_id}\nWorkspace: {}\nAgent: {}\nActive prompt: {}",
             session.cwd.display(),
-            session.selected_agent.as_deref().unwrap_or("not selected")
+            session.selected_agent.as_deref().unwrap_or("not selected"),
+            if session.busy { "yes" } else { "no" }
         ))),
-        "agents" => {
+        InteractionCommand::Agents => {
             let agents = call_backend(backend.list_agents())
                 .await
                 .map_err(|error| backend_protocol_error(&error))?;
             Ok(BackendTurn::completed(format_agents(&agents)))
         }
-        "agent" if command.argument.is_empty() => Ok(BackendTurn::completed(
-            "Usage: /agent <name-or-id>. Use /agents to list active agents.",
-        )),
-        "agent" => match find_agent(backend, command.argument)
+        InteractionCommand::Agent { selector } => match find_agent(backend, &selector)
             .await
             .map_err(|error| backend_protocol_error(&error))?
         {
@@ -420,13 +439,30 @@ async fn handle_slash_command(
                 )))
             }
             None => Ok(BackendTurn::completed(format!(
-                "Active agent '{}' was not found. Use /agents to list choices.",
-                command.argument
+                "Active agent '{selector}' was not found. Use /agents to list choices."
             ))),
         },
-        unknown => Ok(BackendTurn::completed(format!(
-            "Unknown command '/{unknown}'.\n\n{}",
-            help_text()
+        InteractionCommand::Cancel {
+            target: CancelTarget::CurrentTurn,
+        } if session.busy => {
+            call_backend(backend.cancel(session_id.0.as_ref()))
+                .await
+                .map_err(|error| backend_protocol_error(&error))?;
+            Ok(BackendTurn::completed(
+                "Cancellation requested for the active editor prompt.",
+            ))
+        }
+        InteractionCommand::Cancel {
+            target: CancelTarget::CurrentTurn,
+        } => Ok(BackendTurn::completed(
+            "There is no active editor prompt to cancel in this session.",
+        )),
+        InteractionCommand::Cancel { .. } => Ok(BackendTurn::completed(
+            "ACP supports only /cancel without arguments (or /stop) for the current editor prompt; run-scoped and all-session cancellation require durable interaction support.",
+        )),
+        unsupported => Ok(BackendTurn::completed(format!(
+            "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. This ACP slice does not expose durable interactions, run history, approvals, or model changes.",
+            unsupported.name().as_str()
         ))),
     }
 }
@@ -442,19 +478,79 @@ async fn find_agent(
 }
 
 fn available_commands() -> Vec<AvailableCommand> {
-    vec![
-        AvailableCommand::new("help", "Show Polkagent ACP commands"),
-        AvailableCommand::new(
-            "status",
-            "Show the current editor session and selected agent",
-        ),
-        AvailableCommand::new("agents", "List active Polkagent agents"),
-        AvailableCommand::new("agent", "Select an active agent by name or ID"),
-    ]
+    let registry = CommandRegistry::mvp();
+    ACP_COMMANDS
+        .iter()
+        .filter_map(|name| registry.resolve(name.as_str()))
+        .map(available_command)
+        .collect()
 }
 
-fn help_text() -> &'static str {
-    "Polkagent ACP commands:\n/help — show this help\n/status — show session and agent selection\n/agents — list active agents\n/agent <name-or-id> — select the agent used for normal prompts"
+fn available_command(spec: &CommandSpec) -> AvailableCommand {
+    let mut command = AvailableCommand::new(&spec.name, acp_description(spec));
+    if let Some(hint) = acp_input_hint(spec) {
+        command = command.input(AvailableCommandInput::Unstructured(
+            UnstructuredCommandInput::new(hint),
+        ));
+    }
+    command
+}
+
+fn acp_description(spec: &CommandSpec) -> &str {
+    match spec.command {
+        CommandName::Status => "Show the editor workspace, selected agent, and prompt activity",
+        CommandName::Agents => "List active Polkagent agents",
+        CommandName::Cancel => "Cancel the active prompt in this editor session",
+        _ => &spec.description,
+    }
+}
+
+fn acp_input_hint(spec: &CommandSpec) -> Option<&str> {
+    if spec.command == CommandName::Cancel {
+        None
+    } else {
+        spec.input_hint.as_deref()
+    }
+}
+
+fn help_text(registry: &CommandRegistry, command: Option<CommandName>) -> String {
+    if let Some(command) = command {
+        if !ACP_COMMANDS.contains(&command) {
+            return format!(
+                "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Durable interactions, run history, approvals, and model changes are not exposed by this ACP slice.",
+                command.as_str()
+            );
+        }
+        return registry.resolve(command.as_str()).map_or_else(
+            || format!("No help is available for /{}.", command.as_str()),
+            command_help,
+        );
+    }
+
+    let commands = ACP_COMMANDS
+        .iter()
+        .filter_map(|name| registry.resolve(name.as_str()))
+        .map(command_help)
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Polkagent ACP commands:\n{commands}")
+}
+
+fn command_help(spec: &CommandSpec) -> String {
+    let hint = acp_input_hint(spec).map_or(String::new(), |hint| format!(" {hint}"));
+    let aliases = if spec.aliases.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (aliases: {})",
+            spec.aliases
+                .iter()
+                .map(|alias| format!("/{alias}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    format!("/{}{hint} — {}{aliases}", spec.name, acp_description(spec))
 }
 
 fn format_agents(agents: &[AgentSummary]) -> String {
@@ -505,14 +601,26 @@ mod tests {
     }
 
     #[test]
-    fn parses_slash_command_and_argument() {
-        let parsed = SlashCommand::parse("  /agent research  ");
-        assert!(parsed.is_some());
-        let Some(command) = parsed else {
-            return;
+    fn shared_registry_parses_aliases_and_quoted_arguments() {
+        let registry = CommandRegistry::mvp();
+        let Ok(ParsedLine::Command(agent)) = registry.parse("  /use \"research bot\"  ") else {
+            panic!("expected a parsed agent command");
         };
-        assert_eq!(command.name, "agent");
-        assert_eq!(command.argument, "research");
+        assert_eq!(
+            agent.command,
+            InteractionCommand::Agent {
+                selector: "research bot".to_owned()
+            }
+        );
+        let Ok(ParsedLine::Command(cancel)) = registry.parse("/STOP") else {
+            panic!("expected a parsed cancellation command");
+        };
+        assert_eq!(
+            cancel.command,
+            InteractionCommand::Cancel {
+                target: CancelTarget::CurrentTurn
+            }
+        );
     }
 
     #[test]
@@ -522,11 +630,32 @@ mod tests {
 
     #[test]
     fn advertises_supported_commands() {
-        let names = available_commands()
-            .into_iter()
-            .map(|command| command.name)
+        let commands = available_commands();
+        let names = commands
+            .iter()
+            .map(|command| command.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["help", "status", "agents", "agent"]);
+        assert_eq!(names, vec!["help", "status", "agents", "agent", "cancel"]);
+        let Some(agent) = commands.iter().find(|command| command.name == "agent") else {
+            panic!("agent command was not advertised");
+        };
+        let Some(AvailableCommandInput::Unstructured(input)) = agent.input.as_ref() else {
+            panic!("agent command should expose its registry input hint");
+        };
+        assert_eq!(input.hint, "<name-or-id>");
+    }
+
+    #[test]
+    fn help_uses_registry_aliases_without_claiming_durable_acp_support() {
+        let registry = CommandRegistry::mvp();
+        let help = help_text(&registry, None);
+        assert!(help.contains("/agent <name-or-id>"));
+        assert!(help.contains("/use"));
+        assert!(help.contains("/cancel"));
+
+        let runs = help_text(&registry, Some(CommandName::Runs));
+        assert!(runs.contains("shared Polkagent command registry"));
+        assert!(runs.contains("not supported by ACP yet"));
     }
 
     #[test]

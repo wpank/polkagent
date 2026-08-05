@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
-    SessionNotification, SessionUpdate, StopReason, TextContent,
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification,
+    SessionUpdate, StopReason, TextContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, LineDirection};
@@ -162,14 +162,22 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
                     .block_task()
                     .await?;
 
-                let help = connection
-                    .send_request(PromptRequest::new(
-                        session.session_id.clone(),
-                        vec![ContentBlock::Text(TextContent::new("/help"))],
-                    ))
-                    .block_task()
-                    .await?;
-                assert_eq!(help.stop_reason, StopReason::EndTurn);
+                for command in [
+                    "/commands stop",
+                    "/st",
+                    "/agents",
+                    "/use editor-fixture",
+                    "/runs",
+                ] {
+                    let response = connection
+                        .send_request(PromptRequest::new(
+                            session.session_id.clone(),
+                            vec![ContentBlock::Text(TextContent::new(command))],
+                        ))
+                        .block_task()
+                        .await?;
+                    assert_eq!(response.stop_reason, StopReason::EndTurn);
+                }
 
                 let run = connection
                     .send_request(PromptRequest::new(
@@ -188,21 +196,57 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
         .expect("official ACP client completed the subprocess session");
 
     let observed = observed.lock().expect("observed updates lock");
+    assert_editor_command_updates(&observed);
+}
+
+fn assert_editor_command_updates(observed: &ObservedUpdates) {
     assert_eq!(
         observed.command_names,
-        vec!["help", "status", "agents", "agent"]
+        vec!["help", "status", "agents", "agent", "cancel"]
     );
     assert!(
         observed
             .messages
             .iter()
-            .any(|message| message.contains("Polkagent ACP commands")),
-        "slash-command response was not streamed: {:?}",
+            .any(|message| message.contains("/cancel") && message.contains("/stop")),
+        "registry-backed detailed help was not streamed: {:?}",
         observed.messages
     );
     assert!(
-        observed.messages.len() >= 2,
-        "the real Polkagent run did not stream an agent message: {:?}",
+        observed
+            .messages
+            .iter()
+            .any(|message| message.contains("Active prompt: no")),
+        "status alias did not report truthful editor state: {:?}",
+        observed.messages
+    );
+    assert!(
+        observed
+            .messages
+            .iter()
+            .any(|message| message.contains("Active agents:")),
+        "agent discovery was not streamed: {:?}",
+        observed.messages
+    );
+    assert!(
+        observed
+            .messages
+            .iter()
+            .any(|message| message.contains("Selected agent 'editor-fixture'")),
+        "agent-selection alias was not actionable: {:?}",
+        observed.messages
+    );
+    assert!(
+        observed.messages.iter().any(|message| {
+            message.contains("shared Polkagent command registry")
+                && message.contains("not supported by ACP yet")
+        }),
+        "unsupported durable command was not declined truthfully: {:?}",
+        observed.messages
+    );
+    assert!(
+        observed.messages.len() >= 6,
+        "the real Polkagent run did not stream an agent message after commands: {:?}",
         observed.messages
     );
     assert_protocol_stdout(&observed.stdout_lines);
@@ -325,8 +369,14 @@ async fn official_client_cancels_active_run_and_persists_terminal_state() {
                     .await
                     .expect("provider request did not become active")
                     .expect("provider request signal dropped");
-                connection
-                    .send_notification(CancelNotification::new(session.session_id.clone()))?;
+                let cancel = connection
+                    .send_request(PromptRequest::new(
+                        session.session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new("/stop"))],
+                    ))
+                    .block_task()
+                    .await?;
+                assert_eq!(cancel.stop_reason, StopReason::EndTurn);
 
                 let response = tokio::time::timeout(Duration::from_secs(10), &mut prompt)
                     .await
@@ -361,6 +411,14 @@ async fn official_client_cancels_active_run_and_persists_terminal_state() {
             .iter()
             .any(|message| message.contains("Run cancelled: cancelled by user")),
         "cancelled run update was not emitted: {:?}",
+        observed.messages
+    );
+    assert!(
+        observed
+            .messages
+            .iter()
+            .any(|message| message.contains("Cancellation requested for the active editor prompt")),
+        "slash-command cancellation acknowledgement was not emitted: {:?}",
         observed.messages
     );
 }

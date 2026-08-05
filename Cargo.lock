@@ -4054,6 +4054,7 @@ dependencies = [
  "agent-client-protocol",
  "async-trait",
  "futures",
+ "polkagent-interaction",
  "polkagent-telemetry",
  "thiserror 2.0.19",
  "tokio",
