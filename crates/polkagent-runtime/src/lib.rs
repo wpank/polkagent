@@ -32,11 +32,13 @@
 mod adapters;
 mod error;
 mod factory;
+mod interaction;
 mod options;
 mod readiness;
 
 pub use error::RuntimeError;
 pub use factory::{PolkagentRuntime, RuntimeFactory};
+pub use interaction::DurableInteractionService;
 pub use options::{AdapterPolicy, RuntimeOptions};
 pub use readiness::{
     ComponentReadiness, ComponentState, ConfigSource, ReadinessWarning, RuntimeReadiness,

@@ -281,6 +281,11 @@ impl InteractionContent {
 /// A request to append a user turn and start linked execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptRequest {
+    /// Optional caller-generated idempotency identity. Retrying the same
+    /// interaction and turn ID with identical prompt/config returns the
+    /// original handle and never starts execution twice.
+    #[serde(default)]
+    pub turn_id: Option<InteractionTurnId>,
     /// Durable conversation/interaction identity.
     pub conversation_id: ConversationId,
     /// Ordered prompt content blocks.
@@ -624,6 +629,7 @@ mod tests {
     #[test]
     fn prompt_requires_nonempty_valid_content() {
         let mut request = PromptRequest {
+            turn_id: None,
             conversation_id: ConversationId::new(),
             content: Vec::new(),
             config_overrides: InteractionOverrides::default(),

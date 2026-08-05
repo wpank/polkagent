@@ -11,9 +11,12 @@ description = "Production runtime composition for Polkagent surfaces"
 polkagent-chain-fake       = { path = "../polkagent-chain-fake" }
 polkagent-chain-subxt      = { path = "../polkagent-chain-subxt" }
 polkagent-chain-trait      = { path = "../polkagent-chain-trait" }
+polkagent-artifact         = { path = "../polkagent-artifact" }
 polkagent-config           = { path = "../polkagent-config" }
+polkagent-conversation     = { path = "../polkagent-conversation" }
 polkagent-core             = { path = "../polkagent-core" }
 polkagent-event            = { path = "../polkagent-event" }
+polkagent-interaction      = { path = "../polkagent-interaction" }
 polkagent-executor-anthropic = { path = "../polkagent-executor-anthropic" }
 polkagent-executor-fake    = { path = "../polkagent-executor-fake" }
 polkagent-executor-gemini  = { path = "../polkagent-executor-gemini" }
@@ -29,19 +32,24 @@ polkagent-harness-trait    = { path = "../polkagent-harness-trait" }
 polkagent-memory           = { path = "../polkagent-memory" }
 polkagent-service          = { path = "../polkagent-service" }
 polkagent-store-sqlite     = { path = "../polkagent-store-sqlite" }
+polkagent-store-trait      = { path = "../polkagent-store-trait" }
 polkagent-tool             = { path = "../polkagent-tool" }
 polkagent-tool-governance  = { path = "../polkagent-tool-governance" }
 polkagent-tool-treasury    = { path = "../polkagent-tool-treasury" }
 
 dirs       = { workspace = true }
+async-trait = { workspace = true }
+chrono     = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }
 tokio      = { workspace = true }
 tracing    = { workspace = true }
+uuid       = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+rusqlite = { workspace = true }
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 
 [lints]

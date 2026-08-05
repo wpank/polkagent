@@ -214,6 +214,24 @@ impl RunManager {
             .map_err(|error| RunError::Store(error.to_string()))
     }
 
+    /// Terminalize a prepared run that cannot be activated safely.
+    ///
+    /// The run first becomes observable through `RunCreated`, then receives one durable `RunFailed`
+    /// event. This is used to close crash/compensation windows after a durable
+    /// interaction turn has already linked the prepared row.
+    pub async fn fail_prepared_run(&self, run_id: RunId, reason: &str) -> Result<(), RunError> {
+        let current = self.current_state(run_id).await?;
+        if current != RunState::Created {
+            return Err(RunError::Transition(crate::error::TransitionError::new(
+                current,
+                RunTransition::Fail(reason.to_owned()),
+                "prepared run must still be in the created state",
+            )));
+        }
+        self.emit_event(run_id, EventKind::RunCreated).await?;
+        self.fail_run(run_id, reason).await
+    }
+
     /// Enqueue a run: transition `Created → Queued`.
     ///
     /// # Errors

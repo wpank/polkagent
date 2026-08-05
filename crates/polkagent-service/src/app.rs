@@ -1099,6 +1099,26 @@ impl AppService {
         Ok(())
     }
 
+    /// Durably fail a prepared run that is already linked to an interaction.
+    pub async fn fail_prepared_run(&self, run_id: RunId, reason: &str) -> Result<(), ServiceError> {
+        self.run_manager.fail_prepared_run(run_id, reason).await?;
+        Ok(())
+    }
+
+    /// Terminalize non-terminal linked work after activation or execution
+    /// setup fails. Existing terminal state is an idempotent success.
+    pub async fn terminalize_run_failure(
+        &self,
+        run_id: RunId,
+        reason: &str,
+    ) -> Result<(), ServiceError> {
+        if self.run_manager.get_state(run_id).await?.is_terminal() {
+            return Ok(());
+        }
+        self.run_manager.fail_run(run_id, reason).await?;
+        Ok(())
+    }
+
     /// Cancel a running or queued run.
     ///
     /// # Errors

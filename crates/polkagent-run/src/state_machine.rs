@@ -11,7 +11,7 @@
 //! Running     → AwaitingApproval (RequestApproval)
 //! Running     → WaitingEffect   (DispatchEffects)
 //! Running     → Completing      (CompleteStep - final turn done)
-//! Running     → Failed          (Fail)
+//! Created/Queued/Running → Failed (Fail)
 //! Running     → Cancelled       (Cancel)
 //! Running     → TimedOut        (Timeout)
 //! AwaitingApproval → Running    (GrantApproval)
@@ -176,7 +176,9 @@ impl RunStateMachine {
                 Ok(RunState::Cancelled { reason })
             }
             (
-                RunState::Running
+                RunState::Created
+                | RunState::Queued
+                | RunState::Running
                 | RunState::AwaitingApproval { .. }
                 | RunState::WaitingEffect { .. }
                 | RunState::Completing,

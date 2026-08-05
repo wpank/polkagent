@@ -64,12 +64,27 @@ pub struct NewInteractionTurn {
     pub config: InteractionConfig,
     /// User message persisted before execution begins.
     pub user_message_id: Uuid,
+    /// Validated plain-text user transcript content inserted atomically with
+    /// the turn. Rich content remains unsupported until its execution mapping
+    /// is composed end to end.
+    pub user_message_text: String,
     /// Runs created with the interaction correlation already attached.
     pub runs: Vec<InteractionRunLink>,
     /// Caller-generated identity for the initial `turn_started` event.
     pub initial_event_id: InteractionEventId,
     /// Durable creation timestamp.
     pub started_at: DateTime<Utc>,
+}
+
+/// Assistant transcript input committed atomically with a terminal event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAssistantMessage {
+    /// Caller-generated idempotent message identity.
+    pub message_id: Uuid,
+    /// Complete accumulated assistant text.
+    pub text: String,
+    /// Transcript timestamp shared with the terminal observation.
+    pub created_at: DateTime<Utc>,
 }
 
 impl NewInteractionTurn {
@@ -83,6 +98,11 @@ impl NewInteractionTurn {
         if self.runs.is_empty() {
             return Err(InteractionError::invalid_request(
                 "interaction turn must link at least one run",
+            ));
+        }
+        if self.user_message_text.trim().is_empty() {
+            return Err(InteractionError::invalid_request(
+                "interaction user message cannot be empty",
             ));
         }
         self.config.validate()?;
@@ -215,6 +235,23 @@ pub trait InteractionStore: Send + Sync {
         event: NewInteractionEvent,
     ) -> Result<InteractionEventEnvelope, InteractionError>;
 
+    /// Atomically attach the durable assistant transcript message and append
+    /// the exactly-once terminal event for a turn.
+    ///
+    /// Retrying the same event/message identities with identical input returns
+    /// the original envelope. Implementations that cannot provide one atomic
+    /// write must fail closed.
+    async fn finish_turn(
+        &self,
+        _event: NewInteractionEvent,
+        _assistant_message: NewAssistantMessage,
+    ) -> Result<InteractionEventEnvelope, InteractionError> {
+        Err(InteractionError::new(
+            crate::InteractionErrorCode::Unsupported,
+            "atomic interaction turn completion is unavailable for this store",
+        ))
+    }
+
     /// Replay events strictly after `after_sequence`, in ascending order.
     async fn load_events(
         &self,
@@ -254,6 +291,7 @@ mod tests {
                 budget: None,
             },
             user_message_id: Uuid::now_v7(),
+            user_message_text: "hello".to_owned(),
             runs,
             initial_event_id: InteractionEventId::new(),
             started_at: Utc::now(),

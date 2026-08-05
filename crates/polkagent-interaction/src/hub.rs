@@ -11,7 +11,7 @@ use crate::error::{InteractionError, InteractionErrorCode};
 use crate::event::InteractionEventEnvelope;
 use crate::ids::InteractionTurnId;
 use crate::model::SubscriptionRequest;
-use crate::persistence::{InteractionStore, NewInteractionEvent};
+use crate::persistence::{InteractionStore, NewAssistantMessage, NewInteractionEvent};
 use crate::service::{BoxInteractionEventStream, InteractionEventStream, StreamError};
 
 const REPLAY_PAGE_SIZE: u16 = 1_000;
@@ -58,6 +58,28 @@ impl InteractionEventHub {
         event: NewInteractionEvent,
     ) -> Result<InteractionEventEnvelope, InteractionError> {
         let envelope = self.store.append_event(event).await?;
+        self.fan_out(&envelope).await;
+        Ok(envelope)
+    }
+
+    /// Atomically finish a turn in the durable store, then offer the terminal
+    /// envelope to every live subscriber.
+    pub async fn publish_terminal(
+        &self,
+        event: NewInteractionEvent,
+        assistant_message: NewAssistantMessage,
+    ) -> Result<InteractionEventEnvelope, InteractionError> {
+        if !event.event.is_terminal() {
+            return Err(InteractionError::invalid_request(
+                "publish_terminal requires a terminal interaction event",
+            ));
+        }
+        let envelope = self.store.finish_turn(event, assistant_message).await?;
+        self.fan_out(&envelope).await;
+        Ok(envelope)
+    }
+
+    async fn fan_out(&self, envelope: &InteractionEventEnvelope) {
         let mut channels = self.channels.lock().await;
         if let Some(senders) = channels.get_mut(&envelope.conversation_id) {
             senders.retain(|sender| {
@@ -71,7 +93,6 @@ impl InteractionEventHub {
                 channels.remove(&envelope.conversation_id);
             }
         }
-        Ok(envelope)
     }
 
     /// Attach a bounded receiver, replay durable events, then follow live work.

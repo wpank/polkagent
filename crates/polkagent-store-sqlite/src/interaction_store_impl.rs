@@ -4,12 +4,14 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use polkagent_conversation::types::{MessageContent, MessageRole};
 use polkagent_core::ids::{ConversationId, RunId};
 use polkagent_interaction::{
     InteractionError, InteractionErrorCode, InteractionEvent, InteractionEventEnvelope,
     InteractionEventId, InteractionRunLink, InteractionState, InteractionStore, InteractionSummary,
-    InteractionTurnId, ListInteractionsRequest, NewInteraction, NewInteractionEvent,
-    NewInteractionTurn, StoredInteractionTurn, TurnHandle, TurnState, TurnSummary,
+    InteractionTurnId, ListInteractionsRequest, NewAssistantMessage, NewInteraction,
+    NewInteractionEvent, NewInteractionTurn, StoredInteractionTurn, TurnHandle, TurnState,
+    TurnSummary,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use uuid::Uuid;
@@ -33,6 +35,48 @@ impl SqliteInteractionStore {
     #[must_use]
     pub const fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Create a turn and report whether this call won the durable insert.
+    ///
+    /// A deterministic retry with the same caller turn identity returns the
+    /// stored winner and `false`, even though its locally sampled start time
+    /// differs. Callers use the outcome to ensure only the winner activates
+    /// the correlated run.
+    pub async fn create_turn_once(
+        &self,
+        turn: NewInteractionTurn,
+    ) -> Result<(StoredInteractionTurn, bool), InteractionError> {
+        turn.validate()?;
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || create_turn_blocking(&pool, &turn))
+            .await
+            .map_err(join_error)?
+    }
+
+    /// Remove correlated `created` runs that were never attached to a durable
+    /// interaction turn because the process stopped between preparation
+    /// phases. Runtime startup calls this before accepting prompts.
+    pub async fn discard_orphan_prepared_runs(&self) -> Result<u32, InteractionError> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let changed = writer
+                .execute(
+                    "DELETE FROM runs
+                     WHERE state = 'created' AND conversation_id IS NOT NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM interaction_turn_runs links
+                           WHERE links.run_id = runs.id
+                       )",
+                    [],
+                )
+                .map_err(|error| backend_error("discard orphan prepared runs", &error))?;
+            u32::try_from(changed)
+                .map_err(|_| invariant_error("orphan prepared run count exceeds supported range"))
+        })
+        .await
+        .map_err(join_error)?
     }
 }
 
@@ -200,11 +244,7 @@ impl InteractionStore for SqliteInteractionStore {
         &self,
         turn: NewInteractionTurn,
     ) -> Result<StoredInteractionTurn, InteractionError> {
-        turn.validate()?;
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || create_turn_blocking(&pool, &turn))
-            .await
-            .map_err(join_error)?
+        self.create_turn_once(turn).await.map(|(stored, _)| stored)
     }
 
     async fn load_turn(
@@ -254,6 +294,22 @@ impl InteractionStore for SqliteInteractionStore {
     ) -> Result<InteractionEventEnvelope, InteractionError> {
         let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || append_event_blocking(&pool, &event))
+            .await
+            .map_err(join_error)?
+    }
+
+    async fn finish_turn(
+        &self,
+        event: NewInteractionEvent,
+        assistant_message: NewAssistantMessage,
+    ) -> Result<InteractionEventEnvelope, InteractionError> {
+        if !event.event.is_terminal() {
+            return Err(InteractionError::invalid_request(
+                "finish_turn requires a terminal interaction event",
+            ));
+        }
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || finish_turn_blocking(&pool, &event, &assistant_message))
             .await
             .map_err(join_error)?
     }
@@ -412,7 +468,7 @@ fn decode_interaction_state(value: &str) -> Result<InteractionState, Interaction
 fn create_turn_blocking(
     pool: &SqlitePool,
     turn: &NewInteractionTurn,
-) -> Result<StoredInteractionTurn, InteractionError> {
+) -> Result<(StoredInteractionTurn, bool), InteractionError> {
     let mut writer = pool.writer();
     let transaction = writer
         .transaction()
@@ -435,18 +491,23 @@ fn create_turn_blocking(
             && existing.target == turn.target
             && existing.config == turn.config
             && existing.user_message_id == turn.user_message_id
+            && user_message_matches(
+                &transaction,
+                turn.user_message_id,
+                turn.conversation_id,
+                &turn.user_message_text,
+            )?
             && existing.runs == turn.runs
-            && existing.summary.started_at == turn.started_at
             && initial_event_id == turn.initial_event_id
         {
-            return Ok(existing);
+            return Ok((existing, false));
         }
         return Err(conflict_error(
             "interaction turn id is already bound to different durable input",
         ));
     }
 
-    ensure_message_correlation(&transaction, turn.user_message_id, turn.conversation_id)?;
+    insert_or_validate_user_message(&transaction, turn)?;
     for run in &turn.runs {
         ensure_run_correlation(&transaction, run.run_id, turn.conversation_id)?;
     }
@@ -510,7 +571,7 @@ fn create_turn_blocking(
     transaction
         .commit()
         .map_err(|error| backend_error("commit interaction turn", &error))?;
-    Ok(stored)
+    Ok((stored, true))
 }
 
 fn append_event_blocking(
@@ -562,6 +623,79 @@ fn append_event_blocking(
     transaction
         .commit()
         .map_err(|error| backend_error("commit interaction event", &error))?;
+    Ok(envelope)
+}
+
+fn finish_turn_blocking(
+    pool: &SqlitePool,
+    event: &NewInteractionEvent,
+    assistant_message: &NewAssistantMessage,
+) -> Result<InteractionEventEnvelope, InteractionError> {
+    let mut writer = pool.writer();
+    let transaction = writer
+        .transaction()
+        .map_err(|error| backend_error("begin interaction completion transaction", &error))?;
+
+    if let Some(existing) = load_event_by_id(&transaction, event.event_id)? {
+        let stored = load_turn_conn(&transaction, event.turn_id)?;
+        if existing.conversation_id == event.conversation_id
+            && existing.turn_id == event.turn_id
+            && existing.timestamp == event.timestamp
+            && existing.event == event.event
+            && stored.assistant_message_id == Some(assistant_message.message_id)
+            && transcript_message_matches(
+                &transaction,
+                assistant_message.message_id,
+                event.conversation_id,
+                MessageRole::Assistant,
+                &assistant_message.text,
+                assistant_message.created_at,
+            )?
+        {
+            return Ok(existing);
+        }
+        return Err(conflict_error(
+            "terminal interaction event id is already bound to different durable input",
+        ));
+    }
+
+    insert_or_validate_assistant_message(&transaction, event.conversation_id, assistant_message)?;
+    let state = transaction
+        .query_row(
+            "SELECT state FROM interaction_turns WHERE id = ?1 AND conversation_id = ?2",
+            rusqlite::params![event.turn_id.to_string(), event.conversation_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| backend_error("load completing interaction turn", &error))?
+        .ok_or_else(|| not_found_error("interaction turn was not found for this interaction"))?;
+    if decode_turn_state(&state)?.is_terminal() {
+        return Err(conflict_error(
+            "interaction turn already has a different terminal event",
+        ));
+    }
+
+    let changed = transaction
+        .execute(
+            "UPDATE interaction_turns SET assistant_message_id = ?1
+             WHERE id = ?2 AND assistant_message_id IS NULL",
+            rusqlite::params![
+                assistant_message.message_id.to_string(),
+                event.turn_id.to_string()
+            ],
+        )
+        .map_err(|error| write_error("attach interaction assistant message", &error))?;
+    if changed != 1 {
+        return Err(conflict_error(
+            "interaction turn already has a different assistant message",
+        ));
+    }
+
+    let envelope = insert_event(&transaction, event)?;
+    project_turn_state(&transaction, event)?;
+    transaction
+        .commit()
+        .map_err(|error| backend_error("commit interaction completion", &error))?;
     Ok(envelope)
 }
 
@@ -659,26 +793,197 @@ fn turn_exists(
         .map_err(|error| backend_error("check interaction turn", &error))
 }
 
-fn ensure_message_correlation(
+fn insert_or_validate_user_message(
+    transaction: &Transaction<'_>,
+    turn: &NewInteractionTurn,
+) -> Result<(), InteractionError> {
+    if message_exists(transaction, turn.user_message_id)? {
+        if transcript_message_matches(
+            transaction,
+            turn.user_message_id,
+            turn.conversation_id,
+            MessageRole::User,
+            &turn.user_message_text,
+            turn.started_at,
+        )? {
+            return Ok(());
+        }
+        return Err(conflict_error(
+            "interaction user message identity is bound to different content",
+        ));
+    }
+    insert_transcript_message(
+        transaction,
+        turn.user_message_id,
+        turn.conversation_id,
+        MessageRole::User,
+        &turn.user_message_text,
+        turn.started_at,
+    )
+}
+
+fn insert_or_validate_assistant_message(
+    transaction: &Transaction<'_>,
+    conversation_id: ConversationId,
+    message: &NewAssistantMessage,
+) -> Result<(), InteractionError> {
+    if message_exists(transaction, message.message_id)? {
+        if transcript_message_matches(
+            transaction,
+            message.message_id,
+            conversation_id,
+            MessageRole::Assistant,
+            &message.text,
+            message.created_at,
+        )? {
+            return Ok(());
+        }
+        return Err(conflict_error(
+            "interaction assistant message identity is bound to different content",
+        ));
+    }
+    insert_transcript_message(
+        transaction,
+        message.message_id,
+        conversation_id,
+        MessageRole::Assistant,
+        &message.text,
+        message.created_at,
+    )
+}
+
+fn message_exists(connection: &Connection, message_id: Uuid) -> Result<bool, InteractionError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE id = ?1)",
+            [message_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(|error| backend_error("check interaction transcript message", &error))
+}
+
+fn user_message_matches(
     connection: &Connection,
     message_id: Uuid,
     conversation_id: ConversationId,
-) -> Result<(), InteractionError> {
+    text: &str,
+) -> Result<bool, InteractionError> {
     let stored = connection
         .query_row(
-            "SELECT conversation_id FROM conversation_messages WHERE id = ?1",
+            "SELECT conversation_id, role, content_json
+             FROM conversation_messages WHERE id = ?1",
             [message_id.to_string()],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()
-        .map_err(|error| backend_error("load interaction user message", &error))?
-        .ok_or_else(|| not_found_error("interaction user message was not found"))?;
-    if stored != conversation_id.to_string() {
-        return Err(conflict_error(
-            "interaction user message belongs to another conversation",
+        .map_err(|error| backend_error("load interaction user message", &error))?;
+    let Some((stored_conversation, stored_role, content_json)) = stored else {
+        return Ok(false);
+    };
+    Ok(stored_conversation == conversation_id.to_string()
+        && stored_role == encode_message_role(MessageRole::User)
+        && decode_json::<MessageContent>("interaction transcript content", &content_json)?
+            == MessageContent::Text {
+                text: text.to_owned(),
+            })
+}
+
+fn transcript_message_matches(
+    connection: &Connection,
+    message_id: Uuid,
+    conversation_id: ConversationId,
+    role: MessageRole,
+    text: &str,
+    created_at: DateTime<Utc>,
+) -> Result<bool, InteractionError> {
+    let stored = connection
+        .query_row(
+            "SELECT conversation_id, role, content_json, created_at
+             FROM conversation_messages WHERE id = ?1",
+            [message_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| backend_error("load interaction transcript message", &error))?;
+    let Some((stored_conversation, stored_role, content_json, stored_created_at)) = stored else {
+        return Ok(false);
+    };
+    let expected_content = MessageContent::Text {
+        text: text.to_owned(),
+    };
+    Ok(stored_conversation == conversation_id.to_string()
+        && stored_role == encode_message_role(role)
+        && decode_json::<MessageContent>("interaction transcript content", &content_json)?
+            == expected_content
+        && parse_timestamp("interaction transcript timestamp", &stored_created_at)? == created_at)
+}
+
+fn insert_transcript_message(
+    transaction: &Transaction<'_>,
+    message_id: Uuid,
+    conversation_id: ConversationId,
+    role: MessageRole,
+    text: &str,
+    created_at: DateTime<Utc>,
+) -> Result<(), InteractionError> {
+    let content = encode_json(
+        "interaction transcript content",
+        &MessageContent::Text {
+            text: text.to_owned(),
+        },
+    )?;
+    let changed = transaction
+        .execute(
+            "INSERT INTO conversation_messages
+                 (id, conversation_id, role, content_json, token_count, created_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+            rusqlite::params![
+                message_id.to_string(),
+                conversation_id.to_string(),
+                encode_message_role(role),
+                content,
+                created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|error| write_error("insert interaction transcript message", &error))?;
+    if changed != 1 {
+        return Err(invariant_error(
+            "interaction transcript insert changed an unexpected number of rows",
         ));
     }
+    let updated = transaction
+        .execute(
+            "UPDATE conversations
+             SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![created_at.to_rfc3339(), conversation_id.to_string()],
+        )
+        .map_err(|error| write_error("update interaction transcript projection", &error))?;
+    if updated != 1 {
+        return Err(not_found_error("interaction conversation was not found"));
+    }
     Ok(())
+}
+
+const fn encode_message_role(role: MessageRole) -> &'static str {
+    match role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::System => "system",
+        MessageRole::Tool => "tool",
+    }
 }
 
 fn ensure_run_correlation(
@@ -971,6 +1276,7 @@ mod tests {
     use polkagent_interaction::{
         InteractionConfig, InteractionEventId, InteractionTarget, RunRole, TurnResult, UsageView,
     };
+    use polkagent_store_trait::{RunStatus, RunStore};
 
     use super::*;
     use crate::migrations;
@@ -1006,19 +1312,10 @@ mod tests {
                 .execute(
                     "INSERT INTO conversations
                          (id, agent_id, message_count, metadata_json, created_at, updated_at)
-                     VALUES (?1, ?2, 1, '{}', ?3, ?3)",
+                     VALUES (?1, ?2, 0, '{}', ?3, ?3)",
                     rusqlite::params![conversation_id.to_string(), agent_id.to_string(), now],
                 )
                 .expect("insert conversation");
-            writer
-                .execute(
-                    "INSERT INTO conversation_messages
-                         (id, conversation_id, role, content_json, created_at)
-                     VALUES (?1, ?2, 'user',
-                             '{\"type\":\"text\",\"text\":\"hello\"}', ?3)",
-                    rusqlite::params![message_id.to_string(), conversation_id.to_string(), now],
-                )
-                .expect("insert user message");
             writer
                 .execute(
                     "INSERT INTO runs
@@ -1051,6 +1348,7 @@ mod tests {
             target: target.clone(),
             config: InteractionConfig::new(target),
             user_message_id: fixture.message_id,
+            user_message_text: "hello".to_owned(),
             runs: vec![InteractionRunLink {
                 run_id: fixture.run_id,
                 role: RunRole::Primary,
@@ -1232,6 +1530,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deterministic_retry_uses_durable_winner_despite_new_timestamp() {
+        let fixture = fixture();
+        let first = new_turn(&fixture);
+        let (winner, created) = fixture
+            .store
+            .create_turn_once(first.clone())
+            .await
+            .expect("create winner");
+        assert!(created);
+
+        let mut retry = first;
+        retry.started_at += chrono::Duration::seconds(1);
+        let (stored, created) = fixture
+            .store
+            .create_turn_once(retry)
+            .await
+            .expect("load durable winner");
+        assert!(!created);
+        assert_eq!(stored, winner);
+
+        let message_count: i64 = {
+            let writer = fixture.store.pool().writer();
+            writer
+                .query_row(
+                    "SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?1",
+                    [fixture.conversation_id.to_string()],
+                    |row| row.get(0),
+                )
+                .expect("count transcript messages")
+        };
+        assert_eq!(message_count, 1);
+
+        RunStore::delete_prepared(fixture.store.pool(), fixture.run_id)
+            .await
+            .expect("linked winner makes compensation a safe no-op");
+        let run = RunStore::get(fixture.store.pool(), fixture.run_id)
+            .await
+            .expect("linked winner run remains durable");
+        assert_eq!(run.status, RunStatus::new("created"));
+    }
+
+    #[tokio::test]
+    async fn finish_turn_is_atomic_idempotent_and_conflicts_on_content() {
+        let fixture = fixture();
+        let turn = new_turn(&fixture);
+        fixture
+            .store
+            .create_turn(turn.clone())
+            .await
+            .expect("create turn");
+        let timestamp = Utc::now();
+        let terminal = NewInteractionEvent {
+            event_id: InteractionEventId::new(),
+            conversation_id: fixture.conversation_id,
+            turn_id: turn.turn_id,
+            timestamp,
+            event: InteractionEvent::TurnCompleted {
+                result: TurnResult {
+                    text: "answer".to_owned(),
+                    run_ids: vec![fixture.run_id],
+                    usage: UsageView::default(),
+                },
+            },
+        };
+        let assistant = NewAssistantMessage {
+            message_id: Uuid::now_v7(),
+            text: "answer".to_owned(),
+            created_at: timestamp,
+        };
+        let first = fixture
+            .store
+            .finish_turn(terminal.clone(), assistant.clone())
+            .await
+            .expect("finish turn");
+        let retry = fixture
+            .store
+            .finish_turn(terminal.clone(), assistant.clone())
+            .await
+            .expect("retry terminal write");
+        assert_eq!(retry, first);
+
+        let mut conflicting = assistant.clone();
+        conflicting.text = "different answer".to_owned();
+        let error = fixture
+            .store
+            .finish_turn(terminal, conflicting)
+            .await
+            .expect_err("same terminal identities cannot change transcript content");
+        assert_eq!(error.code, InteractionErrorCode::Conflict);
+
+        let stored = fixture
+            .store
+            .load_turn(turn.turn_id)
+            .await
+            .expect("load completed turn");
+        assert_eq!(stored.assistant_message_id, Some(assistant.message_id));
+        assert_eq!(stored.summary.state, TurnState::Completed);
+        let writer = fixture.store.pool().writer();
+        let (messages, terminal_events): (i64, i64) = (
+            writer
+                .query_row(
+                    "SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?1",
+                    [fixture.conversation_id.to_string()],
+                    |row| row.get(0),
+                )
+                .expect("count transcript messages"),
+            writer
+                .query_row(
+                    "SELECT COUNT(*) FROM interaction_events
+                     WHERE turn_id = ?1 AND is_terminal = 1",
+                    [turn.turn_id.to_string()],
+                    |row| row.get(0),
+                )
+                .expect("count terminal events"),
+        );
+        assert_eq!(messages, 2);
+        assert_eq!(terminal_events, 1);
+    }
+
+    #[tokio::test]
     async fn creation_requires_run_correlation_at_run_creation_time() {
         let fixture = fixture();
         let other_conversation = ConversationId::new();
@@ -1256,5 +1674,14 @@ mod tests {
             .await
             .expect("list turns")
             .is_empty());
+        let writer = fixture.store.pool().writer();
+        let messages: i64 = writer
+            .query_row(
+                "SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?1",
+                [fixture.conversation_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count messages after rolled-back turn");
+        assert_eq!(messages, 0);
     }
 }

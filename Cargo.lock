@@ -3712,11 +3712,15 @@ dependencies = [
 name = "polkagent-runtime"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "dirs",
+ "polkagent-artifact",
  "polkagent-chain-fake",
  "polkagent-chain-subxt",
  "polkagent-chain-trait",
  "polkagent-config",
+ "polkagent-conversation",
  "polkagent-core",
  "polkagent-event",
  "polkagent-executor-anthropic",
@@ -3731,6 +3735,7 @@ dependencies = [
  "polkagent-harness-codex",
  "polkagent-harness-cursor",
  "polkagent-harness-trait",
+ "polkagent-interaction",
  "polkagent-memory",
  "polkagent-service",
  "polkagent-store-sqlite",
@@ -3738,12 +3743,14 @@ dependencies = [
  "polkagent-tool",
  "polkagent-tool-governance",
  "polkagent-tool-treasury",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

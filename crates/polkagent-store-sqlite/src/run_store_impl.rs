@@ -150,15 +150,45 @@ impl RunStore for SqlitePool {
             let now = chrono::Utc::now().to_rfc3339();
             let id_str = run_id.to_string();
             let writer = pool.writer();
-            writer
+            let changed = writer
                 .execute(
-                    "INSERT INTO runs
+                    "INSERT OR IGNORE INTO runs
                          (id, agent_id, conversation_id, state, params_json, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, '{}', ?5, ?6)",
-                    rusqlite::params![id_str, agent_id, conversation_id, status_str, now, now],
+                    rusqlite::params![
+                        &id_str,
+                        &agent_id,
+                        &conversation_id,
+                        &status_str,
+                        &now,
+                        &now
+                    ],
                 )
-                .map_err(|e| map_sqlite_err_with_id(e, &id_str))?;
-            Ok(())
+                .map_err(map_sqlite_err)?;
+            if changed == 1 {
+                return Ok(());
+            }
+            let existing = writer
+                .query_row(
+                    "SELECT agent_id, conversation_id, state FROM runs WHERE id = ?1",
+                    [&id_str],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .map_err(map_sqlite_err)?;
+            if conversation_id.is_some() && existing == (agent_id, conversation_id, status_str) {
+                Ok(())
+            } else {
+                Err(StoreError::Conflict {
+                    resource_type: "Run",
+                    id: id_str,
+                })
+            }
         })
         .await
         .map_err(|e| StoreError::Internal {
@@ -173,7 +203,12 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
             let changed = writer
                 .execute(
-                    "DELETE FROM runs WHERE id = ?1 AND state = 'created'",
+                    "DELETE FROM runs
+                     WHERE id = ?1 AND state = 'created'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM interaction_turn_runs links
+                           WHERE links.run_id = runs.id
+                       )",
                     [&id],
                 )
                 .map_err(map_sqlite_err)?;
@@ -187,7 +222,20 @@ impl RunStore for SqlitePool {
                     |row| row.get::<_, bool>(0),
                 )
                 .map_err(map_sqlite_err)?;
-            if exists {
+            let linked = writer
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM interaction_turn_runs WHERE run_id = ?1
+                     )",
+                    [&id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(map_sqlite_err)?;
+            if linked {
+                // A concurrent winner durably attached this deterministic run
+                // identity. Compensation must not delete work it does not own.
+                Ok(())
+            } else if exists {
                 Err(StoreError::InvalidTransition {
                     message: format!("run {id} is no longer prepared"),
                 })

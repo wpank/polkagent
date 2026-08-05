@@ -11,8 +11,8 @@ use polkagent_store_sqlite::{migrations, SqlitePool, SqliteRunStore};
 
 use crate::adapters::{agent, chain, harness, provider};
 use crate::{
-    ComponentReadiness, ComponentState, ConfigSource, ReadinessWarning, RuntimeError,
-    RuntimeOptions, RuntimeReadiness, WarningCode,
+    ComponentReadiness, ComponentState, ConfigSource, DurableInteractionService, ReadinessWarning,
+    RuntimeError, RuntimeOptions, RuntimeReadiness, WarningCode,
 };
 
 /// A process-wide application runtime shared by executable surfaces.
@@ -24,6 +24,7 @@ pub struct PolkagentRuntime {
     app: Arc<AppService>,
     pool: SqlitePool,
     event_bus: EventBus,
+    interactions: Arc<DurableInteractionService>,
     readiness: Arc<RuntimeReadiness>,
     workdir: Arc<PathBuf>,
 }
@@ -59,6 +60,11 @@ impl PolkagentRuntime {
     /// Subscribe to events published after this call.
     pub fn subscribe_events(&self) -> EventReceiver {
         self.event_bus.subscribe()
+    }
+
+    /// Return the durable headless interaction service shared by all surfaces.
+    pub fn interactions(&self) -> &Arc<DurableInteractionService> {
+        &self.interactions
     }
 
     /// Return the resolved live service configuration.
@@ -214,6 +220,18 @@ impl RuntimeFactory {
         let (rehydrated_agents, normalized_legacy_agents) =
             rehydrate_agents(&service, &pool, options.model_override.as_deref())?;
 
+        let interactions = Arc::new(DurableInteractionService::new(
+            Arc::clone(&service),
+            pool.clone(),
+        ));
+        let recovered_interaction_turns =
+            interactions
+                .recover()
+                .await
+                .map_err(|error| RuntimeError::Recovery {
+                    message: format!("durable interaction recovery failed: {error}"),
+                })?;
+
         let timeout_secs = service.config().execution.default_timeout_secs;
         service.start_timeout_enforcer(
             TimeoutConfig::with_global_max(Duration::from_secs(timeout_secs)),
@@ -288,6 +306,7 @@ impl RuntimeFactory {
             database = %database_path.display(),
             rehydrated_agents,
             recovered_runs,
+            recovered_interaction_turns,
             degraded = readiness.is_degraded(),
             "polkagent runtime ready"
         );
@@ -296,6 +315,7 @@ impl RuntimeFactory {
             app: service,
             pool,
             event_bus,
+            interactions,
             readiness: Arc::new(readiness),
             workdir: Arc::new(workdir),
         })

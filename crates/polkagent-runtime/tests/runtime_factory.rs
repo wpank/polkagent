@@ -1,3 +1,8 @@
+#![allow(
+    clippy::expect_used,
+    reason = "runtime integration fixtures fail fast with boundary-specific diagnostics"
+)]
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

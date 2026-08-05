@@ -61,8 +61,8 @@ pub use model::{
     TurnHandle, TurnState, TurnSummary,
 };
 pub use persistence::{
-    InteractionRunLink, InteractionStore, NewInteraction, NewInteractionEvent, NewInteractionTurn,
-    StoredInteractionTurn,
+    InteractionRunLink, InteractionStore, NewAssistantMessage, NewInteraction, NewInteractionEvent,
+    NewInteractionTurn, StoredInteractionTurn,
 };
 pub use service::{
     BoxInteractionEventStream, InteractionEventStream, InteractionService, StartedTurn, StreamError,
