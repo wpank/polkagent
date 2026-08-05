@@ -88,7 +88,6 @@ pub enum Commands {
     Explain(ExplainCmd),
 
     /// Manage pending effects awaiting approval.
-    #[command(subcommand)]
     Inbox(InboxCmd),
 
     /// Chain interaction and inspection.
@@ -205,6 +204,10 @@ pub struct RunCmd {
     /// Disable streaming; wait for completion then print the final response.
     #[arg(long = "no-stream", overrides_with = "stream", action = clap::ArgAction::SetFalse)]
     pub no_stream: bool,
+
+    /// Disable harness auto-detection; use the model executor directly.
+    #[arg(long = "no-harness")]
+    pub no_harness: bool,
 
     /// Cancel the run after this many seconds (0 = no limit, default: 300).
     #[arg(long, value_name = "SECS", default_value_t = 300)]
@@ -616,8 +619,17 @@ pub struct ExplainCmd {
 // ---------------------------------------------------------------------------
 
 /// Manage pending effects awaiting approval.
+///
+/// Defaults to `inbox list` when no subcommand is given.
+#[derive(Debug, Args)]
+pub struct InboxCmd {
+    #[command(subcommand)]
+    pub subcommand: Option<InboxSubCmd>,
+}
+
+/// Inbox subcommands.
 #[derive(Debug, Subcommand)]
-pub enum InboxCmd {
+pub enum InboxSubCmd {
     /// List pending effects awaiting approval.
     List(InboxListCmd),
 

@@ -112,7 +112,7 @@ impl RunStore for PgPool {
             })?;
 
         let row = sqlx::query(
-            "SELECT id, agent_id, state, created_at, started_at, completed_at
+            "SELECT id, agent_id, state, created_at, started_at, completed_at, deadline_at
              FROM runs WHERE id = $1",
         )
         .bind(&id_str)
@@ -140,6 +140,9 @@ impl RunStore for PgPool {
             completed_at: row
                 .get::<Option<chrono::DateTime<Utc>>, _>("completed_at")
                 .map(parse_ts),
+            deadline_at: row
+                .get::<Option<chrono::DateTime<Utc>>, _>("deadline_at")
+                .map(parse_ts),
         })
     }
 
@@ -148,10 +151,11 @@ impl RunStore for PgPool {
         let status_str = new_status.as_str().to_string();
         let now = Utc::now();
 
-        let is_terminal = matches!(
-            status_str.as_str(),
-            "completed" | "failed" | "cancelled" | "timed_out"
-        );
+        let s = status_str.as_str();
+        let is_terminal = s == "completed"
+            || s == "timed_out"
+            || s.starts_with("failed")
+            || s.starts_with("cancelled");
         let completed_at: Option<chrono::DateTime<Utc>> =
             if is_terminal { Some(now) } else { None };
         let started_at: Option<chrono::DateTime<Utc>> = if status_str == "running" {
@@ -221,7 +225,7 @@ impl RunStore for PgPool {
             })?;
 
         let rows = sqlx::query(
-            "SELECT id, agent_id, state, created_at, started_at, completed_at
+            "SELECT id, agent_id, state, created_at, started_at, completed_at, deadline_at
              FROM runs
              WHERE agent_id = $1
              ORDER BY created_at DESC
@@ -251,6 +255,10 @@ impl RunStore for PgPool {
                     completed_at: row
                         .get::<Option<chrono::DateTime<Utc>>, _>("completed_at")
                         .map(parse_ts),
+                    deadline_at: row
+                        .try_get::<chrono::DateTime<Utc>, _>("deadline_at")
+                        .ok()
+                        .map(parse_ts),
                 })
             })
             .collect()
@@ -276,7 +284,7 @@ impl RunStore for PgPool {
             })?;
 
         let rows = sqlx::query(
-            "SELECT id, agent_id, state, created_at, started_at, completed_at
+            "SELECT id, agent_id, state, created_at, started_at, completed_at, deadline_at
              FROM runs
              WHERE state = $1
              ORDER BY created_at DESC
@@ -305,6 +313,10 @@ impl RunStore for PgPool {
                         .map(parse_ts),
                     completed_at: row
                         .get::<Option<chrono::DateTime<Utc>>, _>("completed_at")
+                        .map(parse_ts),
+                    deadline_at: row
+                        .try_get::<chrono::DateTime<Utc>, _>("deadline_at")
+                        .ok()
                         .map(parse_ts),
                 })
             })

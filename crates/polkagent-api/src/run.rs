@@ -141,6 +141,27 @@ pub trait RunManagerTrait: Send + Sync {
     ///
     /// Returns `(page, has_more)`.
     async fn list_runs(&self, params: ListRunsParams) -> Result<(Vec<RunRecord>, bool), RunError>;
+
+    /// List turns for a run, ordered by sequence ascending.
+    ///
+    /// Returns an empty `Vec` if no turns exist for the run.
+    /// Returns `RunError::NotFound` if the run does not exist.
+    async fn list_turns(&self, run_id: RunId) -> Result<Vec<crate::dto::TurnSummary>, RunError>;
+
+    /// Stop all active (non-terminal) runs for an agent.
+    ///
+    /// Returns the number of runs that were cancelled.
+    async fn stop_agent_runs(&self, agent_id: AgentId) -> Result<u32, RunError>;
+
+    /// Pause all running runs for an agent (transition to `AwaitingApproval`).
+    ///
+    /// Returns the number of runs that were paused.
+    async fn pause_agent_runs(&self, agent_id: AgentId) -> Result<u32, RunError>;
+
+    /// Resume all paused runs for an agent (transition from `AwaitingApproval` to `Running`).
+    ///
+    /// Returns the number of runs that were resumed.
+    async fn resume_agent_runs(&self, agent_id: AgentId) -> Result<u32, RunError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,5 +344,59 @@ impl RunManagerTrait for InMemoryRunManager {
         let page = page.into_iter().take(params.limit as usize).collect();
 
         Ok((page, has_more))
+    }
+
+    async fn list_turns(&self, run_id: RunId) -> Result<Vec<crate::dto::TurnSummary>, RunError> {
+        // Verify the run exists.
+        let guard = self.runs.read().await;
+        if !guard.contains_key(&run_id) {
+            return Err(RunError::NotFound(run_id));
+        }
+        // The in-memory manager does not persist turns, so return an empty list.
+        Ok(vec![])
+    }
+
+    async fn stop_agent_runs(&self, agent_id: AgentId) -> Result<u32, RunError> {
+        let mut guard = self.runs.write().await;
+        let mut count = 0u32;
+        for record in guard.values_mut() {
+            if record.agent_id == agent_id && !record.state.is_terminal() {
+                record.state = RunState::Cancelled {
+                    reason: "agent stopped".to_owned(),
+                };
+                record.completed_at = Some(Utc::now());
+                record.terminal_reason = Some("agent stopped".to_owned());
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    async fn pause_agent_runs(&self, agent_id: AgentId) -> Result<u32, RunError> {
+        let mut guard = self.runs.write().await;
+        let mut count = 0u32;
+        for record in guard.values_mut() {
+            if record.agent_id == agent_id && record.state == RunState::Running {
+                record.state = RunState::AwaitingApproval {
+                    request_id: format!("agent-pause-{}", record.id),
+                };
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    async fn resume_agent_runs(&self, agent_id: AgentId) -> Result<u32, RunError> {
+        let mut guard = self.runs.write().await;
+        let mut count = 0u32;
+        for record in guard.values_mut() {
+            if record.agent_id == agent_id {
+                if matches!(&record.state, RunState::AwaitingApproval { .. }) {
+                    record.state = RunState::Running;
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
     }
 }

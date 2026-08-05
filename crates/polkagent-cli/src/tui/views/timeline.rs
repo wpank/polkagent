@@ -288,18 +288,28 @@ fn kv_line(
     ])
 }
 
-/// Truncate a string to `max` characters, appending ellipsis if needed.
+/// Truncate a string to `max` *characters*, appending ellipsis if needed.
+///
+/// Uses `char_indices` to find a valid char boundary so that multi-byte
+/// UTF-8 sequences are never sliced mid-character.
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max && max > 1 {
-        format!("{}…", &s[..max.saturating_sub(1)])
+    if s.chars().count() > max && max > 1 {
+        let split_byte = s
+            .char_indices()
+            .nth(max.saturating_sub(1))
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        format!("{}…", &s[..split_byte])
     } else {
         s.to_owned()
     }
 }
 
 /// Split a JSON payload into lines for display.
+///
+/// Wraps at `max_width` *character* boundaries (not byte boundaries) to
+/// avoid panics on multi-byte UTF-8 characters.
 fn format_payload(json: &str, max_width: usize) -> Vec<String> {
-    // Simple approach: wrap raw JSON at max_width boundaries.
     let trimmed = json.trim();
     if trimmed.is_empty() || trimmed == "{}" {
         return vec!["(empty)".into()];
@@ -308,13 +318,19 @@ fn format_payload(json: &str, max_width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut remaining = trimmed;
     while !remaining.is_empty() {
-        if remaining.len() <= max_width {
+        let char_count = remaining.chars().count();
+        if char_count <= max_width {
             lines.push(remaining.to_owned());
             break;
         }
-        let split_at = max_width.min(remaining.len());
-        lines.push(remaining[..split_at].to_owned());
-        remaining = &remaining[split_at..];
+        // Find the byte offset of the `max_width`-th character boundary.
+        let split_byte = remaining
+            .char_indices()
+            .nth(max_width)
+            .map(|(i, _)| i)
+            .unwrap_or(remaining.len());
+        lines.push(remaining[..split_byte].to_owned());
+        remaining = &remaining[split_byte..];
     }
     lines
 }

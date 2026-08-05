@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use chrono::DateTime;
 use polkagent_core::{RunId, TurnId};
-use polkagent_store_trait::{RunStatus, RunStore, RunSummary, StoreError};
+use polkagent_store_trait::{RunStatus, RunStore, RunSummary, StoreError, TurnSummaryRecord};
 
 use crate::pool::SqlitePool;
 
@@ -72,7 +72,8 @@ fn map_sqlite_err_with_id(e: rusqlite::Error, id: &str) -> StoreError {
 
 /// Extract a `RunSummary` from a `rusqlite::Row`.
 ///
-/// Expected column order: id, agent_id, state, created_at, started_at, completed_at
+/// Expected column order: id, agent_id, state, created_at, started_at,
+/// completed_at, deadline_at
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRunSummary> {
     Ok(RawRunSummary {
         id: row.get(0)?,
@@ -81,6 +82,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRunSummary> {
         created_at: row.get(3)?,
         started_at: row.get(4)?,
         completed_at: row.get(5)?,
+        deadline_at: row.get(6)?,
     })
 }
 
@@ -92,6 +94,7 @@ struct RawRunSummary {
     created_at: String,
     started_at: Option<String>,
     completed_at: Option<String>,
+    deadline_at: Option<String>,
 }
 
 impl RawRunSummary {
@@ -103,6 +106,7 @@ impl RawRunSummary {
             created_at: parse_ts(&self.created_at)?,
             started_at: self.started_at.as_deref().map(parse_ts).transpose()?,
             completed_at: self.completed_at.as_deref().map(parse_ts).transpose()?,
+            deadline_at: self.deadline_at.as_deref().map(parse_ts).transpose()?,
         })
     }
 }
@@ -150,7 +154,7 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
             let raw = writer
                 .query_row(
-                    "SELECT id, agent_id, state, created_at, started_at, completed_at
+                    "SELECT id, agent_id, state, created_at, started_at, completed_at, deadline_at
                      FROM runs WHERE id = ?1",
                     [&id_str],
                     row_to_summary,
@@ -180,10 +184,13 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
 
             // If the status looks terminal, also set completed_at.
-            let is_terminal = matches!(
-                status_str.as_str(),
-                "completed" | "failed" | "cancelled" | "timed_out"
-            );
+            // Use starts_with for "failed" and "cancelled" because the store
+            // layer encodes reasons as "failed:<reason>" / "cancelled:<reason>".
+            let s = status_str.as_str();
+            let is_terminal = s == "completed"
+                || s == "timed_out"
+                || s.starts_with("failed")
+                || s.starts_with("cancelled");
             let completed_at: Option<String> = if is_terminal { Some(now.clone()) } else { None };
 
             // If the status is "running", set started_at (first transition only).
@@ -224,7 +231,7 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
             let mut stmt = writer
                 .prepare(
-                    "SELECT id, agent_id, state, created_at, started_at, completed_at
+                    "SELECT id, agent_id, state, created_at, started_at, completed_at, deadline_at
                      FROM runs
                      WHERE agent_id = ?1
                      ORDER BY created_at DESC
@@ -262,7 +269,7 @@ impl RunStore for SqlitePool {
             let writer = pool.writer();
             let mut stmt = writer
                 .prepare(
-                    "SELECT id, agent_id, state, created_at, started_at, completed_at
+                    "SELECT id, agent_id, state, created_at, started_at, completed_at, deadline_at
                      FROM runs
                      WHERE state = ?1
                      ORDER BY created_at DESC
@@ -323,6 +330,111 @@ impl RunStore for SqlitePool {
                     ],
                 )
                 .map_err(|e| map_sqlite_err_with_id(e, &turn_id_str))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StoreError::Internal {
+            message: format!("blocking task panicked: {e}"),
+        })?
+    }
+
+    async fn list_turns(&self, run_id: RunId) -> Result<Vec<TurnSummaryRecord>, StoreError> {
+        let pool = self.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let run_id_str = run_id.to_string();
+            let writer = pool.writer();
+            let mut stmt = writer
+                .prepare(
+                    "SELECT id, run_id, sequence, role, started_at, completed_at, input_tokens, output_tokens
+                     FROM turns
+                     WHERE run_id = ?1
+                     ORDER BY sequence ASC",
+                )
+                .map_err(map_sqlite_err)?;
+
+            let rows = stmt
+                .query_map([&run_id_str], |row| {
+                    let id_str: String = row.get(0)?;
+                    let rid_str: String = row.get(1)?;
+                    let sequence: u32 = row.get(2)?;
+                    let role: String = row.get(3)?;
+                    let started_at_str: String = row.get(4)?;
+                    let completed_at_str: Option<String> = row.get(5)?;
+                    let input_tokens: u32 = row.get(6)?;
+                    let output_tokens: u32 = row.get(7)?;
+                    Ok((
+                        id_str,
+                        rid_str,
+                        sequence,
+                        role,
+                        started_at_str,
+                        completed_at_str,
+                        input_tokens,
+                        output_tokens,
+                    ))
+                })
+                .map_err(map_sqlite_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_sqlite_err)?;
+
+            rows.into_iter()
+                .map(
+                    |(id_str, rid_str, sequence, role, started_at_str, completed_at_str, input_tokens, output_tokens)| {
+                        let id = id_str.parse::<TurnId>().map_err(|e| StoreError::Internal {
+                            message: format!("invalid turn id '{id_str}': {e}"),
+                        })?;
+                        let rid = parse_run_id(&rid_str)?;
+                        let started_at = parse_ts(&started_at_str)?;
+                        let completed_at = completed_at_str
+                            .as_deref()
+                            .map(parse_ts)
+                            .transpose()?;
+                        Ok(TurnSummaryRecord {
+                            id,
+                            run_id: rid,
+                            sequence,
+                            role,
+                            started_at,
+                            completed_at,
+                            input_tokens,
+                            output_tokens,
+                        })
+                    },
+                )
+                .collect()
+        })
+        .await
+        .map_err(|e| StoreError::Internal {
+            message: format!("blocking task panicked: {e}"),
+        })?
+    }
+
+    async fn set_deadline(
+        &self,
+        run_id: RunId,
+        deadline: Option<polkagent_core::Timestamp>,
+    ) -> Result<(), StoreError> {
+        let pool = self.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let id_str = run_id.to_string();
+            let deadline_str = deadline.map(|dt| dt.to_rfc3339());
+            let now = chrono::Utc::now().to_rfc3339();
+            let writer = pool.writer();
+            let n = writer
+                .execute(
+                    "UPDATE runs SET deadline_at = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![deadline_str, now, id_str],
+                )
+                .map_err(map_sqlite_err)?;
+
+            if n == 0 {
+                return Err(StoreError::NotFound {
+                    resource_type: "Run",
+                    id: id_str,
+                });
+            }
             Ok(())
         })
         .await

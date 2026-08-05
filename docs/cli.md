@@ -21,6 +21,9 @@ graph LR
     PA --> NET["network"]
     PA --> COMP["completions"]
     PA --> VER["version"]
+    PA --> EXP["export"]
+    PA --> INS["inspect"]
+    PA --> KIT["kit"]
 
     AGENT --> AC["create"]
     AGENT --> AL["list"]
@@ -37,6 +40,24 @@ graph LR
     CHAIN --> CM["metadata"]
     CHAIN --> CD["decode"]
     CHAIN --> CB["balance"]
+
+    EXP --> ER["runs"]
+    EXP --> EE["effects"]
+    EXP --> EA["artifacts"]
+    EXP --> EV["events"]
+    EXP --> EAU["audit"]
+    EXP --> EC["config"]
+
+    INS --> IR["run"]
+    INS --> IE["effect"]
+    INS --> IA2["artifact"]
+    INS --> IAG["agent"]
+    INS --> IP["policy"]
+    INS --> IDB["db"]
+
+    KIT --> KI["install"]
+    KIT --> KU["uninstall"]
+    KIT --> KL["list"]
 ```
 
 ## Global Flags
@@ -91,11 +112,10 @@ polkagent run -a <AGENT> -p <TEXT> [FLAGS]
 | `-a, --agent-id <AGENT>` | Agent name or UUID (required) |
 | `-p, --prompt <TEXT>` | Prompt text (required) |
 | `--json` | JSON output |
-| `--wait / --no-wait` | Wait for completion (default: wait) |
+| `--stream / --no-stream` | Stream live token output (default: stream) |
 | `--provider <PROVIDER>` | Override provider |
 | `-m, --model <MODEL>` | Override model (e.g. `anthropic/claude-opus-4-6`) |
 | `--harness <HARNESS>` | Override harness |
-| `--stream / --no-stream` | Streaming mode (default: stream) |
 | `--timeout <SECS>` | Cancel after N seconds (default: 300) |
 
 **Examples:**
@@ -296,9 +316,15 @@ polkagent serve [FLAGS]
 | `--cors-origin <ORIGIN>` | Allowed CORS origin (repeatable) |
 | `--read-only` | Reject all mutating requests |
 
-**Example:**
+> **Note:** The project config (`polkagent.toml`) distinguishes between two server sections: `[api]` (REST API, default `127.0.0.1:4840`) and `[server]` (agent-facing gRPC/HTTP, default `127.0.0.1:9090`). The `serve` CLI flag `--port` overrides the bind port for the HTTP API started by this command and defaults to `8080` when no config file entry is present.
+
+**Examples:**
 
 ```bash
+# Start with default port (8080)
+polkagent serve
+
+# Bind to a specific interface and port
 polkagent serve --port 9090 --host 127.0.0.1
 ```
 
@@ -561,6 +587,265 @@ Compare two evaluation reports.
 
 ```bash
 polkagent eval compare <BASELINE> <CURRENT>
+```
+
+---
+
+### `export`
+
+Export data from the Polkagent database. Output is streamed so arbitrarily large result sets are never fully buffered in memory.
+
+All `export` subcommands (except `config`) share a common set of filter flags:
+
+| Flag | Description |
+|------|-------------|
+| `--format <FORMAT>` | Output format: `json`, `csv`, `jsonl` (default: `json`) |
+| `--output <PATH>` | Write to a file instead of stdout |
+| `--since <DATETIME>` | Include only records at or after this ISO-8601 datetime |
+| `--until <DATETIME>` | Include only records at or before this ISO-8601 datetime |
+| `--agent-id <ID>` | Filter by agent ID |
+| `--run-id <ID>` | Filter by run ID |
+| `--limit <N>` | Maximum number of records to export |
+
+#### `export runs`
+
+Export run history.
+
+```
+polkagent export runs [FLAGS]
+```
+
+**Examples:**
+
+```bash
+polkagent export runs
+polkagent export runs --format csv --output runs.csv
+polkagent export runs --since 2024-01-01T00:00:00Z --agent-id my-agent
+```
+
+#### `export effects`
+
+Export the effect log.
+
+```
+polkagent export effects [FLAGS]
+```
+
+**Example:**
+
+```bash
+polkagent export effects --run-id <RUN_ID> --format jsonl
+```
+
+#### `export artifacts`
+
+Export artifact metadata.
+
+```
+polkagent export artifacts [FLAGS]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--include-bodies` | Include artifact bodies in the output (may be large) |
+
+**Example:**
+
+```bash
+polkagent export artifacts --include-bodies --output artifacts.json
+```
+
+#### `export events`
+
+Export the event log.
+
+```
+polkagent export events [FLAGS]
+```
+
+**Example:**
+
+```bash
+polkagent export events --format jsonl --output events.jsonl
+```
+
+#### `export audit`
+
+Export the audit trail.
+
+```
+polkagent export audit [FLAGS]
+```
+
+**Example:**
+
+```bash
+polkagent export audit --since 2024-06-01T00:00:00Z --format csv
+```
+
+#### `export config`
+
+Export the current resolved configuration as canonical TOML.
+
+```
+polkagent export config [--output <PATH>]
+```
+
+**Example:**
+
+```bash
+polkagent export config
+polkagent export config --output polkagent-resolved.toml
+```
+
+---
+
+### `inspect`
+
+Read-only diagnostic inspection of individual entities stored in the local SQLite database or on disk. Each subcommand fetches a single entity by ID or path and formats it for human consumption.
+
+#### `inspect run <RUN_ID>`
+
+Show run details: status, agent, turns, steps, timing, and effects.
+
+```
+polkagent inspect run <RUN_ID> [--json]
+```
+
+**Example:**
+
+```bash
+polkagent inspect run ab12cd34-...
+polkagent inspect run ab12cd34-... --json
+```
+
+#### `inspect effect <EFFECT_ID>`
+
+Show effect details: intent, attempts, outcome, and timing.
+
+```
+polkagent inspect effect <EFFECT_ID> [--json]
+```
+
+**Example:**
+
+```bash
+polkagent inspect effect ef56gh78-...
+```
+
+#### `inspect artifact <ARTIFACT_ID>`
+
+Show artifact metadata: kind, digest, size, and lineage.
+
+```
+polkagent inspect artifact <ARTIFACT_ID> [--json]
+```
+
+**Example:**
+
+```bash
+polkagent inspect artifact 9a3f...
+```
+
+#### `inspect agent <AGENT_ID>`
+
+Show agent spec: model, tools, policies, autonomy level, and capabilities.
+
+```
+polkagent inspect agent <AGENT_ID> [--json]
+```
+
+**Example:**
+
+```bash
+polkagent inspect agent my-agent
+polkagent inspect agent my-agent --json
+```
+
+#### `inspect policy <PATH>`
+
+Parse and display a TOML policy file with its resolved rules.
+
+```
+polkagent inspect policy <PATH> [--json]
+```
+
+**Example:**
+
+```bash
+polkagent inspect policy .polkagent/policies/governance.toml
+```
+
+#### `inspect db`
+
+Show database statistics: table row counts, database size, WAL size, and migration version.
+
+```
+polkagent inspect db [--json]
+```
+
+**Example:**
+
+```bash
+polkagent inspect db
+polkagent inspect db --json
+```
+
+---
+
+### `kit`
+
+Manage product kits — bundles of agents, skills, and configuration that can be installed as a unit.
+
+#### `kit install <PATH>`
+
+Install a product kit from a local path.
+
+```
+polkagent kit install <PATH> [--json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | JSON output |
+
+**Example:**
+
+```bash
+polkagent kit install ./kits/governance-kit
+polkagent kit install ./kits/governance-kit/kit.toml
+```
+
+#### `kit uninstall <NAME>`
+
+Uninstall a product kit by name.
+
+```
+polkagent kit uninstall <NAME> [-y]
+```
+
+| Flag | Description |
+|------|-------------|
+| `-y, --yes` | Skip confirmation prompt |
+
+**Example:**
+
+```bash
+polkagent kit uninstall governance-kit
+```
+
+#### `kit list`
+
+List all installed product kits.
+
+```bash
+polkagent kit list [--json]
+```
+
+**Example:**
+
+```bash
+polkagent kit list
 ```
 
 ---

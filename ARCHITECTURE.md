@@ -5,7 +5,7 @@ Polkadot-native platform for building, using, and publishing AI agents.
 
 ## System Overview
 
-Polkagent is organized as a Cargo workspace of ~29 crates following a
+Polkagent is organized as a Cargo workspace of 87 crates following a
 **hexagonal (ports and adapters) architecture**. Domain logic lives in pure
 crates with no I/O dependencies. External systems are accessed through narrow
 trait-based ports, with concrete adapters provided separately.
@@ -81,8 +81,52 @@ The architecture enforces strict dependency rules:
 - **Surface crates** (`polkagent-api`, `polkagent-cli`) wire domain logic to
   user-facing interfaces (HTTP/WebSocket API, terminal UI).
 
-- **Test crates** (`polkagent-test-fixtures`, `polkagent-integration-tests`)
-  provide shared builders, factory functions, and cross-crate integration tests.
+- **Test crates** (`polkagent-test-fixtures`, `polkagent-integration-tests`,
+  `polkagent-security-tests`) provide shared builders, factory functions, and
+  cross-crate integration and security tests.
+
+- **Harness crates** (`polkagent-harness-trait`, `polkagent-harness-claude`,
+  `polkagent-harness-acp`, `polkagent-harness-codex`, `polkagent-harness-copilot`,
+  `polkagent-harness-cursor`, `polkagent-harness-goose`, `polkagent-harness-kiro`,
+  `polkagent-harness-opencode`, `polkagent-harness-bridge`) define a common
+  evaluation harness interface and per-agent adapters for running standardised
+  benchmark tasks against external AI coding assistants.
+
+- **Group & multi-agent crates** (`polkagent-group`, `polkagent-store-sqlite-group`)
+  implement multi-agent coordination: group membership, roles, quorum policies, and
+  task orchestration (sequential / parallel / pipeline / consensus).
+
+- **Eval crate** (`polkagent-eval`) provides task-level evaluation primitives for
+  scoring agent outputs against expected results.
+
+- **Billing crate** (`polkagent-billing`) tracks token usage and computes costs per
+  provider/model, emitting metered events and supporting CSV export.
+
+- **Feed & scheduler crates** (`polkagent-feed`, `polkagent-store-sqlite-feed`,
+  `polkagent-scheduler`) handle cron/webhook/event-driven feed processing, trigger
+  evaluation, and durable task scheduling.
+
+- **Cloud crates** (`polkagent-cloud-control`, `polkagent-cloud-worker`) implement
+  the distributed control-plane (priority job queue, worker registry, data-residency
+  policies) and worker-plane (distributed executors, heartbeat, graceful drain).
+
+- **Additional adapter crates** include `polkagent-store-postgres` (multi-tenant RLS
+  PostgreSQL store), `polkagent-executor-gemini`, `polkagent-executor-openrouter`,
+  `polkagent-signer-kms`, `polkagent-signer-proxy`, `polkagent-signer-watchonly`,
+  `polkagent-transport-pca`, `polkagent-surface-webhook`, `polkagent-chain-subxt`,
+  `polkagent-chain-jam`, and `polkagent-chain-fake`.
+
+- **Infrastructure crates** (`polkagent-telemetry`, `polkagent-audit`,
+  `polkagent-rate-limit`, `polkagent-retry`, `polkagent-fault`, `polkagent-health`,
+  `polkagent-vitality`, `polkagent-cache`, `polkagent-migration`,
+  `polkagent-secret`, `polkagent-identity`, `polkagent-context`,
+  `polkagent-conversation`, `polkagent-codec`, `polkagent-batch`,
+  `polkagent-plugin`, `polkagent-skill`, `polkagent-tool`,
+  `polkagent-tool-governance`, `polkagent-tool-treasury`, `polkagent-tool-workbench`,
+  `polkagent-action-sign`, `polkagent-action-transfer`,
+  `polkagent-action-governance`, `polkagent-kit`, `polkagent-service`,
+  `polkagent-marketplace`, `polkagent-payment`) round out the workspace with
+  cross-cutting concerns, Polkadot-specific actions, and ecosystem integrations.
 
 ## Crate Dependency Diagram
 
@@ -230,6 +274,9 @@ The project uses a layered testing approach:
   pass them.
 - **Integration tests** in `polkagent-integration-tests` for cross-crate
   lifecycle flows.
-- **Fuzz targets** (planned) for parsing and deserialization boundaries.
+- **Fuzz targets** (10 targets in `fuzz/fuzz_targets/`) covering parsing and
+  deserialization boundaries: `api_request`, `card_render`, `config`,
+  `effect_state`, `event_kind`, `id_parse`, `json_deser`, `policy_eval`,
+  `skill_manifest`, and `transport_deser`.
 
 See `CONTRIBUTING.md` for instructions on running each test category.

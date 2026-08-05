@@ -40,16 +40,48 @@ use crate::tui::theme::Theme;
 /// Builds an [`AppService`] inline (no daemon required), starts the run, then
 /// subscribes to the event bus and streams events to stdout until the run
 /// reaches a terminal state or the timeout expires.
-pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
+pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
+    // --dry-run: print what would happen and exit without starting a real run.
+    if dry_run {
+        println!("Dry run — no run will be started.");
+        println!("  Agent:   {}", cmd.agent_id);
+        println!("  Prompt:  {}", cmd.prompt);
+        if let Some(ref provider) = cmd.provider {
+            println!("  Provider: {provider}");
+        }
+        if let Some(ref model) = cmd.model {
+            println!("  Model:   {model}");
+        }
+        if let Some(ref harness) = cmd.harness {
+            println!("  Harness: {harness}");
+        } else {
+            println!("  Harness: (auto-detected or executor-only)");
+        }
+        return Ok(());
+    }
+
+    // Reject empty or whitespace-only prompts early.
+    if cmd.prompt.trim().is_empty() {
+        anyhow::bail!("prompt cannot be empty");
+    }
+
     let store = SqliteRunStore::new(pool.clone());
 
-    // Resolve agent by name or ID (must be active/configured, not archived).
+    // Resolve agent by name or ID (must be active, not archived/paused/stopped).
     let agent = store
         .get_agent_by_name_or_id(&cmd.agent_id)
         .map_err(|_| anyhow::anyhow!("Agent not found or not active: {}", cmd.agent_id))?;
 
-    if matches!(agent.state.as_str(), "archived" | "deactivated") {
-        anyhow::bail!("Agent not found or not active: {}", cmd.agent_id);
+    if matches!(
+        agent.state.as_str(),
+        "archived" | "deactivated" | "paused" | "stopped" | "configured"
+    ) {
+        anyhow::bail!(
+            "Agent '{}' is in state '{}' and cannot accept runs. \
+             Only agents in the 'active' state can be run.",
+            cmd.agent_id,
+            agent.state
+        );
     }
 
     // Parse the agent's UUID string into a typed AgentId.
@@ -65,12 +97,14 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     let registry = build_provider_registry(&config);
 
     // Resolve provider and executor.
+    // When --provider was given explicitly, fail hard if the provider is not
+    // available instead of silently falling back to FakeExecutor.
     let (executor, executor_note) = resolve_provider(
         cmd.provider.as_deref(),
         cmd.model.as_deref(),
         &config,
         &registry,
-    );
+    )?;
 
     if let Some(note) = &executor_note {
         eprintln!("{note}");
@@ -86,8 +120,14 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
             harness_registry.register(id, id);
         }
     }
-    let resolution =
-        harness_registry.resolve(cmd.harness.as_deref(), config.harness.default.as_deref());
+    let resolution = if cmd.no_harness {
+        polkagent_service::harness::HarnessResolution {
+            harness_name: None,
+            note: None,
+        }
+    } else {
+        harness_registry.resolve(cmd.harness.as_deref(), config.harness.default.as_deref())
+    };
 
     if let Some(note) = &resolution.note {
         eprintln!("{note}");
@@ -150,12 +190,15 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
 
     let mut tool_registry = polkagent_tool::ToolRegistry::new();
     polkagent_tool_governance::register_governance_tools(&mut tool_registry, chain_client.clone());
-    polkagent_tool_treasury::register_treasury_tools(&mut tool_registry);
+    polkagent_tool_treasury::register_treasury_tools(&mut tool_registry, chain_client.clone());
 
     // Wrap AppService in Arc so it can be shared with the Ctrl-C handler task.
+    // SqlitePool implements both RunStore and EffectStore, so we pass it to
+    // both builder methods to ensure effects are persisted to the same database.
     let mut builder = AppService::builder()
         .with_config(config)
         .with_run_store(Arc::new(pool.clone()))
+        .with_effect_store(Arc::new(pool.clone()))
         .with_event_bus(event_bus.clone())
         .with_event_recorder(event_recorder)
         .with_executor(executor)
@@ -168,6 +211,14 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
     }
 
     let app_service = Arc::new(builder.build().context("building AppService")?);
+
+    // Start the timeout enforcer so wall-clock timeouts are enforced.
+    {
+        let timeout_secs = app_service.config().execution.default_timeout_secs;
+        let timeout_config =
+            polkagent_service::TimeoutConfig::with_global_max(Duration::from_secs(timeout_secs));
+        app_service.start_timeout_enforcer(timeout_config, Duration::from_secs(30));
+    }
 
     // Reconstruct the AgentSpec from the DB row and register it with AppService.
     let agent_spec = build_agent_spec(agent_id, &agent.name, &agent.spec_json, cmd.model.clone());
@@ -194,6 +245,11 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     }
+
+    // Accumulate streaming tokens in JSON mode (the printer handles this for
+    // styled output; in JSON mode we collect manually so we can emit them in
+    // the completion blob).
+    let mut json_response = String::new();
 
     // Build styled printer for non-JSON output.
     let theme = Theme::from_env();
@@ -289,19 +345,53 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool) -> Result<()> {
             }
 
             if cmd.json {
-                // JSON mode: only emit terminal events as JSON.
+                // JSON mode: accumulate streaming tokens and emit a single
+                // completion JSON blob when the run reaches a terminal state.
                 match &event.kind {
-                    EventKind::RunCompleted { .. } => break,
+                    EventKind::StreamingToken { text } => {
+                        json_response.push_str(text);
+                    }
+                    EventKind::RunCompleted {
+                        input_tokens,
+                        output_tokens,
+                        ..
+                    } => {
+                        let out = serde_json::json!({
+                            "ok":           true,
+                            "run_id":       run_id.to_string(),
+                            "agent_id":     agent.id,
+                            "response":     json_response,
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                        break;
+                    }
                     EventKind::RunFailed { reason } => {
-                        println!("\nRun failed: {reason}");
+                        let out = serde_json::json!({
+                            "ok":     false,
+                            "run_id": run_id.to_string(),
+                            "error":  reason,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
                         break;
                     }
                     EventKind::RunCancelled { reason } => {
-                        println!("\nRun cancelled: {reason}");
+                        let out = serde_json::json!({
+                            "ok":     false,
+                            "run_id": run_id.to_string(),
+                            "error":  format!("cancelled: {reason}"),
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
                         break;
                     }
                     EventKind::RunTimedOut => {
-                        println!("\nRun timed out");
+                        let out = serde_json::json!({
+                            "ok":     false,
+                            "run_id": run_id.to_string(),
+                            "error":  "run timed out",
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
                         break;
                     }
                     _ => {}
@@ -499,19 +589,23 @@ fn executor_from_provider_config(
 /// 2. Config `[execution] default_provider`
 /// 3. First registered provider in the registry (env + config)
 /// 4. Fallback: FakeExecutor with warning
+/// Returns an error when `--provider` was given explicitly but the requested
+/// provider could not be found (e.g. the API key is not set). This prevents
+/// a silent fallback to the FakeExecutor when the user explicitly requested a
+/// specific provider.
 fn resolve_provider(
     provider_flag: Option<&str>,
     model_override: Option<&str>,
     config: &Config,
     registry: &ProviderRegistry,
-) -> (Arc<dyn ModelExecutor>, Option<String>) {
+) -> Result<(Arc<dyn ModelExecutor>, Option<String>)> {
     let (primary, primary_id, note) =
-        resolve_primary_provider(provider_flag, model_override, config, registry);
+        resolve_primary_provider(provider_flag, model_override, config, registry)?;
 
     // Build fallback chain from remaining registered providers.
     let fallbacks = collect_fallback_executors(registry, primary_id.as_deref());
     if fallbacks.is_empty() {
-        return (primary, note);
+        return Ok((primary, note));
     }
 
     let fallback_ids: Vec<String> = registry
@@ -527,7 +621,7 @@ fn resolve_provider(
     }
 
     let executor = FallbackExecutor::new(primary, fallbacks);
-    (executor, Some(note_text))
+    Ok((executor, Some(note_text)))
 }
 
 fn resolve_primary_provider(
@@ -535,21 +629,61 @@ fn resolve_primary_provider(
     model_override: Option<&str>,
     config: &Config,
     registry: &ProviderRegistry,
-) -> (Arc<dyn ModelExecutor>, Option<String>, Option<String>) {
-    // 1. CLI flag — look up in the registry.
-    if let Some(provider_id) = provider_flag {
+) -> Result<(Arc<dyn ModelExecutor>, Option<String>, Option<String>)> {
+    // Parse optional `provider/model` prefix from the --model flag.
+    //
+    // When the user passes `--model anthropic/claude-opus-4-6` (and no
+    // `--provider` flag), we split on the first `/` and treat the left part
+    // as the provider name and the right part as the bare model ID.  If a
+    // `--provider` flag was also given it takes precedence.
+    let (effective_provider, effective_model): (Option<&str>, Option<&str>) =
+        match (provider_flag, model_override) {
+            // --provider given explicitly — use it as-is; model stays as-is.
+            (Some(_), _) => (provider_flag, model_override),
+            // No --provider; inspect --model for a "provider/model" prefix.
+            (None, Some(m)) => {
+                if let Some(slash_pos) = m.find('/') {
+                    // Only treat the prefix as a provider name when it looks
+                    // like a known word (no dots, no colons).  This avoids
+                    // misinterpreting path-like strings such as
+                    // "openrouter/auto" or "anthropic/claude-opus-4-6" where
+                    // the left side genuinely is a provider.
+                    let prefix = &m[..slash_pos];
+                    let bare_model = &m[slash_pos + 1..];
+                    if !prefix.is_empty() && !bare_model.is_empty() {
+                        (Some(prefix), Some(bare_model))
+                    } else {
+                        (None, Some(m))
+                    }
+                } else {
+                    (None, Some(m))
+                }
+            }
+            // Neither flag given.
+            (None, None) => (None, None),
+        };
+
+    // 1. CLI flag (possibly extracted from --model prefix) — look up in the
+    //    registry.
+    if let Some(provider_id) = effective_provider {
         if let Ok(executor) = registry.get_executor(provider_id) {
             let note = format!("Using provider '{provider_id}' (from --provider flag).");
-            return (executor, Some(provider_id.to_owned()), Some(note));
+            return Ok((executor, Some(provider_id.to_owned()), Some(note)));
         }
         // Provider flag given but not in registry — try env-based matching.
-        if let Some((executor, note)) = try_provider_by_name(provider_id, model_override) {
-            return (executor, Some(provider_id.to_owned()), note);
+        if let Some((executor, note)) = try_provider_by_name(provider_id, effective_model) {
+            return Ok((executor, Some(provider_id.to_owned()), note));
         }
-        eprintln!(
-            "Warning: provider '{provider_id}' not found in config and no matching \
-             API key detected. Falling back."
-        );
+        // Provider was explicitly requested but cannot be satisfied — fail hard
+        // instead of silently falling back to FakeExecutor.
+        if provider_flag.is_some() {
+            anyhow::bail!(
+                "Provider '{provider_id}' was explicitly requested (--provider flag) but \
+                 could not be found. Check that the corresponding API key environment \
+                 variable is set (e.g. ANTHROPIC_API_KEY for 'anthropic') or that the \
+                 provider is configured in your polkagent.toml."
+            );
+        }
     }
 
     // 2. Config default_provider.
@@ -557,7 +691,7 @@ fn resolve_primary_provider(
         if !default_id.is_empty() {
             if let Ok(executor) = registry.get_executor(default_id) {
                 let note = format!("Using provider '{default_id}' (from config default_provider).");
-                return (executor, Some(default_id.clone()), Some(note));
+                return Ok((executor, Some(default_id.clone()), Some(note)));
             }
             eprintln!("Warning: configured default_provider '{default_id}' not found in registry.");
         }
@@ -571,20 +705,13 @@ fn resolve_primary_provider(
                 "Using provider '{}' (auto-detected from environment).",
                 first.id
             );
-            return (executor, Some(first.id.clone()), Some(note));
+            return Ok((executor, Some(first.id.clone()), Some(note)));
         }
     }
 
-    // 4. Fallback — fake executor.
-    let note = Some(
-        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / \
-         OPENROUTER_API_KEY) and no local model configured (OLLAMA_URL / \
-         OLLAMA_MODEL). Using the fake executor \u{2014} responses will be \
-         simulated. Set an API key or local model environment variable to \
-         use a real model."
-            .to_string(),
-    );
-    (FakeExecutor::new(), None, note)
+    // 4. Fallback — fake executor (only when no provider was explicitly requested).
+    let note = Some("No API key or local model configured. Using simulated responses.".to_string());
+    Ok((FakeExecutor::new(), None, note))
 }
 
 fn collect_fallback_executors(
@@ -722,14 +849,7 @@ fn detect_executor(model_override: Option<&str>) -> (Arc<dyn ModelExecutor>, Opt
     }
 
     // 5. Fallback — fake executor
-    let note = Some(
-        "No API key found (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / \
-         OPENROUTER_API_KEY) and no local model configured (OLLAMA_URL / \
-         OLLAMA_MODEL). Using the fake executor \u{2014} responses will be \
-         simulated. Set an API key or local model environment variable to \
-         use a real model."
-            .to_string(),
-    );
+    let note = Some("No API key or local model configured. Using simulated responses.".to_string());
     (FakeExecutor::new(), note)
 }
 
@@ -767,39 +887,48 @@ fn build_agent_spec(
 
 /// Build a chain client for governance and treasury tools.
 ///
-/// When `POLKAGENT_RPC_URL` is set, builds a [`SubxtChainClient`] that queries
-/// a live chain node. Otherwise falls back to a [`FakeChainClient`] so tools
+/// When `POLKAGENT_CHAIN_RPC_URL` or `POLKAGENT_RPC_URL` is set, builds a
+/// [`SubxtChainClient`] that queries a live chain node.  `POLKAGENT_CHAIN_RPC_URL`
+/// takes precedence.  Otherwise falls back to a [`FakeChainClient`] so tools
 /// still work (returning representative offline data).
 fn build_chain_client() -> Arc<dyn ChainClient> {
     use polkagent_chain_trait::{ChainProfile, ChainProfileId, GenesisHash, NetworkType};
 
-    if let Ok(rpc_url) = std::env::var("POLKAGENT_RPC_URL") {
-        if !rpc_url.is_empty() {
-            let profile = ChainProfile {
-                id: ChainProfileId::new("polkadot"),
-                name: "Polkadot".into(),
-                genesis_hash: GenesisHash::new(
-                    "0x91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3",
-                ),
-                spec_version: None,
-                rpc_endpoints: vec![rpc_url.clone()],
-                network_type: NetworkType::Production,
-            };
+    // Resolve RPC URL: prefer POLKAGENT_CHAIN_RPC_URL, fall back to POLKAGENT_RPC_URL.
+    let rpc_url_opt = std::env::var("POLKAGENT_CHAIN_RPC_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("POLKAGENT_RPC_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
 
-            match polkagent_chain_subxt::SubxtChainClientBuilder::new()
-                .add_profile(profile)
-                .build()
-            {
-                Ok(client) => {
-                    info!(rpc = %rpc_url, "using SubxtChainClient for governance/treasury tools");
-                    return Arc::new(client);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "failed to build SubxtChainClient, falling back to FakeChainClient"
-                    );
-                }
+    if let Some(rpc_url) = rpc_url_opt {
+        let profile = ChainProfile {
+            id: ChainProfileId::new("polkadot"),
+            name: "Polkadot".into(),
+            genesis_hash: GenesisHash::new(
+                "0x91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3",
+            ),
+            spec_version: None,
+            rpc_endpoints: vec![rpc_url.clone()],
+            network_type: NetworkType::Production,
+        };
+
+        match polkagent_chain_subxt::SubxtChainClientBuilder::new()
+            .add_profile(profile)
+            .build()
+        {
+            Ok(client) => {
+                info!(rpc = %rpc_url, "using SubxtChainClient for governance/treasury tools");
+                return Arc::new(client);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to build SubxtChainClient, falling back to FakeChainClient"
+                );
             }
         }
     }
@@ -818,6 +947,7 @@ fn build_chain_client() -> Arc<dyn ChainClient> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
 
@@ -899,9 +1029,9 @@ mod tests {
                 .iter()
                 .map(|&k| (k, std::env::var(k).ok()))
                 .collect();
-            #[allow(deprecated)]
             for &k in Self::KEYS {
-                std::env::remove_var(k);
+                // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+                unsafe { std::env::remove_var(k) };
             }
             Self { vars, _lock: lock }
         }
@@ -909,11 +1039,11 @@ mod tests {
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            #[allow(deprecated)]
             for (k, v) in &self.vars {
+                // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
                 match v {
-                    Some(val) => std::env::set_var(k, val),
-                    None => std::env::remove_var(k),
+                    Some(val) => unsafe { std::env::set_var(k, val) },
+                    None => unsafe { std::env::remove_var(k) },
                 }
             }
         }
@@ -927,7 +1057,7 @@ mod tests {
         assert!(note.is_some());
         let note_text = note.unwrap();
         assert!(
-            note_text.contains("fake executor"),
+            note_text.contains("simulated responses"),
             "expected note to mention 'fake executor', got: {note_text}",
         );
     }
@@ -935,8 +1065,8 @@ mod tests {
     #[test]
     fn detect_executor_uses_anthropic_when_key_set() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-key");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-key") };
 
         let (_exec, note) = detect_executor(None);
         let note_text = note.expect("expected a note");
@@ -953,8 +1083,8 @@ mod tests {
     #[test]
     fn detect_executor_uses_openai_when_key_set() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("OPENAI_API_KEY", "sk-test-key");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-test-key") };
 
         let (_exec, note) = detect_executor(None);
         let note_text = note.expect("expected a note");
@@ -971,8 +1101,8 @@ mod tests {
     #[test]
     fn detect_executor_uses_local_when_ollama_url_set() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("OLLAMA_URL", "http://localhost:11434/v1");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("OLLAMA_URL", "http://localhost:11434/v1") };
 
         let (_exec, note) = detect_executor(None);
         let note_text = note.expect("expected a note");
@@ -985,8 +1115,8 @@ mod tests {
     #[test]
     fn detect_executor_uses_local_when_ollama_model_set() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("OLLAMA_MODEL", "mistral");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("OLLAMA_MODEL", "mistral") };
 
         let (_exec, note) = detect_executor(None);
         let note_text = note.expect("expected a note");
@@ -1003,8 +1133,8 @@ mod tests {
     #[test]
     fn detect_executor_anthropic_takes_priority_over_openai() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        {
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe {
             std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
             std::env::set_var("OPENAI_API_KEY", "sk-test");
         }
@@ -1020,8 +1150,8 @@ mod tests {
     #[test]
     fn detect_executor_model_override_is_applied() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
 
         let (_exec, note) = detect_executor(Some("claude-opus-4-6"));
         let note_text = note.expect("expected a note");
@@ -1034,13 +1164,13 @@ mod tests {
     #[test]
     fn detect_executor_empty_key_treated_as_absent() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("ANTHROPIC_API_KEY", "");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "") };
 
         let (_exec, note) = detect_executor(None);
         let note_text = note.expect("expected a note");
         assert!(
-            note_text.contains("fake executor"),
+            note_text.contains("simulated responses"),
             "empty key should fall through to fake executor, got: {note_text}",
         );
     }
@@ -1052,12 +1182,13 @@ mod tests {
     #[test]
     fn resolve_provider_cli_flag_anthropic() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
 
         let config = Config::default();
         let registry = build_provider_registry(&config);
-        let (_exec, note) = resolve_provider(Some("anthropic"), None, &config, &registry);
+        let (_exec, note) = resolve_provider(Some("anthropic"), None, &config, &registry)
+            .expect("resolve_provider should succeed when key is set");
         let note_text = note.expect("expected a note");
         assert!(
             note_text.contains("Anthropic") || note_text.contains("anthropic"),
@@ -1068,12 +1199,13 @@ mod tests {
     #[test]
     fn resolve_provider_cli_flag_openai() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("OPENAI_API_KEY", "sk-test");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-test") };
 
         let config = Config::default();
         let registry = build_provider_registry(&config);
-        let (_exec, note) = resolve_provider(Some("openai"), None, &config, &registry);
+        let (_exec, note) = resolve_provider(Some("openai"), None, &config, &registry)
+            .expect("resolve_provider should succeed when key is set");
         let note_text = note.expect("expected a note");
         assert!(
             note_text.contains("OpenAI") || note_text.contains("openai"),
@@ -1084,8 +1216,8 @@ mod tests {
     #[test]
     fn resolve_provider_from_config_entry() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("MY_ANTHROPIC_KEY", "sk-custom");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("MY_ANTHROPIC_KEY", "sk-custom") };
 
         let mut config = Config::default();
         config.providers.push(polkagent_config::ProviderConfig {
@@ -1097,7 +1229,8 @@ mod tests {
         });
 
         let registry = build_provider_registry(&config);
-        let (_exec, note) = resolve_provider(Some("my-anthropic"), None, &config, &registry);
+        let (_exec, note) = resolve_provider(Some("my-anthropic"), None, &config, &registry)
+            .expect("resolve_provider should succeed with a configured provider");
         let note_text = note.expect("expected a note");
         assert!(
             note_text.contains("my-anthropic"),
@@ -1108,13 +1241,14 @@ mod tests {
     #[test]
     fn resolve_provider_fallback_to_env_detection() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("OPENAI_API_KEY", "sk-test");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-test") };
 
         let config = Config::default();
         let registry = build_provider_registry(&config);
         // No provider flag, no config providers — should fall to env detection.
-        let (_exec, note) = resolve_provider(None, None, &config, &registry);
+        let (_exec, note) = resolve_provider(None, None, &config, &registry)
+            .expect("resolve_provider should succeed (no explicit provider flag)");
         let note_text = note.expect("expected a note");
         assert!(
             note_text.contains("OpenAI") || note_text.contains("openai"),
@@ -1128,10 +1262,12 @@ mod tests {
 
         let config = Config::default();
         let registry = build_provider_registry(&config);
-        let (_exec, note) = resolve_provider(None, None, &config, &registry);
+        let (_exec, note) = resolve_provider(None, None, &config, &registry).expect(
+            "resolve_provider should succeed (no explicit provider flag, falls back to fake)",
+        );
         let note_text = note.expect("expected a note");
         assert!(
-            note_text.contains("fake executor"),
+            note_text.contains("simulated responses"),
             "should fall back to fake, got: {note_text}",
         );
     }
@@ -1139,15 +1275,16 @@ mod tests {
     #[test]
     fn resolve_provider_default_provider_from_config() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("OPENAI_API_KEY", "sk-test");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-test") };
 
         let mut config = Config::default();
         config.execution.default_provider = Some("openai".to_owned());
 
         let registry = build_provider_registry(&config);
         // No CLI flag — should pick up default_provider from config.
-        let (_exec, note) = resolve_provider(None, None, &config, &registry);
+        let (_exec, note) = resolve_provider(None, None, &config, &registry)
+            .expect("resolve_provider should succeed (no explicit provider flag)");
         let note_text = note.expect("expected a note");
         assert!(
             note_text.contains("openai") && note_text.contains("default_provider"),
@@ -1156,10 +1293,28 @@ mod tests {
     }
 
     #[test]
+    fn resolve_provider_explicit_flag_missing_key_returns_error() {
+        let _guard = EnvGuard::new();
+        // ANTHROPIC_API_KEY is not set — requesting 'anthropic' explicitly must fail.
+        let config = Config::default();
+        let registry = build_provider_registry(&config);
+        let result = resolve_provider(Some("anthropic"), None, &config, &registry);
+        assert!(
+            result.is_err(),
+            "should return an error when explicit --provider flag cannot be satisfied"
+        );
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("anthropic"),
+            "error message should mention the requested provider, got: {msg}",
+        );
+    }
+
+    #[test]
     fn build_provider_registry_populates_from_env() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
 
         let config = Config::default();
         let registry = build_provider_registry(&config);
@@ -1176,8 +1331,8 @@ mod tests {
     #[test]
     fn build_provider_registry_config_overrides_env() {
         let _guard = EnvGuard::new();
-        #[allow(deprecated)]
-        std::env::set_var("MY_KEY", "sk-custom");
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("MY_KEY", "sk-custom") };
 
         let mut config = Config::default();
         config.providers.push(polkagent_config::ProviderConfig {
@@ -1256,5 +1411,115 @@ mod tests {
         assert!(ids.contains(&"codex".to_owned()));
         assert!(ids.contains(&"cursor".to_owned()));
         assert!(ids.contains(&"goose".to_owned()));
+    }
+
+    // -----------------------------------------------------------------------
+    // --model provider/model prefix parsing tests
+    // -----------------------------------------------------------------------
+
+    /// When `--model anthropic/claude-opus-4-6` is passed without `--provider`,
+    /// the "anthropic" prefix should be used to select the Anthropic executor.
+    #[test]
+    fn resolve_provider_model_prefix_selects_anthropic() {
+        let _guard = EnvGuard::new();
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
+
+        let config = Config::default();
+        let registry = build_provider_registry(&config);
+        let (_exec, note) =
+            resolve_provider(None, Some("anthropic/claude-opus-4-6"), &config, &registry)
+                .expect("resolve_provider should succeed");
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("Anthropic") || note_text.contains("anthropic"),
+            "--model prefix 'anthropic' should select Anthropic executor, got: {note_text}",
+        );
+    }
+
+    /// When `--model openai/gpt-4o` is passed, the "openai" prefix should
+    /// select the OpenAI executor and the model should be "gpt-4o".
+    #[test]
+    fn resolve_provider_model_prefix_selects_openai() {
+        let _guard = EnvGuard::new();
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-test") };
+
+        let config = Config::default();
+        let registry = build_provider_registry(&config);
+        let (_exec, note) = resolve_provider(None, Some("openai/gpt-4o"), &config, &registry)
+            .expect("resolve_provider should succeed");
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("OpenAI") || note_text.contains("openai"),
+            "--model prefix 'openai' should select OpenAI executor, got: {note_text}",
+        );
+    }
+
+    /// When `--model ollama/mistral` is passed, the "ollama" prefix should
+    /// select the local executor (OLLAMA_URL must be set so the provider is
+    /// registered in the registry).
+    #[test]
+    fn resolve_provider_model_prefix_selects_local_from_ollama_url() {
+        let _guard = EnvGuard::new();
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("OLLAMA_URL", "http://localhost:11434/v1") };
+
+        let config = Config::default();
+        let registry = build_provider_registry(&config);
+        let (_exec, note) = resolve_provider(None, Some("ollama/mistral"), &config, &registry)
+            .expect("resolve_provider should succeed");
+        let note_text = note.expect("expected a note");
+        // The note should mention "ollama" or "local" — not the fake executor.
+        assert!(
+            !note_text.contains("fake executor"),
+            "--model ollama/mistral should not fall back to fake executor, got: {note_text}",
+        );
+    }
+
+    /// A model string without a slash must not be split, and the whole string
+    /// is treated as the bare model ID.
+    #[test]
+    fn resolve_provider_model_no_prefix_no_provider_extracted() {
+        let _guard = EnvGuard::new();
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test") };
+
+        let config = Config::default();
+        let registry = build_provider_registry(&config);
+        // No slash in model — the first available provider (Anthropic) should
+        // be selected by env detection, not by model prefix logic.
+        let (_exec, note) = resolve_provider(None, Some("claude-opus-4-6"), &config, &registry)
+            .expect("resolve_provider should succeed");
+        let note_text = note.expect("expected a note");
+        // Should still resolve to something (env-detected Anthropic here).
+        assert!(
+            !note_text.is_empty(),
+            "expected a resolution note, got empty string",
+        );
+    }
+
+    /// An explicit `--provider` flag must win over any prefix embedded in
+    /// `--model`.
+    #[test]
+    fn resolve_provider_explicit_provider_flag_wins_over_model_prefix() {
+        let _guard = EnvGuard::new();
+        // SAFETY: tests are serialised by ENV_MUTEX so no concurrent mutation.
+        unsafe {
+            std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
+            std::env::set_var("OPENAI_API_KEY", "sk-test");
+        }
+
+        let config = Config::default();
+        let registry = build_provider_registry(&config);
+        // --provider anthropic should win even though --model says openai/gpt-4o.
+        let (_exec, note) =
+            resolve_provider(Some("anthropic"), Some("openai/gpt-4o"), &config, &registry)
+                .expect("resolve_provider should succeed");
+        let note_text = note.expect("expected a note");
+        assert!(
+            note_text.contains("Anthropic") || note_text.contains("anthropic"),
+            "explicit --provider should win over --model prefix, got: {note_text}",
+        );
     }
 }

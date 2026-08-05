@@ -51,6 +51,11 @@ pub struct RunPrinter {
     active_tool: Option<(String, Instant)>,
     tool_count: u32,
     effect_count: u32,
+    /// True when streaming tokens have been written to the output but no
+    /// trailing newline has been flushed yet.  Used to insert a newline
+    /// before any subsequent log line so that output like
+    /// `I am a fake assistant  Completing...` cannot occur.
+    streaming_active: bool,
 }
 
 impl RunPrinter {
@@ -72,6 +77,7 @@ impl RunPrinter {
             active_tool: None,
             tool_count: 0,
             effect_count: 0,
+            streaming_active: false,
         }
     }
 
@@ -155,6 +161,12 @@ impl RunPrinter {
     /// Returns `ControlFlow::Break(())` for terminal events (completed,
     /// failed, cancelled, timed out) so the caller can exit the event loop.
     pub fn handle_event(&mut self, w: &mut impl Write, event: &RunEvent) -> ControlFlow<()> {
+        // If streaming tokens were being written (no trailing newline yet),
+        // terminate that line before printing any non-token event output.
+        if !matches!(&event.kind, EventKind::StreamingToken { .. }) {
+            self.end_stream_if_active(w);
+        }
+
         match &event.kind {
             // -- Suppressed / silent ----------------------------------------
             EventKind::RunCreated
@@ -182,7 +194,16 @@ impl RunPrinter {
             // -- Streaming tokens -------------------------------------------
             EventKind::StreamingToken { text } => {
                 if self.stream_tokens {
-                    let _ = self.set_fg(w, self.theme.text_primary);
+                    if !self.streaming_active {
+                        // Print the "Response:" label on its own line before
+                        // the first token so the response is clearly separated
+                        // from the preceding log output.
+                        let _ = self.set_fg(w, self.theme.rose_dim);
+                        let _ = writeln!(w, "\n  Response:");
+                        let _ = self.reset(w);
+                        let _ = self.set_fg(w, self.theme.text_primary);
+                        self.streaming_active = true;
+                    }
                     let _ = write!(w, "{text}");
                     let _ = self.reset(w);
                     let _ = w.flush();
@@ -346,13 +367,17 @@ impl RunPrinter {
             EventKind::RunCompleting => {
                 let _ = self.styled_line(w, "  Completing...", self.theme.text_dim, false);
             }
-            EventKind::RunCompleted { .. } => {
+            EventKind::RunCompleted {
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
                 if !self.stream_tokens && !self.final_text.is_empty() {
                     let _ = self.set_fg(w, self.theme.text_primary);
                     let _ = writeln!(w, "{}", self.final_text);
                     let _ = self.reset(w);
                 }
-                let _ = self.print_completion_card(w);
+                let _ = self.print_completion_card(w, *input_tokens, *output_tokens);
                 return ControlFlow::Break(());
             }
             EventKind::RunFailed { reason } => {
@@ -387,6 +412,18 @@ impl RunPrinter {
     }
 
     // ── Private helpers ──────────────────────────────────────────────────
+
+    /// If streaming tokens have been written without a trailing newline,
+    /// emit one now and clear the flag.  Call this before printing any
+    /// non-token output so that log lines are never appended to the end of
+    /// a partial model response.
+    fn end_stream_if_active(&mut self, w: &mut impl Write) {
+        if self.streaming_active {
+            let _ = writeln!(w);
+            let _ = self.reset(w);
+            self.streaming_active = false;
+        }
+    }
 
     /// Write a single styled line with optional bold.
     fn styled_line(
@@ -429,16 +466,26 @@ impl RunPrinter {
     }
 
     /// Render the completion summary card.
-    fn print_completion_card(&self, w: &mut impl Write) -> std::io::Result<()> {
+    fn print_completion_card(
+        &self,
+        w: &mut impl Write,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> std::io::Result<()> {
         let elapsed = format_elapsed(self.start_time.elapsed());
         let turns = self.current_turn + 1;
+        let total_tokens = input_tokens + output_tokens;
 
         let line1 = format!("  ✓ Run completed                    {elapsed}");
         let line2 = format!(
             "  Turns: {}   Tools: {}   Effects: {}",
             turns, self.tool_count, self.effect_count
         );
-        let inner_w = line1.len().max(line2.len()) + 2;
+        let line3 = format!(
+            "  Tokens: {} input / {} output ({} total)",
+            input_tokens, output_tokens, total_tokens
+        );
+        let inner_w = line1.len().max(line2.len()).max(line3.len()) + 2;
 
         let top = format!(" ┌{}┐", "─".repeat(inner_w));
         let bot = format!(" └{}┘", "─".repeat(inner_w));
@@ -465,6 +512,16 @@ impl RunPrinter {
         self.reset(w)?;
         let pad2 = inner_w - line2.len();
         write!(w, "{:width$}", "", width = pad2)?;
+        self.set_fg(w, self.theme.rose_ember)?;
+        writeln!(w, "│")?;
+
+        // Line 3: token counts.
+        write!(w, " │")?;
+        self.set_fg(w, self.theme.text_dim)?;
+        write!(w, "{line3}")?;
+        self.reset(w)?;
+        let pad3 = inner_w - line3.len();
+        write!(w, "{:width$}", "", width = pad3)?;
         self.set_fg(w, self.theme.rose_ember)?;
         writeln!(w, "│")?;
 
@@ -698,6 +755,7 @@ mod tests {
             active_tool: None,
             tool_count: 0,
             effect_count: 0,
+            streaming_active: false,
         };
 
         let mut buf = Vec::new();
@@ -730,6 +788,7 @@ mod tests {
             active_tool: None,
             tool_count: 0,
             effect_count: 0,
+            streaming_active: false,
         };
 
         let event = RunEvent::new_durable(
@@ -762,6 +821,7 @@ mod tests {
             active_tool: None,
             tool_count: 0,
             effect_count: 0,
+            streaming_active: false,
         };
 
         let event = RunEvent::new_durable(
@@ -795,6 +855,7 @@ mod tests {
             active_tool: None,
             tool_count: 0,
             effect_count: 0,
+            streaming_active: false,
         };
 
         let run_id = polkagent_core::ids::RunId::new();
@@ -837,6 +898,7 @@ mod tests {
             active_tool: None,
             tool_count: 0,
             effect_count: 0,
+            streaming_active: false,
         };
 
         let event = RunEvent::new_ephemeral(
@@ -855,5 +917,72 @@ mod tests {
         assert!(buf.is_empty());
         // Text buffered internally.
         assert_eq!(printer.final_text(), "hello world");
+    }
+
+    #[test]
+    fn streaming_tokens_separated_from_completing() {
+        // Verify that "Completing..." never appears on the same line as a
+        // streaming token — a newline must be emitted between them.
+        let theme = Theme::no_color();
+        let mut printer = RunPrinter {
+            theme,
+            styled: false,
+            stream_tokens: true,
+            start_time: Instant::now(),
+            current_turn: 0,
+            final_text: String::new(),
+            active_tool: None,
+            tool_count: 0,
+            effect_count: 0,
+            streaming_active: false,
+        };
+
+        let run_id = polkagent_core::ids::RunId::new();
+
+        // Emit a streaming token (no trailing newline).
+        let token_event = RunEvent::new_ephemeral(
+            polkagent_core::ids::EventId::new(),
+            run_id.clone(),
+            1,
+            EventKind::StreamingToken {
+                text: "I am a fake assistant".into(),
+            },
+        );
+        // Then emit RunCompleting.
+        let completing_event = RunEvent::new_ephemeral(
+            polkagent_core::ids::EventId::new(),
+            run_id,
+            2,
+            EventKind::RunCompleting,
+        );
+
+        let mut buf = Vec::new();
+        let _ = printer.handle_event(&mut buf, &token_event);
+        let _ = printer.handle_event(&mut buf, &completing_event);
+
+        let output = String::from_utf8(buf).unwrap();
+
+        // "Response:" label must appear before the token text.
+        let response_pos = output
+            .find("Response:")
+            .expect("should contain 'Response:'");
+        let token_pos = output
+            .find("I am a fake assistant")
+            .expect("should contain token text");
+        assert!(
+            response_pos < token_pos,
+            "Response: label must precede token text"
+        );
+
+        // "Completing..." must appear on a NEW line after the token text,
+        // i.e. there must be a newline between the token and "Completing...".
+        let completing_pos = output
+            .find("Completing...")
+            .expect("should contain 'Completing...'");
+        let between = &output[token_pos..completing_pos];
+        assert!(
+            between.contains('\n'),
+            "a newline must separate token text from Completing...; got: {between:?}"
+        );
     }
 }

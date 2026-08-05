@@ -6,10 +6,13 @@
 //!
 //! **Grant requirement:** `chain.query`
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, warn};
 
+use polkagent_chain_trait::{ChainClient, ChainProfileId};
 use polkagent_core::config::DataClassification;
 use polkagent_tool::registry::{ToolContext, ToolError, ToolHandler, ToolResult, ToolSpec};
 
@@ -63,6 +66,17 @@ pub(crate) fn chain_token_info(chain: &str) -> Result<(&str, u8), TreasuryToolEr
 // BalanceQueryTool
 // ---------------------------------------------------------------------------
 
+/// Build the storage key for `System::Account(account_id)`.
+///
+/// Uses the pattern `pallet_prefix ++ storage_prefix ++ account_id` where
+/// the prefixes are encoded as human-readable tags for the chain client
+/// adapter to resolve (matching the governance tool convention).
+pub(crate) fn build_balance_storage_key(account_id: &str) -> Vec<u8> {
+    let mut key = b"System:Account:".to_vec();
+    key.extend_from_slice(account_id.as_bytes());
+    key
+}
+
 /// Queries an account's free, reserved, frozen, and total balance.
 ///
 /// Supports the native token of Polkadot, Kusama, Westend, and Rococo.
@@ -78,7 +92,16 @@ pub(crate) fn chain_token_info(chain: &str) -> Result<(&str, u8), TreasuryToolEr
 /// ```
 ///
 /// **Grant requirement:** `chain.query`
-pub struct BalanceQueryTool;
+pub struct BalanceQueryTool {
+    chain_client: Arc<dyn ChainClient>,
+}
+
+impl BalanceQueryTool {
+    /// Create a new `BalanceQueryTool` backed by the given chain client.
+    pub fn new(chain_client: Arc<dyn ChainClient>) -> Self {
+        Self { chain_client }
+    }
+}
 
 #[async_trait]
 impl ToolHandler for BalanceQueryTool {
@@ -112,16 +135,65 @@ impl ToolHandler for BalanceQueryTool {
 
         debug!(account = account_id, chain, "querying balance");
 
-        // In production this would query chain state via ChainClient.
-        // For now we return a representative balance structure.
-        let balance = AccountBalance {
-            free: 0,
-            reserved: 0,
-            frozen: 0,
-            total: 0,
-            asset_id: None,
-            symbol: symbol.to_string(),
-            decimals,
+        let storage_key = build_balance_storage_key(account_id);
+        let chain_profile = ChainProfileId::new(chain);
+
+        let balance = match self
+            .chain_client
+            .query_storage(&storage_key, None, chain_profile)
+            .await
+        {
+            Ok(Some(bytes)) => {
+                serde_json::from_slice::<AccountBalance>(&bytes).unwrap_or_else(|e| {
+                    warn!(
+                        account = account_id,
+                        chain,
+                        error = %e,
+                        "failed to decode balance from chain, using defaults"
+                    );
+                    AccountBalance {
+                        free: 0,
+                        reserved: 0,
+                        frozen: 0,
+                        total: 0,
+                        asset_id: None,
+                        symbol: symbol.to_string(),
+                        decimals,
+                    }
+                })
+            }
+            Ok(None) => {
+                debug!(
+                    account = account_id,
+                    chain, "no balance data on chain, returning zeros"
+                );
+                AccountBalance {
+                    free: 0,
+                    reserved: 0,
+                    frozen: 0,
+                    total: 0,
+                    asset_id: None,
+                    symbol: symbol.to_string(),
+                    decimals,
+                }
+            }
+            Err(e) => {
+                warn!(
+                    account = account_id,
+                    chain,
+                    error = %e,
+                    "chain query failed, falling back to defaults"
+                );
+                AccountBalance {
+                    free: 0,
+                    reserved: 0,
+                    frozen: 0,
+                    total: 0,
+                    asset_id: None,
+                    symbol: symbol.to_string(),
+                    decimals,
+                }
+            }
         };
 
         let output = serde_json::to_value(&balance).map_err(|e| ToolError::ExecutionFailed {
@@ -143,6 +215,7 @@ impl ToolHandler for BalanceQueryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::MockChainClient;
     use polkagent_core::ids::{AgentId, RunId, StepId};
 
     fn test_context() -> ToolContext {
@@ -151,19 +224,24 @@ mod tests {
             agent_id: AgentId::new(),
             step_id: StepId::new(),
             grants: vec![],
+            security_config: None,
         }
+    }
+
+    fn make_tool() -> BalanceQueryTool {
+        BalanceQueryTool::new(Arc::new(MockChainClient::new()))
     }
 
     #[test]
     fn spec_name_and_grant() {
-        let spec = BalanceQueryTool.spec();
+        let spec = make_tool().spec();
         assert_eq!(spec.name, "polkagent.treasury.balance_query");
         assert_eq!(spec.required_grant.as_deref(), Some("chain.query"));
     }
 
     #[test]
     fn spec_has_input_schema() {
-        let spec = BalanceQueryTool.spec();
+        let spec = make_tool().spec();
         let props = &spec.input_schema["properties"];
         assert!(props.get("account_id").is_some());
         assert!(props.get("chain").is_some());
@@ -230,7 +308,7 @@ mod tests {
             "chain": "polkadot"
         });
 
-        let result = BalanceQueryTool
+        let result = make_tool()
             .execute(input, &test_context())
             .await
             .expect("should succeed");
@@ -243,9 +321,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_with_chain_data() {
+        let mut client = MockChainClient::new();
+        let balance = AccountBalance {
+            free: 1_000_000_000_000,
+            reserved: 500_000_000,
+            frozen: 200_000_000_000,
+            total: 1_000_500_000_000,
+            asset_id: None,
+            symbol: "DOT".to_string(),
+            decimals: 10,
+        };
+        let key = build_balance_storage_key("5GrwvaEFcWWqn1bRJJpPi8HBdhQ");
+        let bytes = serde_json::to_vec(&balance).expect("serialize");
+        client.insert_storage(key, bytes);
+
+        let tool = BalanceQueryTool::new(Arc::new(client));
+        let input = serde_json::json!({
+            "account_id": "5GrwvaEFcWWqn1bRJJpPi8HBdhQ",
+            "chain": "polkadot"
+        });
+
+        let result = tool
+            .execute(input, &test_context())
+            .await
+            .expect("should succeed");
+
+        let out: AccountBalance =
+            serde_json::from_value(result.output).expect("deserialize output");
+        assert_eq!(out.free, 1_000_000_000_000);
+        assert_eq!(out.reserved, 500_000_000);
+        assert_eq!(out.total, 1_000_500_000_000);
+    }
+
+    #[tokio::test]
     async fn execute_missing_account_id() {
         let input = serde_json::json!({});
-        let result = BalanceQueryTool.execute(input, &test_context()).await;
+        let result = make_tool().execute(input, &test_context()).await;
         assert!(matches!(result, Err(ToolError::InvalidInput { .. })));
     }
 
@@ -255,7 +367,21 @@ mod tests {
             "account_id": "5GrwvaEF...",
             "chain": "ethereum"
         });
-        let result = BalanceQueryTool.execute(input, &test_context()).await;
+        let result = make_tool().execute(input, &test_context()).await;
         assert!(matches!(result, Err(ToolError::ExecutionFailed { .. })));
+    }
+
+    #[test]
+    fn build_storage_key_deterministic() {
+        let k1 = build_balance_storage_key("5GrwvaEF...");
+        let k2 = build_balance_storage_key("5GrwvaEF...");
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn build_storage_key_different_accounts() {
+        let k1 = build_balance_storage_key("5Alice");
+        let k2 = build_balance_storage_key("5Bob");
+        assert_ne!(k1, k2);
     }
 }

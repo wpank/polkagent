@@ -542,8 +542,8 @@ fn parse_metadata_versioned(bytes: &[u8], expected_version: u8) -> Result<Runtim
         )));
     }
 
-    // Version is encoded as a compact u32 in the real format.
-    let version = dec.decode_compact_u32()? as u8;
+    // Version is encoded as a raw u8 (not compact) in the real format.
+    let version = dec.decode_u8()?;
     if version != expected_version {
         return Err(CodecError::unsupported_version(version));
     }
@@ -612,9 +612,9 @@ pub fn parse_metadata(bytes: &[u8]) -> Result<RuntimeMetadata> {
     if bytes[0..4] != META_MAGIC {
         return Err(CodecError::decode("invalid metadata magic"));
     }
-    // Version byte is compact-encoded starting at offset 4.
+    // Version byte is a raw u8 (not compact) starting at offset 4.
     let mut ver_dec = ScaleDecoder::new(&bytes[4..]);
-    let version = ver_dec.decode_compact_u32()? as u8;
+    let version = ver_dec.decode_u8()?;
     match version {
         14 => parse_metadata_v14(bytes),
         15 => parse_metadata_v15(bytes),
@@ -648,9 +648,9 @@ pub fn build_minimal_metadata_v14(pallets: &[(&str, u8)]) -> Vec<u8> {
     // magic
     buf.extend_from_slice(&META_MAGIC);
 
-    // version: compact 14
+    // version: raw u8 14
     let mut enc2 = ScaleEncoder::new();
-    enc2.encode_compact_u32(14);
+    enc2.encode_u8(14);
     buf.extend(enc2.finish());
 
     // type registry: compact count = 0

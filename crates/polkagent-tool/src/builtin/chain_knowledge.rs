@@ -152,6 +152,7 @@ mod tests {
             agent_id: polkagent_core::AgentId::new(),
             step_id: polkagent_core::StepId::new(),
             grants: vec![],
+            security_config: None,
         };
 
         let result = tool.execute(serde_json::json!({}), &ctx).await;
@@ -168,6 +169,7 @@ mod tests {
             agent_id: polkagent_core::AgentId::new(),
             step_id: polkagent_core::StepId::new(),
             grants: vec![],
+            security_config: None,
         };
 
         let input = serde_json::json!({ "query": "transfer" });
@@ -201,6 +203,7 @@ mod tests {
             agent_id,
             step_id: polkagent_core::StepId::new(),
             grants: vec![],
+            security_config: None,
         };
 
         let input = serde_json::json!({ "query": "Balances transfer" });

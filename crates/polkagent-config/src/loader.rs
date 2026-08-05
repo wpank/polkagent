@@ -174,7 +174,7 @@ pub fn global_config_path() -> Option<PathBuf> {
 /// Walk up from `start` directory looking for `.polkagent/polkagent.toml`.
 ///
 /// Returns the first match found, or `None` if no project config is found
-/// before the filesystem root.
+/// before the filesystem root or a repository boundary (`.git`).
 pub fn find_project_config_from(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
     loop {
@@ -182,6 +182,13 @@ pub fn find_project_config_from(start: &Path) -> Option<PathBuf> {
         if candidate.exists() {
             return Some(candidate);
         }
+
+        // Stop at repository root: `.git` can be a directory (normal repo) or
+        // a file (git worktrees).
+        if current.join(".git").exists() {
+            return None;
+        }
+
         match current.parent() {
             Some(parent) => current = parent.to_path_buf(),
             None => return None,
@@ -233,19 +240,22 @@ pub fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
     }
 }
 
-/// Convenience: merge `base` config with field-level values from `overlay`.
+/// Merge a `base` config with a raw TOML overlay string.
 ///
-/// Both configs are converted to TOML values; the overlay's non-default fields
-/// overwrite the base fields.
+/// The overlay string is parsed into a [`toml::Value`] so that only keys
+/// explicitly present in the string participate in the merge.  This avoids the
+/// pitfall of serializing a full [`Config`] (which materializes every default)
+/// and accidentally clobbering base values with overlay defaults.
 ///
 /// # Errors
 ///
-/// Returns [`ConfigError`] if either config cannot be serialized to TOML.
-pub fn merge(base: Config, overlay: Config) -> Result<Config> {
+/// Returns [`ConfigError`] if the base cannot be serialized, the overlay
+/// string is not valid TOML, or the merged value cannot be deserialized.
+pub fn merge(base: Config, overlay_toml: &str) -> Result<Config> {
     let mut base_val =
         toml::Value::try_from(base).map_err(|e| ConfigError::Serialize(e.to_string()))?;
-    let overlay_val =
-        toml::Value::try_from(overlay).map_err(|e| ConfigError::Serialize(e.to_string()))?;
+    let overlay_val: toml::Value = toml::from_str(overlay_toml)
+        .map_err(|e| ConfigError::Parse("<merge-overlay>".to_owned(), e.to_string()))?;
     merge_toml(&mut base_val, overlay_val);
     base_val
         .try_into()
@@ -378,13 +388,23 @@ level = "warn"
 
     #[test]
     fn merge_config_structs_overlay_wins() {
-        let base = Config::default();
-        let mut overlay = Config::default();
-        overlay.log.level = "error".to_owned();
-        overlay.database.backend = DatabaseBackend::Postgres;
-        let merged = merge(base, overlay).expect("merge");
+        let mut base = Config::default();
+        base.log.level = "trace".to_owned();
+        base.execution.max_concurrent_runs = 42;
+
+        let overlay_toml = r#"
+[log]
+level = "error"
+
+[database]
+backend = "postgres"
+"#;
+        let merged = merge(base, overlay_toml).expect("merge");
+        // Overlay keys win.
         assert_eq!(merged.log.level, "error");
         assert_eq!(merged.database.backend, DatabaseBackend::Postgres);
+        // Base values not mentioned in the overlay are preserved.
+        assert_eq!(merged.execution.max_concurrent_runs, 42);
     }
 
     // -----------------------------------------------------------------------
@@ -426,6 +446,83 @@ level = "warn"
         // It's possible the real filesystem above tmp has a config; we can't
         // assert None in general. Just verify the function doesn't panic.
         let _ = result;
+    }
+
+    #[test]
+    fn find_project_config_stops_at_git_directory_boundary() {
+        let tmp = TempDir::new().expect("tempdir");
+        // Layout:
+        //   outer/.polkagent/polkagent.toml   <-- config above repo root
+        //   outer/repo/.git/                  <-- repo root
+        //   outer/repo/sub/deep/              <-- start dir
+        let outer = tmp.path().join("outer");
+        let repo = outer.join("repo");
+        let nested = repo.join("sub").join("deep");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::create_dir_all(repo.join(".git")).expect("create .git");
+
+        // Config above the repo root — should NOT be discovered.
+        write_config(
+            &outer,
+            ".polkagent/polkagent.toml",
+            "[log]\nlevel = \"trace\"",
+        );
+
+        let found = find_project_config_from(&nested);
+        assert!(
+            found.is_none(),
+            "should not walk past .git boundary, but found: {:?}",
+            found,
+        );
+    }
+
+    #[test]
+    fn find_project_config_finds_config_inside_repo_boundary() {
+        let tmp = TempDir::new().expect("tempdir");
+        // Layout:
+        //   repo/.git/                        <-- repo root
+        //   repo/.polkagent/polkagent.toml    <-- config at repo root
+        //   repo/sub/deep/                    <-- start dir
+        let repo = tmp.path().join("repo");
+        let nested = repo.join("sub").join("deep");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::create_dir_all(repo.join(".git")).expect("create .git");
+
+        write_config(
+            &repo,
+            ".polkagent/polkagent.toml",
+            "[log]\nlevel = \"debug\"",
+        );
+
+        let found = find_project_config_from(&nested);
+        assert!(found.is_some(), "should find config inside repo boundary");
+    }
+
+    #[test]
+    fn find_project_config_stops_at_git_worktree_file_boundary() {
+        let tmp = TempDir::new().expect("tempdir");
+        // In git worktrees, .git is a file, not a directory.
+        let repo = tmp.path().join("worktree");
+        let nested = repo.join("sub");
+        fs::create_dir_all(&nested).expect("create nested");
+
+        // Create .git as a file (worktree marker).
+        fs::write(repo.join(".git"), "gitdir: /some/path/to/.git/worktrees/wt")
+            .expect("write .git file");
+
+        // Config above the worktree — should NOT be discovered.
+        write_config(
+            tmp.path(),
+            ".polkagent/polkagent.toml",
+            "[log]\nlevel = \"trace\"",
+        );
+
+        let found = find_project_config_from(&nested);
+        assert!(
+            found.is_none(),
+            "should not walk past .git file boundary (worktree), but found: {:?}",
+            found,
+        );
     }
 
     #[test]

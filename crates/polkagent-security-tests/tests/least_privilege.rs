@@ -72,6 +72,7 @@ fn tool_ctx(grants: Vec<ResolvedGrant>) -> ToolContext {
         agent_id: AgentId::new(),
         step_id: StepId::new(),
         grants,
+        security_config: None,
     }
 }
 

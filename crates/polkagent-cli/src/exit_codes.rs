@@ -3,10 +3,8 @@
 //! Use these constants with `std::process::exit` to communicate structured
 //! outcomes to shell scripts and CI pipelines.
 //!
-//! These constants are reserved for future use as the CLI command set grows.
-//! Not all codes are wired into command handlers yet; they are defined here
-//! so that the numeric assignments are stable and documented in one place.
-#![allow(dead_code)]
+//! All codes are wired into `main::classify_exit_code()` which inspects
+//! error messages to select the appropriate code.
 
 /// Command completed successfully.
 pub const SUCCESS: i32 = 0;

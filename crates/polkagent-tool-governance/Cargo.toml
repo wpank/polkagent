@@ -12,6 +12,7 @@ description = "OpenGov governance research tools for Polkagent agents"
 polkagent-tool = { path = "../polkagent-tool" }
 polkagent-core = { path = "../polkagent-core" }
 polkagent-chain-trait = { path = "../polkagent-chain-trait" }
+polkagent-codec = { path = "../polkagent-codec" }
 
 # Async
 tokio = { workspace = true }

@@ -48,6 +48,164 @@ pub trait SkillRegistry: Send + Sync {
 
     /// Look up a single skill by its name.
     async fn get_skill(&self, name: &str) -> Option<SkillManifest>;
+
+    /// Install a skill from a filesystem path pointing to a skill directory
+    /// containing a `skill.toml` manifest.
+    ///
+    /// Returns the loaded manifest on success.
+    async fn install_skill(&self, path: &str) -> Result<SkillManifest, String>;
+
+    /// Uninstall a skill by name, removing it from the registry.
+    ///
+    /// Returns `true` if the skill was found and removed.
+    async fn uninstall_skill(&self, name: &str) -> Result<bool, String>;
+
+    /// Update the runtime configuration for a skill by merging key-value
+    /// pairs into the skill's existing config map.
+    ///
+    /// Returns the updated manifest on success.
+    async fn update_skill_config(
+        &self,
+        name: &str,
+        config: serde_json::Value,
+    ) -> Result<SkillManifest, String>;
+}
+
+// ---------------------------------------------------------------------------
+// InMemorySkillRegistry — in-process skill registry
+// ---------------------------------------------------------------------------
+
+/// In-memory implementation of [`SkillRegistry`] backed by an `RwLock<Vec>`.
+///
+/// Skills are loaded from the filesystem via [`SkillLoader`] and cached in
+/// memory. Install/uninstall mutations modify the in-memory cache only; they
+/// do not persist across process restarts.
+#[derive(Debug)]
+pub struct InMemorySkillRegistry {
+    skills: RwLock<Vec<SkillManifest>>,
+}
+
+impl InMemorySkillRegistry {
+    /// Create an empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            skills: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Create a registry pre-populated with the given manifests.
+    #[must_use]
+    pub fn with_manifests(manifests: Vec<SkillManifest>) -> Self {
+        Self {
+            skills: RwLock::new(manifests),
+        }
+    }
+}
+
+impl Default for InMemorySkillRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl SkillRegistry for InMemorySkillRegistry {
+    async fn list_skills(&self) -> Vec<SkillManifest> {
+        self.skills.read().await.clone()
+    }
+
+    async fn get_skill(&self, name: &str) -> Option<SkillManifest> {
+        self.skills
+            .read()
+            .await
+            .iter()
+            .find(|m| m.skill.name == name)
+            .cloned()
+    }
+
+    async fn install_skill(&self, path: &str) -> Result<SkillManifest, String> {
+        let path = std::path::Path::new(path);
+        let manifest =
+            polkagent_skill::SkillLoader::load_from_dir(path).map_err(|e| e.to_string())?;
+
+        let mut guard = self.skills.write().await;
+
+        // Reject if a skill with the same name is already loaded.
+        if guard.iter().any(|m| m.skill.name == manifest.skill.name) {
+            return Err(format!(
+                "skill '{}' is already installed",
+                manifest.skill.name
+            ));
+        }
+
+        guard.push(manifest.clone());
+        Ok(manifest)
+    }
+
+    async fn uninstall_skill(&self, name: &str) -> Result<bool, String> {
+        let mut guard = self.skills.write().await;
+        let before = guard.len();
+        guard.retain(|m| m.skill.name != name);
+        Ok(guard.len() < before)
+    }
+
+    async fn update_skill_config(
+        &self,
+        name: &str,
+        config: serde_json::Value,
+    ) -> Result<SkillManifest, String> {
+        let obj = config
+            .as_object()
+            .ok_or_else(|| "config must be a JSON object".to_owned())?;
+
+        let mut guard = self.skills.write().await;
+        let manifest = guard
+            .iter_mut()
+            .find(|m| m.skill.name == name)
+            .ok_or_else(|| format!("skill '{name}' not found"))?;
+
+        // Merge each key-value pair into the manifest's config map.
+        for (key, value) in obj {
+            // Convert serde_json::Value -> toml::Value for storage in the manifest.
+            let toml_val = json_value_to_toml(value)
+                .ok_or_else(|| format!("config key '{key}' has an unsupported JSON type"))?;
+            manifest.config.insert(key.clone(), toml_val);
+        }
+
+        Ok(manifest.clone())
+    }
+}
+
+/// Best-effort conversion from [`serde_json::Value`] to [`toml::Value`].
+///
+/// Returns `None` for types that TOML does not support (e.g. `null`).
+fn json_value_to_toml(v: &serde_json::Value) -> Option<toml::Value> {
+    match v {
+        serde_json::Value::Bool(b) => Some(toml::Value::Boolean(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(toml::Value::Integer(i))
+            } else if let Some(f) = n.as_f64() {
+                Some(toml::Value::Float(f))
+            } else {
+                None
+            }
+        }
+        serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
+        serde_json::Value::Array(arr) => {
+            let items: Option<Vec<toml::Value>> = arr.iter().map(json_value_to_toml).collect();
+            Some(toml::Value::Array(items?))
+        }
+        serde_json::Value::Object(map) => {
+            let mut table = toml::map::Map::new();
+            for (k, val) in map {
+                table.insert(k.clone(), json_value_to_toml(val)?);
+            }
+            Some(toml::Value::Table(table))
+        }
+        serde_json::Value::Null => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

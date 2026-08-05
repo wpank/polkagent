@@ -9,9 +9,10 @@ use anyhow::Result;
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::cli::StatusCmd;
+use crate::output::OutputFormat;
 
 /// Execute the `status` subcommand.
-pub fn run(cmd: &StatusCmd, pool: &SqlitePool) -> Result<()> {
+pub fn run(cmd: &StatusCmd, pool: &SqlitePool, format: OutputFormat) -> Result<()> {
     let reader = pool
         .reader()
         .map_err(|e| anyhow::anyhow!("opening database reader: {e}"))?;
@@ -72,7 +73,9 @@ pub fn run(cmd: &StatusCmd, pool: &SqlitePool) -> Result<()> {
             .unwrap_or(0)
     };
 
-    if cmd.json {
+    let use_json = cmd.json || matches!(format, OutputFormat::Json | OutputFormat::JsonPretty);
+
+    if use_json {
         let out = serde_json::json!({
             "agents": {
                 "total":  total_agents,
@@ -86,7 +89,11 @@ pub fn run(cmd: &StatusCmd, pool: &SqlitePool) -> Result<()> {
             "effect_queue_depth": effect_queue_depth,
             "memory_entries": memory_entries,
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        if matches!(format, OutputFormat::Json) {
+            println!("{}", serde_json::to_string(&out)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
     } else {
         println!("Polkagent Status");
         println!("{}", "-".repeat(40));

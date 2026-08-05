@@ -72,11 +72,17 @@ impl RegressionResult {
 // ---------------------------------------------------------------------------
 
 /// Detects regressions and improvements between two eval reports.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RegressionDetector {
     /// Minimum absolute score delta required to classify a change as a
-    /// regression or improvement (defaults to `0.0001`).
+    /// regression or improvement (defaults to `0.001`).
     pub min_delta: f64,
+}
+
+impl Default for RegressionDetector {
+    fn default() -> Self {
+        Self { min_delta: 0.001 }
+    }
 }
 
 impl RegressionDetector {

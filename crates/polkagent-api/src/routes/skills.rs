@@ -9,11 +9,12 @@
 //! | `PUT` | `/skills/:skill_id/config` | [`update_skill_config`] |
 //!
 //! All endpoints return 501 Not Implemented when no [`SkillRegistry`] has been
-//! configured in [`AppState`]. When a registry is configured, they delegate to
-//! the trait methods.
+//! configured in [`AppState`]. When a registry is configured, all endpoints
+//! delegate to the trait methods on [`SkillRegistry`].
 
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
     Json,
 };
@@ -107,36 +108,57 @@ pub async fn get_skill(
 
 /// Install a skill from a local filesystem path.
 ///
-/// **Stub:** Returns 501 Not Implemented. Will be wired to the skill loader
-/// once dynamic installation is supported.
-#[instrument(skip(_state, body), fields(path = %body.path))]
+/// Loads the `skill.toml` manifest from the given directory and registers the
+/// skill in the in-memory registry. Returns the newly installed skill.
+///
+/// Returns 501 when no skill registry is configured, 422 on validation or I/O
+/// errors, and 409 if the skill is already installed.
+#[instrument(skip(state, body), fields(path = %body.path))]
 pub async fn install_skill(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<InstallSkillRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let _ = body;
-    Err::<Json<()>, _>(ApiError::NotImplemented(
-        "skill installation is not yet implemented".to_owned(),
-    ))
+    let registry = state
+        .skill_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::NotImplemented("skill registry not configured".to_owned()))?;
+
+    let manifest = registry
+        .install_skill(&body.path)
+        .await
+        .map_err(ApiError::ValidationError)?;
+
+    Ok(Json(manifest_to_response(&manifest)))
 }
 
 // ---------------------------------------------------------------------------
 // POST /skills/:skill_id/uninstall
 // ---------------------------------------------------------------------------
 
-/// Uninstall a skill by name.
+/// Uninstall a skill by name, removing it from the registry.
 ///
-/// **Stub:** Returns 501 Not Implemented. Will be wired to the skill loader
-/// once dynamic uninstallation is supported.
-#[instrument(skip(_state), fields(skill_id = %skill_id))]
+/// Returns 501 when no skill registry is configured, 404 when the skill
+/// is not found.
+#[instrument(skip(state), fields(skill_id = %skill_id))]
 pub async fn uninstall_skill(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(skill_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let _ = skill_id;
-    Err::<Json<()>, _>(ApiError::NotImplemented(
-        "skill uninstall is not yet implemented".to_owned(),
-    ))
+    let registry = state
+        .skill_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::NotImplemented("skill registry not configured".to_owned()))?;
+
+    let removed = registry
+        .uninstall_skill(&skill_id)
+        .await
+        .map_err(ApiError::InternalError)?;
+
+    if !removed {
+        return Err(ApiError::NotFound(format!("skill '{skill_id}'")));
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
@@ -145,16 +167,30 @@ pub async fn uninstall_skill(
 
 /// Update the runtime configuration for a skill.
 ///
-/// **Stub:** Returns 501 Not Implemented. Will be wired to the skill runtime
-/// once per-skill config mutation is supported.
-#[instrument(skip(_state, body), fields(skill_id = %skill_id))]
+/// Merges the supplied key-value pairs into the skill's config map and
+/// returns the updated skill. Returns 501 when no registry is configured,
+/// 404 when the skill is not found.
+#[instrument(skip(state, body), fields(skill_id = %skill_id))]
 pub async fn update_skill_config(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(skill_id): Path<String>,
     Json(body): Json<UpdateSkillConfigRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let _ = (skill_id, body);
-    Err::<Json<()>, _>(ApiError::NotImplemented(
-        "skill config update is not yet implemented".to_owned(),
-    ))
+    let registry = state
+        .skill_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::NotImplemented("skill registry not configured".to_owned()))?;
+
+    let manifest = registry
+        .update_skill_config(&skill_id, body.config)
+        .await
+        .map_err(|e| {
+            if e.contains("not found") {
+                ApiError::NotFound(format!("skill '{skill_id}'"))
+            } else {
+                ApiError::ValidationError(e)
+            }
+        })?;
+
+    Ok(Json(manifest_to_response(&manifest)))
 }

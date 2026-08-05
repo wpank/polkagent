@@ -75,8 +75,6 @@ CREATE TABLE IF NOT EXISTS memory_provenance (
     source_agent_id     TEXT,
     ingested_at         TEXT
 );
-
-CREATE INDEX IF NOT EXISTS idx_provenance_artifact ON memory_provenance(source_artifact_id);
 ";
 
 /// SQL to create the FTS5 virtual table for full-text search on memory content.
@@ -160,6 +158,11 @@ impl SqliteMemoryStore {
         // Apply core schema.
         conn.execute_batch(SCHEMA_SQL)?;
 
+        // Apply incremental migrations for databases created before the
+        // current schema version. Each migration is idempotent: it checks
+        // whether the change is already present before applying it.
+        Self::migrate(&conn)?;
+
         // Attempt to create FTS5 virtual table. Not all SQLite builds include
         // FTS5, so we gracefully degrade to LIKE-based search if it fails.
         let fts_available = conn.execute_batch(FTS5_SQL).is_ok();
@@ -173,6 +176,52 @@ impl SqliteMemoryStore {
                 fts_available,
             }),
         })
+    }
+
+    /// Apply incremental schema migrations.
+    ///
+    /// Each migration is guarded so it is safe to run against both fresh and
+    /// existing databases. New migrations must be appended in order.
+    fn migrate(conn: &Connection) -> MemoryResult<()> {
+        // --- Migration 1 (P4-8): provenance columns & index ---
+        //
+        // The initial schema for `memory_provenance` had only:
+        //   memory_id, source_run_id, source_turn, extraction_method,
+        //   confidence, verified
+        //
+        // P4-8 added three new columns and an index on one of them.
+        // Databases created before P4-8 need the columns added first;
+        // otherwise the index creation fails with "no such column".
+        //
+        // SQLite does not support `ADD COLUMN IF NOT EXISTS`, so we inspect
+        // `PRAGMA table_info` and only issue the ALTER TABLE when necessary.
+        let existing_columns: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(memory_provenance)")?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            names
+        };
+
+        if !existing_columns.iter().any(|c| c == "source_artifact_id") {
+            conn.execute_batch(
+                "ALTER TABLE memory_provenance ADD COLUMN source_artifact_id TEXT;",
+            )?;
+        }
+        if !existing_columns.iter().any(|c| c == "source_agent_id") {
+            conn.execute_batch("ALTER TABLE memory_provenance ADD COLUMN source_agent_id TEXT;")?;
+        }
+        if !existing_columns.iter().any(|c| c == "ingested_at") {
+            conn.execute_batch("ALTER TABLE memory_provenance ADD COLUMN ingested_at TEXT;")?;
+        }
+
+        // Create the index now that the column is guaranteed to exist.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_provenance_artifact \
+             ON memory_provenance(source_artifact_id);",
+        )?;
+
+        Ok(())
     }
 
     /// Whether FTS5 full-text search is available.
@@ -677,8 +726,19 @@ fn search_fts(
     sql.push_str(" ORDER BY m.relevance_score DESC, rank LIMIT ?100");
 
     // Build a dynamic rusqlite params vector.
+    // Sanitize the FTS5 query to prevent metacharacter injection.  FTS5 supports
+    // operators like `"`, `*`, `NEAR(…)` and column filters (`content:`) that could
+    // be used to probe memory contents beyond the caller's intended search scope.
+    // Each whitespace-separated word is individually quoted to neutralise operators
+    // while still allowing matches when the words appear in different positions.
+    let sanitized_query = query
+        .query_text
+        .split_whitespace()
+        .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    values.push(Box::new(query.query_text.clone()));
+    values.push(Box::new(sanitized_query));
     if let Some(ref agent_id) = query.agent_id {
         values.push(Box::new(agent_id.to_string()));
     }

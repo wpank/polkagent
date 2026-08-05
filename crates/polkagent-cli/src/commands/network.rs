@@ -109,12 +109,14 @@ fn strip_scheme(url: &str) -> &str {
 }
 
 /// Determine whether a real RPC endpoint is configured.
+///
+/// `POLKAGENT_CHAIN_RPC_URL` takes precedence over `POLKAGENT_RPC_URL`.
 fn rpc_url() -> Option<String> {
-    std::env::var("POLKAGENT_RPC_URL")
+    std::env::var("POLKAGENT_CHAIN_RPC_URL")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            std::env::var("POLKAGENT_CHAIN_RPC_URL")
+            std::env::var("POLKAGENT_RPC_URL")
                 .ok()
                 .filter(|s| !s.is_empty())
         })
@@ -149,7 +151,7 @@ async fn status(cmd: &NetworkStatusCmd) -> Result<()> {
                 "spec_version": meta.spec_version,
                 "peer_count": serde_json::Value::Null,
                 "rpc_configured": false,
-                "note": "No RPC endpoint configured. Set POLKAGENT_RPC_URL to connect to a live chain.",
+                "note": "No RPC endpoint configured. Set POLKAGENT_CHAIN_RPC_URL or POLKAGENT_RPC_URL to connect to a live chain.",
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
             return Ok(());
@@ -290,7 +292,7 @@ async fn metadata(cmd: &NetworkMetadataCmd) -> Result<()> {
 
     if configured_rpc.is_none() {
         println!("  Note: Showing representative pallet list from offline data.");
-        println!("  Set POLKAGENT_RPC_URL to fetch live metadata from a chain node.");
+        println!("  Set POLKAGENT_CHAIN_RPC_URL or POLKAGENT_RPC_URL to fetch live metadata from a chain node.");
         println!();
     }
 
@@ -327,7 +329,8 @@ fn start(cmd: &NetworkStartCmd) -> Result<()> {
     println!("    https://github.com/AcalaNetwork/chopsticks");
     println!();
     println!("  Once a network is running, configure its RPC endpoint:");
-    println!("    export POLKAGENT_RPC_URL=ws://127.0.0.1:9944");
+    println!("    export POLKAGENT_CHAIN_RPC_URL=ws://127.0.0.1:9944");
+    println!("  (or the legacy alias: export POLKAGENT_RPC_URL=ws://127.0.0.1:9944)");
     println!();
 
     Ok(())

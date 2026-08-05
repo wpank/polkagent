@@ -28,7 +28,7 @@ use polkagent_grant::{
 use polkagent_harness_trait::Harness;
 use polkagent_memory::{MemoryEntry, MemoryId, MemoryQuery, MemoryStore};
 use polkagent_payment::{Amount, CostRecord, PaymentStore, UsageSummary};
-use polkagent_run::{RunManager, RunOrchestrator};
+use polkagent_run::{RunManager, RunOrchestrator, TimeoutConfig, TimeoutEnforcer};
 use polkagent_signer_trait::Signer;
 use polkagent_store_trait::{
     EffectStore, RunStore, RunSummary, StoreError, StoredIntent, StoredOutcome,
@@ -45,14 +45,21 @@ use crate::provider::ProviderRegistry;
 // ---------------------------------------------------------------------------
 
 /// A no-op [`EffectStore`] used internally when the service has no real
-/// effect store configured. Effect intents are silently accepted but never
-/// persisted, which is safe for auto-approve scenarios.
+/// effect store configured. Effect intents are accepted but never persisted.
+///
+/// **Warning:** This stub logs a warning whenever effects are discarded.
+/// Prefer providing a real effect store (e.g. `SqliteEffectStore`) to avoid
+/// losing effect data.
 #[derive(Debug, Default)]
 struct NoopEffectStore;
 
 #[async_trait::async_trait]
 impl EffectStore for NoopEffectStore {
     async fn propose_intent(&self, _intent: StoredIntent) -> Result<(), StoreError> {
+        warn!(
+            "NoopEffectStore: discarding proposed effect intent — \
+             no real effect store is configured; effects will not be persisted"
+        );
         Ok(())
     }
 
@@ -106,10 +113,18 @@ impl EffectStore for NoopEffectStore {
         _worker_id: WorkerId,
         _payload: serde_json::Value,
     ) -> Result<(), StoreError> {
+        warn!(
+            "NoopEffectStore: discarding effect attempt start — \
+             no real effect store is configured"
+        );
         Ok(())
     }
 
     async fn record_outcome(&self, _outcome: StoredOutcome) -> Result<(), StoreError> {
+        warn!(
+            "NoopEffectStore: discarding effect outcome — \
+             no real effect store is configured; outcome will not be persisted"
+        );
         Ok(())
     }
 
@@ -372,10 +387,14 @@ impl AppServiceBuilder {
             });
 
             // Use the configured effect store or fall back to the noop stub.
-            let effect_store: Arc<dyn EffectStore> = self
-                .effect_store
-                .clone()
-                .unwrap_or_else(|| Arc::new(NoopEffectStore));
+            let effect_store: Arc<dyn EffectStore> =
+                self.effect_store.clone().unwrap_or_else(|| {
+                    warn!(
+                        "no effect store configured — falling back to NoopEffectStore; \
+                         effects will be accepted but not persisted"
+                    );
+                    Arc::new(NoopEffectStore)
+                });
 
             let pipeline = polkagent_effect::EffectPipeline::new(effect_store, WorkerId::new());
 
@@ -425,6 +444,7 @@ impl AppServiceBuilder {
             scheduler: self.scheduler,
             plugin_manager: self.plugin_manager,
             metadata_watcher: std::sync::Mutex::new(self.metadata_watcher),
+            timeout_enforcer_handle: Mutex::new(None),
         })
     }
 }
@@ -504,6 +524,10 @@ pub struct AppService {
     /// Metadata drift watcher (optional). When present, periodically checks
     /// for runtime metadata drift and publishes events.
     metadata_watcher: std::sync::Mutex<Option<crate::metadata_watcher::MetadataDriftWatcher>>,
+    /// Join handle for the background timeout enforcer task. When `Some`, a
+    /// background task is periodically sweeping active runs and timing out
+    /// those that have exceeded the global deadline.
+    timeout_enforcer_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for AppService {
@@ -538,6 +562,7 @@ impl std::fmt::Debug for AppService {
                     .map(|g| g.is_some())
                     .unwrap_or(false),
             )
+            .field("has_timeout_enforcer", &self.has_timeout_enforcer())
             .finish()
     }
 }
@@ -824,6 +849,28 @@ impl AppService {
                 .cloned()
                 .ok_or(ServiceError::AgentNotFound { agent_id })?
         };
+
+        // Enforce max_concurrent_runs when the limit is non-zero.
+        let max_concurrent = self.atomic_config.get().execution.max_concurrent_runs;
+        if max_concurrent > 0 {
+            let running_status = polkagent_store_trait::RunStatus::new("running");
+            // Use a high limit so we get an accurate count; in practice the
+            // number of concurrent runs is expected to be small (≤ limit).
+            let active_runs = self
+                .run_store
+                .list_by_state(running_status, 10_000, 0)
+                .await
+                .map_err(|e| ServiceError::Store {
+                    message: format!("failed to count running runs: {e}"),
+                })?;
+            let active_count = active_runs.len() as u32;
+            if active_count >= max_concurrent {
+                return Err(ServiceError::ConcurrentRunLimitReached {
+                    active: active_count,
+                    limit: max_concurrent,
+                });
+            }
+        }
 
         // Create the run record in the Created state.
         // RunManager emits RunCreated via the EventRecorder (→ bus).
@@ -1335,19 +1382,17 @@ impl AppService {
     ///
     /// The enforcer runs every `interval` and checks all runs in non-terminal
     /// states (`running`, `queued`, `awaiting_approval`, `waiting_effect`).
-    /// Runs whose `started_at` timestamp plus the configured global max
-    /// duration has elapsed are transitioned to `TimedOut` via
+    /// Each run is checked via [`TimeoutEnforcer::check`] which evaluates
+    /// both per-run deadlines and the global max duration. Runs that have
+    /// exceeded their deadline are transitioned to `TimedOut` via
     /// [`RunManager::timeout_run`].
     ///
-    /// Returns a [`tokio::task::JoinHandle`] that can be used to abort the
-    /// background task.
-    pub fn start_timeout_enforcer(
-        &self,
-        config: polkagent_run::TimeoutConfig,
-        interval: Duration,
-    ) -> tokio::task::JoinHandle<()> {
+    /// The join handle is stored internally and can be checked via
+    /// [`has_timeout_enforcer`](Self::has_timeout_enforcer).
+    pub fn start_timeout_enforcer(&self, config: TimeoutConfig, interval: Duration) {
         let run_store = Arc::clone(&self.run_store);
         let run_manager = self.run_manager.clone();
+        let enforcer = TimeoutEnforcer::new(config.clone());
 
         info!(
             global_max_secs = config.global_max_duration.map(|d| d.as_secs()),
@@ -1355,16 +1400,11 @@ impl AppService {
             "timeout enforcer started"
         );
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             // The first tick fires immediately; consume it so we start after
             // one full interval.
             ticker.tick().await;
-
-            let max_dur = match config.global_max_duration {
-                Some(d) => d,
-                None => return, // nothing to enforce
-            };
 
             loop {
                 ticker.tick().await;
@@ -1382,24 +1422,24 @@ impl AppService {
                         }
                     };
 
-                    let now = chrono::Utc::now();
                     for summary in summaries {
-                        let started = match summary.started_at {
-                            Some(t) => t,
-                            None => continue,
-                        };
-                        let elapsed = now
-                            .signed_duration_since(started)
-                            .to_std()
-                            .unwrap_or(Duration::ZERO);
-                        if elapsed >= max_dur {
+                        // Build a lightweight Run with only the fields the
+                        // enforcer inspects (id, started_at, deadline).
+                        let mut run = polkagent_core::run::Run::new(
+                            summary.id,
+                            polkagent_core::AgentId::new(),
+                        );
+                        run.started_at = summary.started_at;
+                        run.deadline = summary.deadline_at;
+
+                        if let Err(polkagent_run::RunError::DeadlineExceeded(_)) =
+                            enforcer.check(&run)
+                        {
                             info!(
-                                run_id = %summary.id,
-                                elapsed_secs = elapsed.as_secs(),
-                                max_secs = max_dur.as_secs(),
+                                run_id = %run.id,
                                 "timeout enforcer: transitioning run to TimedOut"
                             );
-                            if let Err(e) = run_manager.timeout_run(summary.id).await {
+                            if let Err(e) = run_manager.timeout_run(run.id).await {
                                 warn!(
                                     %e,
                                     "timeout enforcer: failed to transition run"
@@ -1409,7 +1449,20 @@ impl AppService {
                     }
                 }
             }
-        })
+        });
+
+        if let Ok(mut guard) = self.timeout_enforcer_handle.lock() {
+            *guard = Some(handle);
+        }
+    }
+
+    /// Return `true` if the timeout enforcer background task is running.
+    #[must_use]
+    pub fn has_timeout_enforcer(&self) -> bool {
+        self.timeout_enforcer_handle
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
     }
 }
 
@@ -1513,6 +1566,7 @@ mod tests {
                     created_at: Utc::now(),
                     started_at: None,
                     completed_at: None,
+                    deadline_at: None,
                 },
             );
             Ok(())
@@ -2065,6 +2119,103 @@ mod tests {
         let unknown_id = AgentId::new();
         let result = service.start_run(unknown_id, "test").await;
         assert!(matches!(result, Err(ServiceError::AgentNotFound { .. })));
+    }
+
+    /// When `max_concurrent_runs = 1` and a run is already in the `"running"`
+    /// state, a second `start_run` must be rejected with
+    /// `ServiceError::ConcurrentRunLimitReached`.
+    #[tokio::test]
+    async fn start_run_rejects_when_concurrent_limit_reached() {
+        // Build a service with a shared run store we can manipulate directly.
+        let run_store = Arc::new(FakeRunStore::default());
+        let run_store_arc: Arc<dyn RunStore> = Arc::clone(&run_store) as _;
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+
+        let mut config = Config::default();
+        config.execution.max_concurrent_runs = 1;
+
+        let service = AppService::builder()
+            .with_config(config)
+            .with_run_store(run_store_arc)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .build()
+            .expect("build");
+
+        // Register an agent.
+        let spec = make_spec("limit-test");
+        let agent_id = service.create_agent(spec).expect("create_agent");
+
+        // Manually insert a run in "running" state directly into the store
+        // (bypassing the service) to simulate an already-active run.
+        let occupied_run_id = RunId::new();
+        run_store
+            .create(
+                occupied_run_id,
+                &agent_id.to_string(),
+                RunStatus::new("running"),
+            )
+            .await
+            .expect("seed running run");
+
+        // Attempting to start another run must now fail.
+        let result = service.start_run(agent_id, "second run").await;
+        assert!(
+            matches!(
+                result,
+                Err(ServiceError::ConcurrentRunLimitReached {
+                    active: 1,
+                    limit: 1,
+                })
+            ),
+            "expected ConcurrentRunLimitReached, got: {result:?}"
+        );
+    }
+
+    /// When `max_concurrent_runs = 0` (unlimited), runs should be accepted
+    /// regardless of how many are in `"running"` state.
+    #[tokio::test]
+    async fn start_run_unlimited_when_max_concurrent_runs_is_zero() {
+        let run_store = Arc::new(FakeRunStore::default());
+        let run_store_arc: Arc<dyn RunStore> = Arc::clone(&run_store) as _;
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+
+        let mut config = Config::default();
+        config.execution.max_concurrent_runs = 0; // unlimited
+
+        let service = AppService::builder()
+            .with_config(config)
+            .with_run_store(run_store_arc)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .build()
+            .expect("build");
+
+        let spec = make_spec("unlimited-test");
+        let agent_id = service.create_agent(spec).expect("create_agent");
+
+        // Seed several "running" runs.
+        for _ in 0..5 {
+            run_store
+                .create(
+                    RunId::new(),
+                    &agent_id.to_string(),
+                    RunStatus::new("running"),
+                )
+                .await
+                .expect("seed running run");
+        }
+
+        // Starting another run must still succeed (limit=0 means unlimited).
+        let result = service.start_run(agent_id, "overflow check").await;
+        assert!(
+            result.is_ok(),
+            "expected Ok when max_concurrent_runs=0, got: {result:?}"
+        );
     }
 
     #[tokio::test]

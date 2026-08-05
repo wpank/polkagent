@@ -9,7 +9,7 @@
 //!
 //! ## Chain polling
 //!
-//! [`ChainPoller`] reads `POLKAGENT_RPC_URL` from the environment and
+//! [`ChainPoller`] reads `POLKAGENT_CHAIN_RPC_URL` (or the legacy `POLKAGENT_RPC_URL`) from the environment and
 //! periodically queries the JSON-RPC endpoint for chain status (best block,
 //! finalized block, chain name, node version). When the variable is unset
 //! or empty the poller is a no-op and the TUI gracefully shows
@@ -729,8 +729,9 @@ pub struct ChainStatus {
 
 /// Polls a Substrate JSON-RPC endpoint for chain status on a fixed interval.
 ///
-/// Reads `POLKAGENT_RPC_URL` from the environment at construction time. If the
-/// variable is absent or empty, all poll calls are no-ops and the chain status
+/// Reads `POLKAGENT_CHAIN_RPC_URL` (preferred) or `POLKAGENT_RPC_URL` (legacy) from
+/// the environment at construction time. If neither variable is set or both are
+/// empty, all poll calls are no-ops and the chain status
 /// fields on [`crate::tui::state::TuiState`] remain at their defaults
 /// ("Not connected", block 0).
 pub struct ChainPoller {
@@ -746,11 +747,18 @@ impl ChainPoller {
     /// Polling interval — one poll per finality period (6 seconds).
     const DEFAULT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6);
 
-    /// Create a new poller, reading `POLKAGENT_RPC_URL` from the environment.
+    /// Create a new poller, reading the RPC URL from the environment.
+    ///
+    /// `POLKAGENT_CHAIN_RPC_URL` takes precedence over `POLKAGENT_RPC_URL`.
     pub fn new() -> Self {
-        let rpc_url = std::env::var("POLKAGENT_RPC_URL")
+        let rpc_url = std::env::var("POLKAGENT_CHAIN_RPC_URL")
             .ok()
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                std::env::var("POLKAGENT_RPC_URL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            });
 
         Self {
             rpc_url,

@@ -20,7 +20,13 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use polkagent_card::{ActionCard, EffectKindTag, IntentCardSpec};
-use polkagent_core::{agent::AgentSpec, turn::TokenUsage, ArtifactId, RunId, RunState, StepId};
+use polkagent_core::{
+    agent::AgentSpec,
+    event::{EventKind, RunEvent},
+    ids::EventId,
+    turn::TokenUsage,
+    ArtifactId, RunId, RunState, StepId,
+};
 use polkagent_effect::{EffectIntent, EffectKind, EffectPipeline};
 use polkagent_event::EventRecorder;
 use polkagent_executor_trait::{
@@ -463,11 +469,27 @@ impl RunOrchestrator {
             .unwrap_or(self.config.max_tokens_per_turn);
 
         // Wall-clock timeout derived from resource limits (optional).
-        let run_deadline: Option<Instant> = agent_spec
+        //
+        // The deadline is stored as an absolute DateTime<Utc> so that it
+        // survives process restarts. On recovery, the RunManager can read the
+        // persisted `deadline_at` from the database instead of creating a new
+        // process-local Instant.
+        let run_deadline: Option<chrono::DateTime<chrono::Utc>> = agent_spec
             .resource_limits
             .as_ref()
             .and_then(|rl| rl.timeout_secs)
-            .map(|secs| Instant::now() + Duration::from_secs(secs));
+            .map(|secs| chrono::Utc::now() + chrono::Duration::seconds(secs as i64));
+
+        // Persist the deadline to the store so it can be restored after a crash.
+        if let Some(deadline) = run_deadline {
+            if let Err(e) = self
+                .run_manager
+                .set_deadline(run_id.clone(), Some(deadline))
+                .await
+            {
+                warn!(%run_id, error = %e, "failed to persist run deadline");
+            }
+        }
 
         // Resolve the model to use: prefer model_preference.model_id when set,
         // then fall back to agent_spec.model.
@@ -558,7 +580,7 @@ impl RunOrchestrator {
         let outcome = loop {
             // Guard: wall-clock timeout.
             if let Some(deadline) = run_deadline {
-                if Instant::now() >= deadline {
+                if chrono::Utc::now() >= deadline {
                     warn!(%run_id, "run deadline exceeded — transitioning to TimedOut");
                     self.run_manager.timeout_run(run_id.clone()).await?;
                     break RunOutcome {
@@ -706,6 +728,21 @@ impl RunOrchestrator {
                     error = %e,
                     "failed to persist turn record (non-fatal)"
                 );
+            }
+
+            // Emit the model's response text so RunPrinter can display it.
+            if !response.text.is_empty() {
+                let _ = self
+                    .event_recorder
+                    .record(RunEvent::new_ephemeral(
+                        EventId::new(),
+                        run_id.clone(),
+                        0,
+                        EventKind::StreamingToken {
+                            text: response.text.clone(),
+                        },
+                    ))
+                    .await;
             }
 
             debug!(
@@ -1191,6 +1228,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     started_at: None,
                     completed_at: None,
+                    deadline_at: None,
                 },
             );
             Ok(())

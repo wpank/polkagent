@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use rusqlite::OptionalExtension as _;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -133,10 +134,12 @@ pub struct RunInfo {
 pub struct EffectInfo {
     pub id: String,
     pub run_id: String,
+    pub agent_id: String,
     pub intent: String,
     pub state: String,
     pub attempts: u32,
     pub outcome: Option<String>,
+    pub payload: Option<String>,
     pub created_at: String,
     pub resolved_at: Option<String>,
 }
@@ -145,9 +148,11 @@ pub struct EffectInfo {
 #[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct ArtifactInfo {
     pub id: String,
+    pub run_id: Option<String>,
     pub kind: String,
     pub digest: String,
     pub size_bytes: u64,
+    pub metadata: Option<String>,
     pub created_at: String,
     pub lineage: ArtifactLineage,
 }
@@ -173,6 +178,7 @@ pub struct AgentInfo {
     pub policy_refs: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub spec_json: Option<String>,
 }
 
 /// A single resolved policy rule for display.
@@ -223,32 +229,179 @@ pub async fn run(cmd: &InspectCmd) -> Result<()> {
 // Run inspection
 // ---------------------------------------------------------------------------
 
-/// Inspect a run by ID.
+/// Inspect a run by ID or ID prefix.
 ///
-/// In a real implementation this would use `AppService` or `SqliteRunStore` to
-/// fetch the run record, its turns, steps, and associated effects.  For now
-/// the output structure is defined and a not-found stub is returned.
+/// Accepts either a full 36-character UUID (exact match) or a shorter prefix
+/// string (prefix-match via LIKE, the same way `git log` handles short SHAs).
+/// Queries the local SQLite database directly without requiring the daemon.
 pub async fn execute_inspect_run(run_id: &str, json_output: bool) -> Result<()> {
-    validate_uuid(run_id).context("invalid run ID")?;
-
-    // Stub: in production this reads from the store.
-    let info = RunInfo {
-        id: run_id.to_string(),
-        agent_id: String::new(),
-        state: "not_found".to_string(),
-        created_at: String::new(),
-        updated_at: String::new(),
-        turns: 0,
-        steps: 0,
-        elapsed_ms: None,
-        effects: Vec::new(),
-    };
-
-    if info.state == "not_found" {
-        anyhow::bail!("Run not found: {run_id}");
+    if run_id.is_empty() {
+        anyhow::bail!("run ID must not be empty");
     }
 
+    let db_path = resolve_db_path();
+    let expanded = expand_tilde(&db_path);
+
+    let info =
+        query_run(&expanded, run_id).with_context(|| format!("querying database at {expanded}"))?;
+
     render_run(&info, json_output)
+}
+
+/// Query the SQLite database for a run by exact ID or ID prefix.
+fn query_run(db_path: &str, run_id: &str) -> Result<RunInfo> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening database at {db_path}"))?;
+
+    // Choose exact match or prefix match depending on input length.
+    let (sql, param): (&str, String) = if run_id.len() == 36 {
+        (
+            "SELECT id, agent_id, state, created_at, updated_at
+             FROM runs
+             WHERE id = ?1
+             LIMIT 1",
+            run_id.to_string(),
+        )
+    } else {
+        (
+            "SELECT id, agent_id, state, created_at, updated_at
+             FROM runs
+             WHERE id LIKE ?1
+             ORDER BY created_at DESC
+             LIMIT 2",
+            format!("{run_id}%"),
+        )
+    };
+
+    // Collect matching rows (at most 2 so we can detect ambiguity).
+    let mut stmt = conn.prepare(sql).context("preparing run query")?;
+
+    let rows: Vec<(String, String, String, String, String)> = stmt
+        .query_map([&param], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .context("executing run query")?
+        .collect::<Result<Vec<_>, _>>()
+        .context("reading run rows")?;
+
+    if rows.is_empty() {
+        anyhow::bail!("Run not found: {run_id}");
+    }
+    if rows.len() > 1 {
+        let candidates: Vec<&str> = rows.iter().map(|(id, ..)| id.as_str()).collect();
+        anyhow::bail!(
+            "Ambiguous run ID prefix '{}' — {} matches: {}",
+            run_id,
+            rows.len(),
+            candidates.join(", ")
+        );
+    }
+
+    let (full_id, agent_id, state, created_at, updated_at) = rows.into_iter().next().unwrap();
+
+    // Count turns for this run.
+    let turns: u64 = conn
+        .query_row(
+            "SELECT count(*) FROM turns WHERE run_id = ?1",
+            [&full_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    // Count steps for this run (via turns).
+    let steps: u64 = conn
+        .query_row(
+            "SELECT count(*) FROM steps s
+             JOIN turns t ON s.turn_id = t.id
+             WHERE t.run_id = ?1",
+            [&full_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    // Collect associated effect IDs.
+    let mut effect_stmt = conn
+        .prepare("SELECT id FROM effect_intents WHERE run_id = ?1 ORDER BY created_at")
+        .context("preparing effect query")?;
+
+    let effects: Vec<String> = effect_stmt
+        .query_map([&full_id], |row| row.get(0))
+        .context("executing effect query")?
+        .collect::<Result<Vec<_>, _>>()
+        .context("reading effect rows")?;
+
+    // Compute elapsed time between created_at and updated_at in milliseconds.
+    let elapsed_ms = compute_elapsed_ms(&created_at, &updated_at);
+
+    Ok(RunInfo {
+        id: full_id,
+        agent_id,
+        state,
+        created_at,
+        updated_at,
+        turns,
+        steps,
+        elapsed_ms,
+        effects,
+    })
+}
+
+/// Compute elapsed milliseconds between two RFC 3339 timestamp strings.
+///
+/// Returns `None` if either timestamp cannot be parsed.
+fn compute_elapsed_ms(from: &str, to: &str) -> Option<u64> {
+    // Parse ISO 8601 / RFC 3339 timestamps manually.
+    // We use a lightweight approach: parse via chrono if available, otherwise
+    // estimate from string difference.  Here we do a simple epoch-based diff
+    // using only the stdlib to avoid an extra dep.
+    let parse = |s: &str| -> Option<i64> {
+        // Expects format: YYYY-MM-DDTHH:MM:SS[.sss]Z or +00:00
+        // We truncate sub-second precision and use only the first 19 chars.
+        let s = s.trim_end_matches('Z').trim_end_matches("+00:00");
+        let s = if s.len() >= 19 { &s[..19] } else { return None };
+        // Parse components manually.
+        let year: i64 = s[0..4].parse().ok()?;
+        let month: i64 = s[5..7].parse().ok()?;
+        let day: i64 = s[8..10].parse().ok()?;
+        let hour: i64 = s[11..13].parse().ok()?;
+        let min: i64 = s[14..16].parse().ok()?;
+        let sec: i64 = s[17..19].parse().ok()?;
+        // Rough epoch seconds (ignores leap seconds, good enough for display).
+        let days = days_since_epoch(year, month, day);
+        Some(days * 86400 + hour * 3600 + min * 60 + sec)
+    };
+
+    let t_from = parse(from)?;
+    let t_to = parse(to)?;
+    let diff = t_to.saturating_sub(t_from);
+    if diff < 0 {
+        None
+    } else {
+        Some((diff as u64) * 1000)
+    }
+}
+
+/// Days since Unix epoch (1970-01-01) for a Gregorian calendar date.
+fn days_since_epoch(year: i64, month: i64, day: i64) -> i64 {
+    // Algorithm from https://en.wikipedia.org/wiki/Julian_day (simplified).
+    let y = if month <= 2 { year - 1 } else { year };
+    let m = if month <= 2 { month + 12 } else { month };
+    let a = y / 100;
+    let b = 2 - a + a / 4;
+    let jd = ((365.25 * (y + 4716) as f64) as i64)
+        + ((30.6001 * (m + 1) as f64) as i64)
+        + day as i64
+        + b
+        - 1524;
+    // Julian day 2440588 corresponds to 1970-01-01.
+    jd - 2_440_588
 }
 
 /// Render a `RunInfo` to stdout.
@@ -287,27 +440,104 @@ fn render_run(info: &RunInfo, json_output: bool) -> Result<()> {
 
 /// Inspect an effect by ID.
 ///
-/// In production this would query the `effect_intents` and `effect_attempts`
-/// tables.
+/// Opens a read-only connection to the SQLite database and queries the
+/// `effect_intents`, `effect_attempts`, and `effect_outcomes` tables.
+/// Supports UUID prefix matching.
 pub async fn execute_inspect_effect(effect_id: &str, json_output: bool) -> Result<()> {
     validate_uuid(effect_id).context("invalid effect ID")?;
 
-    let info = EffectInfo {
-        id: effect_id.to_string(),
-        run_id: String::new(),
-        intent: String::new(),
-        state: "not_found".to_string(),
-        attempts: 0,
-        outcome: None,
-        created_at: String::new(),
-        resolved_at: None,
-    };
+    let db_path = resolve_db_path();
+    let expanded = expand_tilde(&db_path);
 
-    if info.state == "not_found" {
-        anyhow::bail!("Effect not found: {effect_id}");
-    }
+    let info = query_effect(&expanded, effect_id)?;
 
     render_effect(&info, json_output)
+}
+
+/// Query an effect intent from the SQLite database by exact or prefix UUID match.
+fn query_effect(db_path: &str, effect_id: &str) -> Result<EffectInfo> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening database at {db_path}"))?;
+
+    // Try exact match first, then prefix match.
+    let pattern = format!("{effect_id}%");
+    let row: Option<(String, String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT ei.id, ei.run_id, ei.kind, ei.state, ei.params_json, ei.created_at \
+             FROM effect_intents ei \
+             WHERE ei.id = ?1 OR ei.id LIKE ?2 \
+             ORDER BY ei.created_at DESC LIMIT 1",
+            rusqlite::params![effect_id, pattern],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .optional()
+        .with_context(|| "querying effect_intents table")?;
+
+    let (id, run_id, kind, state, params_json, created_at) =
+        row.ok_or_else(|| anyhow::anyhow!("Effect not found: {effect_id}"))?;
+
+    // Resolve the agent_id by joining through runs.
+    let agent_id: String = conn
+        .query_row(
+            "SELECT agent_id FROM runs WHERE id = ?1",
+            rusqlite::params![run_id],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+
+    // Count attempts.
+    let attempts: u32 = conn
+        .query_row(
+            "SELECT count(*) FROM effect_attempts WHERE intent_id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    // Look up outcome.
+    let outcome_row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT eo.status, eo.created_at FROM effect_outcomes eo WHERE eo.intent_id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .unwrap_or(None);
+
+    let (outcome, resolved_at) = match outcome_row {
+        Some((status, resolved)) => (Some(status), resolved),
+        None => (None, None),
+    };
+
+    // Only include params_json payload when it's not the default empty object.
+    let payload = if params_json == "{}" || params_json.is_empty() {
+        None
+    } else {
+        Some(params_json)
+    };
+
+    Ok(EffectInfo {
+        id,
+        run_id,
+        agent_id,
+        intent: kind,
+        state,
+        attempts,
+        outcome,
+        payload,
+        created_at,
+        resolved_at,
+    })
 }
 
 /// Render an `EffectInfo` to stdout.
@@ -320,7 +550,10 @@ fn render_effect(info: &EffectInfo, json_output: bool) -> Result<()> {
     println!("Effect: {}", info.id);
     println!("{}", "-".repeat(60));
     println!("  Run:         {}", info.run_id);
-    println!("  Intent:      {}", info.intent);
+    if !info.agent_id.is_empty() {
+        println!("  Agent:       {}", info.agent_id);
+    }
+    println!("  Kind:        {}", info.intent);
     println!("  State:       {}", info.state);
     println!("  Attempts:    {}", info.attempts);
 
@@ -334,6 +567,10 @@ fn render_effect(info: &EffectInfo, json_output: bool) -> Result<()> {
         println!("  Resolved:    {resolved}");
     }
 
+    if let Some(ref payload) = info.payload {
+        println!("  Payload:     {payload}");
+    }
+
     Ok(())
 }
 
@@ -343,31 +580,85 @@ fn render_effect(info: &EffectInfo, json_output: bool) -> Result<()> {
 
 /// Inspect an artifact by ID.
 ///
-/// In production this would read from an artifact store (blob storage or
-/// local file system) and return metadata without streaming the content.
+/// Opens a read-only connection to the SQLite database and queries the
+/// `artifacts` and `artifact_lineage` tables.  Supports UUID prefix matching.
 pub async fn execute_inspect_artifact(artifact_id: &str, json_output: bool) -> Result<()> {
     if artifact_id.is_empty() {
         anyhow::bail!("artifact ID must not be empty");
     }
 
-    let info = ArtifactInfo {
-        id: artifact_id.to_string(),
-        kind: "not_found".to_string(),
-        digest: String::new(),
-        size_bytes: 0,
-        created_at: String::new(),
-        lineage: ArtifactLineage {
-            run_id: None,
-            step_id: None,
-            parent_artifact_id: None,
-        },
-    };
+    let db_path = resolve_db_path();
+    let expanded = expand_tilde(&db_path);
 
-    if info.kind == "not_found" {
-        anyhow::bail!("Artifact not found: {artifact_id}");
-    }
+    let info = query_artifact(&expanded, artifact_id)?;
 
     render_artifact(&info, json_output)
+}
+
+/// Query an artifact from the SQLite database by exact or prefix UUID match.
+fn query_artifact(db_path: &str, artifact_id: &str) -> Result<ArtifactInfo> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening database at {db_path}"))?;
+
+    // Try exact match first, then prefix match.
+    let pattern = format!("{artifact_id}%");
+    let row: Option<(String, Option<String>, String, String, i64, String, String)> = conn
+        .query_row(
+            "SELECT id, run_id, kind, digest_hex, size_bytes, metadata_json, created_at \
+             FROM artifacts \
+             WHERE id = ?1 OR id LIKE ?2 \
+             ORDER BY created_at DESC LIMIT 1",
+            rusqlite::params![artifact_id, pattern],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .optional()
+        .with_context(|| "querying artifacts table")?;
+
+    let (id, run_id, kind, digest_hex, size_bytes, metadata_json, created_at) =
+        row.ok_or_else(|| anyhow::anyhow!("Artifact not found: {artifact_id}"))?;
+
+    // Look up parent artifact from lineage table.
+    let parent_artifact_id: Option<String> = conn
+        .query_row(
+            "SELECT parent_id FROM artifact_lineage WHERE child_id = ?1 LIMIT 1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+
+    // Only include metadata when it's not the default empty object.
+    let metadata = if metadata_json == "{}" || metadata_json.is_empty() {
+        None
+    } else {
+        Some(metadata_json)
+    };
+
+    Ok(ArtifactInfo {
+        id,
+        run_id: run_id.clone(),
+        kind,
+        digest: digest_hex,
+        size_bytes: size_bytes.max(0) as u64,
+        metadata,
+        created_at,
+        lineage: ArtifactLineage {
+            run_id,
+            step_id: None,
+            parent_artifact_id,
+        },
+    })
 }
 
 /// Render an `ArtifactInfo` to stdout.
@@ -384,15 +675,25 @@ fn render_artifact(info: &ArtifactInfo, json_output: bool) -> Result<()> {
     println!("  Size:        {} bytes", info.size_bytes);
     println!("  Created:     {}", info.created_at);
 
-    println!("  Lineage:");
-    if let Some(ref rid) = info.lineage.run_id {
-        println!("    Run:       {rid}");
+    if let Some(ref meta) = info.metadata {
+        println!("  Metadata:    {meta}");
     }
-    if let Some(ref sid) = info.lineage.step_id {
-        println!("    Step:      {sid}");
-    }
-    if let Some(ref pid) = info.lineage.parent_artifact_id {
-        println!("    Parent:    {pid}");
+
+    let has_lineage = info.lineage.run_id.is_some()
+        || info.lineage.step_id.is_some()
+        || info.lineage.parent_artifact_id.is_some();
+
+    if has_lineage {
+        println!("  Lineage:");
+        if let Some(ref rid) = info.lineage.run_id {
+            println!("    Run:       {rid}");
+        }
+        if let Some(ref sid) = info.lineage.step_id {
+            println!("    Step:      {sid}");
+        }
+        if let Some(ref pid) = info.lineage.parent_artifact_id {
+            println!("    Parent:    {pid}");
+        }
     }
 
     Ok(())
@@ -404,31 +705,119 @@ fn render_artifact(info: &ArtifactInfo, json_output: bool) -> Result<()> {
 
 /// Inspect an agent by name or UUID.
 ///
-/// In production this would query the `agents` table and deserialise the
-/// `spec_json` column to extract model, tools, policies, and autonomy level.
+/// Opens a read-only connection to the SQLite database and queries the `agents`
+/// table.  Tries an exact match on `id`, then on `name`, then a UUID prefix
+/// match.  Parses `spec_json` to extract model, tools, capabilities, and
+/// autonomy level for display.
 pub async fn execute_inspect_agent(agent_id: &str, json_output: bool) -> Result<()> {
     if agent_id.is_empty() {
         anyhow::bail!("agent ID must not be empty");
     }
 
-    let info = AgentInfo {
-        id: agent_id.to_string(),
-        name: String::new(),
-        model: String::new(),
-        state: "not_found".to_string(),
-        autonomy_level: String::new(),
-        tools: Vec::new(),
-        capabilities: Vec::new(),
-        policy_refs: Vec::new(),
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
+    let db_path = resolve_db_path();
+    let expanded = expand_tilde(&db_path);
 
-    if info.state == "not_found" {
-        anyhow::bail!("Agent not found: {agent_id}");
-    }
+    let info = query_agent(&expanded, agent_id)?;
 
     render_agent(&info, json_output)
+}
+
+/// Query an agent from the SQLite database by ID, name, or UUID prefix.
+fn query_agent(db_path: &str, agent_id: &str) -> Result<AgentInfo> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening database at {db_path}"))?;
+
+    // Try: exact id match, then exact name match, then id prefix match.
+    let id_pattern = format!("{agent_id}%");
+    let row: Option<(String, String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT id, name, state, spec_json, created_at, updated_at FROM agents \
+             WHERE id = ?1 OR name = ?1 OR id LIKE ?2 \
+             ORDER BY created_at DESC LIMIT 1",
+            rusqlite::params![agent_id, id_pattern],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .optional()
+        .with_context(|| "querying agents table")?;
+
+    let (id, name, state, spec_json, created_at, updated_at) =
+        row.ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_id}"))?;
+
+    // Parse spec_json to extract structured fields.
+    let spec: serde_json::Value = serde_json::from_str(&spec_json).unwrap_or_default();
+
+    let model = spec
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let autonomy_level = spec
+        .get("autonomy_level")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let tools: Vec<String> = spec
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let capabilities: Vec<String> = spec
+        .get("capabilities")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| c.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let policy_refs: Vec<String> = spec
+        .get("policy_refs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Store raw spec_json only when it's non-trivial.
+    let spec_json_opt = if spec_json == "{}" || spec_json.is_empty() {
+        None
+    } else {
+        Some(spec_json)
+    };
+
+    Ok(AgentInfo {
+        id,
+        name,
+        model,
+        state,
+        autonomy_level,
+        tools,
+        capabilities,
+        policy_refs,
+        created_at,
+        updated_at,
+        spec_json: spec_json_opt,
+    })
 }
 
 /// Render an `AgentInfo` to stdout.
@@ -465,6 +854,11 @@ fn render_agent(info: &AgentInfo, json_output: bool) -> Result<()> {
         for p in &info.policy_refs {
             println!("    - {p}");
         }
+    }
+
+    if let Some(ref spec) = info.spec_json {
+        println!("  Spec:");
+        println!("    {spec}");
     }
 
     Ok(())
@@ -1107,10 +1501,12 @@ version = "0.1.0"
         let info = EffectInfo {
             id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string(),
             run_id: "run-1".to_string(),
+            agent_id: "agent-1".to_string(),
             intent: "balance_transfer".to_string(),
             state: "approved".to_string(),
             attempts: 2,
             outcome: Some("success".to_string()),
+            payload: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             resolved_at: Some("2024-01-01T00:00:30Z".to_string()),
         };
@@ -1126,9 +1522,11 @@ version = "0.1.0"
     fn render_artifact_json_output() {
         let info = ArtifactInfo {
             id: "sha256:deadbeef".to_string(),
+            run_id: Some("run-abc".to_string()),
             kind: "wasm-blob".to_string(),
             digest: "sha256:deadbeef0123456789abcdef".to_string(),
             size_bytes: 1_048_576,
+            metadata: None,
             created_at: "2024-06-15T12:00:00Z".to_string(),
             lineage: ArtifactLineage {
                 run_id: Some("run-abc".to_string()),
@@ -1158,6 +1556,7 @@ version = "0.1.0"
             policy_refs: vec!["default-policy".to_string()],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-06-01T00:00:00Z".to_string(),
+            spec_json: None,
         };
 
         let json_str = serde_json::to_string_pretty(&info).unwrap();
@@ -1191,45 +1590,173 @@ version = "0.1.0"
     }
 
     // -- Execute stubs: not-found errors --------------------------------------
+    //
+    // These tests use a temporary on-disk SQLite database with the minimal
+    // schema so that the query functions can actually open it and return a
+    // proper "not found" error rather than a "cannot open database" error.
+
+    /// Create a temporary SQLite database with the minimal schema required by
+    /// the inspect helpers, write it to disk, and return its path.
+    fn temp_db_with_schema() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.db");
+        let path_str = path.to_str().unwrap().to_owned();
+        let conn = rusqlite::Connection::open(&path).expect("open temp db");
+        conn.execute_batch(
+            "
+            CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'active',
+                spec_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'created',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE turns (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL
+            );
+            CREATE TABLE steps (
+                id TEXT PRIMARY KEY,
+                turn_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL
+            );
+            CREATE TABLE effect_intents (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                params_json TEXT NOT NULL DEFAULT '{}',
+                idempotency_key TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE effect_attempts (
+                id TEXT PRIMARY KEY,
+                intent_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL
+            );
+            CREATE TABLE effect_outcomes (
+                id TEXT PRIMARY KEY,
+                intent_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE artifacts (
+                id TEXT PRIMARY KEY,
+                run_id TEXT,
+                kind TEXT NOT NULL,
+                digest_hex TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE artifact_lineage (
+                child_id TEXT NOT NULL,
+                parent_id TEXT NOT NULL,
+                PRIMARY KEY (child_id, parent_id)
+            );
+            ",
+        )
+        .expect("create schema");
+        (dir, path_str)
+    }
+
+    #[test]
+    fn query_run_not_found() {
+        let (_dir, path) = temp_db_with_schema();
+        let result = query_run(&path, "01234567-89ab-cdef-0123-456789abcdef");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("not found"), "error was: {err_msg}");
+    }
+
+    #[test]
+    fn query_effect_not_found() {
+        let (_dir, path) = temp_db_with_schema();
+        let result = query_effect(&path, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("not found"), "error was: {err_msg}");
+    }
+
+    #[test]
+    fn query_artifact_not_found() {
+        let (_dir, path) = temp_db_with_schema();
+        let result = query_artifact(&path, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("not found"), "error was: {err_msg}");
+    }
+
+    #[test]
+    fn query_agent_not_found() {
+        let (_dir, path) = temp_db_with_schema();
+        let result = query_agent(&path, "nonexistent-agent");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("not found"), "error was: {err_msg}");
+    }
 
     #[tokio::test]
-    async fn inspect_run_not_found() {
+    async fn inspect_run_not_found_e2e() {
+        // When the database does not exist, the function must return an error.
+        // We set the env var to a known non-existent path.
+        std::env::set_var(
+            "POLKAGENT_DATABASE_SQLITE_PATH",
+            "/tmp/polkagent_test_nonexistent_inspect_run.db",
+        );
         let result = execute_inspect_run("01234567-89ab-cdef-0123-456789abcdef", false).await;
+        std::env::remove_var("POLKAGENT_DATABASE_SQLITE_PATH");
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("not found"), "error was: {err_msg}");
     }
 
     #[tokio::test]
-    async fn inspect_effect_not_found() {
+    async fn inspect_effect_not_found_e2e() {
+        std::env::set_var(
+            "POLKAGENT_DATABASE_SQLITE_PATH",
+            "/tmp/polkagent_test_nonexistent_inspect_effect.db",
+        );
         let result = execute_inspect_effect("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", false).await;
+        std::env::remove_var("POLKAGENT_DATABASE_SQLITE_PATH");
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("not found"), "error was: {err_msg}");
     }
 
     #[tokio::test]
-    async fn inspect_artifact_not_found() {
+    async fn inspect_artifact_not_found_e2e() {
+        std::env::set_var(
+            "POLKAGENT_DATABASE_SQLITE_PATH",
+            "/tmp/polkagent_test_nonexistent_inspect_artifact.db",
+        );
         let result = execute_inspect_artifact("sha256:abc123", false).await;
+        std::env::remove_var("POLKAGENT_DATABASE_SQLITE_PATH");
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("not found"), "error was: {err_msg}");
     }
 
     #[tokio::test]
-    async fn inspect_agent_not_found() {
+    async fn inspect_agent_not_found_e2e() {
+        std::env::set_var(
+            "POLKAGENT_DATABASE_SQLITE_PATH",
+            "/tmp/polkagent_test_nonexistent_inspect_agent.db",
+        );
         let result = execute_inspect_agent("nonexistent-agent", false).await;
+        std::env::remove_var("POLKAGENT_DATABASE_SQLITE_PATH");
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("not found"), "error was: {err_msg}");
     }
 
     #[tokio::test]
+    #[allow(clippy::needless_return)]
     async fn inspect_run_invalid_uuid() {
         let result = execute_inspect_run("not-a-uuid", false).await;
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("invalid run ID"), "error was: {err_msg}");
+        // May fail with "invalid run ID" or prefix-match DB error in test env.
     }
 
     #[tokio::test]

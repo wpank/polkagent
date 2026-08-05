@@ -11,11 +11,12 @@ use serde_json::Value;
 use tracing::debug;
 
 use polkagent_chain_trait::ChainClient;
+use polkagent_codec::ScaleDecoder;
 use polkagent_core::config::DataClassification;
 use polkagent_tool::registry::{ToolContext, ToolError, ToolHandler, ToolResult, ToolSpec};
 
 use crate::error::GovernanceError;
-use crate::types::Referendum;
+use crate::types::{Referendum, ReferendumStatus, TimelineEvent};
 
 // ---------------------------------------------------------------------------
 // ReferendumLookupTool
@@ -149,17 +150,282 @@ fn build_referendum_storage_key(index: u32) -> Vec<u8> {
     key
 }
 
-/// Decode SCALE-encoded referendum bytes into a [`Referendum`].
+/// Decode referendum bytes into a [`Referendum`].
 ///
-/// The current implementation performs a best-effort decode. Production
-/// use should use the runtime metadata for accurate decoding.
+/// Attempts SCALE decoding first (matching the on-chain
+/// `ReferendumInfo<..>` enum layout), then falls back to JSON
+/// deserialization for mock/test data or API responses that arrive
+/// pre-serialized.
 fn decode_referendum(index: u32, bytes: &[u8]) -> Result<Referendum, GovernanceError> {
-    // Minimal decode: in production this would parse the SCALE enum.
-    // For now, attempt to interpret the bytes as a JSON-encoded referendum
-    // (as a mock chain client would provide), falling back to a decode error.
+    // First, try SCALE decoding.
+    if let Ok(referendum) = try_decode_scale_referendum(index, bytes) {
+        return Ok(referendum);
+    }
+
+    // Fall back to JSON deserialization (mock chain clients and some
+    // API adapters store referenda as JSON blobs).
     serde_json::from_slice(bytes).map_err(|e| GovernanceError::Decode {
-        message: format!("failed to decode referendum {index}: {e}"),
+        message: format!(
+            "failed to decode referendum {index}: SCALE decode failed and JSON fallback failed: {e}"
+        ),
     })
+}
+
+/// Attempt to decode a SCALE-encoded `ReferendumInfo` enum.
+///
+/// The on-chain layout (simplified) is:
+///
+/// ```text
+/// enum ReferendumInfo {
+///     Ongoing(ReferendumStatus) = 0,
+///     Approved(block, …)       = 1,
+///     Rejected(block, …)       = 2,
+///     Cancelled(block, …)      = 3,
+///     TimedOut(block, …)       = 4,
+///     Killed(block)            = 5,
+/// }
+/// ```
+///
+/// For `Ongoing` referenda we extract the track, origin, tally, and
+/// submission block. For terminal states we record the deciding block
+/// and appropriate status.
+fn try_decode_scale_referendum(index: u32, bytes: &[u8]) -> Result<Referendum, GovernanceError> {
+    let mut dec = ScaleDecoder::new(bytes);
+
+    // Enum discriminant.
+    let variant = dec.decode_u8().map_err(|e| GovernanceError::Decode {
+        message: format!("referendum {index}: failed to read variant byte: {e}"),
+    })?;
+
+    match variant {
+        // Ongoing
+        0 => decode_ongoing_referendum(index, &mut dec),
+        // Approved
+        1 => decode_terminal_referendum(index, &mut dec, ReferendumStatus::Approved),
+        // Rejected
+        2 => decode_terminal_referendum(index, &mut dec, ReferendumStatus::Rejected),
+        // Cancelled
+        3 => decode_terminal_referendum(index, &mut dec, ReferendumStatus::Cancelled),
+        // TimedOut
+        4 => decode_terminal_referendum(index, &mut dec, ReferendumStatus::TimedOut),
+        // Killed
+        5 => decode_killed_referendum(index, &mut dec),
+        _ => Err(GovernanceError::Decode {
+            message: format!("referendum {index}: unknown ReferendumInfo variant: {variant}"),
+        }),
+    }
+}
+
+/// Decode the body of an `Ongoing` referendum variant.
+///
+/// Expected SCALE fields (simplified from the Polkadot runtime):
+///   - track: u16
+///   - origin: Compact-encoded string (we read as bytes and attempt UTF-8)
+///   - … (several fields we skip) …
+///   - tally: { ayes: u128, nays: u128, support: u128 }
+///   - submission_block: u32
+///   - submitter: [u8; 32] (AccountId)
+///
+/// This is a best-effort decoder — it extracts what it can from the
+/// beginning of the SCALE payload. If the layout does not match our
+/// expectations at any point, we return an error so the JSON fallback
+/// can take over.
+fn decode_ongoing_referendum(
+    index: u32,
+    dec: &mut ScaleDecoder<'_>,
+) -> Result<Referendum, GovernanceError> {
+    // track: u16
+    let track = dec
+        .decode_u16()
+        .map_err(|e| scale_field_err(index, "track", &e))?;
+
+    // origin: SCALE-encoded string (compact-length-prefixed UTF-8).
+    let origin = dec
+        .decode_string()
+        .map_err(|e| scale_field_err(index, "origin", &e))?;
+
+    // proposal_hash: [u8; 32] — skip.
+    let _proposal_hash: [u8; 32] = dec
+        .decode_fixed_array::<32>()
+        .map_err(|e| scale_field_err(index, "proposal_hash", &e))?;
+
+    // enactment: enum { After(u32), At(u32) } — 1 byte variant + u32.
+    let _enactment_variant = dec
+        .decode_u8()
+        .map_err(|e| scale_field_err(index, "enactment variant", &e))?;
+    let _enactment_block = dec
+        .decode_u32()
+        .map_err(|e| scale_field_err(index, "enactment block", &e))?;
+
+    // submitted: u32 (block number)
+    let submitted_block = dec
+        .decode_u32()
+        .map_err(|e| scale_field_err(index, "submitted block", &e))?;
+
+    // submission_deposit: Option<(AccountId, u128)>
+    let has_deposit = dec
+        .decode_u8()
+        .map_err(|e| scale_field_err(index, "submission_deposit option", &e))?;
+    if has_deposit == 1 {
+        let _depositor: [u8; 32] = dec
+            .decode_fixed_array::<32>()
+            .map_err(|e| scale_field_err(index, "depositor", &e))?;
+        let _amount = dec
+            .decode_u128()
+            .map_err(|e| scale_field_err(index, "deposit amount", &e))?;
+    }
+
+    // decision_deposit: Option<(AccountId, u128)>
+    let has_decision_deposit = dec
+        .decode_u8()
+        .map_err(|e| scale_field_err(index, "decision_deposit option", &e))?;
+    if has_decision_deposit == 1 {
+        let _depositor: [u8; 32] = dec
+            .decode_fixed_array::<32>()
+            .map_err(|e| scale_field_err(index, "decision depositor", &e))?;
+        let _amount = dec
+            .decode_u128()
+            .map_err(|e| scale_field_err(index, "decision deposit amount", &e))?;
+    }
+
+    // deciding: Option<DecidingStatus { since: u32, confirming: Option<u32> }>
+    let has_deciding = dec
+        .decode_u8()
+        .map_err(|e| scale_field_err(index, "deciding option", &e))?;
+    let status = if has_deciding == 1 {
+        let _since = dec
+            .decode_u32()
+            .map_err(|e| scale_field_err(index, "deciding since", &e))?;
+        let has_confirming = dec
+            .decode_u8()
+            .map_err(|e| scale_field_err(index, "confirming option", &e))?;
+        if has_confirming == 1 {
+            let _confirming_since = dec
+                .decode_u32()
+                .map_err(|e| scale_field_err(index, "confirming since", &e))?;
+            ReferendumStatus::Confirming
+        } else {
+            ReferendumStatus::Deciding
+        }
+    } else {
+        ReferendumStatus::Preparing
+    };
+
+    // tally: { ayes: u128, nays: u128, support: u128 }
+    let ayes = dec
+        .decode_u128()
+        .map_err(|e| scale_field_err(index, "tally ayes", &e))?;
+    let nays = dec
+        .decode_u128()
+        .map_err(|e| scale_field_err(index, "tally nays", &e))?;
+    let support = dec
+        .decode_u128()
+        .map_err(|e| scale_field_err(index, "tally support", &e))?;
+
+    // alarm: Option<(u32, (u32, u32))> — skip (we have enough data).
+    // submitter AccountId — try to read but tolerate failure.
+    let proposer = if dec.remaining() >= 32 {
+        match dec.decode_fixed_array::<32>() {
+            Ok(acct) => format!("0x{}", hex_encode_bytes(&acct)),
+            Err(_) => "unknown".to_string(),
+        }
+    } else {
+        "unknown".to_string()
+    };
+
+    Ok(Referendum {
+        index,
+        track,
+        origin,
+        status,
+        ayes,
+        nays,
+        support,
+        proposer,
+        timeline: vec![TimelineEvent {
+            event: "submitted".to_string(),
+            block_number: u64::from(submitted_block),
+            timestamp: None,
+        }],
+    })
+}
+
+/// Build a [`GovernanceError::Decode`] for a specific field failure.
+fn scale_field_err(index: u32, field: &str, e: &polkagent_codec::CodecError) -> GovernanceError {
+    GovernanceError::Decode {
+        message: format!("referendum {index}: failed to decode {field}: {e}"),
+    }
+}
+
+/// Decode a terminal referendum variant (`Approved`, `Rejected`,
+/// `Cancelled`, `TimedOut`).
+///
+/// These share a common prefix: a `u32` block number indicating when
+/// the terminal event occurred. We use that as the single timeline
+/// event.
+fn decode_terminal_referendum(
+    index: u32,
+    dec: &mut ScaleDecoder<'_>,
+    status: ReferendumStatus,
+) -> Result<Referendum, GovernanceError> {
+    let block = dec.decode_u32().map_err(|e| GovernanceError::Decode {
+        message: format!("referendum {index}: failed to decode terminal block: {e}"),
+    })?;
+
+    Ok(Referendum {
+        index,
+        track: 0,
+        origin: String::new(),
+        status,
+        ayes: 0,
+        nays: 0,
+        support: 0,
+        proposer: String::new(),
+        timeline: vec![TimelineEvent {
+            event: status.to_string(),
+            block_number: u64::from(block),
+            timestamp: None,
+        }],
+    })
+}
+
+/// Decode a `Killed` referendum variant.
+///
+/// Contains only the block number at which the referendum was killed.
+fn decode_killed_referendum(
+    index: u32,
+    dec: &mut ScaleDecoder<'_>,
+) -> Result<Referendum, GovernanceError> {
+    let block = dec.decode_u32().map_err(|e| GovernanceError::Decode {
+        message: format!("referendum {index}: failed to decode killed block: {e}"),
+    })?;
+
+    Ok(Referendum {
+        index,
+        track: 0,
+        origin: String::new(),
+        status: ReferendumStatus::Killed,
+        ayes: 0,
+        nays: 0,
+        support: 0,
+        proposer: String::new(),
+        timeline: vec![TimelineEvent {
+            event: "killed".to_string(),
+            block_number: u64::from(block),
+            timestamp: None,
+        }],
+    })
+}
+
+/// Hex-encode a byte slice (no `0x` prefix — caller adds it).
+fn hex_encode_bytes(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +445,7 @@ mod tests {
             agent_id: AgentId::new(),
             step_id: StepId::new(),
             grants: vec![],
+            security_config: None,
         }
     }
 

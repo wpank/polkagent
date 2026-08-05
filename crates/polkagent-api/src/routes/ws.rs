@@ -48,6 +48,7 @@ use futures::{SinkExt, StreamExt};
 use polkagent_core::{AgentId, RunId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 use tokio::time::Instant;
 use tracing::{debug, trace, warn};
@@ -326,6 +327,37 @@ impl WsRegistry {
 }
 
 // ---------------------------------------------------------------------------
+// Token validation
+// ---------------------------------------------------------------------------
+
+/// Validate `token` against the auth configuration stored in `state`.
+///
+/// When auth is **disabled** (`config.auth.enabled = false`), any non-empty
+/// token is accepted (development / testing convenience).
+///
+/// When auth is **enabled**, the token is SHA-256 hashed and compared against
+/// the pre-hashed entries in `config.auth.api_keys`.  An empty token is always
+/// rejected.
+fn validate_ws_token(token: &str, state: &AppState) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+
+    let auth = &state.config.auth;
+
+    if !auth.enabled {
+        // Auth disabled — accept any non-empty token.
+        return true;
+    }
+
+    // Auth enabled — hash the token and compare against stored digests.
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    auth.api_keys.iter().any(|h| h == &digest)
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -335,18 +367,19 @@ impl WsRegistry {
 /// `Auth` message. Unauthenticated connections are accepted but will receive
 /// an `"error"` if they attempt to subscribe without authenticating.
 ///
-/// For development/testing purposes, any non-empty token is accepted. A
-/// production deployment would validate against a real auth store.
+/// When `config.auth.enabled` is `true`, the token is validated by SHA-256
+/// hash against `config.auth.api_keys`. When disabled, any non-empty token
+/// is accepted for development convenience.
 pub async fn ws_handler(
     State(state): State<AppState>,
     Query(query): Query<WsQuery>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    // Check if a token was provided as query parameter.
+    // Check if a token was provided as query parameter and validate it.
     let pre_authenticated = query
         .token
         .as_deref()
-        .map(|t| !t.is_empty())
+        .map(|t| validate_ws_token(t, &state))
         .unwrap_or(false);
 
     debug!(pre_authenticated, "WebSocket v1alpha1 upgrade accepted");
@@ -398,7 +431,11 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(reply) = handle_client_text(&text, &mut session) {
+                        if let Some(reply) =
+                            handle_client_text(&text, &mut session, &|t| {
+                                validate_ws_token(t, &state)
+                            })
+                        {
                             let json = match reply.to_json() {
                                 Ok(j) => j,
                                 Err(e) => {
@@ -500,7 +537,15 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
 ///
 /// Returns an optional reply message. Returns `None` if no reply is needed
 /// (e.g. the message was an event acknowledgement).
-fn handle_client_text(text: &str, session: &mut WsSession) -> Option<WsMessage> {
+///
+/// `token_valid` is a predicate that returns `true` when a given token string
+/// should be accepted.  Pass `|t| validate_ws_token(t, &state)` in production
+/// and a simple closure in tests.
+fn handle_client_text(
+    text: &str,
+    session: &mut WsSession,
+    token_valid: &dyn Fn(&str) -> bool,
+) -> Option<WsMessage> {
     let client_msg: ClientMessage = match serde_json::from_str(text) {
         Ok(m) => m,
         Err(e) => {
@@ -511,7 +556,7 @@ fn handle_client_text(text: &str, session: &mut WsSession) -> Option<WsMessage> 
 
     match client_msg {
         ClientMessage::Auth { token } => {
-            let valid = token.as_deref().map(|t| !t.is_empty()).unwrap_or(false);
+            let valid = token.as_deref().map(token_valid).unwrap_or(false);
             if valid {
                 session.authenticate();
                 Some(WsMessage::ack(None, None))
@@ -782,10 +827,20 @@ mod tests {
 
     // ── handle_client_text ──────────────────────────────────────────────────
 
+    /// Convenience: a token validator that accepts any non-empty token (auth disabled).
+    fn any_nonempty(t: &str) -> bool {
+        !t.is_empty()
+    }
+
+    /// Convenience: a token validator that only accepts the literal "mytoken".
+    fn only_mytoken(t: &str) -> bool {
+        t == "mytoken"
+    }
+
     #[test]
     fn handle_text_invalid_json_returns_error() {
         let mut session = WsSession::authenticated();
-        let reply = handle_client_text("not json", &mut session);
+        let reply = handle_client_text("not json", &mut session, &any_nonempty);
         assert!(reply.is_some());
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "error");
@@ -796,7 +851,7 @@ mod tests {
         let mut session = WsSession::new();
         assert!(!session.is_authenticated());
         let json = r#"{"msg_type":"auth","token":"mytoken"}"#;
-        let reply = handle_client_text(json, &mut session);
+        let reply = handle_client_text(json, &mut session, &only_mytoken);
         assert!(session.is_authenticated());
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "ack");
@@ -806,7 +861,18 @@ mod tests {
     fn handle_text_auth_with_empty_token_fails() {
         let mut session = WsSession::new();
         let json = r#"{"msg_type":"auth","token":""}"#;
-        let reply = handle_client_text(json, &mut session);
+        let reply = handle_client_text(json, &mut session, &any_nonempty);
+        assert!(!session.is_authenticated());
+        let msg = reply.unwrap();
+        assert_eq!(msg.msg_type, "error");
+    }
+
+    #[test]
+    fn handle_text_auth_with_wrong_token_fails() {
+        let mut session = WsSession::new();
+        let json = r#"{"msg_type":"auth","token":"wrong-token"}"#;
+        // Validator only accepts "mytoken"; "wrong-token" should fail.
+        let reply = handle_client_text(json, &mut session, &only_mytoken);
         assert!(!session.is_authenticated());
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "error");
@@ -816,7 +882,7 @@ mod tests {
     fn handle_text_subscribe_without_auth_returns_error() {
         let mut session = WsSession::new();
         let json = r#"{"msg_type":"subscribe","channel":"system"}"#;
-        let reply = handle_client_text(json, &mut session);
+        let reply = handle_client_text(json, &mut session, &any_nonempty);
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "error");
         assert!(!session.is_subscribed(&Channel::System));
@@ -826,7 +892,7 @@ mod tests {
     fn handle_text_subscribe_to_system_channel() {
         let mut session = WsSession::authenticated();
         let json = r#"{"msg_type":"subscribe","id":"req-1","channel":"system"}"#;
-        let reply = handle_client_text(json, &mut session);
+        let reply = handle_client_text(json, &mut session, &any_nonempty);
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "ack");
         assert_eq!(msg.id, Some("req-1".into()));
@@ -839,7 +905,7 @@ mod tests {
         let run_id = RunId::new();
         let channel = format!("runs:{run_id}");
         let json = format!(r#"{{"msg_type":"subscribe","channel":"{channel}"}}"#);
-        let reply = handle_client_text(&json, &mut session);
+        let reply = handle_client_text(&json, &mut session, &any_nonempty);
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "ack");
         assert!(session.is_subscribed(&Channel::Run(run_id)));
@@ -851,7 +917,7 @@ mod tests {
         let agent_id = AgentId::new();
         let channel = format!("agents:{agent_id}");
         let json = format!(r#"{{"msg_type":"subscribe","channel":"{channel}"}}"#);
-        let reply = handle_client_text(&json, &mut session);
+        let reply = handle_client_text(&json, &mut session, &any_nonempty);
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "ack");
         assert!(session.is_subscribed(&Channel::Agent(agent_id)));
@@ -861,7 +927,7 @@ mod tests {
     fn handle_text_subscribe_to_unknown_channel_returns_error() {
         let mut session = WsSession::authenticated();
         let json = r#"{"msg_type":"subscribe","channel":"bogus:channel"}"#;
-        let reply = handle_client_text(json, &mut session);
+        let reply = handle_client_text(json, &mut session, &any_nonempty);
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "error");
         assert_eq!(session.subscription_count(), 0);
@@ -872,7 +938,7 @@ mod tests {
         let mut session = WsSession::authenticated();
         session.subscribe(Channel::System);
         let json = r#"{"msg_type":"unsubscribe","channel":"system"}"#;
-        let reply = handle_client_text(json, &mut session);
+        let reply = handle_client_text(json, &mut session, &any_nonempty);
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "ack");
         assert!(!session.is_subscribed(&Channel::System));
@@ -882,7 +948,7 @@ mod tests {
     fn handle_text_ping_returns_pong() {
         let mut session = WsSession::authenticated();
         let json = r#"{"msg_type":"ping","id":"ping-1"}"#;
-        let reply = handle_client_text(json, &mut session);
+        let reply = handle_client_text(json, &mut session, &any_nonempty);
         let msg = reply.unwrap();
         assert_eq!(msg.msg_type, "pong");
         assert_eq!(msg.id, Some("ping-1".into()));

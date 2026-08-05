@@ -52,6 +52,7 @@ impl RunStore for MemRunStore {
                 created_at: Utc::now(),
                 started_at: None,
                 completed_at: None,
+                deadline_at: None,
             },
         );
         Ok(())

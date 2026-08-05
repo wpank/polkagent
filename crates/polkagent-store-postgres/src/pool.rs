@@ -44,15 +44,11 @@ impl PgPool {
         &self.inner.tenant_id
     }
 
-    pub async fn set_tenant<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
-    where
-        E: Executor<'e, Database = sqlx::Postgres>,
-    {
-        let sql = format!(
-            "SET LOCAL app.tenant_id = '{}'",
-            self.inner.tenant_id.replace('\'', "''")
-        );
-        sqlx::query(&sql).execute(executor).await?;
+    pub async fn set_tenant(&self, conn: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT set_config('app.tenant_id', $1, true)")
+            .bind(&self.inner.tenant_id)
+            .execute(conn)
+            .await?;
         Ok(())
     }
 

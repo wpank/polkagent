@@ -7,16 +7,26 @@ use polkagent_store_sqlite::SqlitePool;
 
 use crate::cli::{
     InboxApproveCmd, InboxCmd, InboxDenyCmd, InboxHistoryCmd, InboxListCmd, InboxShowCmd,
+    InboxSubCmd,
 };
 
 /// Dispatch the inbox subcommand.
+///
+/// When no subcommand is provided, defaults to `inbox list`.
 pub fn run(cmd: &InboxCmd, pool: &SqlitePool) -> Result<()> {
-    match cmd {
-        InboxCmd::List(c) => list(c, pool),
-        InboxCmd::Show(c) => show(c, pool),
-        InboxCmd::Approve(c) => approve(c, pool),
-        InboxCmd::Deny(c) => deny(c, pool),
-        InboxCmd::History(c) => history(c, pool),
+    match &cmd.subcommand {
+        None | Some(InboxSubCmd::List(_)) => {
+            let default_list = InboxListCmd { json: false };
+            let c = match &cmd.subcommand {
+                Some(InboxSubCmd::List(c)) => c,
+                _ => &default_list,
+            };
+            list(c, pool)
+        }
+        Some(InboxSubCmd::Show(c)) => show(c, pool),
+        Some(InboxSubCmd::Approve(c)) => approve(c, pool),
+        Some(InboxSubCmd::Deny(c)) => deny(c, pool),
+        Some(InboxSubCmd::History(c)) => history(c, pool),
     }
 }
 

@@ -4,14 +4,15 @@
 //! etc.). An SS58 address encodes a network prefix, 32-byte account ID, and a
 //! 2-byte checksum into a Base58 string.
 //!
-//! # Checksum note
+//! # Checksum
 //!
-//! The canonical SS58 specification uses Blake2b-512 for the checksum. This
-//! implementation uses Blake3 as a simplified substitute since the workspace
-//! does not include a Blake2b dependency. Production deployments should use
-//! Blake2b-512 to ensure interoperability with other Substrate tooling.
+//! The checksum is the first 2 bytes of
+//! `Blake2b-512(b"SS58PRE" || prefix_bytes || account_id)`, matching the
+//! canonical Substrate/Polkadot SS58 specification and ensuring interoperability
+//! with subkey, Polkadot.js, and all standard Substrate tooling.
 
 use base58::{FromBase58, ToBase58};
+use blake2::{Blake2b512, Digest};
 
 use crate::error::IdentityError;
 
@@ -130,16 +131,16 @@ fn decode_prefix(data: &[u8]) -> Result<(u16, usize), IdentityError> {
 
 /// Compute the SS58 checksum for the given prefix bytes and account data.
 ///
-/// Uses Blake3 as a simplified substitute for the canonical Blake2b-512.
-/// The checksum is the first 2 bytes of `Blake3(SS58_PREFIX || prefix || account)`.
+/// Returns the first 2 bytes of
+/// `Blake2b-512(b"SS58PRE" || prefix_bytes || account)` per the canonical
+/// Substrate SS58 specification.
 fn compute_checksum(prefix_bytes: &[u8], account: &[u8; 32]) -> [u8; 2] {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = Blake2b512::new();
     hasher.update(SS58_PREFIX);
     hasher.update(prefix_bytes);
     hasher.update(account);
     let hash = hasher.finalize();
-    let bytes = hash.as_bytes();
-    [bytes[0], bytes[1]]
+    [hash[0], hash[1]]
 }
 
 #[cfg(test)]

@@ -121,8 +121,8 @@ Connect to any major LLM provider through a unified interface with automatic fal
 | **Perplexity** | Sonar models | `PERPLEXITY_API_KEY` |
 | **Cerebras** | Llama 4 Scout | `CEREBRAS_API_KEY` |
 | **Ollama** | Any local model | No key needed |
-| **AWS Bedrock** | Bedrock-hosted models | AWS credentials |
-| **Azure** | Azure-hosted OpenAI models | Azure credentials |
+| **AWS Bedrock** | Bedrock-hosted models (planned) | AWS credentials |
+| **Azure** | Azure-hosted OpenAI models (planned) | Azure credentials |
 
 Automatic fallback chains: if one provider fails, the next one picks up transparently.
 
@@ -194,7 +194,7 @@ Quality control through admission gates (novelty, relevance, confidence filterin
 ```bash
 polkagent memory search "governance delegation patterns"
 polkagent memory stats
-polkagent memory export --format json > backup.json
+polkagent memory export <AGENT_ID> backup.json
 polkagent memory sweep --dry-run
 ```
 
@@ -270,13 +270,13 @@ Regression-test agent behavior with structured eval suites:
 
 ```bash
 # Run the built-in safety suite
-polkagent eval run --suite safety
+polkagent eval run safety
 
 # Compare against a baseline
-polkagent eval compare --baseline results-v1.json --current results-v2.json
+polkagent eval compare results-v1.json results-v2.json
 ```
 
-25 built-in test cases across 6 categories (Safety, Tool Use, Chain Explanation, Governance, Treasury, General). Includes model-as-judge evaluation with configurable criteria and regression detection with delta thresholds.
+25 built-in test cases across 3 categories (Safety, Tool Use, Chain Explanation). Includes model-as-judge evaluation with configurable criteria and regression detection with delta thresholds.
 
 ### Production Operations
 

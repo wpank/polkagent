@@ -1,6 +1,7 @@
 //! Scoring functions for evaluating agent responses.
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::report::CaseResult;
 use crate::types::{Expected, ExpectedOutcome};
@@ -186,10 +187,8 @@ pub fn score_case(result: &CaseResult, expected: &Expected) -> Score {
 #[must_use]
 pub fn aggregate_score(checks: Vec<CheckResult>) -> Score {
     if checks.is_empty() {
-        // NOTE: no assertions were defined for this case, so we auto-pass.
-        // This inflates suite-level scores when cases lack assertions.
-        // Consider adding at least one expected check per eval case.
-        return Score::perfect();
+        warn!("aggregate_score called with no checks; returning zero score to avoid inflating suite-level results");
+        return Score::zero("No checks defined for this case");
     }
 
     let total = checks.len();
@@ -422,10 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_score_empty_checks_is_perfect() {
+    fn aggregate_score_empty_checks_is_zero() {
         let score = aggregate_score(Vec::new());
-        assert!(score.passed);
-        assert!((score.score - 1.0).abs() < f64::EPSILON);
+        assert!(!score.passed);
+        assert!((score.score - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]

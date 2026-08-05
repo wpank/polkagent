@@ -45,9 +45,11 @@
 //! | [`dto`] | Request/response data transfer objects |
 //! | [`error`] | `ApiError` with `IntoResponse` impl |
 
+pub mod auth;
 pub mod dto;
 pub mod error;
 pub mod rate_limit;
+pub mod read_only;
 pub mod routes;
 pub mod run;
 pub mod server;

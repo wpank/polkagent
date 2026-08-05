@@ -432,14 +432,41 @@ fn config_toml_round_trip_preserves_all_fields() {
 
 #[test]
 fn config_merge_overlay_wins_on_conflict() {
-    let base = Config::default();
-    let mut overlay = Config::default();
-    overlay.log.level = "error".into();
-    overlay.database.backend = DatabaseBackend::Postgres;
-    overlay.execution.max_concurrent_runs = 99;
+    let mut base = Config::default();
+    base.log.level = "trace".into();
+    base.execution.max_concurrent_runs = 42;
 
-    let merged = polkagent_config::merge(base, overlay).expect("merge");
+    let overlay_toml = r#"
+[log]
+level = "error"
+
+[database]
+backend = "postgres"
+
+[execution]
+max_concurrent_runs = 99
+"#;
+
+    let merged = polkagent_config::merge(base, overlay_toml).expect("merge");
     assert_eq!(merged.log.level, "error");
     assert_eq!(merged.database.backend, DatabaseBackend::Postgres);
     assert_eq!(merged.execution.max_concurrent_runs, 99);
+}
+
+#[test]
+fn config_merge_preserves_base_values_not_in_overlay() {
+    let mut base = Config::default();
+    base.log.level = "trace".into();
+    base.execution.max_concurrent_runs = 42;
+
+    // Overlay only sets log.level — everything else should come from base.
+    let overlay_toml = r#"
+[log]
+level = "warn"
+"#;
+
+    let merged = polkagent_config::merge(base, overlay_toml).expect("merge");
+    assert_eq!(merged.log.level, "warn");
+    // Base value must survive when overlay is silent about it.
+    assert_eq!(merged.execution.max_concurrent_runs, 42);
 }

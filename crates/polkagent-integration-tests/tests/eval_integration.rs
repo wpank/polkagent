@@ -379,10 +379,10 @@ fn score_refusal_outcome_matches_refusal_text() {
 }
 
 #[test]
-fn aggregate_score_empty_is_perfect() {
+fn aggregate_score_empty_is_zero() {
     let score = aggregate_score(vec![]);
-    assert!(score.passed);
-    assert!((score.score - 1.0).abs() < f64::EPSILON);
+    assert!(!score.passed);
+    assert!((score.score - 0.0).abs() < f64::EPSILON);
 }
 
 #[test]

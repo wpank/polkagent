@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use polkagent_core::AgentId;
 use serde::{Deserialize, Serialize};
 
@@ -72,13 +73,12 @@ impl AgentIdentity {
 ///
 /// An `AgentCard` packages an [`AgentIdentity`] together with a list of
 /// declared capabilities. It can be serialized to a canonical byte format
-/// for future signature-based verification workflows.
+/// and verified using Ed25519 signatures.
 ///
 /// # Signature verification
 ///
-/// The [`verify_signature`](AgentCard::verify_signature) method is currently a
-/// stub that always returns `false`. A full implementation will be added once
-/// the signing infrastructure is in place.
+/// Use [`verify_signature`](AgentCard::verify_signature) to verify an Ed25519
+/// signature over the card's canonical byte representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCard {
     /// The agent identity this card describes.
@@ -111,23 +111,25 @@ impl AgentCard {
         serde_json::to_vec(self).unwrap_or_default()
     }
 
-    /// Verify a signature over this card's canonical bytes.
+    /// Verify an Ed25519 signature over this card's canonical bytes.
     ///
-    /// # Stub implementation
+    /// 1. Calls [`to_bytes()`](AgentCard::to_bytes) to obtain the canonical payload.
+    /// 2. Parses the 64-byte `signature` and 32-byte `public_key`.
+    /// 3. Verifies the signature against the payload using Ed25519.
     ///
-    /// This always returns `false`. A real implementation would:
-    /// 1. Call [`to_bytes()`](AgentCard::to_bytes) to obtain the canonical payload.
-    /// 2. Verify the `signature` against the payload using the `public_key`
-    ///    with Ed25519 or Sr25519 (depending on the key type indicator).
-    ///
-    /// The stub conservatively returns `false` (reject) rather than `true`
-    /// so that callers cannot accidentally bypass verification.
+    /// Returns `true` only when the signature is a valid 64-byte Ed25519
+    /// signature that matches the canonical card bytes under the given key.
+    /// Returns `false` for any malformed input or verification failure.
     #[must_use]
-    pub fn verify_signature(&self, _signature: &[u8], _public_key: &[u8; 32]) -> bool {
-        // Stub: signature verification is not yet implemented.
-        // Returning `false` is the safe default -- no signature is ever
-        // considered valid until the signing infrastructure lands.
-        false
+    pub fn verify_signature(&self, signature: &[u8], public_key: &[u8; 32]) -> bool {
+        let Ok(verifying_key) = VerifyingKey::from_bytes(public_key) else {
+            return false;
+        };
+        let Ok(sig) = Signature::try_from(signature) else {
+            return false;
+        };
+        let payload = self.to_bytes();
+        verifying_key.verify(&payload, &sig).is_ok()
     }
 }
 
@@ -137,10 +139,21 @@ impl AgentCard {
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
     use polkagent_core::AgentId;
+    use rand::rngs::OsRng;
 
     use super::*;
     use crate::types::{AccountId32, NetworkId};
+
+    /// Helper: create a card, sign it, return (card, signature_bytes, public_key_bytes).
+    fn sign_card(card: &AgentCard) -> (Vec<u8>, [u8; 32]) {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let payload = card.to_bytes();
+        let signature = signing_key.sign(&payload);
+        let public_key = signing_key.verifying_key();
+        (signature.to_bytes().to_vec(), public_key.to_bytes())
+    }
 
     #[test]
     fn agent_identity_construction() {
@@ -194,16 +207,83 @@ mod tests {
     }
 
     #[test]
-    fn agent_card_verify_signature_stub_returns_false() {
+    fn agent_card_verify_valid_signature() {
         let identity = AgentIdentity::new(AgentId::new(), "sig-test");
+        let card = AgentCard::new(identity, vec!["transfer".into()]);
+
+        let (sig_bytes, pub_key) = sign_card(&card);
+        assert!(
+            card.verify_signature(&sig_bytes, &pub_key),
+            "valid Ed25519 signature must verify"
+        );
+    }
+
+    #[test]
+    fn agent_card_verify_wrong_key_rejects() {
+        let identity = AgentIdentity::new(AgentId::new(), "wrong-key-test");
         let card = AgentCard::new(identity, vec![]);
 
-        let fake_sig = vec![0u8; 64];
-        let fake_key = [0u8; 32];
+        let (sig_bytes, _correct_key) = sign_card(&card);
+
+        // Use a different random key
+        let wrong_key = SigningKey::generate(&mut OsRng).verifying_key().to_bytes();
+        assert!(
+            !card.verify_signature(&sig_bytes, &wrong_key),
+            "signature under wrong key must be rejected"
+        );
+    }
+
+    #[test]
+    fn agent_card_verify_tampered_signature_rejects() {
+        let identity = AgentIdentity::new(AgentId::new(), "tamper-test");
+        let card = AgentCard::new(identity, vec!["stake".into()]);
+
+        let (mut sig_bytes, pub_key) = sign_card(&card);
+        // Flip a byte in the signature
+        sig_bytes[0] ^= 0xFF;
+        assert!(
+            !card.verify_signature(&sig_bytes, &pub_key),
+            "tampered signature must be rejected"
+        );
+    }
+
+    #[test]
+    fn agent_card_verify_wrong_length_signature_rejects() {
+        let identity = AgentIdentity::new(AgentId::new(), "bad-len-test");
+        let card = AgentCard::new(identity, vec![]);
+
+        let pub_key = SigningKey::generate(&mut OsRng).verifying_key().to_bytes();
+
+        // Too short
+        assert!(
+            !card.verify_signature(&[0u8; 32], &pub_key),
+            "short signature must be rejected"
+        );
+        // Too long
+        assert!(
+            !card.verify_signature(&[0u8; 128], &pub_key),
+            "overlong signature must be rejected"
+        );
+        // Empty
+        assert!(
+            !card.verify_signature(&[], &pub_key),
+            "empty signature must be rejected"
+        );
+    }
+
+    #[test]
+    fn agent_card_verify_random_bytes_rejected() {
+        let identity = AgentIdentity::new(AgentId::new(), "random-bytes-test");
+        let card = AgentCard::new(identity, vec![]);
+
+        // Sign with one key, verify with a different key.
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let wrong_key = SigningKey::generate(&mut OsRng);
+        let sig = signing_key.sign(&card.to_bytes());
 
         assert!(
-            !card.verify_signature(&fake_sig, &fake_key),
-            "stub should always return false"
+            !card.verify_signature(&sig.to_bytes(), &wrong_key.verifying_key().to_bytes()),
+            "signature verified by wrong key must be rejected"
         );
     }
 

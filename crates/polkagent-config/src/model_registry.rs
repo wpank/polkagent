@@ -531,13 +531,18 @@ const ENV_PROVIDER_SPECS: &[EnvProviderSpec] = &[
 /// This allows zero-config usage: if the user has `ANTHROPIC_API_KEY` set,
 /// an `anthropic` provider is available without any TOML configuration.
 ///
+/// In addition, if `OLLAMA_URL` is set, a `local` provider entry is synthesized
+/// pointing at that URL. If only `OLLAMA_MODEL` is set (without `OLLAMA_URL`),
+/// the default Ollama endpoint (`http://localhost:11434/v1`) is used instead.
+/// Neither variable requires an API key.
+///
 /// The `env_lookup` parameter is a closure so callers can inject a custom
 /// environment for testing. In production, pass `std::env::var`.
 pub fn synthesize_providers_from_env<F>(env_lookup: F) -> Vec<(ProviderKind, ProviderConfig)>
 where
     F: Fn(&str) -> Result<String, std::env::VarError>,
 {
-    ENV_PROVIDER_SPECS
+    let mut providers: Vec<(ProviderKind, ProviderConfig)> = ENV_PROVIDER_SPECS
         .iter()
         .filter(|spec| env_lookup(spec.env_var).is_ok_and(|v| !v.is_empty()))
         .map(|spec| {
@@ -552,7 +557,31 @@ where
             };
             (spec.kind, config)
         })
-        .collect()
+        .collect();
+
+    // Synthesize a local/Ollama provider when OLLAMA_URL or OLLAMA_MODEL is set.
+    // These variables do not require an API key, so they cannot be expressed in
+    // the ENV_PROVIDER_SPECS table above.
+    let ollama_url = env_lookup("OLLAMA_URL").ok().filter(|v| !v.is_empty());
+    let ollama_model = env_lookup("OLLAMA_MODEL").ok().filter(|v| !v.is_empty());
+
+    if ollama_url.is_some() || ollama_model.is_some() {
+        let base_url = ollama_url.unwrap_or_else(|| "http://localhost:11434/v1".to_owned());
+        let default_model = ollama_model.unwrap_or_else(|| "llama3.2".to_owned());
+        let config = ProviderConfig {
+            id: "ollama".to_owned(),
+            provider_type: "local".to_owned(),
+            // No API key required for local Ollama instances.
+            api_key_env: String::new(),
+            base_url,
+            default_model,
+            kind: Some(ProviderKind::Local),
+            ..Default::default()
+        };
+        providers.push((ProviderKind::Local, config));
+    }
+
+    providers
 }
 
 // ---------------------------------------------------------------------------
@@ -812,5 +841,80 @@ mod tests {
         assert_eq!(*kind, ProviderKind::GeminiApi);
         assert_eq!(config.id, "gemini");
         assert_eq!(config.default_model, "gemini-2.5-flash");
+    }
+
+    // ── OLLAMA_URL / OLLAMA_MODEL synthesis ────────────────────────────
+
+    #[test]
+    fn synthesize_ollama_url_produces_local_provider() {
+        let result = synthesize_providers_from_env(|var| match var {
+            "OLLAMA_URL" => Ok("http://localhost:11434/v1".to_owned()),
+            _ => Err(std::env::VarError::NotPresent),
+        });
+        assert_eq!(result.len(), 1);
+        let (kind, config) = &result[0];
+        assert_eq!(*kind, ProviderKind::Local);
+        assert_eq!(config.id, "ollama");
+        assert_eq!(config.provider_type, "local");
+        assert_eq!(config.base_url, "http://localhost:11434/v1");
+        assert_eq!(config.default_model, "llama3.2");
+        assert_eq!(config.api_key_env, "");
+        assert_eq!(config.kind, Some(ProviderKind::Local));
+    }
+
+    #[test]
+    fn synthesize_ollama_model_uses_default_endpoint() {
+        let result = synthesize_providers_from_env(|var| match var {
+            "OLLAMA_MODEL" => Ok("mistral".to_owned()),
+            _ => Err(std::env::VarError::NotPresent),
+        });
+        assert_eq!(result.len(), 1);
+        let (kind, config) = &result[0];
+        assert_eq!(*kind, ProviderKind::Local);
+        assert_eq!(config.id, "ollama");
+        assert_eq!(config.base_url, "http://localhost:11434/v1");
+        assert_eq!(config.default_model, "mistral");
+    }
+
+    #[test]
+    fn synthesize_ollama_url_and_model_both_set() {
+        let result = synthesize_providers_from_env(|var| match var {
+            "OLLAMA_URL" => Ok("http://gpu-box:11434/v1".to_owned()),
+            "OLLAMA_MODEL" => Ok("deepseek-r1".to_owned()),
+            _ => Err(std::env::VarError::NotPresent),
+        });
+        // Only one ollama provider entry synthesized.
+        let ollama_entries: Vec<_> = result
+            .iter()
+            .filter(|(k, _)| *k == ProviderKind::Local)
+            .collect();
+        assert_eq!(ollama_entries.len(), 1);
+        let (_, config) = &ollama_entries[0];
+        assert_eq!(config.base_url, "http://gpu-box:11434/v1");
+        assert_eq!(config.default_model, "deepseek-r1");
+    }
+
+    #[test]
+    fn synthesize_ollama_alongside_api_key_provider() {
+        let result = synthesize_providers_from_env(|var| match var {
+            "ANTHROPIC_API_KEY" => Ok("sk-ant-test".to_owned()),
+            "OLLAMA_URL" => Ok("http://localhost:11434/v1".to_owned()),
+            _ => Err(std::env::VarError::NotPresent),
+        });
+        // Both anthropic and ollama providers synthesized.
+        assert_eq!(result.len(), 2);
+        let kinds: Vec<ProviderKind> = result.iter().map(|(k, _)| *k).collect();
+        assert!(kinds.contains(&ProviderKind::AnthropicApi));
+        assert!(kinds.contains(&ProviderKind::Local));
+    }
+
+    #[test]
+    fn synthesize_neither_ollama_var_produces_no_local_entry() {
+        let result = synthesize_providers_from_env(|_| Err(std::env::VarError::NotPresent));
+        let local_entries: Vec<_> = result
+            .iter()
+            .filter(|(k, _)| *k == ProviderKind::Local)
+            .collect();
+        assert!(local_entries.is_empty());
     }
 }

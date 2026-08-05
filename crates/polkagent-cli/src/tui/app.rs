@@ -143,6 +143,23 @@ impl Tab {
         }
     }
 
+    /// Parse a tab name from the `--tab` CLI flag value.
+    ///
+    /// Accepted values match the flag's documented names (case-insensitive).
+    /// Unknown names fall back to [`Tab::Dashboard`].
+    pub fn from_cli_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "agents" => Self::Agents,
+            "runs" => Self::Runs,
+            "system" => Self::System,
+            "timeline" => Self::Timeline,
+            "approvals" => Self::Approvals,
+            "memory" => Self::Memory,
+            "audit" => Self::Audit,
+            _ => Self::Dashboard,
+        }
+    }
+
     /// Return the previous tab in display order (wraps around).
     /// RunDetail maps to its parent (Runs).
     pub fn prev(self) -> Self {
@@ -193,10 +210,10 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new `App` with the given theme and database pool.
-    pub fn new(theme: Theme, pool: SqlitePool) -> Self {
+    /// Create a new `App` with the given theme, database pool, and initial tab.
+    pub fn new(theme: Theme, pool: SqlitePool, initial_tab: Tab) -> Self {
         Self {
-            active_tab: Tab::default(),
+            active_tab: initial_tab,
             tui_state: TuiState::default(),
             theme,
             input_mode: InputMode::default(),
@@ -807,10 +824,8 @@ impl App {
                     100.0
                 };
 
-                // Clear error if all queries succeeded.
-                if self.tui_state.last_error.is_none() {
-                    self.tui_state.last_error = None;
-                }
+                // Clear any previous error now that all queries succeeded.
+                self.tui_state.last_error = None;
                 self.tui_state.last_refresh = Some(chrono::Utc::now());
                 self.tui_state.recompute_widget_data();
                 self.tui_state.mark_dirty();

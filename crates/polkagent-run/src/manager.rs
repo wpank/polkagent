@@ -418,6 +418,25 @@ impl RunManager {
         self.current_state(run_id).await
     }
 
+    /// Persist a wall-clock deadline for a run.
+    ///
+    /// The deadline is stored as an absolute `DateTime<Utc>` so that it
+    /// survives process restarts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunError::Store`] if the store write fails.
+    pub async fn set_deadline(
+        &self,
+        run_id: RunId,
+        deadline: Option<polkagent_core::Timestamp>,
+    ) -> Result<(), RunError> {
+        self.store
+            .set_deadline(run_id, deadline)
+            .await
+            .map_err(|e| RunError::Store(e.to_string()))
+    }
+
     /// Persist a completed [`Turn`] (including token usage) to the store.
     ///
     /// The turn's `sequence` is stored as 1-based in the database (the
@@ -631,6 +650,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     started_at: None,
                     completed_at: None,
+                    deadline_at: None,
                 },
             );
             Ok(())

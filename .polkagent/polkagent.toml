@@ -208,3 +208,11 @@ otlp_protocol = "grpc"     # grpc | http/protobuf
 metrics_enabled = true
 traces_enabled = true
 service_name = "polkagent"
+
+# ─── Cloud ──────────────────────────────────────────────────────────────────
+# Data residency: restrict job routing to a specific geographic region.
+# Override: POLKAGENT_CLOUD_REGION=eu
+
+[cloud]
+# region = "eu"            # eu | us | ap | au | ca
+allow_cross_region = false

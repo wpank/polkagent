@@ -462,8 +462,21 @@ fn detect_config_sources() -> Vec<String> {
 }
 
 /// Detect the configured chain name from environment variables.
+///
+/// Checks `POLKAGENT_CHAIN_RPC_URL` first, then `POLKAGENT_RPC_URL`, using
+/// the URL contents to infer the chain name.
 fn detect_chain_name() -> String {
-    if let Ok(url) = std::env::var("POLKAGENT_RPC_URL") {
+    // Prefer POLKAGENT_CHAIN_RPC_URL, fall back to POLKAGENT_RPC_URL.
+    let url_opt = std::env::var("POLKAGENT_CHAIN_RPC_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("POLKAGENT_RPC_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
+
+    if let Some(url) = url_opt {
         if url.contains("westend") {
             return "Westend".to_owned();
         } else if url.contains("kusama") {

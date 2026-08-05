@@ -200,9 +200,15 @@ fn render_list(
             let relevance_color = relevance_color(entry.relevance_score, theme);
             let relevance_str = format!("{:.2}", entry.relevance_score);
 
-            // Truncate agent name to 14 chars.
-            let agent = if entry.agent_name.len() > 14 {
-                format!("{}…", &entry.agent_name[..13])
+            // Truncate agent name to 14 chars (char-boundary safe).
+            let agent = if entry.agent_name.chars().count() > 14 {
+                let split_byte = entry
+                    .agent_name
+                    .char_indices()
+                    .nth(13)
+                    .map(|(i, _)| i)
+                    .unwrap_or(entry.agent_name.len());
+                format!("{}…", &entry.agent_name[..split_byte])
             } else {
                 entry.agent_name.clone()
             };
@@ -329,22 +335,30 @@ fn render_detail(frame: &mut Frame, area: Rect, entry: &MemoryEntry, theme: &The
     let content_width = inner.width.saturating_sub(4) as usize;
     let content_lines_available = inner.height.saturating_sub(lines.len() as u16) as usize;
     for line in entry.content.lines().take(content_lines_available.max(1)) {
-        // Split each line at content_width.
+        // Split each line at content_width using char boundaries (not byte indices)
+        // to avoid panics on multi-byte UTF-8 characters.
         let mut remaining = line;
         loop {
-            if remaining.len() <= content_width {
+            let char_count = remaining.chars().count();
+            if char_count <= content_width {
                 lines.push(Line::from(Span::styled(
                     format!("  {remaining}"),
                     Style::default().fg(theme.text_primary),
                 )));
                 break;
             }
-            let chunk = &remaining[..content_width];
+            // Find the byte offset of the char_count-th character boundary.
+            let split_byte = remaining
+                .char_indices()
+                .nth(content_width)
+                .map(|(i, _)| i)
+                .unwrap_or(remaining.len());
+            let chunk = &remaining[..split_byte];
             lines.push(Line::from(Span::styled(
                 format!("  {chunk}"),
                 Style::default().fg(theme.text_primary),
             )));
-            remaining = &remaining[content_width..];
+            remaining = &remaining[split_byte..];
         }
     }
 

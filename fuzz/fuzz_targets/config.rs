@@ -32,11 +32,9 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // Attempt 3: try the merge function with fuzzed TOML on both sides.
+    // Attempt 3: try the merge function with fuzzed TOML string overlay.
     if let Ok(s) = std::str::from_utf8(data) {
-        if let Ok(overlay) = toml::from_str::<Config>(s) {
-            let base = Config::default();
-            let _ = polkagent_config::merge(base, overlay);
-        }
+        let base = Config::default();
+        let _ = polkagent_config::merge(base, s);
     }
 });

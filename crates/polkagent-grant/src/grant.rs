@@ -402,8 +402,9 @@ impl GrantResolver {
         // Step 5: Budget check.
         if let Some(amount) = amount {
             if let Some(tracker) = &self.budget_tracker {
-                // Use a placeholder AgentId derived from principal string for
-                // Phase 1. In Phase 2 the principal will carry a typed AgentId.
+                // Derive an AgentId from the principal string. If the
+                // principal is already a UUID it round-trips directly;
+                // otherwise a deterministic blake3-based ID is produced.
                 let agent_id = principal_to_agent_id(principal);
                 let within_budget = tracker.check_budget(agent_id, amount).await?;
                 if !within_budget {
@@ -453,15 +454,29 @@ impl GrantResolver {
 }
 
 /// Map a string principal name to a deterministic [`AgentId`] for budget
-/// lookups. Phase 1 stub — real implementation will pass `AgentId` directly.
+/// lookups.
+///
+/// Two code paths:
+///
+/// 1. **Typed `AgentId`**: If the caller passes a UUID string (e.g.
+///    `agent_id.to_string()`), it is parsed back into an `AgentId` directly.
+///    This is the common path when the caller already has a typed ID.
+///
+/// 2. **Opaque principal string**: When the caller only has a human-readable
+///    principal name (e.g. `"alice"`) — such as from external policy
+///    descriptors — we derive a deterministic UUID v5-style identifier via
+///    blake3 hashing.  This ensures a stable, collision-resistant mapping
+///    from arbitrary principal strings to `AgentId` values suitable for
+///    budget tracking.
 fn principal_to_agent_id(principal: &str) -> AgentId {
     use std::str::FromStr;
-    // Try to parse as a UUID first (for tests that pass real IDs).
+    // Fast path: the principal is already a valid UUID (typed AgentId).
     if let Ok(id) = AgentId::from_str(principal) {
         return id;
     }
-    // Fall back to a UUID v5-ish deterministic ID via hashing the string.
-    // Phase 1: use a fixed namespace + blake3 to get 16 bytes.
+    // Deterministic derivation for opaque principal strings.
+    // blake3 produces 32 bytes; we take the first 16 and set the UUID
+    // version/variant bits to produce a valid v5 UUID.
     let hash = blake3::hash(principal.as_bytes());
     let bytes = hash.as_bytes();
     let mut uuid_bytes = [0u8; 16];

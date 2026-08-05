@@ -11,6 +11,7 @@ description = "Tool registry, handler trait, and built-in tool implementations f
 # Internal
 polkagent-core = { path = "../polkagent-core" }
 polkagent-batch = { path = "../polkagent-batch" }
+polkagent-config = { path = "../polkagent-config" }
 polkagent-executor-trait = { path = "../polkagent-executor-trait" }
 polkagent-grant = { path = "../polkagent-grant" }
 polkagent-memory = { path = "../polkagent-memory" }

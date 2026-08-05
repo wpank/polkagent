@@ -21,8 +21,51 @@ pub struct SecretId(String);
 
 impl SecretId {
     /// Create a new `SecretId` from any string-like value.
+    ///
+    /// No character validation is performed here. Use [`SecretId::try_new`]
+    /// when the input comes from an untrusted source (e.g. user input or API
+    /// parameters). IDs that contain path-traversal characters will be
+    /// rejected by [`SecretId::to_filename`].
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    /// Create a `SecretId` from an untrusted string, validating that it
+    /// contains only safe characters.
+    ///
+    /// Allowed characters: ASCII alphanumeric (`a-z`, `A-Z`, `0-9`),
+    /// hyphen (`-`), underscore (`_`), and dot (`.`).
+    ///
+    /// Returns `None` if `id` is empty or contains any disallowed character,
+    /// including path separators (`/`, `\`), `..`, or whitespace.
+    #[must_use]
+    pub fn try_new(id: impl Into<String>) -> Option<Self> {
+        let s: String = id.into();
+        if s.is_empty() {
+            return None;
+        }
+        if Self::has_safe_chars(&s) {
+            Some(Self(s))
+        } else {
+            None
+        }
+    }
+
+    /// Return `true` if `s` consists entirely of characters that are safe to
+    /// use in a filesystem filename.
+    ///
+    /// Allowed: ASCII alphanumeric, `-`, `_`, `.`.
+    /// Any other byte — including `/`, `\`, or `..` as a component — returns
+    /// `false`.
+    #[must_use]
+    fn has_safe_chars(s: &str) -> bool {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+            // Explicitly reject ".." even though individual dots are allowed,
+            // because ".." is a path-traversal component.
+            && s != ".."
+            && !s.starts_with("..")
     }
 
     /// Return the raw identifier string.
@@ -39,11 +82,27 @@ impl SecretId {
         format!("POLKAGENT_{}", self.0.to_uppercase().replace('-', "_"))
     }
 
-    /// Convert this secret ID to a safe filename (replacing non-alphanumeric
-    /// characters with underscores).
+    /// Convert this secret ID to a filename for on-disk storage.
+    ///
+    /// # Security
+    ///
+    /// This method validates that the ID contains only safe characters before
+    /// constructing the filename. Any ID containing path-traversal sequences
+    /// (`/`, `\`, `..`) or other dangerous characters will cause this method
+    /// to return `None`, preventing directory traversal attacks.
+    ///
+    /// Allowed characters: ASCII alphanumeric, hyphen, underscore, dot.
+    ///
+    /// # Returns
+    ///
+    /// `Some(filename)` if the ID is safe, `None` otherwise.
     #[must_use]
-    pub fn to_filename(&self) -> String {
-        format!("{}.json", self.0)
+    pub fn to_filename(&self) -> Option<String> {
+        if Self::has_safe_chars(&self.0) {
+            Some(format!("{}.json", self.0))
+        } else {
+            None
+        }
     }
 }
 
@@ -211,7 +270,99 @@ mod tests {
     #[test]
     fn secret_id_to_filename() {
         let id = SecretId::new("polkadot-seed");
-        assert_eq!(id.to_filename(), "polkadot-seed.json");
+        assert_eq!(id.to_filename(), Some("polkadot-seed.json".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Security: to_filename path-traversal prevention
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn to_filename_rejects_slash() {
+        let id = SecretId::new("../etc/shadow");
+        assert!(
+            id.to_filename().is_none(),
+            "ID with '/' must not produce a filename"
+        );
+    }
+
+    #[test]
+    fn to_filename_rejects_backslash() {
+        let id = SecretId::new("..\\etc\\shadow");
+        assert!(
+            id.to_filename().is_none(),
+            "ID with backslash must not produce a filename"
+        );
+    }
+
+    #[test]
+    fn to_filename_rejects_dotdot() {
+        let id = SecretId::new("..");
+        assert!(
+            id.to_filename().is_none(),
+            "bare '..' must not produce a filename"
+        );
+    }
+
+    #[test]
+    fn to_filename_rejects_dotdot_prefix() {
+        let id = SecretId::new("..evil");
+        assert!(
+            id.to_filename().is_none(),
+            "ID starting with '..' must not produce a filename"
+        );
+    }
+
+    #[test]
+    fn to_filename_rejects_space() {
+        let id = SecretId::new("my key");
+        assert!(
+            id.to_filename().is_none(),
+            "ID with space must not produce a filename"
+        );
+    }
+
+    #[test]
+    fn to_filename_rejects_null_byte() {
+        let id = SecretId::new("key\0evil");
+        assert!(
+            id.to_filename().is_none(),
+            "ID with null byte must not produce a filename"
+        );
+    }
+
+    #[test]
+    fn to_filename_accepts_valid_ids() {
+        let valid_ids = [
+            "anthropic-api-key",
+            "polkadot_seed",
+            "key.version.1",
+            "MyKey123",
+            "a",
+        ];
+        for raw in &valid_ids {
+            let id = SecretId::new(*raw);
+            assert!(
+                id.to_filename().is_some(),
+                "valid ID '{}' must produce a filename",
+                raw
+            );
+        }
+    }
+
+    #[test]
+    fn try_new_accepts_safe_id() {
+        let id = SecretId::try_new("my-key");
+        assert!(id.is_some());
+        assert_eq!(id.unwrap().as_str(), "my-key");
+    }
+
+    #[test]
+    fn try_new_rejects_path_traversal() {
+        assert!(SecretId::try_new("../evil").is_none());
+        assert!(SecretId::try_new("etc/shadow").is_none());
+        assert!(SecretId::try_new("key\0evil").is_none());
+        assert!(SecretId::try_new("").is_none());
     }
 
     #[test]

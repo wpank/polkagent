@@ -188,25 +188,23 @@ pub async fn cancel_run(
 // GET /runs/:id/turns
 // ---------------------------------------------------------------------------
 
-/// List turns for a run.
+/// List turns for a run, ordered by sequence ascending.
 ///
-/// **Stub:** Returns an empty list. Will be populated once the turn store
-/// is integrated.
+/// Returns 404 if the run does not exist.
 #[instrument(skip(state), fields(run_id = %id))]
 pub async fn list_run_turns(
     State(state): State<AppState>,
     Path(id): Path<RunId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Verify the run exists.
-    let _record = state
+    let turns = state
         .run_manager
-        .get_run(id)
+        .list_turns(id)
         .await
         .map_err(ApiError::from)?;
 
     Ok(Json(crate::dto::ListTurnsResponse {
         version: API_VERSION.to_owned(),
-        data: vec![],
+        data: turns,
     }))
 }
 
@@ -358,10 +356,10 @@ pub async fn resume_run(
 // POST /agents/:id/start
 // ---------------------------------------------------------------------------
 
-/// Start an agent (transition to active/running state).
+/// Start an agent by creating a new run.
 ///
-/// **Stub:** Returns 501 Not Implemented. Will be wired to the agent
-/// lifecycle subsystem once long-running agent processes are supported.
+/// Creates a run for the agent in `Running` state and returns an
+/// `accepted` lifecycle response. Returns 404 if the agent does not exist.
 #[instrument(skip(state), fields(agent_id = %id))]
 pub async fn start_agent(
     State(state): State<AppState>,
@@ -374,12 +372,18 @@ pub async fn start_agent(
         .await
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
-    info!(agent_id = %id, "agent start requested");
+    state
+        .run_manager
+        .create_run(id, serde_json::Value::Null)
+        .await
+        .map_err(ApiError::from)?;
+
+    info!(agent_id = %id, "agent started");
     Ok(Json(AgentLifecycleResponse {
         version: API_VERSION.to_owned(),
         agent_id: id.to_string(),
         action: "start".to_owned(),
-        status: "not_implemented".to_owned(),
+        status: "accepted".to_owned(),
     }))
 }
 
@@ -387,10 +391,10 @@ pub async fn start_agent(
 // POST /agents/:id/stop
 // ---------------------------------------------------------------------------
 
-/// Stop a running agent.
+/// Stop a running agent by cancelling all its active runs.
 ///
-/// **Stub:** Returns a lifecycle response. Will be wired to the agent
-/// lifecycle subsystem once long-running agent processes are supported.
+/// Transitions every non-terminal run belonging to the agent to `Cancelled`.
+/// Returns 404 if the agent does not exist.
 #[instrument(skip(state), fields(agent_id = %id))]
 pub async fn stop_agent(
     State(state): State<AppState>,
@@ -403,12 +407,18 @@ pub async fn stop_agent(
         .await
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
-    info!(agent_id = %id, "agent stop requested");
+    let cancelled = state
+        .run_manager
+        .stop_agent_runs(id)
+        .await
+        .map_err(ApiError::from)?;
+
+    info!(agent_id = %id, cancelled, "agent stopped");
     Ok(Json(AgentLifecycleResponse {
         version: API_VERSION.to_owned(),
         agent_id: id.to_string(),
         action: "stop".to_owned(),
-        status: "not_implemented".to_owned(),
+        status: format!("stopped ({cancelled} runs cancelled)"),
     }))
 }
 
@@ -416,10 +426,10 @@ pub async fn stop_agent(
 // POST /agents/:id/pause
 // ---------------------------------------------------------------------------
 
-/// Pause a running agent.
+/// Pause a running agent by pausing all its running runs.
 ///
-/// **Stub:** Returns a lifecycle response. Will be wired to the agent
-/// lifecycle subsystem once pause/resume is supported.
+/// Transitions every `Running` run belonging to the agent to
+/// `AwaitingApproval`. Returns 404 if the agent does not exist.
 #[instrument(skip(state), fields(agent_id = %id))]
 pub async fn pause_agent(
     State(state): State<AppState>,
@@ -432,12 +442,18 @@ pub async fn pause_agent(
         .await
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
-    info!(agent_id = %id, "agent pause requested");
+    let paused = state
+        .run_manager
+        .pause_agent_runs(id)
+        .await
+        .map_err(ApiError::from)?;
+
+    info!(agent_id = %id, paused, "agent paused");
     Ok(Json(AgentLifecycleResponse {
         version: API_VERSION.to_owned(),
         agent_id: id.to_string(),
         action: "pause".to_owned(),
-        status: "not_implemented".to_owned(),
+        status: format!("paused ({paused} runs paused)"),
     }))
 }
 
@@ -445,10 +461,10 @@ pub async fn pause_agent(
 // POST /agents/:id/resume
 // ---------------------------------------------------------------------------
 
-/// Resume a paused agent.
+/// Resume a paused agent by resuming all its paused runs.
 ///
-/// **Stub:** Returns a lifecycle response. Will be wired to the agent
-/// lifecycle subsystem once pause/resume is supported.
+/// Transitions every `AwaitingApproval` run belonging to the agent back
+/// to `Running`. Returns 404 if the agent does not exist.
 #[instrument(skip(state), fields(agent_id = %id))]
 pub async fn resume_agent(
     State(state): State<AppState>,
@@ -461,11 +477,17 @@ pub async fn resume_agent(
         .await
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
-    info!(agent_id = %id, "agent resume requested");
+    let resumed = state
+        .run_manager
+        .resume_agent_runs(id)
+        .await
+        .map_err(ApiError::from)?;
+
+    info!(agent_id = %id, resumed, "agent resumed");
     Ok(Json(AgentLifecycleResponse {
         version: API_VERSION.to_owned(),
         agent_id: id.to_string(),
         action: "resume".to_owned(),
-        status: "not_implemented".to_owned(),
+        status: format!("resumed ({resumed} runs resumed)"),
     }))
 }

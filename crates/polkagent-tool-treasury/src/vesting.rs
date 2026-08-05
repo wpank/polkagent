@@ -5,10 +5,13 @@
 //!
 //! **Grant requirement:** `chain.query`
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, warn};
 
+use polkagent_chain_trait::{ChainClient, ChainProfileId};
 use polkagent_core::config::DataClassification;
 use polkagent_tool::registry::{ToolContext, ToolError, ToolHandler, ToolResult, ToolSpec};
 
@@ -18,6 +21,13 @@ use crate::types::VestingInfo;
 // ---------------------------------------------------------------------------
 // VestingScheduleTool
 // ---------------------------------------------------------------------------
+
+/// Build the storage key for `Vesting::Vesting(account_id)`.
+fn build_vesting_storage_key(account_id: &str) -> Vec<u8> {
+    let mut key = b"Vesting:Vesting:".to_vec();
+    key.extend_from_slice(account_id.as_bytes());
+    key
+}
 
 /// Queries vesting schedules for an account.
 ///
@@ -35,7 +45,16 @@ use crate::types::VestingInfo;
 /// ```
 ///
 /// **Grant requirement:** `chain.query`
-pub struct VestingScheduleTool;
+pub struct VestingScheduleTool {
+    chain_client: Arc<dyn ChainClient>,
+}
+
+impl VestingScheduleTool {
+    /// Create a new `VestingScheduleTool` backed by the given chain client.
+    pub fn new(chain_client: Arc<dyn ChainClient>) -> Self {
+        Self { chain_client }
+    }
+}
 
 #[async_trait]
 impl ToolHandler for VestingScheduleTool {
@@ -71,13 +90,43 @@ impl ToolHandler for VestingScheduleTool {
 
         debug!(account = account_id, chain, "querying vesting schedules");
 
-        // In production this queries pallet_vesting storage.
-        // Return empty vesting info as placeholder.
-        let info = VestingInfo {
+        let storage_key = build_vesting_storage_key(account_id);
+        let chain_profile = ChainProfileId::new(chain);
+
+        let default_info = || VestingInfo {
             schedules: vec![],
             total_unlocked: 0,
             total_locked: 0,
             next_unlock_block: None,
+        };
+
+        let info = match self
+            .chain_client
+            .query_storage(&storage_key, None, chain_profile)
+            .await
+        {
+            Ok(Some(bytes)) => serde_json::from_slice::<VestingInfo>(&bytes).unwrap_or_else(|e| {
+                warn!(
+                    account = account_id,
+                    chain,
+                    error = %e,
+                    "failed to decode vesting info, using defaults"
+                );
+                default_info()
+            }),
+            Ok(None) => {
+                debug!(account = account_id, chain, "no vesting data on chain");
+                default_info()
+            }
+            Err(e) => {
+                warn!(
+                    account = account_id,
+                    chain,
+                    error = %e,
+                    "chain query failed for vesting, falling back to defaults"
+                );
+                default_info()
+            }
         };
 
         let output = serde_json::to_value(&info).map_err(|e| ToolError::ExecutionFailed {
@@ -99,7 +148,8 @@ impl ToolHandler for VestingScheduleTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::VestingInfo;
+    use crate::tests::MockChainClient;
+    use crate::types::{VestingInfo, VestingSchedule};
     use polkagent_core::ids::{AgentId, RunId, StepId};
 
     fn test_context() -> ToolContext {
@@ -108,19 +158,24 @@ mod tests {
             agent_id: AgentId::new(),
             step_id: StepId::new(),
             grants: vec![],
+            security_config: None,
         }
+    }
+
+    fn make_tool() -> VestingScheduleTool {
+        VestingScheduleTool::new(Arc::new(MockChainClient::new()))
     }
 
     #[test]
     fn spec_name_and_grant() {
-        let spec = VestingScheduleTool.spec();
+        let spec = make_tool().spec();
         assert_eq!(spec.name, "polkagent.treasury.vesting_schedule");
         assert_eq!(spec.required_grant.as_deref(), Some("chain.query"));
     }
 
     #[test]
     fn spec_has_input_schema() {
-        let spec = VestingScheduleTool.spec();
+        let spec = make_tool().spec();
         let props = &spec.input_schema["properties"];
         assert!(props.get("account_id").is_some());
         assert!(props.get("chain").is_some());
@@ -133,7 +188,7 @@ mod tests {
             "chain": "polkadot"
         });
 
-        let result = VestingScheduleTool
+        let result = make_tool()
             .execute(input, &test_context())
             .await
             .expect("should succeed");
@@ -146,9 +201,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_with_chain_data() {
+        let mut client = MockChainClient::new();
+        let info = VestingInfo {
+            schedules: vec![VestingSchedule {
+                locked: 10_000_000_000_000,
+                per_block: 1_000_000,
+                starting_block: 15_000_000,
+            }],
+            total_unlocked: 2_000_000_000_000,
+            total_locked: 8_000_000_000_000,
+            next_unlock_block: Some(18_000_100),
+        };
+        let key = build_vesting_storage_key("5GrwvaEFcWWqn1bRJJpPi8HBdhQ");
+        client.insert_storage(key, serde_json::to_vec(&info).expect("serialize"));
+
+        let tool = VestingScheduleTool::new(Arc::new(client));
+        let input = serde_json::json!({
+            "account_id": "5GrwvaEFcWWqn1bRJJpPi8HBdhQ",
+            "chain": "polkadot"
+        });
+
+        let result = tool
+            .execute(input, &test_context())
+            .await
+            .expect("should succeed");
+
+        let out: VestingInfo = serde_json::from_value(result.output).expect("deserialize output");
+        assert_eq!(out.schedules.len(), 1);
+        assert_eq!(out.total_locked, 8_000_000_000_000);
+        assert_eq!(out.total_unlocked, 2_000_000_000_000);
+        assert_eq!(out.next_unlock_block, Some(18_000_100));
+    }
+
+    #[tokio::test]
     async fn execute_missing_account_id() {
         let input = serde_json::json!({});
-        let result = VestingScheduleTool.execute(input, &test_context()).await;
+        let result = make_tool().execute(input, &test_context()).await;
         assert!(matches!(result, Err(ToolError::InvalidInput { .. })));
     }
 
@@ -158,7 +247,7 @@ mod tests {
             "account_id": "5GrwvaEF...",
             "chain": "cosmos"
         });
-        let result = VestingScheduleTool.execute(input, &test_context()).await;
+        let result = make_tool().execute(input, &test_context()).await;
         assert!(matches!(result, Err(ToolError::ExecutionFailed { .. })));
     }
 
@@ -168,7 +257,7 @@ mod tests {
             "account_id": "5GrwvaEFcWWqn1bRJJpPi8HBdhQ"
         });
 
-        let result = VestingScheduleTool
+        let result = make_tool()
             .execute(input, &test_context())
             .await
             .expect("should succeed");

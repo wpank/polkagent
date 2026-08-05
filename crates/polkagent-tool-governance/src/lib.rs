@@ -153,21 +153,36 @@ pub(crate) mod tests {
     impl ChainClient for MockChainClient {
         async fn fetch_metadata(
             &self,
-            _chain_profile: ChainProfileId,
+            chain_profile: ChainProfileId,
         ) -> Result<PinnedMetadata, ChainError> {
-            Err(ChainError::Internal {
-                message: "mock: fetch_metadata not implemented".to_string(),
+            Ok(PinnedMetadata {
+                chain_profile,
+                spec_version: 1_000_000,
+                metadata_digest: polkagent_chain_trait::MetadataDigest(
+                    "mock-digest-000".to_string(),
+                ),
+                metadata_bytes: Vec::new(),
+                block_ref: BlockRef {
+                    number: 1,
+                    hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                },
+                fetched_at: chrono::Utc::now(),
             })
         }
 
         async fn simulate(
             &self,
             _signed_extrinsic: &[u8],
-            _block_ref: &BlockRef,
+            block_ref: &BlockRef,
             _metadata: &PinnedMetadata,
         ) -> Result<SimulationResult, ChainError> {
-            Err(ChainError::Internal {
-                message: "mock: simulate not implemented".to_string(),
+            Ok(SimulationResult {
+                success: true,
+                fee_estimate: Some(1_000_000),
+                error_message: None,
+                storage_changes_preview: vec![],
+                block_ref: block_ref.clone(),
             })
         }
 
@@ -176,9 +191,9 @@ pub(crate) mod tests {
             _signed_extrinsic: &[u8],
             _chain_profile: ChainProfileId,
         ) -> Result<TxHash, ChainError> {
-            Err(ChainError::Internal {
-                message: "mock: submit_extrinsic not implemented".to_string(),
-            })
+            Ok(TxHash::new(
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+            ))
         }
 
         async fn watch_finality(
@@ -187,18 +202,36 @@ pub(crate) mod tests {
             _chain_profile: ChainProfileId,
             _timeout_ms: u64,
         ) -> Result<FinalityObservation, ChainError> {
-            Err(ChainError::Internal {
-                message: "mock: watch_finality not implemented".to_string(),
+            Ok(FinalityObservation::Finalized {
+                block_ref: BlockRef {
+                    number: 1,
+                    hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_string(),
+                },
+                tx_index: 0,
             })
         }
 
         async fn decode_call(
             &self,
-            _call_bytes: &[u8],
-            _metadata: &PinnedMetadata,
+            call_bytes: &[u8],
+            metadata: &PinnedMetadata,
         ) -> Result<DecodedCall, ChainError> {
-            Err(ChainError::Internal {
-                message: "mock: decode_call not implemented".to_string(),
+            // Return a basic decoded call using the first two bytes as
+            // pallet/call indices when available, otherwise a placeholder.
+            let (pallet, call_name) = if call_bytes.len() >= 2 {
+                (
+                    format!("Pallet{}", call_bytes[0]),
+                    format!("call_{}", call_bytes[1]),
+                )
+            } else {
+                ("Unknown".to_string(), "unknown".to_string())
+            };
+            Ok(DecodedCall {
+                pallet,
+                call_name,
+                arguments_json: "{}".to_string(),
+                metadata_digest: metadata.metadata_digest.clone(),
             })
         }
 

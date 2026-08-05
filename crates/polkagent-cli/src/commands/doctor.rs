@@ -155,9 +155,13 @@ impl CheckStatus {
 // ---------------------------------------------------------------------------
 
 /// Execute the `doctor` subcommand.
-pub fn run(cmd: &DoctorCmd) -> Result<()> {
+///
+/// `config_path` is the optional `--config` flag value from the root CLI.
+/// When provided it is used as the sole config file source; otherwise the
+/// standard search paths are tried.
+pub fn run(cmd: &DoctorCmd, config_path: Option<&std::path::Path>) -> Result<()> {
     // Load config (best-effort).
-    let config = load_config();
+    let config = load_config(config_path);
 
     // System checks.
     let mut system_checks: Vec<Check> = Vec::new();
@@ -166,7 +170,7 @@ pub fn run(cmd: &DoctorCmd) -> Result<()> {
     system_checks.push(check_disk_space());
     system_checks.push(check_signer());
     system_checks.push(check_chain_rpc());
-    system_checks.push(check_daemon());
+    system_checks.push(check_daemon(&config));
     system_checks.extend(check_metadata_drift(&config));
 
     // Provider checks.
@@ -180,6 +184,18 @@ pub fn run(cmd: &DoctorCmd) -> Result<()> {
         print_json(&system_checks, &provider_checks, &harness_checks)?;
     } else {
         print_human(&system_checks, &provider_checks, &harness_checks);
+    }
+
+    // Count hard failures across all check groups.
+    let fail_count = system_checks
+        .iter()
+        .chain(provider_checks.iter())
+        .chain(harness_checks.iter())
+        .filter(|c| c.status == CheckStatus::Fail)
+        .count();
+
+    if fail_count > 0 {
+        return Err(anyhow::anyhow!("{fail_count} check(s) failed"));
     }
 
     Ok(())
@@ -777,9 +793,11 @@ fn check_chain_rpc() -> Check {
     }
 }
 
-fn check_daemon() -> Check {
-    let bind_addr =
-        std::env::var("POLKAGENT_API_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
+fn check_daemon(config: &polkagent_config::schema::Config) -> Check {
+    let bind_addr = std::env::var("POLKAGENT_API_BIND")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| config.api.bind_address.clone());
 
     let reachable = probe_tcp_addr(&bind_addr);
 
@@ -844,8 +862,22 @@ fn check_metadata_drift(_config: &polkagent_config::schema::Config) -> Vec<Check
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Try to load the Polkagent config from standard locations.
-fn load_config() -> polkagent_config::schema::Config {
+/// Try to load the Polkagent config.
+///
+/// When `explicit_path` is provided (from `--config`) it is tried first and
+/// exclusively; standard search paths are used as fallback only when no
+/// explicit path is given.
+fn load_config(explicit_path: Option<&std::path::Path>) -> polkagent_config::schema::Config {
+    // When the caller supplied an explicit --config path, try only that file.
+    if let Some(path) = explicit_path {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(cfg) = toml::from_str(&content) {
+                return cfg;
+            }
+        }
+        // Explicit path given but unreadable/invalid — fall through to default.
+    }
+
     if let Ok(content) = std::fs::read_to_string(".polkagent/polkagent.toml") {
         if let Ok(cfg) = toml::from_str(&content) {
             return cfg;

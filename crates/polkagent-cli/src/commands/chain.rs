@@ -8,6 +8,7 @@ use polkagent_chain_subxt::decode::{
     parse_runtime_metadata,
 };
 use polkagent_chain_subxt::rpc::RpcClient;
+use polkagent_identity::ss58::decode_ss58;
 
 use crate::cli::{ChainBalanceCmd, ChainCmd, ChainDecodeCmd, ChainMetadataCmd, ChainStatusCmd};
 
@@ -219,18 +220,33 @@ async fn balance(cmd: &ChainBalanceCmd, rpc_url: Option<&str>) -> Result<()> {
     // Compute the System.Account storage key for the address.
     // Storage key = twox128("System") ++ twox128("Account") ++ blake2_128_concat(account_id)
     //
-    // The address must be a hex-encoded 32-byte account ID (with optional 0x prefix).
-    let account_bytes = hex_to_bytes(&cmd.address).map_err(|e| {
-        anyhow::anyhow!("invalid account address (expected hex-encoded account ID): {e}")
-    })?;
+    // The address may be either:
+    //   - An SS58 address (e.g. `15oF4uVJwmo4TdGW7VfQxNLavjCXviqXr...`), or
+    //   - A hex-encoded 32-byte account ID (with optional 0x prefix).
+    let account_bytes: [u8; 32] = if let Ok((_prefix, id)) = decode_ss58(&cmd.address) {
+        // SS58 decoded successfully — use the 32-byte account ID directly.
+        id
+    } else {
+        // Not a valid SS58 address; try interpreting as hex.
+        let bytes = hex_to_bytes(&cmd.address).map_err(|_| {
+            anyhow::anyhow!(
+                "invalid account address '{}': not a valid SS58 address or hex-encoded account ID. \
+                 Provide an SS58 address (e.g. 15oF4uVJwmo...) or a 64-character hex string.",
+                cmd.address
+            )
+        })?;
 
-    if account_bytes.len() != 32 {
-        anyhow::bail!(
-            "account ID must be 32 bytes, got {} bytes. \
-             Provide the hex-encoded account ID (not SS58 address).",
-            account_bytes.len()
-        );
-    }
+        if bytes.len() != 32 {
+            anyhow::bail!(
+                "hex-encoded account ID must be 32 bytes (64 hex chars), got {} bytes.",
+                bytes.len()
+            );
+        }
+
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        id
+    };
 
     let system_prefix = twox128(b"System");
     let account_prefix = twox128(b"Account");

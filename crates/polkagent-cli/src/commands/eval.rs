@@ -24,9 +24,9 @@ use crate::cli::{EvalCmd, EvalCompareCmd, EvalListCmd, EvalReportCmd, EvalRunCmd
 // ---------------------------------------------------------------------------
 
 /// Dispatch an `eval` subcommand.
-pub fn run(cmd: &EvalCmd) -> Result<()> {
+pub async fn run(cmd: &EvalCmd) -> Result<()> {
     match cmd {
-        EvalCmd::Run(c) => run_suite(c),
+        EvalCmd::Run(c) => run_suite(c).await,
         EvalCmd::List(c) => list_suites(c),
         EvalCmd::Report(c) => show_report(c),
         EvalCmd::Compare(c) => compare_reports(c),
@@ -37,7 +37,7 @@ pub fn run(cmd: &EvalCmd) -> Result<()> {
 // eval run
 // ---------------------------------------------------------------------------
 
-fn run_suite(cmd: &EvalRunCmd) -> Result<()> {
+async fn run_suite(cmd: &EvalRunCmd) -> Result<()> {
     // Resolve suite path: if a directory is given try <dir>/suite.json.
     let suite_path = if cmd.suite_path.is_dir() {
         cmd.suite_path.join("suite.json")
@@ -78,13 +78,10 @@ fn run_suite(cmd: &EvalRunCmd) -> Result<()> {
     };
     let runner = EvalRunner::new(FakeExecutor::new(), config);
 
-    // Run the suite on a temporary Tokio runtime.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("building Tokio runtime")?;
-
-    let report = rt.block_on(runner.run_suite(&suite));
+    // Await the async runner directly — we are already inside a Tokio runtime
+    // (the #[tokio::main] runtime from main). Creating a nested runtime here
+    // would panic with "Cannot start a runtime from within a runtime".
+    let report = runner.run_suite(&suite).await;
 
     // Print verbose per-case scoring details.
     if cmd.details {
@@ -512,8 +509,8 @@ mod tests {
     // ------------------------------------------------------------------
     // Test 5: Helpful error on missing suite file
     // ------------------------------------------------------------------
-    #[test]
-    fn missing_suite_file_gives_helpful_error() {
+    #[tokio::test]
+    async fn missing_suite_file_gives_helpful_error() {
         let result = super::run_suite(&crate::cli::EvalRunCmd {
             suite_path: std::path::PathBuf::from("/nonexistent/path/suite.json"),
             agent: None,
@@ -522,7 +519,8 @@ mod tests {
             model: "test-model".into(),
             json: false,
             details: false,
-        });
+        })
+        .await;
 
         let err = result.expect_err("should fail for missing file");
         let msg = format!("{err}");
@@ -574,8 +572,8 @@ mod tests {
     // ------------------------------------------------------------------
     // Test 8: eval run with output file saves report
     // ------------------------------------------------------------------
-    #[test]
-    fn run_suite_saves_output_file() {
+    #[tokio::test]
+    async fn run_suite_saves_output_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let suite_path = dir.path().join("suite.json");
         std::fs::write(&suite_path, minimal_suite_json()).expect("write");
@@ -590,7 +588,8 @@ mod tests {
             model: "test-model".into(),
             json: false,
             details: false,
-        });
+        })
+        .await;
 
         assert!(result.is_ok(), "run_suite should succeed: {:?}", result);
         assert!(output_path.exists(), "report file should have been created");

@@ -9,14 +9,54 @@ use crate::cli::{
     AgentCmd, AgentCreateCmd, AgentDeleteCmd, AgentListCmd, AgentPauseCmd, AgentResumeCmd,
     AgentShowCmd, AgentStartCmd, AgentStopCmd,
 };
+use crate::output::OutputFormat;
+
+/// Returns true when the resolved format requests JSON output.
+///
+/// A command should emit JSON when either the command-local `--json` flag is
+/// set *or* the global `--format json` / `--format json-pretty` flag is used.
+fn wants_json(cmd_json: bool, format: OutputFormat) -> bool {
+    cmd_json || matches!(format, OutputFormat::Json | OutputFormat::JsonPretty)
+}
+
+/// Returns true when output should be compact (single-line) JSON.
+///
+/// Compact JSON is used for `--format json`; pretty-printed JSON is used for
+/// `--format json-pretty` or the legacy `--json` flag.
+fn compact_json(format: OutputFormat) -> bool {
+    matches!(format, OutputFormat::Json)
+}
+
+/// Normalize a description that may have TOML multi-line artifacts.
+fn normalize_description(s: &str) -> String {
+    let expanded = s.replace("\\n", "\n");
+    let parts: Vec<&str> = expanded
+        .split('\n')
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    parts.join(" ")
+}
+
+/// Serialise `value` to a JSON string according to `format`.
+///
+/// When `compact_json(format)` is true, a single-line compact string is
+/// produced; otherwise the output is indented with 2 spaces (pretty).
+fn json_string(value: &serde_json::Value, format: OutputFormat) -> anyhow::Result<String> {
+    if compact_json(format) {
+        Ok(serde_json::to_string(value)?)
+    } else {
+        Ok(serde_json::to_string_pretty(value)?)
+    }
+}
 
 /// Dispatch the agent subcommand.
-pub fn run(cmd: &AgentCmd, pool: &SqlitePool) -> Result<()> {
+pub fn run(cmd: &AgentCmd, pool: &SqlitePool, format: OutputFormat) -> Result<()> {
     let store = SqliteRunStore::new(pool.clone());
     match cmd {
-        AgentCmd::Create(c) => create(c, &store),
-        AgentCmd::List(c) => list(c, &store),
-        AgentCmd::Show(c) => show(c, &store),
+        AgentCmd::Create(c) => create(c, &store, format),
+        AgentCmd::List(c) => list(c, &store, format),
+        AgentCmd::Show(c) => show(c, &store, format),
         AgentCmd::Delete(c) => delete(c, &store),
         AgentCmd::Start(c) => start(c, &store),
         AgentCmd::Stop(c) => stop(c, &store),
@@ -29,8 +69,13 @@ pub fn run(cmd: &AgentCmd, pool: &SqlitePool) -> Result<()> {
 // create
 // ---------------------------------------------------------------------------
 
-fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
+fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore, format: OutputFormat) -> Result<()> {
     use chrono::Utc;
+
+    // Reject empty or whitespace-only names immediately with a clear message.
+    if cmd.name.trim().is_empty() {
+        anyhow::bail!("Agent name must not be empty or whitespace-only.");
+    }
 
     let now = Utc::now().to_rfc3339();
 
@@ -53,10 +98,17 @@ fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
         serde_json::Value::Null
     };
 
+    // Normalize description to clean up TOML multi-line artifacts.
+    let description: Option<String> = cmd
+        .description
+        .as_deref()
+        .map(normalize_description)
+        .filter(|s| !s.is_empty());
+
     // Build spec JSON including PRD-03 fields.
     let mut spec_json = serde_json::json!({
         "name":                  cmd.name,
-        "description":           cmd.description,
+        "description":           description,
         "model":                 cmd.model,
         "tools":                 [],
         "autonomy_level":        "supervised",
@@ -74,13 +126,25 @@ fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
         spec_json["model_preference"] = model_preference;
     }
 
-    let agent = store.create_agent(
-        &cmd.name,
-        cmd.description.as_deref(),
-        &spec_json.to_string(),
-    )?;
+    let agent = store
+        .create_agent(
+            &cmd.name,
+            cmd.description.as_deref(),
+            &spec_json.to_string(),
+        )
+        .map_err(|e| {
+            use polkagent_store_sqlite::StoreError;
+            if matches!(e, StoreError::Duplicate(_)) {
+                anyhow::anyhow!(
+                    "Agent name '{}' is already in use. Choose a different name.",
+                    cmd.name
+                )
+            } else {
+                anyhow::anyhow!("Failed to create agent: {e}")
+            }
+        })?;
 
-    if cmd.json {
+    if wants_json(cmd.json, format) {
         let mut out = serde_json::json!({
             "id":    agent.id,
             "name":  agent.name,
@@ -100,7 +164,7 @@ fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
         if let Some(ref mid) = cmd.preferred_model {
             out["model_preference"] = serde_json::json!({ "model_id": mid });
         }
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", json_string(&out, format)?);
     } else {
         println!("Created agent:");
         println!("  ID:    {}", agent.id);
@@ -129,7 +193,7 @@ fn create(cmd: &AgentCreateCmd, store: &SqliteRunStore) -> Result<()> {
 // list
 // ---------------------------------------------------------------------------
 
-fn list(cmd: &AgentListCmd, store: &SqliteRunStore) -> Result<()> {
+fn list(cmd: &AgentListCmd, store: &SqliteRunStore, format: OutputFormat) -> Result<()> {
     // Map CLI filter strings to the optional state_filter argument.
     let state_filter = match cmd.filter.as_str() {
         "active" => Some("active"),
@@ -154,7 +218,7 @@ fn list(cmd: &AgentListCmd, store: &SqliteRunStore) -> Result<()> {
         rows
     };
 
-    if cmd.json {
+    if wants_json(cmd.json, format) {
         let agents: Vec<serde_json::Value> = rows
             .iter()
             .map(|r| {
@@ -163,7 +227,8 @@ fn list(cmd: &AgentListCmd, store: &SqliteRunStore) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&agents)?);
+        let value = serde_json::Value::Array(agents);
+        println!("{}", json_string(&value, format)?);
         return Ok(());
     }
 
@@ -196,7 +261,7 @@ fn list(cmd: &AgentListCmd, store: &SqliteRunStore) -> Result<()> {
 // show
 // ---------------------------------------------------------------------------
 
-fn show(cmd: &AgentShowCmd, store: &SqliteRunStore) -> Result<()> {
+fn show(cmd: &AgentShowCmd, store: &SqliteRunStore, format: OutputFormat) -> Result<()> {
     let agent = store
         .get_agent_by_name_or_id(&cmd.agent)
         .map_err(|e| anyhow::anyhow!("Agent not found: {} ({})", cmd.agent, e))?;
@@ -204,12 +269,12 @@ fn show(cmd: &AgentShowCmd, store: &SqliteRunStore) -> Result<()> {
     let spec: serde_json::Value =
         serde_json::from_str(&agent.spec_json).unwrap_or(serde_json::Value::Null);
 
-    if cmd.json {
+    if wants_json(cmd.json, format) {
         let out = serde_json::json!({
             "id": agent.id, "name": agent.name, "state": agent.state,
             "updated_at": agent.updated_at, "spec": spec,
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", json_string(&out, format)?);
         return Ok(());
     }
 

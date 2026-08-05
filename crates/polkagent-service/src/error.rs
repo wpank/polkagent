@@ -101,6 +101,18 @@ pub enum ServiceError {
         message: String,
     },
 
+    /// The maximum number of concurrent runs has been reached.
+    ///
+    /// Returned by [`AppService::start_run`] when `config.execution.max_concurrent_runs > 0`
+    /// and the number of runs currently in the `"running"` state equals the limit.
+    #[error("maximum concurrent runs reached ({active}/{limit})")]
+    ConcurrentRunLimitReached {
+        /// Number of runs currently active.
+        active: u32,
+        /// Configured limit (`config.execution.max_concurrent_runs`).
+        limit: u32,
+    },
+
     /// An unexpected internal error.
     #[error("internal service error: {message}")]
     Internal {

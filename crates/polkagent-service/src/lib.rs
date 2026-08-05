@@ -76,6 +76,7 @@ pub use negotiate::{
     ProviderRestrictions,
 };
 pub use plugins::{PluginInfo, ServicePluginManager};
+pub use polkagent_run::TimeoutConfig;
 pub use provider::{ProviderInfo, ProviderRegistry, ProviderStatus};
 pub use router::{
     DefaultModelRouter, ModelRouter, ProviderHealthInfo, RouteDecision, RouteError, RouteReason,

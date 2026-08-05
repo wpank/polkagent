@@ -6,10 +6,13 @@
 //!
 //! **Grant requirement:** `chain.query`
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, warn};
 
+use polkagent_chain_trait::{ChainClient, ChainProfileId};
 use polkagent_core::config::DataClassification;
 use polkagent_tool::registry::{ToolContext, ToolError, ToolHandler, ToolResult, ToolSpec};
 
@@ -30,6 +33,13 @@ const MAX_LIMIT: u64 = 100;
 // TransferHistoryTool
 // ---------------------------------------------------------------------------
 
+/// Build the storage key for `Balances::Transfers(account_id)`.
+fn build_transfer_storage_key(account_id: &str) -> Vec<u8> {
+    let mut key = b"Balances:Transfers:".to_vec();
+    key.extend_from_slice(account_id.as_bytes());
+    key
+}
+
 /// Retrieves recent transfers in and out of an account.
 ///
 /// Returns a list of [`Transfer`] records sorted by block number (most
@@ -47,7 +57,16 @@ const MAX_LIMIT: u64 = 100;
 /// ```
 ///
 /// **Grant requirement:** `chain.query`
-pub struct TransferHistoryTool;
+pub struct TransferHistoryTool {
+    chain_client: Arc<dyn ChainClient>,
+}
+
+impl TransferHistoryTool {
+    /// Create a new `TransferHistoryTool` backed by the given chain client.
+    pub fn new(chain_client: Arc<dyn ChainClient>) -> Self {
+        Self { chain_client }
+    }
+}
 
 #[async_trait]
 impl ToolHandler for TransferHistoryTool {
@@ -97,9 +116,41 @@ impl ToolHandler for TransferHistoryTool {
             chain, limit, "querying transfer history"
         );
 
-        // In production this would index transfer events from chain storage.
-        // Return empty list as placeholder.
-        let transfers: Vec<Transfer> = vec![];
+        let storage_key = build_transfer_storage_key(account_id);
+        let chain_profile = ChainProfileId::new(chain);
+
+        let transfers: Vec<Transfer> = match self
+            .chain_client
+            .query_storage(&storage_key, None, chain_profile)
+            .await
+        {
+            Ok(Some(bytes)) => {
+                let all: Vec<Transfer> = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                    warn!(
+                        account = account_id,
+                        chain,
+                        error = %e,
+                        "failed to decode transfer history, returning empty"
+                    );
+                    vec![]
+                });
+                // Apply the limit.
+                all.into_iter().take(limit as usize).collect()
+            }
+            Ok(None) => {
+                debug!(account = account_id, chain, "no transfer data on chain");
+                vec![]
+            }
+            Err(e) => {
+                warn!(
+                    account = account_id,
+                    chain,
+                    error = %e,
+                    "chain query failed for transfers, returning empty"
+                );
+                vec![]
+            }
+        };
 
         let output = serde_json::json!({
             "account_id": account_id,
@@ -127,6 +178,7 @@ impl ToolHandler for TransferHistoryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::MockChainClient;
     use polkagent_core::ids::{AgentId, RunId, StepId};
 
     fn test_context() -> ToolContext {
@@ -135,19 +187,24 @@ mod tests {
             agent_id: AgentId::new(),
             step_id: StepId::new(),
             grants: vec![],
+            security_config: None,
         }
+    }
+
+    fn make_tool() -> TransferHistoryTool {
+        TransferHistoryTool::new(Arc::new(MockChainClient::new()))
     }
 
     #[test]
     fn spec_name_and_grant() {
-        let spec = TransferHistoryTool.spec();
+        let spec = make_tool().spec();
         assert_eq!(spec.name, "polkagent.treasury.transfer_history");
         assert_eq!(spec.required_grant.as_deref(), Some("chain.query"));
     }
 
     #[test]
     fn spec_schema_has_limit_field() {
-        let spec = TransferHistoryTool.spec();
+        let spec = make_tool().spec();
         let limit_prop = &spec.input_schema["properties"]["limit"];
         assert_eq!(limit_prop["type"], "integer");
         assert_eq!(limit_prop["minimum"], 1);
@@ -162,7 +219,7 @@ mod tests {
             "limit": 10
         });
 
-        let result = TransferHistoryTool
+        let result = make_tool()
             .execute(input, &test_context())
             .await
             .expect("should succeed");
@@ -179,12 +236,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_with_chain_data() {
+        let mut client = MockChainClient::new();
+        let transfers = vec![
+            Transfer {
+                from: "5Alice".to_string(),
+                to: "5GrwvaEFcWWqn1bRJJpPi8HBdhQ".to_string(),
+                amount: 1_000_000_000_000,
+                asset: "DOT".to_string(),
+                block_number: 18_500_000,
+                timestamp: Some("2024-06-15T12:30:00Z".to_string()),
+                extrinsic_hash: Some("0xabc123".to_string()),
+            },
+            Transfer {
+                from: "5GrwvaEFcWWqn1bRJJpPi8HBdhQ".to_string(),
+                to: "5Bob".to_string(),
+                amount: 500_000_000_000,
+                asset: "DOT".to_string(),
+                block_number: 18_500_001,
+                timestamp: None,
+                extrinsic_hash: None,
+            },
+        ];
+        let key = build_transfer_storage_key("5GrwvaEFcWWqn1bRJJpPi8HBdhQ");
+        client.insert_storage(key, serde_json::to_vec(&transfers).expect("serialize"));
+
+        let tool = TransferHistoryTool::new(Arc::new(client));
+        let input = serde_json::json!({
+            "account_id": "5GrwvaEFcWWqn1bRJJpPi8HBdhQ",
+            "chain": "polkadot",
+            "limit": 10
+        });
+
+        let result = tool
+            .execute(input, &test_context())
+            .await
+            .expect("should succeed");
+
+        assert_eq!(result.output["count"], 2);
+        let out_transfers = result.output["transfers"]
+            .as_array()
+            .expect("transfers array");
+        assert_eq!(out_transfers.len(), 2);
+        assert_eq!(
+            out_transfers[0]["amount"],
+            serde_json::json!(1_000_000_000_000_u128)
+        );
+    }
+
+    #[tokio::test]
     async fn execute_default_limit() {
         let input = serde_json::json!({
             "account_id": "5GrwvaEFcWWqn1bRJJpPi8HBdhQ"
         });
 
-        let result = TransferHistoryTool
+        let result = make_tool()
             .execute(input, &test_context())
             .await
             .expect("should succeed");
@@ -199,7 +305,7 @@ mod tests {
             "limit": 500
         });
 
-        let result = TransferHistoryTool
+        let result = make_tool()
             .execute(input, &test_context())
             .await
             .expect("should succeed");
@@ -210,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn execute_missing_account_id() {
         let input = serde_json::json!({});
-        let result = TransferHistoryTool.execute(input, &test_context()).await;
+        let result = make_tool().execute(input, &test_context()).await;
         assert!(matches!(result, Err(ToolError::InvalidInput { .. })));
     }
 
@@ -220,7 +326,7 @@ mod tests {
             "account_id": "5GrwvaEF...",
             "chain": "cardano"
         });
-        let result = TransferHistoryTool.execute(input, &test_context()).await;
+        let result = make_tool().execute(input, &test_context()).await;
         assert!(matches!(result, Err(ToolError::ExecutionFailed { .. })));
     }
 }

@@ -32,7 +32,7 @@ use crate::model_registry::ProviderKind;
 /// Corresponds to the top-level keys of `polkagent.toml`. Every field is
 /// optional-with-default so that a minimal config file can omit any section.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Schema metadata (version check, API version).
     pub meta: MetaConfig,
@@ -83,7 +83,7 @@ pub struct Config {
 ///
 /// Used to detect version mismatches and reject unknown schemas early.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MetaConfig {
     /// Semantic API version string (e.g. `"polkagent.dev/v1alpha1"`).
     pub api_version: String,
@@ -109,7 +109,7 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// Logging and structured-tracing configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LogConfig {
     /// Minimum log level: `trace`, `debug`, `info`, `warn`, or `error`.
     pub level: String,
@@ -143,7 +143,7 @@ pub enum LogFormat {
 
 /// Database backend configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// Storage backend to use.
     pub backend: DatabaseBackend,
@@ -176,7 +176,7 @@ pub enum DatabaseBackend {
 
 /// `SQLite` backend settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SqliteConfig {
     /// Path to the database file. Tilde expansion is applied at load time.
     pub path: String,
@@ -205,7 +205,7 @@ impl Default for SqliteConfig {
 /// The `url` field must be empty in config files; it is resolved at runtime
 /// from the `POLKAGENT_DATABASE_POSTGRES_URL` environment variable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PostgresConfig {
     /// Connection URL. **Must not be set in config files** — use the
     /// `POLKAGENT_DATABASE_POSTGRES_URL` environment variable instead.
@@ -232,7 +232,7 @@ impl Default for PostgresConfig {
 
 /// Execution engine limits and budget defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExecutionConfig {
     /// Maximum number of runs that may execute concurrently. Default: `10`.
     pub max_concurrent_runs: u32,
@@ -259,7 +259,7 @@ impl Default for ExecutionConfig {
 
 /// Spending-limit defaults applied to every run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BudgetConfig {
     /// Maximum model API spend per single run in USD. Default: `5.00`.
     pub max_usd_per_run: f64,
@@ -296,7 +296,7 @@ impl Default for BudgetConfig {
 /// - `POLKAGENT_PROVIDER_{ID}_TIMEOUT` — override `timeout_secs`
 /// - `POLKAGENT_PROVIDER_{ID}_MAX_CONCURRENT` — override `max_concurrent`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ProviderConfig {
     /// Stable identifier used to reference this provider in agent specs.
     pub id: String,
@@ -376,6 +376,7 @@ impl Default for ProviderConfig {
 /// models or override properties of known models (context window, cost, tool
 /// support, etc.).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelOverrideConfig {
     /// Model slug used to reference this model (e.g. `"claude-sonnet-4-6"`).
     pub slug: String,
@@ -410,7 +411,7 @@ pub struct ModelOverrideConfig {
 
 /// Policy engine settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PolicyConfig {
     /// Directory containing policy definition files. Tilde expansion is applied.
     pub policy_dir: String,
@@ -433,7 +434,7 @@ impl Default for PolicyConfig {
 
 /// Conversational memory settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MemoryConfig {
     /// Whether the memory subsystem is active. Default: `false`.
     pub enabled: bool,
@@ -457,7 +458,7 @@ impl Default for MemoryConfig {
 
 /// HTTP API server settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ApiConfig {
     /// Whether the HTTP API server is started. Default: `true`.
     pub enabled: bool,
@@ -488,7 +489,7 @@ impl Default for ApiConfig {
 
 /// Terminal User Interface settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TuiConfig {
     /// Visual theme.
     pub theme: TuiTheme,
@@ -527,7 +528,7 @@ pub enum TuiTheme {
 /// Binds the primary agent-facing RPC endpoint with optional TLS, CORS, and
 /// rate-limiting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     /// Socket address the server binds to. Default: `"127.0.0.1:9090"`.
     pub bind_address: String,
@@ -557,7 +558,7 @@ impl Default for ServerConfig {
 /// without validation errors during loading; the validator will reject
 /// incomplete TLS configurations before the server starts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TlsConfig {
     /// Path to the PEM-encoded TLS certificate file.
     pub cert_path: Option<PathBuf>,
@@ -570,7 +571,7 @@ pub struct TlsConfig {
 
 /// Token-bucket rate-limiting parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// Whether rate limiting is enabled. Default: `true`.
     pub enabled: bool,
@@ -601,7 +602,7 @@ impl Default for RateLimitConfig {
 /// this list. JWT secrets are never stored here; `jwt_secret_env` names the
 /// environment variable that holds the secret at runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AuthConfig {
     /// Whether authentication is required. Default: `false` (open access).
     pub enabled: bool,
@@ -638,7 +639,7 @@ impl Default for AuthConfig {
 /// pair: access is granted to paths in `allowed_paths` (empty = all), then
 /// refined by denying anything in `denied_paths`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Whether the process-level sandbox is active. Default: `false`.
     pub sandbox_enabled: bool,
@@ -687,7 +688,7 @@ impl Default for SecurityConfig {
 /// `auto_load` is `true`, all discovered skills are loaded immediately;
 /// otherwise they are registered but not activated until explicitly requested.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SkillsConfig {
     /// Directories to search for skill bundles. Tilde expansion is applied.
     /// Default: empty (no extra skill paths).
@@ -728,7 +729,7 @@ impl Default for SkillsConfig {
 /// - `POLKAGENT_HARNESS_TIMEOUT` — override `timeout_secs`
 /// - `POLKAGENT_HARNESS_MAX_CONCURRENT` — override `max_concurrent`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HarnessConfig {
     /// Harness backend identifier. Default: `"claude"`.
     pub harness_type: String,
@@ -764,6 +765,7 @@ impl Default for HarnessConfig {
 ///
 /// Listed under `[harness.harnesses.<name>]` in TOML.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HarnessEntryConfig {
     /// Path to the harness binary. `None` resolves from `PATH`.
     #[serde(default)]
@@ -788,7 +790,7 @@ pub struct HarnessEntryConfig {
 /// Controls how run outputs (files, logs, results) are stored, how large they
 /// may be, and how long they are retained before automatic cleanup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ArtifactConfig {
     /// Maximum size of a single artifact, in bytes.
     /// Default: `104_857_600` (100 MiB).
@@ -820,7 +822,7 @@ impl Default for ArtifactConfig {
 /// (e.g. OpenTelemetry Collector, Jaeger, Grafana Alloy). When
 /// `otlp_endpoint` is `None`, telemetry export is disabled.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ObservabilityConfig {
     /// OTLP collector endpoint URL.
     /// Example: `"http://localhost:4317"`. `None` disables export.
@@ -887,7 +889,7 @@ impl std::fmt::Display for DataRegion {
 /// Configures the data region for this deployment and whether cross-region
 /// data movement is permitted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CloudConfig {
     /// The data region for this deployment. When set, the control plane will
     /// only assign jobs to workers in the same region. Default: `None` (region
@@ -953,6 +955,7 @@ pub enum WatcherSchedule {
 /// timeout_secs = 60
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatcherConfig {
     /// Human-readable name for this watcher.
     pub name: String,
@@ -1010,7 +1013,7 @@ schema_version = 1
 # Override with: POLKAGENT_LOG_LEVEL=debug
 
 [log]
-level = "info"     # trace | debug | info | warn | error
+level = "warn"     # trace | debug | info | warn | error
 format = "pretty"  # pretty | json
 
 # ─── Database ────────────────────────────────────────────────────────────────

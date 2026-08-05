@@ -74,7 +74,7 @@ pub use risk::{
     BatchHidingDetector, CompositeRiskGate, HighValueDetector, HomoglyphDetector, RiskCode,
     RiskFinding, RiskGate, RiskSeverity,
 };
-pub use store::{BalanceSummary, PaymentStore};
+pub use store::{BalanceSummary, InMemoryPaymentStore, PaymentStore};
 pub use types::{
     Amount, AssetId, CostRecord, PaymentIntent, PaymentReceipt, PaymentStatus, UsageSummary,
 };

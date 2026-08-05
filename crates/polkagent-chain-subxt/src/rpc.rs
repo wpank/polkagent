@@ -227,12 +227,13 @@ impl RpcClient {
             });
         }
 
-        rpc_response
-            .result
-            .ok_or_else(|| SubxtError::InvalidResponse {
-                endpoint: endpoint.to_string(),
-                message: "JSON-RPC response has neither result nor error".into(),
-            })
+        // A JSON-RPC response with `"result": null` is valid: the node is
+        // reporting that the queried key has no on-chain value (e.g.
+        // `state_getStorage` for an account that has never been funded).
+        // Return `Value::Null` so that callers such as `state_get_storage`
+        // can distinguish "null result" from "non-null result" and map it to
+        // `None` (zero balance) rather than an error.
+        Ok(rpc_response.result.unwrap_or(serde_json::Value::Null))
     }
 
     // -----------------------------------------------------------------------
@@ -494,5 +495,21 @@ mod tests {
         let json = serde_json::to_string(&health).expect("serialize");
         assert!(json.contains("\"peers\":10"));
         assert!(json.contains("\"isSyncing\":true"));
+    }
+
+    /// Regression test: `{"result": null}` must deserialise as `result: None`
+    /// and must NOT trigger the "neither result nor error" error path.
+    /// Substrate returns this for `state_getStorage` when an account has no
+    /// on-chain record.  The caller (`state_get_storage`) maps `Value::Null`
+    /// to `Ok(None)` which the balance command then treats as zero.
+    #[test]
+    fn json_rpc_response_deserializes_null_result() {
+        let json = r#"{"jsonrpc":"2.0","id":3,"result":null}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(resp.id, 3);
+        assert!(resp.error.is_none());
+        // `result` is `None` when the JSON value is `null` because the field
+        // is typed as `Option<serde_json::Value>`.
+        assert!(resp.result.is_none());
     }
 }

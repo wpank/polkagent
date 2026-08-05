@@ -4,7 +4,7 @@
 //! `ApiServer::into_router`, and drives it with `axum_test::TestServer`.
 //! No real TCP sockets or database files are opened.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -2189,12 +2189,15 @@ impl EventStore for InMemoryEventStore {
 
 struct InMemoryArtifactStore {
     artifacts: RwLock<HashMap<ArtifactId, (ArtifactSummary, Vec<u8>)>>,
+    /// child_id -> set of parent_ids (for lineage tracking)
+    lineage: RwLock<HashMap<ArtifactId, HashSet<ArtifactId>>>,
 }
 
 impl InMemoryArtifactStore {
     fn new() -> Self {
         Self {
             artifacts: RwLock::new(HashMap::new()),
+            lineage: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -2263,6 +2266,42 @@ impl ArtifactStore for InMemoryArtifactStore {
             .map(|(s, _)| s.clone())
             .collect();
         Ok(results)
+    }
+
+    async fn add_lineage(
+        &self,
+        child_id: ArtifactId,
+        parent_id: ArtifactId,
+    ) -> Result<(), StoreError> {
+        self.lineage
+            .write()
+            .await
+            .entry(child_id)
+            .or_default()
+            .insert(parent_id);
+        Ok(())
+    }
+
+    async fn get_lineage(&self, id: ArtifactId) -> Result<Vec<ArtifactId>, StoreError> {
+        let guard = self.lineage.read().await;
+        let mut ancestors = Vec::new();
+        let mut visited = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        visited.insert(id);
+        queue.push_back(id);
+
+        while let Some(current) = queue.pop_front() {
+            if let Some(parents) = guard.get(&current) {
+                for &parent in parents {
+                    if visited.insert(parent) {
+                        ancestors.push(parent);
+                        queue.push_back(parent);
+                    }
+                }
+            }
+        }
+
+        Ok(ancestors)
     }
 }
 

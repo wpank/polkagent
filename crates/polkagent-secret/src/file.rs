@@ -79,8 +79,22 @@ impl FileSecretStore {
     }
 
     /// Return the path for a given secret ID.
-    fn secret_path(&self, id: &SecretId) -> PathBuf {
-        self.secrets_dir.join(id.to_filename())
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecretError::PermissionDenied`] if the secret ID contains
+    /// path-traversal characters or is otherwise unsafe as a filename.
+    fn secret_path(&self, id: &SecretId) -> Result<PathBuf> {
+        let filename = id
+            .to_filename()
+            .ok_or_else(|| SecretError::PermissionDenied {
+                message: format!(
+                    "secret ID '{}' contains invalid characters; only alphanumeric, dash, \
+                 underscore, and dot are allowed",
+                    id.as_str()
+                ),
+            })?;
+        Ok(self.secrets_dir.join(filename))
     }
 
     /// Read and deserialize a secret file.
@@ -110,7 +124,7 @@ impl FileSecretStore {
 #[async_trait]
 impl SecretStore for FileSecretStore {
     async fn get(&self, id: &SecretId) -> Result<SecretValue> {
-        let path = self.secret_path(id);
+        let path = self.secret_path(id)?;
         if !path.exists() {
             return Err(SecretError::NotFound {
                 id: id.as_str().to_string(),
@@ -123,7 +137,7 @@ impl SecretStore for FileSecretStore {
     }
 
     async fn set(&self, id: SecretId, value: SecretValue, metadata: SecretMetadata) -> Result<()> {
-        let path = self.secret_path(&id);
+        let path = self.secret_path(&id)?;
         let stored = StoredSecret {
             value: value.inner().to_string(),
             metadata,
@@ -134,7 +148,7 @@ impl SecretStore for FileSecretStore {
     }
 
     async fn delete(&self, id: &SecretId) -> Result<()> {
-        let path = self.secret_path(id);
+        let path = self.secret_path(id)?;
         if !path.exists() {
             return Err(SecretError::NotFound {
                 id: id.as_str().to_string(),
@@ -168,7 +182,7 @@ impl SecretStore for FileSecretStore {
     }
 
     async fn exists(&self, id: &SecretId) -> Result<bool> {
-        Ok(self.secret_path(id).exists())
+        Ok(self.secret_path(id)?.exists())
     }
 }
 
@@ -275,7 +289,7 @@ mod tests {
         let meta = SecretMetadata::new(id.clone(), "Perms", SecretSource::Manual);
         store.set(id.clone(), val, meta).await.expect("set");
 
-        let path = store.secret_path(&id);
+        let path = store.secret_path(&id).expect("safe id");
         let perms = std::fs::metadata(&path).expect("metadata").permissions();
         assert_eq!(perms.mode() & 0o777, 0o600);
     }
@@ -295,5 +309,66 @@ mod tests {
 
         let retrieved = store.get(&id).await.expect("get");
         assert_eq!(retrieved.inner(), "second");
+    }
+
+    // -----------------------------------------------------------------------
+    // Security: path traversal prevention via secret_path
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_path_traversal_id_is_denied() {
+        let (_dir, store) = temp_store();
+        let id = SecretId::new("../evil");
+        let err = store.get(&id).await.unwrap_err();
+        assert!(
+            matches!(err, SecretError::PermissionDenied { .. }),
+            "path-traversal ID must return PermissionDenied, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_path_traversal_id_is_denied() {
+        let (_dir, store) = temp_store();
+        let id = SecretId::new("../evil");
+        let val = SecretValue::new("data");
+        let meta = SecretMetadata::new(id.clone(), "Evil", SecretSource::Manual);
+        let err = store.set(id, val, meta).await.unwrap_err();
+        assert!(
+            matches!(err, SecretError::PermissionDenied { .. }),
+            "path-traversal ID must return PermissionDenied on set, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_path_traversal_id_is_denied() {
+        let (_dir, store) = temp_store();
+        let id = SecretId::new("../evil");
+        let err = store.delete(&id).await.unwrap_err();
+        assert!(
+            matches!(err, SecretError::PermissionDenied { .. }),
+            "path-traversal ID must return PermissionDenied on delete, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exists_path_traversal_id_is_denied() {
+        let (_dir, store) = temp_store();
+        let id = SecretId::new("etc/shadow");
+        let err = store.exists(&id).await.unwrap_err();
+        assert!(
+            matches!(err, SecretError::PermissionDenied { .. }),
+            "path-traversal ID must return PermissionDenied on exists, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_id_with_slash_is_denied() {
+        let (_dir, store) = temp_store();
+        let id = SecretId::new("subdir/key");
+        let err = store.get(&id).await.unwrap_err();
+        assert!(
+            matches!(err, SecretError::PermissionDenied { .. }),
+            "ID with slash must return PermissionDenied, got: {err:?}"
+        );
     }
 }

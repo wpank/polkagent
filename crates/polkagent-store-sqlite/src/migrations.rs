@@ -49,6 +49,15 @@ const SCHEMA_V8: &str = include_str!("v8_skill_store.sql");
 /// V9: Add priority column to effect_intents for claim ordering.
 const SCHEMA_V9: &str = include_str!("v9_intent_priority.sql");
 
+/// V10: Add deadline_at column to runs table for persistent timeout deadlines.
+const SCHEMA_V10: &str = include_str!("v10_run_deadline.sql");
+
+/// V11: Add started_at column to runs table (missing from early databases).
+const SCHEMA_V11: &str = include_str!("v11_run_started_at.sql");
+
+/// V12: Enforce unique agent names with a UNIQUE index on agents(name).
+const SCHEMA_V12: &str = include_str!("v12_agents_unique_name.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -60,6 +69,9 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (7, "feed store tables", SCHEMA_V7),
     (8, "skill registry table", SCHEMA_V8),
     (9, "intent priority column", SCHEMA_V9),
+    (10, "run deadline_at column", SCHEMA_V10),
+    (11, "run started_at column", SCHEMA_V11),
+    (12, "unique agent names index", SCHEMA_V12),
 ];
 
 // ---------------------------------------------------------------------------
@@ -194,7 +206,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 9);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -203,7 +215,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 9);
+        assert_eq!(version, 12);
     }
 
     #[test]

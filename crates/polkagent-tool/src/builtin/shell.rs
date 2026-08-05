@@ -160,6 +160,7 @@ mod tests {
             agent_id: AgentId::new(),
             step_id: StepId::new(),
             grants: vec![],
+            security_config: None,
         }
     }
 

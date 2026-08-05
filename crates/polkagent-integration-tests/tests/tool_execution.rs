@@ -135,6 +135,7 @@ fn empty_ctx() -> ToolContext {
         agent_id: AgentId::new(),
         step_id: StepId::new(),
         grants: vec![],
+        security_config: None,
     }
 }
 
@@ -430,6 +431,7 @@ async fn execute_passes_correct_run_id_to_handler() {
         agent_id: AgentId::new(),
         step_id: StepId::new(),
         grants: vec![],
+        security_config: None,
     };
     reg.execute("test.ctx", json!({}), &ctx)
         .await

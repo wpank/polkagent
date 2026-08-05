@@ -23,10 +23,10 @@
 
 use std::sync::Arc;
 
-use axum::{middleware, Router};
+use axum::{http::HeaderValue, middleware, Router};
 use thiserror::Error;
 use tower_http::{
-    cors::CorsLayer,
+    cors::{AllowOrigin, CorsLayer},
     trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::{info, Level};
@@ -36,7 +36,9 @@ use polkagent_event::EventBus;
 use polkagent_store_trait::EffectStore;
 use polkagent_telemetry::{LogFormat, TelemetryConfig, TelemetryGuard};
 
+use crate::auth::{auth_middleware, AuthState};
 use crate::rate_limit::{rate_limit_middleware, RateLimitState};
+use crate::read_only::read_only_middleware;
 use crate::run::RunManagerTrait;
 use crate::state::AgentStore;
 
@@ -68,6 +70,38 @@ pub enum ServerError {
     /// The server returned an I/O error while running.
     #[error("server error: {0}")]
     Serve(#[from] std::io::Error),
+}
+
+// ---------------------------------------------------------------------------
+// CORS helpers
+// ---------------------------------------------------------------------------
+
+/// Build a [`CorsLayer`] from the configured origin list.
+///
+/// - **Empty list** → `CorsLayer::permissive()` (development mode: allow all).
+/// - **Non-empty list** → only the listed origins are allowed; each entry is
+///   treated as an exact `HeaderValue` match.
+fn build_cors_layer(origins: &[String]) -> CorsLayer {
+    if origins.is_empty() {
+        // No origins configured — fall back to permissive (dev mode).
+        return CorsLayer::permissive();
+    }
+
+    let header_values: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
+
+    if header_values.is_empty() {
+        // All origins were invalid — fall back to permissive rather than
+        // silently blocking every request.
+        return CorsLayer::permissive();
+    }
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(header_values))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +153,15 @@ impl ApiServer {
     /// `axum_test::TestServer` without opening a real TCP socket.
     #[must_use]
     pub fn into_router(self) -> Router {
-        let cors = CorsLayer::permissive();
+        // ---------------------------------------------------------------
+        // CORS
+        //
+        // When `config.api.cors_origins` is empty we default to permissive
+        // mode (development / testing).  In production, operators must list
+        // at least one origin so that the wildcard is replaced with an
+        // explicit allow-list.
+        // ---------------------------------------------------------------
+        let cors = build_cors_layer(&self.state.config.api.cors_origins);
 
         // Request tracing middleware: records HTTP method, path, status, and
         // latency for every request. Spans are emitted at INFO level.
@@ -147,7 +189,21 @@ impl ApiServer {
             &self.state.config.server.rate_limit,
         ));
 
+        // Auth middleware — validates Bearer / X-Api-Key headers when
+        // `config.auth.enabled = true`.  No-op when disabled.
+        let auth_state = Arc::new(AuthState::from_config(&self.state.config.auth));
+
+        // Read-only guard: when `config.api.read_only` is true, any request
+        // that is not GET/HEAD/OPTIONS is rejected with 405 Method Not Allowed
+        // before it reaches any route handler or the rate limiter.
+        let read_only = self.state.config.api.read_only;
+
         routes::register(self.state)
+            .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
+            .layer(middleware::from_fn_with_state(
+                read_only,
+                read_only_middleware,
+            ))
             .layer(middleware::from_fn_with_state(
                 rate_limit_state,
                 rate_limit_middleware,
@@ -182,11 +238,15 @@ impl ApiServer {
             polkagent_config::schema::LogFormat::Pretty => LogFormat::Pretty,
         };
 
+        // Respect NO_COLOR for the API server's tracing output as well.
+        let ansi = std::env::var_os("NO_COLOR").is_none();
+
         let telemetry_cfg = TelemetryConfig {
             log_level,
             log_format,
             otlp_endpoint: obs.otlp_endpoint.clone(),
             service_name: obs.service_name.clone(),
+            ansi,
         };
 
         // Attempt to initialise; swallow the error if a subscriber is already

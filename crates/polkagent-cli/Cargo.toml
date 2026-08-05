@@ -42,6 +42,7 @@ polkagent-chain-trait     = { path = "../polkagent-chain-trait" }
 polkagent-chain-subxt     = { path = "../polkagent-chain-subxt" }
 polkagent-chain-fake      = { path = "../polkagent-chain-fake" }
 polkagent-kit             = { path = "../polkagent-kit" }
+polkagent-skill           = { path = "../polkagent-skill" }
 polkagent-tool            = { path = "../polkagent-tool" }
 polkagent-tool-governance = { path = "../polkagent-tool-governance" }
 polkagent-tool-treasury   = { path = "../polkagent-tool-treasury" }

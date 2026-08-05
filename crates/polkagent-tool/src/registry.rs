@@ -21,6 +21,7 @@ use serde_json::Value;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+use polkagent_config::SecurityConfig;
 use polkagent_core::config::DataClassification;
 use polkagent_core::ids::{AgentId, ArtifactId, RunId, StepId};
 use polkagent_executor_trait::ToolDefinition;
@@ -138,6 +139,13 @@ pub struct ToolContext {
 
     /// Grants available to the agent for this invocation.
     pub grants: Vec<ResolvedGrant>,
+
+    /// Security configuration governing filesystem access for this invocation.
+    ///
+    /// When `None`, file tools apply no path restrictions beyond the OS-level
+    /// permissions of the running process. When `Some`, denied_paths and
+    /// allowed_paths are enforced before any filesystem operation.
+    pub security_config: Option<SecurityConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +411,7 @@ mod tests {
             agent_id: AgentId::new(),
             step_id: StepId::new(),
             grants,
+            security_config: None,
         }
     }
 

@@ -49,7 +49,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use polkagent_harness_trait::{
@@ -384,10 +384,73 @@ impl Harness for BridgeHarness {
             }
         }
 
-        // Return an empty stream for now. A full implementation would
-        // long-poll the HTTP endpoint or subscribe to a WebSocket channel.
-        let stream = futures::stream::empty();
-        Ok(Box::pin(stream))
+        let events_url = format!("{}/events", self.config.endpoint);
+        let client = self.client.clone();
+        let poll_interval = Duration::from_secs(1);
+
+        let stream = futures::stream::unfold(
+            (client, events_url, session_id, poll_interval, false),
+            |(client, url, sid, interval, done)| async move {
+                if done {
+                    return None;
+                }
+
+                // Wait before polling to avoid tight-looping.
+                tokio::time::sleep(interval).await;
+
+                let resp = client
+                    .get(&url)
+                    .query(&[("session_id", sid.to_string())])
+                    .send()
+                    .await;
+
+                match resp {
+                    Ok(r) if r.status().is_success() => {
+                        // The endpoint returns a JSON array of events.
+                        match r.json::<Vec<HarnessEvent>>().await {
+                            Ok(events) => {
+                                // Check if the session has ended.
+                                let ended = events
+                                    .iter()
+                                    .any(|e| matches!(e, HarnessEvent::SessionEnded { .. }));
+                                Some((
+                                    futures::stream::iter(events),
+                                    (client, url, sid, interval, ended),
+                                ))
+                            }
+                            Err(_) => {
+                                // Malformed response — skip this poll cycle.
+                                Some((
+                                    futures::stream::iter(vec![]),
+                                    (client, url, sid, interval, false),
+                                ))
+                            }
+                        }
+                    }
+                    Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
+                        // Session gone — emit an error event and stop.
+                        let event = HarnessEvent::Error {
+                            session_id: sid,
+                            message: "session not found on remote".into(),
+                        };
+                        Some((
+                            futures::stream::iter(vec![event]),
+                            (client, url, sid, interval, true),
+                        ))
+                    }
+                    _ => {
+                        // Network error or non-success status — skip and retry.
+                        Some((
+                            futures::stream::iter(vec![]),
+                            (client, url, sid, interval, false),
+                        ))
+                    }
+                }
+            },
+        );
+
+        // Flatten the stream-of-streams into a single event stream.
+        Ok(Box::pin(stream.flatten()))
     }
 
     async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError> {

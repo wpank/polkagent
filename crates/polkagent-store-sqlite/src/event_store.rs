@@ -471,13 +471,13 @@ mod tests {
         let agent_id = uuid::Uuid::now_v7().to_string();
         writer
             .execute(
-                "INSERT OR IGNORE INTO agents (id, name, created_at, updated_at) VALUES (?1, 'test-agent', ?2, ?2)",
-                params![agent_id, now],
+                "INSERT INTO agents (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+                params![agent_id, format!("agent-{agent_id}"), now],
             )
             .expect("insert agent");
         writer
             .execute(
-                "INSERT OR IGNORE INTO runs (id, agent_id, state, created_at, updated_at) VALUES (?1, ?2, 'created', ?3, ?3)",
+                "INSERT INTO runs (id, agent_id, state, created_at, updated_at) VALUES (?1, ?2, 'created', ?3, ?3)",
                 params![run_id, agent_id, now],
             )
             .expect("insert run");

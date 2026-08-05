@@ -131,6 +131,29 @@ pub struct RunSummary {
     pub created_at: Timestamp,
     pub started_at: Option<Timestamp>,
     pub completed_at: Option<Timestamp>,
+    /// Wall-clock deadline for the run. `None` if no timeout is configured.
+    pub deadline_at: Option<Timestamp>,
+}
+
+/// A minimal turn summary record returned by [`RunStore::list_turns`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnSummaryRecord {
+    /// Turn UUID.
+    pub id: TurnId,
+    /// Parent run UUID.
+    pub run_id: RunId,
+    /// 1-based sequence within the run.
+    pub sequence: u32,
+    /// Role of this turn (user, assistant, system, tool).
+    pub role: String,
+    /// When the turn started (ISO 8601).
+    pub started_at: Timestamp,
+    /// When the turn completed (ISO 8601), if finished.
+    pub completed_at: Option<Timestamp>,
+    /// Input tokens consumed by this turn.
+    pub input_tokens: u32,
+    /// Output tokens produced by this turn.
+    pub output_tokens: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +459,30 @@ pub trait RunStore: Send + Sync + 'static {
         input_tokens: u32,
         output_tokens: u32,
     ) -> Result<(), StoreError>;
+
+    /// List all turns for a run, ordered by sequence ascending.
+    ///
+    /// Returns an empty `Vec` if no turns have been recorded for the run.
+    /// The default implementation returns an empty list for backward
+    /// compatibility with stores that have not yet implemented turn queries.
+    async fn list_turns(&self, _run_id: RunId) -> Result<Vec<TurnSummaryRecord>, StoreError> {
+        Ok(vec![])
+    }
+
+    /// Set the wall-clock deadline for a run.
+    ///
+    /// Stores the absolute `DateTime<Utc>` so the deadline survives process
+    /// restarts. Pass `None` to clear a previously set deadline.
+    ///
+    /// The default implementation is a no-op for backward compatibility with
+    /// stores that have not yet added the `deadline_at` column.
+    async fn set_deadline(
+        &self,
+        _run_id: RunId,
+        _deadline: Option<polkagent_core::Timestamp>,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +537,33 @@ pub trait ArtifactStore: Send + Sync + 'static {
 
     /// List artifact summaries for a given run, in creation order.
     async fn list_for_run(&self, run_id: RunId) -> Result<Vec<ArtifactSummary>, StoreError>;
+
+    /// Record a parent-child lineage edge.
+    ///
+    /// Adding a duplicate edge MUST be idempotent.
+    ///
+    /// The default implementation returns an error indicating the store does
+    /// not support lineage tracking.
+    async fn add_lineage(
+        &self,
+        _child_id: ArtifactId,
+        _parent_id: ArtifactId,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Internal {
+            message: "lineage tracking not supported by this store".into(),
+        })
+    }
+
+    /// Return the ordered chain of ancestor artifact IDs for `id`.
+    ///
+    /// The ordering is implementation-defined but MUST be consistent across
+    /// calls.  Typically ancestors are returned in breadth-first order
+    /// (nearest parents first).
+    ///
+    /// The default implementation returns an empty vec (no lineage).
+    async fn get_lineage(&self, _id: ArtifactId) -> Result<Vec<ArtifactId>, StoreError> {
+        Ok(Vec::new())
+    }
 }
 
 // ---------------------------------------------------------------------------

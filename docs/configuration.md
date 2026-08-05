@@ -7,9 +7,7 @@ polkagent uses TOML for configuration. Multiple configuration sources are merged
 Sources are applied in order; later sources override earlier ones:
 
 1. Built-in defaults
-2. Global user file:
-   - Linux: `~/.config/polkagent/polkagent.toml`
-   - macOS: `~/Library/Application Support/polkagent/polkagent.toml`
+2. Global user file: `~/.config/polkagent/polkagent.toml` (all platforms)
 3. Project-local file: `.polkagent/polkagent.toml` (searched by walking up from the current working directory)
 4. Environment variables
 
@@ -164,6 +162,21 @@ otlp_protocol = "grpc"
 metrics_enabled = true
 traces_enabled = true
 service_name = "polkagent"
+
+[cloud]
+# region = "us"              # us | eu | ap | au | ca — omit to disable region enforcement
+allow_cross_region = false   # permit routing to workers outside the configured region
+
+[[watchers]]
+# Always-on background agent. Repeat [[watchers]] blocks to define multiple watchers.
+name = "my-watcher"
+agent_id = "agent-my-watcher"
+schedule = { type = "interval", every_secs = 300 }
+# schedule = { type = "cron", expr = "*/5 * * * *" }
+cedar_policy = "watcher-read-only"
+enabled = true
+read_only = true             # write effects require an explicit Cedar grant
+timeout_secs = 120
 ```
 
 ## Environment Variables

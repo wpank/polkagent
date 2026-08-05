@@ -1,0 +1,12 @@
+-- V11: Add started_at column to runs table.
+--
+-- The initial schema (V1) was deployed to some databases before this column
+-- existed.  The code (run_store_impl.rs) expects `started_at` for tracking
+-- when a run transitions to the Running state.
+--
+-- NOTE: The base schema (V1 / schema.sql) was updated to include started_at
+-- directly in the CREATE TABLE statement.  This migration is preserved to
+-- maintain version-number continuity for databases that were created before
+-- that schema update, but the ALTER TABLE is now a no-op placeholder because
+-- fresh databases already have the column from V1.
+SELECT 1; -- no-op: started_at already defined in base schema (V1)

@@ -172,6 +172,9 @@ impl SqliteRunStore {
     // ------------------------------------------------------------------
 
     /// Insert a new agent.
+    ///
+    /// Returns `StoreError::Duplicate` if an agent with the same name already
+    /// exists (enforced by the `idx_agents_name` UNIQUE index added in V12).
     #[instrument(skip(self))]
     pub fn create_agent(
         &self,
@@ -190,19 +193,27 @@ impl SqliteRunStore {
         };
 
         let writer = self.pool.writer();
-        writer.execute(
-            "INSERT INTO agents (id, name, description, state, spec_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                row.id,
-                row.name,
-                row.description,
-                row.state,
-                row.spec_json,
-                row.created_at,
-                row.updated_at,
-            ],
-        )?;
+        writer
+            .execute(
+                "INSERT INTO agents (id, name, description, state, spec_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    row.id,
+                    row.name,
+                    row.description,
+                    row.state,
+                    row.spec_json,
+                    row.created_at,
+                    row.updated_at,
+                ],
+            )
+            .map_err(|e| {
+                if StoreError::is_unique_violation(&e) {
+                    StoreError::Duplicate(format!("agent name '{}' already exists", name))
+                } else {
+                    StoreError::Sqlite(e)
+                }
+            })?;
 
         debug!(agent_id = %row.id, "agent created");
         Ok(row)
@@ -1814,6 +1825,42 @@ impl EffectStore for SqlitePool {
                 .into_iter()
                 .map(StoredIntentRaw::into_stored_intent)
                 .collect()
+        })
+        .await
+        .map_err(|e| TraitStoreError::Internal {
+            message: format!("spawn_blocking join: {e}"),
+        })?
+    }
+
+    async fn get_by_idempotency_key(
+        &self,
+        key: &str,
+        _run_id: RunId,
+    ) -> Result<Option<StoredIntent>, TraitStoreError> {
+        let pool = self.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+
+            let maybe_raw: Option<StoredIntentRaw> = writer
+                .query_row(
+                    &format!("{INTENT_SELECT} WHERE idempotency_key = ?1"),
+                    [&key],
+                    row_to_stored_intent,
+                )
+                .map(Some)
+                .or_else(|e| {
+                    if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                        Ok(None)
+                    } else {
+                        Err(map_sqlite_err(e))
+                    }
+                })?;
+
+            match maybe_raw {
+                Some(raw) => Ok(Some(raw.into_stored_intent()?)),
+                None => Ok(None),
+            }
         })
         .await
         .map_err(|e| TraitStoreError::Internal {

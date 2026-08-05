@@ -264,6 +264,19 @@ impl HarnessRegistry {
     ) -> HarnessResolution {
         // 1. CLI flag.
         if let Some(name) = harness_flag {
+            // Treat "none" (case-insensitive) as an explicit opt-out rather
+            // than a missing binary name. Prefer `--no-harness` for clarity.
+            if name.eq_ignore_ascii_case("none") {
+                return HarnessResolution {
+                    harness_name: None,
+                    note: Some(
+                        "Harness disabled via --harness none. \
+                         Tip: prefer --no-harness for the same effect."
+                            .to_owned(),
+                    ),
+                };
+            }
+
             if self.probe(name) {
                 let note = format!("Using harness '{name}' (from --harness flag).");
                 return HarnessResolution {
@@ -467,6 +480,29 @@ mod tests {
     fn which_binary_returns_none_for_nonexistent() {
         let result = which_binary("nonexistent-binary-abc123xyz");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_none_sentinel_disables_harness() {
+        let mut registry = HarnessRegistry::with_known_harnesses();
+
+        // Lower-case "none" should be treated as an explicit opt-out.
+        let result = registry.resolve(Some("none"), None);
+        assert!(result.harness_name.is_none());
+        let note = result.note.expect("expected a note");
+        assert!(
+            note.contains("disabled") || note.contains("Tip"),
+            "expected sentinel note, got: {note}",
+        );
+
+        // Upper-case variant should also work (case-insensitive).
+        let result_upper = registry.resolve(Some("NONE"), None);
+        assert!(result_upper.harness_name.is_none());
+        let note_upper = result_upper.note.expect("expected a note");
+        assert!(
+            !note_upper.contains("not found on PATH"),
+            "sentinel should not trigger 'not found' warning, got: {note_upper}",
+        );
     }
 
     #[test]

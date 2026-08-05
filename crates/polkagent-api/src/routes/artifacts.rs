@@ -100,9 +100,9 @@ pub async fn get_artifact_content(
 
 /// Get the lineage chain for an artifact.
 ///
-/// **Stub:** Currently returns a chain containing only the requested artifact.
-/// Full provenance traversal will be implemented when the lineage graph is
-/// available.
+/// Walks the artifact's ancestor graph via `get_lineage` and returns the
+/// full provenance chain ordered from oldest ancestor to the requested
+/// artifact itself.
 ///
 /// Returns 501 if no artifact store is configured.
 /// Returns 404 if the artifact does not exist.
@@ -116,6 +116,7 @@ pub async fn get_artifact_provenance(
         .as_ref()
         .ok_or_else(|| ApiError::NotImplemented("artifact store not configured".to_owned()))?;
 
+    // Fetch the requested artifact (also validates that it exists).
     let summary = store.get(id).await.map_err(|e| match e {
         polkagent_store_trait::StoreError::NotFound { .. } => {
             ApiError::NotFound(format!("artifact {id}"))
@@ -123,8 +124,38 @@ pub async fn get_artifact_provenance(
         other => ApiError::InternalError(other.to_string()),
     })?;
 
-    // For now, return a single-element chain with just this artifact.
-    let artifact_resp = ArtifactResponse {
+    // Walk the ancestor lineage (BFS order: nearest parents first).
+    let ancestor_ids = store
+        .get_lineage(id)
+        .await
+        .map_err(|e| ApiError::InternalError(format!("failed to retrieve lineage: {e}")))?;
+
+    // Fetch metadata for each ancestor. Errors on individual ancestors are
+    // treated as internal errors (the lineage references them, so they
+    // should exist).
+    let mut ancestor_responses = Vec::with_capacity(ancestor_ids.len());
+    for ancestor_id in &ancestor_ids {
+        let ancestor = store.get(*ancestor_id).await.map_err(|e| {
+            ApiError::InternalError(format!("failed to fetch ancestor {ancestor_id}: {e}"))
+        })?;
+        ancestor_responses.push(ArtifactResponse {
+            version: API_VERSION.to_owned(),
+            id: ancestor.id.to_string(),
+            kind: ancestor.kind,
+            algorithm: ancestor.algorithm,
+            digest_hex: ancestor.digest_hex,
+            classification: ancestor.classification,
+            run_id: ancestor.run_id,
+            created_at: ancestor.created_at.to_rfc3339(),
+        });
+    }
+
+    // Build the chain: oldest ancestor first, requested artifact last.
+    // `ancestor_responses` is in BFS order (nearest first), so reverse it.
+    ancestor_responses.reverse();
+
+    // Append the requested artifact itself at the end.
+    ancestor_responses.push(ArtifactResponse {
         version: API_VERSION.to_owned(),
         id: summary.id.to_string(),
         kind: summary.kind,
@@ -133,10 +164,10 @@ pub async fn get_artifact_provenance(
         classification: summary.classification,
         run_id: summary.run_id,
         created_at: summary.created_at.to_rfc3339(),
-    };
+    });
 
     Ok(Json(ProvenanceResponse {
         version: API_VERSION.to_owned(),
-        chain: vec![artifact_resp],
+        chain: ancestor_responses,
     }))
 }

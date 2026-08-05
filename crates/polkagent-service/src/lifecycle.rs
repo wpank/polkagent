@@ -21,12 +21,14 @@
 //! 3. Close database connections.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use polkagent_config::Config;
 use polkagent_event::{EventBus, EventRecorder};
 use polkagent_executor_trait::ModelExecutor;
+use polkagent_run::TimeoutConfig;
 use polkagent_store_trait::event::EventStore;
-use polkagent_store_trait::{RunStatus, RunStore};
+use polkagent_store_trait::{EffectStore, RunStatus, RunStore};
 use tracing::{info, warn};
 
 use crate::app::AppService;
@@ -46,6 +48,10 @@ pub struct StartupContext {
     pub run_store: Arc<dyn RunStore>,
     /// The event store implementation.
     pub event_store: Arc<dyn EventStore>,
+    /// Optional effect store. When provided, effects are persisted to this
+    /// store. When `None`, the builder falls back to `NoopEffectStore` which
+    /// logs warnings and discards effects.
+    pub effect_store: Option<Arc<dyn EffectStore>>,
     /// Optional default model executor.
     pub executor: Option<Arc<dyn ModelExecutor>>,
     /// Pre-built provider registry (providers already registered).
@@ -107,6 +113,10 @@ pub fn startup(config: Config, context: StartupContext) -> Result<AppService, Se
         .with_event_bus(event_bus)
         .with_event_recorder(recorder);
 
+    if let Some(effect_store) = context.effect_store {
+        builder = builder.with_effect_store(effect_store);
+    }
+
     if let Some(executor) = context.executor {
         builder = builder.with_executor(executor);
     }
@@ -116,6 +126,16 @@ pub fn startup(config: Config, context: StartupContext) -> Result<AppService, Se
     }
 
     let service = builder.build()?;
+
+    // Step 5: Start the timeout enforcer background task.
+    //
+    // Uses the `default_timeout_secs` from the execution config as the global
+    // max duration, and sweeps every 30 seconds. This requires a Tokio runtime
+    // to be active (which is the case for all production entry points).
+    let timeout_secs = service.config().execution.default_timeout_secs;
+    let timeout_config = TimeoutConfig::with_global_max(Duration::from_secs(timeout_secs));
+    service.start_timeout_enforcer(timeout_config, Duration::from_secs(30));
+
     info!("polkagent service started successfully");
 
     Ok(service)
@@ -265,6 +285,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     started_at: None,
                     completed_at: None,
+                    deadline_at: None,
                 },
             );
             Ok(())
@@ -418,6 +439,7 @@ mod tests {
         StartupContext {
             run_store: Arc::new(FakeRunStore::default()),
             event_store: Arc::new(FakeEventStore::default()),
+            effect_store: None,
             executor: None,
             provider_registry: None,
         }
@@ -425,8 +447,8 @@ mod tests {
 
     // ── Tests ───────────────────────────────────────────────────────────
 
-    #[test]
-    fn startup_with_default_config_succeeds() {
+    #[tokio::test]
+    async fn startup_with_default_config_succeeds() {
         let config = Config::default();
         let service = startup(config, fake_context()).expect("startup");
         assert_eq!(
@@ -435,8 +457,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn startup_and_shutdown_do_not_panic() {
+    #[tokio::test]
+    async fn startup_and_shutdown_do_not_panic() {
         let config = Config::default();
         let service = startup(config, fake_context()).expect("startup");
         shutdown(service);

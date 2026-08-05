@@ -41,15 +41,23 @@ pub struct TelemetryConfig {
     pub otlp_endpoint: Option<String>,
     /// The `service.name` resource attribute for traces.
     pub service_name: String,
+    /// Whether to emit ANSI colour codes in log output.
+    ///
+    /// Set to `false` when `--no-color` is passed or the `NO_COLOR`
+    /// environment variable is present.
+    pub ansi: bool,
 }
 
 impl Default for TelemetryConfig {
     fn default() -> Self {
+        // Respect the NO_COLOR standard (<https://no-color.org/>) by default.
+        let ansi = std::env::var_os("NO_COLOR").is_none();
         Self {
             log_level: "info".to_owned(),
             log_format: LogFormat::Pretty,
             otlp_endpoint: None,
             service_name: "polkagent".to_owned(),
+            ansi,
         }
     }
 }
@@ -127,6 +135,7 @@ pub fn init_telemetry(
 
     // Build each combination of (format x otlp) separately so that the
     // tracing-subscriber type-level layering is fully resolved at compile time.
+    let ansi = config.ansi;
     let provider = match (&config.log_format, &config.otlp_endpoint) {
         (LogFormat::Pretty, Some(endpoint)) => {
             let (provider, tracer) = build_otel_provider(endpoint, &config.service_name)?;
@@ -134,8 +143,14 @@ pub fn init_telemetry(
             tracing_subscriber::registry()
                 .with(env_filter)
                 .with(otel_layer)
-                .with(fmt::layer().pretty())
-                .init();
+                .with(
+                    fmt::layer()
+                        .pretty()
+                        .with_ansi(ansi)
+                        .with_writer(std::io::stderr),
+                )
+                .try_init()
+                .ok();
             Some(provider)
         }
         (LogFormat::Json, Some(endpoint)) => {
@@ -144,22 +159,40 @@ pub fn init_telemetry(
             tracing_subscriber::registry()
                 .with(env_filter)
                 .with(otel_layer)
-                .with(fmt::layer().json())
-                .init();
+                .with(
+                    fmt::layer()
+                        .json()
+                        .with_ansi(ansi)
+                        .with_writer(std::io::stderr),
+                )
+                .try_init()
+                .ok();
             Some(provider)
         }
         (LogFormat::Pretty, None) => {
             tracing_subscriber::registry()
                 .with(env_filter)
-                .with(fmt::layer().pretty())
-                .init();
+                .with(
+                    fmt::layer()
+                        .pretty()
+                        .with_ansi(ansi)
+                        .with_writer(std::io::stderr),
+                )
+                .try_init()
+                .ok();
             None
         }
         (LogFormat::Json, None) => {
             tracing_subscriber::registry()
                 .with(env_filter)
-                .with(fmt::layer().json())
-                .init();
+                .with(
+                    fmt::layer()
+                        .json()
+                        .with_ansi(ansi)
+                        .with_writer(std::io::stderr),
+                )
+                .try_init()
+                .ok();
             None
         }
     };
@@ -192,11 +225,15 @@ pub fn init_from_env() -> Result<TelemetryGuard, Box<dyn std::error::Error + Sen
 
     let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
 
+    // Honour the NO_COLOR standard (<https://no-color.org/>).
+    let ansi = std::env::var_os("NO_COLOR").is_none();
+
     init_telemetry(TelemetryConfig {
         log_level,
         log_format,
         otlp_endpoint,
         service_name: "polkagent".to_owned(),
+        ansi,
     })
 }
 

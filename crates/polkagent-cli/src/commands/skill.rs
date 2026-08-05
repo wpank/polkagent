@@ -8,6 +8,7 @@
 use anyhow::Result;
 use tracing::info;
 
+use polkagent_skill::manifest::SkillManifest;
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::cli::{
@@ -142,27 +143,14 @@ fn install(cmd: &SkillInstallCmd, pool: &SqlitePool) -> Result<()> {
     let manifest_content = std::fs::read_to_string(&manifest_path)
         .map_err(|e| anyhow::anyhow!("Cannot read manifest '{}': {e}", manifest_path.display()))?;
 
-    // Parse as TOML and extract required fields.
-    let manifest: toml::Value = toml::from_str(&manifest_content)
+    // Parse and validate using the canonical SkillManifest parser which
+    // correctly reads fields from the [skill] section (e.g. manifest["skill"]["name"]).
+    let manifest = SkillManifest::from_toml(&manifest_content)
         .map_err(|e| anyhow::anyhow!("Invalid skill manifest: {e}"))?;
 
-    let name = manifest
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("skill.toml is missing required field: name"))?
-        .to_owned();
-
-    let version = manifest
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("0.1.0")
-        .to_owned();
-
-    let description = manifest
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_owned();
+    let name = manifest.skill.name.clone();
+    let version = manifest.skill.version.clone();
+    let description = manifest.skill.description.clone();
 
     let manifest_json = serde_json::to_string(&manifest_content)?;
     let path_str = path.to_string_lossy().to_string();
@@ -251,19 +239,13 @@ fn update(cmd: &SkillUpdateCmd, pool: &SqlitePool) -> Result<()> {
         )
     })?;
 
-    let manifest: toml::Value = toml::from_str(&manifest_content)
+    // Parse and validate using the canonical SkillManifest parser which
+    // correctly reads fields from the [skill] section (e.g. manifest["skill"]["version"]).
+    let manifest = SkillManifest::from_toml(&manifest_content)
         .map_err(|e| anyhow::anyhow!("Invalid skill manifest: {e}"))?;
 
-    let new_version = manifest
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("0.1.0")
-        .to_owned();
-    let description = manifest
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_owned();
+    let new_version = manifest.skill.version.clone();
+    let description = manifest.skill.description.clone();
     let manifest_json = serde_json::to_string(&manifest_content)?;
     let now = chrono::Utc::now().to_rfc3339();
 

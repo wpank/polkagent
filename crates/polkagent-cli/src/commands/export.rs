@@ -68,7 +68,7 @@ impl std::str::FromStr for Format {
 #[derive(Debug, Clone, Args)]
 pub struct ExportConfig {
     /// Output format.
-    #[arg(long, value_enum, default_value = "json")]
+    #[arg(long, id = "export-format", value_enum, default_value = "json")]
     pub format: Format,
 
     /// Write output to a file instead of stdout.
@@ -756,8 +756,23 @@ fn export_audit(cfg: &ExportConfig, pool: &SqlitePool) -> Result<()> {
 }
 
 fn export_config(output_path: &Option<PathBuf>) -> Result<()> {
-    let config = polkagent_config::Config::default();
-    let toml_str = toml::to_string_pretty(&config).context("serialising config to TOML")?;
+    // Load the fully-resolved config (defaults + config files + env overrides)
+    // so that provider entries written to config files are included.  Using
+    // Config::default() here would produce empty `providers = []` / `models =
+    // []` arrays even when the user has providers configured.
+    let config = polkagent_config::ConfigLoader::new()
+        .load()
+        .context("loading configuration")?;
+
+    // Serialise to a TOML Value first so we can strip empty arrays before
+    // rendering.  The `toml` crate emits `providers = []` for an empty Vec
+    // which is valid TOML but looks confusing; omitting the key entirely is
+    // cleaner because the empty-array default is implied.
+    let mut value: toml::Value =
+        toml::Value::try_from(&config).context("serialising config to TOML value")?;
+    strip_empty_arrays(&mut value);
+
+    let toml_str = toml::to_string_pretty(&value).context("serialising config to TOML")?;
 
     let mut out = open_output(output_path)?;
     out.write_all(toml_str.as_bytes())?;
@@ -766,6 +781,25 @@ fn export_config(output_path: &Option<PathBuf>) -> Result<()> {
     }
     out.flush()?;
     Ok(())
+}
+
+/// Recursively remove any TOML table key whose value is an empty array `[]`.
+///
+/// This prevents noise like `providers = []` and `models = []` in the
+/// exported config when the user has not defined any entries.  Non-empty
+/// arrays and all other value types are left untouched.
+fn strip_empty_arrays(value: &mut toml::Value) {
+    if let toml::Value::Table(table) = value {
+        table.retain(|_, v| !matches!(v, toml::Value::Array(a) if a.is_empty()));
+        // toml::map::Map does not expose values_mut(); iterate over keys and
+        // re-borrow each value individually.
+        let keys: Vec<String> = table.keys().cloned().collect();
+        for key in keys {
+            if let Some(v) = table.get_mut(&key) {
+                strip_empty_arrays(v);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
