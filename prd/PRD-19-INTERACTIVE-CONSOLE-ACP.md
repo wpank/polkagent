@@ -984,12 +984,13 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [x] Add official ACP Rust SDK and `polkagent-surface-acp` crate.
 - [x] Add protocol-safe early `polkagent acp` dispatch.
 - [x] Implement the bounded initialize/new/prompt/cancel slice.
-- [ ] Implement durable session list/load/import/resume.
-- [ ] Map live interaction events to session updates.
+- [ ] Implement durable session list/load/import/resume for thread import and
+  restart recovery.
+- [ ] Map shared `InteractionEvent` envelopes to ACP session updates; the
+  current direct `AppService` event mapping is only the bounded one-run slice.
 - [x] Advertise the initial MVP slash commands.
 - [ ] Move commands onto the shared registry.
 - [ ] Expose target/model/autonomy config options.
-- [ ] Implement session list for thread import.
 - [ ] Implement tool permission round-trip.
 - [x] Write the Zed custom-agent setup guide.
 - [x] Add an official-SDK subprocess protocol fixture.
@@ -1045,7 +1046,8 @@ Zed, not merely a single-agent chat wrapper.
   fixtures assert JSON on every observed successful-session stdout line, and
   the missing-explicit-config fixture asserts empty stdout.
 - Initialize negotiates current v1 capabilities correctly.
-- New session honors absolute cwd and supplied MCP servers.
+- New session requires an absolute cwd and, until Phase 5 passthrough exists,
+  explicitly rejects supplied MCP servers and additional roots.
 - Prompt streams before its terminal response.
 - Tool calls have stable IDs and legal status transitions.
 - Permission allow/deny/timeout/disconnect are all tested; default is deny.

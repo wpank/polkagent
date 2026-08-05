@@ -12,18 +12,26 @@ At this evidence snapshot, the following local gates passed:
 ```text
 cargo check --workspace
 cargo +1.89 check --workspace --locked
+cargo +1.89 check --workspace --all-targets --all-features --locked
 cargo test --workspace --no-fail-fast
+cargo test --workspace --all-features --no-fail-fast
 cargo test --workspace --tests -- --ignored
+cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test -p polkagent-cli --test tui_tests
 cargo test -p polkagent-cli --test acp_stdio_e2e
 cargo test -p polkagent-interaction
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps
 ./scripts/container-smoke.sh
 ```
 
-The workspace test run exited 0 and includes extensive unit, property,
-contract, integration, security, TUI rendering, API, and doc tests. This is a
-strong component baseline. The container smoke additionally proves that the
+The final uncontended all-feature workspace run exited 0 with 7,871 ordinary
+tests and 84 doc tests passing, zero failures, and 28 ignored tests. It includes
+extensive unit, property, contract, integration, security, TUI rendering, API,
+and doc coverage. Twenty-four live PostgreSQL tests returned early because
+`TEST_DATABASE_URL` was unset, so they are not external-database evidence even
+though Cargo reports them as passed. This is a strong component baseline. The
+container smoke additionally proves that the
 locked canonical image builds, starts unprivileged, honours a bind-mounted
 read-only config, answers the three HTTP probes, drains HTTP on SIGTERM with a
 clean exit, and replaces the container on the same named volume while retaining
@@ -40,16 +48,15 @@ prove durable API/run recovery, worker/effect draining, Postgres, backup/restore
 auth, HA, a real chain action, a durable multi-turn interaction, or complete
 Zed/editor behavior.
 
-The CI lint command is not green: `cargo clippy --workspace -- -D warnings`
-still reports extensive pre-existing pedantic lint debt across multiple crates.
-Bounded batches have cleared config, signer/executor/store/harness traits,
-identity, chain-fake, conversation, rate-limit, payment, metadata, event,
-audit, outbox, effect, scheduler, executor-fake, skill, memory, retry, and
-telemetry. The post-integration exact run still fails with 465 diagnostics
-across 14 packages, recorded in
-[`QA-01-CLIPPY-INVENTORY.json`](QA-01-CLIPPY-INVENTORY.json). Passing checks,
-tests, and rustdoc must not be described as a fully green CI baseline until the
-exact command exits zero.
+The exact mandatory CI lint command, `cargo clippy --workspace -- -D
+warnings`, now exits zero locally. The stronger
+`cargo clippy --workspace --all-targets --all-features -- -D warnings` gate
+also exits zero, covering tests, benches, and optional-feature targets that the
+current CI command does not compile. The closure record and the preserved
+465-diagnostic baseline are in
+[`QA-01-CLIPPY-INVENTORY.json`](QA-01-CLIPPY-INVENTORY.json). This closes the
+lint-debt packet; it does not close the production composition, live adapter,
+client-interoperability, or operations evidence gaps below.
 
 The audit intentionally treats tests such as “returns 501 when store is not
 configured” as contract coverage and simultaneous evidence that production
@@ -96,7 +103,7 @@ startup still has a wiring gap.
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | CLI/TUI plus actionable Console slice | Partial | Single-run prompt E2E; no durable chat/orchestration UX | Active P0/P1 + PRD-19 |
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
-| 15 Testing | Broad passing check/test/rustdoc suite | Mandatory Clippy gate is red; production paths under-tested | Lint debt plus live/client/ops gates missing | Active cross-cutting |
+| 15 Testing | Broad passing check/test/rustdoc suite; mandatory and extended Clippy gates are locally green | Production paths remain under-tested | Hosted CI confirmation plus live/client/ops gates missing | Active cross-cutting |
 | 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
 | 19 Interactive/ACP | Initial ACP server, actionable TUI, and shared interaction-contract slices implemented | TUI/ACP still independently compose the one-shot `AppService`; durable interaction/runtime implementations remain missing | Official client proves ACP discovery, prompt/run, and active-run cancellation with durable terminal state; focused TUI reducer/render plus durable fake-run tests cover the bounded seam, but no real-terminal TUI cancel, full Zed, or durable session E2E exists | Active P0/P1 |
 
@@ -158,8 +165,10 @@ startup still has a wiring gap.
   job runs independently of the Rust 1.89 MSRV matrix and uploads selected
   lifecycle state/log artifacts. API agents and runs are still in-memory.
 - CI checks the workspace on stable Rust and the declared Rust 1.89 MSRV, and
-  now enforces `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` on
-  stable. The workspace Clippy step remains red as described above.
+  enforces `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` on
+  stable. Both the exact workspace Clippy command and the stronger local
+  all-target/all-feature variant now pass; the hosted CI run remains external
+  evidence to collect.
 - The slow/ignored CI pass is scoped to Rust test targets so it runs the PCA
   subprocess helpers without asking rustdoc to compile illustrative
   adapter-placeholder examples marked `ignore`.

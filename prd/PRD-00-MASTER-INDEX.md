@@ -6,13 +6,14 @@
 
 ## Executive state
 
-Polkagent has a broad passing Rust check/test/rustdoc suite, though the
-mandatory workspace Clippy gate still has substantial debt. Bounded product
-slices now exist for the TUI, ACP, local packages, PCA transport, and container
-lifecycle, but no PRD is complete end-to-end under the repository's completion
-rule. The dominant gap is composition: these slices do not converge on one
-shared durable runtime/session/event contract, and the API/tool/effect/policy
-paths remain incomplete.
+Polkagent has a broad passing Rust check/test/rustdoc suite, and both the
+mandatory workspace Clippy command and a stronger all-target/all-feature gate
+are locally green. Bounded product slices now exist for the TUI, ACP, local
+packages, PCA transport, and container lifecycle, but no PRD is complete
+end-to-end under the repository's completion rule. The dominant gap is
+composition: these slices do not converge on one shared durable
+runtime/session/event contract, and the API/tool/effect/policy paths remain
+incomplete.
 
 The next milestone is therefore not “add more crates.” It is one durable
 runtime and interaction contract, followed by real tool/effect execution and
@@ -56,7 +57,7 @@ percentage.
 | [PRD-12](PRD-12-MARKETPLACE-EXTENSIONS.md) | Extensions and marketplace | Active; durable local package lifecycle and operator CLI work, while activation, sandbox execution, cryptographic trust, and registry paths remain. |
 | [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; the TUI has a bounded actionable Console, but durable chat/orchestration and studio/mobile surfaces are absent. |
 | [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; API production composition and OpenAPI parity are P0/P1 gaps. |
-| [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; broad component coverage and stable/Rust-1.89 checks exist, and local strict rustdoc passes; Clippy and production/live/client conformance remain incomplete. |
+| [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; broad component coverage, stable/Rust-1.89 checks, strict rustdoc, and mandatory/extended Clippy gates pass locally; production/live/client conformance remains incomplete. |
 
 ## Active delivery PRDs
 
