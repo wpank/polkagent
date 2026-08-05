@@ -104,18 +104,40 @@ but not TUI widgets or ACP protocol mapping.
 
 **Checklist:**
 
-- [ ] Define `RuntimeOptions`, `PolkagentRuntime`, readiness report, and
+- [x] Define `RuntimeOptions`, `PolkagentRuntime`, readiness report, and
   `RuntimeFactory::build`.
 - [ ] Centralize config-path provenance, database path, provider/model/harness,
-  chain, signer, tools/skills, policy/grants, and read-only selection.
+  chain, signer, tools/skills, policy/grants, and read-only selection. The
+  factory now owns config/database/provider/model/harness/chain/tool selection;
+  signer, configured skills, policy/grant injection, and service-level
+  read-only enforcement remain explicit degraded-readiness gaps.
 - [ ] Open/migrate durable run, effect, event, artifact, conversation, memory,
-  payment, audit, agent, group/feed, and registry stores as applicable.
+  payment, audit, agent, group/feed, and registry stores as applicable. The
+  current factory wires SQLite run/effect/event/conversation/payment and
+  configured memory; audit, artifact, group/feed, and registry composition are
+  not complete.
 - [ ] Remove `NoopEffectStore` and in-memory production fallbacks from
   executable configurations; missing required dependencies fail at startup.
-- [ ] Rehydrate agents and recover/timeout stuck work.
-- [ ] Migrate one-shot `run` without behavior regression.
-- [ ] Make `serve` use durable agents/runs and inject every advertised route
-  dependency, or deliberately remove/disable the route at startup.
+  One-shot run, TUI, ACP, and `serve` now consume the shared runtime; the
+  central tool/effect/policy loop and some optional API store adapters remain
+  incomplete.
+- [x] Rehydrate agents and recover/timeout stuck work.
+- [x] Migrate one-shot `run` without behavior regression.
+- [x] Make `serve` use the shared runtime and durable agents/runs/effects/events/
+  artifacts/payments/conversations. Artifact metadata, verified content,
+  classification, and lineage survive restart; the exact runtime tool registry
+  backs deterministic read-only API discovery. Fifteen optional skill/memory/
+  audit/registry routes remain registered with a published, tested 501 boundary
+  until truthful adapters/stores are composed.
+
+**2026-08-05 runtime checkpoint:** `polkagent-runtime` now provides strict or
+explicitly simulated adapter policy, workdir-aware config provenance, durable
+SQLite composition, one event bus/`AppService`, active-agent rehydration,
+startup recovery, timeout startup, and structured readiness. Twenty focused
+runtime tests plus executable restart/recovery tests pass. `polkagent run`, the
+TUI, and ACP now retain the factory's runtime, durable pool, service, and event
+bus. `serve` now uses the same strict factory and durable core stores. Complete
+optional-store composition plus shutdown/tool/policy gaps keep FND-01 open.
 
 **Exit checks:** a production-composition integration test starts runtime on a
 temporary SQLite database, creates a run through service and API paths, observes
@@ -133,33 +155,73 @@ and group orchestration.
 types, typed command registry, projections, and additive SQLite migrations.
 Avoid editing individual TUI/ACP renderers.
 
-**2026-08-05 bounded contract checkpoint:** the domain-only
-`polkagent-interaction` crate now freezes serializable target/config, prompt,
-turn-handle, structured event/projection, replay-stream, service-trait, and MVP
-slash-command parser/catalog/output contracts. It deliberately has no runtime
-implementation, persistence, migrations, command handlers, or surface adapter
-wiring, so this checkpoint is not FND-02 completion.
+**2026-08-05 implementation checkpoint:** `polkagent-interaction` freezes the
+serializable contract and now also provides a durable store port, bounded
+durable/live event hub, and shared typed command handlers. SQLite migrations
+and an adapter persist safe session defaults, turn/run links, replay sequences,
+and exactly one terminal event. The runtime now composes a durable headless
+service for create/list/load/archive, target config, prompt, cancel, and
+subscribe with atomic transcripts, prepared-run causality, idempotent retry,
+lag backfill, paged turn-correlated transcript projection, and restart recovery.
+TUI, terminal chat, and HTTP consume it; ACP does not. Model-executor
+interactions receive bounded typed prior context; approval/tool projection and
+execution-scoped provider/harness/autonomy/max-turn/budget config remain, so
+this checkpoint is not FND-02 completion.
 
 **Checklist:**
 
 - [x] Define conversation-target/config, prompt request, turn handle, and
   stable interaction/tool/approval/plan/usage event types from PRD-19.
-- [ ] Add `interaction_turns` and `interaction_turn_runs` with idempotent IDs
-  and run correlation at creation time.
-- [ ] Persist user message before execution and assistant/tool/terminal state
-  exactly once.
-- [ ] Implement new/list/load/delete/prompt/cancel/config/approve/deny/subscribe.
-- [ ] Implement bounded live broadcast plus durable checkpoint/projection
-  recovery when a subscriber lags.
+- [x] Add `interaction_sessions`, `interaction_turns`,
+  `interaction_turn_runs`, and `interaction_events` with idempotent
+  session/turn/event writes and durable run links.
+- [x] Prepare a caller-identified run with its conversation correlation without
+  publishing, atomically create the turn/run join and user transcript, attach
+  the subscriber, and only then activate the earliest run event.
+- [x] Persist the user message before execution and atomically persist the
+  assistant message plus exactly one terminal event; retrying the same caller
+  turn ID cannot execute or write twice.
+- [ ] Project structured tool/approval observations into the durable transcript
+  with exact underlying effect identities.
+- [x] Implement new/list/load/archive/prompt/cancel/target-config/subscribe.
+- [x] Project the durable user/assistant transcript through the service with
+  exact turn/run IDs and bounded store pages; a 1,002-turn fixture crosses the
+  page boundary without scanning or leaking unrelated low-level messages.
+- [x] Assemble typed model-executor context from the newest 32 completed
+  user/assistant pairs among the latest 1,000 prior turn records, then append
+  the current user exactly once. Failed/cancelled/timed-out partial turns are
+  omitted as whole pairs; string-only harness follow-up fails explicitly and
+  durably rather than flattening roles.
+- [x] Implement persisted and per-prompt execution-scoped model selection with
+  prompt > session > agent precedence, canonical same-provider validation, a
+  cloned prepared-run spec, retry conflict semantics, and strict harness
+  refusal unless unchanged/fixed-model evidence exists.
+- [ ] Implement approve/deny and execution-scoped provider/harness/autonomy/
+  max-turn/budget configuration; current methods fail explicitly rather than
+  accepting ignored settings.
+- [x] Implement bounded live broadcast plus durable checkpoint recovery when a
+  subscriber lags; TUI and terminal chat resubscribe, while HTTP exposes finite
+  checkpoint pages and a checkpoint-aware replay-then-follow SSE adapter.
+- [x] Page replay lazily after attaching the live receiver: subscription does
+  zero replay reads and each `recv` retains at most one 1,000-event page while
+  preserving filters, exact checkpoints, concurrent publication, and lag
+  recovery.
 - [x] Define one typed parser, catalog, availability model, and output contract
   for `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`,
   `/inspect`, `/cancel`, `/approve`, `/deny`, and `/model`.
-- [ ] Implement and wire the typed command handlers for `/help`, `/status`,
-  `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/cancel`,
-  `/approve`, `/deny`, and `/model`.
+- [x] Implement the typed command handlers for `/help`, `/status`, `/agents`,
+  `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/cancel`, `/approve`,
+  `/deny`, and `/model` against shared service/runtime ports.
+- [ ] Wire the shared command executor through every applicable surface.
+  Terminal chat executes help/status/cancel/new/resume; the TUI executes
+  help/status/new/resume with structured results; ACP uses the registry for a
+  truthful ephemeral subset; HTTP exposes typed resource operations rather
+  than slash text. Broader cross-surface parity remains open.
 
-**Exit checks:** headless tests create, prompt, stream, cancel, restart, load,
-resume, approve, and deny without depending on CLI, Ratatui, Axum, or ACP types.
+**Exit checks:** current headless tests create, contextually prompt, stream,
+retry, cancel, restart, load, and replay without CLI, Ratatui, Axum, or ACP
+types. FND-02 closes only after real approve/deny/tool state passes the same
+restart tests and harness/session behavior has a role-safe contract.
 
 **Depends on:** agree the minimal runtime handle with FND-01. Implementation can
 proceed in parallel after that interface is frozen.
@@ -201,14 +263,36 @@ own runtime construction or orchestrator internals.
 
 **Checklist:**
 
-- [ ] Implement durable `AgentStore` and `RunManagerTrait` adapters over the
-  shared runtime/stores.
-- [ ] Inject event, artifact, conversation, memory, payment, audit, skill,
-  tool, registry, and service-registry dependencies.
-- [ ] Make create/cancel/resume endpoints operate on real work.
-- [ ] Add cursor/replay semantics and explicit stream-gap recovery.
-- [ ] Reconcile OpenAPI with runtime routes including WebSocket, metrics,
-  audit, conversation, and registry surfaces; decide SSE deliberately.
+- [x] Implement durable `AgentStore` and `RunManagerTrait` adapters over the
+  shared runtime/stores. The adapters now project SQLite rows strictly and
+  route lifecycle mutations through the shared `AppService`; `serve` selects
+  them through `app_state_from_runtime`.
+- [x] Inject durable event, artifact, conversation, and payment dependencies;
+  artifact reads preserve classification/lineage and verify content integrity.
+- [x] Inject a truthful read-only projection of the exact runtime tool registry,
+  including deterministic list/detail/grant behavior and an empty view when
+  registration is disabled.
+- [ ] Inject truthful memory, audit, skill, registry, and service-registry
+  adapters. Their exact uncomposed routes remain in the published 501 list.
+- [x] Expose interaction create/list/load/archive/turn/prompt/cancel/target
+  endpoints over the exact runtime `InteractionService`; caller-supplied turn
+  IDs provide retry idempotency and conflict detection.
+- [x] Add finite JSON cursor/replay semantics with durable sequence checkpoints,
+  turn filtering, restart recovery, and no skip across unrelated events.
+- [x] Add checkpoint-aware interaction SSE with `Last-Event-ID` precedence,
+  typed envelopes/durable sequence IDs, bounded live delivery, exact lag
+  recovery after the last emitted sequence, turn filtering, and keepalives.
+  Existing sockets remain distinct run-event protocols.
+- [x] Reconcile all ten implemented durable-interaction operations and their
+  strict DTO/error/event/checkpoint schemas with `openapi.yaml`; tests parse all
+  local references, compare `/openapi.json`, and prove unsupported fields and
+  approve/deny paths remain absent.
+- [x] Enforce ordinary HTTP router/OpenAPI parity from the actual router AST,
+  including unique operation IDs, local refs, and exact served-document
+  equality. Zero ordinary routes are missing or stale; the two bidirectional
+  WebSocket transports remain an explicit documented allowlist.
+- [ ] Compose the 15 intentionally unavailable optional skill/memory/audit/
+  registry routes with real stores and preserve auth/read-only policy.
 - [ ] Unify root config selection, bind address/port, auth, CORS, read-only,
   and rate-limit provenance.
 
@@ -227,8 +311,12 @@ state. OpenAPI conformance and authenticated/read-only tests pass.
 **Checklist:**
 
 - [ ] Persist user-visible deltas/checkpoints with stable event and sequence IDs.
-- [ ] Replace silent broadcast-lag drops with a gap event and projection reload.
-- [ ] Remove fixed first-10k scans from event lookup.
+- [x] Replace silent interaction broadcast-lag drops with an explicit lag
+  checkpoint and durable resubscribe; run-event transports still need the same
+  product-wide contract.
+- [x] Remove the fixed first-10k event-ID scan: the object-safe store contract
+  has an uncapped validated 1,000-row cursor fallback, SQLite uses its primary-
+  key index, and API lookup sanitizes backend failures.
 - [ ] Wire telemetry, audit, retention, backup, and recovery into lifecycle.
 - [ ] Add restart, slow-consumer, duplicate, retention, and corrupted-projection
   tests plus operator diagnostics.
@@ -251,23 +339,53 @@ adapter hooks through small interfaces.
 - [x] Thread the root explicit `--config`/`POLKAGENT_CONFIG` selection into
   both one-shot and TUI run composition instead of silently rediscovering
   provider/harness/execution settings.
-- [ ] Add `polkagent chat` using `InteractionService` and shared commands.
+- [x] Add `polkagent chat` using `InteractionService` and the truthful
+  help/status/cancel/new/resume subset of the shared command handlers. Process
+  tests cover non-TTY stdout, multiline input, restart resume, refusal, lag
+  resubscribe, and SIGINT cancellation.
 - [ ] Convert the TUI loop to async/channel-driven input, runtime events, and
   background completion.
-- [ ] Pass a runtime/interaction handle, not only a SQLite pool.
-- [ ] Add conversation workspace, Unicode/multiline composer, history,
-  completion, streaming transcript, tool/plan/approval/usage/error rendering.
-- [ ] Add follow-up, service-routed approve/deny, and create/select-agent
-  actions; the interim one-run start/cancel actions are already shipped.
+- [x] Pass one long-lived `PolkagentRuntime`, not only a SQLite pool, into the
+  TUI and reuse its exact service/event bus/pool across sequential prompts.
+- [x] Pass the full durable interaction-service handle into the TUI and route
+  prompt/cancel through it with conversation/turn/run correlation.
+- [x] Add extended-grapheme-safe editing/navigation/deletion, multiline
+  composition, bounded history, viewport scrolling, 128-KiB whole-grapheme
+  limits, safe bracketed-paste normalization, and reducer/render/PTY coverage.
+- [x] Add registry-derived slash-command discovery/help/completion, including
+  aliases, argument hints, keyboard selection, and truthful surface filtering.
+- [x] Execute the truthful `/help`, `/status`, `/new`, and `/resume` subset in
+  the Console through shared handlers; render structured command state, guard
+  stale results, switch/load exact same-agent sessions, and keep commands out
+  of the model transcript.
+- [x] Add an explicit durable conversation selector. `s` asynchronously lists
+  at most 50 same-agent sessions from the newest 1,000 summaries, loads the
+  exact selected transcript through `InteractionService`, refuses while a turn
+  or command is active, and guards stale list/load results. Restart coverage
+  proves exact selection while excluding a foreign-agent session.
+- [ ] Add richer structured tool/plan transcript rendering. The selected
+  durable session reloads bounded transcript/composer history after restart and
+  renders typed lifecycle/usage/error observations.
+- [x] Add durable transcript follow-up and service-routed prompt/cancel.
+- [x] Assemble bounded prior completed transcript into typed model-executor
+  context with exact roles and whole-turn truncation. Harness-backed follow-up
+  fails explicitly because its string ingress cannot preserve roles.
+- [ ] Add service-routed approve/deny plus create/select-agent actions; legacy
+  Approvals-tab mutations remain outside the Console interaction path.
 - [ ] Remove UI direct DB mutations.
 - [x] Preserve all existing monitoring tabs while adding the Console.
-- [ ] Prove terminal restoration on panic/error through the full event loop.
+- [x] Prove terminal restoration on normal error and panic unwind through the
+  lifecycle guard and a real Unix PTY, including escape ordering and termios
+  restoration. Windows ConPTY remains an evidence gap.
 
-**Current boundary:** the completed slice is single-line, single-active-run,
-and in-memory at the transcript layer. It shares `commands/run.rs` bootstrap
-instead of shelling out, but it does not satisfy FND-01/FND-02: no long-lived
-runtime handle, durable conversation/turn model, command registry, restart
-resume, simultaneous orchestration, or service-routed approval path exists.
+**Current boundary:** terminal chat and the TUI Console are target-only,
+single-active-turn surfaces over the durable `InteractionService`. The Console
+reloads per-agent transcript/history after restart, `/new` and `/resume` switch
+an explicit conversation ID, `s` provides a bounded same-agent durable session
+selector, and terminal chat can resume one.
+Prior completed turns enter model-executor context; string-only harness follow-
+up is unsupported. Broader shared-command coverage, simultaneous orchestration,
+structured tool/plan rendering, and service-routed approvals remain open.
 
 **Exit checks:** user can launch, select/create an agent, prompt, see tokens and
 tools, approve/deny, cancel, prompt again, restart, and resume. Headless event
@@ -291,19 +409,34 @@ the stable execution event path; can run fully parallel to ACP-01.
 - [ ] Add durable session list/load/import/resume and restart recovery.
 - [x] Advertise and handle `/help`, `/status`, `/agents`, and `/agent` through
   `available_commands_update`.
-- [ ] Move those commands onto the shared command registry and add dynamic
-  target/model/provider/autonomy configuration options.
+- [x] Move ACP discovery/parsing/help/aliases onto the shared command registry,
+  including real current-prompt `/cancel`/`/stop`; registered durable commands
+  are refused explicitly when the ephemeral ACP backend cannot execute them.
+- [x] Add native ACP configuration for active-agent and standard model
+  selection, backed by the same session state as `/agent` and `/model`; prove
+  concurrent sessions retain their chosen agent/model at the real run boundary.
+- [ ] Add durable command-executor routing plus truthful provider, target, and
+  autonomy configuration after those settings can be isolated per execution.
 - [x] Validate absolute cwd and reject unsupported MCP servers/additional roots
   explicitly instead of ignoring them.
-- [ ] Add structured tool/plan/usage updates, permission round-trips, default
-  deny on timeout/disconnect, client capabilities, and secret-safe logging proof.
+- [x] Forward bounded real runtime text updates before the terminal response,
+  reconcile exact final text without duplication, and emit ACP usage only from
+  real terminal token counts plus a known model context window.
+- [ ] Add structured tool/plan updates, permission round-trips, default deny on
+  timeout/disconnect, and client filesystem/terminal capabilities.
 - [x] Add an official-client cancellation/stop-reason test covering
   cancellation during an active provider request and the durable terminal run
   state/timestamp.
 - [x] Prove successful-session stdout purity and fail-closed missing-explicit-
   config startup with empty stdout, a stderr diagnostic, and exit code 4.
-- [ ] Implement and prove ACP-safe file diagnostics, secret redaction, panic
-  behavior, and broader startup/provider failure behavior.
+- [x] Prove provider/backend error redaction, backend panic containment,
+  process-level ACP panic-payload suppression, and unavailable-provider startup
+  behavior without protocol-stdout contamination.
+- [x] Implement and prove opt-in ACP-safe JSONL file diagnostics with known-
+  pattern redaction, a 4 KiB detail cap, 1 MiB rotation, three retained
+  generations, restrictive Unix permissions, `O_NOFOLLOW`, and non-regular-
+  path refusal. Diagnostics remain per-process and intentionally exclude raw
+  prompt/response bodies.
 - [x] Add an official-SDK subprocess fixture and a Zed custom-agent setup guide.
 - [ ] Complete the manual Zed smoke (tool, approval/deny, cancel, restart/import,
   and ACP-log inspection).
@@ -477,18 +610,27 @@ separate files.
 
 **Depends on:** EXE-01, CHAIN-01, SEC-01; do not lead with this packet.
 
-## Recommended parallel-agent waves
+## Next safe parallel-agent allocation
 
-| Wave | Concurrent lanes | Integration gate |
-|---|---|---|
-| 0 | FND-01 runtime interface; FND-02 data/event interface; CHAIN-01 workflow repair; SEC-01 backend research/spikes | Freeze runtime handle, interaction events, principal context, and migration ownership. |
-| 1 | FND-01 composition; FND-02 headless interaction; EXE-01 orchestrator; CHAIN-01 real tests | Production composition test plus real tool-call test. |
-| 2 | API-01; TUI-01; ACP-01; OBS-01; PCA-01 | Same conversation/run can be initiated and inspected across clients; restart and lag tests pass. |
-| 3 | ORC-01; OPS-01 durable API/Postgres/recovery; EXT-01 manifest/runtime/sandbox/trust; PAY-01 design/spike | Completion gate from `STATUS.md`; no fake path hidden by surface tests. |
+The contract/runtime foundation and first TUI, chat, HTTP, and ACP slices are
+already present. New agents should start from the remaining rows below rather
+than replaying historical foundation work.
 
-At each wave boundary, one integration agent should own workspace manifests,
-CLI command registration, SQLite migration registration, and the final
-cross-surface test. Other agents should not concurrently edit those hot files.
+| Lane | Packet and next deliverable | Exclusive primary ownership | Integration gate |
+|---|---|---|---|
+| Integration | FND-01/FND-02: one cross-surface interaction fixture and any additive interaction migration | `polkagent-runtime`, `polkagent-interaction`, migration registration | One interaction can be created, prompted, cancelled, restarted, and projected identically through every composed surface. |
+| Execution | EXE-01: first real read-only tool call, then persisted approval-required effect | `polkagent-run` orchestrator and narrow service bridges | No fabricated tool result; intent precedes I/O and exact tool output returns to the next model turn. |
+| Editor | ACP-01: durable session create/list/load/prompt/cancel over `InteractionService` | `polkagent-surface-acp` and ACP subprocess tests | Official client restart/load/follow-up uses the same durable session and clean JSON-RPC stdout. |
+| Terminal | TUI-01: remaining shared commands, service-routed approvals, and structured tool/plan projection | CLI chat/TUI modules | Commands create no accidental prompt; exact effect identities survive cancel/restart. |
+| Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
+| Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
+| Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |
+| Productization | OPS-01, EXT-01, and PAY-01 remain independent until their named core dependency is ready | deployment, marketplace, and payment paths respectively | Apply the completion gate in `STATUS.md`; do not replace missing production dependencies with fake stores. |
+
+One integration owner must serialize changes to workspace manifests, CLI
+dispatch, shared API state, and SQLite migration registration. Other lanes can
+run concurrently when they keep to the ownership column and hand additive
+interfaces to that owner.
 
 ## Required agent handoff
 

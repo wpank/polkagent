@@ -10,14 +10,15 @@ Polkagent has a broad passing Rust check/test/rustdoc suite, and both the
 mandatory workspace Clippy command and a stronger all-target/all-feature gate
 are locally green. Bounded product slices now exist for the TUI, ACP, local
 packages, PCA transport, and container lifecycle, but no PRD is complete
-end-to-end under the repository's completion rule. The dominant gap is
-composition: these slices do not converge on one shared durable
-runtime/session/event contract, and the API/tool/effect/policy paths remain
-incomplete.
+end-to-end under the repository's completion rule. A production runtime,
+durable interaction/session/event service, and shared command handlers now
+exist. TUI, terminal chat, and HTTP now consume the interaction service; the
+dominant gaps are ACP migration, role-safe harness history, approval/tool
+projection, and the central tool/effect/policy path.
 
-The next milestone is therefore not “add more crates.” It is one durable
-runtime and interaction contract, followed by real tool/effect execution and
-actionable surfaces built on that contract.
+The next milestone is therefore not “add more crates.” It is consuming the
+shared runtime/interaction service across surfaces, followed by real
+tool/effect execution and durable actionable experiences.
 
 Current execution truth lives in:
 
@@ -55,8 +56,8 @@ percentage.
 | [PRD-10](PRD-10-DATA-OBSERVABILITY.md) | Events, artifacts, telemetry, recovery | Active; production injection and stream gap/replay behavior remain. |
 | [PRD-11](PRD-11-DEPLOYMENT-CLOUD.md) | Deployment and cloud | Active; bounded single-instance container/config/shutdown/replacement persistence is proven, while durable API/run recovery and production operations remain. |
 | [PRD-12](PRD-12-MARKETPLACE-EXTENSIONS.md) | Extensions and marketplace | Active; durable local package lifecycle and operator CLI work, while activation, sandbox execution, cryptographic trust, and registry paths remain. |
-| [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; the TUI has a bounded actionable Console, but durable chat/orchestration and studio/mobile surfaces are absent. |
-| [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; API production composition and OpenAPI parity are P0/P1 gaps. |
+| [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; durable terminal chat and a restart-resumable TUI Console now provide bounded contextual model-executor follow-up, while harness context, approvals/orchestration, and studio/mobile surfaces remain. |
+| [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; shared-runtime durable interaction/core routes, checkpointed SSE, and zero-drift ordinary HTTP/OpenAPI parity exist, while optional-route composition remains. |
 | [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; broad component coverage, stable/Rust-1.89 checks, strict rustdoc, and mandatory/extended Clippy gates pass locally; production/live/client conformance remains incomplete. |
 
 ## Active delivery PRDs
@@ -74,17 +75,19 @@ backlog.
 ## Critical path
 
 ```text
-shared production runtime
+shared production runtime (implemented; run/TUI/chat/ACP/serve migrated)
         |
         +--> real tool/effect/policy/approval execution
         |
-        +--> durable interaction/session/event contract
+        +--> durable interaction/session/event service
+             (target-only prompt/transcript/cancel/replay implemented)
                     |
                     +--> terminal chat + durable/actionable TUI
-                         (bounded single-run TUI slice exists)
+                         (target-only session/restart/cancel slices exist)
                     +--> complete ACP server + Zed support
                          (bounded stdio protocol slice exists)
                     +--> durable API control plane
+                         (interaction/core HTTP slice exists)
                     +--> group/feed orchestration
 
 parallel foundations: live-chain E2E, security custody/auth, PCA networking,
