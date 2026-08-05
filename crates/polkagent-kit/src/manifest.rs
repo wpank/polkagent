@@ -306,6 +306,13 @@ impl KitManifest {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Manifest tests intentionally panic at parsing and rejection boundaries so
+// malformed kit fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "kit manifest test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

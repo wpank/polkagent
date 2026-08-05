@@ -168,6 +168,12 @@ pub fn skills_to_unregister(manifest: &KitManifest) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Kit manager tests intentionally panic at temporary-filesystem and validation
+// boundaries so broken installation fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "kit manager test assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use std::fs;
