@@ -34,6 +34,7 @@ use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::{
     input::{key_to_action, InputMode, TuiAction},
+    interaction::{ControllerEvent, RunController},
     state::TuiState,
     theme::Theme,
     views,
@@ -59,7 +60,7 @@ pub const REFRESH_INTERVAL_SECS: u64 = 5;
 // Tab
 // ---------------------------------------------------------------------------
 
-/// Top-level region tab (F1–F8) plus pseudo-tabs for drill-down views.
+/// Top-level region tab (F1–F9) plus pseudo-tabs for drill-down views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     /// F1 — Overview: agent grid, run summary, system health.
@@ -79,6 +80,8 @@ pub enum Tab {
     Memory,
     /// F8 — Audit log.
     Audit,
+    /// F9 — Interactive agent console.
+    Console,
     /// Run detail (entered from Runs via Enter; not a top-level F-key tab).
     RunDetail,
 }
@@ -86,7 +89,7 @@ pub enum Tab {
 #[allow(dead_code)]
 impl Tab {
     /// All tabs in display order (excludes pseudo-tabs like RunDetail).
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Dashboard,
         Tab::Agents,
         Tab::Runs,
@@ -95,6 +98,7 @@ impl Tab {
         Tab::Approvals,
         Tab::Memory,
         Tab::Audit,
+        Tab::Console,
     ];
 
     /// Display name used in the header bar and status bar.
@@ -108,6 +112,7 @@ impl Tab {
             Self::Approvals => "APPROVALS",
             Self::Memory => "MEMORY",
             Self::Audit => "AUDIT",
+            Self::Console => "CONSOLE",
             Self::RunDetail => "RUN DETAIL",
         }
     }
@@ -123,6 +128,7 @@ impl Tab {
             Self::Approvals => "[F6]",
             Self::Memory => "[F7]",
             Self::Audit => "[F8]",
+            Self::Console => "[F9]",
             Self::RunDetail => "[--]",
         }
     }
@@ -138,7 +144,8 @@ impl Tab {
             Self::Timeline => Self::Approvals,
             Self::Approvals => Self::Memory,
             Self::Memory => Self::Audit,
-            Self::Audit => Self::Dashboard,
+            Self::Audit => Self::Console,
+            Self::Console => Self::Dashboard,
             Self::RunDetail => Self::System,
         }
     }
@@ -156,6 +163,7 @@ impl Tab {
             "approvals" => Self::Approvals,
             "memory" => Self::Memory,
             "audit" => Self::Audit,
+            "console" | "chat" => Self::Console,
             _ => Self::Dashboard,
         }
     }
@@ -164,7 +172,7 @@ impl Tab {
     /// RunDetail maps to its parent (Runs).
     pub fn prev(self) -> Self {
         match self {
-            Self::Dashboard => Self::Audit,
+            Self::Dashboard => Self::Console,
             Self::Agents => Self::Dashboard,
             Self::Runs => Self::Agents,
             Self::System => Self::Runs,
@@ -172,6 +180,7 @@ impl Tab {
             Self::Approvals => Self::Timeline,
             Self::Memory => Self::Approvals,
             Self::Audit => Self::Memory,
+            Self::Console => Self::Audit,
             Self::RunDetail => Self::Runs,
         }
     }
@@ -207,11 +216,15 @@ pub struct App {
 
     // -- Chain polling -------------------------------------------------------
     pub chain_poller: crate::tui::db::ChainPoller,
+
+    // -- Interactive execution ---------------------------------------------
+    pub run_controller: RunController,
 }
 
 impl App {
     /// Create a new `App` with the given theme, database pool, and initial tab.
     pub fn new(theme: Theme, pool: SqlitePool, initial_tab: Tab) -> Self {
+        let run_controller = RunController::new(pool.clone());
         Self {
             active_tab: initial_tab,
             tui_state: TuiState::default(),
@@ -225,6 +238,7 @@ impl App {
                 .unwrap_or_else(Instant::now),
             pool,
             chain_poller: crate::tui::db::ChainPoller::new(),
+            run_controller,
         }
     }
 
@@ -254,6 +268,8 @@ impl App {
             }
 
             // 2. Background data refresh (every REFRESH_INTERVAL_SECS).
+            self.drain_run_events();
+
             if self.last_refresh.elapsed().as_secs() >= REFRESH_INTERVAL_SECS {
                 self.refresh_data();
                 self.last_refresh = Instant::now();
@@ -295,6 +311,9 @@ impl App {
         match action {
             TuiAction::NavigateTab(tab) => {
                 self.active_tab = tab;
+                if tab == Tab::Console {
+                    self.ensure_console_agent();
+                }
                 // When switching to timeline, refresh events for the selected run.
                 if tab == Tab::Timeline {
                     self.refresh_run_events();
@@ -489,6 +508,12 @@ impl App {
             }
 
             TuiAction::Back => {
+                if self.input_mode == InputMode::Prompt {
+                    self.input_mode = InputMode::Normal;
+                    self.tui_state.interaction.prompt_buffer.clear();
+                    self.tui_state.mark_dirty();
+                    return;
+                }
                 match self.active_tab {
                     Tab::Agents => {
                         self.tui_state.agents_scroll.selected = None;
@@ -736,7 +761,65 @@ impl App {
                 }
             }
 
+            TuiAction::OpenPrompt => {
+                let run_active = self
+                    .tui_state
+                    .interaction
+                    .run
+                    .as_ref()
+                    .is_some_and(|run| !run.status.is_terminal());
+                if run_active {
+                    self.tui_state.last_error =
+                        Some("a console run is already active; press x to cancel it".to_owned());
+                } else if self.ensure_console_agent() {
+                    self.active_tab = Tab::Console;
+                    self.input_mode = InputMode::Prompt;
+                    self.tui_state.last_error = None;
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptInput(c) => {
+                self.tui_state.interaction.push_char(c);
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptBackspace => {
+                self.tui_state.interaction.backspace();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptSubmit => match self.tui_state.interaction.submit() {
+                Ok(request) => {
+                    self.input_mode = InputMode::Normal;
+                    if let Err(error) = self.run_controller.start(request) {
+                        self.tui_state
+                            .interaction
+                            .apply(ControllerEvent::Failed(error.to_owned()));
+                        self.tui_state.last_error = Some(error.to_owned());
+                    } else {
+                        self.tui_state.last_error = None;
+                    }
+                    self.tui_state.mark_dirty();
+                }
+                Err(error) => {
+                    self.tui_state.last_error = Some(error.to_owned());
+                    self.tui_state.mark_dirty();
+                }
+            },
+
+            TuiAction::CancelActiveRun => {
+                if self.run_controller.cancel() {
+                    self.tui_state.interaction.mark_cancelling();
+                    self.tui_state.last_error = None;
+                } else {
+                    self.tui_state.last_error = Some("no console run is active".to_owned());
+                }
+                self.tui_state.mark_dirty();
+            }
+
             TuiAction::Quit => {
+                let _ = self.run_controller.cancel();
                 self.running = false;
             }
 
@@ -749,6 +832,70 @@ impl App {
             TuiAction::Resize(_w, _h) => {
                 self.tui_state.mark_dirty();
             }
+        }
+    }
+
+    /// Select the highlighted active agent, retain the console target when it
+    /// is still active, or fall back to the first active agent.
+    fn ensure_console_agent(&mut self) -> bool {
+        let selected = self
+            .tui_state
+            .agents_scroll
+            .selected
+            .and_then(|index| self.tui_state.agents.get(index))
+            .filter(|agent| agent.state == "active")
+            .or_else(|| {
+                let current = self.tui_state.interaction.agent_id.as_deref();
+                self.tui_state
+                    .agents
+                    .iter()
+                    .find(|agent| Some(agent.id.as_str()) == current && agent.state == "active")
+            })
+            .or_else(|| {
+                self.tui_state
+                    .agents
+                    .iter()
+                    .find(|agent| agent.state == "active")
+            })
+            .map(|agent| (agent.id.clone(), agent.name.clone()));
+
+        if let Some((id, name)) = selected {
+            let changed = self.tui_state.interaction.agent_id.as_deref() != Some(id.as_str());
+            if changed {
+                self.tui_state.interaction.select_agent(id, name);
+            }
+            true
+        } else {
+            self.tui_state.last_error =
+                Some("no active agent is available; activate an agent before prompting".to_owned());
+            false
+        }
+    }
+
+    /// Drain controller events on the terminal thread and immediately refresh
+    /// durable run projections when lifecycle state changes.
+    fn drain_run_events(&mut self) {
+        let mut refresh = false;
+        while let Some(event) = self.run_controller.try_recv() {
+            if let ControllerEvent::Started { run_id, .. } = &event {
+                self.tui_state.selected_run = Some(run_id.clone());
+                refresh = true;
+            }
+            if matches!(
+                event,
+                ControllerEvent::Completed { .. }
+                    | ControllerEvent::Failed(_)
+                    | ControllerEvent::Cancelled(_)
+                    | ControllerEvent::TimedOut
+            ) {
+                refresh = true;
+            }
+            self.tui_state.interaction.apply(event);
+            self.tui_state.mark_dirty();
+        }
+        if refresh {
+            self.refresh_data();
+            self.last_refresh = Instant::now();
         }
     }
 
@@ -1049,6 +1196,15 @@ impl App {
             Tab::Audit => {
                 views::audit::render(frame, layout.main, &self.tui_state, &self.theme);
             }
+            Tab::Console => {
+                views::console::render(
+                    frame,
+                    layout.main,
+                    &self.tui_state,
+                    self.input_mode,
+                    &self.theme,
+                );
+            }
         }
     }
 
@@ -1069,6 +1225,7 @@ impl App {
             (Tab::Approvals, "F6 Approvals"),
             (Tab::Memory, "F7 Memory"),
             (Tab::Audit, "F8 Audit"),
+            (Tab::Console, "F9 Console"),
         ];
 
         let mut spans = Vec::with_capacity(tabs.len() * 2);

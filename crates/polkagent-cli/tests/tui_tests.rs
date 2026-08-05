@@ -13,7 +13,7 @@ use polkagent_cli::tui::{
     input::{key_to_action, InputMode, TuiAction},
     state::{ApprovalItem, AuditEvent, ConfirmDialog, MemoryEntry, ScrollState, TuiState},
     theme::Theme,
-    views::audit::AuditFilter,
+    views::{audit::AuditFilter, console},
     widgets::{header_bar, status_bar},
 };
 
@@ -313,7 +313,12 @@ fn test_tab_keys() {
 fn test_any_key_no_panic() {
     // Exhaustive check: a broad range of key codes should never panic.
     // We test all printable ASCII, all F-keys, arrow keys, and modifiers.
-    let modes = [InputMode::Normal, InputMode::Insert, InputMode::Command];
+    let modes = [
+        InputMode::Normal,
+        InputMode::Insert,
+        InputMode::Prompt,
+        InputMode::Command,
+    ];
     let modifiers = [
         KeyModifiers::NONE,
         KeyModifiers::CONTROL,
@@ -486,20 +491,20 @@ fn test_tab_navigation() {
     assert_eq!(tab, Tab::Memory);
     tab = tab.next(); // Audit
     assert_eq!(tab, Tab::Audit);
+    tab = tab.next(); // Console
+    assert_eq!(tab, Tab::Console);
     tab = tab.next(); // Dashboard (wrap)
     assert_eq!(
         tab,
         Tab::Dashboard,
-        "next() should wrap from Audit to Dashboard"
+        "next() should wrap from Console to Dashboard"
     );
 
     // Go backward through all tabs.
+    tab = tab.prev(); // Console
+    assert_eq!(tab, Tab::Console);
     tab = tab.prev(); // Audit
-    assert_eq!(
-        tab,
-        Tab::Audit,
-        "prev() should wrap from Dashboard to Audit"
-    );
+    assert_eq!(tab, Tab::Audit, "Console should precede Dashboard");
     tab = tab.prev(); // Memory
     assert_eq!(tab, Tab::Memory);
     tab = tab.prev(); // Approvals
@@ -516,7 +521,7 @@ fn test_tab_navigation() {
     assert_eq!(tab, Tab::Dashboard);
 
     // Tab::ALL should list all tabs.
-    assert_eq!(Tab::ALL.len(), 8, "There should be exactly 8 tabs");
+    assert_eq!(Tab::ALL.len(), 9, "There should be exactly 9 tabs");
 }
 
 // =========================================================================
@@ -1130,33 +1135,37 @@ fn test_approvals_keybinding_deny_produces_action() {
 // =========================================================================
 
 #[test]
-fn test_tab_navigation_includes_memory_and_audit() {
-    // Tab::ALL should now include Memory and Audit.
+fn test_tab_navigation_includes_memory_audit_and_console() {
+    // Tab::ALL should include every top-level operational surface.
     let all = Tab::ALL;
     assert_eq!(
         all.len(),
-        8,
-        "Tab::ALL should contain 8 tabs (including Memory and Audit)"
+        9,
+        "Tab::ALL should contain 9 tabs (including Console)"
     );
     assert!(all.contains(&Tab::Memory), "Tab::ALL should include Memory");
     assert!(all.contains(&Tab::Audit), "Tab::ALL should include Audit");
-}
-
-#[test]
-fn test_tab_next_audit_wraps_to_dashboard() {
-    assert_eq!(
-        Tab::Audit.next(),
-        Tab::Dashboard,
-        "next() on Audit should wrap to Dashboard"
+    assert!(
+        all.contains(&Tab::Console),
+        "Tab::ALL should include Console"
     );
 }
 
 #[test]
-fn test_tab_prev_dashboard_goes_to_audit() {
+fn test_tab_next_audit_goes_to_console() {
+    assert_eq!(
+        Tab::Audit.next(),
+        Tab::Console,
+        "next() on Audit should go to Console"
+    );
+}
+
+#[test]
+fn test_tab_prev_dashboard_goes_to_console() {
     assert_eq!(
         Tab::Dashboard.prev(),
-        Tab::Audit,
-        "prev() on Dashboard should go to Audit"
+        Tab::Console,
+        "prev() on Dashboard should go to Console"
     );
 }
 
@@ -1176,6 +1185,63 @@ fn test_tab_f8_maps_to_audit() {
         matches!(action, Some(TuiAction::NavigateTab(Tab::Audit))),
         "F8 should switch to Audit tab, got: {action:?}"
     );
+}
+
+#[test]
+fn test_console_keys_map_to_actions() {
+    assert!(matches!(
+        key_to_action(key(KeyCode::F(9)), InputMode::Normal),
+        Some(TuiAction::NavigateTab(Tab::Console))
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Char('p')), InputMode::Normal),
+        Some(TuiAction::OpenPrompt)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Char('x')), InputMode::Normal),
+        Some(TuiAction::CancelActiveRun)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Char('a')), InputMode::Prompt),
+        Some(TuiAction::PromptInput('a'))
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Enter), InputMode::Prompt),
+        Some(TuiAction::PromptSubmit)
+    ));
+}
+
+#[test]
+fn test_console_renders_prompt_and_live_output() {
+    use polkagent_cli::tui::interaction::{ControllerEvent, InteractionState};
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let theme = Theme::dark();
+    let mut state = TuiState {
+        interaction: InteractionState::default(),
+        ..TuiState::default()
+    };
+    state.interaction.select_agent("agent-id", "Treasury Agent");
+    state.interaction.prompt_buffer = "summarize proposals".to_owned();
+    state.interaction.submit().unwrap();
+    state.interaction.apply(ControllerEvent::Started {
+        run_id: "12345678-1234-1234-1234-123456789abc".to_owned(),
+        agent_name: "Treasury Agent".to_owned(),
+        notes: Vec::new(),
+    });
+    state.interaction.apply(ControllerEvent::Output(
+        "Three active proposals.".to_owned(),
+    ));
+
+    terminal
+        .draw(|frame| console::render(frame, frame.area(), &state, InputMode::Normal, &theme))
+        .expect("draw console");
+    let text = buffer_text(&terminal);
+    assert!(text.contains("Treasury Agent"), "{text}");
+    assert!(text.contains("summarize proposals"), "{text}");
+    assert!(text.contains("Three active proposals"), "{text}");
+    assert!(text.contains("12345678"), "{text}");
 }
 
 #[test]

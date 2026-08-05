@@ -186,6 +186,10 @@ adapter hooks through small interfaces.
 
 **Checklist:**
 
+- [x] Deliver an interim actionable vertical slice: F9 Console, active-agent
+  selection, prompt submission, non-blocking live output/lifecycle projection,
+  cancellation, durable run selection, and focused reducer/render/bootstrap
+  tests using the one-shot service composition.
 - [ ] Add `polkagent chat` using `InteractionService` and shared commands.
 - [ ] Convert the TUI loop to async/channel-driven input, runtime events, and
   background completion.
@@ -195,6 +199,12 @@ adapter hooks through small interfaces.
 - [ ] Add start/follow-up/cancel/approve/deny/create-select-agent actions.
 - [ ] Remove UI direct DB mutations.
 - [ ] Preserve all monitoring tabs and terminal restoration on panic/error.
+
+**Current boundary:** the completed slice is single-line, single-active-run,
+and in-memory at the transcript layer. It shares `commands/run.rs` bootstrap
+instead of shelling out, but it does not satisfy FND-01/FND-02: no long-lived
+runtime handle, durable conversation/turn model, command registry, restart
+resume, simultaneous orchestration, or service-routed approval path exists.
 
 **Exit checks:** user can launch, select/create an agent, prompt, see tokens and
 tools, approve/deny, cancel, prompt again, restart, and resume. Headless event

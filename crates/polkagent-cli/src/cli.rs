@@ -637,7 +637,7 @@ pub struct LogsCmd {
 /// Launch the interactive ROSEDUST terminal UI.
 #[derive(Debug, Args)]
 pub struct TuiCmd {
-    /// Start on a specific tab: dashboard, agents, runs, system.
+    /// Start on a specific tab, including dashboard, agents, runs, or console.
     #[arg(long, value_name = "TAB", default_value = "dashboard")]
     pub tab: String,
 }

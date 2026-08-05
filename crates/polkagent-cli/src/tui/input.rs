@@ -21,6 +21,8 @@ pub enum InputMode {
     Normal,
     /// Text input mode — most bindings suppressed, characters go to the buffer.
     Insert,
+    /// Interactive console composer — characters go to the agent prompt.
+    Prompt,
     /// Command-palette mode — input goes to the palette filter.
     Command,
 }
@@ -62,6 +64,18 @@ pub enum TuiAction {
     DenyEffect,
     /// Toggle between sub-panels (e.g. info/turns in run detail).
     TogglePanel,
+
+    // -- Interactive console ------------------------------------------------
+    /// Open the console composer for the selected/default active agent.
+    OpenPrompt,
+    /// Append a character to the console prompt.
+    PromptInput(char),
+    /// Delete the final character from the console prompt.
+    PromptBackspace,
+    /// Start a real run using the current prompt.
+    PromptSubmit,
+    /// Cancel the run currently owned by the console.
+    CancelActiveRun,
 
     // -- Memory / audit ------------------------------------------------------
     /// Activate the memory search bar (switches to insert mode on the Memory tab).
@@ -123,6 +137,13 @@ pub fn key_to_action(key: KeyEvent, mode: InputMode) -> Option<TuiAction> {
             KeyCode::Char(c) => Some(TuiAction::SearchInput(c)),
             _ => None,
         },
+        InputMode::Prompt => match key.code {
+            KeyCode::Esc => Some(TuiAction::Back),
+            KeyCode::Enter => Some(TuiAction::PromptSubmit),
+            KeyCode::Backspace => Some(TuiAction::PromptBackspace),
+            KeyCode::Char(c) => Some(TuiAction::PromptInput(c)),
+            _ => None,
+        },
         InputMode::Command => match key.code {
             KeyCode::Esc => Some(TuiAction::Back),
             _ => None,
@@ -142,6 +163,7 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
         KeyCode::F(6) => Some(TuiAction::NavigateTab(Tab::Approvals)),
         KeyCode::F(7) => Some(TuiAction::NavigateTab(Tab::Memory)),
         KeyCode::F(8) => Some(TuiAction::NavigateTab(Tab::Audit)),
+        KeyCode::F(9) => Some(TuiAction::NavigateTab(Tab::Console)),
 
         // ── Quick tab shortcuts ──────────────────────────────────────────
         KeyCode::Char('1') => Some(TuiAction::NavigateTab(Tab::Dashboard)),
@@ -152,6 +174,7 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
         KeyCode::Char('6') => Some(TuiAction::NavigateTab(Tab::Approvals)),
         KeyCode::Char('7') => Some(TuiAction::NavigateTab(Tab::Memory)),
         KeyCode::Char('8') => Some(TuiAction::NavigateTab(Tab::Audit)),
+        KeyCode::Char('9') => Some(TuiAction::NavigateTab(Tab::Console)),
 
         // ── Quit ─────────────────────────────────────────────────────────
         KeyCode::Char('q') | KeyCode::Char('Q') => Some(TuiAction::Quit),
@@ -180,6 +203,10 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
 
         // ── Panel toggle (Tab key) ───────────────────────────────────────
         KeyCode::Tab => Some(TuiAction::TogglePanel),
+
+        // ── Interactive console ─────────────────────────────────────────
+        KeyCode::Char('p') => Some(TuiAction::OpenPrompt),
+        KeyCode::Char('x') => Some(TuiAction::CancelActiveRun),
 
         // ── Approval actions ─────────────────────────────────────────────
         // NOTE: These fire globally but the handler in App::apply_action

@@ -2,7 +2,7 @@
 
 **Evidence snapshot:** 2026-08-05
 **Conclusion:** broad component maturity; incomplete production composition;
-no PRD verified complete end-to-end
+no PRD verified complete end-to-end; first actionable TUI run slice exists
 
 ## Verification baseline
 
@@ -22,10 +22,11 @@ locked canonical image builds, starts unprivileged, honours a bind-mounted
 read-only config, answers the three HTTP probes, drains HTTP on SIGTERM with a
 clean exit, and replaces the container on the same named volume while retaining
 a SQLite CLI marker. A focused official-SDK subprocess test also proves one ACP
-initialize/new/prompt session and a real `AppService` run. These checks do not
-prove durable API/run recovery, worker/effect draining, Postgres,
-backup/restore, auth, HA, a real chain action, an interactive TUI prompt, or
-complete Zed/editor behavior.
+initialize/new/prompt session and a real `AppService` run. Focused TUI tests
+prove the bounded Console prompt/start/stream/cancel projection. These checks
+do not prove durable API/run recovery, worker/effect draining, Postgres,
+backup/restore, auth, HA, a real chain action, a durable multi-turn interaction,
+or complete Zed/editor behavior.
 
 The audit intentionally treats tests such as “returns 501 when store is not
 configured” as contract coverage and simultaneous evidence that production
@@ -35,8 +36,8 @@ startup still has a wiring gap.
 
 | Surface/capability | Component state | Product state | Decisive gap |
 |---|---|---|---|
-| One-shot CLI run | Substantial and tested | Partially usable | Bootstrap is embedded in the command; tools/effects/policy are not a real model loop. |
-| Monitoring TUI | Rich views and rendering tests | Not actionable as an agent console | No prompt/session/start/cancel path; direct DB mutations bypass services. |
+| One-shot CLI run | Substantial and tested | Partially usable | Bootstrap is now reusable by the TUI but still lives in the command composition; tools/effects/policy are not a real model loop. |
+| Monitoring TUI | Rich views plus an F9 Console | Actionable for one run at a time | Prompt/start/live output/cancel work; durable conversations, history/slash commands, simultaneous orchestration, restart recovery, and service-routed approvals remain. |
 | REST/WebSocket API | Broad route and middleware coverage | Not a durable production control plane | `serve` uses in-memory agents/runs and omits most optional stores/registries, producing many 501s. |
 | Interactive terminal chat | No shared surface | Missing | Requires `InteractionService`, command registry, and runtime factory. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
@@ -70,11 +71,11 @@ startup still has a wiring gap.
 | 10 Observability | Strong components | Partial | No recovery/replay proof | Active P1 |
 | 11 Deployment/cloud | Container boot/config/HTTP drain/same-volume replacement verified; broader scaffolding exists | Single-instance SQLite only | CLI marker persistence, not durable API/run recovery | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
-| 13 UX | CLI/TUI exist | Partial | Interactive experience missing | Active P0/P1 + PRD-19 |
+| 13 UX | CLI/TUI plus actionable Console slice | Partial | Single-run prompt E2E; no durable chat/orchestration UX | Active P0/P1 + PRD-19 |
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
 | 15 Testing | Broad green suite | Production paths under-tested | Live/client/ops gates missing | Active cross-cutting |
 | 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
-| 19 Interactive/ACP | Initial ACP server implemented; TUI architecture specified | ACP independently composes `AppService`; shared interaction/runtime factory remains missing | Official client proves command discovery and prompt/run; no full Zed or interactive TUI E2E | Active P0/P1 |
+| 19 Interactive/ACP | Initial ACP server and actionable TUI slices implemented | Both independently compose the one-shot `AppService` path; shared interaction/runtime factory remains missing | Official client proves ACP discovery and prompt/run; TUI fake-executor E2E proves prompt/start/stream/cancel; no full Zed or durable session E2E | Active P0/P1 |
 
 ## Decisive implementation evidence
 
@@ -93,8 +94,10 @@ startup still has a wiring gap.
 - `crates/polkagent-cli/src/commands/package.rs` exposes that lifecycle through
   restart-safe local commands with structured output. Strict trust fails
   closed; development trust requires an explicit CLI selection.
-- `crates/polkagent-cli/src/tui/app.rs` owns a database pool and polls it; it
-  does not own the application/interaction runtime or a live event receiver.
+- `crates/polkagent-cli/src/tui/interaction.rs` now bridges the F9 Console to
+  the shared one-shot run bootstrap, projects live events without blocking the
+  render loop, and cancels through `AppService`; `App` still lacks the target
+  long-lived production/interaction runtime and durable session projection.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent
   harnesses, not a Polkagent ACP agent server.
 - `crates/polkagent-surface-acp` is the separate server-side adapter. The

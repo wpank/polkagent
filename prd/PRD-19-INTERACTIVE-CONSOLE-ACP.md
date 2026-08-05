@@ -1,30 +1,59 @@
 # PRD-19 — Interactive Polkagent: TUI, Terminal Sessions, Orchestration, and ACP
 
-**Status:** active architecture and implementation plan; initial ACP server slice implemented
+**Status:** active architecture and implementation plan; initial ACP server and
+actionable TUI slices implemented
 
 **Prepared:** 2026-08-05
 
 **Scope:** current Polkagent checkout at `/Users/will/dev/par/polkagent`, compared with Roko at `/Users/will/dev/nunchi/roko/roko` and the current ACP v1/Zed documentation
 
 **Implementation status:** `polkagent-surface-acp` and protocol-safe
-`polkagent acp` dispatch now implement an ACP v1 initialize/new/prompt/cancel
-slice, slash-command discovery, agent selection, and `AppService`-backed
-prompts. An official-SDK subprocess test proves the wire path. Durable
-sessions, shared interaction/runtime composition, structured tools and
-permissions, and manual Zed validation remain open.
+`polkagent acp` dispatch implement an ACP v1 initialize/new/prompt/cancel slice,
+slash-command discovery, agent selection, and `AppService`-backed prompts. An
+official-SDK subprocess test proves that wire path. The F9 Console now supports
+selecting an active agent, composing a prompt, starting a durable run through
+the same bootstrap as `polkagent run`, viewing live output/progress/usage, and
+cancelling it. Both remain bounded adapters: durable sessions, a shared
+interaction/runtime composition, structured tools and permissions, and manual
+Zed validation remain open.
 
 **Supersedes:** the implementation role of archived PRD-18; unresolved work is
 tracked in `IMPLEMENTATION-BACKLOG.md`
 
 ## Executive decision
 
-Polkagent is not currently an interactive agent product.
+### 2026-08-05 implementation checkpoint
+
+The first useful vertical TUI slice is now present:
+
+- `p` opens a dedicated prompt composer for the selected or first active agent;
+- F9/`9` opens the Console workspace;
+- Enter starts a real `AppService` run and `x` requests cancellation;
+- live text, lifecycle, progress, tool names, errors, and final usage are
+  projected into the Console without blocking the terminal loop;
+- the durable run is selected and refreshed into the existing Runs, Run Detail,
+  and Timeline views;
+- the one-shot command and TUI share `start_run_inner`, so this slice does not
+  shell out or manufacture database rows;
+- reducer, key mapping, TestBackend rendering, and fake-executor durable-run
+  tests cover the new seam.
+
+Deliberate gaps remain: the controller composes one `AppService` per prompt
+rather than receiving a long-lived `PolkagentRuntime`; it retains only the most
+recent in-memory transcript; input is single-line and has no history or slash
+commands; direct approval/database actions remain; restart/resume,
+conversation-turn correlation, simultaneous runs, group orchestration,
+attachments, and ACP are not implemented. The architecture below remains the
+target rather than retroactively treating this slice as TUI-01 completion.
+
+Polkagent now has a useful single-run interactive TUI slice, but it is not yet
+the durable, multi-turn agent product described by this PRD.
 
 It has a substantial monitoring TUI, a runnable one-shot `polkagent run`, an
 in-process execution service, streaming run events, conversation storage, and
 an ACP **client** used to drive other coding agents. These are valuable building
-blocks. They are not assembled into a session that a human can prompt from the
-TUI or an editor.
+blocks. The TUI now assembles them for one active run, but they are not yet
+assembled into a durable session that can resume or operate from an editor.
 
 Two distinct features are needed:
 
@@ -41,22 +70,21 @@ or approval behavior.
 
 The archived `archive/2026-08-05/superseded-plans/PRD-18-INTERACTIVE-TUI.md`
 correctly identifies much of the TUI
-problem and proposes a prompt bar. It is still explicitly “design requirements
-only,” and none of its prompt-bar files or action variants exist. It also does
-not address ACP, durable interactive sessions, multi-run/multi-agent turns, or
-the production-runtime duplication that must be fixed first. It should be
-treated as input to this design, not as evidence that the feature exists.
+problem and proposes a prompt bar. The new Console closes its smallest
+single-run gap, but that archived plan still does not address ACP, durable
+interactive sessions, multi-run/multi-agent turns, or the production runtime.
+It remains design input rather than the completion contract.
 
 ## Bottom line: status matrix
 
 | User capability | Current status | Evidence / implication |
 |---|---|---|
 | Run `polkagent` with no arguments | Launches the monitoring TUI when stdout is a TTY | `polkagent-cli/src/main.rs` dispatches `None` to `launch_tui` |
-| Prompt Polkagent interactively | **Missing** | No chat/session/repl command; no generic input composer |
-| Prompt from inside the TUI | **Missing** | Insert mode is memory search only; command mode is inert |
-| Start or cancel a run from the TUI | **Missing** | TUI owns only `SqlitePool`, not `AppService`; no start/cancel actions |
+| Prompt Polkagent interactively | Partial | F9 Console has a single-line composer; focused `polkagent chat`, history, slash commands, and durable sessions remain |
+| Prompt from inside the TUI | Implemented for one run at a time | `p` selects an active agent and opens the Console composer |
+| Start or cancel a run from the TUI | Implemented for the bounded slice | Shared run bootstrap starts through `AppService`; `x` requests service cancellation |
 | Approve/deny in the TUI | Partial and unsafe architecturally | It writes outcome rows directly through `TuiDb`, bypassing `AppService` |
-| See live run output in the TUI | **Missing** | Five-second SQLite polling; no event-bus receiver; streaming tokens are ephemeral |
+| See live run output in the TUI | Partial | Controller projects the owned run's live event receiver; lag/restart recovery and durable transcript projection remain |
 | Persist/resume human conversations | Building blocks exist, not integrated | SQLite conversation schema/store exists; prompt/run path does not use it as a session |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
@@ -66,9 +94,9 @@ treated as input to this design, not as evidence that the feature exists.
 
 ## 1. What Polkagent actually has today
 
-### 1.1 The TUI is a monitor with a few direct database mutations
+### 1.1 The TUI is now an actionable monitor for one active run
 
-The current Ratatui application has eight top-level tabs plus run detail:
+The current Ratatui application has nine top-level tabs plus run detail:
 
 - Dashboard
 - Agents
@@ -78,17 +106,11 @@ The current Ratatui application has eight top-level tabs plus run detail:
 - Approvals
 - Memory
 - Audit
+- Console
 
-This is a meaningful operational dashboard, and its render/input tests pass.
-The current test run completed with:
-
-- `polkagent-cli` TUI integration tests: 56 passed
-- `polkagent-cli` library tests: 59 passed
-- `polkagent-harness-acp` library tests: 52 passed
-
-Those tests establish that the existing state/rendering and downstream ACP
-client are healthy. They do not test interactive prompting, because it is not
-implemented.
+This is a meaningful operational dashboard. The Console's reducer, input
+mapping, TestBackend render, and durable fake-executor run path now have focused
+coverage; the broader baseline remains recorded in `STATUS.md`.
 
 The event loop in `crates/polkagent-cli/src/tui/app.rs`:
 
@@ -97,12 +119,12 @@ The event loop in `crates/polkagent-cli/src/tui/app.rs`:
 - polls SQLite every five seconds;
 - optionally polls a chain endpoint;
 - renders at an effective 10 fps (5 fps when idle);
-- has no channel for run output or task completion.
+- drains a typed controller channel for run output and task completion.
 
-`App` owns a `SqlitePool`, but not an `AppService`, `EventBus`, executor,
-harness, command registry, or conversation service. Consequently it cannot
-legitimately create agents, start runs, cancel work, or subscribe to live
-execution.
+`App` owns a `SqlitePool` and `RunController`, but not a long-lived
+`PolkagentRuntime`, command registry, or conversation service. The controller
+legitimately starts/cancels through `AppService` and subscribes before run
+creation, but it rebuilds the one-shot composition for each prompt.
 
 The TUI is not completely read-only: approvals, denials, and memory deletion
 write directly through `TuiDb`. That is a problem rather than a pattern to
@@ -111,20 +133,22 @@ audit, notifications, and waiting tasks observe the same transition. Starting
 runs by inserting database rows would be even more dangerous and must not be
 done.
 
-### 1.2 The input modes prove the prompt UI is not wired
+### 1.2 Input now has a bounded prompt mode
 
-`crates/polkagent-cli/src/tui/input.rs` defines `Normal`, `Insert`, and
-`Command` modes, but:
+`crates/polkagent-cli/src/tui/input.rs` now defines a distinct `Prompt` mode in
+addition to `Normal`, memory-search `Insert`, and the still-inert `Command`
+mode. It supports character entry, backspace, submit, and cancel. Remaining
+editor gaps are:
 
 - `/` invokes search, not a general slash-command prompt;
-- Insert mode emits only memory-search actions;
-- Enter in Insert mode submits only memory search;
 - Command mode handles only Escape;
-- no prompt buffer, cursor, history, completion, or submit action exists;
-- no `OpenPrompt`, `SubmitPrompt`, `StartRun`, or `CancelRun` action exists.
+- the prompt is single-line and append/backspace only;
+- there is no history, completion, slash-command parsing, paste model, or
+  grapheme-aware cursor movement;
+- target selection is the highlighted or first active agent, not a modal or
+  durable conversation configuration.
 
-This is why the UI feels “useless” for action despite having substantial visual
-surface area.
+This is enough to initiate useful work, but not yet an IDE-quality editor.
 
 ### 1.3 The one-shot run path contains the production wiring we need
 
@@ -138,9 +162,10 @@ surface area.
 - starts the run;
 - streams events and supports cancellation/timeout.
 
-That bootstrap is embedded in the run command. The TUI and a future ACP server
-must not copy it. It needs to become a production `RuntimeFactory` used by all
-long-lived surfaces.
+That bootstrap has now been extracted to `start_run_inner` inside the run
+command and is shared by the TUI's interim controller. This prevents immediate
+behavior drift, but it still needs to become a production `RuntimeFactory`
+used by every long-lived surface.
 
 ### 1.4 Useful session and streaming primitives exist but are incomplete
 
@@ -918,12 +943,20 @@ resume a conversation without any TUI or ACP types.
 
 - [ ] Convert TUI event loop to async channel-driven architecture.
 - [ ] Pass `PolkagentRuntime`, not only `SqlitePool`, into `App`.
-- [ ] Add Conversations/Console workspace and composer.
+- [x] Add the first single-run Console workspace and composer.
+- [ ] Upgrade the composer for Unicode cursor movement, multiline input,
+  history, completion, and durable conversation selection.
+- [x] Start/cancel a run through the shared one-shot `AppService` bootstrap as
+  an interim vertical slice.
 - [ ] Start/cancel runs through `InteractionService`.
-- [ ] Render live text, tools, approvals, usage, and errors.
+- [x] Render live text, lifecycle/tool-name progress, usage, and errors for the
+  Console-owned run.
+- [ ] Render structured tools/plans/approvals and recover after lag/restart.
 - [ ] Replace direct approval/denial database writes.
 - [ ] Add create/select agent modal; defer full agent-spec editor.
-- [ ] Add snapshot and event-loop integration tests.
+- [x] Add reducer, key mapping, TestBackend rendering, and durable fake-run
+  bootstrap tests.
+- [ ] Add full event-loop, resize, simultaneous-run, restart, and resume tests.
 
 **Exit:** a user can enter the TUI, select/create an agent, prompt it, observe
 work, approve/deny, cancel, and prompt again without leaving.

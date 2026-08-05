@@ -60,6 +60,7 @@ pub fn render(
     let mode_label = match mode {
         InputMode::Normal => "NRM",
         InputMode::Insert => "INS",
+        InputMode::Prompt => "PRM",
         InputMode::Command => "CMD",
     };
     let right = Paragraph::new(Line::from(vec![
@@ -77,7 +78,7 @@ pub fn render(
 fn key_hints(tab: Tab) -> &'static str {
     match tab {
         Tab::Dashboard => "F1-F8:tabs  q:quit  r:refresh  j/k:scroll",
-        Tab::Agents => "j/k:select  Enter:detail  r:refresh  q:quit",
+        Tab::Agents => "j/k:select  p:prompt  Enter:detail  r:refresh  q:quit",
         Tab::Runs => "j/k:select  Enter:detail  r:refresh  q:quit",
         Tab::System => "r:refresh  q:quit",
         Tab::RunDetail => "Esc:back  Tab:panel  F5:timeline  r:refresh  q:quit",
@@ -85,5 +86,6 @@ fn key_hints(tab: Tab) -> &'static str {
         Tab::Approvals => "j/k:select  a:approve  d:deny  r:refresh  q:quit",
         Tab::Memory => "j/k:select  /:search  Del:forget  r:refresh  q:quit",
         Tab::Audit => "j/k:scroll  r:refresh  q:quit",
+        Tab::Console => "p:prompt  x:cancel  F3:runs  F5:timeline  q:quit",
     }
 }

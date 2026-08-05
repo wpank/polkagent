@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::tui::interaction::InteractionState;
 use crate::tui::views::audit::AuditFilter;
 
 // ---------------------------------------------------------------------------
@@ -425,6 +426,9 @@ pub struct TuiState {
 
     /// Confirmation dialog state for approve/deny actions.
     pub confirm_dialog: ConfirmDialog,
+
+    /// Actionable console prompt and most-recent run projection.
+    pub interaction: InteractionState,
 
     // -- Scroll / selection --------------------------------------------------
     /// Scroll state for the agents list.

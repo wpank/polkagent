@@ -63,7 +63,7 @@ fn render_list(
 
     if runs.is_empty() {
         let msg = Paragraph::new(Span::styled(
-            "\n  No runs found. Use `polkagent run --agent-id <ID> --prompt <TEXT>`.",
+            "\n  No runs found. Press F2, select an active agent, then press p to prompt it.",
             Style::default().fg(theme.text_dim),
         ));
         frame.render_widget(msg, inner);

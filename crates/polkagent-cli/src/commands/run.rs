@@ -15,8 +15,8 @@ use polkagent_chain_trait::ChainClient;
 use polkagent_config::model_registry::synthesize_providers_from_env;
 use polkagent_config::Config;
 use polkagent_core::event::EventKind;
-use polkagent_core::{AgentId, AgentSpec};
-use polkagent_event::{EventBus, EventRecorder};
+use polkagent_core::{AgentId, AgentSpec, RunId};
+use polkagent_event::{EventBus, EventReceiver, EventRecorder};
 use polkagent_executor_anthropic::AnthropicExecutor;
 use polkagent_executor_fake::FakeExecutor;
 use polkagent_executor_gemini::GeminiExecutor;
@@ -30,6 +30,50 @@ use polkagent_store_sqlite::{SqlitePool, SqliteRunStore};
 use crate::cli::RunCmd;
 use crate::commands::run_printer::RunPrinter;
 use crate::tui::theme::Theme;
+
+/// A started run plus the live resources needed by interactive surfaces.
+///
+/// The one-shot CLI and the TUI deliberately share this bootstrap so provider,
+/// harness, store, event-recorder, and tool composition cannot drift.
+pub(crate) struct StartedRun {
+    pub(crate) service: Arc<AppService>,
+    pub(crate) events: EventReceiver,
+    pub(crate) run_id: RunId,
+    pub(crate) agent_id: String,
+    pub(crate) agent_name: String,
+    pub(crate) agent_model: String,
+    pub(crate) notes: Vec<String>,
+}
+
+struct StartRunOptions<'a> {
+    provider: Option<&'a str>,
+    model: Option<String>,
+    harness: Option<&'a str>,
+    no_harness: bool,
+    config: Option<Config>,
+}
+
+/// Start a run with normal config/environment auto-detection for a long-lived
+/// interactive surface such as the TUI.
+pub(crate) async fn start_interactive_run(
+    pool: &SqlitePool,
+    agent_id: &str,
+    prompt: &str,
+) -> Result<StartedRun> {
+    start_run_inner(
+        pool,
+        agent_id,
+        prompt,
+        StartRunOptions {
+            provider: None,
+            model: None,
+            harness: None,
+            no_harness: false,
+            config: None,
+        },
+    )
+    .await
+}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -60,187 +104,36 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Reject empty or whitespace-only prompts early.
-    if cmd.prompt.trim().is_empty() {
-        anyhow::bail!("prompt cannot be empty");
-    }
-
-    let store = SqliteRunStore::new(pool.clone());
-
-    // Resolve agent by name or ID (must be active, not archived/paused/stopped).
-    let agent = store
-        .get_agent_by_name_or_id(&cmd.agent_id)
-        .map_err(|_| anyhow::anyhow!("Agent not found or not active: {}", cmd.agent_id))?;
-
-    if matches!(
-        agent.state.as_str(),
-        "archived" | "deactivated" | "paused" | "stopped" | "configured"
-    ) {
-        anyhow::bail!(
-            "Agent '{}' is in state '{}' and cannot accept runs. \
-             Only agents in the 'active' state can be run.",
-            cmd.agent_id,
-            agent.state
-        );
-    }
-
-    // Parse the agent's UUID string into a typed AgentId.
-    let agent_id: AgentId = agent
-        .id
-        .parse()
-        .with_context(|| format!("invalid agent ID in database: {}", agent.id))?;
-
-    // Load config for provider/harness resolution.
-    let config = load_config();
-
-    // Build the provider registry from environment + config providers.
-    let registry = build_provider_registry(&config);
-
-    // Resolve provider and executor.
-    // When --provider was given explicitly, fail hard if the provider is not
-    // available instead of silently falling back to FakeExecutor.
-    let (executor, executor_note) = resolve_provider(
-        cmd.provider.as_deref(),
-        cmd.model.as_deref(),
-        &config,
-        &registry,
-    )?;
-
-    if let Some(note) = &executor_note {
+    let started = start_run_inner(
+        pool,
+        &cmd.agent_id,
+        &cmd.prompt,
+        StartRunOptions {
+            provider: cmd.provider.as_deref(),
+            model: cmd.model.clone(),
+            harness: cmd.harness.as_deref(),
+            no_harness: cmd.no_harness,
+            config: None,
+        },
+    )
+    .await?;
+    for note in &started.notes {
         eprintln!("{note}");
     }
-
-    // Resolve harness via registry.
-    let mut harness_registry = HarnessRegistry::with_known_harnesses();
-    // Register any custom harness entries from the config file.
-    for (id, entry) in &config.harness.harnesses {
-        if let Some(ref path) = entry.binary_path {
-            harness_registry.register_with_path(id, id, path.clone());
-        } else {
-            harness_registry.register(id, id);
-        }
-    }
-    let resolution = if cmd.no_harness {
-        polkagent_service::harness::HarnessResolution {
-            harness_name: None,
-            note: None,
-        }
-    } else {
-        harness_registry.resolve(cmd.harness.as_deref(), config.harness.default.as_deref())
-    };
-
-    if let Some(note) = &resolution.note {
-        eprintln!("{note}");
-    }
-
-    if let Some(ref name) = resolution.harness_name {
-        info!(harness = %name, "harness selected");
-    }
-
-    // Instantiate the harness when one was resolved.
-    let harness: Option<Arc<dyn polkagent_harness_trait::Harness>> =
-        match resolution.harness_name.as_deref() {
-            Some("codex") => {
-                let hcfg = polkagent_harness_trait::HarnessConfig::new("codex");
-                let codex = polkagent_harness_codex::CodexHarness::new(
-                    hcfg,
-                    polkagent_harness_codex::CodexHarnessConfig::default(),
-                )
-                .context("creating CodexHarness")?;
-                Some(Arc::new(codex))
-            }
-            Some("claude-code") => {
-                let hcfg = polkagent_harness_trait::HarnessConfig::new("claude-code");
-                let claude = polkagent_harness_claude::ClaudeHarness::new(
-                    hcfg,
-                    polkagent_harness_claude::ClaudeHarnessConfig::default(),
-                )
-                .context("creating ClaudeHarness")?;
-                Some(Arc::new(claude))
-            }
-            Some("cursor") => {
-                let hcfg = polkagent_harness_trait::HarnessConfig::new("cursor");
-                let cursor = polkagent_harness_acp::AcpHarness::new(
-                    polkagent_harness_cursor::CursorConfigurator::default(),
-                    hcfg,
-                );
-                Some(Arc::new(cursor))
-            }
-            _ => None,
-        };
-
-    // -----------------------------------------------------------------------
-    // Build AppService inline
-    // -----------------------------------------------------------------------
-
-    // Create the event bus and subscribe BEFORE starting the run so we don't
-    // miss RunCreated or any early events.
-    let event_bus = EventBus::with_default_capacity();
-    let mut event_rx = event_bus.subscribe();
-
-    // SqlitePool implements EventStore, so Arc<SqlitePool> coerces to
-    // Arc<dyn EventStore> for the EventRecorder.
-    let event_recorder = EventRecorder::new(Arc::new(pool.clone()), event_bus.clone());
-
-    // -----------------------------------------------------------------------
-    // Build chain client and tool registry
-    // -----------------------------------------------------------------------
-
-    let chain_client: Arc<dyn ChainClient> = build_chain_client();
-
-    let mut tool_registry = polkagent_tool::ToolRegistry::new();
-    polkagent_tool_governance::register_governance_tools(&mut tool_registry, chain_client.clone());
-    polkagent_tool_treasury::register_treasury_tools(&mut tool_registry, chain_client.clone());
-
-    // Wrap AppService in Arc so it can be shared with the Ctrl-C handler task.
-    // SqlitePool implements both RunStore and EffectStore, so we pass it to
-    // both builder methods to ensure effects are persisted to the same database.
-    let mut builder = AppService::builder()
-        .with_config(config)
-        .with_run_store(Arc::new(pool.clone()))
-        .with_effect_store(Arc::new(pool.clone()))
-        .with_event_bus(event_bus.clone())
-        .with_event_recorder(event_recorder)
-        .with_executor(executor)
-        .with_provider_registry(registry)
-        .with_chain_client(chain_client)
-        .with_tool_registry(Arc::new(tool_registry));
-
-    if let Some(h) = harness {
-        builder = builder.with_harness(h);
-    }
-
-    let app_service = Arc::new(builder.build().context("building AppService")?);
-
-    // Start the timeout enforcer so wall-clock timeouts are enforced.
-    {
-        let timeout_secs = app_service.config().execution.default_timeout_secs;
-        let timeout_config =
-            polkagent_service::TimeoutConfig::with_global_max(Duration::from_secs(timeout_secs));
-        app_service.start_timeout_enforcer(timeout_config, Duration::from_secs(30));
-    }
-
-    // Reconstruct the AgentSpec from the DB row and register it with AppService.
-    let agent_spec = build_agent_spec(agent_id, &agent.name, &agent.spec_json, cmd.model.clone());
-    let agent_model = agent_spec.model.clone();
-    app_service
-        .create_agent(agent_spec)
-        .context("registering agent with AppService")?;
-
-    // -----------------------------------------------------------------------
-    // Start the run
-    // -----------------------------------------------------------------------
-    let run_id = app_service
-        .start_run(agent_id, &cmd.prompt)
-        .await
-        .context("starting run")?;
-
-    info!(%run_id, agent_id = %agent.id, "run started");
+    let StartedRun {
+        service: app_service,
+        events: mut event_rx,
+        run_id,
+        agent_id,
+        agent_name,
+        agent_model,
+        ..
+    } = started;
 
     if cmd.json {
         let out = serde_json::json!({
             "run_id":   run_id.to_string(),
-            "agent_id": agent.id,
+            "agent_id": agent_id,
             "state":    "running",
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -257,7 +150,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
     let mut stdout = std::io::stdout();
 
     if !cmd.json {
-        printer.print_header(&mut stdout, &run_id, &agent.name, &agent_model)?;
+        printer.print_header(&mut stdout, &run_id, &agent_name, &agent_model)?;
     }
 
     // -----------------------------------------------------------------------
@@ -359,7 +252,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
                         let out = serde_json::json!({
                             "ok":           true,
                             "run_id":       run_id.to_string(),
-                            "agent_id":     agent.id,
+                            "agent_id":     agent_id,
                             "response":     json_response,
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
@@ -409,6 +302,155 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
     .await;
 
     result
+}
+
+async fn start_run_inner(
+    pool: &SqlitePool,
+    agent_reference: &str,
+    prompt: &str,
+    options: StartRunOptions<'_>,
+) -> Result<StartedRun> {
+    if prompt.trim().is_empty() {
+        anyhow::bail!("prompt cannot be empty");
+    }
+
+    let store = SqliteRunStore::new(pool.clone());
+    let agent = store
+        .get_agent_by_name_or_id(agent_reference)
+        .map_err(|_| anyhow::anyhow!("Agent not found or not active: {agent_reference}"))?;
+
+    if matches!(
+        agent.state.as_str(),
+        "archived" | "deactivated" | "paused" | "stopped" | "configured"
+    ) {
+        anyhow::bail!(
+            "Agent '{}' is in state '{}' and cannot accept runs. \
+             Only agents in the 'active' state can be run.",
+            agent_reference,
+            agent.state
+        );
+    }
+
+    let typed_agent_id: AgentId = agent
+        .id
+        .parse()
+        .with_context(|| format!("invalid agent ID in database: {}", agent.id))?;
+    let config = options.config.unwrap_or_else(load_config);
+    let registry = build_provider_registry(&config);
+    let (executor, executor_note) = resolve_provider(
+        options.provider,
+        options.model.as_deref(),
+        &config,
+        &registry,
+    )?;
+
+    let mut notes = Vec::new();
+    if let Some(note) = executor_note {
+        notes.push(note);
+    }
+
+    let mut harness_registry = HarnessRegistry::with_known_harnesses();
+    for (id, entry) in &config.harness.harnesses {
+        if let Some(ref path) = entry.binary_path {
+            harness_registry.register_with_path(id, id, path.clone());
+        } else {
+            harness_registry.register(id, id);
+        }
+    }
+    let resolution = if options.no_harness {
+        polkagent_service::harness::HarnessResolution {
+            harness_name: None,
+            note: None,
+        }
+    } else {
+        harness_registry.resolve(options.harness, config.harness.default.as_deref())
+    };
+    if let Some(note) = resolution.note.clone() {
+        notes.push(note);
+    }
+    if let Some(ref name) = resolution.harness_name {
+        info!(harness = %name, "harness selected");
+    }
+
+    let harness: Option<Arc<dyn polkagent_harness_trait::Harness>> =
+        match resolution.harness_name.as_deref() {
+            Some("codex") => {
+                let hcfg = polkagent_harness_trait::HarnessConfig::new("codex");
+                let codex = polkagent_harness_codex::CodexHarness::new(
+                    hcfg,
+                    polkagent_harness_codex::CodexHarnessConfig::default(),
+                )
+                .context("creating CodexHarness")?;
+                Some(Arc::new(codex))
+            }
+            Some("claude-code") => {
+                let hcfg = polkagent_harness_trait::HarnessConfig::new("claude-code");
+                let claude = polkagent_harness_claude::ClaudeHarness::new(
+                    hcfg,
+                    polkagent_harness_claude::ClaudeHarnessConfig::default(),
+                )
+                .context("creating ClaudeHarness")?;
+                Some(Arc::new(claude))
+            }
+            Some("cursor") => {
+                let hcfg = polkagent_harness_trait::HarnessConfig::new("cursor");
+                let cursor = polkagent_harness_acp::AcpHarness::new(
+                    polkagent_harness_cursor::CursorConfigurator::default(),
+                    hcfg,
+                );
+                Some(Arc::new(cursor))
+            }
+            _ => None,
+        };
+
+    let event_bus = EventBus::with_default_capacity();
+    let events = event_bus.subscribe();
+    let event_recorder = EventRecorder::new(Arc::new(pool.clone()), event_bus.clone());
+    let chain_client: Arc<dyn ChainClient> = build_chain_client();
+    let mut tool_registry = polkagent_tool::ToolRegistry::new();
+    polkagent_tool_governance::register_governance_tools(&mut tool_registry, chain_client.clone());
+    polkagent_tool_treasury::register_treasury_tools(&mut tool_registry, chain_client.clone());
+
+    let mut builder = AppService::builder()
+        .with_config(config)
+        .with_run_store(Arc::new(pool.clone()))
+        .with_effect_store(Arc::new(pool.clone()))
+        .with_event_bus(event_bus)
+        .with_event_recorder(event_recorder)
+        .with_executor(executor)
+        .with_provider_registry(registry)
+        .with_chain_client(chain_client)
+        .with_tool_registry(Arc::new(tool_registry));
+    if let Some(harness) = harness {
+        builder = builder.with_harness(harness);
+    }
+
+    let service = Arc::new(builder.build().context("building AppService")?);
+    let timeout_secs = service.config().execution.default_timeout_secs;
+    let timeout_config =
+        polkagent_service::TimeoutConfig::with_global_max(Duration::from_secs(timeout_secs));
+    service.start_timeout_enforcer(timeout_config, Duration::from_secs(30));
+
+    let agent_spec = build_agent_spec(typed_agent_id, &agent.name, &agent.spec_json, options.model);
+    let agent_model = agent_spec.model.clone();
+    service
+        .create_agent(agent_spec)
+        .context("registering agent with AppService")?;
+    let run_id = service
+        .start_run(typed_agent_id, prompt)
+        .await
+        .context("starting run")?;
+
+    info!(%run_id, agent_id = %agent.id, "run started");
+    Ok(StartedRun {
+        service,
+        events,
+        run_id,
+        agent_id: agent.id,
+        agent_name: agent.name,
+        agent_model,
+        notes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,6 +1090,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shared_run_bootstrap_executes_and_persists_fake_run() {
+        let _guard = EnvGuard::new();
+        let pool = SqlitePool::open_in_memory().expect("open database");
+        polkagent_store_sqlite::migrations::migrate(&pool.writer()).expect("migrate database");
+        let store = SqliteRunStore::new(pool.clone());
+        let agent = store
+            .create_agent("console-agent", None, "{}")
+            .expect("create agent");
+
+        let mut started = start_run_inner(
+            &pool,
+            &agent.id,
+            "hello from the console",
+            StartRunOptions {
+                provider: None,
+                model: None,
+                harness: None,
+                no_harness: true,
+                config: Some(Config::default()),
+            },
+        )
+        .await
+        .expect("start run");
+        let run_id = started.run_id.to_string();
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let event = started.events.recv().await.expect("run event");
+                if event.run_id != started.run_id {
+                    continue;
+                }
+                match event.kind {
+                    EventKind::RunCompleted { .. } => break,
+                    EventKind::RunFailed { reason } => panic!("run failed: {reason}"),
+                    EventKind::RunCancelled { reason } => panic!("run cancelled: {reason}"),
+                    EventKind::RunTimedOut => panic!("run timed out"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("fake run should finish");
+
+        let durable = store.get_run(&run_id).expect("durable run");
+        assert_eq!(durable.agent_id, agent.id);
+        assert_eq!(durable.state, "completed");
     }
 
     #[test]

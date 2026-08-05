@@ -32,6 +32,7 @@
 pub mod app;
 pub mod db;
 pub mod input;
+pub mod interaction;
 pub mod state;
 pub mod theme;
 pub mod views;

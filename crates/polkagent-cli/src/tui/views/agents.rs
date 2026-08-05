@@ -233,6 +233,11 @@ fn render_detail(frame: &mut Frame, area: Rect, agent: &AgentSummary, theme: &Th
         detail_row("Total runs", &total_runs_str, theme),
         detail_row("Active runs", &active_runs_str, theme),
         detail_row("Updated", &updated, theme),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Press p to open the agent console",
+            Style::default().fg(theme.rose_bright),
+        )),
     ];
 
     frame.render_widget(Paragraph::new(lines), inner);
