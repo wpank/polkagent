@@ -65,6 +65,9 @@ pub enum Commands {
     /// Execute a run against an agent.
     Run(RunCmd),
 
+    /// Start an ACP stdio server for editor integrations such as Zed.
+    Acp(AcpCmd),
+
     /// Manage agents (create, list, show, delete, start, stop, pause, resume).
     #[command(subcommand)]
     Agent(AgentCmd),
@@ -213,6 +216,32 @@ pub struct RunCmd {
     pub no_harness: bool,
 
     /// Cancel the run after this many seconds (0 = no limit, default: 300).
+    #[arg(long, value_name = "SECS", default_value_t = 300)]
+    pub timeout: u64,
+}
+
+// ---------------------------------------------------------------------------
+// acp
+// ---------------------------------------------------------------------------
+
+/// Start the Agent Client Protocol server on stdin/stdout.
+#[derive(Debug, Args)]
+pub struct AcpCmd {
+    /// Agent name or UUID selected for new editor sessions.
+    ///
+    /// When omitted, select an active agent in the editor with `/agent`.
+    #[arg(long, short = 'a', value_name = "AGENT")]
+    pub agent: Option<String>,
+
+    /// Provider to use for model inference (e.g. `anthropic`, `openai`).
+    #[arg(long, value_name = "PROVIDER")]
+    pub provider: Option<String>,
+
+    /// Override the selected agent's model for editor prompts.
+    #[arg(long, short = 'm', value_name = "MODEL")]
+    pub model: Option<String>,
+
+    /// Maximum duration of one editor prompt (0 disables the surface timeout).
     #[arg(long, value_name = "SECS", default_value_t = 300)]
     pub timeout: u64,
 }

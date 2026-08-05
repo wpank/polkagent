@@ -67,6 +67,20 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
             .map(std::path::PathBuf::from)
     });
 
+    // ACP owns stdout as its JSON-RPC transport. Dispatch it before telemetry
+    // or any shared command setup can emit human-readable output.
+    if let Some(Commands::Acp(cmd)) = &cli.command {
+        let db_path = resolve_db_path(config_path.as_deref());
+        let pool = match open_pool(&db_path) {
+            Ok(pool) => pool,
+            Err(error) => return (exit_codes::CONFIG_ERROR, Some(error)),
+        };
+        return match commands::acp::run(cmd, pool, config_path.as_deref()).await {
+            Ok(()) => (exit_codes::SUCCESS, None),
+            Err(error) => (classify_exit_code(&error), Some(error)),
+        };
+    }
+
     // Load config to extract observability settings.
     let obs_config = load_observability_config(config_path.as_deref());
 
@@ -182,7 +196,8 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                 Some(Commands::Logs(cmd)) => ("logs", commands::logs::run(cmd, &pool)),
                 // Already handled above; listed here to satisfy exhaustiveness.
                 Some(
-                    Commands::Init(_)
+                    Commands::Acp(_)
+                    | Commands::Init(_)
                     | Commands::Config(_)
                     | Commands::Version
                     | Commands::Explain(_)

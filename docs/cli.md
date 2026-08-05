@@ -4,6 +4,7 @@
 graph LR
     PA["polkagent"] --> INIT["init"]
     PA --> RUN["run"]
+    PA --> ACP["acp"]
     PA --> AGENT["agent"]
     PA --> SKILL["skill"]
     PA --> TUI["tui"]
@@ -155,6 +156,21 @@ set. `--json` mode bypasses all styled output entirely.
 
 Internal tracing logs are written to stderr. Use `-v` or `-vv` for debug/trace
 verbosity.
+
+---
+
+### `acp`
+
+Start an ACP v1 stdio server for editor integrations such as Zed.
+
+```text
+polkagent acp [--agent <AGENT>] [--provider <PROVIDER>] [--model <MODEL>] [--timeout <SECS>]
+```
+
+Stdout is reserved for ACP JSON-RPC traffic. When `--agent` is omitted, use
+`/agents` and `/agent <name-or-id>` from the editor session. See
+[ACP and Zed integration](acp-zed.md) for setup, verified behavior, and current
+gaps.
 
 ---
 

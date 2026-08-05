@@ -1,12 +1,17 @@
 # PRD-19 — Interactive Polkagent: TUI, Terminal Sessions, Orchestration, and ACP
 
-**Status:** active architecture and implementation plan; not implemented
+**Status:** active architecture and implementation plan; initial ACP server slice implemented
 
 **Prepared:** 2026-08-05
 
 **Scope:** current Polkagent checkout at `/Users/will/dev/par/polkagent`, compared with Roko at `/Users/will/dev/nunchi/roko/roko` and the current ACP v1/Zed documentation
 
-**Implementation in this document:** none; this is a findings, requirements, design, and delivery plan
+**Implementation status:** `polkagent-surface-acp` and protocol-safe
+`polkagent acp` dispatch now implement an ACP v1 initialize/new/prompt/cancel
+slice, slash-command discovery, agent selection, and `AppService`-backed
+prompts. An official-SDK subprocess test proves the wire path. Durable
+sessions, shared interaction/runtime composition, structured tools and
+permissions, and manual Zed validation remain open.
 
 **Supersedes:** the implementation role of archived PRD-18; unresolved work is
 tracked in `IMPLEMENTATION-BACKLOG.md`
@@ -55,8 +60,8 @@ treated as input to this design, not as evidence that the feature exists.
 | Persist/resume human conversations | Building blocks exist, not integrated | SQLite conversation schema/store exists; prompt/run path does not use it as a session |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
-| Use Polkagent *from* Zed | **Missing** | No `polkagent acp`, no ACP server crate, no server-side `Agent` implementation |
-| ACP slash commands/config selectors | **Missing** | No `available_commands_update` or `session/set_config_option` server path |
+| Use Polkagent *from* Zed | Protocol slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK and an executable client fixture; rich editor acceptance is still open |
+| ACP slash commands/config selectors | Commands partially implemented | `/help`, `/status`, `/agents`, and `/agent` are advertised; shared registry and config options remain missing |
 | REST API as a production control plane | Not yet reliable for this purpose | `serve` constructs in-memory agent/run stores and does not attach conversation storage |
 
 ## 1. What Polkagent actually has today
@@ -302,16 +307,15 @@ configuration would look like:
     "polkagent": {
       "type": "custom",
       "command": "/absolute/path/to/polkagent",
-      "args": ["acp", "--workdir", "."],
+      "args": ["acp", "--agent", "editor-agent"],
       "env": {}
     }
   }
 }
 ```
 
-Use Zed's “Add Custom Agent” UI rather than promising that the literal `.`
-argument will always be expanded as the project root; the ACP `session/new`
-working directory must remain authoritative. Zed documents custom agents and
+The ACP `session/new` working directory is authoritative; Polkagent has no
+separate `--workdir` flag. Zed documents custom agents and
 ACP debugging at [External Agents](https://zed.dev/docs/ai/external-agents).
 Zed's `dev: open acp logs` command should be part of the validation checklist.
 
@@ -926,16 +930,19 @@ work, approve/deny, cancel, and prompt again without leaving.
 
 ### Phase 4 — ACP server and Zed MVP (P0/P1)
 
-- [ ] Add official ACP Rust SDK and `polkagent-surface-acp` crate.
-- [ ] Add protocol-safe early `polkagent acp` dispatch.
-- [ ] Implement initialize/new/load/prompt/cancel.
+- [x] Add official ACP Rust SDK and `polkagent-surface-acp` crate.
+- [x] Add protocol-safe early `polkagent acp` dispatch.
+- [x] Implement the bounded initialize/new/prompt/cancel slice.
+- [ ] Implement durable session list/load/import/resume.
 - [ ] Map live interaction events to session updates.
-- [ ] Advertise the shared MVP slash commands.
+- [x] Advertise the initial MVP slash commands.
+- [ ] Move commands onto the shared registry.
 - [ ] Expose target/model/autonomy config options.
 - [ ] Implement session list for thread import.
 - [ ] Implement tool permission round-trip.
-- [ ] Write the Zed custom-agent setup guide.
-- [ ] Validate with Zed ACP logs and protocol conformance fixtures.
+- [x] Write the Zed custom-agent setup guide.
+- [x] Add an official-SDK subprocess protocol fixture.
+- [ ] Validate manually with Zed ACP logs and the full acceptance matrix.
 
 **Exit:** Polkagent can be added as a Zed custom external agent and complete a
 real tool-using, cancellable, permission-gated prompt.

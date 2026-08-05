@@ -11,6 +11,7 @@ The current worktree passed:
 ```text
 cargo check --workspace
 cargo test --workspace --no-fail-fast
+cargo test -p polkagent-cli --test acp_stdio_e2e
 ./scripts/container-smoke.sh
 ```
 
@@ -20,9 +21,11 @@ strong component baseline. The container smoke additionally proves that the
 locked canonical image builds, starts unprivileged, honours a bind-mounted
 read-only config, answers the three HTTP probes, drains HTTP on SIGTERM with a
 clean exit, and replaces the container on the same named volume while retaining
-a SQLite CLI marker. It does not prove durable API/run recovery, worker/effect
-draining, Postgres, backup/restore, auth, HA, a real chain action, an interactive
-TUI prompt, or an ACP server session.
+a SQLite CLI marker. A focused official-SDK subprocess test also proves one ACP
+initialize/new/prompt session and a real `AppService` run. These checks do not
+prove durable API/run recovery, worker/effect draining, Postgres,
+backup/restore, auth, HA, a real chain action, an interactive TUI prompt, or
+complete Zed/editor behavior.
 
 The audit intentionally treats tests such as “returns 501 when store is not
 configured” as contract coverage and simultaneous evidence that production
@@ -37,7 +40,7 @@ startup still has a wiring gap.
 | REST/WebSocket API | Broad route and middleware coverage | Not a durable production control plane | `serve` uses in-memory agents/runs and omits most optional stores/registries, producing many 501s. |
 | Interactive terminal chat | No shared surface | Missing | Requires `InteractionService`, command registry, and runtime factory. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
-| Polkagent inside Zed/ACP clients | Design complete in PRD-19 | Missing | No ACP agent server, `polkagent acp`, session mapping, or Zed conformance. |
+| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio slice with executable subprocess coverage | Protocol-usable MVP; manual Zed support unverified | No durable list/load/import, shared conversations/config registry, structured tools/permissions, MCP passthrough, or Zed tool/approval/restart smoke. |
 | Providers/harnesses | Many adapters exist | Partially composed | Each adapter needs shared-runtime conformance and real failure/readiness evidence. |
 | Tools/skills | Registries and handlers exist | Not actionable in normal run loop | Orchestrator sends no tool schemas and synthesizes tool success instead of executing. |
 | Effects/approvals/policy | Strong domain libraries | Incomplete execution path | Effect pipeline and grant resolver are not used by the central orchestrator. |
@@ -71,7 +74,7 @@ startup still has a wiring gap.
 | 14 API/config | Broad components/routes | P0 composition gap | No durable control-plane proof | Active P0/P1 |
 | 15 Testing | Broad green suite | Production paths under-tested | Live/client/ops gates missing | Active cross-cutting |
 | 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
-| 19 Interactive/ACP | Architecture specified | Missing | No | Active P0/P1 |
+| 19 Interactive/ACP | Initial ACP server implemented; TUI architecture specified | ACP independently composes `AppService`; shared interaction/runtime factory remains missing | Official client proves command discovery and prompt/run; no full Zed or interactive TUI E2E | Active P0/P1 |
 
 ## Decisive implementation evidence
 
@@ -94,6 +97,11 @@ startup still has a wiring gap.
   does not own the application/interaction runtime or a live event receiver.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent
   harnesses, not a Polkagent ACP agent server.
+- `crates/polkagent-surface-acp` is the separate server-side adapter. The
+  `acp_stdio_e2e` test uses the official Rust client to launch `polkagent acp`,
+  negotiate ACP v1, discover commands, execute `/help`, and complete a real
+  `AppService` run. Session persistence, permissions/tools, and manual Zed
+  evidence remain absent.
 - `crates/polkagent-transport-pca::network::TcpPcaTransport` now exercises
   encrypted OS-socket I/O across separate processes with a durable inbox,
   outbox, deduplication, reconnect retry, restart redelivery, and typed

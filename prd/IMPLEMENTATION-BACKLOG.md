@@ -209,16 +209,24 @@ the stable execution event path; can run fully parallel to ACP-01.
 
 **Checklist:**
 
-- [ ] Add a dedicated `polkagent-surface-acp` server crate using the official
+- [x] Add a dedicated `polkagent-surface-acp` server crate using the official
   ACP Rust SDK; retain `polkagent-harness-acp` as the separate downstream client.
-- [ ] Add protocol-safe early `polkagent acp` stdio dispatch so stdout contains
+- [x] Add protocol-safe early `polkagent acp` stdio dispatch so stdout contains
   JSON-RPC frames only.
-- [ ] Implement initialize, new/list/load session, prompt, cancel, permission,
-  tool/plan updates, and terminal stop reasons.
-- [ ] Map shared slash commands and dynamic target/model/autonomy options.
-- [ ] Validate cwd, supplied MCP servers, secret redaction, disconnect/default
-  deny, and concurrent/busy session behavior.
-- [ ] Add ACP transcript/conformance fixtures and a Zed custom-agent guide.
+- [x] Implement the bounded initialize/new/prompt/cancel lifecycle, agent-message
+  updates, terminal/cancel stop reasons, and unknown/busy-session errors.
+- [ ] Add durable session list/load/import/resume and restart recovery.
+- [x] Advertise and handle `/help`, `/status`, `/agents`, and `/agent` through
+  `available_commands_update`.
+- [ ] Move those commands onto the shared command registry and add dynamic
+  target/model/provider/autonomy configuration options.
+- [x] Validate absolute cwd and reject unsupported MCP servers/additional roots
+  explicitly instead of ignoring them.
+- [ ] Add structured tool/plan/usage updates, permission round-trips, default
+  deny on timeout/disconnect, client capabilities, and secret-safe logging proof.
+- [x] Add an official-SDK subprocess fixture and a Zed custom-agent setup guide.
+- [ ] Complete the manual Zed smoke (tool, approval/deny, cancel, restart/import,
+  and ACP-log inspection).
 
 **Exit checks:** in Zed, add the custom external agent, prompt, observe a real
 tool call, approve/deny, cancel, restart/import thread, and inspect clean ACP

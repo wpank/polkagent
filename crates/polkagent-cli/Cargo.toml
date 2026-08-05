@@ -51,6 +51,7 @@ polkagent-harness-codex   = { path = "../polkagent-harness-codex" }
 polkagent-harness-cursor  = { path = "../polkagent-harness-cursor" }
 polkagent-harness-claude  = { path = "../polkagent-harness-claude" }
 polkagent-harness-acp     = { path = "../polkagent-harness-acp" }
+polkagent-surface-acp     = { path = "../polkagent-surface-acp" }
 polkagent-marketplace     = { path = "../polkagent-marketplace" }
 futures                   = { workspace = true }
 
@@ -102,6 +103,7 @@ ratatui   = { workspace = true }
 crossterm = { workspace = true }
 proptest  = { workspace = true }
 tempfile  = { workspace = true }
+agent-client-protocol = { workspace = true }
 
 [lints]
 workspace = true

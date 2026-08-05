@@ -419,7 +419,7 @@ pub async fn run(cmd: &RunCmd, pool: &SqlitePool, dry_run: bool) -> Result<()> {
 /// [`polkagent_config::ConfigLoader`].
 ///
 /// Returns [`Config::default()`] if no config file is found or loading fails.
-fn load_config() -> Config {
+pub(crate) fn load_config() -> Config {
     match polkagent_config::ConfigLoader::new().load() {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -519,7 +519,7 @@ impl ModelExecutor for FallbackExecutor {
 /// Environment-synthesized providers are registered first, then config-file
 /// providers are layered on top (potentially overriding env-synthesized
 /// entries with the same id).
-fn build_provider_registry(config: &Config) -> ProviderRegistry {
+pub(crate) fn build_provider_registry(config: &Config) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
 
     // 1. Synthesize providers from well-known environment variables.
@@ -593,7 +593,7 @@ fn executor_from_provider_config(
 /// provider could not be found (e.g. the API key is not set). This prevents
 /// a silent fallback to the FakeExecutor when the user explicitly requested a
 /// specific provider.
-fn resolve_provider(
+pub(crate) fn resolve_provider(
     provider_flag: Option<&str>,
     model_override: Option<&str>,
     config: &Config,
@@ -861,7 +861,7 @@ fn detect_executor(model_override: Option<&str>) -> (Arc<dyn ModelExecutor>, Opt
 ///
 /// Tries to deserialise the stored `spec_json`. Falls back to a minimal spec
 /// constructed from the agent's name. CLI model override always wins.
-fn build_agent_spec(
+pub(crate) fn build_agent_spec(
     agent_id: AgentId,
     name: &str,
     spec_json: &str,
@@ -892,7 +892,7 @@ fn build_agent_spec(
 /// `POLKAGENT_CHAIN_RPC_URL` takes precedence. Otherwise falls back to a
 /// [`polkagent_chain_fake::FakeChainClient`] so tools
 /// still work (returning representative offline data).
-fn build_chain_client() -> Arc<dyn ChainClient> {
+pub(crate) fn build_chain_client() -> Arc<dyn ChainClient> {
     use polkagent_chain_trait::{ChainProfile, ChainProfileId, GenesisHash, NetworkType};
 
     // Resolve RPC URL: prefer POLKAGENT_CHAIN_RPC_URL, fall back to POLKAGENT_RPC_URL.

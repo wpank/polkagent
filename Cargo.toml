@@ -64,6 +64,7 @@ members = [
     "crates/polkagent-store-sqlite-feed",
     "crates/polkagent-store-sqlite-group",
     "crates/polkagent-surface-webhook",
+    "crates/polkagent-surface-acp",
     "crates/polkagent-tool-governance",
     "crates/polkagent-tool-treasury",
     "crates/polkagent-tool-workbench",
@@ -155,6 +156,7 @@ parking_lot = "0.12"
 bytes = "1"
 dirs = "5"
 semver = { version = "1", features = ["serde"] }
+agent-client-protocol = "2.0.0"
 
 # Testing
 proptest = "1"

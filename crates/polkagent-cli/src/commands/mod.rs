@@ -1,5 +1,6 @@
 //! Command handler implementations — one module per CLI subcommand.
 
+pub mod acp;
 pub mod agent;
 pub mod auth;
 pub mod chain;
