@@ -105,5 +105,8 @@ proptest  = { workspace = true }
 tempfile  = { workspace = true }
 agent-client-protocol = { workspace = true }
 
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.29", features = ["fs", "term"] }
+
 [lints]
 workspace = true

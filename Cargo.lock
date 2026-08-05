@@ -2848,6 +2848,7 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "futures",
+ "nix",
  "parking_lot",
  "polkagent-api",
  "polkagent-card",
