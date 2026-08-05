@@ -136,7 +136,7 @@ impl RpcClient {
                 debug!(
                     method,
                     attempt,
-                    delay_ms = delay.as_millis() as u64,
+                    delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                     "retrying RPC call"
                 );
                 tokio::time::sleep(delay).await;
@@ -406,6 +406,7 @@ impl RpcClient {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

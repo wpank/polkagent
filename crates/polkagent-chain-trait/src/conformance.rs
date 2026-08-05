@@ -63,27 +63,21 @@ pub fn genesis_block() -> BlockRef {
 pub async fn test_get_runtime_version(client: &dyn ChainClient) {
     let result = client.fetch_metadata(test_profile_id()).await;
 
-    match result {
-        Ok(meta) => {
-            assert!(
-                !meta.metadata_bytes.is_empty(),
-                "fetch_metadata() must return non-empty metadata_bytes; got 0 bytes"
-            );
-            assert!(
-                meta.spec_version > 0,
-                "fetch_metadata() must return a non-zero spec_version; got {}",
-                meta.spec_version,
-            );
-            assert_eq!(
-                meta.chain_profile,
-                test_profile_id(),
-                "fetch_metadata() must return metadata tagged with the requested chain profile"
-            );
-        }
-        Err(_) => {
-            // Adapters that can't serve the test profile return an error.
-            // This is acceptable — they must not panic.
-        }
+    if let Ok(meta) = result {
+        assert!(
+            !meta.metadata_bytes.is_empty(),
+            "fetch_metadata() must return non-empty metadata_bytes; got 0 bytes"
+        );
+        assert!(
+            meta.spec_version > 0,
+            "fetch_metadata() must return a non-zero spec_version; got {}",
+            meta.spec_version,
+        );
+        assert_eq!(
+            meta.chain_profile,
+            test_profile_id(),
+            "fetch_metadata() must return metadata tagged with the requested chain profile"
+        );
     }
 }
 
@@ -100,20 +94,11 @@ pub async fn test_query_storage(client: &dyn ChainClient) {
         .await;
 
     // Any non-panicking outcome is acceptable.
-    match result {
-        Ok(maybe_value) => {
-            // If Some, the value must be non-empty bytes.
-            if let Some(value) = maybe_value {
-                assert!(
-                    !value.is_empty(),
-                    "query_storage() returned Some with 0 bytes; storage values must be non-empty"
-                );
-            }
-        }
-        Err(_) => {
-            // ProfileNotFound or RPC errors are acceptable for a conformance
-            // adapter configured with only the test profile.
-        }
+    if let Ok(Some(value)) = result {
+        assert!(
+            !value.is_empty(),
+            "query_storage() returned Some with 0 bytes; storage values must be non-empty"
+        );
     }
 }
 
@@ -126,11 +111,10 @@ pub async fn test_get_block_number(client: &dyn ChainClient) {
     let result = client.fetch_metadata(test_profile_id()).await;
 
     if let Ok(meta) = result {
-        // block_ref.number is a u64; any value is valid, just ensure access.
-        let _block_number = meta.block_ref.number;
         assert!(
             !meta.block_ref.hash.is_empty(),
-            "block_ref.hash must not be empty; got {:?}",
+            "block_ref.hash at block {} must not be empty; got {:?}",
+            meta.block_ref.number,
             meta.block_ref.hash,
         );
     }
@@ -150,21 +134,15 @@ pub async fn test_submit_extrinsic(client: &dyn ChainClient) {
         .submit_extrinsic(&signed_extrinsic, test_profile_id())
         .await;
 
-    match result {
-        Ok(tx_hash) => {
-            assert!(
-                !tx_hash.0.is_empty(),
-                "submit_extrinsic() must return a non-empty TxHash; got {:?}",
-                tx_hash,
-            );
-        }
-        Err(_) => {
-            // Rejection of an invalid extrinsic is expected and valid.
-        }
+    if let Ok(tx_hash) = result {
+        assert!(
+            !tx_hash.0.is_empty(),
+            "submit_extrinsic() must return a non-empty TxHash; got {tx_hash:?}",
+        );
     }
 }
 
-/// Conformance: `fetch_metadata()` genesis_hash is non-empty.
+/// Conformance: `fetch_metadata()` `genesis_hash` is non-empty.
 ///
 /// Every chain profile must have a non-empty genesis hash.  This test
 /// verifies the genesis hash stored in the pinned metadata is accessible and
@@ -218,17 +196,11 @@ pub async fn test_watch_finality_unknown_on_timeout(client: &dyn ChainClient) {
         .await;
 
     match result {
-        Ok(FinalityObservation::Unknown { .. }) => {
+        Ok(FinalityObservation::Unknown { .. }) | Err(_) => {
             // Correct — unknown tx hash timed out without confirmation.
         }
         Ok(other) => {
-            panic!(
-                "watch_finality() on a bogus tx hash must return Unknown; got {:?}",
-                other,
-            );
-        }
-        Err(_) => {
-            // Transport or profile errors are acceptable for offline adapters.
+            panic!("watch_finality() on a bogus tx hash must return Unknown; got {other:?}");
         }
     }
 }

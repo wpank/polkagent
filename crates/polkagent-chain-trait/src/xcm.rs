@@ -101,7 +101,7 @@ pub struct FeeEstimate {
     pub dest_weight_fee: u128,
     /// Delivery fee for transporting the message.
     pub delivery_fee: u128,
-    /// Total estimated fee (source_fee + dest_weight_fee + delivery_fee).
+    /// Total estimated fee (`source_fee` + `dest_weight_fee` + `delivery_fee`).
     pub total: u128,
     /// Whether this estimate is heuristic (true) or based on runtime queries (false).
     pub is_heuristic: bool,
@@ -148,16 +148,14 @@ pub async fn resolve_xcm_mechanism(
     // Check teleport first (preferred when available).
     match client.is_trusted_teleporter(dest, asset).await {
         Ok(true) => return Ok(XcmMechanism::Teleport),
-        Ok(false) => {}
-        Err(crate::ChainError::Unsupported { .. }) => {}
+        Ok(false) | Err(crate::ChainError::Unsupported { .. }) => {}
         Err(e) => return Err(XcmError::ChainClient(e)),
     }
 
     // Fall back to reserve transfer.
     match client.is_reserve_transfer_supported(dest, asset).await {
         Ok(true) => return Ok(XcmMechanism::ReserveTransfer),
-        Ok(false) => {}
-        Err(crate::ChainError::Unsupported { .. }) => {}
+        Ok(false) | Err(crate::ChainError::Unsupported { .. }) => {}
         Err(e) => return Err(XcmError::ChainClient(e)),
     }
 
@@ -191,14 +189,13 @@ pub async fn estimate_xcm_fees(
         };
 
     // Use dry-run for destination weight fee if available.
-    let dest_weight_fee = if !message.is_empty() {
+    let dest_weight_fee = if message.is_empty() {
+        0
+    } else {
         match client.dry_run_call(message).await {
             Ok(result) => result.dest_weight_fee.unwrap_or(0),
-            Err(crate::ChainError::Unsupported { .. }) => 0,
             Err(_) => 0,
         }
-    } else {
-        0
     };
 
     let total = source_fee_estimate + dest_weight_fee + delivery_fee;
@@ -217,6 +214,7 @@ pub async fn estimate_xcm_fees(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{
@@ -628,7 +626,7 @@ mod tests {
             .await
             .expect("ok");
         assert_eq!(est.dest_weight_fee, 0);
-        assert_eq!(est.total, 500_000 + 0 + 50_000);
+        assert_eq!(est.total, 550_000);
     }
 
     // -----------------------------------------------------------------------
@@ -685,8 +683,8 @@ mod tests {
             supported: 3,
         };
         let msg = format!("{err}");
-        assert!(msg.contains("5"));
-        assert!(msg.contains("3"));
+        assert!(msg.contains('5'));
+        assert!(msg.contains('3'));
     }
 
     // -----------------------------------------------------------------------

@@ -153,12 +153,11 @@ fn field_value_to_json(value: &FieldValue) -> serde_json::Value {
         FieldValue::U16(v) => serde_json::json!(*v),
         FieldValue::U32(v) => serde_json::json!(*v),
         FieldValue::U64(v) => serde_json::json!(*v),
-        FieldValue::U128(v) => serde_json::json!(v.to_string()),
+        FieldValue::U128(v) | FieldValue::Compact(v) => serde_json::json!(v.to_string()),
         FieldValue::Bool(v) => serde_json::json!(*v),
         FieldValue::String(s) => serde_json::json!(s),
         FieldValue::Bytes(b) => serde_json::json!(bytes_to_hex(b)),
         FieldValue::AccountId(id) => serde_json::json!(bytes_to_hex(id)),
-        FieldValue::Compact(v) => serde_json::json!(v.to_string()),
         FieldValue::Sequence(items) => {
             let arr: Vec<serde_json::Value> = items.iter().map(field_value_to_json).collect();
             serde_json::Value::Array(arr)
@@ -197,6 +196,7 @@ pub fn parse_block_number_hex(hex: &str) -> Result<u64, SubxtError> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

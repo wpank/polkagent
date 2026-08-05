@@ -94,7 +94,7 @@ impl std::fmt::Debug for SubxtChainClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubxtChainClient")
             .field("profiles", &self.profiles.keys().collect::<Vec<_>>())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -113,7 +113,7 @@ impl SubxtChainClient {
         profile
             .rpc_endpoints
             .first()
-            .map(|s| s.as_str())
+            .map(String::as_str)
             .ok_or_else(|| SubxtError::Config {
                 message: format!(
                     "chain profile '{}' has no RPC endpoints configured",
@@ -223,7 +223,7 @@ impl ChainClient for SubxtChainClient {
 
         let spec_version = profile
             .spec_version
-            .unwrap_or(runtime_metadata.version as u32);
+            .unwrap_or(u32::from(runtime_metadata.version));
 
         debug!(
             spec_version,
@@ -586,6 +586,7 @@ impl ChainClient for SubxtChainClient {
 ///     .expect("build client");
 /// ```
 #[derive(Debug, Default)]
+#[must_use]
 pub struct SubxtChainClientBuilder {
     profiles: HashMap<String, ChainProfile>,
     config: Option<SubxtConfig>,
@@ -628,6 +629,7 @@ impl SubxtChainClientBuilder {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use polkagent_chain_trait::{

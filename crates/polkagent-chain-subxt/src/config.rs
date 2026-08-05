@@ -68,8 +68,8 @@ impl SubxtConfig {
     /// Uses exponential backoff: `base_delay * 2^attempt`, capped at
     /// `retry_max_delay`.
     pub fn backoff_delay(&self, attempt: u32) -> Duration {
-        let multiplier = 2u64.saturating_pow(attempt);
-        let delay = self.retry_base_delay.saturating_mul(multiplier as u32);
+        let multiplier = 2u32.saturating_pow(attempt);
+        let delay = self.retry_base_delay.saturating_mul(multiplier);
         std::cmp::min(delay, self.retry_max_delay)
     }
 }
@@ -80,6 +80,7 @@ impl SubxtConfig {
 
 /// Builder for [`SubxtConfig`].
 #[derive(Debug, Default)]
+#[must_use]
 pub struct SubxtConfigBuilder {
     config: SubxtConfig,
 }
@@ -140,7 +141,8 @@ mod duration_millis {
     where
         S: Serializer,
     {
-        serializer.serialize_u64(duration.as_millis() as u64)
+        let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        serializer.serialize_u64(millis)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
@@ -157,6 +159,7 @@ mod duration_millis {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

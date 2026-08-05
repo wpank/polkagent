@@ -79,15 +79,9 @@ impl From<SubxtError> for ChainError {
                 retryable,
             },
             SubxtError::RpcError {
-                endpoint,
-                code: _,
-                message,
-            } => ChainError::Rpc {
-                endpoint,
-                message,
-                retryable: false,
-            },
-            SubxtError::InvalidResponse { endpoint, message } => ChainError::Rpc {
+                endpoint, message, ..
+            }
+            | SubxtError::InvalidResponse { endpoint, message } => ChainError::Rpc {
                 endpoint,
                 message,
                 retryable: false,
@@ -101,9 +95,10 @@ impl From<SubxtError> for ChainError {
                     actual: GenesisHash::new(actual),
                 }
             }
-            SubxtError::ScaleDecode { message } => ChainError::DecodeFailed { message },
+            SubxtError::ScaleDecode { message } | SubxtError::HexDecode { message } => {
+                ChainError::DecodeFailed { message }
+            }
             SubxtError::Metadata { message } => ChainError::MetadataFetch { message },
-            SubxtError::HexDecode { message } => ChainError::DecodeFailed { message },
             SubxtError::ExtrinsicRejected { reason } => ChainError::ExtrinsicRejected { reason },
             SubxtError::SimulationFailed { message } => ChainError::SimulationFailed { message },
             SubxtError::FinalityTimeout { elapsed_ms } => {
@@ -118,8 +113,7 @@ impl From<reqwest::Error> for SubxtError {
     fn from(e: reqwest::Error) -> Self {
         let url = e
             .url()
-            .map(|u| u.to_string())
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(|| "<unknown>".to_string(), std::string::ToString::to_string);
         let retryable = e.is_timeout() || e.is_connect();
         SubxtError::Transport {
             endpoint: url,
@@ -130,6 +124,7 @@ impl From<reqwest::Error> for SubxtError {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

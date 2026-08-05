@@ -13,7 +13,7 @@
 //!   it must not make additional RPC calls.
 //! - [`ChainClient::simulate`] produces evidence for decision-making, not
 //!   authorization.
-//! - [`ChainClient::submit`] sends the signed extrinsic and returns the tx
+//! - [`ChainClient::submit_extrinsic`] sends the signed extrinsic and returns the tx
 //!   hash. It does NOT wait for finality.
 //! - [`ChainClient::watch_finality`] returns [`FinalityObservation::Unknown`]
 //!   on timeout rather than erroring. **Never** return `Finalized` without
@@ -160,7 +160,7 @@ pub struct PinnedMetadata {
 pub struct DecodedCall {
     /// The pallet name (e.g. "Balances").
     pub pallet: String,
-    /// The call name within the pallet (e.g. "transfer_keep_alive").
+    /// The call name within the pallet (e.g. "`transfer_keep_alive`").
     pub call_name: String,
     /// JSON-encoded decoded arguments.
     pub arguments_json: String,
@@ -168,7 +168,7 @@ pub struct DecodedCall {
     pub metadata_digest: MetadataDigest,
 }
 
-/// Result of a DryRunApi dry-run call.
+/// Result of a `DryRunApi` dry-run call.
 ///
 /// Captures whether execution succeeded, the emitted events, and an optional
 /// destination weight/fee estimate (populated when the extrinsic triggers an
@@ -352,7 +352,7 @@ impl ChainError {
 /// - [`decode_call`] must use only the provided `metadata` bytes; no
 ///   additional RPC calls may be made.
 /// - [`simulate`] runs a dry-run. The result is evidence, not authorization.
-/// - [`submit`] sends the signed extrinsic and returns the tx hash. It does
+/// - [`submit_extrinsic`] sends the signed extrinsic and returns the tx hash. It does
 ///   NOT wait for inclusion or finality.
 /// - [`watch_finality`] returns [`FinalityObservation::Unknown`] on timeout.
 ///   It must **never** return `Finalized` without verified on-chain evidence.
@@ -360,7 +360,7 @@ impl ChainError {
 /// [`fetch_metadata`]: ChainClient::fetch_metadata
 /// [`decode_call`]: ChainClient::decode_call
 /// [`simulate`]: ChainClient::simulate
-/// [`submit`]: ChainClient::submit
+/// [`submit_extrinsic`]: ChainClient::submit_extrinsic
 /// [`watch_finality`]: ChainClient::watch_finality
 #[async_trait]
 pub trait ChainClient: Send + Sync + 'static {
@@ -428,7 +428,7 @@ pub trait ChainClient: Send + Sync + 'static {
         chain_profile: ChainProfileId,
     ) -> Result<Option<Vec<u8>>, ChainError>;
 
-    /// Execute a DryRunApi dry-run against the given extrinsic bytes.
+    /// Execute a `DryRunApi` dry-run against the given extrinsic bytes.
     ///
     /// Returns execution outcome, events, and an optional destination fee
     /// estimate. Adapters that do not support this runtime API should return
@@ -478,6 +478,7 @@ pub trait ChainClient: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
