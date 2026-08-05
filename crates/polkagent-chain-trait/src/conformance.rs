@@ -54,7 +54,7 @@ pub fn genesis_block() -> BlockRef {
 // Conformance tests
 // ---------------------------------------------------------------------------
 
-/// Conformance: `fetch_metadata()` returns a [`PinnedMetadata`] with a
+/// Conformance: `fetch_metadata()` returns a [`crate::PinnedMetadata`] with a
 /// non-empty metadata body and a valid spec version.
 ///
 /// The adapter under test must be configured with a chain profile identified
