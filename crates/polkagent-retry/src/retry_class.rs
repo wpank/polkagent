@@ -67,9 +67,8 @@ pub fn classify_provider_error(error: &ProviderError) -> RetryClass {
         ProviderError::RateLimit {
             retry_after_secs: None,
             ..
-        } => RetryClass::RetryImmediate,
-
-        ProviderError::Timeout { .. } => RetryClass::RetryImmediate,
+        }
+        | ProviderError::Timeout { .. } => RetryClass::RetryImmediate,
 
         ProviderError::ServerError { status, .. } => match status {
             // 503 often indicates the provider is down for a while;
@@ -79,10 +78,12 @@ pub fn classify_provider_error(error: &ProviderError) -> RetryClass {
             _ => RetryClass::RetryImmediate,
         },
 
-        ProviderError::AuthFailure { .. } => RetryClass::NoRetry,
-        ProviderError::ContentPolicy { .. } => RetryClass::NoRetry,
-        ProviderError::ContextOverflow { .. } => RetryClass::Fallback,
-        ProviderError::ModelNotFound { .. } => RetryClass::Fallback,
+        ProviderError::AuthFailure { .. } | ProviderError::ContentPolicy { .. } => {
+            RetryClass::NoRetry
+        }
+        ProviderError::ContextOverflow { .. } | ProviderError::ModelNotFound { .. } => {
+            RetryClass::Fallback
+        }
     }
 }
 
@@ -102,6 +103,7 @@ mod duration_millis {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

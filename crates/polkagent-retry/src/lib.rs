@@ -57,6 +57,7 @@ pub use retry_class::{classify_provider_error, RetryClass};
 pub use timeout::TimeoutWrapper;
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -119,7 +120,7 @@ mod tests {
     #[test]
     fn test_jitter_produces_different_values_for_different_seeds() {
         let strategy = BackoffStrategy::Exponential {
-            base: Duration::from_millis(1000),
+            base: Duration::from_secs(1),
             max: Duration::from_secs(10),
             jitter: true,
         };
@@ -151,12 +152,12 @@ mod tests {
     fn test_exponential_overflow_saturates() {
         let strategy = BackoffStrategy::Exponential {
             base: Duration::from_millis(100),
-            max: Duration::from_millis(5000),
+            max: Duration::from_secs(5),
             jitter: false,
         };
         // attempt 40: 2^40 * 100ms would overflow u64 ms, but should clamp
         let delay = strategy.delay(40, 0);
-        assert_eq!(delay, Duration::from_millis(5000));
+        assert_eq!(delay, Duration::from_secs(5));
     }
 
     // ──────────────────────────── Policy tests ──────────────────────────────
@@ -400,8 +401,7 @@ mod tests {
         );
         assert!(
             wall_time >= Duration::from_millis(15),
-            "wall time {:?} should be >= 15ms",
-            wall_time
+            "wall time {wall_time:?} should be >= 15ms"
         );
     }
 

@@ -100,12 +100,16 @@ mod optional_duration_millis {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::time::Duration;
 
+    // Serde's `with` callback ABI passes the field as `&Option<T>`.
+    #[allow(clippy::ref_option)]
     pub fn serialize<S: Serializer>(
         value: &Option<Duration>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         match value {
-            Some(d) => (d.as_millis() as u64).serialize(serializer),
+            Some(d) => u64::try_from(d.as_millis())
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer),
             None => serializer.serialize_none(),
         }
     }

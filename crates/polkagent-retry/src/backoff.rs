@@ -40,9 +40,9 @@ impl BackoffStrategy {
 
             Self::Exponential { base, max, jitter } => {
                 let multiplier = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
-                let base_ms = base.as_millis() as u64;
+                let base_ms = duration_millis_saturating(*base);
                 let delay_ms = base_ms.saturating_mul(multiplier);
-                let max_ms = max.as_millis() as u64;
+                let max_ms = duration_millis_saturating(*max);
                 let capped = delay_ms.min(max_ms);
 
                 if *jitter {
@@ -61,9 +61,9 @@ impl BackoffStrategy {
             }
 
             Self::Linear { step, max } => {
-                let step_ms = step.as_millis() as u64;
+                let step_ms = duration_millis_saturating(*step);
                 let delay_ms = step_ms.saturating_mul(u64::from(attempt) + 1);
-                let max_ms = max.as_millis() as u64;
+                let max_ms = duration_millis_saturating(*max);
                 Duration::from_millis(delay_ms.min(max_ms))
             }
         }
@@ -76,8 +76,12 @@ impl BackoffStrategy {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default();
-            now.as_nanos() as u64 ^ u64::from(attempt)
+            u64::try_from(now.as_nanos()).unwrap_or(u64::MAX) ^ u64::from(attempt)
         };
         self.delay(attempt, seed)
     }
+}
+
+fn duration_millis_saturating(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }

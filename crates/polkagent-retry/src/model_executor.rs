@@ -299,6 +299,7 @@ impl ModelExecutor for RetryModelExecutor {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use polkagent_core::{RunId, StepId};

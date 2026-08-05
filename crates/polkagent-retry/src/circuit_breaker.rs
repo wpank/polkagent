@@ -181,7 +181,7 @@ impl CircuitBreaker {
         info!("circuit breaker manually reset to closed");
     }
 
-    /// Check if an Open circuit should transition to HalfOpen.
+    /// Check if an open circuit should transition to half-open.
     fn maybe_transition_to_half_open(
         _config: &CircuitBreakerConfig,
         inner: &mut CircuitBreakerInner,

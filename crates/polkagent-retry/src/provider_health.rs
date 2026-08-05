@@ -147,25 +147,28 @@ impl LatencyTracker {
         } else {
             let mut sorted: Vec<Duration> = inner.samples[..inner.count].to_vec();
             sorted.sort();
-            let p50_idx = (inner.count as f64 * 0.5) as usize;
-            let p99_idx = ((inner.count as f64 * 0.99) as usize).min(inner.count - 1);
+            let p50_idx = inner.count / 2;
+            let p99_idx = inner.count - inner.count.div_ceil(100);
             (sorted[p50_idx], sorted[p99_idx])
         };
 
         let total = inner.successes + inner.failures;
+        // Precision beyond f64's integer mantissa is immaterial for a health ratio.
+        #[allow(clippy::cast_precision_loss)]
         let error_rate = if total == 0 {
             0.0
         } else {
             inner.failures as f64 / total as f64
         };
 
-        let circuit = cb
-            .map(CircuitSnapshot::from_circuit_breaker)
-            .unwrap_or(CircuitSnapshot {
+        let circuit = cb.map_or(
+            CircuitSnapshot {
                 state: "none".to_string(),
                 failure_count: 0,
                 failure_threshold: 0,
-            });
+            },
+            CircuitSnapshot::from_circuit_breaker,
+        );
 
         let state = if let Some(cb) = cb {
             match cb.state() {
@@ -241,7 +244,9 @@ mod duration_millis {
     use std::time::Duration;
 
     pub fn serialize<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
-        (value.as_millis() as u64).serialize(serializer)
+        u64::try_from(value.as_millis())
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
@@ -257,6 +262,8 @@ mod optional_instant_epoch {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::time::Instant;
 
+    // Serde's `with` callback ABI passes the field as `&Option<T>`.
+    #[allow(clippy::ref_option)]
     pub fn serialize<S: Serializer>(
         value: &Option<Instant>,
         serializer: S,
@@ -275,14 +282,15 @@ mod optional_instant_epoch {
         deserializer: D,
     ) -> Result<Option<Instant>, D::Error> {
         let opt: Option<u128> = Option::deserialize(deserializer)?;
-        Ok(opt.map(|ms_ago| {
-            let d = std::time::Duration::from_millis(ms_ago as u64);
-            Instant::now() - d
+        Ok(opt.and_then(|ms_ago| {
+            let milliseconds = u64::try_from(ms_ago).ok()?;
+            Instant::now().checked_sub(std::time::Duration::from_millis(milliseconds))
         }))
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
 

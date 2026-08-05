@@ -35,18 +35,13 @@ impl ModelRoute {
 }
 
 /// Which error classes should trigger a fallback to this entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FallbackTrigger {
     /// Fall back on any error classified as `Fallback`.
+    #[default]
     AnyFallback,
     /// Fall back only for specific provider error types.
     Specific(Vec<String>),
-}
-
-impl Default for FallbackTrigger {
-    fn default() -> Self {
-        Self::AnyFallback
-    }
 }
 
 /// A single entry in a fallback chain.
@@ -209,15 +204,22 @@ impl FallbackChain {
 
 impl std::fmt::Debug for FallbackChain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let usage_counts = self
+            .usage_counts
+            .iter()
+            .map(|count| count.load(Ordering::Acquire))
+            .collect::<Vec<_>>();
         f.debug_struct("FallbackChain")
             .field("primary", &self.primary)
             .field("fallbacks", &self.fallbacks)
+            .field("usage_counts", &usage_counts)
             .field("side_effect_started", &self.side_effect_started())
             .finish()
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 
