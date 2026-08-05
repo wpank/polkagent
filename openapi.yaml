@@ -38,7 +38,9 @@ info:
     ## WebSocket streaming
 
     Real-time events are available at `GET /api/v1alpha1/events/stream` via
-    a WebSocket upgrade. Each frame is a JSON-encoded `RunEvent` object.
+    a WebSocket upgrade. Each frame is a JSON-encoded `RunEvent` object. That
+    run-event protocol is distinct from checkpointed durable interaction SSE
+    at `GET /api/v1alpha1/interactions/{id}/events/stream`.
 
 servers:
   - url: http://localhost:9090
@@ -1649,6 +1651,78 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayInteractionEventsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}/events/stream:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+
+    get:
+      operationId: streamInteractionEvents
+      summary: Replay and follow durable interaction events over SSE
+      tags: [interactions]
+      description: |
+        Attaches to the exact bounded stream owned by the shared interaction
+        service, replays durable events after the selected checkpoint, then
+        follows live events. A valid `Last-Event-ID` header takes precedence
+        over the `after_sequence` query parameter. Every data event is named
+        `interaction_event`; its `id` is the durable interaction-wide sequence
+        and its JSON `data` is an `InteractionEventEnvelope`. Safe comment-only
+        keepalives may appear between data events.
+
+        On live-channel lag, the server resubscribes after the last sequence it
+        actually emitted, preventing duplicate or skipped data events. A turn
+        filter can therefore produce non-contiguous IDs. Terminal turn events
+        do not close the interaction stream because later turns may follow.
+
+        The current service materializes the full durable replay after the
+        checkpoint before returning the bounded live receiver. Consequently,
+        reconnecting from a very old checkpoint is not yet storage-bounded.
+      parameters:
+        - name: after_sequence
+          in: query
+          description: Used only when `Last-Event-ID` is absent.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+        - name: turn_id
+          in: query
+          description: Optional turn filter; event IDs remain interaction-wide.
+          schema:
+            type: string
+            format: uuid
+        - name: Last-Event-ID
+          in: header
+          description: |
+            Non-negative durable sequence already processed by the client.
+            When present and valid, this header overrides `after_sequence`.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        "200":
+          description: |
+            Open SSE connection. Each `interaction_event` data field is a
+            JSON-encoded `InteractionEventEnvelope` and each ID is its sequence.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "SSE wire stream of typed interaction envelopes."
         "404":
           $ref: "#/components/responses/NotFound"
         "422":

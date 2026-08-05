@@ -2670,6 +2670,7 @@ dependencies = [
  "polkagent-store-trait",
  "polkagent-telemetry",
  "polkagent-tool",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2682,6 +2683,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

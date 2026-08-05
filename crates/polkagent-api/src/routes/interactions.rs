@@ -4,21 +4,23 @@
 //! `/conversations` routes manipulate transcript records only and never start
 //! model execution.
 
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode},
+    response::{sse::Event, sse::KeepAlive, IntoResponse, Sse},
     Json,
 };
+use futures::Stream;
 use polkagent_core::ConversationId;
 use polkagent_interaction::{
-    ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate, InteractionConfig,
-    InteractionContent, InteractionEventEnvelope, InteractionOverrides, InteractionService,
-    InteractionStore, ListInteractionsRequest, PromptRequest,
+    BoxInteractionEventStream, ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate,
+    InteractionConfig, InteractionContent, InteractionEventEnvelope, InteractionOverrides,
+    InteractionService, InteractionStore, InteractionTurnId, ListInteractionsRequest,
+    PromptRequest, StreamError, SubscriptionRequest,
 };
-use tracing::instrument;
+use tracing::{debug, instrument, warn};
 
 use crate::{
     dto::{
@@ -26,8 +28,8 @@ use crate::{
         HttpInteractionResponse, InteractionReplayCheckpoint, ListHttpInteractionTurnsResponse,
         ListHttpInteractionsQuery, ListHttpInteractionsResponse, PageMeta,
         PromptHttpInteractionRequest, PromptHttpInteractionResponse, ReplayInteractionEventsQuery,
-        ReplayInteractionEventsResponse, UpdateHttpInteractionTargetRequest,
-        UpdateHttpInteractionTargetResponse, API_VERSION,
+        ReplayInteractionEventsResponse, StreamInteractionEventsQuery,
+        UpdateHttpInteractionTargetRequest, UpdateHttpInteractionTargetResponse, API_VERSION,
     },
     error::ApiError,
     state::AppState,
@@ -35,6 +37,10 @@ use crate::{
 
 const DEFAULT_REPLAY_LIMIT: u32 = 100;
 const MAX_REPLAY_LIMIT: u32 = 999;
+const SSE_STREAM_CAPACITY: usize = 256;
+const SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const LAST_EVENT_ID_HEADER: &str = "last-event-id";
+const INTERACTION_SSE_EVENT_NAME: &str = "interaction_event";
 
 fn interaction_service(state: &AppState) -> Result<Arc<dyn InteractionService>, ApiError> {
     state
@@ -285,6 +291,163 @@ pub async fn replay_interaction_events(
             has_more,
         },
     }))
+}
+
+struct InteractionSseState {
+    service: Arc<dyn InteractionService>,
+    events: BoxInteractionEventStream,
+    conversation_id: ConversationId,
+    turn_id: Option<InteractionTurnId>,
+    last_delivered_sequence: u64,
+}
+
+fn requested_sse_checkpoint(
+    headers: &HeaderMap,
+    query_checkpoint: Option<u64>,
+) -> Result<u64, ApiError> {
+    let Some(last_event_id) = headers.get(LAST_EVENT_ID_HEADER) else {
+        return Ok(query_checkpoint.unwrap_or(0));
+    };
+    let value = last_event_id.to_str().map_err(|_| {
+        ApiError::ValidationError("Last-Event-ID must be an ASCII decimal sequence".to_owned())
+    })?;
+    value.trim().parse::<u64>().map_err(|_| {
+        ApiError::ValidationError(
+            "Last-Event-ID must be a non-negative decimal sequence".to_owned(),
+        )
+    })
+}
+
+async fn resubscribe_after_lag(state: &mut InteractionSseState) -> bool {
+    // The service's lag marker may point at the durable tail. Resuming there
+    // would skip events, so the HTTP adapter always replays after the last
+    // sequence it actually emitted to this client.
+    tokio::task::yield_now().await;
+    match state
+        .service
+        .subscribe(SubscriptionRequest {
+            conversation_id: state.conversation_id,
+            turn_id: state.turn_id,
+            after_sequence: Some(state.last_delivered_sequence),
+            capacity: SSE_STREAM_CAPACITY,
+        })
+        .await
+    {
+        Ok(events) => {
+            state.events = events;
+            true
+        }
+        Err(error) => {
+            warn!(
+                error_code = %error.code,
+                "interaction SSE resubscription failed"
+            );
+            false
+        }
+    }
+}
+
+fn sse_event_stream(
+    state: InteractionSseState,
+) -> impl Stream<Item = Result<Event, Infallible>> + Send {
+    futures::stream::unfold(state, |mut state| async move {
+        loop {
+            match state.events.recv().await {
+                Ok(envelope) => {
+                    if envelope.sequence <= state.last_delivered_sequence {
+                        continue;
+                    }
+                    if envelope.conversation_id != state.conversation_id {
+                        warn!("interaction SSE received a cross-interaction event");
+                        return None;
+                    }
+                    if state
+                        .turn_id
+                        .is_some_and(|turn_id| turn_id != envelope.turn_id)
+                    {
+                        warn!("interaction SSE service returned an event outside its turn filter");
+                        continue;
+                    }
+                    let event = match Event::default()
+                        .event(INTERACTION_SSE_EVENT_NAME)
+                        .id(envelope.sequence.to_string())
+                        .json_data(&envelope)
+                    {
+                        Ok(event) => event,
+                        Err(error) => {
+                            warn!(%error, "interaction SSE envelope serialization failed");
+                            return None;
+                        }
+                    };
+                    state.last_delivered_sequence = envelope.sequence;
+                    return Some((Ok(event), state));
+                }
+                Err(StreamError::Lagged {
+                    last_seen_sequence,
+                    resume_after_sequence,
+                }) => {
+                    warn!(
+                        ?last_seen_sequence,
+                        resume_after_sequence,
+                        delivered_sequence = state.last_delivered_sequence,
+                        "interaction SSE receiver lagged; replaying from delivered checkpoint"
+                    );
+                    if !resubscribe_after_lag(&mut state).await {
+                        return None;
+                    }
+                }
+                Err(StreamError::Closed) => {
+                    debug!("interaction SSE source closed");
+                    return None;
+                }
+                Err(StreamError::Backend(error)) => {
+                    warn!(
+                        error_code = %error.code,
+                        "interaction SSE backend failed"
+                    );
+                    return None;
+                }
+            }
+        }
+    })
+}
+
+/// Replay durable events and then follow the bounded interaction stream.
+///
+/// A valid `Last-Event-ID` header takes precedence over `after_sequence`.
+/// Every data event is named `interaction_event`, carries a complete typed
+/// [`InteractionEventEnvelope`], and uses its durable conversation sequence as
+/// the SSE `id`.
+#[instrument(skip(state, headers), fields(%conversation_id))]
+pub async fn stream_interaction_events(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<ConversationId>,
+    Query(query): Query<StreamInteractionEventsQuery>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    let after_sequence = requested_sse_checkpoint(&headers, query.after_sequence)?;
+    let service = interaction_service(&state)?;
+    let events = service
+        .subscribe(SubscriptionRequest {
+            conversation_id,
+            turn_id: query.turn_id,
+            after_sequence: Some(after_sequence),
+            capacity: SSE_STREAM_CAPACITY,
+        })
+        .await
+        .map_err(ApiError::from)?;
+    let stream = sse_event_stream(InteractionSseState {
+        service,
+        events,
+        conversation_id,
+        turn_id: query.turn_id,
+        last_delivered_sequence: after_sequence,
+    });
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(SSE_KEEPALIVE_INTERVAL)
+            .text("keepalive"),
+    ))
 }
 
 async fn replay_page(

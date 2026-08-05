@@ -113,6 +113,11 @@ async fn embedded_openapi_matches_source_and_interaction_contract() {
             "get",
             "replayInteractionEvents",
         ),
+        (
+            "/api/v1alpha1/interactions/{id}/events/stream",
+            "get",
+            "streamInteractionEvents",
+        ),
     ];
     for (path, method, operation_id) in operations {
         assert_eq!(
@@ -188,6 +193,23 @@ async fn embedded_openapi_matches_source_and_interaction_contract() {
         string_set(&schemas["InteractionReplayCheckpoint"]["required"]),
         ["has_more", "next_after_sequence"].into_iter().collect()
     );
+    let stream = &source["paths"]["/api/v1alpha1/interactions/{id}/events/stream"]["get"];
+    let stream_parameters: std::collections::BTreeSet<_> = stream["parameters"]
+        .as_array()
+        .expect("stream parameters")
+        .iter()
+        .map(|parameter| parameter["name"].as_str().expect("parameter name"))
+        .collect();
+    assert_eq!(
+        stream_parameters,
+        ["Last-Event-ID", "after_sequence", "turn_id"]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(
+        stream["responses"]["200"]["content"]["text/event-stream"]["schema"]["type"],
+        "string"
+    );
     assert!(
         source["paths"]["/api/v1alpha1/interactions/{id}"]["delete"]["responses"]["204"]
             .get("content")
@@ -202,7 +224,6 @@ async fn embedded_openapi_matches_source_and_interaction_contract() {
     for unsupported in [
         "/api/v1alpha1/interactions/{id}/approve",
         "/api/v1alpha1/interactions/{id}/deny",
-        "/api/v1alpha1/interactions/{id}/events/stream",
     ] {
         assert!(source["paths"].get(unsupported).is_none());
     }
@@ -239,13 +260,16 @@ async fn documented_interaction_methods_resolve_but_unsupported_methods_do_not()
         server
             .get(&format!("/api/v1alpha1/interactions/{id}/events"))
             .await,
+        server
+            .get(&format!("/api/v1alpha1/interactions/{id}/events/stream"))
+            .await,
     ];
     for response in responses {
         assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
         assert_ne!(response.status_code(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
-    for unsupported in ["approve", "deny", "events/stream"] {
+    for unsupported in ["approve", "deny"] {
         server
             .post(&format!("/api/v1alpha1/interactions/{id}/{unsupported}"))
             .await

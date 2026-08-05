@@ -65,8 +65,10 @@ dashmap = { workspace = true }
 axum-test = "21"
 async-trait = { workspace = true }
 polkagent-conversation = { path = "../polkagent-conversation" }
+reqwest = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

@@ -97,6 +97,16 @@ pub struct ReplayInteractionEventsQuery {
     pub limit: Option<u32>,
 }
 
+/// Query for checkpoint-aware live interaction event streaming.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct StreamInteractionEventsQuery {
+    /// Resume strictly after this durable sequence when `Last-Event-ID` is
+    /// absent.
+    pub after_sequence: Option<u64>,
+    /// Restrict delivery to one turn while retaining interaction-wide IDs.
+    pub turn_id: Option<InteractionTurnId>,
+}
+
 /// Versioned projection for one interaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInteractionResponse {

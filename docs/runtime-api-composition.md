@@ -55,6 +55,7 @@ other surfaces onto that shared service is tracked separately.
 | `POST` | `/interactions/{id}/turns/{turn_id}/cancel` | Cancel the path-scoped turn idempotently |
 | `PUT` | `/interactions/{id}/target` | Change only the supported agent target |
 | `GET` | `/interactions/{id}/events` | Return a finite ordered page after a durable sequence checkpoint |
+| `GET` | `/interactions/{id}/events/stream` | Replay and follow the exact bounded service stream over checkpointed SSE |
 
 Prompt responses are `202 Accepted` once the turn and its initial event are
 durable. Retrying the same `turn_id` with the same prompt returns the same turn
@@ -68,11 +69,22 @@ response checkpoint's `next_after_sequence` is safe to send on the next
 request, including when a turn filter skips unrelated events; `has_more`
 indicates that another matching event is already durable.
 
-Live interaction streaming remains open. The existing `/events/stream` and
-`/ws/v1alpha1` transports speak run-event protocols and cannot currently
-preserve the interaction sequence checkpoint. Until a checkpoint-aware
-streaming protocol is implemented, clients poll the finite JSON replay route
-and resume from its returned checkpoint.
+The SSE route accepts `after_sequence`, optional `turn_id`, and the standard
+`Last-Event-ID` header. A valid header takes precedence over the query
+checkpoint. Data events are named `interaction_event`; their SSE IDs are the
+durable conversation sequences and their JSON data are typed interaction event
+envelopes. On bounded-channel lag, the API resubscribes after the last sequence
+it emitted, so durable replay closes the gap without duplicates. Terminal turn
+events leave the stream open for later turns, and dropping the HTTP connection
+drops the owned service receiver. Backend or closed-stream failures end the
+connection without serializing backend messages; server logs record only the
+typed error code. The older `/events/stream` and `/ws/v1alpha1` transports
+remain separate run-event protocols.
+
+One upstream scaling gap remains: `InteractionEventHub::subscribe` currently
+materializes the full durable replay after the requested checkpoint before it
+returns its bounded live receiver. Live fan-out is bounded, but a reconnect
+from a very old checkpoint is not yet storage-bounded.
 
 The `/conversations` API is a low-level transcript compatibility surface.
 In particular, `POST /conversations/{id}/messages` appends a record only: it

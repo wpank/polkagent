@@ -85,6 +85,7 @@
 //!   POST   /interactions/:id/turns/:turn_id/cancel
 //!   PUT    /interactions/:id/target
 //!   GET    /interactions/:id/events
+//!   GET    /interactions/:id/events/stream (SSE)
 //!
 //!   POST   /registry/listings
 //!   GET    /registry/listings/:id
@@ -317,6 +318,10 @@ pub fn register(state: AppState) -> Router {
         .route(
             "/interactions/{id}/events",
             get(interactions::replay_interaction_events),
+        )
+        .route(
+            "/interactions/{id}/events/stream",
+            get(interactions::stream_interaction_events),
         )
         // Registry (PRD-12 §5.5 — agent-service listings)
         .route("/registry/listings", post(registry::create_listing))

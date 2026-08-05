@@ -233,12 +233,26 @@ interaction routes below when a prompt must initiate agent work.
 | `POST` | `/api/v1alpha1/interactions/:id/turns/:turn_id/cancel` | Cancel a turn |
 | `PUT` | `/api/v1alpha1/interactions/:id/target` | Change the agent target |
 | `GET` | `/api/v1alpha1/interactions/:id/events` | Replay events after a durable sequence |
+| `GET` | `/api/v1alpha1/interactions/:id/events/stream` | Replay and follow typed events over SSE |
 
 Callers may supply `turn_id` when prompting. A retry with identical input
 returns the original handle, while reuse with different input returns `409`.
 For replay, send `after_sequence` and persist the returned
 `checkpoint.next_after_sequence`; optional `turn_id` and `limit` parameters
 filter and page the ordered durable history.
+
+The SSE route accepts the same `after_sequence` and optional `turn_id` model.
+On browser or client reconnect, a valid `Last-Event-ID` header takes precedence
+over `after_sequence`. Each `interaction_event` has an `id` equal to its
+durable interaction-wide sequence and a JSON `data` field containing the typed
+event envelope. Comment-only keepalives carry no application data. On bounded
+receiver lag, the server replays after the last event it emitted, avoiding
+duplicates and gaps; terminal turn events do not close the session stream.
+
+The live receiver is bounded, but the underlying interaction service currently
+materializes all durable replay events after the checkpoint before returning
+it. Reconnecting from a very old checkpoint is therefore not yet
+storage-bounded.
 
 ### System
 
@@ -264,10 +278,9 @@ These endpoints are served without the `/api/v1alpha1` prefix.
 
 Connect to `/api/v1alpha1/events/stream` to receive real-time events. The stream delivers run lifecycle events including `RunStarted`, `TurnCompleted`, `EffectResolved`, `TokensStreamed`, and others.
 
-This WebSocket is a run-event protocol, not a checkpointed interaction stream.
-Interaction clients currently poll
-`GET /api/v1alpha1/interactions/:id/events` so they can resume exactly after a
-durable sequence across disconnects and process restarts.
+This WebSocket remains a run-event protocol and is not reused for durable
+interaction delivery. Interaction clients use the separate checkpointed SSE
+route documented above, or finite JSON replay when streaming is unsuitable.
 
 ```mermaid
 stateDiagram-v2
