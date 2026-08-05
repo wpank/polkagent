@@ -19,7 +19,7 @@ reports.
 | EVD-08 | Run container/deployment smoke with persistent data, health, shutdown, restart, backup/restore, upgrade/rollback, auth, and resource pressure. | OPS-01 | CI artifact, runbook, recovery timings, known limits |
 | EVD-09 | Attempt extension escape/capability abuse, malicious package/update, dependency confusion, and rollback. | EXT-01 | Red-team corpus, sandbox/trust results, signed package provenance |
 | EVD-10 | Prove tenant/principal isolation through API, stores, events, memory, artifacts, groups, payments, logs, and metrics. | SEC-01, OPS-01 | Cross-tenant matrix with deny/audit evidence |
-| EVD-11 | Compare TUI, terminal chat, API, and ACP views of the same active/restarted interaction. | FND-02, TUI-01, ACP-01, API-01 | Cross-surface conformance test using stable interaction/run/event IDs |
+| EVD-11 (captured 2026-08-05) | Compare TUI, terminal chat, API, and ACP views of the same restarted interaction, including a refusal critical path. | — | [`cross_surface_interaction_e2e.rs`](../crates/polkagent-cli/tests/cross_surface_interaction_e2e.rs) using one exact conversation and stable turn/run/event IDs |
 | EVD-12 | Validate real provider/harness readiness, streaming, tool protocol, cancellation, retry, billing/usage, context limits, and redaction. | PRD-04a maturity claims | Per-adapter conformance report; unsupported features explicitly labeled |
 
 ## Partial evidence captured
@@ -48,8 +48,22 @@ reports.
   turn/executor creation for unknown models, and discovery-only harness model
   rejection. Unsupported provider/harness/autonomy/budget config and approval/
   deny return typed errors.
-  This is strong headless evidence, but FND-02/EVD-11 remain open until real
-  effect approvals and cross-surface restart tests pass.
+  This is strong headless evidence. The successful/restarted EVD-11 path now
+  has one cross-surface fixture; FND-02 remains open for real effect approvals,
+  structured tool projection, and a role-safe harness contract.
+
+- **EXE-01 / grantless registered-tool slice (2026-08-05):** a SQLite-backed
+  `AppService` fixture runs a real registered handler selected only from the
+  exact agent allowlist/registry intersection. The handler observes that its
+  parent turn, normalized step, effect intent, claim, and attempt already
+  exist before I/O; the immutable outcome survives database reopen and the
+  exact serialized tool result enters the next inference request. Separate
+  cases prove unknown, unallowlisted, malformed-JSON, registry-mismatched, and
+  grant-bearing calls never execute and receive typed tool errors. This closes
+  the fabricated-success defect for the bounded grantless path, not EVD-05:
+  approval pause/resume, crash boundaries, cancellation during handler I/O,
+  unknown-outcome reconciliation, duplicate retry, worker drain, and an
+  external side effect remain unproved.
 
 - **EVD-07 / ACP client-protocol slices (2026-08-05):** the official ACP Rust
   client launches `polkagent acp` as a subprocess and proves initialization,
@@ -104,11 +118,19 @@ reports.
   selected model in the TUI header/status, and reject unknown, cross-provider,
   and unsupported harness changes. They also prove commands create no turns
   and never mutate the shared AgentSpec.
-  Separate terminal-chat subprocess tests prove exact non-TTY stdout, restart
-  transcript resume, explicit configuration refusal, shared-command help, and
-  SIGINT cancellation with durable terminal state. These are single-surface
-  fixtures: EVD-11 remains open because no test yet compares TUI, chat, API,
-  and ACP projections of the same interaction; Windows ConPTY is also untested.
+  A single deterministic SQLite fixture now creates and configures one exact
+  conversation through the in-process HTTP router, prompts it through a real
+  `polkagent chat --resume` subprocess, restarts and loads it through an
+  official ACP client subprocess, follows up through ACP, then reconstructs
+  the TUI controller/session selector, loads the same conversation, prompts a
+  third turn, and renders it through Ratatui `TestBackend`. Final HTTP and
+  durable-store projections agree on the same conversation, ordered transcript,
+  exact turn/run links, model config, lifecycle, terminal usage, and ACP
+  checkpoint. `/model`, `/status`, and an invalid model refusal create no
+  turns or runs. This closes EVD-11 through its restarted success and refusal
+  paths. Cancellation uses the same durable boundary and remains proven by the
+  existing adapter-specific HTTP/chat/ACP/TUI tests rather than interrupting
+  this linear three-turn fixture; Windows ConPTY is also untested.
 
 - **API-01 / durable HTTP core slice (2026-08-05):** a black-box router test
   builds the same runtime composition used by `serve`, creates an agent and run

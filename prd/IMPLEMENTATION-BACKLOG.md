@@ -119,7 +119,8 @@ but not TUI widgets or ACP protocol mapping.
 - [ ] Remove `NoopEffectStore` and in-memory production fallbacks from
   executable configurations; missing required dependencies fail at startup.
   One-shot run, TUI, ACP, and `serve` now consume the shared runtime; the
-  central tool/effect/policy loop and some optional API store adapters remain
+  runtime now refuses an executable tool registry without a real effect store.
+  Approval/policy/resume and some optional API store adapters remain
   incomplete.
 - [x] Rehydrate agents and recover/timeout stuck work.
 - [x] Migrate one-shot `run` without behavior regression.
@@ -239,13 +240,22 @@ packet owns the orchestrator hot files; FND-01 only injects its dependencies.
 
 **Checklist:**
 
-- [ ] Advertise effective tool schemas to model inference.
-- [ ] Normalize and validate tool calls with stable IDs.
+- [x] Advertise only exact registered definitions in the agent's allowlist and
+  with no required grant; unknown and grant-bearing tools remain invisible.
+- [ ] Finish canonical tool-call identity/schema validation. The bounded slice
+  parses JSON, verifies registry/allowlist/grant state, and persists stable
+  step/effect/attempt identities, but user-visible structured call projection
+  remains open.
 - [ ] Resolve grants/policy/budgets before dispatch.
-- [ ] Persist `EffectIntent` before external I/O.
-- [ ] Execute through `ToolRegistry`/effect worker, not fabricated JSON.
+- [x] Persist the parent turn, normalized step, `EffectIntent`, claim, and
+  attempt before handler I/O while retaining SQLite foreign-key enforcement.
+- [x] Execute grantless calls through the exact runtime `ToolRegistry` and
+  `EffectPipeline`, not fabricated JSON. This slice dispatches in-process after
+  a durable claim; a separate effect worker/drain path remains.
 - [ ] Pause durably for approval and resume the exact call/effect.
-- [ ] Record tool output/artifacts/evidence and feed it into the next model turn.
+- [x] Persist a success/failure/timeout outcome and feed the exact serialized
+  tool result into the next typed model inference request. Artifact projection
+  remains open.
 - [ ] Enforce max turns, cancellation, timeout, retries, and explicit unknown
   outcomes without duplicate effects.
 
@@ -643,9 +653,9 @@ than replaying historical foundation work.
 
 | Lane | Packet and next deliverable | Exclusive primary ownership | Integration gate |
 |---|---|---|---|
-| Integration | FND-01/FND-02: one cross-surface interaction fixture and any additive interaction migration | `polkagent-runtime`, `polkagent-interaction`, migration registration | One interaction can be created, prompted, cancelled, restarted, and projected identically through every composed surface. |
-| Execution | EXE-01: first real read-only tool call, then persisted approval-required effect | `polkagent-run` orchestrator and narrow service bridges | No fabricated tool result; intent precedes I/O and exact tool output returns to the next model turn. |
-| Editor | ACP-01: durable session create/list/load/prompt/cancel over `InteractionService` | `polkagent-surface-acp` and ACP subprocess tests | Official client restart/load/follow-up uses the same durable session and clean JSON-RPC stdout. |
+| Integration | FND-02/OBS-01: project real effect-backed tool events through interaction replay | `polkagent-runtime`, `polkagent-interaction`, and narrow surface projections | Stable tool/effect identity, safe arguments/outcome, checkpoint lag, and restart are identical across composed surfaces. |
+| Execution | EXE-01: persisted approval-required effect and crash/cancel recovery after the grantless tool slice | `polkagent-run` orchestrator and narrow service bridges | Pause/resume never duplicates handler I/O; unknown outcomes and cancellation are explicit. |
+| Editor | ACP-01: structured tools/permissions and real Zed validation after durable new/load/resume | `polkagent-surface-acp` and ACP subprocess/manual evidence | Official client and Zed show the exact durable effect, permission decision, cancel, and restart state. |
 | Terminal | TUI-01: remaining shared commands, service-routed approvals, and structured tool/plan projection | CLI chat/TUI modules | Commands create no accidental prompt; exact effect identities survive cancel/restart. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |

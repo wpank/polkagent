@@ -32,6 +32,15 @@ same prompt, cancel, config, replay, and restart lifecycle. Session list/import,
 structured tools/permissions, cwd provenance, and manual Zed validation remain
 open.
 
+One deterministic SQLite conformance fixture now carries the same exact
+conversation through HTTP creation/config, terminal-chat prompting, ACP
+restart/load/follow-up, TUI load/prompt/render, and final HTTP projection. The
+ordered transcript, turn/run links, persisted model, usage, lifecycle, and ACP
+checkpoint agree, while commands and refusal create no work. Active-turn
+cancel remains covered by separate adapter-specific durable tests so the
+linear three-turn fixture can continue; rich tool/approval projection remains
+open.
+
 FND-02 now includes shared IDs/config/requests/handles, structured events and
 projections, the service/store traits, a bounded durable/live replay hub, typed
 MVP slash-command parsing plus handlers, and a runtime-composed durable
@@ -141,7 +150,7 @@ It remains design input rather than the completion contract.
 | Start or cancel a run from the TUI | Implemented for the bounded slice | `InteractionService::prompt` creates correlated conversation/turn/run state; `x` requests exact turn cancellation |
 | Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/new`, `/resume`, and `/model` use the shared command executor, render structured results, and never become model turns; unavailable capabilities fail explicitly |
 | Approve/deny in the TUI | Partial and unsafe architecturally | It writes outcome rows directly through `TuiDb`, bypassing `AppService` |
-| See live run output in the TUI | Implemented for typed single-agent events | Controller projects bounded interaction events and resubscribes from a durable checkpoint after lag; structured tool/approval production remains absent |
+| See live run output in the TUI | Implemented for typed single-agent events | Controller projects bounded interaction events and resubscribes from a durable checkpoint after lag; the runtime now produces a bounded real grantless tool lifecycle, but interaction tool/approval projection remains absent |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
@@ -1233,9 +1242,10 @@ Zed, not merely a single-agent chat wrapper.
 
 - **Runtime duplication:** one-shot run, TUI, chat, ACP, and `serve` share the
   production factory; TUI/chat/HTTP/ACP consume the headless interaction
-  service. The central tool/effect/policy loop remains incomplete.
+  service. A bounded grantless registered-tool/effect loop is composed;
+  approval/policy/resume and crash recovery remain incomplete.
 - **Event loss:** TUI/chat/HTTP/ACP use durable interaction replay; structured
-  tool/approval production and projection remain incomplete.
+  tool/approval interaction projection remains incomplete.
 - **Protocol drift:** ACP v2 is draft. Pin the official SDK, test v1, and isolate
   conversions in the adapter.
 - **SQLite concurrency:** Zed may spawn processes while TUI/API is open. Enable
@@ -1272,7 +1282,7 @@ Zed, not merely a single-agent chat wrapper.
 | `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/model selection plus shared command execution exists; add async input, structured tool/approval projection, and orchestration |
 | `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime exists; add truthful adapters for the published optional-route 501 boundary |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
-| Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance exist; attach manual Zed and cross-surface acceptance evidence |
+| Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; attach manual Zed and active-turn permission/cancel evidence |
 
 ## 13. Source trail
 
@@ -1328,6 +1338,7 @@ The terminal, TUI, HTTP, and ACP slices are shipped and intentionally bounded.
 `RuntimeFactory` plus the single-agent, model-selectable durable interaction/
 store/event/command service now exist. One-shot run, TUI, chat, ACP, and `serve`
 share that runtime; TUI/chat/HTTP/ACP share the durable interaction lifecycle.
-Next connect real tools/permissions and approvals, complete manual Zed and
-cross-surface evidence, define role-safe harness history, and expand truthful
-command coverage before multi-agent orchestration.
+Next project the real tool lifecycle into interactions, connect permissions and
+approvals with crash-safe resume, complete manual Zed evidence, define role-safe
+harness history, and expand truthful command coverage before multi-agent
+orchestration.

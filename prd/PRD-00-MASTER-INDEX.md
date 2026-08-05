@@ -13,12 +13,14 @@ packages, PCA transport, and container lifecycle, but no PRD is complete
 end-to-end under the repository's completion rule. A production runtime,
 durable interaction/session/event service, and shared command handlers now
 exist. TUI, terminal chat, HTTP, and ACP now consume the interaction service;
-the dominant gaps are role-safe harness history, approval/tool projection, the
-central tool/effect/policy path, and cross-surface/manual-editor evidence.
+one exact restarted conversation is proven across all four surfaces, and a
+bounded grantless registered-tool loop now persists intent before real handler
+I/O. The dominant gaps are role-safe harness history, structured tool/approval
+projection, approval/policy/resume, and manual-editor evidence.
 
-The next milestone is therefore not “add more crates.” It is real tool/effect
-execution and durable approval-capable experiences, followed by cross-surface
-and real-editor validation.
+The next milestone is therefore not “add more crates.” It is extending the
+grantless tool slice into durable approval/policy/recovery and structured
+surface events, followed by real-editor validation.
 
 Current execution truth lives in:
 
@@ -45,8 +47,8 @@ percentage.
 |---|---|---|
 | [PRD-01](PRD-01-VISION-PRINCIPLES-PERSONAS.md) | Vision, principles, personas, pillars | Normative product direction; implementation prose is historical. |
 | [PRD-02](PRD-02-VOCABULARY-ARCHITECTURE.md) | Vocabulary, invariants, architecture | Preserve invariants; reconcile sketches with current types during touched work. |
-| [PRD-03](PRD-03-EXECUTION-MODEL.md) | Runs, turns, effects, recovery | Active; real tool/effect/policy loop is a P0 gap. |
-| [PRD-04](PRD-04-PROVIDERS-MODELS-TOOLS.md) | Providers, models, harnesses, tools, skills | Active; adapters exist but tools are not in the model execution loop. |
+| [PRD-03](PRD-03-EXECUTION-MODEL.md) | Runs, turns, effects, recovery | Active; bounded grantless registered-tool execution exists, while approval/policy/recovery remain P0 gaps. |
+| [PRD-04](PRD-04-PROVIDERS-MODELS-TOOLS.md) | Providers, models, harnesses, tools, skills | Active; grantless allowlisted registered tools now execute in a bounded model loop, while approvals/policy/external-adapter evidence remain. |
 | [PRD-04a](PRD-04a-PROVIDER-HARNESS-EXPANSION.md) | Provider/harness expansion | Active component scope; prove each adapter through the shared runtime. |
 | [PRD-05](PRD-05-POLKADOT-INTEGRATIONS.md) | Polkadot read/write integrations | Active; live finality, signing, dry-run/XCM, and action E2E remain. |
 | [PRD-06](PRD-06-PCA-COMPATIBILITY.md) | PCA compatibility and transport | Active; durable encrypted TCP/control delivery is cross-process tested, but reference PCA framing, signed identity, attachments, and runtime composition remain. |
