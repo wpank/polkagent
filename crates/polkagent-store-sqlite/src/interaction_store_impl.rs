@@ -7,9 +7,9 @@ use chrono::{DateTime, Utc};
 use polkagent_core::ids::{ConversationId, RunId};
 use polkagent_interaction::{
     InteractionError, InteractionErrorCode, InteractionEvent, InteractionEventEnvelope,
-    InteractionEventId, InteractionRunLink, InteractionStore, InteractionTurnId,
-    NewInteractionEvent, NewInteractionTurn, StoredInteractionTurn, TurnHandle, TurnState,
-    TurnSummary,
+    InteractionEventId, InteractionRunLink, InteractionState, InteractionStore, InteractionSummary,
+    InteractionTurnId, ListInteractionsRequest, NewInteraction, NewInteractionEvent,
+    NewInteractionTurn, StoredInteractionTurn, TurnHandle, TurnState, TurnSummary,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use uuid::Uuid;
@@ -38,6 +38,164 @@ impl SqliteInteractionStore {
 
 #[async_trait]
 impl InteractionStore for SqliteInteractionStore {
+    async fn create_interaction(
+        &self,
+        interaction: NewInteraction,
+    ) -> Result<InteractionSummary, InteractionError> {
+        interaction.validate()?;
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut writer = pool.writer();
+            let transaction = writer
+                .transaction()
+                .map_err(|error| backend_error("begin interaction session transaction", &error))?;
+            if let Some(existing) =
+                load_interaction_conn_optional(&transaction, interaction.conversation_id)?
+            {
+                if existing.config == interaction.config
+                    && existing.created_at == interaction.created_at
+                {
+                    return Ok(existing);
+                }
+                return Err(conflict_error(
+                    "interaction is already bound to different durable defaults",
+                ));
+            }
+            let config_json = encode_json("interaction config", &interaction.config)?;
+            transaction
+                .execute(
+                    "INSERT INTO interaction_sessions
+                         (conversation_id, config_json, state, created_at, updated_at)
+                     VALUES (?1, ?2, 'active', ?3, ?3)",
+                    rusqlite::params![
+                        interaction.conversation_id.to_string(),
+                        config_json,
+                        interaction.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(|error| write_error("create interaction session", &error))?;
+            let summary = load_interaction_conn(&transaction, interaction.conversation_id)?;
+            transaction
+                .commit()
+                .map_err(|error| backend_error("commit interaction session", &error))?;
+            Ok(summary)
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn list_interactions(
+        &self,
+        request: ListInteractionsRequest,
+    ) -> Result<Vec<InteractionSummary>, InteractionError> {
+        if request.limit == 0 || request.limit > 1_000 {
+            return Err(InteractionError::invalid_request(
+                "interaction list limit must be between 1 and 1000",
+            ));
+        }
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let state = request.state.map(encode_interaction_state);
+            let mut statement = writer
+                .prepare(
+                    "SELECT s.conversation_id
+                     FROM interaction_sessions s
+                     WHERE (?1 IS NULL OR s.state = ?1)
+                     ORDER BY s.updated_at DESC, s.conversation_id DESC
+                     LIMIT ?2 OFFSET ?3",
+                )
+                .map_err(|error| backend_error("prepare interaction list", &error))?;
+            let ids = statement
+                .query_map(
+                    rusqlite::params![state, i64::from(request.limit), i64::from(request.offset)],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| backend_error("query interaction list", &error))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| backend_error("decode interaction list", &error))?;
+            ids.into_iter()
+                .map(|id| {
+                    parse_id("conversation", &id).and_then(|id| load_interaction_conn(&writer, id))
+                })
+                .collect()
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn load_interaction(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<InteractionSummary, InteractionError> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            load_interaction_conn(&writer, conversation_id)
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn update_interaction_config(
+        &self,
+        conversation_id: ConversationId,
+        config: polkagent_interaction::InteractionConfig,
+    ) -> Result<InteractionSummary, InteractionError> {
+        config.validate()?;
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let config_json = encode_json("interaction config", &config)?;
+            let changed = writer
+                .execute(
+                    "UPDATE interaction_sessions
+                     SET config_json = ?1, updated_at = ?2
+                     WHERE conversation_id = ?3 AND state = 'active'",
+                    rusqlite::params![
+                        config_json,
+                        Utc::now().to_rfc3339(),
+                        conversation_id.to_string()
+                    ],
+                )
+                .map_err(|error| write_error("update interaction config", &error))?;
+            if changed != 1 {
+                return Err(conflict_or_not_found(&writer, conversation_id));
+            }
+            load_interaction_conn(&writer, conversation_id)
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    async fn set_interaction_state(
+        &self,
+        conversation_id: ConversationId,
+        state: InteractionState,
+    ) -> Result<InteractionSummary, InteractionError> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let changed = writer
+                .execute(
+                    "UPDATE interaction_sessions SET state = ?1, updated_at = ?2
+                     WHERE conversation_id = ?3",
+                    rusqlite::params![
+                        encode_interaction_state(state),
+                        Utc::now().to_rfc3339(),
+                        conversation_id.to_string()
+                    ],
+                )
+                .map_err(|error| write_error("update interaction state", &error))?;
+            if changed != 1 {
+                return Err(not_found_error("interaction was not found"));
+            }
+            load_interaction_conn(&writer, conversation_id)
+        })
+        .await
+        .map_err(join_error)?
+    }
+
     async fn create_turn(
         &self,
         turn: NewInteractionTurn,
@@ -172,6 +330,82 @@ impl InteractionStore for SqliteInteractionStore {
         })
         .await
         .map_err(join_error)?
+    }
+}
+
+fn load_interaction_conn(
+    connection: &Connection,
+    conversation_id: ConversationId,
+) -> Result<InteractionSummary, InteractionError> {
+    load_interaction_conn_optional(connection, conversation_id)?
+        .ok_or_else(|| not_found_error("interaction was not found"))
+}
+
+fn load_interaction_conn_optional(
+    connection: &Connection,
+    conversation_id: ConversationId,
+) -> Result<Option<InteractionSummary>, InteractionError> {
+    connection
+        .query_row(
+            "SELECT c.title, s.config_json, s.state,
+                    (SELECT COUNT(*) FROM interaction_turns t
+                     WHERE t.conversation_id = s.conversation_id),
+                    s.created_at, s.updated_at
+             FROM interaction_sessions s
+             JOIN conversations c ON c.id = s.conversation_id
+             WHERE s.conversation_id = ?1",
+            [conversation_id.to_string()],
+            |row| {
+                Ok(RawInteraction {
+                    title: row.get(0)?,
+                    config_json: row.get(1)?,
+                    state: row.get(2)?,
+                    turn_count: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| backend_error("load interaction session", &error))?
+        .map(|row| {
+            Ok(InteractionSummary {
+                conversation_id,
+                title: row.title,
+                config: decode_json("interaction config", &row.config_json)?,
+                state: decode_interaction_state(&row.state)?,
+                turn_count: u32::try_from(row.turn_count)
+                    .map_err(|_| invariant_error("stored interaction turn count is invalid"))?,
+                created_at: parse_timestamp("interaction created_at", &row.created_at)?,
+                updated_at: parse_timestamp("interaction updated_at", &row.updated_at)?,
+            })
+        })
+        .transpose()
+}
+
+fn conflict_or_not_found(
+    connection: &Connection,
+    conversation_id: ConversationId,
+) -> InteractionError {
+    match load_interaction_conn_optional(connection, conversation_id) {
+        Ok(Some(_)) => conflict_error("archived interaction configuration cannot be changed"),
+        Ok(None) => not_found_error("interaction was not found"),
+        Err(error) => error,
+    }
+}
+
+const fn encode_interaction_state(state: InteractionState) -> &'static str {
+    match state {
+        InteractionState::Active => "active",
+        InteractionState::Archived => "archived",
+    }
+}
+
+fn decode_interaction_state(value: &str) -> Result<InteractionState, InteractionError> {
+    match value {
+        "active" => Ok(InteractionState::Active),
+        "archived" => Ok(InteractionState::Archived),
+        _ => Err(invariant_error("stored interaction state is invalid")),
     }
 }
 
@@ -709,6 +943,15 @@ struct RawTurn {
     first_event_sequence: Option<i64>,
 }
 
+struct RawInteraction {
+    title: Option<String>,
+    config_json: String,
+    state: String,
+    turn_count: i64,
+    created_at: String,
+    updated_at: String,
+}
+
 struct RawEvent {
     id: String,
     conversation_id: String,
@@ -816,6 +1059,71 @@ mod tests {
             initial_event_id: InteractionEventId::new(),
             started_at: Utc::now(),
         }
+    }
+
+    #[tokio::test]
+    async fn interaction_session_create_list_update_and_archive_round_trip() {
+        let fixture = fixture();
+        let target = InteractionTarget::Agent(AgentId::new());
+        let created_at = Utc::now();
+        let new_interaction = NewInteraction {
+            conversation_id: fixture.conversation_id,
+            config: InteractionConfig::new(target),
+            created_at,
+        };
+        let created = fixture
+            .store
+            .create_interaction(new_interaction.clone())
+            .await
+            .expect("create interaction session");
+        assert_eq!(created.state, InteractionState::Active);
+        assert_eq!(created.turn_count, 0);
+        assert_eq!(
+            fixture
+                .store
+                .create_interaction(new_interaction)
+                .await
+                .expect("retry interaction creation"),
+            created
+        );
+        assert_eq!(
+            fixture
+                .store
+                .list_interactions(ListInteractionsRequest::default())
+                .await
+                .expect("list active interactions"),
+            vec![created.clone()]
+        );
+
+        let mut config = created.config;
+        config.model = Some("model-x".to_owned());
+        let updated = fixture
+            .store
+            .update_interaction_config(fixture.conversation_id, config)
+            .await
+            .expect("update interaction config");
+        assert_eq!(updated.config.model.as_deref(), Some("model-x"));
+        let archived = fixture
+            .store
+            .set_interaction_state(fixture.conversation_id, InteractionState::Archived)
+            .await
+            .expect("archive interaction");
+        assert_eq!(archived.state, InteractionState::Archived);
+        assert!(fixture
+            .store
+            .list_interactions(ListInteractionsRequest {
+                state: Some(InteractionState::Active),
+                ..ListInteractionsRequest::default()
+            })
+            .await
+            .expect("list active interactions")
+            .is_empty());
+        let error = fixture
+            .store
+            .update_interaction_config(fixture.conversation_id, archived.config)
+            .await
+            .expect_err("archived config update must fail");
+        assert_eq!(error.code, InteractionErrorCode::Conflict);
     }
 
     #[tokio::test]

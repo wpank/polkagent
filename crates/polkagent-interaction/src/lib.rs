@@ -61,7 +61,7 @@ pub use model::{
     TurnHandle, TurnState, TurnSummary,
 };
 pub use persistence::{
-    InteractionRunLink, InteractionStore, NewInteractionEvent, NewInteractionTurn,
+    InteractionRunLink, InteractionStore, NewInteraction, NewInteractionEvent, NewInteractionTurn,
     StoredInteractionTurn,
 };
 pub use service::{

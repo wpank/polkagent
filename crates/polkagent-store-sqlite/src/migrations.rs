@@ -61,6 +61,9 @@ const SCHEMA_V12: &str = include_str!("v12_agents_unique_name.sql");
 /// V13: Durable interaction turns, run correlations, and replayable events.
 const SCHEMA_V13: &str = include_str!("v13_interaction_store.sql");
 
+/// V14: Safe durable interaction configuration and lifecycle.
+const SCHEMA_V14: &str = include_str!("v14_interaction_sessions.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -76,6 +79,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (11, "run started_at column", SCHEMA_V11),
     (12, "unique agent names index", SCHEMA_V12),
     (13, "durable interaction turns and events", SCHEMA_V13),
+    (14, "durable interaction sessions", SCHEMA_V14),
 ];
 
 // ---------------------------------------------------------------------------
@@ -212,7 +216,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -221,7 +225,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -276,6 +280,7 @@ mod tests {
             "interaction_turns",
             "interaction_turn_runs",
             "interaction_events",
+            "interaction_sessions",
         ];
 
         for table in &tables {

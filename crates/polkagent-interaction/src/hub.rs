@@ -212,7 +212,10 @@ mod tests {
     use super::*;
     use crate::event::InteractionEvent;
     use crate::ids::InteractionEventId;
-    use crate::persistence::{NewInteractionTurn, StoredInteractionTurn};
+    use crate::model::{
+        InteractionConfig, InteractionState, InteractionSummary, ListInteractionsRequest,
+    };
+    use crate::persistence::{NewInteraction, NewInteractionTurn, StoredInteractionTurn};
 
     #[derive(Default)]
     struct FakeStore {
@@ -221,34 +224,62 @@ mod tests {
 
     #[async_trait]
     impl InteractionStore for FakeStore {
+        async fn create_interaction(
+            &self,
+            _interaction: NewInteraction,
+        ) -> Result<InteractionSummary, InteractionError> {
+            Err(unsupported())
+        }
+
+        async fn list_interactions(
+            &self,
+            _request: ListInteractionsRequest,
+        ) -> Result<Vec<InteractionSummary>, InteractionError> {
+            Err(unsupported())
+        }
+
+        async fn load_interaction(
+            &self,
+            _conversation_id: ConversationId,
+        ) -> Result<InteractionSummary, InteractionError> {
+            Err(unsupported())
+        }
+
+        async fn update_interaction_config(
+            &self,
+            _conversation_id: ConversationId,
+            _config: InteractionConfig,
+        ) -> Result<InteractionSummary, InteractionError> {
+            Err(unsupported())
+        }
+
+        async fn set_interaction_state(
+            &self,
+            _conversation_id: ConversationId,
+            _state: InteractionState,
+        ) -> Result<InteractionSummary, InteractionError> {
+            Err(unsupported())
+        }
+
         async fn create_turn(
             &self,
             _turn: NewInteractionTurn,
         ) -> Result<StoredInteractionTurn, InteractionError> {
-            Err(InteractionError::new(
-                InteractionErrorCode::Unsupported,
-                "not used by event-hub tests",
-            ))
+            Err(unsupported())
         }
 
         async fn load_turn(
             &self,
             _turn_id: InteractionTurnId,
         ) -> Result<StoredInteractionTurn, InteractionError> {
-            Err(InteractionError::new(
-                InteractionErrorCode::Unsupported,
-                "not used by event-hub tests",
-            ))
+            Err(unsupported())
         }
 
         async fn list_turns(
             &self,
             _conversation_id: ConversationId,
         ) -> Result<Vec<StoredInteractionTurn>, InteractionError> {
-            Err(InteractionError::new(
-                InteractionErrorCode::Unsupported,
-                "not used by event-hub tests",
-            ))
+            Err(unsupported())
         }
 
         async fn append_event(
@@ -310,6 +341,13 @@ mod tests {
                 .find(|event| event.conversation_id == conversation_id)
                 .map_or(0, |event| event.sequence))
         }
+    }
+
+    fn unsupported() -> InteractionError {
+        InteractionError::new(
+            InteractionErrorCode::Unsupported,
+            "not used by event-hub tests",
+        )
     }
 
     fn event(

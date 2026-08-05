@@ -15,7 +15,28 @@ use uuid::Uuid;
 use crate::error::InteractionError;
 use crate::event::{InteractionEvent, InteractionEventEnvelope, RunRole};
 use crate::ids::{InteractionEventId, InteractionTurnId};
-use crate::model::{InteractionConfig, InteractionTarget, TurnSummary};
+use crate::model::{
+    InteractionConfig, InteractionState, InteractionSummary, InteractionTarget,
+    ListInteractionsRequest, TurnSummary,
+};
+
+/// Safe durable defaults for a conversation-backed interaction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewInteraction {
+    /// Existing conversation identity used by every surface.
+    pub conversation_id: ConversationId,
+    /// Initial surface-neutral configuration.
+    pub config: InteractionConfig,
+    /// Durable creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+impl NewInteraction {
+    /// Validate safe configuration before a store transaction begins.
+    pub fn validate(&self) -> Result<(), InteractionError> {
+        self.config.validate()
+    }
+}
 
 /// One run linked to a human interaction turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +151,40 @@ pub struct NewInteractionEvent {
 /// Persistence boundary used by a durable interaction-service implementation.
 #[async_trait]
 pub trait InteractionStore: Send + Sync {
+    /// Persist safe interaction defaults for an existing conversation.
+    ///
+    /// Retrying the same conversation and identical input is idempotent.
+    async fn create_interaction(
+        &self,
+        interaction: NewInteraction,
+    ) -> Result<InteractionSummary, InteractionError>;
+
+    /// List interactions in stable most-recently-updated order.
+    async fn list_interactions(
+        &self,
+        request: ListInteractionsRequest,
+    ) -> Result<Vec<InteractionSummary>, InteractionError>;
+
+    /// Load one durable interaction projection.
+    async fn load_interaction(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<InteractionSummary, InteractionError>;
+
+    /// Replace validated safe interaction defaults atomically.
+    async fn update_interaction_config(
+        &self,
+        conversation_id: ConversationId,
+        config: InteractionConfig,
+    ) -> Result<InteractionSummary, InteractionError>;
+
+    /// Set the durable interaction lifecycle state.
+    async fn set_interaction_state(
+        &self,
+        conversation_id: ConversationId,
+        state: InteractionState,
+    ) -> Result<InteractionSummary, InteractionError>;
+
     /// Atomically create a turn, its run links, and its initial event.
     ///
     /// Retrying the same `turn_id` with identical input returns the existing
