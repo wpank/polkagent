@@ -170,6 +170,10 @@ fn system_nanos() -> u128 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "configuration tests intentionally panic when static serialization fixtures fail"
+)]
 mod tests {
     use super::*;
 

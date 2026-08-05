@@ -114,6 +114,10 @@ impl DeliveryStore for InMemoryDeliveryStore {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "memory-store tests intentionally panic at CRUD fixture boundaries"
+)]
 mod tests {
     use super::*;
 

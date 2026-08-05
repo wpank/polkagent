@@ -153,6 +153,10 @@ impl<S: DeliveryStore> WebhookService<S> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "service tests intentionally panic at dispatch and registration fixture boundaries"
+)]
 mod tests {
     use super::*;
     use serde_json::json;

@@ -116,6 +116,10 @@ pub fn approval_requested(webhook_id: Uuid, delivery_id: Uuid, data: Value) -> W
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "payload tests intentionally panic when static JSON and timestamp fixtures fail"
+)]
 mod tests {
     use super::*;
     use serde_json::json;

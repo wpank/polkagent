@@ -173,6 +173,10 @@ impl WebhookRegistry {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "registry tests intentionally panic at subscription lifecycle fixture boundaries"
+)]
 mod tests {
     use super::*;
     use crate::config::WebhookConfig;

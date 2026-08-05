@@ -237,6 +237,10 @@ fn compute_next_retry(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "delivery tests intentionally panic at transport and persistence fixture boundaries"
+)]
 mod tests {
     use super::*;
     use crate::config::WebhookConfig;

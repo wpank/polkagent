@@ -153,6 +153,10 @@ pub trait DeliveryStore: Send + Sync {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "store tests intentionally panic when static delivery-status fixtures fail to serialize"
+)]
 mod tests {
     use super::*;
 
