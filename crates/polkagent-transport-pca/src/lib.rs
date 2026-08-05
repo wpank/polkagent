@@ -305,7 +305,7 @@ impl Transport for PcaTransport {
             .incoming
             .dequeue()
             .await
-            .map_err(|e| TransportError::from(e))?;
+            .map_err(TransportError::from)?;
 
         // Deserialize the wire message.
         let wire_msg: PcaWireMessage =
@@ -343,7 +343,7 @@ impl Transport for PcaTransport {
 
         self.incoming
             .acknowledge(&delivery_id.0)
-            .map_err(|e| TransportError::from(e))?;
+            .map_err(TransportError::from)?;
 
         debug!(delivery_id = %delivery_id, "PCA message acknowledged");
 
@@ -385,7 +385,7 @@ impl Transport for PcaTransport {
         let delivery_id = self
             .outgoing
             .enqueue(payload)
-            .map_err(|e| TransportError::from(e))?;
+            .map_err(TransportError::from)?;
 
         let receipt = DeliveryReceipt {
             delivery_id: DeliveryId::new(delivery_id),
@@ -417,6 +417,10 @@ impl Transport for PcaTransport {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "transport integration tests intentionally fail fast when fixture operations violate expectations"
+)]
 mod tests {
     use super::*;
     use polkagent_transport_trait::{Classification, OutgoingBody};
@@ -601,10 +605,7 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let conv = polkagent_core::ConversationId::new();
-        transport
-            .send(make_outgoing(conv.clone()))
-            .await
-            .expect("send 1");
+        transport.send(make_outgoing(conv)).await.expect("send 1");
         transport.send(make_outgoing(conv)).await.expect("send 2");
 
         let drained = transport.drain_outgoing();

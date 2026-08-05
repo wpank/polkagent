@@ -77,7 +77,7 @@ impl DeviceChannelSet {
     pub fn is_subscribed(&self, device_id: &str, channel_id: &str) -> bool {
         let map = self.inner.read();
         map.get(device_id)
-            .map_or(false, |channels| channels.contains(channel_id))
+            .is_some_and(|channels| channels.contains(channel_id))
     }
 
     /// Return all channel IDs a device is subscribed to.
@@ -153,6 +153,10 @@ impl Default for DeviceChannelSet {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "device-channel tests intentionally fail fast when snapshots cannot be encoded or decoded"
+)]
 mod tests {
     use super::*;
 

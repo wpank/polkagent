@@ -85,7 +85,7 @@ pub struct DeviceSyncState {
     pub sequence_high_water: u64,
     /// Highest sequence number for which a cumulative ACK has been received.
     pub acked_through: u64,
-    /// Selectively ACKed sequence numbers above `acked_through`.
+    /// Selectively `ACKed` sequence numbers above `acked_through`.
     pub selective_acks: BTreeSet<u64>,
     /// Epoch-millisecond timestamp of the last sync event.
     pub last_sync_ms: Option<u64>,
@@ -157,7 +157,7 @@ impl DeviceSyncState {
 /// The actual message relay/storage is provided by external infrastructure.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SyncClock {
-    /// Per-device sync state, keyed by device_id.
+    /// Per-device sync state, keyed by `device_id`.
     devices: BTreeMap<String, DeviceSyncState>,
     /// Monotonic sequence counter for locally generated sync envelopes.
     next_sync_sequence: u64,
@@ -321,6 +321,10 @@ pub struct SyncClockSnapshot {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "synchronization tests intentionally fail fast when fixture operations violate expectations"
+)]
 mod tests {
     use super::*;
 

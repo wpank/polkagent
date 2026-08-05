@@ -220,6 +220,10 @@ pub fn decrypt_with_aad(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "cryptographic round-trip tests intentionally fail fast on invalid fixture output"
+)]
 mod tests {
     use super::*;
 
@@ -247,10 +251,10 @@ mod tests {
         let bob = KeyPair::generate();
         let carol = KeyPair::generate();
 
-        let shared_ab = alice.diffie_hellman(bob.public_key());
-        let shared_ac = alice.diffie_hellman(carol.public_key());
+        let shared_with_bob = alice.diffie_hellman(bob.public_key());
+        let shared_with_carol = alice.diffie_hellman(carol.public_key());
 
-        assert_ne!(shared_ab.as_bytes(), shared_ac.as_bytes());
+        assert_ne!(shared_with_bob.as_bytes(), shared_with_carol.as_bytes());
     }
 
     #[test]

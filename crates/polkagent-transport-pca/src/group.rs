@@ -94,8 +94,8 @@ impl GroupKeyState {
     /// Derive the group epoch key by hashing all pairwise secrets in
     /// deterministic (sorted) order.
     ///
-    /// Uses iterated XOR + a final ChaCha20 pass as a KDF. This is
-    /// intentionally simple; a production deployment would use HKDF.
+    /// Uses iterated XOR + a final `ChaCha20` pass as a KDF. This is
+    /// intentionally simple; a production deployment would use `HKDF`.
     fn derive_group_key(&mut self) {
         if self.pairwise_secrets.is_empty() {
             self.group_key = None;
@@ -485,6 +485,10 @@ impl GroupSession {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "group-protocol tests intentionally fail fast when fixture operations violate expectations"
+)]
 mod tests {
     use super::*;
 

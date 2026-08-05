@@ -93,6 +93,7 @@ impl PcaConfig {
     }
 
     /// Add a peer endpoint to the configuration.
+    #[must_use]
     pub fn with_peer(mut self, ss58_address: impl Into<String>, label: Option<String>) -> Self {
         self.peers.push(PeerEndpoint {
             ss58_address: ss58_address.into(),
@@ -102,24 +103,28 @@ impl PcaConfig {
     }
 
     /// Set the key rotation interval.
+    #[must_use]
     pub fn with_key_rotation_interval(mut self, interval: Duration) -> Self {
         self.key_rotation_interval = interval;
         self
     }
 
     /// Set the session timeout.
+    #[must_use]
     pub fn with_session_timeout(mut self, timeout: Duration) -> Self {
         self.session_timeout = timeout;
         self
     }
 
     /// Set the maximum in-flight messages.
+    #[must_use]
     pub fn with_max_in_flight(mut self, max: usize) -> Self {
         self.max_in_flight = max;
         self
     }
 
     /// Set the maximum message size.
+    #[must_use]
     pub fn with_max_message_bytes(mut self, max: u64) -> Self {
         self.max_message_bytes = max;
         self
@@ -171,6 +176,11 @@ mod humantime_duration {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "configuration tests intentionally fail fast when expected validation results are absent"
+)]
 mod tests {
     use super::*;
 

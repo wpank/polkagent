@@ -135,6 +135,10 @@ pub fn load_state(data: &[u8]) -> Result<PersistentState, crate::error::PcaError
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "persistence round-trip tests intentionally fail fast on invalid fixture data"
+)]
 mod tests {
     use super::*;
     use std::collections::HashMap;

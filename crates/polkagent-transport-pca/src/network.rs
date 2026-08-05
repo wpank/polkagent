@@ -1516,6 +1516,10 @@ async fn read_frame_until_shutdown(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "network framing tests intentionally fail fast on malformed fixture operations"
+)]
 mod tests {
     use super::*;
 

@@ -354,6 +354,11 @@ pub struct EncryptedEnvelope {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "session state-machine tests intentionally fail fast when fixture transitions are invalid"
+)]
 mod tests {
     use super::*;
 

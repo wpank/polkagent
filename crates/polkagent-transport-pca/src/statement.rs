@@ -41,7 +41,7 @@ use crate::error::PcaError;
 
 /// A content identifier (CID) referencing an anchored statement.
 ///
-/// The format depends on the backing store (e.g. IPFS CIDv1, a SHA-256
+/// The format depends on the backing store (e.g. `IPFS` `CIDv1`, a SHA-256
 /// hex string for local stores). This type is intentionally opaque.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Cid(pub String);
@@ -224,9 +224,8 @@ impl StatementStore for InMemoryStatementStore {
         let by_conv = self.by_conversation.read();
         let entries = self.entries.read();
 
-        let cids = match by_conv.get(conversation_id) {
-            Some(cids) => cids,
-            None => return Ok(Vec::new()),
+        let Some(cids) = by_conv.get(conversation_id) else {
+            return Ok(Vec::new());
         };
 
         let mut result: Vec<BulletinEntry> = cids
@@ -251,6 +250,10 @@ pub fn test_payload_hash(payload: &[u8]) -> [u8; 32] {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "statement-store tests intentionally fail fast when fixture operations violate expectations"
+)]
 mod tests {
     use super::*;
 

@@ -143,6 +143,10 @@ pub struct PendingTurn {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "deduplication tests intentionally fail fast when fixture operations violate expectations"
+)]
 mod tests {
     use super::*;
 

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::expect_used,
+    reason = "the TCP integration target intentionally fails fast on fixture and network setup failures"
+)]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -91,14 +96,14 @@ async fn tcp_delivery_has_distinct_network_and_application_ack_boundaries() {
         .send(outgoing(conversation_id, "across a real socket"))
         .await
         .expect("durably enqueue outbound message");
-    let received = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
+    let delivered_message = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
         .await
         .expect("network delivery timeout")
         .expect("receive network message");
 
-    assert_eq!(received.conversation_id, conversation_id);
-    assert_eq!(received.sender.user_id.0, "5Sender");
-    let MessageBody::Text { content } = &received.body else {
+    assert_eq!(delivered_message.conversation_id, conversation_id);
+    assert_eq!(delivered_message.sender.user_id.0, "5Sender");
+    let MessageBody::Text { content } = &delivered_message.body else {
         panic!("expected text body");
     };
     assert_eq!(content, "across a real socket");
@@ -108,7 +113,7 @@ async fn tcp_delivery_has_distinct_network_and_application_ack_boundaries() {
     wait_for_outbox_empty(&sender).await;
     assert_eq!(receiver.pending_inbox_count().await, 1);
     receiver
-        .ack(received.delivery_id)
+        .ack(delivered_message.delivery_id)
         .await
         .expect("application ACK");
     assert_eq!(receiver.pending_inbox_count().await, 0);
@@ -142,12 +147,15 @@ async fn sender_reconnects_and_retries_durable_outbox_when_peer_appears() {
     ))
     .await
     .expect("bind receiver after sender");
-    let received = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
+    let delivered_message = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
         .await
         .expect("reconnect timeout")
         .expect("receive after reconnect");
     wait_for_outbox_empty(&sender).await;
-    receiver.ack(received.delivery_id).await.expect("ack");
+    receiver
+        .ack(delivered_message.delivery_id)
+        .await
+        .expect("ack");
 
     sender.shutdown().await;
     receiver.shutdown().await;
@@ -307,7 +315,7 @@ async fn duplicate_delivery_is_wire_acked_without_second_application_message() {
         .send(outgoing(conversation_id, "only once"))
         .await
         .expect("send first copy");
-    let received = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
+    let delivered_message = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
         .await
         .expect("first copy timeout")
         .expect("receive first copy");
@@ -352,7 +360,7 @@ async fn duplicate_delivery_is_wire_acked_without_second_application_message() {
     assert_eq!(receiver.pending_inbox_count().await, 1);
     assert_eq!(receiver.dedup_marker_count().await, 1);
     receiver
-        .ack(received.delivery_id)
+        .ack(delivered_message.delivery_id)
         .await
         .expect("ack original application delivery");
     let duplicate = tokio::time::timeout(Duration::from_millis(150), receiver.receive()).await;
@@ -402,13 +410,16 @@ async fn cancellation_reconnects_from_durable_outbox_and_deduplicates_retry() {
     )
     .await
     .expect("restart cancellation sender");
-    let received = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
+    let delivered_message = tokio::time::timeout(Duration::from_secs(5), receiver.receive())
         .await
         .expect("cancellation receive timeout")
         .expect("receive cancellation");
-    assert_eq!(received.delivery_id, receipt.delivery_id);
+    assert_eq!(delivered_message.delivery_id, receipt.delivery_id);
     assert_eq!(
-        structured_payload::<PcaCancellationFrame>(&received.body, PCA_CANCELLATION_COMMAND),
+        structured_payload::<PcaCancellationFrame>(
+            &delivered_message.body,
+            PCA_CANCELLATION_COMMAND
+        ),
         cancellation
     );
     wait_for_outbox_empty(&restarted_sender).await;
@@ -427,7 +438,7 @@ async fn cancellation_reconnects_from_durable_outbox_and_deduplicates_retry() {
     assert_eq!(receiver.pending_inbox_count().await, 1);
     assert_eq!(receiver.dedup_marker_count().await, 1);
     receiver
-        .ack(received.delivery_id)
+        .ack(delivered_message.delivery_id)
         .await
         .expect("ack cancel");
 
@@ -735,7 +746,7 @@ async fn dropping_transport_releases_listener_even_with_idle_peer() {
 /// a fresh OS process. Keeping the helper in the integration-test binary avoids
 /// adding a production executable solely for test orchestration.
 #[tokio::test]
-#[ignore]
+#[ignore = "subprocess helper launched explicitly by its parent integration test"]
 async fn child_process_receives_one_message() {
     let Ok(listen_addr) = std::env::var("PCA_CHILD_LISTEN") else {
         return;
@@ -765,7 +776,7 @@ async fn child_process_receives_one_message() {
 
 /// Subprocess helper for typed status/error interoperability coverage.
 #[tokio::test]
-#[ignore]
+#[ignore = "subprocess helper launched explicitly by its parent integration test"]
 async fn child_process_receives_control_replies() {
     let Ok(listen_addr) = std::env::var("PCA_CONTROL_CHILD_LISTEN") else {
         return;

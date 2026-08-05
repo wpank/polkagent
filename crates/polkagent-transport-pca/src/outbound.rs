@@ -234,33 +234,31 @@ impl OutboundLane {
     ///
     /// Returns `true` if the ACK was accepted, `false` if it was stale.
     pub fn handle_peer_ack(&mut self, request_id: &str, now_ms: u64) -> bool {
-        match &self.slot {
-            OutboundSlot::Pending {
-                request_id: pending_id,
-                ..
-            } => {
-                if pending_id != request_id {
-                    warn!(
-                        stale_id = %request_id,
-                        current_id = %pending_id,
-                        "ignoring stale ACK"
-                    );
-                    return false;
-                }
-
-                debug!(request_id = %request_id, "peer ACK accepted");
-                self.slot = OutboundSlot::Acked;
-                self.try_promote_next(now_ms);
-                true
-            }
-            _ => {
+        if let OutboundSlot::Pending {
+            request_id: pending_id,
+            ..
+        } = &self.slot
+        {
+            if pending_id != request_id {
                 warn!(
-                    request_id = %request_id,
-                    slot = ?self.slot,
-                    "ACK received but slot is not Pending"
+                    stale_id = %request_id,
+                    current_id = %pending_id,
+                    "ignoring stale ACK"
                 );
-                false
+                return false;
             }
+
+            debug!(request_id = %request_id, "peer ACK accepted");
+            self.slot = OutboundSlot::Acked;
+            self.try_promote_next(now_ms);
+            true
+        } else {
+            warn!(
+                request_id = %request_id,
+                slot = ?self.slot,
+                "ACK received but slot is not Pending"
+            );
+            false
         }
     }
 
@@ -397,6 +395,11 @@ mod duration_secs {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "outbound state-machine tests intentionally fail fast when fixture transitions are invalid"
+)]
 mod tests {
     use super::*;
 
@@ -753,10 +756,10 @@ mod tests {
     fn restore_rejects_oversized_queue() {
         let state = OutboundLaneState {
             slot: OutboundSlot::Empty,
-            queue: (0..5)
+            queue: (0_u8..5)
                 .map(|i| QueuedOutbound {
                     id: format!("q-{i}"),
-                    payload: vec![i as u8],
+                    payload: vec![i],
                     enqueued_at_ms: now_ms(),
                 })
                 .collect(),
@@ -930,30 +933,30 @@ mod tests {
 
     #[test]
     fn outbound_slot_equality() {
-        let a = OutboundSlot::Empty;
-        let b = OutboundSlot::Empty;
-        assert_eq!(a, b);
+        let empty = OutboundSlot::Empty;
+        let another_empty = OutboundSlot::Empty;
+        assert_eq!(empty, another_empty);
 
-        let c = OutboundSlot::Acked;
-        assert_ne!(a, c);
+        let acknowledged = OutboundSlot::Acked;
+        assert_ne!(empty, acknowledged);
 
-        let d = OutboundSlot::Pending {
+        let pending = OutboundSlot::Pending {
             request_id: "r1".into(),
             payload: vec![1],
             submitted_at_ms: 100,
         };
-        let e = OutboundSlot::Pending {
+        let matching_pending = OutboundSlot::Pending {
             request_id: "r1".into(),
             payload: vec![1],
             submitted_at_ms: 100,
         };
-        assert_eq!(d, e);
+        assert_eq!(pending, matching_pending);
 
-        let f = OutboundSlot::Pending {
+        let different_pending = OutboundSlot::Pending {
             request_id: "r2".into(),
             payload: vec![1],
             submitted_at_ms: 100,
         };
-        assert_ne!(d, f);
+        assert_ne!(pending, different_pending);
     }
 }

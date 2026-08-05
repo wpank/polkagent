@@ -36,7 +36,7 @@ pub struct MessageChannel {
     /// Messages waiting to be delivered to the consumer.
     incoming: Mutex<VecDeque<QueuedMessage>>,
     /// Messages that have been delivered but not yet acknowledged.
-    /// Keyed by delivery_id for efficient lookup.
+    /// Keyed by `delivery_id` for efficient lookup.
     pending_ack: Mutex<BTreeMap<String, QueuedMessage>>,
     /// Next sequence number for incoming messages.
     next_sequence: Mutex<u64>,
@@ -221,6 +221,10 @@ impl MessageChannel {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "channel tests intentionally fail fast when fixture operations violate expectations"
+)]
 mod tests {
     use super::*;
 
