@@ -933,6 +933,10 @@ fn cleanup_directory_contents(directory: &Path) -> Result<(), LocalPackageError>
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "local package tests fail immediately when required filesystem fixtures or expected package states are absent"
+)]
 mod tests {
     use super::*;
 

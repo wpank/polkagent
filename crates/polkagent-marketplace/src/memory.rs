@@ -121,6 +121,10 @@ impl ServiceRegistryStore for InMemoryServiceRegistry {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "in-memory registry tests fail immediately when required fixture operations or expected listings are absent"
+)]
 mod tests {
     use super::*;
     use crate::types::{ServiceAvailability, ServicePricing};
