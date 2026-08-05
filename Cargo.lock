@@ -4014,6 +4014,8 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
+ "futures",
+ "polkagent-telemetry",
  "thiserror 2.0.19",
  "tokio",
  "uuid",

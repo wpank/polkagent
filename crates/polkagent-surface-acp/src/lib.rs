@@ -7,6 +7,8 @@
 #![warn(clippy::pedantic)]
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,7 +20,10 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
+use futures::FutureExt as _;
 use tokio::sync::Mutex;
+
+const BACKEND_PANIC_DETAIL: &str = "Polkagent's ACP backend panicked; the request was stopped";
 
 /// A backend failure that is safe to return through an ACP error response.
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +99,23 @@ pub trait AcpBackend: Send + Sync + 'static {
 
     /// Cancel the active run, if any, for an ACP session.
     async fn cancel(&self, session_id: &str) -> Result<(), BackendError>;
+}
+
+#[derive(Debug)]
+enum BackendCallError {
+    Rejected(BackendError),
+    Panicked,
+}
+
+async fn call_backend<T, F>(future: F) -> Result<T, BackendCallError>
+where
+    F: Future<Output = Result<T, BackendError>>,
+{
+    match AssertUnwindSafe(future).catch_unwind().await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(BackendCallError::Rejected(error)),
+        Err(_) => Err(BackendCallError::Panicked),
+    }
 }
 
 /// Configuration for one ACP stdio server process.
@@ -192,7 +214,7 @@ pub async fn serve_stdio(
                             );
                         }
                         Err(error) => {
-                            return responder.respond_with_internal_error(error.to_string());
+                            return responder.respond_with_error(backend_protocol_error(&error));
                         }
                     }
                 }
@@ -243,13 +265,9 @@ pub async fn serve_stdio(
                     .await
                     .contains_key(&notification.session_id)
                 {
-                    cancel_backend
-                        .cancel(notification.session_id.0.as_ref())
+                    call_backend(cancel_backend.cancel(notification.session_id.0.as_ref()))
                         .await
-                        .map_err(|error| {
-                            agent_client_protocol::Error::internal_error()
-                                .data(error.to_string())
-                        })?;
+                        .map_err(|error| backend_protocol_error(&error))?;
                 }
                 Ok(())
             },
@@ -292,10 +310,14 @@ async fn handle_prompt(
             }
             current.busy = true;
         }
-        let turn = backend
-            .prompt(session_id.0.as_ref(), &snapshot.cwd, agent, prompt.trim())
-            .await
-            .map_err(|error| backend_protocol_error(&error));
+        let turn = call_backend(backend.prompt(
+            session_id.0.as_ref(),
+            &snapshot.cwd,
+            agent,
+            prompt.trim(),
+        ))
+        .await
+        .map_err(|error| backend_protocol_error(&error));
         if let Some(current) = sessions.lock().await.get_mut(&session_id) {
             current.busy = false;
         }
@@ -376,8 +398,7 @@ async fn handle_slash_command(
             session.selected_agent.as_deref().unwrap_or("not selected")
         ))),
         "agents" => {
-            let agents = backend
-                .list_agents()
+            let agents = call_backend(backend.list_agents())
                 .await
                 .map_err(|error| backend_protocol_error(&error))?;
             Ok(BackendTurn::completed(format_agents(&agents)))
@@ -413,9 +434,8 @@ async fn handle_slash_command(
 async fn find_agent(
     backend: &dyn AcpBackend,
     selector: &str,
-) -> Result<Option<AgentSummary>, BackendError> {
-    Ok(backend
-        .list_agents()
+) -> Result<Option<AgentSummary>, BackendCallError> {
+    Ok(call_backend(backend.list_agents())
         .await?
         .into_iter()
         .find(|agent| agent.id == selector || agent.name == selector))
@@ -449,13 +469,40 @@ fn format_agents(agents: &[AgentSummary]) -> String {
     format!("Active agents:\n{rows}")
 }
 
-fn backend_protocol_error(error: &BackendError) -> agent_client_protocol::Error {
-    agent_client_protocol::Error::internal_error().data(error.to_string())
+fn backend_protocol_error(error: &BackendCallError) -> agent_client_protocol::Error {
+    let detail = match error {
+        BackendCallError::Rejected(error) => polkagent_telemetry::redact_string(&error.to_string()),
+        BackendCallError::Panicked => BACKEND_PANIC_DETAIL.to_owned(),
+    };
+    agent_client_protocol::Error::internal_error().data(detail)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PanickingBackend;
+
+    #[async_trait]
+    impl AcpBackend for PanickingBackend {
+        async fn list_agents(&self) -> Result<Vec<AgentSummary>, BackendError> {
+            panic!("synthetic backend panic payload");
+        }
+
+        async fn prompt(
+            &self,
+            _session_id: &str,
+            _cwd: &Path,
+            _agent: &str,
+            _prompt: &str,
+        ) -> Result<BackendTurn, BackendError> {
+            panic!("synthetic backend panic payload");
+        }
+
+        async fn cancel(&self, _session_id: &str) -> Result<(), BackendError> {
+            panic!("synthetic backend panic payload");
+        }
+    }
 
     #[test]
     fn parses_slash_command_and_argument() {
@@ -480,5 +527,39 @@ mod tests {
             .map(|command| command.name)
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["help", "status", "agents", "agent"]);
+    }
+
+    #[test]
+    fn redacts_backend_error_details_before_json_rpc() {
+        let raw_secret = "sk-acpProtocolSafetyFixture123";
+        let error = BackendCallError::Rejected(BackendError::new(format!(
+            "provider rejected credential {raw_secret}"
+        )));
+        let protocol_error = backend_protocol_error(&error);
+        let detail = protocol_error
+            .data
+            .as_ref()
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+
+        assert!(detail.contains("sk-***REDACTED***"));
+        assert!(!detail.contains(raw_secret));
+    }
+
+    #[tokio::test]
+    async fn contains_backend_panics_without_exposing_payload() {
+        let result = call_backend(PanickingBackend.list_agents()).await;
+        let Err(error) = result else {
+            panic!("backend panic unexpectedly crossed the safety boundary");
+        };
+        let protocol_error = backend_protocol_error(&error);
+        let detail = protocol_error
+            .data
+            .as_ref()
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+
+        assert_eq!(detail, BACKEND_PANIC_DETAIL);
+        assert!(!detail.contains("synthetic backend panic payload"));
     }
 }

@@ -13,7 +13,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, LineDirection};
-use tokio::io::{AsyncBufReadExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 #[derive(Default)]
 struct ObservedUpdates {
@@ -26,6 +26,11 @@ struct ObservedUpdates {
 struct DelayedProvider {
     base_url: String,
     request_seen: tokio::sync::oneshot::Receiver<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct FailingProvider {
+    base_url: String,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -303,6 +308,127 @@ async fn official_client_cancels_active_run_and_persists_terminal_state() {
     );
 }
 
+#[tokio::test]
+async fn provider_failure_is_redacted_and_keeps_stdout_protocol_only() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let config_path = temp.path().join("polkagent.toml");
+    let project_path = temp.path().to_path_buf();
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    let raw_secret = "sk-acpProviderFailureFixture123";
+
+    assert_cli_success(
+        binary,
+        &db_path,
+        &[
+            "agent",
+            "create",
+            "failure-fixture",
+            "--model",
+            "fixture/model",
+        ],
+    );
+    assert_cli_success(binary, &db_path, &["agent", "start", "failure-fixture"]);
+
+    let failing_provider = failing_provider(raw_secret).await;
+    std::fs::write(
+        &config_path,
+        format!(
+            "[[providers]]\n\
+             id = \"failing-provider\"\n\
+             provider_type = \"local\"\n\
+             base_url = \"{}\"\n\
+             default_model = \"fixture-model\"\n",
+            failing_provider.base_url
+        ),
+    )
+    .expect("write failing provider config");
+
+    let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let config_arg = config_path.to_string_lossy().into_owned();
+    let agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args([
+                "--config",
+                config_arg.as_str(),
+                "acp",
+                "--agent",
+                "failure-fixture",
+                "--provider",
+                "failing-provider",
+                "--timeout",
+                "20",
+            ])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            )
+            .env("ANTHROPIC_API_KEY", "")
+            .env("OPENAI_API_KEY", "")
+            .env("GEMINI_API_KEY", "")
+            .env("GOOGLE_API_KEY", "")
+            .env("OPENROUTER_API_KEY", "")
+            .env("PERPLEXITY_API_KEY", "")
+            .env("CEREBRAS_API_KEY", "")
+            .env("OLLAMA_URL", "")
+            .env("OLLAMA_MODEL", ""),
+        Arc::clone(&observed),
+    );
+
+    agent_client_protocol::Client
+        .connect_with(
+            agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(project_path))
+                    .block_task()
+                    .await?;
+                let error = connection
+                    .send_request(PromptRequest::new(
+                        session.session_id,
+                        vec![ContentBlock::Text(TextContent::new(
+                            "Exercise a provider failure without leaking credentials.",
+                        ))],
+                    ))
+                    .block_task()
+                    .await
+                    .expect_err("failing provider must return a JSON-RPC error");
+                let detail = error
+                    .data
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                assert!(detail.contains("sk-***REDACTED***"), "{detail}");
+                assert!(!detail.contains(raw_secret), "{detail}");
+                Ok(())
+            },
+        )
+        .await
+        .expect("official ACP client observed the provider failure safely");
+    failing_provider
+        .task
+        .await
+        .expect("failing provider task completed");
+
+    let observed = observed.lock().expect("observed updates lock");
+    assert_protocol_stdout(&observed.stdout_lines);
+    let protocol_output = observed.stdout_lines.join("\n");
+    assert!(protocol_output.contains("sk-***REDACTED***"));
+    assert!(!protocol_output.contains(raw_secret));
+    assert!(
+        observed
+            .stderr_lines
+            .iter()
+            .all(|line| !line.contains(raw_secret)),
+        "provider secret leaked to stderr: {:?}",
+        observed.stderr_lines
+    );
+}
+
 #[test]
 fn explicit_config_startup_failure_keeps_stdout_empty() {
     let temp = tempfile::tempdir().expect("temporary directory");
@@ -325,6 +451,46 @@ fn explicit_config_startup_failure_keeps_stdout_empty() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Error: loading ACP configuration"));
     assert!(stderr.contains("loading config from"));
+}
+
+#[test]
+fn unavailable_explicit_provider_fails_before_protocol_stdout() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let db_path = temp.path().join("polkagent.db");
+    let config_path = temp.path().join("polkagent.toml");
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    std::fs::write(&config_path, "").expect("write empty provider config");
+
+    let output = Command::new(binary)
+        .args([
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+            "acp",
+            "--provider",
+            "definitely-unavailable",
+        ])
+        .env("POLKAGENT_DATABASE_SQLITE_PATH", &db_path)
+        .env("ANTHROPIC_API_KEY", "")
+        .env("OPENAI_API_KEY", "")
+        .env("GEMINI_API_KEY", "")
+        .env("GOOGLE_API_KEY", "")
+        .env("OPENROUTER_API_KEY", "")
+        .env("PERPLEXITY_API_KEY", "")
+        .env("CEREBRAS_API_KEY", "")
+        .env("OLLAMA_URL", "")
+        .env("OLLAMA_MODEL", "")
+        .output()
+        .expect("run ACP with an unavailable explicit provider");
+
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "ACP provider startup failure contaminated stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Provider 'definitely-unavailable' was explicitly requested"));
+    assert!(stderr.contains("could not be found"));
 }
 
 fn observed_agent(config: AcpAgentConfig, observed: Arc<Mutex<ObservedUpdates>>) -> AcpAgent {
@@ -379,6 +545,47 @@ async fn delayed_provider() -> DelayedProvider {
     DelayedProvider {
         base_url: format!("http://{address}/v1"),
         request_seen: request_rx,
+        task,
+    }
+}
+
+async fn failing_provider(raw_secret: &str) -> FailingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind failing provider");
+    let address = listener.local_addr().expect("failing provider address");
+    let raw_secret = raw_secret.to_owned();
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept provider request");
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        reader
+            .read_line(&mut request_line)
+            .await
+            .expect("read provider request line");
+        assert!(
+            request_line.starts_with("POST /v1/chat/completions "),
+            "unexpected provider request: {request_line}"
+        );
+
+        let body = format!(r#"{{"error":{{"message":"credential rejected: {raw_secret}"}}}}"#);
+        let response = format!(
+            "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        reader
+            .get_mut()
+            .write_all(response.as_bytes())
+            .await
+            .expect("write failing provider response");
+        reader
+            .get_mut()
+            .shutdown()
+            .await
+            .expect("close failing provider response");
+    });
+    FailingProvider {
+        base_url: format!("http://{address}/v1"),
         task,
     }
 }
