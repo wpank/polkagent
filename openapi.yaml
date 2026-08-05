@@ -2662,8 +2662,7 @@ components:
       description: Cursor state included in every list response.
       properties:
         next:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Opaque token for the next page, or null on the last page.
           example: "0196b2f4-3d3a-7b2a-a4c1-0da7b3c5f6e8"
         has_more:
@@ -3103,8 +3102,7 @@ components:
           enum: [ok, degraded]
           example: ok
         detail:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Optional human-readable detail.
           example: "initialisation complete"
         checks:
@@ -3136,8 +3134,7 @@ components:
           description: 'Model identifier in "provider/model-id" format.'
           example: "anthropic/claude-opus-4-6"
         description:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Optional description shown in UIs and logs.
           example: "General-purpose assistant"
         tools:
@@ -3147,8 +3144,7 @@ components:
           description: Names of tools the agent may invoke.
           example: ["polkagent.file.read"]
         system_prompt:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: System prompt template.
           example: "You are a helpful assistant."
         created_at:
@@ -3176,8 +3172,7 @@ components:
           description: 'Model identifier in "provider/model-id" format.'
           example: "anthropic/claude-opus-4-6"
         description:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Optional description.
           example: "General-purpose assistant"
         tools:
@@ -3188,8 +3183,7 @@ components:
           description: Names of tools the agent may invoke.
           example: ["polkagent.file.read"]
         system_prompt:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: System prompt template.
           example: "You are a helpful assistant."
 
@@ -3274,8 +3268,7 @@ components:
             JSON value.
           example: "Summarise the attached document."
         idempotency_key:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: |
             Optional idempotency key (24-hour window). Supplying the same
             key within the window returns the existing run instead of
@@ -3315,18 +3308,15 @@ components:
           format: date-time
           description: When the run was created.
         started_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: When the run began executing.
         completed_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: When the run reached a terminal state.
         terminal_reason:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Human-readable reason for the terminal state.
           example: "Completed successfully"
 
@@ -3362,9 +3352,8 @@ components:
           format: date-time
           description: When the turn started.
         completed_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: When the turn completed.
 
     ListTurnsResponse:
@@ -3441,9 +3430,8 @@ components:
           description: Data classification (e.g. "public", "private").
           example: private
         run_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: The run that produced this artifact, if any.
         created_at:
           type: string
@@ -3508,14 +3496,11 @@ components:
               type: string
               format: uuid
             trace_id:
-              type: string
-              nullable: true
+              type: [string, "null"]
             span_id:
-              type: string
-              nullable: true
+              type: [string, "null"]
         payload:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: Event-kind-specific payload (schema varies by kind).
 
     EventResponse:
@@ -3768,8 +3753,7 @@ components:
                 description: Absolute path to the file.
             required: [path]
         required_grant:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Grant pattern required to invoke this tool.
           example: "polkagent.file.read"
         output_classification:
@@ -3803,8 +3787,7 @@ components:
           description: The tool name.
           example: "polkagent.file.read"
         required_grant:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Required grant pattern, or null if the tool requires no grants.
           example: "polkagent.file.read"
 
@@ -3926,8 +3909,7 @@ components:
           description: Maximum number of results to return (default 10).
           example: 5
         namespace:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Optional namespace filter.
           example: "code-context"
 
@@ -3952,8 +3934,7 @@ components:
           description: Relevance score (0.0 = least relevant, 1.0 = most relevant).
           example: 0.92
         namespace:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Namespace/type of the memory.
           example: "code-context"
         created_at:
@@ -4104,48 +4085,42 @@ components:
       required: [max_cost_usd, max_tokens, max_input_tokens, max_output_tokens]
       properties:
         max_cost_usd:
-          type: number
+          type: [number, "null"]
           format: double
           minimum: 0
-          nullable: true
         max_tokens:
-          type: integer
+          type: [integer, "null"]
           format: int64
           minimum: 0
-          nullable: true
         max_input_tokens:
-          type: integer
+          type: [integer, "null"]
           format: int64
           minimum: 0
-          nullable: true
         max_output_tokens:
-          type: integer
+          type: [integer, "null"]
           format: int64
           minimum: 0
-          nullable: true
 
     InteractionBudget:
       type: object
       required: [max_cost_usd, max_tokens, per_run, per_turn]
       properties:
         max_cost_usd:
-          type: number
+          type: [number, "null"]
           format: double
           minimum: 0
-          nullable: true
         max_tokens:
-          type: integer
+          type: [integer, "null"]
           format: int64
           minimum: 0
-          nullable: true
         per_run:
-          allOf:
+          anyOf:
             - $ref: "#/components/schemas/InteractionBudgetLimits"
-          nullable: true
+            - type: "null"
         per_turn:
-          allOf:
+          anyOf:
             - $ref: "#/components/schemas/InteractionBudgetLimits"
-          nullable: true
+            - type: "null"
 
     InteractionConfig:
       type: object
@@ -4159,25 +4134,21 @@ components:
         target:
           $ref: "#/components/schemas/InteractionTarget"
         model:
-          type: string
-          nullable: true
+          type: [string, "null"]
         provider:
-          type: string
-          nullable: true
+          type: [string, "null"]
         harness:
-          type: string
-          nullable: true
+          type: [string, "null"]
         autonomy:
           $ref: "#/components/schemas/InteractionAutonomyLevel"
         max_turns:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
-          nullable: true
         budget:
-          allOf:
+          anyOf:
             - $ref: "#/components/schemas/InteractionBudget"
-          nullable: true
+            - type: "null"
 
     CreateHttpInteractionRequest:
       type: object
@@ -4188,8 +4159,7 @@ components:
         rejected instead of being silently ignored.
       properties:
         title:
-          type: string
-          nullable: true
+          type: [string, "null"]
         target:
           $ref: "#/components/schemas/InteractionTarget"
         working_directory:
@@ -4197,11 +4167,9 @@ components:
           description: Absolute project directory used by the runtime.
           example: "/workspace/project"
         client_name:
-          type: string
-          nullable: true
+          type: [string, "null"]
         client_session_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     PromptHttpInteractionRequest:
       type: object
@@ -4210,9 +4178,8 @@ components:
       description: Text-only prompt accepted by the durable HTTP surface.
       properties:
         turn_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: Caller-generated idempotency identity.
         prompt:
           type: string
@@ -4222,11 +4189,9 @@ components:
           description: Absolute project directory used by the runtime.
           example: "/workspace/project"
         client_name:
-          type: string
-          nullable: true
+          type: [string, "null"]
         client_session_id:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     UpdateHttpInteractionConfigRequest:
       description: |
@@ -4286,8 +4251,7 @@ components:
           type: string
           format: uuid
         title:
-          type: string
-          nullable: true
+          type: [string, "null"]
         config:
           $ref: "#/components/schemas/InteractionConfig"
         state:
@@ -4365,9 +4329,8 @@ components:
           type: string
           format: date-time
         completed_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
 
     ListHttpInteractionTurnsResponse:
       type: object
@@ -4489,18 +4452,15 @@ components:
           format: int64
           minimum: 0
         cost_usd:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
         remaining_tokens:
-          type: integer
+          type: [integer, "null"]
           format: int64
           minimum: 0
-          nullable: true
         remaining_cost_usd:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
 
     InteractionTurnResult:
       type: object
@@ -4535,15 +4495,13 @@ components:
         path:
           type: string
         line:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
-          nullable: true
         column:
-          type: integer
+          type: [integer, "null"]
           format: int32
           minimum: 1
-          nullable: true
 
     InteractionToolCallView:
       type: object
@@ -4590,8 +4548,7 @@ components:
         title:
           type: string
         description:
-          type: string
-          nullable: true
+          type: [string, "null"]
         status:
           type: string
           enum: [pending, in_progress, completed, failed, cancelled]
@@ -4624,9 +4581,8 @@ components:
           type: string
           format: uuid
         tool_call_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
         title:
           type: string
         description:
@@ -4635,12 +4591,10 @@ components:
           type: string
           enum: [pending, approved, denied, expired, cancelled]
         policy_reason:
-          type: string
-          nullable: true
+          type: [string, "null"]
         expires_at:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
 
     InteractionApprovalDecision:
       type: object
@@ -4651,8 +4605,7 @@ components:
           type: string
           enum: [approve, deny]
         reason:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     InteractionRunState:
       type: object
@@ -4827,8 +4780,7 @@ components:
               type: string
               const: turn_cancelled
             reason:
-              type: string
-              nullable: true
+              type: [string, "null"]
         - type: object
           additionalProperties: false
           required: [type]
