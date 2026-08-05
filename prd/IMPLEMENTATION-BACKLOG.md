@@ -122,9 +122,16 @@ and group orchestration.
 types, typed command registry, projections, and additive SQLite migrations.
 Avoid editing individual TUI/ACP renderers.
 
+**2026-08-05 bounded contract checkpoint:** the domain-only
+`polkagent-interaction` crate now freezes serializable target/config, prompt,
+turn-handle, structured event/projection, replay-stream, service-trait, and MVP
+slash-command parser/catalog/output contracts. It deliberately has no runtime
+implementation, persistence, migrations, command handlers, or surface adapter
+wiring, so this checkpoint is not FND-02 completion.
+
 **Checklist:**
 
-- [ ] Implement conversation-target/config, prompt request, turn handle, and
+- [x] Define conversation-target/config, prompt request, turn handle, and
   stable interaction/tool/approval/plan/usage event types from PRD-19.
 - [ ] Add `interaction_turns` and `interaction_turn_runs` with idempotent IDs
   and run correlation at creation time.
@@ -133,7 +140,10 @@ Avoid editing individual TUI/ACP renderers.
 - [ ] Implement new/list/load/delete/prompt/cancel/config/approve/deny/subscribe.
 - [ ] Implement bounded live broadcast plus durable checkpoint/projection
   recovery when a subscriber lags.
-- [ ] Add one typed command registry for `/help`, `/status`, `/agents`,
+- [x] Define one typed parser, catalog, availability model, and output contract
+  for `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`,
+  `/inspect`, `/cancel`, `/approve`, `/deny`, and `/model`.
+- [ ] Implement and wire the typed command handlers for `/help`, `/status`, `/agents`,
   `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/cancel`, `/approve`,
   `/deny`, and `/model`.
 

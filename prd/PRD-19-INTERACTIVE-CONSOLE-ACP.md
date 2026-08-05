@@ -17,6 +17,13 @@ cancelling it. Both remain bounded adapters: durable sessions, a shared
 interaction/runtime composition, structured tools and permissions, and manual
 Zed validation remain open.
 
+The first bounded FND-02 contract slice is also implemented in the domain-only
+`polkagent-interaction` crate: shared IDs/config/requests/handles, structured
+events and projections, replay-aware stream and service traits, and the typed
+MVP slash-command parser/catalog/output boundary. No service implementation,
+database migration, command handler, or CLI/TUI/ACP wiring is included yet;
+the headless end-to-end exit criterion remains open.
+
 **Supersedes:** the implementation role of archived PRD-18; unresolved work is
 tracked in `IMPLEMENTATION-BACKLOG.md`
 
@@ -501,6 +508,11 @@ Add a surface-neutral service. “Session” is overloaded by provider and harne
 sessions, so use `InteractionService` while mapping its durable identity to
 `ConversationId`.
 
+The initial `polkagent-interaction` contract crate now defines this boundary,
+including an attached replay-aware event stream returned with a started turn.
+The code below remains illustrative; the durable implementation and runtime
+composition are subsequent FND-02/FND-01 work.
+
 ```rust
 pub enum InteractionTarget {
     Agent(AgentId),
@@ -913,7 +925,7 @@ available for inspection.
 - [ ] Extract production `RuntimeFactory` from `commands/run.rs`.
 - [ ] Migrate one-shot `run` to the factory with no behavior regression.
 - [ ] Make `serve` use production durable stores and attach conversation store.
-- [ ] Define structured `InteractionEvent`, tool-call identity, and real approval identity.
+- [x] Define structured `InteractionEvent`, tool-call identity, and real approval identity.
 - [ ] Add runtime startup/readiness integration tests.
 
 **Exit:** one-shot CLI and API can use the same production service composition.
@@ -921,11 +933,13 @@ available for inspection.
 ### Phase 1 — durable single-agent interaction service (P0)
 
 - [ ] Add interaction turn/link migrations.
-- [ ] Add `InteractionService` and config/target types.
+- [x] Define surface-neutral `InteractionService` traits and config/target types.
+- [ ] Implement the durable `InteractionService` against the production runtime.
 - [ ] Link run creation to conversation/turn at creation time.
 - [ ] Persist user and assistant messages and terminal turn state.
 - [ ] Add live subscription with lag/recovery behavior.
-- [ ] Implement typed command registry and MVP commands.
+- [x] Define the typed MVP command registry/parser and structured output contracts.
+- [ ] Implement and wire all MVP command handlers.
 - [ ] Add cancellation and approval service tests.
 
 **Exit:** a headless test can create, prompt, stream, cancel, persist, load, and
