@@ -35,11 +35,11 @@ pub enum ProviderKind {
     Local,
     /// Google Gemini native API.
     GeminiApi,
-    /// OpenRouter aggregation gateway.
+    /// `OpenRouter` aggregation gateway.
     Openrouter,
     /// AWS Bedrock.
     Bedrock,
-    /// Azure OpenAI Service.
+    /// Azure `OpenAI` Service.
     AzureOpenai,
     /// Perplexity Sonar API.
     PerplexityApi,
@@ -71,6 +71,9 @@ pub enum ToolFormat {
 // ---------------------------------------------------------------------------
 
 /// Canonical description of a model's identity, capabilities, and pricing.
+// These flags describe independent provider capabilities in the serialized
+// model registry; combining them would obscure rather than simplify the schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelDescriptor {
     /// Unique slug used to reference this model (e.g. `"claude-opus-4-6"`).
@@ -102,7 +105,7 @@ pub struct ModelDescriptor {
     /// Wire format for tool definitions and tool-use messages.
     pub tool_format: ToolFormat,
     /// If `true`, use `max_completion_tokens` instead of `max_tokens` in the
-    /// request (OpenAI o-series behaviour).
+    /// request (`OpenAI` o-series behaviour).
     #[serde(default)]
     pub use_max_completion_tokens: bool,
     /// Cost per million input tokens (USD). `None` if unknown or free-tier.
@@ -160,6 +163,9 @@ pub struct BuiltInModelCatalog {
 impl BuiltInModelCatalog {
     /// Build the catalog with all built-in models.
     #[must_use]
+    // Keeping the static catalog in one table makes additions and pricing
+    // reviews auditable without spreading model facts across helpers.
+    #[allow(clippy::too_many_lines)]
     pub fn new() -> Self {
         let descriptors = vec![
             // ── Anthropic ──────────────────────────────────────────────

@@ -31,10 +31,22 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn read_unpoisoned<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
+}
 
 // ---------------------------------------------------------------------------
 // WatchEvent
@@ -143,16 +155,13 @@ impl<T> AtomicConfig<T> {
     ///
     /// This never blocks writers and is wait-free on most platforms.
     pub fn get(&self) -> Arc<T> {
-        self.inner
-            .read()
-            .expect("AtomicConfig RwLock poisoned")
-            .clone()
+        read_unpoisoned(&self.inner).clone()
     }
 
     /// Atomically replace the config, returning the previous value.
     pub fn swap(&self, new: T) -> Arc<T> {
         let new_arc = Arc::new(new);
-        let mut guard = self.inner.write().expect("AtomicConfig RwLock poisoned");
+        let mut guard = write_unpoisoned(&self.inner);
         let old = guard.clone();
         *guard = new_arc;
         old
@@ -263,8 +272,10 @@ fn flatten_json(
 ///
 /// A gate holds a list of validator functions. All validators are run and
 /// their errors are collected.
+type Validator<T> = Box<dyn Fn(&T) -> Result<(), Vec<ValidationError>> + Send + Sync>;
+
 pub struct ValidationGate<T> {
-    validators: Vec<Box<dyn Fn(&T) -> Result<(), Vec<ValidationError>> + Send + Sync>>,
+    validators: Vec<Validator<T>>,
 }
 
 /// A single validation failure produced by a [`ValidationGate`].
@@ -417,7 +428,7 @@ impl fmt::Debug for ConfigWatcher {
             .field("watch_path", &self.watch_path)
             .field("poll_interval", &self.poll_interval)
             .field("reload_policy", &self.reload_policy)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -475,14 +486,14 @@ impl ConfigWatcher {
     pub fn check_for_changes(&self) -> Option<WatchEvent> {
         let now = SystemTime::now();
         let exists = self.watch_path.exists();
-        let mut was_present = self.was_present.lock().expect("lock poisoned");
+        let mut was_present = lock_unpoisoned(&self.was_present);
 
         // --- Deletion ---
         if !exists && *was_present {
             *was_present = false;
-            let mut last_cs = self.last_checksum.lock().expect("lock poisoned");
+            let mut last_cs = lock_unpoisoned(&self.last_checksum);
             *last_cs = None;
-            let mut last_mt = self.last_mtime.lock().expect("lock poisoned");
+            let mut last_mt = lock_unpoisoned(&self.last_mtime);
             *last_mt = None;
 
             let event = WatchEvent {
@@ -497,12 +508,12 @@ impl ConfigWatcher {
         if exists && !*was_present {
             *was_present = true;
             if let Ok(cs) = compute_checksum(&self.watch_path) {
-                let mut last_cs = self.last_checksum.lock().expect("lock poisoned");
+                let mut last_cs = lock_unpoisoned(&self.last_checksum);
                 *last_cs = Some(cs);
             }
             if let Ok(meta) = fs::metadata(&self.watch_path) {
                 if let Ok(mt) = meta.modified() {
-                    let mut last_mt = self.last_mtime.lock().expect("lock poisoned");
+                    let mut last_mt = lock_unpoisoned(&self.last_mtime);
                     *last_mt = Some(mt);
                 }
             }
@@ -526,7 +537,7 @@ impl ConfigWatcher {
             .ok();
 
         let mtime_changed = {
-            let last_mt = self.last_mtime.lock().expect("lock poisoned");
+            let last_mt = lock_unpoisoned(&self.last_mtime);
             current_mtime != *last_mt
         };
 
@@ -535,13 +546,12 @@ impl ConfigWatcher {
         }
 
         // mtime changed — compute checksum to confirm a real content change.
-        let current_checksum = match compute_checksum(&self.watch_path) {
-            Ok(cs) => cs,
-            Err(_) => return self.drain_debounce(),
+        let Ok(current_checksum) = compute_checksum(&self.watch_path) else {
+            return self.drain_debounce();
         };
 
         let checksum_changed = {
-            let mut last_cs = self.last_checksum.lock().expect("lock poisoned");
+            let mut last_cs = lock_unpoisoned(&self.last_checksum);
             let changed = last_cs.as_ref() != Some(&current_checksum);
             *last_cs = Some(current_checksum);
             changed
@@ -549,7 +559,7 @@ impl ConfigWatcher {
 
         // Update mtime regardless (the file was touched even if content is same).
         {
-            let mut last_mt = self.last_mtime.lock().expect("lock poisoned");
+            let mut last_mt = lock_unpoisoned(&self.last_mtime);
             *last_mt = current_mtime;
         }
 
@@ -571,30 +581,27 @@ impl ConfigWatcher {
             ReloadPolicy::Immediate => Some(event),
             ReloadPolicy::Debounced(window) => {
                 let now = Instant::now();
-                let mut debounce = self.debounce.lock().expect("lock poisoned");
-                match debounce.as_mut() {
-                    Some(state) => {
-                        // Reset the trailing timer.
-                        state.last_seen = now;
-                        state.pending_event = event;
-                        None
-                    }
-                    None => {
-                        *debounce = Some(DebounceState {
-                            pending_event: event,
-                            _first_seen: now,
-                            last_seen: now,
-                        });
-                        // We need to wait for the debounce window to expire
-                        // before surfacing the event. Check will happen on the
-                        // next poll tick via `drain_debounce`.
-                        let _ = window; // used in drain_debounce
-                        None
-                    }
+                let mut debounce = lock_unpoisoned(&self.debounce);
+                if let Some(state) = debounce.as_mut() {
+                    // Reset the trailing timer.
+                    state.last_seen = now;
+                    state.pending_event = event;
+                    None
+                } else {
+                    *debounce = Some(DebounceState {
+                        pending_event: event,
+                        _first_seen: now,
+                        last_seen: now,
+                    });
+                    // We need to wait for the debounce window to expire
+                    // before surfacing the event. Check will happen on the
+                    // next poll tick via `drain_debounce`.
+                    let _ = window; // used in drain_debounce
+                    None
                 }
             }
             ReloadPolicy::Manual => {
-                let mut pending = self.manual_pending.lock().expect("lock poisoned");
+                let mut pending = lock_unpoisoned(&self.manual_pending);
                 *pending = Some(event);
                 None
             }
@@ -604,7 +611,7 @@ impl ConfigWatcher {
     /// If the debounce window has elapsed, drain and return the pending event.
     fn drain_debounce(&self) -> Option<WatchEvent> {
         if let ReloadPolicy::Debounced(window) = &self.reload_policy {
-            let mut debounce = self.debounce.lock().expect("lock poisoned");
+            let mut debounce = lock_unpoisoned(&self.debounce);
             if let Some(state) = debounce.as_ref() {
                 if state.last_seen.elapsed() >= *window {
                     let event = debounce.take().map(|s| s.pending_event);
@@ -620,7 +627,7 @@ impl ConfigWatcher {
     /// Returns `None` if there is no pending event or the policy is not
     /// `Manual`.
     pub fn take_pending(&self) -> Option<WatchEvent> {
-        let mut pending = self.manual_pending.lock().expect("lock poisoned");
+        let mut pending = lock_unpoisoned(&self.manual_pending);
         pending.take()
     }
 

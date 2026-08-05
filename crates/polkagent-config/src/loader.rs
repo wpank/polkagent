@@ -112,7 +112,7 @@ impl ConfigLoader {
                     match read_toml_file(&global_path) {
                         Ok(overlay) => merge_toml(&mut base, overlay),
                         Err(e) => {
-                            warn!(path = %global_path.display(), error = %e, "skipping unreadable global config")
+                            warn!(path = %global_path.display(), error = %e, "skipping unreadable global config");
                         }
                     }
                 }
@@ -124,7 +124,7 @@ impl ConfigLoader {
                 match read_toml_file(&project_path) {
                     Ok(overlay) => merge_toml(&mut base, overlay),
                     Err(e) => {
-                        warn!(path = %project_path.display(), error = %e, "skipping unreadable project config")
+                        warn!(path = %project_path.display(), error = %e, "skipping unreadable project config");
                     }
                 }
             }

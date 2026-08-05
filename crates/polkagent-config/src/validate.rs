@@ -630,8 +630,7 @@ fn validate_harness(config: &Config, errors: &mut Vec<ValidationError>) {
             errors.push(ValidationError::new(
                 "harness.default",
                 format!(
-                    "default harness '{}' does not match any entry in [harness.harnesses]",
-                    default_name
+                    "default harness '{default_name}' does not match any entry in [harness.harnesses]"
                 ),
             ));
         }
@@ -739,8 +738,7 @@ fn validate_observability(config: &Config, errors: &mut Vec<ValidationError>) {
             errors.push(ValidationError::new(
                 "observability.otlp_endpoint",
                 format!(
-                    "'{}' does not look like an HTTP/HTTPS URL (expected 'http://' or 'https://' prefix)",
-                    endpoint
+                    "'{endpoint}' does not look like an HTTP/HTTPS URL (expected 'http://' or 'https://' prefix)"
                 ),
             ));
         }
@@ -792,8 +790,7 @@ fn validate_watchers(config: &Config, errors: &mut Vec<ValidationError>) {
                         errors.push(ValidationError::new(
                             format!("{prefix}.schedule.expr"),
                             format!(
-                                "cron expression '{}' must have exactly 5 fields (minute hour day month dow)",
-                                expr
+                                "cron expression '{expr}' must have exactly 5 fields (minute hour day month dow)"
                             ),
                         ));
                     }

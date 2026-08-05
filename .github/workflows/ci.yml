@@ -45,6 +45,12 @@ jobs:
         if: ${{ !matrix.msrv }}
         run: cargo fmt --all -- --check
 
+      - name: cargo doc
+        if: ${{ !matrix.msrv }}
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
   test:
     name: Test
     runs-on: ubuntu-latest

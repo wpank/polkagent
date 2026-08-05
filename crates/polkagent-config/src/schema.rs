@@ -334,14 +334,19 @@ pub struct ProviderConfig {
     pub extra: Option<serde_json::Value>,
 }
 
+// Serde invokes these functions for absent optional fields; returning `Some`
+// distinguishes the configured default from an explicitly disabled value.
+#[allow(clippy::unnecessary_wraps)]
 fn default_ttft_timeout() -> Option<u64> {
     Some(15)
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn default_connect_timeout() -> Option<u64> {
     Some(5)
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn default_max_concurrent() -> Option<u32> {
     Some(10)
 }
@@ -888,7 +893,7 @@ impl std::fmt::Display for DataRegion {
 ///
 /// Configures the data region for this deployment and whether cross-region
 /// data movement is permitted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CloudConfig {
     /// The data region for this deployment. When set, the control plane will
@@ -898,15 +903,6 @@ pub struct CloudConfig {
     /// When `true`, the control plane may route jobs to workers in a different
     /// region. Requires explicit operator intent. Default: `false`.
     pub allow_cross_region: bool,
-}
-
-impl Default for CloudConfig {
-    fn default() -> Self {
-        Self {
-            region: None,
-            allow_cross_region: false,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
