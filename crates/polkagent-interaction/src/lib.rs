@@ -33,6 +33,7 @@ pub mod error;
 pub mod event;
 pub mod ids;
 pub mod model;
+pub mod persistence;
 pub mod service;
 
 pub use command::{
@@ -54,6 +55,10 @@ pub use model::{
     InteractionContent, InteractionOverrides, InteractionState, InteractionSummary,
     InteractionTarget, ListInteractionsRequest, OverrideValue, PromptRequest, SubscriptionRequest,
     TurnHandle, TurnState, TurnSummary,
+};
+pub use persistence::{
+    InteractionRunLink, InteractionStore, NewInteractionEvent, NewInteractionTurn,
+    StoredInteractionTurn,
 };
 pub use service::{
     BoxInteractionEventStream, InteractionEventStream, InteractionService, StartedTurn, StreamError,
