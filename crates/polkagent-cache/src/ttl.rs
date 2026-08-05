@@ -77,6 +77,12 @@ impl TtlPolicy {
 }
 
 #[cfg(test)]
+// TTL policy tests intentionally panic when an expected expiry is absent so
+// expiration-policy regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "TTL policy assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
 

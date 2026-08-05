@@ -96,6 +96,13 @@ impl<S: CacheStore> CacheAside<S> {
 }
 
 #[cfg(test)]
+// Cache-aside tests intentionally panic at fetch, refresh, and rejection
+// boundaries so loader and cache-contract regressions remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "cache-aside assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::key::CacheKey;

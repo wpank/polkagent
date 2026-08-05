@@ -115,6 +115,12 @@ impl CacheStore for InMemoryCache {
 }
 
 #[cfg(test)]
+// In-memory cache tests intentionally panic at storage and concurrency contract
+// boundaries so malformed fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "in-memory cache assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use crate::key::CacheKey;

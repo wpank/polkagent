@@ -286,6 +286,12 @@ where
 }
 
 #[cfg(test)]
+// LRU tests intentionally panic at eviction-callback synchronization boundaries
+// so poisoned fixture state remains easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "LRU cache assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};

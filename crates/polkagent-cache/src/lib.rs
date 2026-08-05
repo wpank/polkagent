@@ -118,6 +118,12 @@ impl Default for CacheConfig {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Public API tests intentionally panic at cache and serialization boundaries so
+// broken shared fixtures remain easy to diagnose.
+#[allow(
+    clippy::expect_used,
+    reason = "cache API assertions intentionally panic with focused diagnostics"
+)]
 mod tests {
     use super::*;
     use serde_json::json;
