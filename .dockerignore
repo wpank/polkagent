@@ -1,5 +1,9 @@
 target/
 .git/
+.claude/
+.codex/
+.idea/
+.vscode/
 tmp/
 .DS_Store
 *.swp

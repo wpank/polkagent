@@ -10,7 +10,9 @@ COPY . .
 RUN --mount=type=cache,id=polkagent-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=polkagent-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=polkagent-target,target=/build/target,sharing=locked \
-    cargo build --release --locked -p polkagent-cli \
+    find crates -type f -exec touch {} + \
+    && touch Cargo.toml Cargo.lock \
+    && cargo build --release --locked -p polkagent-cli \
     && install -D /build/target/release/polkagent /out/polkagent
 
 # Stage 2: Runtime
