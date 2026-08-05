@@ -28,6 +28,9 @@
 //!
 //! This module is only available when the `test-contracts` feature is enabled.
 
+// Contract helpers are assertion APIs and intentionally fail fast on adapter violations.
+#![allow(clippy::expect_used)]
+
 use crate::{Classification, OutgoingBody, OutgoingMessage, Transport, TransportCapabilities};
 use polkagent_core::ConversationId;
 
@@ -93,18 +96,16 @@ pub async fn test_send_and_ack(transport: &dyn Transport) {
 /// the returned [`TransportCapabilities`] struct has coherent values:
 /// - `max_message_bytes` is set (may be 0 for "no limit").
 /// - `supported_auth_methods` is a valid (possibly empty) list.
+#[allow(clippy::unused_async)] // Keep every shared contract entry point uniformly awaitable.
 pub async fn test_capabilities_returns(transport: &dyn Transport) {
     let caps: TransportCapabilities = transport.capabilities();
 
-    // We cannot assert specific values since they are implementation-specific,
-    // but we verify the struct is accessible and its fields are well-formed.
-    // max_message_bytes is a u64 so any value is technically valid.
-    // supported_auth_methods must be a valid Vec (not panic on access).
-    let _streaming = caps.supports_streaming;
-    let _cards = caps.supports_structured_cards;
-    let _files = caps.supports_file_transfer;
-    let _max = caps.max_message_bytes;
-    let _auth_count = caps.supported_auth_methods.len();
+    assert!(
+        caps.supported_auth_methods
+            .iter()
+            .all(|method| !method.trim().is_empty()),
+        "supported_auth_methods must not contain empty names"
+    );
 
     // If max_message_bytes is non-zero, it should be a reasonable value.
     // We don't enforce a specific range, just that it didn't overflow or

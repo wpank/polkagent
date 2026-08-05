@@ -30,6 +30,9 @@
 //!
 //! Compiled only when the `test-contracts` feature is enabled.
 
+// Conformance helpers are assertion APIs and intentionally fail fast on adapter violations.
+#![allow(clippy::expect_used)]
+
 use crate::{
     AuthenticatedSender, Classification, DeliveryId, IncomingMessage, MessageBody, OutgoingBody,
     OutgoingMessage, SenderTrustTier, Transport, UserId,
@@ -98,7 +101,7 @@ pub async fn test_send_receive_roundtrip(transport: &dyn Transport) {
         incoming.delivery_id,
     );
 
-    let conversation_id = incoming.conversation_id.clone();
+    let conversation_id = incoming.conversation_id;
     let delivery_id = incoming.delivery_id.clone();
 
     // 2. Acknowledge the message.
@@ -155,6 +158,7 @@ pub async fn test_message_ordering(transport: &dyn Transport) {
 ///
 /// Every transport must implement `capabilities()` and return a struct whose
 /// fields are internally consistent.  This test checks sanity constraints.
+#[allow(clippy::unused_async)] // Keep every shared conformance entry point uniformly awaitable.
 pub async fn test_connection_lifecycle(transport: &dyn Transport) {
     let caps = transport.capabilities();
 
@@ -168,13 +172,12 @@ pub async fn test_connection_lifecycle(transport: &dyn Transport) {
         );
     }
 
-    // supported_auth_methods must be accessible without panic.
-    let _method_count = caps.supported_auth_methods.len();
-
-    // Boolean flags are always valid; just ensure they are accessible.
-    let _streaming = caps.supports_streaming;
-    let _cards = caps.supports_structured_cards;
-    let _files = caps.supports_file_transfer;
+    assert!(
+        caps.supported_auth_methods
+            .iter()
+            .all(|method| !method.trim().is_empty()),
+        "supported_auth_methods must not contain empty names"
+    );
 }
 
 /// Conformance: `send()` accepts a `Classification::Sensitive` message without

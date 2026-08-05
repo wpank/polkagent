@@ -317,6 +317,8 @@ pub trait Transport: Send + Sync + 'static {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Assertion-oriented serialization tests intentionally fail fast on invalid fixtures.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
