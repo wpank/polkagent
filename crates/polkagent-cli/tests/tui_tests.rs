@@ -1257,6 +1257,14 @@ fn test_console_keys_map_to_actions() {
         key_to_action(key(KeyCode::Delete), InputMode::Prompt),
         Some(TuiAction::PromptDelete)
     ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Tab), InputMode::Prompt),
+        Some(TuiAction::PromptAcceptCompletion)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Esc), InputMode::Prompt),
+        Some(TuiAction::Back)
+    ));
     assert!(key_to_action(ctrl(KeyCode::Char('z')), InputMode::Prompt).is_none());
 }
 
@@ -1331,6 +1339,36 @@ fn test_console_renders_multiline_unicode_composer_and_cursor() {
         cursor.x > 3,
         "wide Unicode should advance the cursor: {cursor:?}"
     );
+}
+
+#[test]
+fn test_console_renders_registry_slash_completions_and_truthful_scope() {
+    use polkagent_cli::tui::interaction::InteractionState;
+
+    let backend = TestBackend::new(110, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let theme = Theme::dark();
+    let mut interaction = InteractionState::default();
+    interaction.select_agent("agent-id", "Treasury Agent");
+    for character in "/a".chars() {
+        interaction.push_char(character);
+    }
+    let state = TuiState {
+        interaction,
+        ..TuiState::default()
+    };
+
+    terminal
+        .draw(|frame| console::render(frame, frame.area(), &state, InputMode::Prompt, &theme))
+        .expect("draw slash completion");
+
+    let text = buffer_text(&terminal);
+    assert!(text.contains("SLASH HELP"), "{text}");
+    assert!(text.contains("/agents"), "{text}");
+    assert!(text.contains("/agent <name-or-id>"), "{text}");
+    assert!(text.contains("/approve <approval-id>"), "{text}");
+    assert!(text.contains("List configured agents"), "{text}");
+    assert!(text.contains("execution is not wired"), "{text}");
 }
 
 #[test]

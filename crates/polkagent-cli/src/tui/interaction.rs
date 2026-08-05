@@ -4,10 +4,11 @@
 //! owns the deterministic reducer and the bridge to the same production run
 //! bootstrap used by `polkagent run`.
 
-use std::sync::mpsc;
+use std::sync::{mpsc, OnceLock};
 
 use polkagent_config::Config;
 use polkagent_core::event::EventKind;
+use polkagent_interaction::CommandRegistry;
 use polkagent_store_sqlite::SqlitePool;
 
 /// Keep a runaway streaming response from growing the terminal process
@@ -15,6 +16,47 @@ use polkagent_store_sqlite::SqlitePool;
 const MAX_OUTPUT_BYTES: usize = 128 * 1024;
 /// Bound in-memory Console history until durable conversations own it.
 const MAX_PROMPT_HISTORY: usize = 100;
+
+/// One canonical entry in the Console's shared slash-command picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashCommandCandidate {
+    /// Canonical command name without the leading slash.
+    pub name: String,
+    /// Alternative spellings accepted by the shared parser.
+    pub aliases: Vec<String>,
+    /// Human-readable command purpose from the shared registry.
+    pub description: String,
+    /// Optional argument syntax from the shared registry.
+    pub input_hint: Option<String>,
+}
+
+impl SlashCommandCandidate {
+    /// Render the canonical command and its argument hint.
+    #[must_use]
+    pub fn usage(&self) -> String {
+        self.input_hint.as_ref().map_or_else(
+            || format!("/{}", self.name),
+            |hint| format!("/{} {hint}", self.name),
+        )
+    }
+}
+
+/// Current registry-derived slash-command picker projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashCommandMenu {
+    /// Canonical candidates matching the typed name or alias prefix.
+    pub candidates: Vec<SlashCommandCandidate>,
+    /// Highlighted candidate, always clamped to `candidates`.
+    pub selected: usize,
+}
+
+impl SlashCommandMenu {
+    /// Return the highlighted candidate.
+    #[must_use]
+    pub fn selected_candidate(&self) -> Option<&SlashCommandCandidate> {
+        self.candidates.get(self.selected)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptRequest {
@@ -77,6 +119,8 @@ pub struct InteractionState {
     prompt_history: Vec<String>,
     prompt_history_index: Option<usize>,
     prompt_history_draft: Option<String>,
+    slash_completion_selection: usize,
+    slash_completion_dismissed: bool,
     pub run: Option<ConsoleRun>,
 }
 
@@ -139,6 +183,9 @@ impl InteractionState {
     /// Move vertically within multiline input, falling back to older history
     /// only when the cursor is already on the first line.
     pub fn move_up(&mut self) {
+        if self.move_slash_completion_up() {
+            return;
+        }
         let cursor = self.cursor();
         let line_start = self.prompt_buffer[..cursor]
             .rfind('\n')
@@ -160,6 +207,9 @@ impl InteractionState {
     /// Move vertically within multiline input, falling back to newer history
     /// only when the cursor is already on the last line.
     pub fn move_down(&mut self) {
+        if self.move_slash_completion_down() {
+            return;
+        }
         let cursor = self.cursor();
         let line_start = self.prompt_buffer[..cursor]
             .rfind('\n')
@@ -188,12 +238,118 @@ impl InteractionState {
         self.prompt_cursor = 0;
         self.prompt_history_index = None;
         self.prompt_history_draft = None;
+        self.slash_completion_selection = 0;
+        self.slash_completion_dismissed = false;
+    }
+
+    /// Return shared slash-command candidates for the current composer text.
+    ///
+    /// The menu is a discovery/completion projection only. Command execution
+    /// remains outside this TUI slice until the durable interaction service is
+    /// connected to the Console.
+    #[must_use]
+    pub fn slash_command_menu(&self) -> Option<SlashCommandMenu> {
+        if self.slash_completion_dismissed {
+            return None;
+        }
+        let command_line = self.prompt_buffer.trim_start().strip_prefix('/')?;
+        let (typed_name, has_arguments) = command_line
+            .find(char::is_whitespace)
+            .map_or((command_line, false), |index| {
+                (&command_line[..index], true)
+            });
+        let typed_name = typed_name.to_ascii_lowercase();
+        let registry = command_registry();
+
+        let candidates = if has_arguments || registry.resolve(&typed_name).is_some() {
+            registry
+                .resolve(&typed_name)
+                .into_iter()
+                .map(slash_candidate)
+                .collect()
+        } else {
+            registry
+                .specs()
+                .into_iter()
+                .filter(|spec| {
+                    spec.name.starts_with(&typed_name)
+                        || spec
+                            .aliases
+                            .iter()
+                            .any(|alias| alias.starts_with(&typed_name))
+                })
+                .map(slash_candidate)
+                .collect::<Vec<_>>()
+        };
+        if candidates.is_empty() {
+            return None;
+        }
+        let selected = self
+            .slash_completion_selection
+            .min(candidates.len().saturating_sub(1));
+        Some(SlashCommandMenu {
+            candidates,
+            selected,
+        })
+    }
+
+    /// Replace the typed slash name with the highlighted canonical command.
+    ///
+    /// Returns whether a completion was available and accepted.
+    pub fn accept_slash_completion(&mut self) -> bool {
+        let Some(candidate) = self
+            .slash_command_menu()
+            .and_then(|menu| menu.selected_candidate().cloned())
+        else {
+            return false;
+        };
+        let leading_whitespace = self.prompt_buffer.len() - self.prompt_buffer.trim_start().len();
+        let command_start = leading_whitespace + 1;
+        let command_end = self.prompt_buffer[command_start..]
+            .find(char::is_whitespace)
+            .map_or(self.prompt_buffer.len(), |offset| command_start + offset);
+        self.prompt_buffer
+            .replace_range(command_start..command_end, &candidate.name);
+        self.prompt_cursor = command_start + candidate.name.len();
+        if candidate.input_hint.is_some()
+            && self
+                .prompt_buffer
+                .as_bytes()
+                .get(self.prompt_cursor)
+                .is_none_or(u8::is_ascii_whitespace)
+        {
+            if self.prompt_buffer.as_bytes().get(self.prompt_cursor) != Some(&b' ') {
+                self.prompt_buffer.insert(self.prompt_cursor, ' ');
+            }
+            self.prompt_cursor += 1;
+        }
+        self.slash_completion_selection = 0;
+        self.slash_completion_dismissed = false;
+        self.leave_history_navigation();
+        true
+    }
+
+    /// Dismiss the visible slash-command picker.
+    ///
+    /// Returns `false` when no picker was visible, allowing Escape to fall
+    /// through to the composer's existing cancel behavior.
+    pub fn dismiss_slash_completion(&mut self) -> bool {
+        if self.slash_command_menu().is_none() {
+            return false;
+        }
+        self.slash_completion_dismissed = true;
+        true
     }
 
     pub fn submit(&mut self) -> Result<PromptRequest, &'static str> {
         let prompt = self.prompt_buffer.trim().to_owned();
         if prompt.is_empty() {
             return Err("prompt cannot be empty");
+        }
+        if prompt.starts_with('/') {
+            return Err(
+                "slash commands are catalog-only in the Console; command execution is not wired yet",
+            );
         }
         let Some(agent_id) = self.agent_id.clone() else {
             return Err("select an active agent before prompting");
@@ -220,6 +376,34 @@ impl InteractionState {
     fn prepare_edit(&mut self) {
         self.prompt_cursor = self.cursor();
         self.leave_history_navigation();
+        self.slash_completion_selection = 0;
+        self.slash_completion_dismissed = false;
+    }
+
+    fn move_slash_completion_up(&mut self) -> bool {
+        let Some(menu) = self.slash_command_menu() else {
+            return false;
+        };
+        if menu.candidates.len() <= 1 {
+            return true;
+        }
+        self.slash_completion_selection = if menu.selected == 0 {
+            menu.candidates.len() - 1
+        } else {
+            menu.selected - 1
+        };
+        true
+    }
+
+    fn move_slash_completion_down(&mut self) -> bool {
+        let Some(menu) = self.slash_command_menu() else {
+            return false;
+        };
+        if menu.candidates.len() <= 1 {
+            return true;
+        }
+        self.slash_completion_selection = (menu.selected + 1) % menu.candidates.len();
+        true
     }
 
     fn leave_history_navigation(&mut self) {
@@ -337,6 +521,20 @@ impl InteractionState {
                 "run timed out".clone_into(&mut run.detail);
             }
         }
+    }
+}
+
+fn command_registry() -> &'static CommandRegistry {
+    static REGISTRY: OnceLock<CommandRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(CommandRegistry::mvp)
+}
+
+fn slash_candidate(spec: &polkagent_interaction::CommandSpec) -> SlashCommandCandidate {
+    SlashCommandCandidate {
+        name: spec.name.clone(),
+        aliases: spec.aliases.clone(),
+        description: spec.description.clone(),
+        input_hint: spec.input_hint.clone(),
     }
 }
 
@@ -733,5 +931,63 @@ mod tests {
             state.prompt_history.last().map(String::as_str),
             Some("prompt 100")
         );
+    }
+
+    #[test]
+    fn slash_completion_uses_shared_registry_metadata_and_aliases() {
+        let mut state = InteractionState::default();
+        type_prompt(&mut state, "/st");
+
+        let menu = state.slash_command_menu().expect("status completion");
+        assert_eq!(menu.candidates.len(), 1);
+        let candidate = menu.selected_candidate().expect("selected completion");
+        assert_eq!(candidate.name, "status");
+        assert_eq!(candidate.aliases, vec!["st"]);
+        assert_eq!(
+            candidate.description,
+            "Show the current target, model, runs, approvals, usage, and budget"
+        );
+        assert_eq!(candidate.usage(), "/status");
+    }
+
+    #[test]
+    fn slash_completion_navigates_accepts_and_dismisses() {
+        let mut state = InteractionState::default();
+        type_prompt(&mut state, "/a");
+
+        let menu = state.slash_command_menu().expect("slash completions");
+        assert_eq!(
+            menu.candidates
+                .iter()
+                .map(|candidate| candidate.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agents", "agent", "approve"]
+        );
+        assert_eq!(menu.selected, 0);
+
+        state.move_down();
+        assert_eq!(state.slash_command_menu().unwrap().selected, 1);
+        assert!(state.accept_slash_completion());
+        assert_eq!(state.prompt_buffer, "/agent ");
+        assert_eq!(state.cursor(), state.prompt_buffer.len());
+
+        assert!(state.dismiss_slash_completion());
+        assert!(state.slash_command_menu().is_none());
+        state.push_char('A');
+        assert!(state.slash_command_menu().is_some());
+    }
+
+    #[test]
+    fn slash_submission_is_not_misrouted_as_an_agent_prompt() {
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        type_prompt(&mut state, "/runs");
+
+        assert_eq!(
+            state.submit(),
+            Err("slash commands are catalog-only in the Console; command execution is not wired yet")
+        );
+        assert_eq!(state.prompt_buffer, "/runs");
+        assert!(state.run.is_none());
     }
 }

@@ -2873,6 +2873,7 @@ dependencies = [
  "polkagent-harness-cursor",
  "polkagent-harness-trait",
  "polkagent-identity",
+ "polkagent-interaction",
  "polkagent-kit",
  "polkagent-marketplace",
  "polkagent-memory",

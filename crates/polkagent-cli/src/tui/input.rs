@@ -88,6 +88,8 @@ pub enum TuiAction {
     PromptMoveHome,
     /// Move to the end of the current prompt line.
     PromptMoveEnd,
+    /// Accept the highlighted shared slash-command completion.
+    PromptAcceptCompletion,
     /// Start a real run using the current prompt.
     PromptSubmit,
     /// Cancel the run currently owned by the console.
@@ -182,6 +184,7 @@ fn prompt_mode_key(key: KeyEvent) -> Option<TuiAction> {
         KeyCode::Down => Some(TuiAction::PromptMoveDown),
         KeyCode::Home => Some(TuiAction::PromptMoveHome),
         KeyCode::End => Some(TuiAction::PromptMoveEnd),
+        KeyCode::Tab => Some(TuiAction::PromptAcceptCompletion),
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(TuiAction::PromptMoveHome)
         }

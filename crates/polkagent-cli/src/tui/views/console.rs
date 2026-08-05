@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::tui::input::InputMode;
-use crate::tui::interaction::ConsoleRunStatus;
+use crate::tui::interaction::{ConsoleRunStatus, SlashCommandMenu};
 use crate::tui::state::TuiState;
 use crate::tui::theme::Theme;
 
@@ -21,7 +21,11 @@ pub fn render(
     theme: &Theme,
 ) {
     let composer_height = if input_mode == InputMode::Prompt {
-        7
+        if state.interaction.slash_command_menu().is_some() {
+            11
+        } else {
+            7
+        }
     } else {
         3
     };
@@ -170,7 +174,14 @@ fn render_composer(
     theme: &Theme,
 ) {
     let composing = input_mode == InputMode::Prompt;
-    let title = if composing {
+    let slash_menu = if composing {
+        state.interaction.slash_command_menu()
+    } else {
+        None
+    };
+    let title = if slash_menu.is_some() {
+        " SLASH HELP · ↑/↓ select · Tab complete · Esc dismiss "
+    } else if composing {
         " PROMPT · Enter send · Shift+Enter newline · ↑/↓ line/history · Esc cancel "
     } else if state
         .interaction
@@ -207,6 +218,17 @@ fn render_composer(
         return;
     }
 
+    let editor_area = if let Some(menu) = slash_menu.as_ref() {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner);
+        render_slash_menu(frame, rows[1], menu, theme);
+        rows[0]
+    } else {
+        inner
+    };
+
     let buffer = &state.interaction.prompt_buffer;
     let cursor = state.interaction.cursor();
     let before_cursor = &buffer[..cursor];
@@ -221,8 +243,8 @@ fn render_composer(
             Span::styled(line.to_owned(), Style::default().fg(theme.text_primary)),
         ])
     });
-    let visible_height = usize::from(inner.height.max(1));
-    let visible_width = usize::from(inner.width.max(1));
+    let visible_height = usize::from(editor_area.height.max(1));
+    let visible_width = usize::from(editor_area.width.max(1));
     let vertical_scroll = cursor_line.saturating_sub(visible_height.saturating_sub(1));
     let horizontal_scroll = cursor_column.saturating_sub(visible_width.saturating_sub(1));
     frame.render_widget(
@@ -230,22 +252,82 @@ fn render_composer(
             u16::try_from(vertical_scroll).unwrap_or(u16::MAX),
             u16::try_from(horizontal_scroll).unwrap_or(u16::MAX),
         )),
-        inner,
+        editor_area,
     );
 
-    if inner.width > 0 && inner.height > 0 {
-        let cursor_x = inner
+    if editor_area.width > 0 && editor_area.height > 0 {
+        let cursor_x = editor_area
             .x
             .saturating_add(
                 u16::try_from(cursor_column.saturating_sub(horizontal_scroll)).unwrap_or(u16::MAX),
             )
-            .min(inner.x.saturating_add(inner.width.saturating_sub(1)));
-        let cursor_y = inner
+            .min(
+                editor_area
+                    .x
+                    .saturating_add(editor_area.width.saturating_sub(1)),
+            );
+        let cursor_y = editor_area
             .y
             .saturating_add(
                 u16::try_from(cursor_line.saturating_sub(vertical_scroll)).unwrap_or(u16::MAX),
             )
-            .min(inner.y.saturating_add(inner.height.saturating_sub(1)));
+            .min(
+                editor_area
+                    .y
+                    .saturating_add(editor_area.height.saturating_sub(1)),
+            );
         frame.set_cursor_position((cursor_x, cursor_y));
     }
+}
+
+fn render_slash_menu(frame: &mut Frame, area: Rect, menu: &SlashCommandMenu, theme: &Theme) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let visible_entries = usize::from(area.height.saturating_sub(1));
+    let window_start = menu
+        .selected
+        .saturating_sub(visible_entries.saturating_sub(1))
+        .min(menu.candidates.len().saturating_sub(visible_entries));
+    let mut lines = menu
+        .candidates
+        .iter()
+        .enumerate()
+        .skip(window_start)
+        .take(visible_entries)
+        .map(|(index, candidate)| {
+            let selected = index == menu.selected;
+            let marker = if selected { "▸ " } else { "  " };
+            let command_style = if selected {
+                Style::default()
+                    .fg(theme.rose_bright)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.bone)
+            };
+            let aliases = if selected && !candidate.aliases.is_empty() {
+                format!(" · aliases: /{}", candidate.aliases.join(", /"))
+            } else {
+                String::new()
+            };
+            Line::from(vec![
+                Span::styled(marker, command_style),
+                Span::styled(candidate.usage(), command_style),
+                Span::styled(
+                    format!(" — {}{aliases}", candidate.description),
+                    Style::default().fg(theme.text_dim),
+                ),
+            ])
+        })
+        .collect::<Vec<_>>();
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Shared catalog · {}/{} · execution is not wired in Console yet",
+            menu.selected + 1,
+            menu.candidates.len()
+        ),
+        Style::default().fg(theme.warning),
+    )));
+    frame.render_widget(Paragraph::new(lines), area);
 }

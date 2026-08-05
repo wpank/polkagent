@@ -522,6 +522,10 @@ impl App {
 
             TuiAction::Back => {
                 if self.input_mode == InputMode::Prompt {
+                    if self.tui_state.interaction.dismiss_slash_completion() {
+                        self.tui_state.mark_dirty();
+                        return;
+                    }
                     self.input_mode = InputMode::Normal;
                     self.tui_state.interaction.clear_prompt();
                     self.tui_state.mark_dirty();
@@ -839,6 +843,11 @@ impl App {
 
             TuiAction::PromptMoveEnd => {
                 self.tui_state.interaction.move_end();
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::PromptAcceptCompletion => {
+                self.tui_state.interaction.accept_slash_completion();
                 self.tui_state.mark_dirty();
             }
 

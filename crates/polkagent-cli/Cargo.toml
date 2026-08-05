@@ -53,6 +53,7 @@ polkagent-harness-cursor  = { path = "../polkagent-harness-cursor" }
 polkagent-harness-claude  = { path = "../polkagent-harness-claude" }
 polkagent-harness-acp     = { path = "../polkagent-harness-acp" }
 polkagent-surface-acp     = { path = "../polkagent-surface-acp" }
+polkagent-interaction     = { path = "../polkagent-interaction" }
 polkagent-marketplace     = { path = "../polkagent-marketplace" }
 futures                   = { workspace = true }
 
