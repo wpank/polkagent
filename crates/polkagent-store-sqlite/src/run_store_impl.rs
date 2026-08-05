@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use chrono::DateTime;
-use polkagent_core::{RunId, TurnId};
+use polkagent_core::{RunId, StepId, TurnId};
 use polkagent_store_trait::{RunStatus, RunStore, RunSummary, StoreError, TurnSummaryRecord};
 
 use crate::pool::SqlitePool;
@@ -444,6 +444,69 @@ impl RunStore for SqlitePool {
         })?
     }
 
+    async fn insert_step(
+        &self,
+        step_id: StepId,
+        turn_id: TurnId,
+        sequence: u32,
+        kind: &str,
+        started_at: &str,
+    ) -> Result<(), StoreError> {
+        let pool = self.clone();
+        let kind = kind.to_owned();
+        let started_at = started_at.to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            let step_id_str = step_id.to_string();
+            let writer = pool.writer();
+            writer
+                .execute(
+                    "INSERT INTO steps (id, turn_id, sequence, kind, started_at)\
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        step_id_str,
+                        turn_id.to_string(),
+                        sequence,
+                        kind,
+                        started_at,
+                    ],
+                )
+                .map_err(|error| map_sqlite_err_with_id(error, &step_id_str))?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| StoreError::Internal {
+            message: format!("blocking task panicked: {error}"),
+        })?
+    }
+
+    async fn complete_step(&self, step_id: StepId, completed_at: &str) -> Result<(), StoreError> {
+        let pool = self.clone();
+        let completed_at = completed_at.to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            let step_id_str = step_id.to_string();
+            let writer = pool.writer();
+            let changed = writer
+                .execute(
+                    "UPDATE steps SET completed_at = ?1 WHERE id = ?2 AND completed_at IS NULL",
+                    rusqlite::params![completed_at, step_id_str],
+                )
+                .map_err(map_sqlite_err)?;
+            if changed == 0 {
+                return Err(StoreError::NotFound {
+                    resource_type: "Step",
+                    id: step_id_str,
+                });
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| StoreError::Internal {
+            message: format!("blocking task panicked: {error}"),
+        })?
+    }
+
     async fn list_turns(&self, run_id: RunId) -> Result<Vec<TurnSummaryRecord>, StoreError> {
         let pool = self.clone();
 
@@ -594,6 +657,57 @@ mod tests {
         assert_eq!(summary.agent_id, "test-agent");
         assert_eq!(summary.status.as_str(), "created");
         assert!(summary.completed_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn normalized_step_is_persisted_and_completed_under_its_turn() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let turn_id = TurnId::new();
+        let step_id = StepId::new();
+
+        RunStore::create(&pool, run_id, "test-agent", RunStatus::new("created"))
+            .await
+            .expect("create run");
+        RunStore::insert_turn(
+            &pool,
+            turn_id,
+            run_id,
+            1,
+            "assistant",
+            "2024-01-01T00:00:00Z",
+            Some("2024-01-01T00:00:01Z"),
+            0,
+            0,
+        )
+        .await
+        .expect("insert parent turn");
+        RunStore::insert_step(
+            &pool,
+            step_id,
+            turn_id,
+            1,
+            "tool_call",
+            "2024-01-01T00:00:01Z",
+        )
+        .await
+        .expect("insert step");
+        RunStore::complete_step(&pool, step_id, "2024-01-01T00:00:02Z")
+            .await
+            .expect("complete step");
+
+        let writer = pool.writer();
+        let stored: (String, i64, String, Option<String>) = writer
+            .query_row(
+                "SELECT turn_id, sequence, kind, completed_at FROM steps WHERE id = ?1",
+                [step_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read step");
+        assert_eq!(stored.0, turn_id.to_string());
+        assert_eq!(stored.1, 1);
+        assert_eq!(stored.2, "tool_call");
+        assert_eq!(stored.3.as_deref(), Some("2024-01-01T00:00:02Z"));
     }
 
     #[tokio::test]

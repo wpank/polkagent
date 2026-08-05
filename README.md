@@ -515,6 +515,14 @@ sequenceDiagram
     S-->>U: Display results
 ```
 
+Today this direct loop is enabled only for exact `AgentSpec.tools` entries that
+have a registered handler and no `required_grant`. The parent turn and
+normalized tool step, intent, claim, attempt, and outcome are durable around
+handler I/O; unknown, unallowlisted, malformed, and grant-bearing calls produce
+typed errors rather than synthetic success. Grant-bearing approval/resume and
+post-crash outcome consumption are still explicit follow-up work. See
+[Tools and Skills](docs/tools-and-skills.md#current-registered-tool-execution-boundary).
+
 ### Effect Pipeline State Machine
 
 ```

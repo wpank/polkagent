@@ -42,7 +42,7 @@ use crate::{
     StoredOutcome,
 };
 use polkagent_core::ids::{
-    ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, WorkerId,
+    ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, TurnId, WorkerId,
 };
 
 // ---------------------------------------------------------------------------
@@ -252,6 +252,40 @@ pub async fn test_run_store_terminal_state_sets_completed_at(store: &dyn RunStor
             "completed_at must be set when transitioning to terminal status '{terminal}'"
         );
     }
+}
+
+/// Conformance: a normalized step can be inserted beneath an existing turn,
+/// rejects a duplicate ID, and can then be completed exactly once.
+///
+/// **Precondition:** `turn_id` must already exist in the backing store.
+pub async fn test_run_store_step_lifecycle(store: &dyn RunStore, turn_id: TurnId) {
+    let step_id = StepId::new();
+    store
+        .insert_step(step_id, turn_id, 1, "tool_call", "2024-01-01T00:00:00Z")
+        .await
+        .expect("insert_step() must persist a fresh normalized step");
+
+    let duplicate = store
+        .insert_step(step_id, turn_id, 1, "tool_call", "2024-01-01T00:00:00Z")
+        .await
+        .expect_err("insert_step() must reject a duplicate step ID");
+    assert!(
+        matches!(duplicate, StoreError::Conflict { .. }),
+        "duplicate normalized step must return StoreError::Conflict; got: {duplicate:?}"
+    );
+
+    store
+        .complete_step(step_id, "2024-01-01T00:00:01Z")
+        .await
+        .expect("complete_step() must complete the persisted step");
+    let second_completion = store
+        .complete_step(step_id, "2024-01-01T00:00:02Z")
+        .await
+        .expect_err("complete_step() must not rewrite a completed step");
+    assert!(
+        matches!(second_completion, StoreError::NotFound { .. }),
+        "second normalized-step completion must fail closed; got: {second_completion:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

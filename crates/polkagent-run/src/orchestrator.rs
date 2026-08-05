@@ -15,6 +15,7 @@
 //! the [`RunManager`] (store + events). The orchestrator merely drives the
 //! loop and delegates to collaborators.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,15 +23,19 @@ use futures::StreamExt;
 use polkagent_card::{ActionCard, EffectKindTag, IntentCardSpec};
 use polkagent_core::{
     agent::AgentSpec,
-    event::{EventKind, RunEvent},
-    ids::EventId,
+    event::{EventCorrelation, EventKind, RunEvent},
+    ids::{EffectAttemptId, EffectOutcomeId, EventId},
     turn::TokenUsage,
-    ArtifactId, RunId, RunState, StepId,
+    ArtifactId, RetryClass, RunId, RunState, StepId,
 };
-use polkagent_effect::{EffectIntent, EffectKind, EffectPipeline};
+use polkagent_effect::{
+    AttemptState, EffectAttempt, EffectIntent, EffectIntentSpec, EffectKind, EffectOutcome,
+    EffectPipeline, ErrorClass, IdempotencyKey, OutcomeResult,
+};
 use polkagent_event::EventRecorder;
 use polkagent_executor_trait::{
-    ContentBlock, InferenceMessage, InferenceRequest, MessageRole, ModelExecutor,
+    ContentBlock, InferenceMessage, InferenceRequest, MessageRole, ModelExecutor, ToolCall,
+    ToolDefinition,
 };
 use polkagent_grant::grant::GrantResolver;
 use polkagent_harness_trait::{
@@ -38,6 +43,8 @@ use polkagent_harness_trait::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
+
+use polkagent_tool::{ToolContext, ToolError, ToolRegistry};
 
 #[cfg(feature = "context")]
 use polkagent_context::ContextAssembler;
@@ -64,10 +71,12 @@ pub struct RunOrchestratorConfig {
     /// Default: 4096.
     pub max_tokens_per_turn: u32,
 
-    /// Whether to auto-approve all effect intents (tool calls) without
-    /// waiting for external approval.
+    /// Legacy compatibility flag for callers that request automatic effect
+    /// approval.
     ///
-    /// Default: `false` -- require manual approval.
+    /// The registered-tool slice never uses this flag to bypass a declared
+    /// grant: grant-bearing tools are withheld until approval and durable
+    /// resume exist end to end. Grantless allowlisted tools need no approval.
     pub auto_approve_effects: bool,
 }
 
@@ -113,7 +122,6 @@ pub struct RunOutcome {
 pub struct RunOrchestrator {
     run_manager: Arc<RunManager>,
     executor: Arc<dyn ModelExecutor>,
-    #[allow(dead_code)] // Phase 2: effect dispatch via the pipeline.
     effect_pipeline: EffectPipeline,
     #[allow(dead_code)] // Phase 2: fine-grained turn/step event recording.
     event_recorder: EventRecorder,
@@ -121,6 +129,9 @@ pub struct RunOrchestrator {
     grant_resolver: Arc<GrantResolver>,
     config: RunOrchestratorConfig,
     turn_manager: TurnManager,
+    /// Registered handlers available to explicitly allowlisted agents.
+    /// Grant-bearing tools are withheld until approval/resume is implemented.
+    tool_registry: Option<Arc<ToolRegistry>>,
     /// Optional harness for delegating runs to an external agent CLI.
     /// When present, the run is driven through the harness instead of
     /// the executor.
@@ -184,6 +195,7 @@ impl RunOrchestrator {
             grant_resolver,
             config: RunOrchestratorConfig::default(),
             turn_manager: TurnManager::new(),
+            tool_registry: None,
             harness: None,
             task_requirements: None,
             #[cfg(feature = "context")]
@@ -197,6 +209,15 @@ impl RunOrchestrator {
     #[must_use]
     pub fn with_config(mut self, config: RunOrchestratorConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Attach the runtime tool registry used for exact schema advertisement
+    /// and dispatch. Only agent-allowlisted tools without a required grant are
+    /// exposed or executable by this orchestrator slice.
+    #[must_use]
+    pub fn with_tool_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
+        self.tool_registry = Some(registry);
         self
     }
 
@@ -418,8 +439,10 @@ impl RunOrchestrator {
     ///       - Text only with `end_turn` stop reason -> complete the run.
     ///       - Tool calls -> create effect intents.
     ///       - `max_tokens` stop reason -> fail with context exceeded.
-    ///    d. For tool calls with `auto_approve_effects`: add synthetic tool
-    ///       results and continue.
+    ///    d. For an advertised grantless tool call: persist its normalized
+    ///       step, intent, claim, attempt, and outcome around real registry
+    ///       dispatch, then add the exact serialized result and continue.
+    ///       Rejected calls receive typed errors without handler I/O.
     ///    e. Add assistant response and tool results to messages.
     ///    f. Continue loop.
     /// 4. Transition: Running -> Completing -> Completed (or Failed).
@@ -635,6 +658,15 @@ impl RunOrchestrator {
             .and_then(|mp| mp.system_prompt.clone())
             .or_else(|| agent_spec.system_prompt.clone());
 
+        // Advertise only exact registered definitions that the agent names
+        // and that require no grant. Grant-bearing tools stay invisible until
+        // approval + durable resume is implemented end to end.
+        let advertised_tools = self.advertised_tools(agent_spec);
+        let advertised_tool_names: HashSet<String> = advertised_tools
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect();
+
         // Step 1: Transition to Running.
         // In production, AppService::start_run enqueues before spawning us
         // (Created → Queued), so we just claim (Queued → Running).
@@ -754,12 +786,13 @@ impl RunOrchestrator {
             #[cfg(not(feature = "context"))]
             let assembled_messages = messages.clone();
 
+            let model_step_id = StepId::new();
             let request = InferenceRequest {
                 run_id,
-                step_id: StepId::new(),
+                step_id: model_step_id,
                 messages: assembled_messages,
                 system: effective_system.clone(),
-                tools: Vec::new(),
+                tools: advertised_tools.clone(),
                 model_id: effective_model_id.clone(),
                 max_tokens: effective_max_tokens,
                 temperature: effective_temperature,
@@ -828,13 +861,19 @@ impl RunOrchestrator {
                     TurnOutput::continuing().with_usage(turn_usage)
                 };
             let completed_turn = self.turn_manager.complete_turn(turn, &turn_output);
-            if let Err(e) = self.run_manager.record_turn(&completed_turn).await {
-                warn!(
-                    %run_id,
-                    turn = turn_count,
-                    error = %e,
-                    "failed to persist turn record (non-fatal)"
-                );
+            if let Err(error) = self.run_manager.record_turn(&completed_turn).await {
+                if response.tool_calls.is_empty() {
+                    warn!(
+                        %run_id,
+                        turn = turn_count,
+                        error = %error,
+                        "failed to persist text-only turn record (non-fatal)"
+                    );
+                } else {
+                    return Err(RunError::Store(format!(
+                        "cannot persist tool effects without their parent turn: {error}"
+                    )));
+                }
             }
 
             // Emit the model's response text so RunPrinter can display it.
@@ -928,43 +967,23 @@ impl RunOrchestrator {
                     content: assistant_content,
                 });
 
-                // For each tool call, produce a tool result.
-                // In the full system, this would go through the effect
-                // pipeline and wait for approval. For now, when
-                // `auto_approve_effects` is true, we produce a synthetic
-                // success result so the loop can continue.
                 let mut tool_result_content: Vec<ContentBlock> = Vec::new();
-                for tc in &response.tool_calls {
-                    if self.config.auto_approve_effects {
-                        tool_result_content.push(ContentBlock::ToolResult {
-                            tool_call_id: tc.tool_call_id.clone(),
-                            content: format!("{{\"status\":\"ok\",\"tool\":\"{}\"}}", tc.tool_name),
-                            is_error: false,
-                        });
-                    } else {
-                        // Without auto-approve, we cannot proceed in this
-                        // loop; the run would need to transition to
-                        // WaitingEffect and resume later. For the
-                        // orchestrator's Phase 1 implementation, treat
-                        // this as a completion point.
-                        self.run_manager.completing_run(run_id).await?;
-                        self.run_manager
-                            .complete_run(
-                                run_id,
-                                None,
-                                u64::from(total_usage.input_tokens),
-                                u64::from(total_usage.output_tokens),
-                            )
-                            .await?;
-                        return Ok(RunOutcome {
+                for (call_index, tool_call) in response.tool_calls.iter().enumerate() {
+                    let step_sequence = u32::try_from(call_index + 1).unwrap_or(u32::MAX);
+                    let effect_sequence =
+                        (u64::from(turn_count) << 32).saturating_add(u64::from(step_sequence));
+                    tool_result_content.push(
+                        self.execute_tool_call(
                             run_id,
-                            final_state: RunState::Completed,
-                            total_tokens: total_usage,
-                            turn_count,
-                            artifacts,
-                            duration: start.elapsed(),
-                        });
-                    }
+                            agent_spec,
+                            completed_turn.id,
+                            step_sequence,
+                            effect_sequence,
+                            tool_call,
+                            &advertised_tool_names,
+                        )
+                        .await?,
+                    );
                 }
 
                 if !tool_result_content.is_empty() {
@@ -998,6 +1017,305 @@ impl RunOrchestrator {
     // Private helpers
     // -----------------------------------------------------------------------
 
+    fn advertised_tools(&self, agent_spec: &AgentSpec) -> Vec<ToolDefinition> {
+        let Some(registry) = &self.tool_registry else {
+            return Vec::new();
+        };
+        let mut seen = HashSet::new();
+        agent_spec
+            .tools
+            .iter()
+            .filter(|name| seen.insert((*name).clone()))
+            .filter_map(|name| {
+                let handler = registry.get(name)?;
+                let spec = handler.spec();
+                (spec.name == *name && spec.required_grant.is_none()).then(|| ToolDefinition {
+                    name: spec.name,
+                    description: spec.description,
+                    input_schema_json: spec.input_schema.to_string(),
+                })
+            })
+            .collect()
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "tool dispatch keeps its ordered durable step/intent/claim/attempt/outcome sequence together"
+    )]
+    async fn execute_tool_call(
+        &self,
+        run_id: RunId,
+        agent_spec: &AgentSpec,
+        turn_id: polkagent_core::TurnId,
+        step_sequence: u32,
+        effect_sequence: u64,
+        tool_call: &ToolCall,
+        advertised_tool_names: &HashSet<String>,
+    ) -> Result<ContentBlock, RunError> {
+        let Some(registry) = &self.tool_registry else {
+            return Ok(Self::tool_error_block(
+                tool_call,
+                "registry_unavailable",
+                "no runtime tool registry is configured",
+            ));
+        };
+        if !agent_spec
+            .tools
+            .iter()
+            .any(|name| name == &tool_call.tool_name)
+        {
+            return Ok(Self::tool_error_block(
+                tool_call,
+                "not_allowlisted",
+                "the agent spec does not allow this tool",
+            ));
+        }
+        let Some(handler) = registry.get(&tool_call.tool_name) else {
+            return Ok(Self::tool_error_block(
+                tool_call,
+                "not_registered",
+                "the requested tool is not registered",
+            ));
+        };
+        let spec = handler.spec();
+        if spec.name != tool_call.tool_name {
+            return Ok(Self::tool_error_block(
+                tool_call,
+                "registry_mismatch",
+                "the registered handler definition changed after registration",
+            ));
+        }
+        if spec.required_grant.is_some() || !advertised_tool_names.contains(&tool_call.tool_name) {
+            return Ok(Self::tool_error_block(
+                tool_call,
+                "approval_required",
+                "grant-bearing tools are unavailable until durable approval resume is implemented",
+            ));
+        }
+        let input: serde_json::Value = match serde_json::from_str(&tool_call.arguments_json) {
+            Ok(input) => input,
+            Err(error) => {
+                return Ok(Self::tool_error_block(
+                    tool_call,
+                    "invalid_input",
+                    &format!("tool arguments are not valid JSON: {error}"),
+                ));
+            }
+        };
+
+        // The normalized step and its parent turn are durable before the
+        // effect intent can reference them. This keeps SQLite FK enforcement
+        // active and lets handlers audit the exact lineage before I/O.
+        let step_id = self
+            .run_manager
+            .start_step(run_id, turn_id, step_sequence, "tool_call")
+            .await?;
+        let effect_payload = serde_json::json!({
+            "tool_call_id": tool_call.tool_call_id,
+            "tool_name": tool_call.tool_name,
+            "arguments": input,
+        });
+        let payload_bytes = serde_json::to_vec(&effect_payload)?;
+        let idempotency_key = IdempotencyKey::generate(
+            run_id,
+            effect_sequence,
+            0,
+            EffectKind::ToolCall,
+            IdempotencyKey::hash_params(&payload_bytes),
+        );
+        let intent_id = self
+            .effect_pipeline
+            .propose(EffectIntentSpec {
+                run_id,
+                turn_id,
+                step_id,
+                kind: EffectKind::ToolCall,
+                sequence: effect_sequence,
+                idempotency_key: Some(idempotency_key),
+                payload: effect_payload,
+                retry_class: Some(RetryClass::CheckBeforeRetry),
+                priority: None,
+                max_attempts: Some(1),
+                action_card: None,
+            })
+            .await
+            .map_err(|error| RunError::Store(format!("failed to persist tool intent: {error}")))?;
+
+        let claim = self
+            .effect_pipeline
+            .claim_by_id(intent_id, EffectKind::ToolCall.default_lease_duration())
+            .await
+            .map_err(|error| RunError::Store(format!("failed to claim tool intent: {error}")))?;
+        let now = chrono::Utc::now();
+        let attempt = EffectAttempt {
+            id: EffectAttemptId::new(),
+            intent_id,
+            run_id,
+            attempt_number: 1,
+            idempotency_key,
+            worker_id: claim.worker_id,
+            lease_expires: claim.lease_expires,
+            retry_class: RetryClass::CheckBeforeRetry,
+            state: AttemptState::InProgress,
+            created_at: now,
+            claimed_at: now,
+            started_at: Some(now),
+            completed_at: None,
+        };
+        self.effect_pipeline
+            .record_attempt(intent_id, &attempt)
+            .await
+            .map_err(|error| RunError::Store(format!("failed to persist tool attempt: {error}")))?;
+        self.record_tool_event(
+            run_id,
+            turn_id,
+            step_id,
+            intent_id,
+            attempt.id,
+            EventKind::ToolCallStarted {
+                tool_name: tool_call.tool_name.clone(),
+            },
+        )
+        .await?;
+
+        let tool_context = ToolContext {
+            run_id,
+            agent_id: agent_spec.id,
+            step_id,
+            grants: Vec::new(),
+            security_config: None,
+        };
+        let execution = registry
+            .execute(&tool_call.tool_name, input, &tool_context)
+            .await;
+        let (content, is_error, outcome_result) = match execution {
+            Ok(result) => {
+                let content = serde_json::to_string(&result)?;
+                let data = serde_json::to_value(result)?;
+                (content, false, OutcomeResult::Success { data })
+            }
+            Err(error) => {
+                let content = Self::serialize_tool_error(&error);
+                let outcome = Self::tool_error_outcome(&error);
+                (content, true, outcome)
+            }
+        };
+        let outcome = EffectOutcome {
+            id: EffectOutcomeId::new(),
+            attempt_id: attempt.id,
+            intent_id,
+            run_id,
+            result: outcome_result,
+            observed_at: chrono::Utc::now(),
+            digest: [0; 32],
+        };
+        self.effect_pipeline
+            .record_outcome(intent_id, &outcome)
+            .await
+            .map_err(|error| RunError::Store(format!("failed to persist tool outcome: {error}")))?;
+        claim.complete();
+        self.run_manager
+            .complete_step(run_id, turn_id, step_id)
+            .await?;
+        self.record_tool_event(
+            run_id,
+            turn_id,
+            step_id,
+            intent_id,
+            attempt.id,
+            EventKind::ToolCallCompleted {
+                tool_name: tool_call.tool_name.clone(),
+            },
+        )
+        .await?;
+
+        Ok(ContentBlock::ToolResult {
+            tool_call_id: tool_call.tool_call_id.clone(),
+            content,
+            is_error,
+        })
+    }
+
+    async fn record_tool_event(
+        &self,
+        run_id: RunId,
+        turn_id: polkagent_core::TurnId,
+        step_id: StepId,
+        intent_id: polkagent_core::EffectId,
+        attempt_id: EffectAttemptId,
+        kind: EventKind,
+    ) -> Result<(), RunError> {
+        let mut event = RunEvent::new_ephemeral(EventId::new(), run_id, 0, kind);
+        event.correlation = EventCorrelation {
+            run_id,
+            turn_id: Some(turn_id),
+            step_id: Some(step_id),
+            effect_intent_id: Some(intent_id),
+            effect_attempt_id: Some(attempt_id),
+        };
+        self.event_recorder
+            .record(event)
+            .await
+            .map(|_| ())
+            .map_err(|error| RunError::Event(error.to_string()))
+    }
+
+    fn tool_error_block(tool_call: &ToolCall, error_type: &str, message: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_call_id: tool_call.tool_call_id.clone(),
+            content: serde_json::json!({
+                "error": {
+                    "type": error_type,
+                    "message": message,
+                }
+            })
+            .to_string(),
+            is_error: true,
+        }
+    }
+
+    fn serialize_tool_error(error: &ToolError) -> String {
+        let error_type = match error {
+            ToolError::PermissionDenied { .. } => "permission_denied",
+            ToolError::InvalidInput { .. } => "invalid_input",
+            ToolError::ExecutionFailed { .. } => "execution_failed",
+            ToolError::Timeout { .. } => "timeout",
+            ToolError::NotFound { .. } => "not_found",
+        };
+        serde_json::json!({
+            "error": {
+                "type": error_type,
+                "message": error.to_string(),
+            }
+        })
+        .to_string()
+    }
+
+    fn tool_error_outcome(error: &ToolError) -> OutcomeResult {
+        match error {
+            ToolError::Timeout { elapsed_ms } => OutcomeResult::Timeout {
+                waited_secs: elapsed_ms.saturating_add(999) / 1_000,
+                partial_work_possible: true,
+            },
+            ToolError::PermissionDenied { .. } => OutcomeResult::Failure {
+                error_class: ErrorClass::AuthorizationError,
+                message: error.to_string(),
+                retriable: false,
+            },
+            ToolError::InvalidInput { .. } | ToolError::NotFound { .. } => OutcomeResult::Failure {
+                error_class: ErrorClass::ClientError,
+                message: error.to_string(),
+                retriable: false,
+            },
+            ToolError::ExecutionFailed { .. } => OutcomeResult::Failure {
+                error_class: ErrorClass::ServerError,
+                message: error.to_string(),
+                retriable: false,
+            },
+        }
+    }
+
     /// Build the initial message list from the agent spec and user prompt.
     fn build_initial_messages(
         _agent_spec: &AgentSpec,
@@ -1030,6 +1348,21 @@ impl RunOrchestrator {
         let Some(context_assembler) = &self.context_assembler else {
             return messages.to_vec();
         };
+
+        // The legacy context assembler renders conversation blocks to text
+        // and cannot reconstruct provider tool-use/result boundaries. Once a
+        // tool block exists, preserve the typed transcript exactly instead of
+        // silently flattening the result before the next inference request.
+        if messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult { .. } | ContentBlock::ToolUse { .. }
+                )
+            })
+        }) {
+            return messages.to_vec();
+        }
 
         // Extract conversation messages as strings for the assembler.
         // Each message is rendered as "Role: content" for the assembler's
@@ -1967,19 +2300,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_call_creates_effect_intent() {
-        // With auto_approve_effects = false, the orchestrator should
-        // complete after encountering a tool call (Phase 1 behaviour).
-        let responses = vec![Ok(FakeExecutor::tool_call_response(
-            "I need to call a tool.",
-            vec![ToolCall {
-                tool_call_id: "tc-1".to_owned(),
-                tool_name: "file_read".to_owned(),
-                arguments_json: r#"{"path": "/tmp/test.txt"}"#.to_owned(),
-            }],
-            50,
-            20,
-        ))];
+    async fn unavailable_tool_does_not_fake_success_or_terminal_completion() {
+        let responses = vec![
+            Ok(FakeExecutor::tool_call_response(
+                "I need to call a tool.",
+                vec![ToolCall {
+                    tool_call_id: "tc-1".to_owned(),
+                    tool_name: "file_read".to_owned(),
+                    arguments_json: r#"{"path": "/tmp/test.txt"}"#.to_owned(),
+                }],
+                50,
+                20,
+            )),
+            Ok(FakeExecutor::text_response(
+                "The tool was unavailable.",
+                10,
+                5,
+            )),
+        ];
 
         let config = RunOrchestratorConfig {
             auto_approve_effects: false,
@@ -1999,9 +2337,10 @@ mod tests {
             .await
             .expect("execute_run");
 
-        // Without auto-approve, the run completes after the tool call.
+        // The unknown call is fed back as a typed error and the model gets a
+        // second turn; lack of approval support is not treated as success.
         assert_eq!(outcome.final_state, RunState::Completed);
-        assert_eq!(outcome.turn_count, 1);
+        assert_eq!(outcome.turn_count, 2);
     }
 
     #[tokio::test]

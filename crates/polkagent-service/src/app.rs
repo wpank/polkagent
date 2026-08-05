@@ -441,6 +441,15 @@ impl AppServiceBuilder {
 
         let run_manager = RunManager::new(Arc::clone(&run_store), event_recorder.clone());
 
+        if (self.executor.is_some() || self.harness.is_some())
+            && self.tool_registry.is_some()
+            && self.effect_store.is_none()
+        {
+            return Err(ServiceError::NotInitialized {
+                component: "effect_store (required for executable tool_registry)".into(),
+            });
+        }
+
         // Build orchestrator when executor OR harness is present.
         let orchestrator = if self.executor.is_some() || self.harness.is_some() {
             let exec: Arc<dyn ModelExecutor> = self.executor.clone().unwrap_or_else(|| {
@@ -473,6 +482,9 @@ impl AppServiceBuilder {
             );
             if let Some(ref harness) = self.harness {
                 orch = orch.with_harness(Arc::clone(harness));
+            }
+            if let Some(ref tool_registry) = self.tool_registry {
+                orch = orch.with_tool_registry(Arc::clone(tool_registry));
             }
             Some(Arc::new(orch))
         } else {

@@ -65,7 +65,43 @@ Provided by the `polkagent-tool-treasury` crate. All tools require the `chain.qu
 
 ## Tool Grants
 
-Tools declare the grants they require. The grant resolver checks agent permissions before allowing tool execution. An agent without the required grant cannot invoke the tool.
+Tools declare the grants they require. The intended approval lifecycle resolves those grants before allowing tool execution. An agent without the required grant cannot invoke the tool.
+
+### Current registered-tool execution boundary
+
+The in-process run orchestrator currently executes only the safety-bounded
+intersection of:
+
+1. exact names in `AgentSpec.tools`;
+2. handlers registered in the runtime `ToolRegistry`; and
+3. `ToolSpec` definitions whose `required_grant` is `None`.
+
+Only those exact registry definitions are advertised to the model. A service
+that combines an executable registry with a model executor must also configure
+a real `EffectStore`; composition fails instead of routing tool work through a
+no-op store.
+
+For each accepted call, the orchestrator durably persists the parent turn and
+a normalized `tool_call` step, then proposes and claims a `ToolCall` intent and
+records its attempt before invoking the handler. It records a success or error
+outcome before returning the exact serialized `ToolResult` (or a typed tool
+error) to the model. Correlated `ToolCallStarted` and `ToolCallCompleted` events
+carry the run, turn, step, intent, and attempt IDs.
+
+Unknown, unallowlisted, malformed, and grant-bearing calls do not invoke a
+handler. They are returned to the model as typed errors; they are never
+promoted to synthetic success. Grant-bearing tools are not advertised yet,
+because durable approval-to-resume wiring is not complete.
+
+Remaining execution gaps are explicit:
+
+- approval/grant decisions do not yet resume a suspended tool call;
+- crash recovery does not yet consume a recorded outcome back into a resumed
+  model turn;
+- a crash after handler I/O but before outcome persistence remains a
+  `CheckBeforeRetry` investigation/recovery case; and
+- tool calls run sequentially, and semantic input validation remains the
+  handler's responsibility after JSON parsing.
 
 Example: all governance and treasury tools require `chain.query`. An agent must have this grant in its permission set to use them.
 

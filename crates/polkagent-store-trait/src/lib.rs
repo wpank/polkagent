@@ -497,6 +497,34 @@ pub trait RunStore: Send + Sync + 'static {
         output_tokens: u32,
     ) -> Result<(), StoreError>;
 
+    /// Persist the start of a normalized step beneath an existing turn.
+    ///
+    /// Effect-producing callers must await this write before proposing an
+    /// effect intent whose `step_id` references the new row. The default is
+    /// deliberately fail-closed so adapters cannot claim durable effect
+    /// correlation without implementing step persistence.
+    async fn insert_step(
+        &self,
+        _step_id: StepId,
+        _turn_id: TurnId,
+        _sequence: u32,
+        _kind: &str,
+        _started_at: &str,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::InvalidTransition {
+            message: "normalized step persistence is unavailable for this store".to_owned(),
+        })
+    }
+
+    /// Mark an existing normalized step complete.
+    ///
+    /// The default fails closed for the same reason as [`RunStore::insert_step`].
+    async fn complete_step(&self, _step_id: StepId, _completed_at: &str) -> Result<(), StoreError> {
+        Err(StoreError::InvalidTransition {
+            message: "normalized step completion is unavailable for this store".to_owned(),
+        })
+    }
+
     /// List all turns for a run, ordered by sequence ascending.
     ///
     /// Returns an empty `Vec` if no turns have been recorded for the run.

@@ -259,6 +259,13 @@ pub struct TokenUsage {
 
 ## Full Lifecycle Walkthrough
 
+The sequence below is the target lifecycle for effect work that can suspend
+for approval or asynchronous workers. The current in-process registered-tool
+slice is narrower: it advertises and executes only exact agent-allowlisted,
+grantless registry tools while the run remains `Running`. Grant-bearing tools
+stay unadvertised until the `WaitingEffect`/approval resume path is implemented
+end to end. See [Tools and Skills](tools-and-skills.md#current-registered-tool-execution-boundary).
+
 ### Sequence Diagram
 
 ```mermaid
@@ -324,7 +331,7 @@ For each turn:
 - **PolicyEvaluation / ApprovalCheck steps:** The grant resolver evaluates whether the proposed action is permitted (see [Grant Resolution](#grant-resolution) below). If approval is required, `RequestApproval` drives the run to `AwaitingApproval`.
 - **ModelInference step:** The executor calls the provider API. This is an effect: an `EffectIntent` with `kind: ModelInference` is persisted before the call (INV-02). The run transitions to `WaitingEffect` until the inference result arrives.
 - **OutputParsing step:** The raw model response is parsed. Tool call requests are extracted.
-- **ToolInvocation step (optional):** For each tool call, an `EffectIntent` with `kind: ToolInvocation` is created. The run transitions to `WaitingEffect` until all tool intents resolve.
+- **ToolInvocation step (optional):** For each accepted grantless registered tool call, the current orchestrator persists a normalized step, a `ToolCall` intent, its claim and attempt, then a success/error outcome around registry dispatch. It feeds the exact typed result into the next model request without a synthetic completion. The target `WaitingEffect` transition and durable resume remain required for grant-bearing and asynchronously resumed tools.
 - **TurnCompleted event** is emitted; `turns_count` is incremented; `token_usage` is accumulated.
 
 **5. Completing (`Running -> Completing`)**

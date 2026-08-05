@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use polkagent_core::{
     event::{EventCorrelation, EventKind, RunEvent},
     turn::Turn,
-    AgentId, ConversationId, EventId, RunId, RunState,
+    AgentId, ConversationId, EventId, RunId, RunState, StepId, TurnId,
 };
 use polkagent_event::EventRecorder;
 use polkagent_store_trait::{RunStatus, RunStore};
@@ -547,6 +547,65 @@ impl RunManager {
         Ok(())
     }
 
+    /// Persist and publish the start of a normalized step beneath `turn_id`.
+    ///
+    /// The storage write completes before the `StepStarted` event is emitted.
+    /// Effect-producing callers must await this method before proposing an
+    /// intent that references the returned ID.
+    pub async fn start_step(
+        &self,
+        run_id: RunId,
+        turn_id: TurnId,
+        sequence: u32,
+        kind: &str,
+    ) -> Result<StepId, RunError> {
+        let step_id = StepId::new();
+        let started_at = chrono::Utc::now().to_rfc3339();
+        self.store
+            .insert_step(step_id, turn_id, sequence, kind, &started_at)
+            .await
+            .map_err(|error| RunError::Store(error.to_string()))?;
+
+        self.emit_correlated_event(
+            run_id,
+            EventKind::StepStarted { step_id },
+            EventCorrelation {
+                run_id,
+                turn_id: Some(turn_id),
+                step_id: Some(step_id),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(step_id)
+    }
+
+    /// Durably complete a normalized step and publish its correlated event.
+    pub async fn complete_step(
+        &self,
+        run_id: RunId,
+        turn_id: TurnId,
+        step_id: StepId,
+    ) -> Result<(), RunError> {
+        let completed_at = chrono::Utc::now().to_rfc3339();
+        self.store
+            .complete_step(step_id, &completed_at)
+            .await
+            .map_err(|error| RunError::Store(error.to_string()))?;
+
+        self.emit_correlated_event(
+            run_id,
+            EventKind::StepCompleted { step_id },
+            EventCorrelation {
+                run_id,
+                turn_id: Some(turn_id),
+                step_id: Some(step_id),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
@@ -586,6 +645,23 @@ impl RunManager {
 
     /// Build a minimal [`RunEvent`] and record it via the [`EventRecorder`].
     async fn emit_event(&self, run_id: RunId, kind: EventKind) -> Result<(), RunError> {
+        self.emit_correlated_event(
+            run_id,
+            kind,
+            EventCorrelation {
+                run_id,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn emit_correlated_event(
+        &self,
+        run_id: RunId,
+        kind: EventKind,
+        correlation: EventCorrelation,
+    ) -> Result<(), RunError> {
         let sequence = {
             let mut seqs = self
                 .sequences
@@ -596,10 +672,6 @@ impl RunManager {
             *entry
         };
 
-        let correlation = EventCorrelation {
-            run_id,
-            ..Default::default()
-        };
         let event = RunEvent::new_durable(EventId::new(), run_id, sequence, kind, correlation);
 
         self.events
@@ -639,6 +711,14 @@ fn parse_run_state(s: &str) -> Result<RunState, String> {
         "running" => Ok(RunState::Running),
         "completing" => Ok(RunState::Completing),
         "completed" => Ok(RunState::Completed),
+        // Older service startup recovery persisted the terminal tag without
+        // the reason-bearing suffix used by `RunState::Display`.
+        "failed" => Ok(RunState::Failed {
+            reason: "legacy persisted state did not include a reason".to_owned(),
+        }),
+        "cancelled" => Ok(RunState::Cancelled {
+            reason: "legacy persisted state did not include a reason".to_owned(),
+        }),
         "timed_out" => Ok(RunState::TimedOut),
         s if s.starts_with("awaiting_approval:") => {
             let request_id = s
@@ -1239,6 +1319,28 @@ mod tests {
                 reason: "user request".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn parse_legacy_terminal_states_without_reasons() {
+        let expected_reason = "legacy persisted state did not include a reason";
+        assert_eq!(
+            parse_run_state("failed").unwrap(),
+            RunState::Failed {
+                reason: expected_reason.to_owned()
+            }
+        );
+        assert_eq!(
+            parse_run_state("cancelled").unwrap(),
+            RunState::Cancelled {
+                reason: expected_reason.to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn reason_bearing_timed_out_state_is_not_part_of_the_persisted_grammar() {
+        assert!(parse_run_state("timed_out:provider timeout").is_err());
     }
 
     #[test]

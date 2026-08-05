@@ -184,6 +184,11 @@ impl EventRecorder {
     }
 
     async fn record_diagnostic(&self, event: &mut RunEvent) -> Result<(), EventError> {
+        // Diagnostic rows share the run_events(run_id, sequence) uniqueness
+        // domain with durable lifecycle rows. Assign the next sequence here
+        // just as we do for durable events; leaving caller-provided `0`
+        // causes the second diagnostic event for a run to collide in SQLite.
+        event.sequence = self.store.max_sequence(event.run_id).await? + 1;
         let payload = serde_json::to_value(&event.kind).map_err(EventError::Serialisation)?;
 
         let stored = StoredEvent {
@@ -343,6 +348,10 @@ mod tests {
             event: StoredEvent,
             _expires_at: String,
         ) -> Result<(), EventStoreError> {
+            self.sequences
+                .lock()
+                .expect("lock")
+                .insert(event.run_id.clone(), event.sequence);
             let mut diag = self.diagnostic.lock().expect("lock");
             diag.push(event);
             Ok(())
@@ -516,6 +525,40 @@ mod tests {
             .await
             .expect("read run events");
         assert!(events.is_empty(), "ephemeral events must not be stored");
+    }
+
+    #[tokio::test]
+    async fn diagnostic_events_share_the_monotonic_run_sequence() {
+        let store = Arc::new(InMemoryStore::default());
+        let store_dyn: Arc<dyn EventStore> = store.clone();
+        let recorder = EventRecorder::new(store_dyn, EventBus::new(16));
+        let run_id = RunId::new();
+
+        let started = recorder
+            .record(run_event(
+                run_id,
+                EventKind::ToolCallStarted {
+                    tool_name: "test.echo".to_owned(),
+                },
+            ))
+            .await
+            .expect("record started diagnostic");
+        let completed = recorder
+            .record(run_event(
+                run_id,
+                EventKind::ToolCallCompleted {
+                    tool_name: "test.echo".to_owned(),
+                },
+            ))
+            .await
+            .expect("record completed diagnostic");
+
+        assert_eq!(started.sequence, 1);
+        assert_eq!(completed.sequence, 2);
+        let diagnostic = store.diagnostic.lock().expect("diagnostic lock");
+        assert_eq!(diagnostic.len(), 2);
+        assert_eq!(diagnostic[0].sequence, 1);
+        assert_eq!(diagnostic[1].sequence, 2);
     }
 
     #[tokio::test]
