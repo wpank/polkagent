@@ -280,19 +280,13 @@ must be labeled live-process-only if shipped separately.
 ## 7. Parallel work packets
 
 ```text
-APR-00 contracts/ADR
-       |
-       +--> APR-01 store/coordinator --------+
-       +--> APR-02 policy/composition -------+--> APR-03 orchestrator/recovery
-       +--> APR-04 ACP protocol harness -----+              |
-                                                            +--> APR-05 interaction projection
-                                                                         |
-                                           +-----------------------------+------------------+
-                                           v                                                v
-                                      APR-06 chat/TUI                                APR-07 ACP integration
-                                           +-----------------------------+------------------+
-                                                                         v
-                                                               APR-08 cross-surface E2E
+APR-00 -> {APR-01 store/coordinator, APR-02 policy/composition,
+           APR-04 ACP protocol harness}
+{APR-01, APR-02} -> APR-03 orchestrator/recovery
+{APR-01, APR-03 event contract} -> APR-05 interaction projection
+APR-05 -> APR-06 chat/TUI
+{APR-03, APR-04, APR-05} -> APR-07 ACP integration
+{APR-03, APR-05, APR-06, APR-07} -> APR-08 cross-surface E2E
 ```
 
 | Packet | Exclusive ownership | Depends on | Exit artifact |

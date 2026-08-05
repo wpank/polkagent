@@ -1,8 +1,8 @@
 # PRD-00 — Master index and roadmap authority
 
 **Status:** active index
-**Audited:** 2026-08-05
-**Scope:** current `main` worktree after the 2026-08-05 implementation audit
+**Audited:** 2026-08-06
+**Scope:** current `main` worktree after the 2026-08-06 implementation audit
 
 ## Executive state
 
@@ -15,12 +15,13 @@ durable interaction/session/event service, and shared command handlers now
 exist. TUI, terminal chat, HTTP, and ACP now consume the interaction service;
 one exact restarted conversation is proven across all four surfaces, and a
 bounded grantless registered-tool loop now persists intent before real handler
-I/O. The dominant gaps are role-safe harness history, structured tool/approval
-projection, approval/policy/resume, and manual-editor evidence.
+I/O and projects one stable effect-backed tool identity through terminal/TUI/
+ACP. The dominant gaps are role-safe harness history, durable approval/policy/
+resume, raw tool-data redaction, and manual-editor evidence.
 
 The next milestone is therefore not “add more crates.” It is extending the
-grantless tool slice into durable approval/policy/recovery and structured
-surface events, followed by real-editor validation.
+grantless tool slice into the atomic approval coordinator/checkpoint design,
+permission surfaces, and recovery, followed by real-editor validation.
 
 Current execution truth lives in:
 
@@ -52,14 +53,14 @@ percentage.
 | [PRD-04a](PRD-04a-PROVIDER-HARNESS-EXPANSION.md) | Provider/harness expansion | Active component scope; prove each adapter through the shared runtime. |
 | [PRD-05](PRD-05-POLKADOT-INTEGRATIONS.md) | Polkadot read/write integrations | Active; live finality, signing, dry-run/XCM, and action E2E remain. |
 | [PRD-06](PRD-06-PCA-COMPATIBILITY.md) | PCA compatibility and transport | Active; durable encrypted TCP/control delivery is cross-process tested, but reference PCA framing, signed identity, attachments, and runtime composition remain. |
-| [PRD-07](PRD-07-IDENTITY-SECURITY.md) | Identity, grants, policy, secrets, signers | Active; production auth, secret custody, policy wiring, and tenant enforcement remain. |
+| [PRD-07](PRD-07-IDENTITY-SECURITY.md) | Identity, grants, policy, secrets, signers | Active; shared-key API auth is composed and deployment-tested, while TLS/key rotation, secret custody, policy wiring, principal authorization, and tenant enforcement remain. |
 | [PRD-08](PRD-08-PAYMENTS-AUTONOMY.md) | Payments, budgets, autonomy | Active; domain code is not a value-moving composed product. |
-| [PRD-09](PRD-09-MEMORY-GROUPS-EVALS.md) | Memory, groups, feeds, evals | Active; substantial libraries, little production orchestration wiring. |
-| [PRD-10](PRD-10-DATA-OBSERVABILITY.md) | Events, artifacts, telemetry, recovery | Active; production injection and stream gap/replay behavior remain. |
-| [PRD-11](PRD-11-DEPLOYMENT-CLOUD.md) | Deployment and cloud | Active; bounded single-instance container/config/shutdown/replacement persistence is proven, while durable API/run recovery and production operations remain. |
+| [PRD-09](PRD-09-MEMORY-GROUPS-EVALS.md) | Memory, groups, feeds, evals | Active; runtime-owned durable memory query/exact lookup is API-composed, while prompt-context, stats/deletion, groups, feeds, and eval orchestration remain. |
+| [PRD-10](PRD-10-DATA-OBSERVABILITY.md) | Events, artifacts, telemetry, recovery | Active; interaction replay/lag recovery and core artifact/event injection are proved, while product-wide transports, audit/telemetry, retention, and operator recovery remain. |
+| [PRD-11](PRD-11-DEPLOYMENT-CLOUD.md) | Deployment and cloud | Active; authenticated single-instance container/config/shutdown/replacement/cold-restore persistence is proven, while successful backend output and production operations remain. |
 | [PRD-12](PRD-12-MARKETPLACE-EXTENSIONS.md) | Extensions and marketplace | Active; durable local package lifecycle and operator CLI work, while activation, sandbox execution, cryptographic trust, and registry paths remain. |
-| [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; durable terminal chat and a restart-resumable TUI Console now provide bounded contextual model-executor follow-up, while harness context, approvals/orchestration, and studio/mobile surfaces remain. |
-| [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; shared-runtime durable interaction/core routes, checkpointed SSE, zero-drift ordinary HTTP parity, and an OpenAPI 3.1-valid nullability contract exist, while optional-route composition remains. |
+| [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; durable terminal chat and TUI Console provide contextual follow-up, persisted agent/model selection, safe tool status, and restart/cancel, while harness context, approvals/orchestration, and studio/mobile surfaces remain. |
+| [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; shared-runtime interaction/core/skill/memory reads, checkpointed SSE, zero-drift ordinary HTTP parity, and an OpenAPI 3.1 contract exist, while 11 optional routes remain. |
 | [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; broad component coverage, stable/Rust-1.89 checks, strict rustdoc, and mandatory/extended Clippy gates pass locally; production/live/client conformance remains incomplete. |
 
 ## Active delivery PRDs
@@ -68,6 +69,7 @@ percentage.
 |---|---|---|
 | [PRD-17](PRD-17-LOCAL-TESTNET-E2E.md) | Real local Polkadot network, signed actions, finality, and reproducible CI evidence | Runtime/action wiring, real signer, corrected live-test workflow |
 | [PRD-19](PRD-19-INTERACTIVE-CONSOLE-ACP.md) | Terminal chat, actionable TUI, shared commands, ACP server, Zed, and orchestration | Shared runtime and interaction contracts |
+| [Approval pause/resume design](APPROVAL-PAUSE-RESUME-DESIGN.md) | Atomic durable permission coordinator, checkpoint recovery, and cross-surface approval | Freeze APR-ADR-01 through APR-ADR-05 before parallel store/policy/orchestrator/surface work |
 
 PRD-19 supersedes the implementation role of archived PRD-18 while preserving
 its useful prompt/TUI requirements. PRD-16 and the diagnostic ledger were
@@ -87,8 +89,8 @@ shared production runtime (implemented; run/TUI/chat/ACP/serve migrated)
                     +--> terminal chat + durable/actionable TUI
                          (single-agent session/model/restart/cancel slices exist)
                     +--> complete rich ACP + Zed support
-                         (durable stdio new/load/resume slice exists;
-                          tools/permissions/list/import/manual Zed remain)
+                         (durable stdio new/load/resume/cwd/tool slice exists;
+                          permissions/list/import/manual Zed remain)
                     +--> durable API control plane
                          (interaction/core HTTP slice exists)
                     +--> group/feed orchestration

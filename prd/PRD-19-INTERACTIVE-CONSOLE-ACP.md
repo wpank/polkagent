@@ -5,6 +5,7 @@ durable interaction service, terminal chat, TUI Console, HTTP adapter, and ACP
 server slices implemented
 
 **Prepared:** 2026-08-05
+**Updated:** 2026-08-06
 
 **Scope:** current Polkagent checkout at `/Users/will/dev/par/polkagent`, compared with Roko at `/Users/will/dev/nunchi/roko/roko` and the current ACP v1/Zed documentation
 
@@ -23,14 +24,16 @@ follow-ups through `InteractionService`, typed output/progress/usage,
 cancellation, and transcript/history reload after restart. Its terminal
 lifecycle is proven in a real Unix PTY. `polkagent chat` now provides a focused
 interactive/non-TTY adapter with explicit resume, multiline input, shared
-help/status/cancel/new/resume handlers, checkpoint resubscribe, and SIGINT
-  cancellation. The TUI now executes the truthful help/status/new/resume/model subset
+help/status/agents/agent/cancel/new/resume/model handlers, checkpoint
+resubscribe, and SIGINT cancellation. The TUI now executes the truthful
+help/status/agents/agent/new/resume/model subset
 through the same registry and service executor, renders structured results, and
 switches/reloads exact durable conversations without creating model turns. ACP
 now maps its session ID exactly to the durable conversation UUID and uses the
-same prompt, cancel, config, replay, and restart lifecycle. Session list/import,
-structured tools/permissions, cwd provenance, and manual Zed validation remain
-open.
+same prompt, cancel, config, replay, and restart lifecycle. Effect-backed tool
+updates and immutable origin-cwd verification now cross restart. Session list/
+import, permissions, raw tool-data redaction, MCP passthrough, and manual Zed
+validation remain open.
 
 One deterministic SQLite conformance fixture now carries the same exact
 conversation through HTTP creation/config, terminal-chat prompting, ACP
@@ -38,8 +41,8 @@ restart/load/follow-up, TUI load/prompt/render, and final HTTP projection. The
 ordered transcript, turn/run links, persisted model, usage, lifecycle, and ACP
 checkpoint agree, while commands and refusal create no work. Active-turn
 cancel remains covered by separate adapter-specific durable tests so the
-linear three-turn fixture can continue; rich tool/approval projection remains
-open.
+linear three-turn fixture can continue; approval and rich plan/redaction-safe
+structured-tool projection remain open.
 
 FND-02 now includes shared IDs/config/requests/handles, structured events and
 projections, the service/store traits, a bounded durable/live replay hub, typed
@@ -54,7 +57,8 @@ prompt override, persisted interaction, then agent default; validation happens
 before activation and changes only the cloned prepared-run spec. TUI, terminal
 chat, HTTP, and ACP bind the service. Model-executor prompts include
 bounded typed prior completed turns; string-only harness history fails role-
-safely. Approval/tool projection and provider/harness/autonomy/max-turn/budget
+safely. Effect-backed tool lifecycle projection is implemented with stable IDs
+and safe status, while approval and provider/harness/autonomy/max-turn/budget
 overrides remain open, so the full headless exit criterion is not closed.
 
 **Supersedes:** the implementation role of archived PRD-18; unresolved work is
@@ -122,8 +126,8 @@ The delivered slices establish two distinct product surfaces that still need
 to be completed:
 
 1. The delivered terminal chat/TUI session must gain role-safe harness
-   follow-up, tools/approvals, broader command coverage, and multi-agent
-   orchestration.
+   follow-up, rich redaction-safe tool detail, approvals, broader command
+   coverage, and multi-agent orchestration.
 2. The ACP **agent server** (`polkagent acp`) must grow from its protocol MVP
    into full Zed and other ACP-client support.
 
@@ -148,15 +152,15 @@ It remains design input rather than the completion contract.
 | Prompt Polkagent interactively | Implemented for single-agent turns with per-conversation model selection | `polkagent chat` and the F9 Console call the durable interaction service; model executors receive bounded typed completed history, while harness follow-up fails explicitly |
 | Prompt from inside the TUI | Implemented for one run at a time | `p` selects an active agent and opens the Console composer |
 | Start or cancel a run from the TUI | Implemented for the bounded slice | `InteractionService::prompt` creates correlated conversation/turn/run state; `x` requests exact turn cancellation |
-| Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/new`, `/resume`, and `/model` use the shared command executor, render structured results, and never become model turns; unavailable capabilities fail explicitly |
-| Approve/deny in the TUI | Partial and unsafe architecturally | It writes outcome rows directly through `TuiDb`, bypassing `AppService` |
-| See live run output in the TUI | Implemented for typed single-agent events | Controller projects bounded interaction events and resubscribes from a durable checkpoint after lag; the runtime now produces a bounded real grantless tool lifecycle, but interaction tool/approval projection remains absent |
+| Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, and `/model` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns; unavailable capabilities fail explicitly |
+| Approve/deny in the TUI | Not safely implemented | Legacy Approvals-tab writes mutate display-state rows but cannot durably resolve and resume the exact paused effect; coordinator-backed interaction approval remains required |
+| See live run output in the TUI | Implemented for typed single-agent events | Controller projects bounded interaction events and resubscribes from a durable checkpoint after lag; the real grantless tool lifecycle appears with stable effect-derived IDs and safe status, while approval/rich plan projection remains absent |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
-| Use Polkagent *from* Zed | Protocol slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK and an executable client fixture; rich editor acceptance is still open |
+| Use Polkagent *from* Zed | Protocol/tool slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK, durable cwd isolation, native tool updates, and executable client fixtures; editor permission acceptance is still open |
 | ACP slash commands/config selectors | Durable shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/model`, and current-prompt `/cancel` plus aliases are registry-derived; native selectors write the same durable interaction config, while provider/autonomy settings remain unavailable |
-| REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, and checkpointed SSE use the exact runtime service; unsupported config tags fail without partial mutation or work creation, while 15 optional skill/memory/audit/registry routes remain unavailable |
+| REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, checkpointed SSE, immutable skill reads, and durable memory query/lookup use exact runtime-owned components; 11 optional mutation/stats/audit/registry routes remain unavailable |
 
 ## 1. What Polkagent actually has today
 
@@ -195,12 +199,13 @@ interaction; `s` lists and selects same-agent interactions through that service,
 typed events and conversation/turn/run IDs project without blocking the UI,
 and bounded transcript/composer history reloads after restart.
 
-The TUI is not completely read-only: approvals, denials, and memory deletion
-write directly through `TuiDb`. That is a problem rather than a pattern to
-extend. Approval should flow through `AppService::approve_effect` so policy,
-audit, notifications, and waiting tasks observe the same transition. Starting
-runs by inserting database rows would be even more dangerous and must not be
-done.
+The TUI is not completely read-only: legacy approvals, denials, and memory
+deletion write directly through `TuiDb`. Those approval writes are unsafe
+display-state mutations, not a usable permission workflow. Replace them only
+with coordinator-backed `InteractionService::approve`/`deny` after APR-01 and
+APR-05; the current `AppService` approval methods are bus-only and are not a
+durable permission boundary. Starting runs by inserting database rows would be
+even more dangerous and must not be done.
 
 ### 1.2 Input now has a bounded prompt mode
 
@@ -216,12 +221,13 @@ gaps are:
 - `/` in normal mode invokes search, while `/` typed in the Console composer
   opens the shared-registry picker;
 - Command mode handles only Escape;
-- registry-derived completion/help and the truthful help/status/new/resume/model
-  subset execute, but word navigation and broader command parity remain open;
+- registry-derived completion/help and the truthful help/status/agents/agent/
+  new/resume/model subset execute, but word navigation and broader command
+  parity remain open;
 - composer history and transcript reload durably, and `s` opens a bounded
   asynchronous same-agent session picker with stale-result guards;
-- target selection is the highlighted or first active agent, not a modal or
-  durable conversation configuration.
+- target selection can begin from the highlighted/first active agent and then
+  persist per conversation through `/agent`; create/edit still lacks a modal.
 
 This is enough to initiate useful work, but not yet an IDE-quality editor.
 
@@ -261,19 +267,23 @@ Gaps that matter to an IDE-quality session:
   absent.
 - `start_run` accepts only `(agent_id, prompt)` and does not accept a
   conversation/interaction ID or per-session execution overrides.
-- `RunProgressEvent::ToolUse` contains only tool name and status. ACP needs a
-  stable tool-call ID and benefits from title, kind, input, output, locations,
-  and raw-content/diff information.
-- The approval mapping currently manufactures a new `ApprovalId` instead of
-  carrying the underlying request/effect identity through the event model.
+- The legacy `RunProgressEvent::ToolUse` adapter still contains only tool name
+  and status. The interaction service no longer relies on it for ACP: it
+  projects stable effect-derived tool-call identity plus safe title/kind/status.
+  Raw input, output, locations, and diff content remain withheld pending a
+  redaction contract.
+- The legacy approval mapping still manufactures a new `ApprovalId` instead of
+  carrying the underlying request/effect identity. The interaction contract has
+  the right identity shape, but no durable coordinator currently produces it.
 - The runtime interaction service now maps run lifecycle/text into durable
   envelopes, accumulates assistant text, and commits transcript plus terminal
   state atomically. Completed-run restart recovery uses a durable output
   artifact when present and otherwise fails closed instead of fabricating an
   empty successful transcript. Model-executor calls receive typed bounded prior
   completed pairs; failed/cancelled/timed-out partial pairs are excluded and
-  harness history is refused rather than flattened. Structured tools/approvals
-  remain absent.
+  harness history is refused rather than flattened. Effect-backed tool status
+  is projected with stable IDs; approvals remain absent and raw tool data is
+  withheld pending redaction policy.
 
 ### 1.5 The HTTP server now shares the durable core runtime
 
@@ -283,8 +293,10 @@ event bus. Black-box restart tests create an agent/run over HTTP, preserve
 verified artifact content/classification/lineage, and reload them from the same
 database. Tool list/detail/grant routes project the exact runtime registry with
 deterministic ordering and truthful empty behavior when registration is
-disabled. Fifteen optional skill/memory/audit/registry routes publish and test
-an explicit 501 boundary rather than falling back to in-memory implementations.
+disabled. Immutable configured-skill reads and durable memory query/exact lookup
+use exact runtime-owned components. Eleven remaining mutation/stats/audit/
+registry routes publish and test an explicit 501 boundary rather than falling
+back to in-memory implementations.
 The exact runtime `InteractionService` also backs versioned create/list/load/
 archive/turn/prompt/cancel and strict target/model config routes. A finite JSON
 event route provides
@@ -435,8 +447,12 @@ configuration would look like:
 }
 ```
 
-The ACP `session/new` working directory is authoritative; Polkagent has no
-separate `--workdir` flag. Zed documents custom agents and
+The ACP `session/new` working directory becomes the immutable durable
+interaction origin; Polkagent has no separate `--workdir` flag. The path must
+be absolute, UTF-8, and lexically normalized without `.`/`..`. Every prompt,
+load, and resume compares the exact stored spelling before replay or work; no
+filesystem canonicalization or symlink resolution changes identity. Zed
+documents custom agents and
 ACP debugging at [External Agents](https://zed.dev/docs/ai/external-agents).
 Zed's `dev: open acp logs` command should be part of the validation checklist.
 
@@ -509,8 +525,11 @@ polkagent --config /path/to/polkagent.toml acp --agent editor-agent
 polkagent acp --agent editor-agent --provider anthropic --model <model> --timeout 300
 ```
 
-ACP uses the absolute working directory supplied by `session/new`; there is no
-`--workdir` flag. The global `--log-file` option enables ACP-specific bounded,
+ACP persists the validated absolute working directory supplied by `session/new`
+and requires the exact same origin on prompt/load/resume; there is no
+`--workdir` flag. Pre-v17 rows with unknown provenance remain generically
+readable/archivable but fail closed for editor attachment. The global
+`--log-file` option enables ACP-specific bounded,
 rotating JSONL diagnostics with redaction and restrictive/no-follow file
 handling; it deliberately excludes raw prompt and response bodies and never
 writes diagnostics to protocol stdout.
@@ -553,8 +572,9 @@ Rules:
 
 ### 5.2 Production runtime
 
-Extract the run command's bootstrap into a new runtime module/crate. Suggested
-shape:
+`RuntimeFactory` now lives in `polkagent-runtime`, and `run`, TUI, chat,
+`serve`, and ACP all consume a retained factory-built runtime. The reference
+shape below remains illustrative rather than an exact public API:
 
 ```rust
 pub struct PolkagentRuntime {
@@ -578,7 +598,7 @@ impl RuntimeFactory {
 }
 ```
 
-`RuntimeFactory` must consistently:
+The factory owns this composition boundary and must consistently:
 
 - discover/validate config;
 - open/migrate SQLite;
@@ -593,19 +613,21 @@ impl RuntimeFactory {
 - start timeout/background services;
 - expose readiness warnings without panicking.
 
-Migrate `run`, `tui`, `chat`, `serve`, and `acp` to this factory. Until that is
-done, parity claims across surfaces will be false.
+Those surface migrations are complete. Remaining composition gaps are signer/
+policy/approval, shutdown/background-worker ownership, optional API stores,
+execution-scoped interaction settings, and groups; parity claims for those
+capabilities remain intentionally withheld.
 
 ### 5.3 Interaction service
 
-Add a surface-neutral service. “Session” is overloaded by provider and harness
-sessions, so use `InteractionService` while mapping its durable identity to
-`ConversationId`.
+The surface-neutral `InteractionService` is implemented and maps its durable
+identity to `ConversationId`; “session” remains reserved for overloaded
+provider, harness, and editor meanings.
 
-The initial `polkagent-interaction` contract crate now defines this boundary,
-including an attached replay-aware event stream returned with a started turn.
-The code below remains illustrative; the durable implementation and runtime
-composition are subsequent FND-02/FND-01 work.
+The `polkagent-interaction` contract crate defines this boundary, including an
+attached replay-aware event stream returned with a started turn, and the
+runtime supplies its durable implementation. The code below remains
+illustrative of the implemented boundary plus future group/config extensions.
 
 ```rust
 pub enum InteractionTarget {
@@ -835,8 +857,9 @@ handler, but it must not share the same semantic action variants.
 
 ### 6.4 Approvals
 
-Replace direct `TuiDb::approve_effect`/`deny_effect` writes with runtime calls.
-An approval modal must show:
+After APR-01/APR-05, replace direct `TuiDb::approve_effect`/`deny_effect` writes
+with coordinator-backed `InteractionService` calls. Do not route the modal to
+the current bus-only `AppService` methods. An approval modal must show:
 
 - requesting agent/run/tool;
 - exact operation and target;
@@ -872,11 +895,11 @@ polling.
 - stdio transport startup with protocol-only stdout and stderr diagnostics.
 
 Durable `InteractionService` mapping, exact session IDs, prompt/cancel,
-load/resume, typed text/lifecycle/usage/checkpoint events, and persisted native
-active-agent/model options are implemented. Remaining work is session
-list/import, structured tool/plan/permission events, original-cwd persistence
-and comparison, MCP/client capabilities, provider/autonomy configuration, and
-manual Zed evidence. Opt-in protocol-safe file diagnostics are implemented. It
+load/resume, typed text/lifecycle/usage/checkpoint/tool events, immutable origin
+cwd comparison, and persisted native active-agent/model options are implemented.
+Remaining work is session list/import, permission/rich-plan events, raw tool-data
+redaction, MCP/client capabilities, provider/autonomy configuration, and manual
+Zed evidence. Opt-in protocol-safe file diagnostics are implemented. It
 may depend on `polkagent-service`, the interaction/command crate, and ACP SDK.
 Core/service crates must not depend on ACP types.
 
@@ -1026,7 +1049,9 @@ available for inspection.
   executable reuse/recovery evidence.
 - [x] Make `serve` use the strict production runtime and durable core stores;
   retain a machine-readable/tested 501 boundary for missing optional adapters.
-- [x] Define structured `InteractionEvent`, tool-call identity, and real approval identity.
+- [x] Define structured `InteractionEvent` and effect-backed tool identity.
+- [ ] Carry real durable approval/effect identity end to end through the
+  coordinator, checkpoint, service, and surfaces.
 - [x] Add runtime startup/readiness, recovery, rehydration, durability, and
   strict/simulated-policy integration tests.
 
@@ -1045,13 +1070,19 @@ available for inspection.
 - [x] Add bounded live subscription with durable replay and explicit
   lag/recovery checkpoints, including durable run-event backfill.
 - [x] Define the typed MVP command registry/parser and structured output contracts.
-- [x] Implement all MVP command handlers against shared service/runtime ports.
-- [ ] Wire the full handler set through terminal/TUI/API/ACP; ACP currently
-  executes a truthful durable help/status/agents/agent/model/cancel subset.
+- [x] Implement typed handler entry points for all 12 MVP commands;
+  unavailable capabilities fail explicitly until their service ports are
+  composed.
+- [ ] Wire the applicable handler set through terminal/TUI/ACP; HTTP exposes
+  typed resource operations over the same ports rather than slash-command
+  text. ACP currently executes a truthful durable help/status/agents/agent/
+  model/cancel subset.
 - [x] Add cancellation, caller-ID retry, transcript causality, lag/replay,
   multi-page, and restart/pre-activation crash service tests.
-- [ ] Carry real effect approval identity through service approve/deny and add
-  structured tool/approval restart tests.
+- [x] Carry real effect identity through structured tool start/update replay and
+  restart tests across terminal/TUI/ACP.
+- [ ] Carry durable approval identity through service approve/deny and add the
+  coordinator/checkpoint restart matrix.
 - [x] Assemble the newest 32 completed pairs among the latest 1,000 prior
   records as typed model-executor input, append the current user once, omit
   partial failed/cancelled/timed-out pairs, and reject string-only harness
@@ -1073,12 +1104,14 @@ a role-safe harness/session context contract.
   runtime and durable interaction service.
 - [x] Implement line-oriented multiline composition, durable transcript resume,
   typed streaming, checkpoint resubscribe, and Ctrl-C cancellation.
-- [x] Execute the truthful help/status/cancel/new/resume/model subset through shared
-  slash-command handlers.
+- [x] Execute the truthful help/status/agents/agent/cancel/new/resume/model
+  subset through shared slash-command handlers.
+- [x] Persist `/agent` per conversation with restart/next-run proof, active/
+  ambiguous/unknown refusal, and no AgentSpec/turn/run/event mutation.
 - [x] Add persisted execution-scoped `/model` selection with same-provider
   validation, restart/isolation proof, and no AgentSpec or transcript mutation.
-- [ ] Add richer interactive editing plus provider/agent selectors; unsupported
-  configuration currently fails explicitly.
+- [ ] Add richer interactive editing plus provider/harness/autonomy selectors;
+  unsupported configuration currently fails explicitly.
 - [x] Test non-TTY stdout/stderr behavior, restart resume, refusal, and SIGINT
   cancellation. The surface does not enter raw/alternate-screen mode.
 
@@ -1095,9 +1128,13 @@ a role-safe harness/session context contract.
   128-KiB whole-grapheme bounds, and scrolling viewport behavior.
 - [x] Add registry-derived slash-command discovery/help/completion with aliases,
   input hints, selection, and acceptance.
-- [x] Execute `/help`, `/status`, `/new`, and `/resume` through the shared
+- [x] Execute `/help`, `/status`, `/agents`, `/agent`, `/new`, and `/resume` through the shared
   command executor with structured pending/completed/failed output, stale-result
   guards, exact conversation switching, and no accidental model turn.
+- [x] Persist exact active-agent selection per conversation in chat and Console;
+  reject unknown/inactive/ambiguous/active-work/stale changes, preserve transcript
+  and model, survive restart, route the next run to the selected target, and
+  create no turn/run/event or AgentSpec mutation.
 - [x] Execute `/model [id]` through the same durable service path, render the
   current selection in status/header, and prove conversation isolation,
   restart, typed refusal, and stale-result guards without creating a turn.
@@ -1110,10 +1147,13 @@ a role-safe harness/session context contract.
   Console-owned run.
 - [x] Recover interaction text/lifecycle/usage after lag and reload transcript
   after restart.
-- [ ] Render real structured tools/plans/approvals once the runtime produces
-  them with durable underlying identities.
+- [x] Render the real effect-backed tool lifecycle with one durable effect-
+  derived identity and safe status through lag/restart. Raw arguments/output are
+  withheld pending one redaction/classification contract.
+- [ ] Render rich plans and durable approvals once the runtime produces them.
 - [ ] Replace direct approval/denial database writes.
-- [ ] Add create/select agent modal; defer full agent-spec editor.
+- [ ] Add create-agent modal; durable list/select is available through
+  `/agents` and `/agent`, while full agent-spec editing is deferred.
 - [x] Add reducer, key mapping, TestBackend rendering, and durable fake-run
   bootstrap tests.
 - [x] Add real Unix PTY proof for terminal restoration after normal exit,
@@ -1136,15 +1176,21 @@ work, approve/deny, cancel, and prompt again without leaving.
   pinned stable ACP v1 SDK exposes neither import nor Polkagent session list.
 - [x] Map shared text/lifecycle/usage/checkpoint `InteractionEvent` envelopes
   to ACP session updates with lag replay and exact terminal reconciliation.
-- [ ] Map structured tool/approval/plan events once the runtime produces them
-  with stable effect identities.
+- [x] Map effect-backed tool start/update events with stable effect-derived IDs
+  to native ACP tool messages, including lag/restart replay and safe terminal
+  status mapping.
+- [ ] Map durable approval and rich plan events once the runtime produces them.
 - [x] Advertise the initial MVP slash commands.
 - [x] Move discovery/parsing/help/aliases onto the shared registry and execute
   the truthful durable subset, including current-prompt cancellation.
 - [x] Expose native active-agent/model config options and route `/agent` and
   `/model` through the same persisted interaction configuration.
-- [ ] Expose target/autonomy/provider options only after execution-scoped
-  semantics can be guaranteed.
+- [x] Persist and compare immutable lexical origin cwd before prompt/load/resume;
+  reject cross-workspace/relative/traversal/legacy-unknown attachment before
+  events, turns, or runs.
+- [ ] Expose group/auto targets plus autonomy/provider/harness options only
+  after execution-scoped semantics can be guaranteed. Active-agent target
+  selection is already persisted and advertised.
 - [ ] Implement tool permission round-trip.
 - [x] Write the Zed custom-agent setup guide.
 - [x] Add an official-SDK subprocess protocol fixture.
@@ -1221,7 +1267,8 @@ Zed, not merely a single-agent chat wrapper.
 - Cancel terminates linked runs and returns a correct stop reason. The bounded
   official-client fixture proves this for one active run and its durable
   terminal state; propagation across future grouped runs remains open.
-- List/load survive server restart and work with Zed thread import.
+- Load/resume survive server restart. List/import remains unsupported until the
+  pinned SDK/surface exposes it and then requires Zed proof.
 - Dynamic command and config-option updates conform to ACP schema.
 - Unknown session, busy session, invalid config, and provider failure are distinct.
 - Zed manual smoke: add custom agent, prompt, tool call, approve, cancel, resume,
@@ -1244,8 +1291,8 @@ Zed, not merely a single-agent chat wrapper.
   production factory; TUI/chat/HTTP/ACP consume the headless interaction
   service. A bounded grantless registered-tool/effect loop is composed;
   approval/policy/resume and crash recovery remain incomplete.
-- **Event loss:** TUI/chat/HTTP/ACP use durable interaction replay; structured
-  tool/approval interaction projection remains incomplete.
+- **Event loss:** TUI/chat/HTTP/ACP use durable interaction replay and stable
+  effect-backed tool projection; approval/plan projection remains incomplete.
 - **Protocol drift:** ACP v2 is draft. Pin the official SDK, test v1, and isolate
   conversions in the adapter.
 - **SQLite concurrency:** Zed may spawn processes while TUI/API is open. Enable
@@ -1273,14 +1320,14 @@ Zed, not merely a single-agent chat wrapper.
 | Area | Suggested change |
 |---|---|
 | Workspace | `polkagent-surface-acp`, `polkagent-interaction`, and `polkagent-runtime` now exist; converge every executable surface on them |
-| `polkagent-service` | Accept linked run requests; expose all UI mutations; integrate group service |
-| `polkagent-run` | Enrich progress/tool/approval identity; add interaction correlation |
+| `polkagent-service` | Replace bus-only approval with coordinator-backed interaction mutations; integrate group service |
+| `polkagent-run` | Add approval checkpoint/CAS pause-resume without regressing effect-backed tool identity and interaction correlation |
 | `polkagent-conversation` | Treat as durable transcript store under interaction service |
-| `polkagent-store-sqlite` | Session/turn/run-link/event persistence exists; connect it through the full interaction service and transcript transaction order |
+| `polkagent-store-sqlite` | Session/turn/run-link/event persistence is composed; add the approval coordinator/checkpoint migration and atomic store operations |
 | `polkagent-cli/src/main.rs` | Early ACP dispatch, one-shot/TUI/chat/ACP/serve runtime convergence, and ACP-safe bounded diagnostics exist |
-| `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation model selection exists; add richer editing/config only after execution semantics are truthful |
-| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/model selection plus shared command execution exists; add async input, structured tool/approval projection, and orchestration |
-| `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime exists; add truthful adapters for the published optional-route 501 boundary |
+| `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation agent/model selection exists; add richer editing/config only after execution semantics are truthful |
+| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection plus shared command execution and safe tool status exists; add async input, approvals/rich plans, and orchestration |
+| `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime plus skill/memory reads exists; compose the remaining published 11-route optional boundary one truthful family at a time |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
 | Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; attach manual Zed and active-turn permission/cancel evidence |
 
@@ -1338,7 +1385,8 @@ The terminal, TUI, HTTP, and ACP slices are shipped and intentionally bounded.
 `RuntimeFactory` plus the single-agent, model-selectable durable interaction/
 store/event/command service now exist. One-shot run, TUI, chat, ACP, and `serve`
 share that runtime; TUI/chat/HTTP/ACP share the durable interaction lifecycle.
-Next project the real tool lifecycle into interactions, connect permissions and
-approvals with crash-safe resume, complete manual Zed evidence, define role-safe
-harness history, and expand truthful command coverage before multi-agent
-orchestration.
+Next implement the durable approval coordinator/checkpoint packet in
+[`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md), connect
+permissions with crash-safe resume, complete manual Zed evidence, define
+role-safe harness history, and expand truthful command coverage before
+multi-agent orchestration.

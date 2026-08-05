@@ -1,6 +1,6 @@
 # Polkagent evidence and decision backlog
 
-**Updated:** 2026-08-05
+**Updated:** 2026-08-06
 
 This queue holds product, safety, interoperability, and operational evidence
 that cannot be closed by adding types or unit tests. It consolidates the still
@@ -19,10 +19,10 @@ reports.
 | EVD-08 | Run container/deployment smoke with persistent data, health, shutdown, restart, backup/restore, upgrade/rollback, auth, and resource pressure. | OPS-01 | CI artifact, runbook, recovery timings, known limits |
 | EVD-09 | Attempt extension escape/capability abuse, malicious package/update, dependency confusion, and rollback. | EXT-01 | Red-team corpus, sandbox/trust results, signed package provenance |
 | EVD-10 | Prove tenant/principal isolation through API, stores, events, memory, artifacts, groups, payments, logs, and metrics. | SEC-01, OPS-01 | Cross-tenant matrix with deny/audit evidence |
-| EVD-11 (captured 2026-08-05) | Compare TUI, terminal chat, API, and ACP views of the same restarted interaction, including a refusal critical path. | — | [`cross_surface_interaction_e2e.rs`](../crates/polkagent-cli/tests/cross_surface_interaction_e2e.rs) using one exact conversation and stable turn/run/event IDs |
+| EVD-11 (closed 2026-08-05) | Compare TUI, terminal chat, API, and ACP views of the same restarted interaction, including a refusal critical path. | — | [`cross_surface_interaction_e2e.rs`](../crates/polkagent-cli/tests/cross_surface_interaction_e2e.rs) using one exact conversation and stable turn/run/event IDs |
 | EVD-12 | Validate real provider/harness readiness, streaming, tool protocol, cancellation, retry, billing/usage, context limits, and redaction. | PRD-04a maturity claims | Per-adapter conformance report; unsupported features explicitly labeled |
 
-## Partial evidence captured
+## Captured evidence and remaining gaps
 
 - **FND-02 / durable headless interaction slice (2026-08-05):** runtime tests
   prove the user transcript, caller turn identity, conversation-correlated run,
@@ -50,7 +50,7 @@ reports.
   deny return typed errors.
   This is strong headless evidence. The successful/restarted EVD-11 path now
   has one cross-surface fixture; FND-02 remains open for real effect approvals,
-  structured tool projection, and a role-safe harness contract.
+  raw tool-data redaction, and a role-safe harness contract.
 
 - **EXE-01 / grantless registered-tool slice (2026-08-05):** a SQLite-backed
   `AppService` fixture runs a real registered handler selected only from the
@@ -64,6 +64,18 @@ reports.
   approval pause/resume, crash boundaries, cancellation during handler I/O,
   unknown-outcome reconciliation, duplicate retry, worker drain, and an
   external side effect remain unproved.
+
+- **FND-02 / effect-backed tool projection slice (2026-08-05):** live and
+  restarted interaction replay re-read the exact persisted intent/attempt/
+  outcome and emit deterministic tool-started/updated envelopes. `ToolCallId`
+  is the exact effect ID; SQLite v16 preserves attempt/run outcome lineage and
+  the forward migration hardens it against tampering. Terminal chat and the
+  TUI render the safe stable ID/status. The official ACP v1 adapter emits native
+  `tool_call`/`tool_call_update` messages with that same ID across lag and
+  restart; unsupported cancelled/unknown ACP statuses map to failed with safe
+  detail. Arguments and raw output are deliberately absent because no common
+  classification/redaction contract exists. This proves projection, not
+  approval, permission, or external-tool safety.
 
 - **EVD-07 / ACP client-protocol slices (2026-08-05):** the official ACP Rust
   client launches `polkagent acp` as a subprocess and proves initialization,
@@ -88,12 +100,17 @@ reports.
   retains that session's selection; unsupported values/settings are rejected. A
   delayed-provider fixture proves a real runtime text update, then truthful
   7+3/200k usage, then the ACP terminal response with exact non-duplicated text
-  and JSON-only stdout. This is runtime-event progress, not evidence of
-  provider HTTP/SSE token streaming.
-  EVD-07 remains open for a real Zed run, session list/import, structured
-  tools and permission round-trips, provider/autonomy options, MCP passthrough,
-  original-cwd provenance checks, editor-side ACP log inspection, and provider
-  HTTP/SSE token-level streaming.
+  and JSON-only stdout. Native effect-backed tool-call/update messages carry
+  the stable effect ID through restart. A separate multi-process fixture proves
+  one immutable SQLite-v17 lexical origin cwd: exact load succeeds after
+  restart, cross-workspace/relative/traversal and legacy-unknown origins fail
+  before adding an event, turn, or run, and generic legacy rows remain readable/
+  archivable. This is runtime-event progress, not provider HTTP/SSE token
+  streaming or a real editor run.
+  EVD-07 remains open for a real Zed run, session list/import, permission
+  round-trips, raw tool-data redaction, provider/autonomy options, MCP
+  passthrough, editor-side ACP log inspection, and provider HTTP/SSE token-level
+  streaming.
 
 - **EVD-11 / terminal interaction slices (2026-08-05):** the TUI lifecycle test
   runs the real integration binary inside a Unix PTY and proves ordered
@@ -104,8 +121,8 @@ reports.
   combining-mark, CJK, multiline slash-prefixed paste, control normalization,
   and 128-KiB whole-grapheme bounds without accidental submit. A focused real-
   runtime test proves the Console creates one durable interaction, completes
-  two prompts, reloads exact
-  transcript/correlation after restart, completes another prompt, cancels an
+  two prompts, reloads exact transcript/correlation after restart, completes
+  another prompt, cancels an
   immediate turn durably, bounds UTF-8 output, and ignores stale history loads.
   A restart fixture creates two same-agent sessions plus a foreign-agent
   session, opens the `s` selector, excludes the foreign session, loads the exact
@@ -118,6 +135,13 @@ reports.
   selected model in the TUI header/status, and reject unknown, cross-provider,
   and unsupported harness changes. They also prove commands create no turns
   and never mutate the shared AgentSpec.
+  Chat and TUI `/agents`/`/agent` fixtures use a read-only active-agent
+  projection from the retained runtime's already-open SQLite pool and the
+  durable target-config service path. They reject unknown, inactive, ambiguous,
+  active-work, and stale-result changes; preserve conversation/transcript/model;
+  create zero turns/runs/events; leave AgentSpec JSON unchanged; survive process
+  restart; and route the next real run to the persisted target without claiming
+  unproved per-agent readiness.
   A single deterministic SQLite fixture now creates and configures one exact
   conversation through the in-process HTTP router, prompts it through a real
   `polkagent chat --resume` subprocess, restarts and loads it through an
@@ -139,8 +163,13 @@ reports.
   live runtime bus are injected. Artifact content, classification, and lineage
   survive restart with integrity verification, auth, and read-only coverage;
   the runtime's exact tool registry is exposed with deterministic schema/grant/
-  classification reads plus auth/read-only/disabled-registry coverage. A
-  machine-readable list proves 15 optional routes remain explicit 501s. The
+  classification reads plus auth/read-only/disabled-registry coverage. The
+  runtime's immutable configured-skill snapshot is exposed with deterministic
+  restart/disabled/unknown/mutation-boundary evidence. Typed memory query and
+  non-mutating exact lookup retain the exact `AppService`-owned SQLite store,
+  survive restart, preserve access counters/timestamps, and cover disabled,
+  unknown, invalid, auth, and read-only behavior. A machine-readable list proves
+  11 optional routes remain explicit 501s. The
   API now injects the exact runtime `InteractionService` and exposes durable
   create/list/load/archive, turns, prompt, cancel, target/model config, and
   finite event-replay routes. Black-box fixtures prove user/assistant
@@ -156,8 +185,9 @@ reports.
   delivered exactly once, filtered hidden events advance the cursor, early
   drop does not load the remaining backlog, and backend retry is exact. This is
   durable control-plane evidence, not full EVD-08: worker/effect drain,
-  container-level interaction recovery, and optional-route composition remain
-  open. A Syn-based parity test derives the actual registered method/path set
+  successful backend output, and the remaining optional-route composition stay
+  open; container replacement and cold restore are covered below. A Syn-based
+  parity test derives the actual registered method/path set
   from the router AST, normalizes path parameters, and proves zero missing or
   stale ordinary HTTP operations, unique operation IDs, valid local refs, and
   byte-equivalent `/openapi.json`. Exactly two WebSocket transports remain on a
@@ -169,8 +199,9 @@ reports.
   extra fields with no partial mutation or turn/run creation.
   All 51 legacy OpenAPI `nullable` uses were converted to 3.1 primitive unions
   or explicit `$ref`/null `anyOf` composition. A recursive contract test guards
-  the dialect and representative semantics; Redocly 2 moved from 51 errors and
-  22 warnings to zero errors and the same 22 style warnings.
+  the dialect and representative semantics. Redocly 2 now has zero active
+  warnings/errors; five exact public-operational rule pointers are deliberately
+  ignored.
 
 - **OBS-01 / event-ID lookup slice (2026-08-05):** store-trait, SQLite,
   conformance, and API tests find a target after 10,001 earlier events. The
@@ -183,8 +214,12 @@ reports.
 - **EVD-08 / OPS-01 container lifecycle slices (2026-08-05):**
   `scripts/container-smoke.sh`, invoked by the `container-smoke` CI job,
   validates the Compose model, builds the canonical image with `Cargo.lock`,
-  waits for Docker readiness, probes live/ready/startup through the published
-  port, and verifies a configured non-root user and process UID. It also proves
+  waits for Docker readiness, and verifies a configured non-root user and
+  process UID. Auth is enabled with one deterministic test-only key hash and
+  rate limiting disabled. Initial, replacement, and restored instances each
+  prove five public OpenAPI/health/PCA-health paths without credentials, exact
+  missing/invalid 401 bodies for four protected system/metrics/PCA/agent paths,
+  and valid-key success on all four. It also proves
   that a read-only bind-mounted config reaches `serve`, SIGTERM drains the HTTP
   server with exit 0, and a newly created container retains the same named
   volume. Through real HTTP routes it creates an agent, targeted durable
@@ -197,20 +232,26 @@ reports.
   whole SQLite volume read-only under the runtime's non-root UID/GID, preserves
   any WAL/SHM sidecars, verifies SHA-256 plus SQLite integrity/foreign keys, and
   restores into a fresh Compose project and named volume. The normal service
-  must return the exact pre-backup API projections. CI uploads a summary,
-  verified backup/manifest, HTTP JSON, selected state, and container logs on
-  success or failure. EVD-08 remains open for successful production-backend
-  output, worker/run/effect draining, online/encrypted/export or PostgreSQL
-  backup, retention/RPO automation, upgrade/rollback, auth, tenant isolation,
-  crash boundaries, and resource-pressure evidence.
-  The 2026-08-05 local Colima run captured a 1,914,880-byte archive whose
-  manifest contained `polkagent.db`, `polkagent.db-wal`, and
-  `polkagent.db-shm`; SHA-256 was
-  `eaf56ed9ee4c9d70aa7a57be96ec67801186368b68842f9808d144a948ff27d3`.
-  Capture rounded to 0 seconds, restore-through-API took 6 seconds, the backup
-  slice took 7 seconds, and the full locked build/smoke took 178 seconds. That
-  local image build included unrelated concurrent worktree changes; the
-  committed clean CI rerun remains the authoritative hosted artifact.
+  must return the exact pre-backup API projections. Plaintext valid and invalid
+  test credentials are scanned across response JSON, metrics/headers, logs,
+  backup/summary, and uploaded artifacts; secret-bearing diagnostics are
+  withheld. CI uploads a summary, verified backup/manifest, HTTP JSON, selected
+  state, and container logs on success or failure. EVD-08 remains open for
+  successful production-backend output, worker/run/effect draining, online/
+  encrypted/export or PostgreSQL backup, retention/RPO automation,
+  upgrade/rollback, TLS/key rotation/
+  revocation, multi-principal authorization, tenant isolation, crash boundaries,
+  and resource-pressure evidence.
+  The authoritative clean detached-worktree Colima run at exact commit
+  `e8adad340a6cbd1106a51f5961ee7f15cb6ee4ea` captured a 1,945,600-byte
+  archive with SHA-256
+  `0010aae43371990ccab19a419bb731d035db41926ef786fe953aa5f65edb8d1d` and
+  SQLite integrity `ok`. Capture rounded to 0 seconds, restore-through-API took
+  7 seconds, and cached full smoke took 23 seconds. Across initial, replacement,
+  and restored phases it recorded 15 public successes, 24 exact unauthorized
+  responses, and 12 valid-key protected successes; built-in and independent
+  plaintext credential scans passed. Reproducible CI artifact capture remains
+  external evidence.
 
 ## Evidence quality rules
 

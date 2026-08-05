@@ -2,7 +2,7 @@
 
 **Status:** active — infrastructure baseline implemented; scenario suite incomplete
 **Owner:** unassigned
-**Last updated:** 2026-08-05
+**Last updated:** 2026-08-06
 **Audience:** engineers, QA, operators, and AI coding agents (Claude Code, etc.)
 who need to run, test, debug, and diagnose polkagent against production-realistic
 local Polkadot networks
@@ -11,8 +11,13 @@ local Polkadot networks
 
 ## Implementation status tracker
 
-> **Last audited:** 2026-08-05. This table tracks what is implemented in the
+> **Last audited:** 2026-08-06. This table tracks what is implemented in the
 > codebase vs. what exists only in this PRD specification.
+>
+> **Navigation authority:** F9 is the implemented interactive Console. Do not
+> replace it with the historical Testnet-tab concept below. Live-chain work is
+> assigned through CHAIN-01; any Testnet TUI destination needs a new explicit
+> UX/navigation decision.
 
 ### Legend
 
@@ -33,7 +38,7 @@ local Polkadot networks
 | 2.3 | Visual balance table | **SPEC ONLY** | Nothing | `testnet balances` command |
 | 2.4 | Visual query output | **SPEC ONLY** | Nothing | `testnet query` command family |
 | 2.5 | Visual exec output | **SPEC ONLY** | Nothing | `testnet exec` command family |
-| 2.6 | TUI F9 Testnet tab | **SPEC ONLY** | 8 tabs exist (F1-F8 in `app.rs`) | New `Tab::Testnet` variant + view |
+| 2.6 | Testnet TUI destination | **SPEC ONLY** | F9 is the implemented Console | Choose non-conflicting navigation before adding a Testnet view |
 | 2.7 | Demo scenarios | **SPEC ONLY** | Nothing | `testnet demo` command + 8 scenario implementations |
 | 2.8 | Alias commands | **SPEC ONLY** | Nothing | Short aliases for common operations |
 | 2.9 | Design principles | **N/A** | Design guidance, not code | — |
@@ -46,7 +51,7 @@ local Polkadot networks
 | 2.10.7 | Full-screen cinematic layout | **SPEC ONLY** | Nothing | Composed layout of all widgets |
 | 2.10.8 | Responsive breakpoints | **PARTIAL** | `dashboard.rs` has 3 breakpoints (Compact/Standard/Wide) | Testnet view needs its own breakpoint layouts |
 | 2.10.9 | Color semantics | **PARTIAL** | ROSEDUST palette fully defined in `theme.rs` | Testnet-specific semantic mapping not applied |
-| 2.10.10 | Agent JSON compatibility | **PARTIAL** | `output.rs` has `format_output()` + `OutputFormat` enum, `format` used in `finish_command()` for success/error envelopes | Individual command handlers use per-command `--json` flags instead of global `--format`; 37 commands have their own `pub json: bool` |
+| 2.10.10 | Agent JSON compatibility | **PARTIAL** | `output.rs` has `format_output()` + `OutputFormat` enum, `format` used in `finish_command()` for success/error envelopes | Many command structs retain per-command `--json` flags instead of global `--format` |
 | 2.11 | `testnet watch` live mode | **SPEC ONLY** | Nothing | Standalone ratatui app for testnet monitoring |
 | 3 | Local testnet architecture | **PARTIAL** | Native-provider Zombienet fixture with a two-validator relay and Asset Hub | Full five-chain topology, lifecycle manager, port allocation |
 | 3.1 | Tooling selection | **PARTIAL** | Pinned Zombienet CLI is provisioned for CI and local use | `zombienet-sdk` programmatic lifecycle integration |
@@ -65,9 +70,9 @@ local Polkadot networks
 | 9 | Monitoring & observability | **SPEC ONLY** | Nothing | Prometheus scraping, log capture, Grafana |
 | 10 | CI/CD integration | **PARTIAL** | Pinned binary provisioning, Zombienet spawn, JSON-RPC readiness, live smoke gate, teardown, and log artifacts | Full scenario reports, retries, state snapshots, and flake tracking |
 | 11.1 | ChainClient trait exercised | **PARTIAL** | Live smoke test exercises the production HTTP RPC transport, metadata, headers, and finality | Full `ChainClient` trait and signed transaction lifecycle against live nodes |
-| 11.4 | `polkagent-signer-dev` | **SPEC ONLY** | `polkagent-signer-fake` (417 lines) exists | Real sr25519 dev signer crate not created |
+| 11.4 | `polkagent-signer-dev` | **SPEC ONLY** | `polkagent-signer-fake` exists | Real sr25519 dev signer crate not created |
 | 11.5 | Explain-before-sign E2E | **PARTIAL** | `explain_and_sign_e2e.rs` tests pipeline with fakes | Not tested against real chain |
-| 12 | Phased delivery | **SPEC ONLY** | Nothing | All 5 phases unstarted |
+| 12 | Phased delivery | **PARTIAL** | Pinned read-only relay/Asset Hub fixture, CI provisioning, RPC/finality smoke, teardown, and artifacts | Signed scenarios, full topology, testnet CLI/TUI UX, and production-grade evidence remain |
 
 ### Crate and dependency status
 
@@ -81,8 +86,8 @@ local Polkadot networks
 | `ascii-petgraph` 0.2.0 | **NOT IN Cargo.toml** | Optional: force-directed graph layout for topology |
 | `ratatui-flow` 0.1.1 | **NOT IN Cargo.toml** | Optional: DAG layout for pipeline views |
 | `polkagent-chain-subxt` | **EXISTS, PARTIAL** | HTTP JSON-RPC client is live-tested; advanced operations such as dry-run/XCM remain unsupported |
-| `polkagent-chain-fake` | **EXISTS (1,440 lines)** | In-memory deterministic chain for unit/integration tests |
-| `polkagent-signer-fake` | **EXISTS (417 lines)** | Deterministic fake signer for testing |
+| `polkagent-chain-fake` | **EXISTS** | In-memory deterministic chain for unit/integration tests |
+| `polkagent-signer-fake` | **EXISTS** | Deterministic fake signer for testing |
 | `polkagent-integration-tests` | **EXISTS (36 test files)** | All use fakes — none hit real chains |
 | `output.rs` (`format_output`) | **EXISTS, PARTIALLY WIRED** | Used in `finish_command()` for envelopes; individual commands use `--json` flags instead of global `--format` |
 | `theme.rs` (ROSEDUST palette) | **EXISTS (complete)** | CRT atmosphere colors defined but not rendered |
@@ -92,7 +97,7 @@ local Polkadot networks
 | File | Status | Notes |
 |---|---|---|
 | `commands/testnet.rs` | **DOES NOT EXIST** | Needs creation with clap subcommand definitions |
-| `tui/views/testnet.rs` | **DOES NOT EXIST** | F9 Testnet tab view |
+| `tui/views/testnet.rs` | **DOES NOT EXIST** | Historical view concept; F9 is reserved for Console, so navigation is undecided |
 | `tui/widgets/network_topology.rs` | **DOES NOT EXIST** | Canvas-based network graph |
 | `tui/widgets/block_waveform.rs` | **DOES NOT EXIST** | Per-chain block production sparkline |
 | `tui/widgets/event_stream.rs` | **DOES NOT EXIST** | Phosphor-decay event list |
@@ -213,7 +218,7 @@ suites when only one scenario needs attention.
 | PRD-08 (Payments) | Payment lifecycle E2E — draft → simulate → sign → submit → confirm → receipt |
 | PRD-14 (APIs) | Schema conformance against real runtime metadata |
 | PRD-15 (Testing) | E2E test layer sitting atop the existing test pyramid |
-| PRD-16 (TUI) | TUI exercised against live chain data for dashboard accuracy |
+| PRD-13/PRD-19 (TUI/interactive) | TUI exercised against live chain data for dashboard accuracy without displacing Console |
 
 ### 1.5 Labels
 
@@ -587,14 +592,16 @@ $ polkagent testnet exec transfer --from alice --to dave --amount 100
   ──────────────────────────────────────────────────────────
 ```
 
-### 2.6 TUI integration (F9 — Testnet tab)
+### 2.6 TUI integration (navigation decision required)
 
-The polkagent TUI SHOULD add a **Testnet** tab (F9) that provides a live
-dashboard of the local testnet when running. This integrates with the
-existing ROSEDUST design system.
+The polkagent TUI may add a **Testnet** destination that provides a live
+dashboard of the local testnet when running. F9 is already the actionable
+Console and must not be reassigned. Choose a non-conflicting tab, nested view,
+or separate `polkagent testnet watch` surface through an explicit UX decision.
+The visual design below remains acceptance input, not an implementation map.
 
 ```
-┌─ F1 Dashboard ─ F2 Agents ─ F3 Runs ─ F4 System ─ ··· ─ F9 Testnet ─┐
+┌─ Dashboard ─ Agents ─ Runs ─ System ─ ··· ─ Testnet (TBD) ───────────┐
 │                                                                        │
 │  ┌─ Chains ─────────────────────────┐ ┌─ Active Referendum ──────────┐ │
 │  │                                  │ │                              │ │
@@ -627,27 +634,16 @@ existing ROSEDUST design system.
 │  └──────────────────────────────────┘                                  │
 │                                                                        │
 ├────────────────────────────────────────────────────────────────────────┤
-│ F9 Testnet │ ▪ 5 chains ● │ era 6 │ ref #1 Deciding 68% │ 12m 34s │
+│ Testnet │ ▪ 5 chains ● │ era 6 │ ref #1 Deciding 68% │ 12m 34s │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-The Testnet tab refreshes every 5 seconds (matching existing TUI refresh
-cycle at `REFRESH_INTERVAL_SECS = 5` in `app.rs`) and uses the ROSEDUST palette.
+If the Testnet destination is implemented as a TUI view, it should follow the
+existing five-second refresh cycle and use the ROSEDUST palette.
 
-> **Implementation changes required** (from codebase exploration):
->
-> 1. **`app.rs` Tab enum** (line ~62): Add `Testnet` variant after `Audit`.
-> 2. **`Tab::ALL`** (line ~87): Change `[Tab; 8]` → `[Tab; 9]`, append `Tab::Testnet`.
-> 3. **`Tab::label()`**: Add `Self::Testnet => "TESTNET"`.
-> 4. **`Tab::fkey_label()`**: Add `Self::Testnet => "[F9]"`.
-> 5. **`Tab::next()`**: `Audit → Testnet`, `Testnet → Dashboard`.
-> 6. **`Tab::prev()`**: `Dashboard → Testnet`, `Testnet → Audit`.
-> 7. **`input.rs`** (line ~145): Add `KeyCode::F(9) => Some(TuiAction::NavigateTab(Tab::Testnet))`.
-> 8. **`input.rs`** (line ~154): Add `KeyCode::Char('9') => Some(TuiAction::NavigateTab(Tab::Testnet))`.
-> 9. **`apply_action()`** (line ~277): Add refresh trigger for `Tab::Testnet`.
-> 10. **`views/mod.rs`** (currently 9 modules): Add `pub mod testnet;`.
-> 11. Create `views/testnet.rs` following the standard signature:
->     `pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme)`.
+> **Implementation constraint:** do not implement the obsolete F9 key map or
+> historical tab-count edits. First record the chosen navigation in PRD-13/
+> PRD-19 and TUI tests, then add the view without displacing Console.
 
 ROSEDUST palette usage:
 
@@ -766,7 +762,8 @@ cinematic visual density. These are the techniques, ordered by visual impact:
   message density fields.
 - Dot count as brightness proxy: more dots = brighter apparent value.
 - **Existing implementation:** `crates/polkagent-cli/src/tui/widgets/token_sparkline.rs`
-  already uses `Marker::Braille` — the testnet tab extends this pattern.
+  already renders custom Unicode Braille glyphs directly; a future Testnet
+  destination can extend that pattern.
 
 **Block element density ramp** (`░▒▓█`)
 - Used for: progress bars with gradient fills, heatmaps showing validator
@@ -825,7 +822,7 @@ pub noise_warm: Color,      // Rgb(42, 24, 32) #2A1820
 pub noise_cool: Color,      // Rgb(32, 24, 40) #201828
 ```
 
-The testnet tab SHOULD activate these atmospheric layers:
+A future Testnet destination SHOULD activate these atmospheric layers:
 
 **Scanline effect** — Every other row gets a subtle darkening using
 `scanline_dark` as background. This creates the CRT monitor feel without
@@ -930,7 +927,7 @@ The TUI should target 15-30fps during animations.
 > **Inspiration:** `bardo/prd/18-interfaces/rendering/02-visualization-primitives.md`
 > § "ForceGraph" and ratatui `Canvas` widget with `Marker::HalfBlock`
 
-The testnet tab MUST include a visual network topology map showing chains
+A future Testnet destination MUST include a visual network topology map showing chains
 and their connections. This is the centrepiece visual — the thing that makes
 someone say "wow" when they see the testnet running.
 
@@ -989,7 +986,8 @@ Each widget below maps to a ratatui primitive or composition:
 ```
 relay  ▁▂▃▅▇█▇▅▃▂▁▁▂▃▅▇█▇▅▃▂▁▁▂▃▅▇█   6.02s avg
 ```
-- ratatui `Sparkline` with `Marker::Braille` for sub-pixel smoothness.
+- Use the existing custom Unicode-Braille widget pattern, or a `Canvas` with
+  `Marker::Braille`, for sub-pixel smoothness.
 - Rolling 30-block window showing block time in seconds.
 - Color: `finalized_teal` for finalized blocks, `pending_amber` for pending.
 - Phosphor decay: older values fade through `rose_dim → rose_deep → phosphor_res`.
@@ -1079,8 +1077,8 @@ finality  ▂▂▃▂▂▃▂▂▁▁▂▃▅▇▅▃▂▁▁▂▂▂▃�
 
 #### 2.10.7 The TUI testnet experience — full-screen cinematic mode
 
-When running `polkagent testnet watch` or the F9 Testnet tab, the full-screen
-layout SHOULD look like this at 120+ column width:
+When running `polkagent testnet watch` or a future Testnet destination, the
+full-screen layout SHOULD look like this at 120+ column width:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -1122,7 +1120,7 @@ layout SHOULD look like this at 120+ column width:
 │  └─────────────────┴───────────────────────┘  └─────────────────────────────────────────────────────────────────┘ │
 │                                                                                                                      │
 ├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ F9 Testnet │ ● 5 chains │ ◆ 2 validators │ ⌘ ref #1 Deciding 87% │ ♦ 9.99M DOT │ ⠶ 2 XCM │ era 6 │ 12m 34s    │
+│ Testnet │ ● 5 chains │ ◆ 2 validators │ ⌘ ref #1 Deciding 87% │ ♦ 9.99M DOT │ ⠶ 2 XCM │ era 6 │ 12m 34s    │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1158,7 +1156,7 @@ TUI breakpoint system in `dashboard.rs`:
 
 At compact width, the status bar condenses to essential metrics only:
 ```
-F9 │ ● 5 │ ref #1 87% │ 12m
+TESTNET │ ● 5 │ ref #1 87% │ 12m
 ```
 
 #### 2.10.9 Color semantics for testnet visualization
@@ -3790,7 +3788,7 @@ the full signing path:
 
 **Implementation:** A new `polkagent-signer-dev` crate wrapping `subxt-signer`
 with sr25519 dev account keys. This signer follows the exact pattern of
-`polkagent-signer-fake` (417 lines) but uses real cryptography.
+`polkagent-signer-fake` but uses real cryptography.
 
 > **Existing pattern to follow:** `polkagent-signer-fake/src/lib.rs`
 > - `Mode` enum (`Signing` / `Rejecting`) for test scenarios
@@ -3937,7 +3935,7 @@ output matching the mockup in § 2.1.
 **Goal:** Full visual experience, TUI integration, CI automation.
 
 **Deliverables:**
-- TUI Testnet tab (F9) with live dashboard (§ 2.6).
+- Testnet TUI destination with live dashboard after a navigation decision (§ 2.6).
 - `polkagent testnet demo --scenario kitchen-sink` — full showcase (§ 2.7).
 - CI pipeline configuration (GitHub Actions).
 - Binary caching and version pinning.
@@ -3956,13 +3954,13 @@ output matching the mockup in § 2.1.
 
 | ID | Question | Impact | Owner |
 |---|---|---|---|
-| OQ-01 | Should we use `polkadot-local` chain spec or build a custom spec with `chain-spec-builder`? Custom gives more control over genesis but adds maintenance. | Genesis state fidelity | Unassigned |
-| OQ-02 | Should E2E tests run against each PR or only on merge/nightly? PR testing adds 15-30 min to CI. | CI latency | Unassigned |
+| OQ-01 | The current baseline uses built-in `rococo-local`; should full scenarios keep it or add a custom spec with `chain-spec-builder`? | Full-scenario genesis fidelity | Unassigned |
+| OQ-02 | Resolved for the current baseline: run on every PR, nightly, and manual dispatch; revisit only if duration becomes unacceptable. | CI latency | Resolved |
 | OQ-03 | Should Chopsticks tests fork from a pinned mainnet block or latest? Pinned is reproducible but may drift from current runtime. | Test reproducibility | Unassigned |
 | OQ-04 | Should the `polkagent testnet exec` commands use `polkagent-chain-subxt` directly or go through the explain-before-sign pipeline? Direct is simpler for test setup; pipeline exercises more code. | Test coverage vs. convenience | Unassigned |
 | OQ-05 | Should Bridge Hub and Coretime Chain be included from Phase 2 or deferred? They add complexity but cover bridge and coretime scenarios. | Scope | Unassigned |
 | OQ-06 | Should we include a People Chain parachain for identity testing or keep identity on relay chain? Production Polkadot has migrated identity to People Chain. | Production fidelity | Unassigned |
-| OQ-07 | What polkadot-sdk release version should we pin to initially? | Compatibility | Unassigned |
+| OQ-07 | Resolved for the current baseline: `POLKADOT_VERSION` and CI pin `polkadot-stable2606`. | Compatibility | Resolved |
 | OQ-08 | Should the `polkagent testnet query` commands use the same `ChainClient` trait implementation as production, or a separate direct-subxt path? Using ChainClient validates the trait; direct subxt is simpler. | Diagnostic accuracy | Unassigned |
 | OQ-09 | Should the Zombienet Rust SDK be a required dependency of the main polkagent binary, or only of the `polkagent-e2e-tests` crate? Putting it in the binary enables `polkagent testnet up` via SDK; keeping it in tests only reduces binary size. | Binary size vs. convenience | Unassigned |
 | OQ-10 | How should `polkagent testnet snapshot` be implemented — copying node databases, or using Zombienet's persistent directory feature? DB copy is more portable; `-d` is simpler but couples to filesystem layout. | Snapshot portability | Unassigned |
@@ -4006,8 +4004,9 @@ output matching the mockup in § 2.1.
       matching the mockup in § 2.1 (numbered steps, progress bars, tally).
 - [ ] `polkagent testnet demo --scenario kitchen-sink` runs all 8 demos
       sequentially (~12 min total).
-- [ ] TUI Testnet tab (F9) shows live chain status, events, balances, referenda,
-      and HRMP channels matching the mockup in § 2.6.
+- [ ] A non-conflicting Testnet TUI destination shows live chain status,
+      events, balances, referenda, and HRMP channels matching the mockup in
+      § 2.6.
 - [ ] `polkagent testnet query referendum <n>` shows visual detail with timeline
       progress bar, tally bar chart, and vote list (§ 2.4).
 - [ ] `polkagent testnet query staking` shows visual table with validators,

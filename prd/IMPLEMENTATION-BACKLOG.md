@@ -1,7 +1,7 @@
 # Polkagent implementation backlog and parallel agent plan
 
 **Status:** canonical execution queue
-**Updated:** 2026-08-05
+**Updated:** 2026-08-06
 **Input:** source audit, green workspace tests, archived diagnostics/UX/E2E
 evidence, PRD-17, and PRD-19
 
@@ -20,10 +20,11 @@ Wave 2: user surfaces
   TUI-01 terminal/TUI + ACP-01 Zed + ORC-01 groups/feeds
 
 Parallel throughout where interfaces are stable:
-  CHAIN-01 live chain | SEC-01 auth/custody | PCA-01 networking | QA-01 CI lint
+  CHAIN-01 live chain | SEC-01 auth/custody | PCA-01 networking |
+  QA-01 CI lint (complete; retain as a gate)
 
 Bounded productization slices already delivered; remaining work:
-  OPS-01 durable API recovery/Postgres/backup
+  OPS-01 successful backend/drain/Postgres/online-encrypted backup/upgrade
   EXT-01 runtime activation/sandbox/trust | PAY-01 settlement
 ```
 
@@ -45,7 +46,7 @@ Bounded productization slices already delivered; remaining work:
 
 ## P0 — shared foundation and executable core
 
-### QA-01 — Restore the mandatory workspace Clippy gate
+### QA-01 — Mandatory workspace Clippy gate — COMPLETE
 
 **Goal:** make the existing CI command `cargo clippy --workspace -- -D
 warnings` pass without weakening the workspace lint policy or hiding product
@@ -97,9 +98,8 @@ parallel with every product packet.
 **Goal:** CLI run, serve, TUI, chat, ACP, and transports construct the same
 durable application runtime.
 
-**Scope/ownership:** a new `polkagent-runtime` crate or a clearly isolated
-`polkagent-service::runtime` module; production composition tests; migration of
-`commands/run.rs` and `commands/serve.rs`. This packet owns runtime construction
+**Scope/ownership:** `polkagent-runtime`, production composition tests, and
+narrow executable-adapter migrations. This packet owns runtime construction
 but not TUI widgets or ACP protocol mapping.
 
 **Checklist:**
@@ -109,13 +109,15 @@ but not TUI widgets or ACP protocol mapping.
 - [ ] Centralize config-path provenance, database path, provider/model/harness,
   chain, signer, tools/skills, policy/grants, and read-only selection. The
   factory now owns config/database/provider/model/harness/chain/tool selection;
-  signer, configured skills, policy/grant injection, and service-level
-  read-only enforcement remain explicit degraded-readiness gaps.
+  signer, skill mutation/trust, policy/grant injection, and service-level
+  read-only enforcement remain explicit degraded-readiness gaps. Configured
+  skill discovery now feeds one immutable runtime snapshot and read-only API.
 - [ ] Open/migrate durable run, effect, event, artifact, conversation, memory,
   payment, audit, agent, group/feed, and registry stores as applicable. The
   current factory wires SQLite run/effect/event/conversation/payment and
-  configured memory; audit, artifact, group/feed, and registry composition are
-  not complete.
+  configured memory; the API now projects typed query/non-mutating exact reads
+  from that same store. Audit, group/feed, registry, and memory statistics/
+  deletion remain incomplete.
 - [ ] Remove `NoopEffectStore` and in-memory production fallbacks from
   executable configurations; missing required dependencies fail at startup.
   One-shot run, TUI, ACP, and `serve` now consume the shared runtime; the
@@ -127,9 +129,10 @@ but not TUI widgets or ACP protocol mapping.
 - [x] Make `serve` use the shared runtime and durable agents/runs/effects/events/
   artifacts/payments/conversations. Artifact metadata, verified content,
   classification, and lineage survive restart; the exact runtime tool registry
-  backs deterministic read-only API discovery. Fifteen optional skill/memory/
-  audit/registry routes remain registered with a published, tested 501 boundary
-  until truthful adapters/stores are composed.
+  backs deterministic read-only API discovery. Runtime-owned skill and memory
+  read adapters are now composed; eleven optional skill mutation, memory stats/
+  deletion, audit, and registry routes remain registered with a published,
+  tested 501 boundary until truthful contracts/stores are composed.
 
 **2026-08-05 runtime checkpoint:** `polkagent-runtime` now provides strict or
 explicitly simulated adapter policy, workdir-aware config provenance, durable
@@ -152,9 +155,10 @@ route unexpectedly returns 501 because startup forgot a store.
 **Goal:** one surface-neutral multi-turn contract for terminal, TUI, API, ACP,
 and group orchestration.
 
-**Scope/ownership:** new `polkagent-interaction` crate, conversation/interaction
-types, typed command registry, projections, and additive SQLite migrations.
-Avoid editing individual TUI/ACP renderers.
+**Scope/ownership:** the existing `polkagent-interaction` crate, its runtime and
+SQLite adapters, conversation/interaction types, typed command registry,
+projections, and additive migrations. Avoid editing individual TUI/ACP
+renderers.
 
 **2026-08-05 implementation checkpoint:** `polkagent-interaction` freezes the
 serializable contract and now also provides a durable store port, bounded
@@ -167,9 +171,10 @@ lag backfill, paged turn-correlated transcript projection, and restart recovery.
 TUI, terminal chat, HTTP, and ACP consume it. ACP maps its protocol session ID
 exactly to the durable conversation UUID and uses the same prompt, cancel,
 target/model configuration, event, and load/resume lifecycle. Model-executor
-interactions receive bounded typed prior context; approval/tool projection and
-execution-scoped provider/harness/autonomy/max-turn/budget config remain, so
-this checkpoint is not FND-02 completion.
+interactions receive bounded typed prior context; effect-backed tool lifecycle
+projection reaches replay/chat/TUI/ACP with stable effect identity, while
+approval and execution-scoped provider/harness/autonomy/max-turn/budget config
+remain, so this checkpoint is not FND-02 completion.
 
 **Checklist:**
 
@@ -184,8 +189,14 @@ this checkpoint is not FND-02 completion.
 - [x] Persist the user message before execution and atomically persist the
   assistant message plus exactly one terminal event; retrying the same caller
   turn ID cannot execute or write twice.
-- [ ] Project structured tool/approval observations into the durable transcript
-  with exact underlying effect identities.
+- [x] Project the real effect-backed tool lifecycle into durable interaction
+  replay and chat/TUI/ACP with exact effect-derived tool-call identity, safe
+  status/error summaries, lag recovery, and restart evidence. Raw arguments and
+  output remain withheld until one explicit redaction/classification contract.
+- [ ] Project durable approval observations and permission decisions with exact
+  effect/run/conversation identity through the coordinator and checkpoint
+  design in
+  [`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md).
 - [x] Implement new/list/load/archive/prompt/cancel/target-config/subscribe.
 - [x] Project the durable user/assistant transcript through the service with
   exact turn/run IDs and bounded store pages; a 1,002-turn fixture crosses the
@@ -216,8 +227,9 @@ this checkpoint is not FND-02 completion.
   `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/cancel`, `/approve`,
   `/deny`, and `/model` against shared service/runtime ports.
 - [ ] Wire the shared command executor through every applicable surface.
-  Terminal chat executes help/status/cancel/new/resume/model; the TUI executes
-  help/status/new/resume/model with structured results; ACP executes a truthful
+  Terminal chat executes help/status/agents/agent/cancel/new/resume/model; the
+  TUI executes help/status/agents/agent/new/resume/model with structured
+  results; ACP executes a truthful
   durable help/status/agents/agent/model/cancel subset; HTTP exposes typed
   resource operations rather than slash text. Broader cross-surface parity
   remains open.
@@ -227,8 +239,8 @@ retry, cancel, restart, load, and replay without CLI, Ratatui, Axum, or ACP
 types. FND-02 closes only after real approve/deny/tool state passes the same
 restart tests and harness/session behavior has a role-safe contract.
 
-**Depends on:** agree the minimal runtime handle with FND-01. Implementation can
-proceed in parallel after that interface is frozen.
+**Depends on:** the accepted ADR-002 boundary, the approval coordinator/
+checkpoint packet, and a role-safe harness history contract.
 
 ### EXE-01 — Real tool/effect/policy/approval execution loop
 
@@ -242,10 +254,11 @@ packet owns the orchestrator hot files; FND-01 only injects its dependencies.
 
 - [x] Advertise only exact registered definitions in the agent's allowlist and
   with no required grant; unknown and grant-bearing tools remain invisible.
-- [ ] Finish canonical tool-call identity/schema validation. The bounded slice
-  parses JSON, verifies registry/allowlist/grant state, and persists stable
-  step/effect/attempt identities, but user-visible structured call projection
-  remains open.
+- [x] Project stable effect identity and safe tool status after parsing JSON,
+  verifying registry/allowlist/grant state, and persisting stable step/effect/
+  attempt identities.
+- [ ] Finish schema-wide canonical argument validation and redaction-safe
+  arguments/output/locations/diffs.
 - [ ] Resolve grants/policy/budgets before dispatch.
 - [x] Persist the parent turn, normalized step, `EffectIntent`, claim, and
   attempt before handler I/O while retaining SQLite foreign-key enforcement.
@@ -285,8 +298,11 @@ own runtime construction or orchestrator internals.
 - [x] Inject a truthful read-only projection of the exact runtime tool registry,
   including deterministic list/detail/grant behavior and an empty view when
   registration is disabled.
-- [ ] Inject truthful memory, audit, skill, registry, and service-registry
-  adapters. Their exact uncomposed routes remain in the published 501 list.
+- [x] Inject immutable skill list/detail and durable memory query/exact lookup
+  through exact runtime-owned read adapters.
+- [ ] Inject skill mutation, memory stats/deletion, audit, registry, and
+  service-registry adapters. Their exact uncomposed routes remain in the
+  published 501 list.
 - [x] Expose interaction create/list/load/archive/turn/prompt/cancel plus strict
   target/model config endpoints over the exact runtime `InteractionService`;
   caller-supplied turn IDs provide retry idempotency and conflict detection.
@@ -309,11 +325,15 @@ own runtime construction or orchestrator internals.
   WebSocket transports remain an explicit documented allowlist.
 - [x] Use OpenAPI 3.1 null unions throughout. A recursive regression rejects
   legacy `nullable`, representative null semantics are protected, and Redocly
-  reports zero dialect errors (22 non-blocking style warnings remain).
-- [ ] Compose the 15 intentionally unavailable optional skill/memory/audit/
-  registry routes with real stores and preserve auth/read-only policy.
+  reports zero active warnings/errors with five exact public-operation ignores.
+- [ ] Compose the 11 intentionally unavailable optional skill mutation, memory
+  stats/deletion, audit, and registry routes with real contracts/stores while
+  preserving auth/read-only policy. Immutable skill reads and durable memory
+  query/exact lookup are composed and restart-tested.
 - [ ] Unify root config selection, bind address/port, auth, CORS, read-only,
-  and rate-limit provenance.
+  and rate-limit provenance. The canonical deployment smoke now proves the
+  current shared-key auth boundary with rate limiting explicitly disabled; it
+  does not prove TLS, rotation, principal authorization, or production limits.
 
 **Exit checks:** black-box API test creates an agent and interaction, streams
 real events/tool approval, cancels, restarts the server, and reads identical
@@ -329,7 +349,8 @@ state. OpenAPI conformance and authenticated/read-only tests pass.
 
 **Checklist:**
 
-- [ ] Persist user-visible deltas/checkpoints with stable event and sequence IDs.
+- [ ] Persist remaining run-event user-visible deltas/checkpoints with stable
+  event and sequence IDs. Interaction checkpoints are complete.
 - [x] Replace silent interaction broadcast-lag drops with an explicit lag
   checkpoint and durable resubscribe; run-event transports still need the same
   product-wide contract.
@@ -359,9 +380,10 @@ adapter hooks through small interfaces.
   both one-shot and TUI run composition instead of silently rediscovering
   provider/harness/execution settings.
 - [x] Add `polkagent chat` using `InteractionService` and the truthful
-  help/status/cancel/new/resume/model subset of the shared command handlers. Process
-  tests cover non-TTY stdout, multiline input, restart resume, refusal, lag
-  resubscribe, and SIGINT cancellation.
+  help/status/agents/agent/cancel/new/resume/model subset of the shared command
+  handlers. Process tests cover non-TTY stdout, multiline input, restart target/
+  model resume, zero-work target changes, refusal, lag resubscribe, and SIGINT
+  cancellation.
 - [ ] Convert the TUI loop to async/channel-driven input, runtime events, and
   background completion.
 - [x] Pass one long-lived `PolkagentRuntime`, not only a SQLite pool, into the
@@ -381,6 +403,13 @@ adapter hooks through small interfaces.
   selection per durable conversation, project it into Console status/header,
   guard stale original-conversation results, and prove restart/isolation/
   refusal without turns or shared-AgentSpec mutation.
+- [x] Execute `/agents` and `/agent <name-or-id>` through a read-only active-
+  agent projection from the retained runtime's already-open SQLite pool and
+  the durable target-config service path in chat and Console. Preserve the
+  conversation/transcript/model, guard stale/active work, reject unknown/
+  inactive/ambiguous selectors, route the next run to the restart-persisted
+  target, and create no turn/run/event or shared-AgentSpec mutation. Per-agent
+  readiness remains explicitly unprojected rather than guessed.
 - [x] Add an explicit durable conversation selector. `s` asynchronously lists
   at most 50 same-agent sessions from the newest 1,000 summaries, loads the
   exact selected transcript through `InteractionService`, refuses while a turn
@@ -393,8 +422,9 @@ adapter hooks through small interfaces.
 - [x] Assemble bounded prior completed transcript into typed model-executor
   context with exact roles and whole-turn truncation. Harness-backed follow-up
   fails explicitly because its string ingress cannot preserve roles.
-- [ ] Add service-routed approve/deny plus create/select-agent actions; legacy
-  Approvals-tab mutations remain outside the Console interaction path.
+- [ ] Add service-routed approve/deny after the durable coordinator/checkpoint
+  packet; legacy Approvals-tab mutations remain outside the Console interaction
+  path. Agent list/selection is now service-routed for this slice.
 - [ ] Remove UI direct DB mutations.
 - [x] Preserve all existing monitoring tabs while adding the Console.
 - [x] Prove terminal restoration on normal error and panic unwind through the
@@ -409,7 +439,8 @@ an explicit conversation ID, `s` provides a bounded same-agent durable session
 selector, and terminal chat can resume one.
 Prior completed turns enter model-executor context; string-only harness follow-
 up is unsupported. Broader shared-command coverage, simultaneous orchestration,
-structured tool/plan rendering, and service-routed approvals remain open.
+rich plan/redaction-safe structured-tool rendering, and service-routed
+approvals remain open.
 
 **Exit checks:** user can launch, select/create an agent, prompt, see tokens and
 tools, approve/deny, cancel, prompt again, restart, and resume. Headless event
@@ -445,17 +476,27 @@ the stable execution event path; can run fully parallel to ACP-01.
   chosen agent/model at the real run boundary without shared-spec mutation.
 - [x] Map typed text/lifecycle/usage/checkpoint events through the durable
   interaction stream, including exact terminal reconciliation and lag replay.
-- [ ] Map structured tool/approval/plan events once the runtime produces them
-  with stable effect identities.
-- [ ] Add durable command-executor routing plus truthful provider, target, and
-  autonomy configuration after those settings can be isolated per execution.
+- [x] Map effect-backed tool start/update events to official ACP tool messages
+  with one stable effect-derived ID, safe content, lag recovery, and restart
+  replay. ACP v1 lacks cancelled/unknown statuses, so both map to failed with a
+  safe detail.
+- [ ] Map durable approval/plan events after the coordinator/checkpoint runtime
+  produces them; raw arguments/output remain withheld pending redaction policy.
+- [ ] Add durable command-executor routing plus truthful group/auto-target,
+  provider, harness, and autonomy configuration after those settings can be
+  isolated per execution. Active-agent target selection is already composed.
 - [x] Validate absolute cwd and reject unsupported MCP servers/additional roots
   explicitly instead of ignoring them.
+- [x] Persist one immutable lexically normalized origin cwd in SQLite v17 and
+  verify it before every prompt/load/resume/replay. Cross-workspace, relative,
+  traversal, and legacy-unknown origins fail before events/turns/runs; generic
+  legacy list/load/archive remains available.
 - [x] Forward bounded real runtime text updates before the terminal response,
   reconcile exact final text without duplication, and emit ACP usage only from
   real terminal token counts plus a known model context window.
-- [ ] Add structured tool/plan updates, permission round-trips, default deny on
-  timeout/disconnect, and client filesystem/terminal capabilities.
+- [ ] Add permission round-trips, default deny on timeout/disconnect, rich plan
+  updates, and client filesystem/terminal capabilities. Native safe tool
+  start/update projection is implemented.
 - [x] Add an official-client cancellation/stop-reason test covering
   cancellation during an active provider request and the durable terminal run
   state/timestamp.
@@ -473,15 +514,18 @@ the stable execution event path; can run fully parallel to ACP-01.
   path refusal. Diagnostics remain per-process and intentionally exclude raw
   prompt/response bodies.
 - [x] Add an official-SDK subprocess fixture and a Zed custom-agent setup guide.
-- [ ] Complete the manual Zed smoke (tool, approval/deny, cancel, restart/import,
-  and ACP-log inspection).
+- [ ] Complete the manual Zed smoke (tool, approval/deny, cancel, restart/load,
+  and ACP-log inspection); add import only when the pinned SDK/surface exposes
+  it.
 
 **Exit checks:** in Zed, add the custom external agent, prompt, observe a real
-tool call, approve/deny, cancel, restart/import thread, and inspect clean ACP
-logs. Protocol fixtures pass without TUI/CLI-specific behavior.
+tool call, approve/deny, cancel, restart/load the thread, and inspect clean ACP
+logs. Add import proof only when the pinned SDK/surface exposes it. Protocol
+fixtures pass without TUI/CLI-specific behavior.
 
-**Ownership:** new ACP surface crate and focused CLI early dispatch. **Depends
-on:** FND-01/FND-02; runs parallel to TUI-01 and API-01 after contracts freeze.
+**Ownership:** existing `polkagent-surface-acp` crate and focused CLI early
+dispatch. **Depends on:** FND-01/FND-02; runs parallel to TUI-01 and API-01
+after contracts freeze.
 
 ### CHAIN-01 — Real local-chain read/write/finality slice
 
@@ -519,8 +563,10 @@ and protected credentials.
 
 - [ ] Replace plaintext credential storage with OS keychain/encrypted or
   external secret backends and migration guidance.
-- [ ] Implement production auth/session/JWT validation, constant-time secret
-  comparison, principal/tenant/RBAC context, and tenant filters.
+- [ ] Extend the composed constant-time shared-key API auth into selected
+  production auth/session/JWT, principal/tenant/RBAC context, and tenant
+  filters. The container replacement/restore smoke proves public/protected
+  routing and secret-free artifacts, not multi-principal authorization.
 - [ ] Load configured policy/grants into every run/effect path; remove empty
   default policy on executable paths.
 - [ ] Bind approvals/audit to a principal and exact payload/effect.
@@ -619,6 +665,11 @@ separate files.
   project/volume under the same identity, and requires exact HTTP projections.
   This is not an online, encrypted, scheduled, PostgreSQL, or export/import
   backup contract.
+- [x] Prove the authenticated recovery boundary with rate limiting explicitly
+  disabled. Initial, replacement, and restored phases each pass five public
+  requests plus four protected requests under missing, invalid, and valid-key
+  credentials (15 public, 24 exact 401, and 12 valid successes total), with
+  built-in and independent plaintext credential scans.
 - [ ] Prove Postgres conformance and tenant isolation.
 - [ ] Define migrations, online/encrypted backup and retention, supported
   export/import, PostgreSQL recovery, upgrade/rollback, resource limits,
@@ -665,10 +716,14 @@ than replaying historical foundation work.
 
 | Lane | Packet and next deliverable | Exclusive primary ownership | Integration gate |
 |---|---|---|---|
-| Integration | FND-02/OBS-01: project real effect-backed tool events through interaction replay | `polkagent-runtime`, `polkagent-interaction`, and narrow surface projections | Stable tool/effect identity, safe arguments/outcome, checkpoint lag, and restart are identical across composed surfaces. |
-| Execution | EXE-01: persisted approval-required effect and crash/cancel recovery after the grantless tool slice | `polkagent-run` orchestrator and narrow service bridges | Pause/resume never duplicates handler I/O; unknown outcomes and cancellation are explicit. |
-| Editor | ACP-01: structured tools/permissions and real Zed validation after durable new/load/resume | `polkagent-surface-acp` and ACP subprocess/manual evidence | Official client and Zed show the exact durable effect, permission decision, cancel, and restart state. |
-| Terminal | TUI-01: remaining shared commands, service-routed approvals, and structured tool/plan projection | CLI chat/TUI modules | Commands create no accidental prompt; exact effect identities survive cancel/restart. |
+| Integration | APR-00 freezes ADR/domain/serialized contracts; APR-01 implements stores/coordinator/CAS/checkpoints | Contract package, store traits, SQLite coordinator, run CAS, checkpoint schema | APR-01 starts after APR-00; atomicity, idempotent retry, and restart-without-duplicate-I/O pass. |
+| Policy | APR-02 composes policy approval effects, config, resolver, and readiness | Policy/config/runtime-composition modules | Starts after APR-00; default deny, permit, and escalation composition tests pass. |
+| Execution | APR-03/EXE-01 implements orchestrator pause/recovery and one approval-required tool | `polkagent-run` orchestrator and narrow service bridges | Starts after APR-01/APR-02; AllowOnce executes once and reject/cancel/timeout execute zero times. |
+| ACP harness | APR-04 builds the fake ACP permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Starts after APR-00 and does not mutate production runtime state. |
+| Projection/API | APR-05 adds durable approval projection/query/approve-deny and HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | Starts after APR-01 plus APR-03's event contract; replay and wrong-scope tests pass. |
+| Terminal | APR-06 adds chat/TUI approval queue/detail/actions and removes direct DB writes | CLI chat/TUI modules | Starts after APR-05; exact approval identities survive cancel/restart with no accidental prompts. |
+| Editor | APR-07 binds production ACP permission requests to the coordinator | `polkagent-surface-acp` production backend | Starts after APR-03/APR-04/APR-05; official client allow/reject/cancel/reconnect tests pass. |
+| Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |

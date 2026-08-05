@@ -1,7 +1,7 @@
 # Polkagent product and implementation planning
 
 This directory is the canonical planning surface for Polkagent as of
-2026-08-05. Start here instead of treating an old checklist, audit report, or
+2026-08-06. Start here instead of treating an old checklist, audit report, or
 crate count as the current roadmap.
 
 ## Reading order
@@ -36,6 +36,9 @@ crate count as the current roadmap.
   implementation claims and unchecked appendices embedded in older PRDs.
 - `IMPLEMENTATION-BACKLOG.md` is the current execution queue. An agent should
   not create a second backlog in `tmp/`.
+- Never assign work directly from an unchecked legacy PRD appendix. Treat those
+  appendices as historical acceptance catalogs and route every implementation
+  task through a current packet and its evidence gate.
 - Tests and crate presence are evidence of component maturity, not proof of a
   user-visible end-to-end capability.
 - Archived material is provenance, not current instruction.
