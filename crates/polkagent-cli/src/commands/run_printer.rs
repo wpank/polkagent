@@ -64,6 +64,7 @@ impl RunPrinter {
     /// Styling is enabled when stdout is a terminal AND `NO_COLOR` is not set.
     /// `stream_tokens` controls whether streaming tokens are printed
     /// immediately or buffered for display at run completion.
+    #[must_use]
     pub fn new(theme: Theme, stream_tokens: bool) -> Self {
         let is_tty = std::io::stdout().is_terminal();
         let no_color = std::env::var_os("NO_COLOR").is_some();
@@ -83,6 +84,7 @@ impl RunPrinter {
 
     /// Return any buffered final text (non-streaming mode).
     #[allow(dead_code)]
+    #[must_use]
     pub fn final_text(&self) -> &str {
         &self.final_text
     }
@@ -168,19 +170,51 @@ impl RunPrinter {
         }
 
         match &event.kind {
-            // -- Suppressed / silent ----------------------------------------
             EventKind::RunCreated
             | EventKind::RunQueued
             | EventKind::TurnCompleted { .. }
             | EventKind::StepStarted { .. }
-            | EventKind::StepCompleted { .. } => {}
+            | EventKind::StepCompleted { .. } => ControlFlow::Continue(()),
+            EventKind::RunStarted
+            | EventKind::TurnStarted { .. }
+            | EventKind::StreamingToken { .. }
+            | EventKind::ToolCallStarted { .. }
+            | EventKind::ToolCallCompleted { .. }
+            | EventKind::EffectIntentCreated { .. }
+            | EventKind::EffectAttemptStarted { .. }
+            | EventKind::EffectOutcomeRecorded { .. }
+            | EventKind::EffectsResolved
+            | EventKind::ArtifactCreated { .. }
+            | EventKind::ApprovalRequested { .. }
+            | EventKind::ApprovalGranted { .. }
+            | EventKind::ApprovalDenied { .. } => {
+                self.handle_activity_event(w, &event.kind);
+                ControlFlow::Continue(())
+            }
+            EventKind::ProgressUpdate { .. }
+            | EventKind::DeliveryStarted
+            | EventKind::DeliveryCompleted
+            | EventKind::DiagnosticLog { .. }
+            | EventKind::BudgetConsumed { .. }
+            | EventKind::BudgetWarning { .. }
+            | EventKind::RunCompleting
+            | EventKind::RunRetryQueued
+            | EventKind::MetadataDriftDetected { .. } => {
+                self.handle_status_event(w, &event.kind);
+                ControlFlow::Continue(())
+            }
+            EventKind::RunCompleted { .. }
+            | EventKind::RunFailed { .. }
+            | EventKind::RunCancelled { .. }
+            | EventKind::RunTimedOut => self.handle_terminal_event(w, &event.kind),
+        }
+    }
 
-            // -- Run lifecycle ----------------------------------------------
+    fn handle_activity_event(&mut self, w: &mut impl Write, kind: &EventKind) {
+        match kind {
             EventKind::RunStarted => {
                 let _ = self.styled_line(w, "  ▶ Running", self.theme.success, false);
             }
-
-            // -- Turns ------------------------------------------------------
             EventKind::TurnStarted { turn_number, .. } => {
                 self.current_turn = *turn_number;
                 let _ = self.styled_line(
@@ -191,7 +225,6 @@ impl RunPrinter {
                 );
             }
 
-            // -- Streaming tokens -------------------------------------------
             EventKind::StreamingToken { text } => {
                 if self.stream_tokens {
                     if !self.streaming_active {
@@ -212,7 +245,6 @@ impl RunPrinter {
                 }
             }
 
-            // -- Tool calls -------------------------------------------------
             EventKind::ToolCallStarted { tool_name } => {
                 self.active_tool = Some((tool_name.clone(), Instant::now()));
                 self.tool_count += 1;
@@ -235,7 +267,6 @@ impl RunPrinter {
                 let _ = self.styled_line(w, &msg, self.theme.success, false);
             }
 
-            // -- Effects ----------------------------------------------------
             EventKind::EffectIntentCreated { intent_id } => {
                 self.effect_count += 1;
                 let id_str = intent_id.to_string();
@@ -271,7 +302,6 @@ impl RunPrinter {
                 let _ = self.styled_line(w, "  ✓ Effects resolved", self.theme.success, false);
             }
 
-            // -- Artifacts --------------------------------------------------
             EventKind::ArtifactCreated { artifact_id } => {
                 let id_str = artifact_id.to_string();
                 let short = short_id(&id_str);
@@ -283,7 +313,6 @@ impl RunPrinter {
                 );
             }
 
-            // -- Approvals --------------------------------------------------
             EventKind::ApprovalRequested { request_id } => {
                 let short = short_id(request_id);
                 let _ = self.styled_line(
@@ -304,8 +333,12 @@ impl RunPrinter {
                     false,
                 );
             }
+            _ => {}
+        }
+    }
 
-            // -- Progress ---------------------------------------------------
+    fn handle_status_event(&self, w: &mut impl Write, kind: &EventKind) {
+        match kind {
             EventKind::ProgressUpdate {
                 message,
                 percentage,
@@ -313,7 +346,6 @@ impl RunPrinter {
                 let _ = self.print_progress(w, message, *percentage);
             }
 
-            // -- Delivery ---------------------------------------------------
             EventKind::DeliveryStarted => {
                 let _ = self.styled_line(w, "  ▶ Delivering...", self.theme.rose_dim, false);
             }
@@ -321,7 +353,6 @@ impl RunPrinter {
                 let _ = self.styled_line(w, "  ✓ Delivered", self.theme.success, false);
             }
 
-            // -- Diagnostics ------------------------------------------------
             EventKind::DiagnosticLog { level, message } => {
                 let color = match level {
                     LogLevel::Error => self.theme.danger,
@@ -339,7 +370,6 @@ impl RunPrinter {
                 let _ = self.styled_line(w, &format!("  [{label}] {message}"), color, false);
             }
 
-            // -- Budget -----------------------------------------------------
             EventKind::BudgetConsumed {
                 resource,
                 amount_str,
@@ -363,35 +393,8 @@ impl RunPrinter {
                 );
             }
 
-            // -- Terminal events --------------------------------------------
             EventKind::RunCompleting => {
                 let _ = self.styled_line(w, "  Completing...", self.theme.text_dim, false);
-            }
-            EventKind::RunCompleted {
-                input_tokens,
-                output_tokens,
-                ..
-            } => {
-                if !self.stream_tokens && !self.final_text.is_empty() {
-                    let _ = self.set_fg(w, self.theme.text_primary);
-                    let _ = writeln!(w, "{}", self.final_text);
-                    let _ = self.reset(w);
-                }
-                let _ = self.print_completion_card(w, *input_tokens, *output_tokens);
-                return ControlFlow::Break(());
-            }
-            EventKind::RunFailed { reason } => {
-                let _ = self.print_failure_card(w, reason);
-                return ControlFlow::Break(());
-            }
-            EventKind::RunCancelled { reason } => {
-                let cancel_reason = format!("cancelled: {reason}");
-                let _ = self.print_failure_card(w, &cancel_reason);
-                return ControlFlow::Break(());
-            }
-            EventKind::RunTimedOut => {
-                let _ = self.print_failure_card(w, "run timed out");
-                return ControlFlow::Break(());
             }
             EventKind::RunRetryQueued => {
                 let _ = self.styled_line(w, "  ↻ Retry queued", self.theme.warning, false);
@@ -406,9 +409,40 @@ impl RunPrinter {
                 );
                 let _ = self.styled_line(w, &msg, self.theme.warning, false);
             }
+            _ => {}
         }
+    }
 
-        ControlFlow::Continue(())
+    fn handle_terminal_event(&mut self, w: &mut impl Write, kind: &EventKind) -> ControlFlow<()> {
+        match kind {
+            EventKind::RunCompleted {
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
+                if !self.stream_tokens && !self.final_text.is_empty() {
+                    let _ = self.set_fg(w, self.theme.text_primary);
+                    let _ = writeln!(w, "{}", self.final_text);
+                    let _ = self.reset(w);
+                }
+                let _ = self.print_completion_card(w, *input_tokens, *output_tokens);
+                ControlFlow::Break(())
+            }
+            EventKind::RunFailed { reason } => {
+                let _ = self.print_failure_card(w, reason);
+                ControlFlow::Break(())
+            }
+            EventKind::RunCancelled { reason } => {
+                let cancel_reason = format!("cancelled: {reason}");
+                let _ = self.print_failure_card(w, &cancel_reason);
+                ControlFlow::Break(())
+            }
+            EventKind::RunTimedOut => {
+                let _ = self.print_failure_card(w, "run timed out");
+                ControlFlow::Break(())
+            }
+            _ => ControlFlow::Continue(()),
+        }
     }
 
     // ── Private helpers ──────────────────────────────────────────────────
@@ -482,8 +516,7 @@ impl RunPrinter {
             turns, self.tool_count, self.effect_count
         );
         let line3 = format!(
-            "  Tokens: {} input / {} output ({} total)",
-            input_tokens, output_tokens, total_tokens
+            "  Tokens: {input_tokens} input / {output_tokens} output ({total_tokens} total)"
         );
         let inner_w = line1.len().max(line2.len()).max(line3.len()) + 2;
 
@@ -621,15 +654,23 @@ impl RunPrinter {
         message: &str,
         percentage: Option<f32>,
     ) -> std::io::Result<()> {
-        let Some(pct) = percentage else {
+        let Some(raw_pct) = percentage else {
             // No percentage — just show message.
             return self.styled_line(w, &format!("  ▶ {message}"), self.theme.rose_dim, false);
         };
 
-        let ratio = (pct / 100.0).clamp(0.0, 1.0) as f64;
+        let pct = if raw_pct.is_finite() {
+            raw_pct.clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+        let ratio = f64::from(pct / 100.0);
         let bar_width = 20usize;
-        let total_units = bar_width * 8;
-        let filled_units = (ratio * total_units as f64).round() as usize;
+        let total_units = 160_u16;
+        let scaled_units = ratio * f64::from(total_units);
+        let filled_units = (0..total_units)
+            .take_while(|unit| scaled_units >= f64::from(*unit) + 0.5)
+            .count();
         let full_cells = filled_units / 8;
         let partial_idx = filled_units % 8;
 
@@ -670,8 +711,7 @@ impl RunPrinter {
 fn rat_to_ct(color: RatColor) -> CtColor {
     match color {
         RatColor::Rgb(r, g, b) => CtColor::Rgb { r, g, b },
-        RatColor::Reset => CtColor::Reset,
-        // Fallback for any other variant (shouldn't happen with our theme).
+        // Reset and any palette variants outside our RGB theme map to reset.
         _ => CtColor::Reset,
     }
 }
@@ -687,8 +727,9 @@ fn format_elapsed(d: std::time::Duration) -> String {
     if secs < 60.0 {
         format!("{secs:.1}s")
     } else {
-        let mins = secs as u64 / 60;
-        let rem = secs as u64 % 60;
+        let whole_secs = d.as_secs();
+        let mins = whole_secs / 60;
+        let rem = whole_secs % 60;
         format!("{mins}m{rem}s")
     }
 }
@@ -739,6 +780,21 @@ mod tests {
     fn format_elapsed_minutes() {
         let s = format_elapsed(std::time::Duration::from_secs(125));
         assert_eq!(s, "2m5s");
+    }
+
+    #[test]
+    fn progress_clamps_non_finite_and_out_of_range_values() -> std::io::Result<()> {
+        let mut printer = RunPrinter::new(Theme::no_color(), true);
+        printer.styled = false;
+        let mut output = Vec::new();
+
+        printer.print_progress(&mut output, "unknown", Some(f32::NAN))?;
+        printer.print_progress(&mut output, "complete", Some(150.0))?;
+
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("0.0%  unknown"));
+        assert!(output.contains("100.0%  complete"));
+        Ok(())
     }
 
     #[test]
@@ -861,7 +917,7 @@ mod tests {
         let run_id = polkagent_core::ids::RunId::new();
         let start_event = RunEvent::new_ephemeral(
             polkagent_core::ids::EventId::new(),
-            run_id.clone(),
+            run_id,
             1,
             EventKind::ToolCallStarted {
                 tool_name: "read_file".into(),
@@ -942,7 +998,7 @@ mod tests {
         // Emit a streaming token (no trailing newline).
         let token_event = RunEvent::new_ephemeral(
             polkagent_core::ids::EventId::new(),
-            run_id.clone(),
+            run_id,
             1,
             EventKind::StreamingToken {
                 text: "I am a fake assistant".into(),
