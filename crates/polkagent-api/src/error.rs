@@ -152,3 +152,21 @@ impl From<crate::run::RunError> for ApiError {
         }
     }
 }
+
+impl From<crate::state::AgentStoreError> for ApiError {
+    fn from(err: crate::state::AgentStoreError) -> Self {
+        use crate::state::AgentStoreError;
+        match err {
+            AgentStoreError::InvalidInput(message) => Self::ValidationError(message),
+            AgentStoreError::Conflict(message) => Self::InvalidState(message),
+            AgentStoreError::InvalidProjection(message) => {
+                tracing::warn!(error = %message, "invalid durable agent projection");
+                Self::InternalError("stored agent projection is invalid".to_owned())
+            }
+            AgentStoreError::Internal(message) => {
+                tracing::warn!(error = %message, "durable agent store operation failed");
+                Self::InternalError("agent store operation failed".to_owned())
+            }
+        }
+    }
+}

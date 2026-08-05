@@ -21,6 +21,9 @@ polkagent-payment = { path = "../polkagent-payment" }
 polkagent-telemetry = { path = "../polkagent-telemetry" }
 polkagent-rate-limit = { path = "../polkagent-rate-limit" }
 polkagent-marketplace = { path = "../polkagent-marketplace" }
+polkagent-runtime = { path = "../polkagent-runtime" }
+polkagent-service = { path = "../polkagent-service" }
+polkagent-store-sqlite = { path = "../polkagent-store-sqlite" }
 
 # Web
 axum = { workspace = true }
@@ -52,6 +55,7 @@ chrono = { workspace = true }
 
 # IDs
 uuid = { workspace = true }
+rusqlite = { workspace = true }
 
 # Concurrency
 dashmap = { workspace = true }
@@ -61,6 +65,7 @@ axum-test = "21"
 async-trait = { workspace = true }
 polkagent-conversation = { path = "../polkagent-conversation" }
 tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

@@ -47,6 +47,7 @@
 
 pub mod auth;
 pub mod dto;
+pub mod durable;
 pub mod error;
 pub mod rate_limit;
 pub mod read_only;
@@ -57,6 +58,7 @@ pub mod state;
 pub mod validate;
 
 // Convenient re-exports for consumers that construct the server.
+pub use durable::{RuntimeAgentStore, RuntimeRunManager};
 pub use run::{InMemoryRunManager, RunManagerTrait};
 pub use server::ApiServer;
-pub use state::{AgentStore, AppState, InMemoryAgentStore};
+pub use state::{AgentStore, AgentStoreError, AppState, InMemoryAgentStore};

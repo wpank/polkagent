@@ -27,6 +27,7 @@ use polkagent_skill::manifest::SkillManifest;
 use polkagent_store_trait::event::EventStore;
 use polkagent_store_trait::{ArtifactStore, EffectStore};
 use polkagent_telemetry::{MetricRecorder, PrometheusRegistry};
+use thiserror::Error;
 
 use crate::routes::health::HealthState;
 use polkagent_tool::ToolSpec;
@@ -227,30 +228,56 @@ pub trait ToolRegistryStore: Send + Sync {
 // AgentStore trait
 // ---------------------------------------------------------------------------
 
+/// Errors produced by agent-store implementations.
+///
+/// The original infallible port could only turn corrupt durable rows and
+/// database failures into false "not found" responses. Durable adapters use
+/// this type to fail closed and let the HTTP layer distinguish absence from an
+/// unavailable or invalid projection.
+#[derive(Debug, Error)]
+pub enum AgentStoreError {
+    /// A caller supplied an invalid agent specification.
+    #[error("invalid agent specification: {0}")]
+    InvalidInput(String),
+    /// A stored agent specification could not be represented by the API DTO.
+    #[error("invalid stored agent projection: {0}")]
+    InvalidProjection(String),
+    /// The requested write conflicts with an existing durable record.
+    #[error("agent store conflict: {0}")]
+    Conflict(String),
+    /// A persistence or runtime-registration operation failed.
+    #[error("agent store unavailable: {0}")]
+    Internal(String),
+}
+
 /// Async storage trait for agent specs.
 ///
 /// Implementations must be `Send + Sync` so that `Arc<dyn AgentStore>` can be
 /// shared across Axum handlers. The in-memory implementation is
 /// [`InMemoryAgentStore`]; a durable SQLite-backed implementation can be
-/// provided by the `polkagent-store-sqlite` crate.
+/// provided by [`crate::durable::RuntimeAgentStore`].
 #[async_trait]
 pub trait AgentStore: Send + Sync {
     /// Insert or replace an agent spec.
-    async fn insert(&self, spec: AgentSpec);
+    async fn insert(&self, spec: AgentSpec) -> Result<(), AgentStoreError>;
 
     /// Retrieve an agent spec by ID, returning `None` if not found.
-    async fn get(&self, id: AgentId) -> Option<AgentSpec>;
+    async fn get(&self, id: AgentId) -> Result<Option<AgentSpec>, AgentStoreError>;
 
     /// Remove an agent spec by ID; returns `true` if it existed.
-    async fn remove(&self, id: AgentId) -> bool;
+    async fn remove(&self, id: AgentId) -> Result<bool, AgentStoreError>;
 
     /// Paginate agent specs sorted by `created_at` ascending.
     ///
     /// Returns `(page, has_more)`.
-    async fn list_page(&self, after: Option<AgentId>, limit: usize) -> (Vec<AgentSpec>, bool);
+    async fn list_page(
+        &self,
+        after: Option<AgentId>,
+        limit: usize,
+    ) -> Result<(Vec<AgentSpec>, bool), AgentStoreError>;
 
     /// Return the number of stored agents.
-    async fn count(&self) -> usize;
+    async fn count(&self) -> Result<usize, AgentStoreError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,22 +315,27 @@ impl InMemoryAgentStore {
 
 #[async_trait]
 impl AgentStore for InMemoryAgentStore {
-    async fn insert(&self, spec: AgentSpec) {
+    async fn insert(&self, spec: AgentSpec) -> Result<(), AgentStoreError> {
         let mut guard = self.agents.write().await;
         guard.insert(spec.id, spec);
+        Ok(())
     }
 
-    async fn get(&self, id: AgentId) -> Option<AgentSpec> {
+    async fn get(&self, id: AgentId) -> Result<Option<AgentSpec>, AgentStoreError> {
         let guard = self.agents.read().await;
-        guard.get(&id).cloned()
+        Ok(guard.get(&id).cloned())
     }
 
-    async fn remove(&self, id: AgentId) -> bool {
+    async fn remove(&self, id: AgentId) -> Result<bool, AgentStoreError> {
         let mut guard = self.agents.write().await;
-        guard.remove(&id).is_some()
+        Ok(guard.remove(&id).is_some())
     }
 
-    async fn list_page(&self, after: Option<AgentId>, limit: usize) -> (Vec<AgentSpec>, bool) {
+    async fn list_page(
+        &self,
+        after: Option<AgentId>,
+        limit: usize,
+    ) -> Result<(Vec<AgentSpec>, bool), AgentStoreError> {
         let sorted = self.list_sorted().await;
 
         let start = match after {
@@ -318,11 +350,11 @@ impl AgentStore for InMemoryAgentStore {
 
         let has_more = page.len() > limit;
         let page = page.into_iter().take(limit).collect();
-        (page, has_more)
+        Ok((page, has_more))
     }
 
-    async fn count(&self) -> usize {
-        self.agents.read().await.len()
+    async fn count(&self) -> Result<usize, AgentStoreError> {
+        Ok(self.agents.read().await.len())
     }
 }
 

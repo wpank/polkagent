@@ -112,7 +112,7 @@ pub enum RunError {
 /// Implementations must be `Send + Sync` so that `Arc<dyn RunManagerTrait>`
 /// can be shared across Axum handlers. The in-memory implementation is
 /// [`InMemoryRunManager`]; a durable SQLite-backed implementation can be
-/// provided by an adapter crate.
+/// provided by [`crate::durable::RuntimeRunManager`].
 #[async_trait]
 pub trait RunManagerTrait: Send + Sync {
     /// Create and immediately start a run for the given agent.

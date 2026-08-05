@@ -819,6 +819,23 @@ impl AppService {
         Ok(agent_id)
     }
 
+    /// Remove an agent specification from the live runtime registry.
+    ///
+    /// Durable surfaces archive or delete their projection separately and use
+    /// this method to ensure the runtime cannot continue accepting work for a
+    /// removed agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::Internal`] if the agent registry lock is
+    /// poisoned.
+    pub fn remove_agent(&self, agent_id: AgentId) -> Result<bool, ServiceError> {
+        let mut agents = self.agents.lock().map_err(|error| ServiceError::Internal {
+            message: format!("agent lock poisoned: {error}"),
+        })?;
+        Ok(agents.remove(&agent_id).is_some())
+    }
+
     // -----------------------------------------------------------------------
     // Run lifecycle
     // -----------------------------------------------------------------------
@@ -961,6 +978,49 @@ impl AppService {
     pub async fn cancel_run(&self, run_id: RunId) -> Result<(), ServiceError> {
         self.run_manager
             .cancel_run(run_id, "cancelled by user")
+            .await?;
+        Ok(())
+    }
+
+    /// Pause a running run at an approval checkpoint.
+    ///
+    /// This is the service-level lifecycle entry point used by control-plane
+    /// adapters. It preserves the run state machine and records the matching
+    /// approval event rather than updating the durable row directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::RunNotFound`] when the run does not exist, or
+    /// [`ServiceError::InvalidTransition`] unless it is currently running.
+    pub async fn pause_run(&self, run_id: RunId, request_id: &str) -> Result<(), ServiceError> {
+        self.run_manager
+            .request_approval(run_id, request_id)
+            .await?;
+        Ok(())
+    }
+
+    /// Resume a run that is waiting for approval.
+    ///
+    /// The approval event receives a stable identifier derived from the
+    /// pending request because the current HTTP resume DTO carries no explicit
+    /// approval identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::RunNotFound`] when the run does not exist, or
+    /// [`ServiceError::InvalidTransition`] unless it is awaiting approval.
+    pub async fn resume_run(&self, run_id: RunId) -> Result<(), ServiceError> {
+        let state = self.run_manager.get_state(run_id).await?;
+        let RunState::AwaitingApproval { request_id } = state else {
+            return Err(ServiceError::InvalidTransition {
+                message: format!(
+                    "can only resume a run in AwaitingApproval state, current state is {state:?}"
+                ),
+            });
+        };
+        let approval_id = format!("api-resume:{request_id}");
+        self.run_manager
+            .grant_approval(run_id, &approval_id)
             .await?;
         Ok(())
     }

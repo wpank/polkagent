@@ -48,7 +48,13 @@ pub async fn create_run(
     Json(body): Json<CreateRunRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Verify the agent exists.
-    if state.agents.get(agent_id).await.is_none() {
+    if state
+        .agents
+        .get(agent_id)
+        .await
+        .map_err(ApiError::from)?
+        .is_none()
+    {
         return Err(ApiError::AgentNotFound(agent_id.to_string()));
     }
 
@@ -370,6 +376,7 @@ pub async fn start_agent(
         .agents
         .get(id)
         .await
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
     state
@@ -405,6 +412,7 @@ pub async fn stop_agent(
         .agents
         .get(id)
         .await
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
     let cancelled = state
@@ -440,6 +448,7 @@ pub async fn pause_agent(
         .agents
         .get(id)
         .await
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
     let paused = state
@@ -475,6 +484,7 @@ pub async fn resume_agent(
         .agents
         .get(id)
         .await
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
     let resumed = state

@@ -67,7 +67,14 @@ pub async fn create_agent(
     spec.model_preference = body.model_preference;
     spec.surface_bindings = body.surface_bindings;
 
-    state.agents.insert(spec.clone()).await;
+    spec.validate()
+        .map_err(|error| ApiError::ValidationError(error.to_string()))?;
+
+    state
+        .agents
+        .insert(spec.clone())
+        .await
+        .map_err(ApiError::from)?;
 
     info!(agent_id = %id, name = %body.name, "agent created");
 
@@ -89,7 +96,11 @@ pub async fn list_agents(
     let limit = query.limit.unwrap_or(50).min(100) as usize;
     let after = query.after;
 
-    let (specs, has_more) = state.agents.list_page(after, limit).await;
+    let (specs, has_more) = state
+        .agents
+        .list_page(after, limit)
+        .await
+        .map_err(ApiError::from)?;
 
     let next_cursor = if has_more {
         specs.last().map(|s| s.id.to_string())
@@ -126,6 +137,7 @@ pub async fn get_agent(
         .agents
         .get(id)
         .await
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::AgentNotFound(id.to_string()))?;
 
     Ok(Json(AgentResponse::from_spec(spec)))
@@ -142,7 +154,7 @@ pub async fn delete_agent(
     State(state): State<AppState>,
     Path(id): Path<AgentId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let found = state.agents.remove(id).await;
+    let found = state.agents.remove(id).await.map_err(ApiError::from)?;
     if !found {
         return Err(ApiError::AgentNotFound(id.to_string()));
     }
