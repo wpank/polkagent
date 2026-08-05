@@ -1,8 +1,8 @@
-//! PRD-15 conformance tests for the SQLite store adapter.
+//! PRD-15 conformance tests for the `SQLite` store adapter.
 //!
 //! These tests call the shared conformance suite from `polkagent-store-trait`
 //! and exercise the SQLite-backed implementations.  Each test sets up an
-//! in-memory SQLite pool with full migrations and calls the appropriate
+//! in-memory `SQLite` pool with full migrations and calls the appropriate
 //! shared conformance function.
 //!
 //! Note: `SqlitePool` implements `polkagent_store_trait::{RunStore, EffectStore,
@@ -10,6 +10,10 @@
 //! (a different trait).  The `ArtifactStore` conformance tests from store-trait
 //! use the store-trait version of the interface and are exercised by
 //! implementations that use the store-trait API directly.
+
+// This conformance target uses `expect` to identify the exact shared store
+// contract or database-fixture step that failed.
+#![allow(clippy::expect_used)]
 
 use chrono::Utc;
 
@@ -24,7 +28,7 @@ use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, Sto
 
 const TEST_AGENT: &str = "conformance-agent";
 
-/// Create an in-memory SQLite pool with all migrations applied and one
+/// Create an in-memory `SQLite` pool with all migrations applied and one
 /// test agent pre-inserted (FK required by `runs.agent_id`).
 fn setup_pool() -> SqlitePool {
     let pool = SqlitePool::open_in_memory().expect("open in-memory pool");

@@ -1,25 +1,32 @@
-//! Criterion benchmarks for the SQLite store performance-critical paths.
+//! Criterion benchmarks for the `SQLite` store performance-critical paths.
 //!
 //! Covers all ten benchmark categories requested:
 //!
-//!  1. Run CRUD (create, get, update_state, list_by_agent, list_by_state)
-//!  2. Effect pipeline (propose_intent, claim_intent, record_attempt, record_outcome)
-//!  3. Artifact operations (store, get, get_body, verify, list_for_run)
-//!  4. Event operations (append, list_for_run, list_by_kinds)
-//!  5. Payment operations (record_charge, get_budget_usage)
-//!  6. Conversation operations (create, append_message, get)
+//!  1. Run CRUD (`create`, `get`, `update_state`, `list_by_agent`, `list_by_state`)
+//!  2. Effect pipeline (`propose_intent`, `claim_intent`, `record_attempt`, `record_outcome`)
+//!  3. Artifact operations (`store`, `get`, `get_body`, `verify`, `list_for_run`)
+//!  4. Event operations (`append`, `list_for_run`, `list_by_kinds`)
+//!  5. Payment operations (`record_charge`, `get_budget_usage`)
+//!  6. Conversation operations (`create`, `append_message`, `get`)
 //!  7. Migration performance (full schema creation)
 //!  8. Concurrent read/write (multiple threads reading while one writes)
-//!  9. Bulk insert (100, 1_000, 10_000 records)
+//!  9. Bulk insert (100, `1_000`, `10_000` records)
 //! 10. Query with filters (by agent, by status, by time range)
 //!
-//! Uses file-backed SQLite databases via `tempfile` so that WAL mode is
-//! exercised (in-memory SQLite does not support WAL).
+//! Uses file-backed `SQLite` databases via `tempfile` so that WAL mode is
+//! exercised (in-memory `SQLite` does not support WAL).
 //!
 //! PRD-15 performance benchmarks (enhanced).
 
+// Every timed benchmark requires a fully valid fixture and operation result;
+// `expect` aborts an invalid sample at the exact setup or measured operation.
+#![allow(clippy::expect_used)]
+
 use chrono::{DateTime, Utc};
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
+use criterion::{
+    criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup, BenchmarkId,
+    Criterion, Throughput,
+};
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
@@ -33,7 +40,7 @@ use polkagent_store_sqlite::{
 // DB setup helpers
 // ---------------------------------------------------------------------------
 
-/// Open a file-backed SQLite pool with migrations applied.
+/// Open a file-backed `SQLite` pool with migrations applied.
 ///
 /// Returns the pool and the tempfile handle (which must be kept alive to
 /// prevent the OS from deleting the file while the benchmark runs).
@@ -314,49 +321,50 @@ fn bench_effect_pipeline(c: &mut Criterion) {
         });
     }
 
-    // --- record_outcome ---
-    {
-        let (pool, _tmpfile) = open_bench_db();
-        let run_store = SqliteRunStore::new(pool.clone());
-        let effect_store = SqliteEffectStore::new(pool);
-        let agent_id = seed_agent(&run_store);
-        let run_id = seed_run(&run_store, &agent_id);
-
-        // Pre-create intents for outcomes (each intent can have only one outcome).
-        let mut intent_ids = Vec::new();
-        for i in 0..500 {
-            let intent = effect_store
-                .create_intent(
-                    &run_id,
-                    None,
-                    None,
-                    "model_call",
-                    r#"{"input":"outcome test"}"#,
-                    &format!("outcome-key-{i}"),
-                )
-                .expect("create intent");
-            intent_ids.push(intent.id);
-        }
-        let mut outcome_idx = 0usize;
-
-        group.bench_function("record_outcome", |b| {
-            b.iter(|| {
-                if outcome_idx < intent_ids.len() {
-                    let outcome = effect_store
-                        .record_outcome(
-                            &intent_ids[outcome_idx],
-                            "success",
-                            r#"{"output":"benchmark result","tokens":150}"#,
-                        )
-                        .expect("record outcome");
-                    criterion::black_box(outcome.id);
-                    outcome_idx += 1;
-                }
-            });
-        });
-    }
+    register_effect_outcome_benchmark(&mut group);
 
     group.finish();
+}
+
+fn register_effect_outcome_benchmark(group: &mut BenchmarkGroup<'_, WallTime>) {
+    let (pool, _tmpfile) = open_bench_db();
+    let run_store = SqliteRunStore::new(pool.clone());
+    let effect_store = SqliteEffectStore::new(pool);
+    let agent_id = seed_agent(&run_store);
+    let run_id = seed_run(&run_store, &agent_id);
+
+    // Each intent can have only one outcome.
+    let mut intent_ids = Vec::new();
+    for i in 0..500 {
+        let intent = effect_store
+            .create_intent(
+                &run_id,
+                None,
+                None,
+                "model_call",
+                r#"{"input":"outcome test"}"#,
+                &format!("outcome-key-{i}"),
+            )
+            .expect("create intent");
+        intent_ids.push(intent.id);
+    }
+    let mut outcome_idx = 0usize;
+
+    group.bench_function("record_outcome", |b| {
+        b.iter(|| {
+            if outcome_idx < intent_ids.len() {
+                let outcome = effect_store
+                    .record_outcome(
+                        &intent_ids[outcome_idx],
+                        "success",
+                        r#"{"output":"benchmark result","tokens":150}"#,
+                    )
+                    .expect("record outcome");
+                criterion::black_box(outcome.id);
+                outcome_idx += 1;
+            }
+        });
+    });
 }
 
 // ============================================================================
@@ -385,7 +393,7 @@ fn bench_artifact_ops(c: &mut Criterion) {
                         Some(&run_id),
                         "log",
                         &digest,
-                        body.len() as i64,
+                        i64::try_from(body.len()).expect("artifact body length fits in i64"),
                         r#"{"source":"benchmark","format":"text/plain"}"#,
                     )
                     .expect("create artifact");
@@ -409,7 +417,7 @@ fn bench_artifact_ops(c: &mut Criterion) {
                 Some(&run_id),
                 "log",
                 &digest,
-                body.len() as i64,
+                i64::try_from(body.len()).expect("artifact body length fits in i64"),
                 r#"{"source":"benchmark"}"#,
             )
             .expect("create artifact");
@@ -473,7 +481,7 @@ fn bench_artifact_ops(c: &mut Criterion) {
                     Some(&run_id),
                     "log",
                     &digest,
-                    body.len() as i64,
+                    i64::try_from(body.len()).expect("artifact body length fits in i64"),
                     &format!(r#"{{"index":{i}}}"#),
                 )
                 .expect("create artifact");
@@ -730,10 +738,10 @@ fn bench_payment_ops(c: &mut Criterion) {
         }
 
         let since = DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid benchmark timestamp")
             .with_timezone(&Utc);
         let until = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid benchmark timestamp")
             .with_timezone(&Utc);
 
         group.bench_function("get_usage", |b| {
@@ -910,46 +918,54 @@ fn bench_conversation_ops(c: &mut Criterion) {
         });
     }
 
-    // --- get_recent_messages ---
-    {
-        let (pool, _tmpfile) = open_bench_db();
-        let agent_id = AgentId::new();
-        let conv = Conversation::new(ConversationId::new(), agent_id);
-        let conv_id = conv.id;
-        rt.block_on(ConversationStore::create(&pool, conv))
-            .expect("create conversation");
-
-        let base = Utc::now();
-        for i in 0..50i64 {
-            let msg = Message {
-                id: Uuid::now_v7(),
-                conversation_id: conv_id,
-                role: if i % 2 == 0 {
-                    MessageRole::User
-                } else {
-                    MessageRole::Assistant
-                },
-                content: MessageContent::Text {
-                    text: format!("conversation turn {i}"),
-                },
-                created_at: base + chrono::Duration::milliseconds(i),
-                token_count: Some(12),
-            };
-            rt.block_on(ConversationStore::add_message(&pool, conv_id, msg))
-                .expect("seed message");
-        }
-
-        group.bench_function("get_recent_messages_10", |b| {
-            b.iter(|| {
-                let msgs = rt
-                    .block_on(ConversationStore::get_recent_messages(&pool, conv_id, 10))
-                    .expect("get recent");
-                criterion::black_box(msgs.len());
-            });
-        });
-    }
+    register_recent_messages_benchmark(&mut group);
 
     group.finish();
+}
+
+fn register_recent_messages_benchmark(group: &mut BenchmarkGroup<'_, WallTime>) {
+    use polkagent_conversation::{
+        types::{Conversation, Message, MessageContent, MessageRole},
+        ConversationStore,
+    };
+    use polkagent_core::ids::{AgentId, ConversationId};
+
+    let rt = build_rt();
+    let (pool, _tmpfile) = open_bench_db();
+    let agent_id = AgentId::new();
+    let conv = Conversation::new(ConversationId::new(), agent_id);
+    let conv_id = conv.id;
+    rt.block_on(ConversationStore::create(&pool, conv))
+        .expect("create conversation");
+
+    let base = Utc::now();
+    for i in 0..50i64 {
+        let msg = Message {
+            id: Uuid::now_v7(),
+            conversation_id: conv_id,
+            role: if i % 2 == 0 {
+                MessageRole::User
+            } else {
+                MessageRole::Assistant
+            },
+            content: MessageContent::Text {
+                text: format!("conversation turn {i}"),
+            },
+            created_at: base + chrono::Duration::milliseconds(i),
+            token_count: Some(12),
+        };
+        rt.block_on(ConversationStore::add_message(&pool, conv_id, msg))
+            .expect("seed message");
+    }
+
+    group.bench_function("get_recent_messages_10", |b| {
+        b.iter(|| {
+            let msgs = rt
+                .block_on(ConversationStore::get_recent_messages(&pool, conv_id, 10))
+                .expect("get recent");
+            criterion::black_box(msgs.len());
+        });
+    });
 }
 
 // ============================================================================
@@ -1129,7 +1145,9 @@ fn bench_bulk_insert(c: &mut Criterion) {
                     (event_store, tmpfile, run_id)
                 },
                 |(event_store, _tmpfile, run_id)| {
-                    for seq in 1..=count as i64 {
+                    let event_count =
+                        i64::try_from(count).expect("benchmark event count fits in i64");
+                    for seq in 1..=event_count {
                         event_store
                             .append_event(
                                 &run_id,
@@ -1359,101 +1377,92 @@ fn bench_query_filters(c: &mut Criterion) {
         });
     }
 
-    // --- filter expired leases ---
-    {
-        let (pool, _tmpfile) = open_bench_db();
-        let run_store = SqliteRunStore::new(pool.clone());
-        let effect_store = SqliteEffectStore::new(pool.clone());
-        let agent_id = seed_agent(&run_store);
-        let run_id = seed_run(&run_store, &agent_id);
-
-        // Create 100 intents with expired leases.
-        let expired_lease = (Utc::now() - chrono::Duration::seconds(60)).to_rfc3339();
-        for i in 0..100 {
-            let intent = effect_store
-                .create_intent(
-                    &run_id,
-                    None,
-                    None,
-                    "model_call",
-                    r#"{"filter":"expired_test"}"#,
-                    &format!("expired-key-{i}"),
-                )
-                .expect("create intent");
-            // Directly set expired lease via raw SQL (claim_intent won't allow
-            // claiming with a past date on already-expired leases cleanly).
-            {
-                let writer = pool.writer();
-                writer
-                    .execute(
-                        "UPDATE effect_intents SET claimed_by = 'worker-old', claimed_until = ?1 WHERE id = ?2",
-                        rusqlite::params![expired_lease, intent.id],
-                    )
-                    .expect("set expired lease");
-            }
-        }
-
-        group.bench_function("expired_leases_100", |b| {
-            b.iter(|| {
-                let rows = effect_store
-                    .expired_leases(Utc::now())
-                    .expect("expired leases");
-                criterion::black_box(rows.len());
-            });
-        });
-    }
-
-    // --- query payment costs by run ---
-    {
-        use polkagent_payment::{types::CostRecord, PaymentStore};
-
-        let (pool, _tmpfile) = open_bench_db();
-        let rt = build_rt();
-
-        {
-            let writer = pool.writer();
-            writer
-                .execute(
-                    "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at)
-                     VALUES ('q-agent', 'Query Agent', 'active', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
-                    [],
-                )
-                .expect("insert agent");
-            writer
-                .execute(
-                    "INSERT INTO runs (id, agent_id, state, params_json, created_at, updated_at)
-                     VALUES ('q-run', 'q-agent', 'completed', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
-                    [],
-                )
-                .expect("insert run");
-        }
-
-        // Seed 100 cost records.
-        for _ in 0..100 {
-            let record = CostRecord {
-                run_id: "q-run".to_string(),
-                provider: "anthropic".to_string(),
-                model: "claude-sonnet-4".to_string(),
-                input_tokens: 2000,
-                output_tokens: 1000,
-                estimated_usd: 0.02,
-                recorded_at: Utc::now(),
-            };
-            rt.block_on(PaymentStore::record_cost(&pool, record))
-                .expect("seed cost");
-        }
-
-        group.bench_function("get_costs_for_run_100", |b| {
-            b.iter(|| {
-                let costs = rt
-                    .block_on(PaymentStore::get_costs(&pool, "q-run"))
-                    .expect("get costs");
-                criterion::black_box(costs.len());
-            });
-        });
-    }
+    register_expired_and_payment_filter_benchmarks(&mut group);
 
     group.finish();
+}
+
+fn register_expired_and_payment_filter_benchmarks(group: &mut BenchmarkGroup<'_, WallTime>) {
+    use polkagent_payment::{types::CostRecord, PaymentStore};
+
+    let (pool, _tmpfile) = open_bench_db();
+    let run_store = SqliteRunStore::new(pool.clone());
+    let effect_store = SqliteEffectStore::new(pool.clone());
+    let agent_id = seed_agent(&run_store);
+    let run_id = seed_run(&run_store, &agent_id);
+
+    let expired_lease = (Utc::now() - chrono::Duration::seconds(60)).to_rfc3339();
+    for i in 0..100 {
+        let intent = effect_store
+            .create_intent(
+                &run_id,
+                None,
+                None,
+                "model_call",
+                r#"{"filter":"expired_test"}"#,
+                &format!("expired-key-{i}"),
+            )
+            .expect("create intent");
+        let writer = pool.writer();
+        writer
+            .execute(
+                "UPDATE effect_intents SET claimed_by = 'worker-old', claimed_until = ?1 WHERE id = ?2",
+                rusqlite::params![expired_lease, intent.id],
+            )
+            .expect("set expired lease");
+    }
+
+    group.bench_function("expired_leases_100", |b| {
+        b.iter(|| {
+            let rows = effect_store
+                .expired_leases(Utc::now())
+                .expect("expired leases");
+            criterion::black_box(rows.len());
+        });
+    });
+
+    let (pool, _tmpfile) = open_bench_db();
+    let rt = build_rt();
+    {
+        let writer = pool.writer();
+        writer
+            .execute(
+                "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at)
+                 VALUES ('q-agent', 'Query Agent', 'active', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("insert agent");
+        writer
+            .execute(
+                "INSERT INTO runs (id, agent_id, state, params_json, created_at, updated_at)
+                 VALUES ('q-run', 'q-agent', 'completed', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("insert run");
+    }
+
+    for _ in 0..100 {
+        let record = CostRecord {
+            run_id: "q-run".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4".to_string(),
+            input_tokens: 2000,
+            output_tokens: 1000,
+            estimated_usd: 0.02,
+            recorded_at: Utc::now(),
+        };
+        rt.block_on(PaymentStore::record_cost(&pool, record))
+            .expect("seed cost");
+    }
+
+    group.bench_function("get_costs_for_run_100", |b| {
+        b.iter(|| {
+            let costs = rt
+                .block_on(PaymentStore::get_costs(&pool, "q-run"))
+                .expect("get costs");
+            criterion::black_box(costs.len());
+        });
+    });
 }
 
 // ============================================================================

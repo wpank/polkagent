@@ -371,6 +371,9 @@ impl ArtifactStore for SqlitePool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These contract tests use `expect` to pinpoint the exact database setup or
+// artifact-store operation that violated the fixture's asserted invariant.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::migrations;
@@ -659,40 +662,40 @@ mod tests {
         let pool = test_pool();
 
         // Create three artifacts: grandparent -> parent -> child
-        let body_gp = b"grandparent";
-        let art_gp = make_artifact(body_gp);
-        ArtifactStore::store(&pool, &art_gp, body_gp)
+        let grandparent_body = b"grandparent";
+        let grandparent_artifact = make_artifact(grandparent_body);
+        ArtifactStore::store(&pool, &grandparent_artifact, grandparent_body)
             .await
             .expect("store gp");
 
-        let body_p = b"parent";
-        let art_p = make_artifact(body_p);
-        ArtifactStore::store(&pool, &art_p, body_p)
+        let parent_body = b"parent";
+        let parent_artifact = make_artifact(parent_body);
+        ArtifactStore::store(&pool, &parent_artifact, parent_body)
             .await
             .expect("store parent");
 
-        let body_c = b"child";
-        let art_c = make_artifact(body_c);
-        ArtifactStore::store(&pool, &art_c, body_c)
+        let child_body = b"child";
+        let child_artifact = make_artifact(child_body);
+        ArtifactStore::store(&pool, &child_artifact, child_body)
             .await
             .expect("store child");
 
         // Record lineage.
-        ArtifactStore::add_lineage(&pool, art_c.id, art_p.id)
+        ArtifactStore::add_lineage(&pool, child_artifact.id, parent_artifact.id)
             .await
             .expect("link child->parent");
-        ArtifactStore::add_lineage(&pool, art_p.id, art_gp.id)
+        ArtifactStore::add_lineage(&pool, parent_artifact.id, grandparent_artifact.id)
             .await
             .expect("link parent->gp");
 
         // Get lineage for child: should return [parent, grandparent] in BFS order.
-        let lineage = ArtifactStore::get_lineage(&pool, art_c.id)
+        let lineage = ArtifactStore::get_lineage(&pool, child_artifact.id)
             .await
             .expect("get lineage");
 
         assert_eq!(lineage.len(), 2);
-        assert_eq!(lineage[0], art_p.id);
-        assert_eq!(lineage[1], art_gp.id);
+        assert_eq!(lineage[0], parent_artifact.id);
+        assert_eq!(lineage[1], grandparent_artifact.id);
     }
 
     #[tokio::test]

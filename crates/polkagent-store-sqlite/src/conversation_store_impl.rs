@@ -501,6 +501,9 @@ impl ConversationStore for SqlitePool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These contract tests use `expect` to pinpoint the exact database setup or
+// conversation-store operation that violated the fixture's asserted invariant.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::migrations;
@@ -1214,7 +1217,10 @@ mod tests {
                 content: MessageContent::Text {
                     text: format!("{role:?} message"),
                 },
-                created_at: base + chrono::Duration::seconds(i as i64),
+                created_at: base
+                    + chrono::Duration::seconds(
+                        i64::try_from(i).expect("four fixture roles fit in i64"),
+                    ),
                 token_count: None,
             };
             ConversationStore::add_message(&pool, conv_id, msg)

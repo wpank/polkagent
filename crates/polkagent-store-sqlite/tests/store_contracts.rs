@@ -7,10 +7,14 @@
 //! - [`EventStore`](polkagent_store_trait::event::EventStore)
 //! - [`ArtifactStore`](polkagent_artifact::store::ArtifactStore)
 //!
-//! Each test uses an in-memory SQLite database with migrations applied.  The
+//! Each test uses an in-memory `SQLite` database with migrations applied.  The
 //! tests are intentionally written against the *trait* APIs (not the concrete
 //! `Sqlite*Store` wrappers) so they validate the public contract that any
 //! implementation must uphold.
+
+// This assertion-oriented contract target uses `expect` to identify the exact
+// fixture setup or trait operation that violated the public store contract.
+#![allow(clippy::expect_used)]
 
 use std::time::Duration;
 
@@ -60,7 +64,7 @@ fn setup_pool() -> SqlitePool {
     pool
 }
 
-/// Insert a run record directly (bypasses the RunStore trait) so that FK
+/// Insert a run record directly (bypasses the `RunStore` trait) so that FK
 /// constraints on `effect_intents.run_id` and `artifacts.run_id` are satisfied.
 fn insert_run(pool: &SqlitePool, run_id: RunId, agent_id: &str) {
     let now = Utc::now().to_rfc3339();
@@ -90,7 +94,7 @@ fn insert_run_str(pool: &SqlitePool, run_id: &str) {
 }
 
 /// Insert the full chain of FK records: run -> turn -> step, returning the
-/// step_id.  Required because `effect_intents.step_id` has a FK to `steps(id)`.
+/// `step_id`. Required because `effect_intents.step_id` has a FK to `steps(id)`.
 fn insert_run_with_step(pool: &SqlitePool, run_id: RunId, agent_id: &str) -> StepId {
     let now = Utc::now().to_rfc3339();
     let writer = pool.writer();
@@ -496,7 +500,7 @@ mod effect_store {
             .expect("claim");
 
         assert!(claimed.is_some(), "should claim the pending intent");
-        let claimed = claimed.unwrap();
+        let claimed = claimed.expect("pending intent should be claimable");
         assert_eq!(claimed.id, intent_id);
         assert_eq!(claimed.state, "claimed");
         assert_eq!(claimed.lease_owner, Some(worker));
@@ -581,7 +585,12 @@ mod effect_store {
             .await
             .expect("reclaim");
         assert!(reclaimed.is_some());
-        assert_eq!(reclaimed.unwrap().lease_owner, Some(worker2));
+        assert_eq!(
+            reclaimed
+                .expect("released intent should be claimable")
+                .lease_owner,
+            Some(worker2)
+        );
     }
 
     #[tokio::test]
@@ -1376,41 +1385,41 @@ mod artifact_store {
         let pool = setup_pool();
 
         // grandparent -> parent -> child
-        let body_gp = b"grandparent content";
-        let art_gp = make_artifact(body_gp);
-        ArtifactStore::store(&pool, &art_gp, body_gp)
+        let grandparent_body = b"grandparent content";
+        let grandparent_artifact = make_artifact(grandparent_body);
+        ArtifactStore::store(&pool, &grandparent_artifact, grandparent_body)
             .await
             .expect("store gp");
 
-        let body_p = b"parent content";
-        let art_p = make_artifact(body_p);
-        ArtifactStore::store(&pool, &art_p, body_p)
+        let parent_body = b"parent content";
+        let parent_artifact = make_artifact(parent_body);
+        ArtifactStore::store(&pool, &parent_artifact, parent_body)
             .await
             .expect("store parent");
 
-        let body_c = b"child content";
-        let art_c = make_artifact(body_c);
-        ArtifactStore::store(&pool, &art_c, body_c)
+        let child_body = b"child content";
+        let child_artifact = make_artifact(child_body);
+        ArtifactStore::store(&pool, &child_artifact, child_body)
             .await
             .expect("store child");
 
         // Record lineage.
-        ArtifactStore::add_lineage(&pool, art_c.id, art_p.id)
+        ArtifactStore::add_lineage(&pool, child_artifact.id, parent_artifact.id)
             .await
             .expect("child -> parent");
-        ArtifactStore::add_lineage(&pool, art_p.id, art_gp.id)
+        ArtifactStore::add_lineage(&pool, parent_artifact.id, grandparent_artifact.id)
             .await
             .expect("parent -> grandparent");
 
         // Get lineage for child: should find parent and grandparent.
-        let lineage = ArtifactStore::get_lineage(&pool, art_c.id)
+        let lineage = ArtifactStore::get_lineage(&pool, child_artifact.id)
             .await
             .expect("lineage");
 
         assert_eq!(lineage.len(), 2, "should have 2 ancestors");
         // BFS order: parent first, then grandparent.
-        assert_eq!(lineage[0], art_p.id);
-        assert_eq!(lineage[1], art_gp.id);
+        assert_eq!(lineage[0], parent_artifact.id);
+        assert_eq!(lineage[1], grandparent_artifact.id);
     }
 
     #[tokio::test]

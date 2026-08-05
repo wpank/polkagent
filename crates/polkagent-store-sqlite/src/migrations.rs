@@ -192,6 +192,9 @@ fn u64(b: u8) -> u64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These migration assertions use `expect` to identify the exact schema setup
+// or query that broke the in-memory migration fixture.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
@@ -231,7 +234,10 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .expect("count");
-        assert_eq!(count, MIGRATIONS.len() as i64);
+        assert_eq!(
+            count,
+            i64::try_from(MIGRATIONS.len()).expect("migration count fits in i64")
+        );
     }
 
     #[test]

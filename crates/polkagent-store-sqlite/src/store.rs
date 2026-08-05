@@ -2192,6 +2192,9 @@ impl EffectStore for SqlitePool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These contract tests use `expect` to pinpoint the exact database setup or
+// effect-store operation that violated the fixture's asserted invariant.
+#[allow(clippy::expect_used)]
 mod effect_store_tests {
     use super::*;
     use crate::migrations;
@@ -2253,7 +2256,7 @@ mod effect_store_tests {
         TestScaffold { run_id, step_id }
     }
 
-    /// Build a minimal `StoredIntent` for testing, using the scaffold's step_id.
+    /// Build a minimal `StoredIntent` for testing, using the scaffold's `step_id`.
     fn make_intent(scaffold: &TestScaffold) -> StoredIntent {
         StoredIntent {
             id: EffectId::new(),

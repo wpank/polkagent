@@ -618,6 +618,9 @@ impl PaymentStore for SqlitePool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These contract tests use `expect` to pinpoint the exact database setup or
+// payment-store operation that violated the fixture's asserted invariant.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::migrations;
@@ -1002,7 +1005,8 @@ mod tests {
                 model: format!("gpt-4-{i}"),
                 input_tokens: 100 * i,
                 output_tokens: 50 * i,
-                estimated_usd: 0.001 * i as f64,
+                estimated_usd: 0.001
+                    * f64::from(u32::try_from(i).expect("five fixture records fit in u32")),
                 recorded_at: Utc::now(),
             };
             PaymentStore::record_cost(&pool, record)
@@ -1050,10 +1054,10 @@ mod tests {
         }
 
         let since = DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid fixture timestamp")
             .with_timezone(&Utc);
         let until = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid fixture timestamp")
             .with_timezone(&Utc);
 
         let summary = PaymentStore::get_usage(&pool, "agent-1", since, until)
@@ -1069,10 +1073,10 @@ mod tests {
     async fn get_usage_empty_for_unknown_agent() {
         let pool = test_pool();
         let since = DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid fixture timestamp")
             .with_timezone(&Utc);
         let until = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid fixture timestamp")
             .with_timezone(&Utc);
 
         let summary = PaymentStore::get_usage(&pool, "no-such-agent", since, until)
@@ -1081,7 +1085,7 @@ mod tests {
 
         assert_eq!(summary.total_runs, 0);
         assert_eq!(summary.total_tokens, 0);
-        assert_eq!(summary.estimated_usd, 0.0);
+        assert!(summary.estimated_usd.abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -1113,10 +1117,10 @@ mod tests {
 
         // Query a range that includes 2023-06-01.
         let since = DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid fixture timestamp")
             .with_timezone(&Utc);
         let until = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid fixture timestamp")
             .with_timezone(&Utc);
         let summary = PaymentStore::get_usage(&pool, "agent-1", since, until)
             .await
@@ -1125,10 +1129,10 @@ mod tests {
 
         // Query a range that excludes it.
         let since2 = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid fixture timestamp")
             .with_timezone(&Utc);
         let until2 = DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
-            .unwrap()
+            .expect("valid fixture timestamp")
             .with_timezone(&Utc);
         let summary2 = PaymentStore::get_usage(&pool, "agent-1", since2, until2)
             .await

@@ -4,6 +4,10 @@
 //! the database is automatically cleaned up when the test ends.  Tests that
 //! only need schema validation can use an in-memory database.
 
+// This assertion-oriented integration target uses `expect` to identify the
+// exact setup, storage, or concurrency contract that failed.
+#![allow(clippy::expect_used)]
+
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;

@@ -436,6 +436,9 @@ impl EventStore for SqlitePool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// These contract tests use `expect` to pinpoint the exact database setup or
+// event-store operation that violated the fixture's asserted invariant.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::migrations;
