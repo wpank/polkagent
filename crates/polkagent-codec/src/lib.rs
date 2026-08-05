@@ -51,6 +51,10 @@ pub mod metadata;
 pub mod scale;
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "codec tests use fail-fast assertions for deterministic byte fixtures"
+)]
 mod tests;
 
 // ---------------------------------------------------------------------------

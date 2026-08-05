@@ -8,7 +8,7 @@ use crate::scale::ScaleEncoder;
 // ---------------------------------------------------------------------------
 
 /// Build a minimal unsigned extrinsic byte sequence:
-/// [compact(total_len)] [version=4 (no sign flag)] [pallet] [call] [args...]
+/// `[compact(total_len)] [version=4 (no sign flag)] [pallet] [call] [args...]`
 fn build_unsigned_extrinsic(pallet: u8, call: u8, args: &[u8]) -> Vec<u8> {
     // Inner payload: version byte + pallet + call + args
     let mut payload = vec![0x04, pallet, call];

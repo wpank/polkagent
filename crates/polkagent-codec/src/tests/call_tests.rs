@@ -152,10 +152,10 @@ fn decode_batch_call_wrong_pallet_error() {
 // decode_proxy_call
 // ---------------------------------------------------------------------------
 
-/// Build minimal Proxy.proxy args:
-/// dest = MultiAddress::Id(32 zero bytes)
-/// force_proxy_type = None
-/// inner_call = [pallet, call]
+/// Build minimal `Proxy.proxy` args:
+/// `dest = MultiAddress::Id(32 zero bytes)`
+/// `force_proxy_type = None`
+/// `inner_call = [pallet, call]`
 fn build_proxy_args(inner_pallet: u8, inner_call: u8) -> Vec<u8> {
     let mut enc = ScaleEncoder::new();
     // real: MultiAddress::Id

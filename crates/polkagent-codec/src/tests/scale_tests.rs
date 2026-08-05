@@ -200,7 +200,9 @@ fn vec_round_trip() {
     enc.encode_vec(&items, |e, v| e.encode_u32(*v));
     let bytes = enc.finish();
     let mut dec = ScaleDecoder::new(&bytes);
-    let decoded = dec.decode_vec(|d| d.decode_u32()).expect("vec decode");
+    let decoded = dec
+        .decode_vec(ScaleDecoder::decode_u32)
+        .expect("vec decode");
     assert_eq!(decoded, items);
 }
 
@@ -212,7 +214,9 @@ fn empty_vec_round_trip() {
     let bytes = enc.finish();
     assert_eq!(bytes, vec![0x00]); // compact 0
     let mut dec = ScaleDecoder::new(&bytes);
-    let decoded = dec.decode_vec(|d| d.decode_u8()).expect("empty vec decode");
+    let decoded = dec
+        .decode_vec(ScaleDecoder::decode_u8)
+        .expect("empty vec decode");
     assert!(decoded.is_empty());
 }
 
@@ -224,7 +228,7 @@ fn option_some_round_trip() {
     assert_eq!(bytes[0], 0x01);
     let mut dec = ScaleDecoder::new(&bytes);
     let decoded = dec
-        .decode_option(|d| d.decode_u32())
+        .decode_option(ScaleDecoder::decode_u32)
         .expect("option decode");
     assert_eq!(decoded, Some(42u32));
 }
@@ -236,7 +240,9 @@ fn option_none_round_trip() {
     let bytes = enc.finish();
     assert_eq!(bytes, vec![0x00]);
     let mut dec = ScaleDecoder::new(&bytes);
-    let decoded = dec.decode_option(|d| d.decode_u32()).expect("none decode");
+    let decoded = dec
+        .decode_option(ScaleDecoder::decode_u32)
+        .expect("none decode");
     assert_eq!(decoded, None);
 }
 

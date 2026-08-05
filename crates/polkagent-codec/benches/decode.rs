@@ -7,6 +7,11 @@
 //!
 //! PRD-15 performance benchmarks.
 
+#![allow(
+    clippy::expect_used,
+    reason = "benchmarks fail fast when deterministic codec fixtures violate their invariants"
+)]
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use polkagent_codec::{
     decode_extrinsic,
@@ -43,7 +48,9 @@ fn make_transfer_keep_alive_extrinsic() -> Vec<u8> {
 
     let body_bytes = body.finish();
     // Outer compact length prefix
-    enc.encode_compact_u32(body_bytes.len() as u32);
+    enc.encode_compact_u32(
+        u32::try_from(body_bytes.len()).expect("fixed benchmark body length fits in u32"),
+    );
     let mut out = enc.finish();
     out.extend_from_slice(&body_bytes);
     out
