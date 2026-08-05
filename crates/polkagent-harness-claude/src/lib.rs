@@ -47,7 +47,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -61,6 +61,24 @@ use polkagent_harness_trait::{
     HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
     TransportFlavor,
 };
+
+/// Recover session/status state after a panic poisoned a standard mutex.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("Claude harness state mutex was poisoned; recovering inner state");
+            poisoned.into_inner()
+        }
+    }
+}
+
+#[cfg(unix)]
+fn unix_process_id(pid: u32) -> Result<i32, HarnessError> {
+    i32::try_from(pid).map_err(|error| HarnessError::Internal {
+        message: format!("child process ID {pid} cannot be represented by pid_t: {error}"),
+    })
+}
 
 // ---------------------------------------------------------------------------
 // ClaudeHarnessConfig
@@ -151,7 +169,7 @@ impl std::fmt::Debug for SessionState {
             .field("messages", &self.messages.len())
             .field("binary_path", &self.binary_path)
             .field("working_dir", &self.working_dir)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -193,7 +211,7 @@ impl std::fmt::Debug for ClaudeHarness {
             .field("config", &self.config)
             .field("claude_config", &self.claude_config)
             .field("active_sessions", &self.active_session_count())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -251,7 +269,7 @@ impl ClaudeHarness {
     /// Return the number of active sessions.
     #[must_use]
     pub fn active_session_count(&self) -> usize {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.values().filter(|s| s.active).count()
     }
 
@@ -260,7 +278,7 @@ impl ClaudeHarness {
     /// Returns `None` if the session does not exist.
     #[must_use]
     pub fn session_messages(&self, session_id: SessionId) -> Option<Vec<String>> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.get(&session_id).map(|s| s.messages.clone())
     }
 
@@ -269,7 +287,7 @@ impl ClaudeHarness {
     /// Returns `None` if the session does not exist.
     #[must_use]
     pub fn session_metadata(&self, session_id: SessionId) -> Option<SessionMetadata> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.get(&session_id).map(|s| SessionMetadata {
             session_id: s.id,
             binary_path: s.binary_path.clone(),
@@ -321,7 +339,7 @@ impl Harness for ClaudeHarness {
     }
 
     fn status(&self) -> HarnessStatus {
-        let status = self.status.lock().expect("status mutex poisoned");
+        let status = lock_or_recover(&self.status);
         status.clone()
     }
 
@@ -385,13 +403,13 @@ impl Harness for ClaudeHarness {
         };
 
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             sessions.insert(session_id, state);
         }
 
         // Update harness status to Running.
         {
-            let mut status = self.status.lock().expect("status mutex poisoned");
+            let mut status = lock_or_recover(&self.status);
             *status = HarnessStatus::Running {
                 since: Utc::now(),
                 run_id: None,
@@ -417,10 +435,10 @@ impl Harness for ClaudeHarness {
         // Take the stdin handle out of the session under the lock, record
         // the message, then drop the lock before performing async I/O.
         let mut taken_stdin = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 return Err(HarnessError::InvalidState {
@@ -454,7 +472,7 @@ impl Harness for ClaudeHarness {
 
         // Put stdin back into the session.
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.stdin = Some(taken_stdin);
             }
@@ -477,10 +495,10 @@ impl Harness for ClaudeHarness {
     ) -> Result<Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>, HarnessError> {
         // Take the stdout handle from the session.
         let stdout = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             session
                 .stdout
@@ -554,10 +572,10 @@ impl Harness for ClaudeHarness {
         // Phase 1: Under the lock, mark inactive and close I/O handles.
         // Extract the PID for signal-based termination.
         let pid = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 warn!(
@@ -611,12 +629,19 @@ impl Harness for ClaudeHarness {
             let exited = tokio::time::timeout(timeout, async {
                 loop {
                     let done = {
-                        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                        let mut sessions = lock_or_recover(&self.sessions);
                         match sessions.get_mut(&session_id) {
                             Some(session) => match session.child.try_wait() {
                                 Ok(Some(_)) => true,
                                 Ok(None) => false,
-                                Err(_) => true, // treat errors as "done"
+                                Err(error) => {
+                                    warn!(
+                                        session_id = %session_id,
+                                        error = %error,
+                                        "failed to inspect Claude process; treating it as exited"
+                                    );
+                                    true
+                                }
                             },
                             None => true, // session removed
                         }
@@ -660,7 +685,7 @@ impl Harness for ClaudeHarness {
         {
             // On non-Unix platforms, use `child.start_kill()` which is
             // synchronous (non-async), so we can hold the lock safely.
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 if let Err(e) = session.child.start_kill() {
                     warn!(
@@ -674,7 +699,7 @@ impl Harness for ClaudeHarness {
 
         // Phase 3: Reap the child and update status (under lock).
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 match session.child.try_wait() {
                     Ok(Some(status)) => {
@@ -704,7 +729,7 @@ impl Harness for ClaudeHarness {
             let any_active = sessions.values().any(|s| s.active);
             if !any_active {
                 drop(sessions);
-                let mut status = self.status.lock().expect("status mutex poisoned");
+                let mut status = lock_or_recover(&self.status);
                 *status = HarnessStatus::Idle;
             }
         }
@@ -751,7 +776,7 @@ impl Harness for ClaudeHarness {
         &self,
         session_id: SessionId,
     ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         let session = sessions
             .get(&session_id)
             .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -776,7 +801,7 @@ impl Harness for ClaudeHarness {
             process_pid: pid,
             started_at: chrono::Utc::now(),
             working_directory: session.working_dir.clone(),
-            turn_count: session.messages.len() as u32,
+            turn_count: u32::try_from(session.messages.len()).unwrap_or(u32::MAX),
             backend_state,
         };
 
@@ -791,7 +816,8 @@ impl Harness for ClaudeHarness {
         // Check if the old process is still alive.
         if let Some(pid) = snapshot.process_pid {
             let alive =
-                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok();
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(unix_process_id(pid)?), None)
+                    .is_ok();
 
             if alive {
                 debug!(pid, session_id = %session_id, "Re-attaching to live Claude process");
@@ -820,7 +846,7 @@ impl Harness for ClaudeHarness {
         #[cfg(unix)]
         {
             let raw_pid = {
-                let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                let sessions = lock_or_recover(&self.sessions);
                 let session = sessions
                     .get(&session_id)
                     .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -829,14 +855,14 @@ impl Harness for ClaudeHarness {
 
             if let Some(pid) = raw_pid {
                 debug!(session_id = %session_id, pid, "Sending SIGTERM to Claude process");
-                let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+                let nix_pid = nix::unistd::Pid::from_raw(unix_process_id(pid)?);
                 let _ = nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM);
 
                 // Wait up to 5 seconds for clean exit.
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 loop {
                     let exited = {
-                        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                        let mut sessions = lock_or_recover(&self.sessions);
                         if let Some(session) = sessions.get_mut(&session_id) {
                             matches!(session.child.try_wait(), Ok(Some(_)))
                         } else {
@@ -865,6 +891,9 @@ impl Harness for ClaudeHarness {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Adapter contract tests use `expect` to identify the exact subprocess,
+// session, or event-stream invariant that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use futures::StreamExt;
@@ -1319,7 +1348,7 @@ mod tests {
             .start_session(SessionConfig::default())
             .await
             .expect("start s1");
-        let _s2 = harness
+        let s2 = harness
             .start_session(SessionConfig::default())
             .await
             .expect("start s2");
@@ -1330,7 +1359,7 @@ mod tests {
         assert_eq!(harness.active_session_count(), 1);
 
         // Clean up s2.
-        harness.end_session(_s2).await.expect("end s2");
+        harness.end_session(s2).await.expect("end s2");
     }
 
     #[tokio::test]
@@ -1465,6 +1494,6 @@ mod tests {
     /// object-safety requirement.
     #[allow(dead_code)]
     fn _claude_harness_is_object_safe(h: &ClaudeHarness) {
-        let _dyn: &dyn Harness = h;
+        let _: &dyn Harness = h;
     }
 }

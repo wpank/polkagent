@@ -49,7 +49,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -64,6 +64,21 @@ use polkagent_harness_trait::{
     Harness, HarnessCapabilities, HarnessConfig, HarnessError, HarnessEvent, HarnessId,
     HarnessStatus, SessionConfig, SessionId,
 };
+
+/// Recover adapter state after a panic poisoned a standard mutex.
+///
+/// Session/status state remains structurally valid because every mutation is
+/// performed through ordinary collection and enum assignments. Recovery is
+/// preferable to turning a diagnostic/status path into a second panic.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("ACP harness state mutex was poisoned; recovering inner state");
+            poisoned.into_inner()
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AcpError
@@ -178,7 +193,7 @@ impl AcpConfig {
         }
     }
 
-    /// Create a configuration for the OpenCode ACP agent.
+    /// Create a configuration for the `OpenCode` ACP agent.
     ///
     /// Spawns `opencode acp` (or the given binary path).
     pub fn opencode(binary: impl Into<String>, cwd: Option<PathBuf>) -> Self {
@@ -296,7 +311,7 @@ impl std::fmt::Debug for AcpStdioClient {
             .field("command", &self.config.command)
             .field("connected", &self.child.is_some())
             .field("session_id", &self.session_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -930,7 +945,7 @@ impl<C: AcpConfigurator> std::fmt::Debug for AcpHarness<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AcpHarness")
             .field("harness_id", &self.configurator.harness_id())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -958,7 +973,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
     }
 
     fn status(&self) -> HarnessStatus {
-        let status = self.status.lock().expect("status mutex poisoned");
+        let status = lock_or_recover(&self.status);
         status.clone()
     }
 
@@ -990,7 +1005,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         let session_key = client.new_session(wd.as_deref(), None).await?;
 
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             sessions.insert(
                 session_id,
                 AcpSessionState {
@@ -1001,7 +1016,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         }
 
         {
-            let mut status = self.status.lock().expect("status mutex poisoned");
+            let mut status = lock_or_recover(&self.status);
             *status = HarnessStatus::Running {
                 since: Utc::now(),
                 run_id: None,
@@ -1014,10 +1029,10 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
 
     async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError> {
         let session_key = {
-            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             let state = sessions
                 .get(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             if !state.active {
                 return Err(HarnessError::InvalidState {
@@ -1045,7 +1060,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         session_id: SessionId,
     ) -> Result<Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>, HarnessError> {
         {
-            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             if !sessions.contains_key(&session_id) {
                 return Err(HarnessError::SessionNotFound { session_id });
             }
@@ -1118,10 +1133,10 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
 
     async fn end_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         let session_key = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let state = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             if !state.active {
                 return Ok(());
@@ -1137,11 +1152,11 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         }
 
         {
-            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             let any_active = sessions.values().any(|s| s.active);
             if !any_active {
                 drop(sessions);
-                let mut status = self.status.lock().expect("status mutex poisoned");
+                let mut status = lock_or_recover(&self.status);
                 *status = HarnessStatus::Idle;
             }
         }
@@ -1174,7 +1189,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         &self,
         session_id: SessionId,
     ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         let session = sessions
             .get(&session_id)
             .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -1220,7 +1235,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
 
         // Re-register the session in our local map.
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             sessions.insert(
                 session_id,
                 AcpSessionState {
@@ -1231,7 +1246,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
         }
 
         {
-            let mut status = self.status.lock().expect("status mutex poisoned");
+            let mut status = lock_or_recover(&self.status);
             *status = HarnessStatus::Running {
                 since: chrono::Utc::now(),
                 run_id: None,
@@ -1245,7 +1260,7 @@ impl<C: AcpConfigurator> Harness for AcpHarness<C> {
 
     async fn cancel_session(&self, session_id: SessionId) -> Result<(), HarnessError> {
         let session_key = {
-            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             let state = sessions
                 .get(&session_id)
                 .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -1277,12 +1292,15 @@ pub fn build_jsonrpc_request(
     method: &str,
     params: serde_json::Value,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut request = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
         "method": method,
-        "params": params,
-    })
+    });
+    if let Some(object) = request.as_object_mut() {
+        object.insert("params".into(), params);
+    }
+    request
 }
 
 /// Build a JSON-RPC 2.0 notification (no id).
@@ -1301,11 +1319,14 @@ pub fn build_jsonrpc_notification(method: &str, params: serde_json::Value) -> se
 
 /// Build a JSON-RPC 2.0 response message.
 pub fn build_jsonrpc_response(id: u64, result: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
+    let mut response = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
-        "result": result,
-    })
+    });
+    if let Some(object) = response.as_object_mut() {
+        object.insert("result".into(), result);
+    }
+    response
 }
 
 /// Build a JSON-RPC 2.0 error response.
@@ -1325,8 +1346,12 @@ pub fn build_jsonrpc_error(id: u64, code: i64, message: &str) -> serde_json::Val
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Protocol fixture assertions use `expect` to identify the exact malformed
+// message, channel, or subprocess contract that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use polkagent_harness_trait::{CancelMode, McpMode, SessionResumeMode, ToolInjection};
 
     // -----------------------------------------------------------------------
     // AcpConfig constructor tests
@@ -1962,7 +1987,7 @@ mod tests {
                     _ => panic!("expected AgentMessageChunk"),
                 }
             }
-            _ => panic!("expected SessionUpdate"),
+            AcpNotification::PermissionRequest { .. } => panic!("expected SessionUpdate"),
         }
     }
 
@@ -2031,7 +2056,7 @@ mod tests {
                     Some("Write to /tmp/test.txt")
                 );
             }
-            _ => panic!("expected PermissionRequest"),
+            AcpNotification::SessionUpdate { .. } => panic!("expected PermissionRequest"),
         }
     }
 
@@ -2091,10 +2116,10 @@ mod tests {
                 models: vec!["test-model".into()],
                 transport: None,
                 model_override: None,
-                session_resume: Default::default(),
-                mcp_passthrough: Default::default(),
-                tool_injection: Default::default(),
-                cancel: Default::default(),
+                session_resume: SessionResumeMode::default(),
+                mcp_passthrough: McpMode::default(),
+                tool_injection: ToolInjection::default(),
+                cancel: CancelMode::default(),
                 multiplex_safe: false,
             }
         }

@@ -121,7 +121,7 @@ pub struct UserInputText {
 pub struct TurnStartParams {
     /// The thread ID from thread/start response.
     pub thread_id: String,
-    /// The user input (array of UserInput objects).
+    /// The user input (array of `UserInput` objects).
     pub input: Vec<UserInputText>,
 }
 
@@ -286,7 +286,7 @@ impl CodexNotification {
                     .map(String::from);
                 let arguments_json = params
                     .and_then(|p| p.get("arguments"))
-                    .map(|v| v.to_string());
+                    .map(ToString::to_string);
                 Self::ItemCompleted {
                     item_id,
                     item_type,
@@ -332,6 +332,9 @@ impl CodexNotification {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Protocol serialization tests use `expect` to identify the exact fixture
+// that failed to encode or decode.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -529,7 +532,7 @@ mod tests {
 
     #[test]
     fn initialize_result_deserializes_with_defaults() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let result: InitializeResult = serde_json::from_str(json).expect("parse");
         assert_eq!(result.name, "");
         assert_eq!(result.version, "");

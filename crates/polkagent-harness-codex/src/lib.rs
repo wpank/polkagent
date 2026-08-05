@@ -56,7 +56,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -76,23 +76,157 @@ use crate::protocol::{
     TurnStartParams, BACKPRESSURE_ERROR_CODE,
 };
 
+/// Recover session/status state after a panic poisoned a standard mutex.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!("Codex harness state mutex was poisoned; recovering inner state");
+            poisoned.into_inner()
+        }
+    }
+}
+
+#[cfg(unix)]
+fn unix_process_id(pid: u32) -> Result<i32, HarnessError> {
+    i32::try_from(pid).map_err(|error| HarnessError::Internal {
+        message: format!("child process ID {pid} cannot be represented by pid_t: {error}"),
+    })
+}
+
+#[derive(Default)]
+struct NotificationResult {
+    events: Vec<HarnessEvent>,
+    turn_completed: bool,
+}
+
+async fn send_approval_response(
+    stdin: &mut Option<tokio::process::ChildStdin>,
+    request_id: serde_json::Value,
+    approved: bool,
+    operation: &str,
+) {
+    let Some(writer) = stdin.as_mut() else {
+        warn!(
+            operation,
+            "cannot send Codex approval response: stdin is unavailable"
+        );
+        return;
+    };
+    let response = serde_json::json!({
+        "id": request_id,
+        "result": { "approved": approved },
+    });
+    let json = match serde_json::to_string(&response) {
+        Ok(json) => json,
+        Err(error) => {
+            error!(operation, error = %error, "failed to serialize Codex approval response");
+            return;
+        }
+    };
+    if let Err(error) = writer.write_all(format!("{json}\n").as_bytes()).await {
+        error!(operation, error = %error, "failed to write Codex approval response");
+        return;
+    }
+    if let Err(error) = writer.flush().await {
+        error!(operation, error = %error, "failed to flush Codex approval response");
+    }
+}
+
+async fn handle_notification(
+    notification: CodexNotification,
+    session_id: SessionId,
+    approval_mode: ApprovalMode,
+    message_buffer: &mut String,
+    stdin: &mut Option<tokio::process::ChildStdin>,
+) -> NotificationResult {
+    let mut result = NotificationResult::default();
+    match notification {
+        CodexNotification::AgentMessageDelta { delta } => message_buffer.push_str(&delta),
+        CodexNotification::ItemCompleted {
+            item_type,
+            text,
+            command,
+            arguments_json,
+            ..
+        } => {
+            if item_type.as_deref() == Some("agentMessage") {
+                let content = text.unwrap_or_else(|| std::mem::take(message_buffer));
+                if !content.is_empty() {
+                    result.events.push(HarnessEvent::MessageReceived {
+                        session_id,
+                        content,
+                    });
+                }
+                message_buffer.clear();
+            } else if item_type.as_deref() == Some("commandExecution") {
+                result.events.push(HarnessEvent::ToolCallRequested {
+                    session_id,
+                    tool_name: command.unwrap_or_default(),
+                    arguments_json: arguments_json.unwrap_or_else(|| "{}".into()),
+                });
+            }
+        }
+        CodexNotification::TurnCompleted => {
+            if !message_buffer.is_empty() {
+                result.events.push(HarnessEvent::MessageReceived {
+                    session_id,
+                    content: std::mem::take(message_buffer),
+                });
+            }
+            result.turn_completed = true;
+        }
+        CodexNotification::CommandApprovalRequested {
+            request_id,
+            command,
+        } => {
+            let approved = approval_mode == ApprovalMode::Auto;
+            debug!(
+                session_id = %session_id,
+                command,
+                approved,
+                "handling Codex command approval request"
+            );
+            send_approval_response(stdin, request_id, approved, "command execution").await;
+            result.events.push(HarnessEvent::ToolCallRequested {
+                session_id,
+                tool_name: command,
+                arguments_json: "{}".into(),
+            });
+        }
+        CodexNotification::FileChangeApprovalRequested {
+            request_id,
+            file_path,
+        } => {
+            let approved = approval_mode == ApprovalMode::Auto;
+            debug!(
+                session_id = %session_id,
+                file_path,
+                approved,
+                "handling Codex file-change approval request"
+            );
+            send_approval_response(stdin, request_id, approved, "file change").await;
+        }
+        CodexNotification::TurnStarted { .. } | CodexNotification::ItemStarted { .. } => {}
+        CodexNotification::Unknown { method } => {
+            trace!("Unknown Codex notification: {method}");
+        }
+    }
+    result
+}
+
 // ---------------------------------------------------------------------------
 // ApprovalMode
 // ---------------------------------------------------------------------------
 
 /// How the harness handles Codex approval requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApprovalMode {
     /// Automatically approve all tool execution and file change requests.
+    #[default]
     Auto,
     /// Deny all approval requests.
     Deny,
-}
-
-impl Default for ApprovalMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +314,7 @@ impl std::fmt::Debug for SessionState {
             .field("messages", &self.messages.len())
             .field("initialized", &self.initialized)
             .field("thread_id", &self.thread_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -212,7 +346,7 @@ impl std::fmt::Debug for CodexHarness {
             .field("config", &self.config)
             .field("codex_config", &self.codex_config)
             .field("active_sessions", &self.active_session_count())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -257,7 +391,7 @@ impl CodexHarness {
     /// Return the number of active sessions.
     #[must_use]
     pub fn active_session_count(&self) -> usize {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         sessions.values().filter(|s| s.active).count()
     }
 
@@ -287,10 +421,10 @@ impl CodexHarness {
     /// puts it back. Callers must hold no lock on `self.sessions`.
     async fn write_line(&self, session_id: SessionId, json_line: &str) -> Result<(), HarnessError> {
         let mut taken_stdin = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 return Err(HarnessError::InvalidState {
@@ -313,7 +447,7 @@ impl CodexHarness {
 
         // Put stdin back.
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.stdin = Some(taken_stdin);
             }
@@ -356,10 +490,10 @@ impl CodexHarness {
 
         // Read lines from stdout until we get the initialize response.
         let stdout = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
             session.stdout.take().ok_or_else(|| HarnessError::IoError {
                 message: format!("session {session_id} stdout not available for handshake"),
             })?
@@ -418,7 +552,7 @@ impl CodexHarness {
         // Reconstruct the stdout from the reader and put it back.
         let stdout = reader.into_inner();
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.stdout = Some(stdout);
             }
@@ -429,7 +563,7 @@ impl CodexHarness {
             Ok(Err(e)) => return Err(e),
             Err(_) => {
                 return Err(HarnessError::Timeout {
-                    elapsed_ms: handshake_timeout.as_millis() as u64,
+                    elapsed_ms: u64::try_from(handshake_timeout.as_millis()).unwrap_or(u64::MAX),
                 });
             }
         }
@@ -446,7 +580,7 @@ impl CodexHarness {
 
         // Mark session as initialized.
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.initialized = true;
             }
@@ -473,10 +607,10 @@ impl CodexHarness {
 
         // Wait for the thread/start response to get the thread ID.
         let stdout = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
             session
                 .stdout
                 .take()
@@ -543,7 +677,7 @@ impl CodexHarness {
         // Put stdout back.
         let stdout = reader.into_inner();
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.stdout = Some(stdout);
             }
@@ -553,7 +687,7 @@ impl CodexHarness {
             Ok(Ok(thread_id)) => {
                 // Store thread ID in session.
                 {
-                    let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                    let mut sessions = lock_or_recover(&self.sessions);
                     if let Some(session) = sessions.get_mut(&session_id) {
                         session.thread_id = Some(thread_id.clone());
                     }
@@ -563,7 +697,7 @@ impl CodexHarness {
             }
             Ok(Err(e)) => Err(e),
             Err(_) => Err(HarnessError::Timeout {
-                elapsed_ms: timeout_dur.as_millis() as u64,
+                elapsed_ms: u64::try_from(timeout_dur.as_millis()).unwrap_or(u64::MAX),
             }),
         }
     }
@@ -620,7 +754,7 @@ impl Harness for CodexHarness {
     }
 
     fn status(&self) -> HarnessStatus {
-        let status = self.status.lock().expect("status mutex poisoned");
+        let status = lock_or_recover(&self.status);
         status.clone()
     }
 
@@ -707,13 +841,13 @@ impl Harness for CodexHarness {
         };
 
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             sessions.insert(session_id, state);
         }
 
         // Update harness status to Running.
         {
-            let mut status = self.status.lock().expect("status mutex poisoned");
+            let mut status = lock_or_recover(&self.status);
             *status = HarnessStatus::Running {
                 since: Utc::now(),
                 run_id: None,
@@ -733,10 +867,10 @@ impl Harness for CodexHarness {
     async fn send_message(&self, session_id: SessionId, message: &str) -> Result<(), HarnessError> {
         // Record the message and grab thread_id.
         let thread_id = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
             if !session.active {
                 return Err(HarnessError::InvalidState {
                     message: format!("session {session_id} is no longer active"),
@@ -797,10 +931,10 @@ impl Harness for CodexHarness {
         session_id: SessionId,
     ) -> Result<Pin<Box<dyn Stream<Item = HarnessEvent> + Send>>, HarnessError> {
         let stdout = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
             session
                 .stdout
                 .take()
@@ -818,10 +952,10 @@ impl Harness for CodexHarness {
         // We need to send approval responses back on stdin, so we take stdin
         // out as well. We'll manage it inside the stream.
         let stdin = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
             session.stdin.take()
         };
 
@@ -848,16 +982,13 @@ impl Harness for CodexHarness {
                             continue;
                         }
 
-                        let raw = match serde_json::from_str::<RawIncoming>(&trimmed) {
-                            Ok(r) => r,
-                            Err(_) => {
-                                // Non-JSON output, treat as message content.
-                                yield HarnessEvent::MessageReceived {
-                                    session_id,
-                                    content: trimmed,
-                                };
-                                continue;
-                            }
+                        let Ok(raw) = serde_json::from_str::<RawIncoming>(&trimmed) else {
+                            // Non-JSON output, treat as message content.
+                            yield HarnessEvent::MessageReceived {
+                                session_id,
+                                content: trimmed,
+                            };
+                            continue;
                         };
 
                         // If it has a method, it's a notification or server request.
@@ -868,106 +999,19 @@ impl Harness for CodexHarness {
                                 raw.id.as_ref(),
                             );
 
-                            match notif {
-                                CodexNotification::AgentMessageDelta { delta } => {
-                                    message_buffer.push_str(&delta);
-                                }
-                                CodexNotification::ItemCompleted { item_type, text, command, arguments_json, .. } => {
-                                    // If this completes an agent message, emit the buffered text.
-                                    if item_type.as_deref() == Some("agentMessage") {
-                                        let content = text.unwrap_or_else(|| {
-                                            std::mem::take(&mut message_buffer)
-                                        });
-                                        if !content.is_empty() {
-                                            yield HarnessEvent::MessageReceived {
-                                                session_id,
-                                                content,
-                                            };
-                                        }
-                                        message_buffer.clear();
-                                    } else if item_type.as_deref() == Some("commandExecution") {
-                                        // Tool call completed.
-                                        let tool_name = command.unwrap_or_default();
-                                        let args = arguments_json.unwrap_or_else(|| "{}".into());
-                                        yield HarnessEvent::ToolCallRequested {
-                                            session_id,
-                                            tool_name,
-                                            arguments_json: args,
-                                        };
-                                    }
-                                }
-                                CodexNotification::TurnCompleted => {
-                                    // Flush any remaining message buffer.
-                                    if !message_buffer.is_empty() {
-                                        yield HarnessEvent::MessageReceived {
-                                            session_id,
-                                            content: std::mem::take(&mut message_buffer),
-                                        };
-                                    }
-                                    // Turn is complete — signal the end of this session's event stream.
-                                    break;
-                                }
-                                CodexNotification::CommandApprovalRequested { request_id, command } => {
-                                    let approved = approval_mode == ApprovalMode::Auto;
-                                    debug!(
-                                        session_id = %session_id,
-                                        command = %command,
-                                        approved = approved,
-                                        "Handling command approval request"
-                                    );
-
-                                    // Send approval response via stdin.
-                                    if let Some(ref mut writer) = stdin {
-                                        let response = serde_json::json!({
-                                            "id": request_id,
-                                            "result": { "approved": approved },
-                                        });
-                                        if let Ok(json) = serde_json::to_string(&response) {
-                                            let line = format!("{json}\n");
-                                            if let Err(e) = writer.write_all(line.as_bytes()).await {
-                                                error!("Failed to send command approval: {e}");
-                                            }
-                                            let _ = writer.flush().await;
-                                        }
-                                    }
-
-                                    // Also emit as a tool call event.
-                                    yield HarnessEvent::ToolCallRequested {
-                                        session_id,
-                                        tool_name: command,
-                                        arguments_json: "{}".into(),
-                                    };
-                                }
-                                CodexNotification::FileChangeApprovalRequested { request_id, file_path } => {
-                                    let approved = approval_mode == ApprovalMode::Auto;
-                                    debug!(
-                                        session_id = %session_id,
-                                        file_path = %file_path,
-                                        approved = approved,
-                                        "Handling file change approval request"
-                                    );
-
-                                    if let Some(ref mut writer) = stdin {
-                                        let response = serde_json::json!({
-                                            "id": request_id,
-                                            "result": { "approved": approved },
-                                        });
-                                        if let Ok(json) = serde_json::to_string(&response) {
-                                            let line = format!("{json}\n");
-                                            if let Err(e) = writer.write_all(line.as_bytes()).await {
-                                                error!("Failed to send file change approval: {e}");
-                                            }
-                                            let _ = writer.flush().await;
-                                        }
-                                    }
-                                }
-                                CodexNotification::TurnStarted { .. }
-                                | CodexNotification::ItemStarted { .. } => {
-                                    // Informational, no action needed.
-                                }
-                                CodexNotification::Unknown { method } => {
-                                    trace!("Unknown Codex notification: {method}");
-                                }
+                            let notification_result = handle_notification(
+                                notif,
+                                session_id,
+                                approval_mode,
+                                &mut message_buffer,
+                                &mut stdin,
+                            )
+                            .await;
+                            for event in notification_result.events {
+                                yield event;
+                            }
+                            if notification_result.turn_completed {
+                                break;
                             }
                         } else if let Some(ref err) = raw.error {
                             // Error response.
@@ -1012,10 +1056,10 @@ impl Harness for CodexHarness {
         let timeout = self.codex_config.timeout;
 
         let pid = {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions
                 .get_mut(&session_id)
-                .ok_or_else(|| HarnessError::SessionNotFound { session_id })?;
+                .ok_or(HarnessError::SessionNotFound { session_id })?;
 
             if !session.active {
                 warn!(
@@ -1043,7 +1087,7 @@ impl Harness for CodexHarness {
         if let Some(pid) = pid {
             use std::time::Instant;
 
-            let raw_pid = pid as i32;
+            let raw_pid = unix_process_id(pid)?;
             debug!(session_id = %session_id, pid = raw_pid, "Sending SIGTERM to Codex process");
 
             // Try SIGTERM first.
@@ -1054,29 +1098,34 @@ impl Harness for CodexHarness {
 
             let deadline = Instant::now() + timeout;
             let exited = loop {
-                let should_wait = {
-                    let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                let process_exited = {
+                    let mut sessions = lock_or_recover(&self.sessions);
                     if let Some(session) = sessions.get_mut(&session_id) {
                         match session.child.try_wait() {
-                            Ok(Some(_)) => None,    // exited
-                            Ok(None) => Some(true), // still running
-                            Err(_) => None,         // treat as exited
+                            Ok(None) => false,
+                            Ok(Some(_)) => true,
+                            Err(error) => {
+                                warn!(
+                                    session_id = %session_id,
+                                    error = %error,
+                                    "failed to inspect Codex process; treating it as exited"
+                                );
+                                true
+                            }
                         }
                     } else {
-                        None // session removed
+                        true
                     }
                     // MutexGuard dropped here.
                 };
 
-                match should_wait {
-                    None => break true,
-                    Some(_) => {
-                        if Instant::now() >= deadline {
-                            break false;
-                        }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
+                if process_exited {
+                    break true;
                 }
+                if Instant::now() >= deadline {
+                    break false;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
             };
 
             if !exited {
@@ -1086,7 +1135,7 @@ impl Harness for CodexHarness {
                     nix::sys::signal::Signal::SIGKILL,
                 );
 
-                let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                let mut sessions = lock_or_recover(&self.sessions);
                 if let Some(session) = sessions.get_mut(&session_id) {
                     let _ = session.child.start_kill();
                 }
@@ -1095,7 +1144,7 @@ impl Harness for CodexHarness {
 
         #[cfg(not(unix))]
         {
-            let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let mut sessions = lock_or_recover(&self.sessions);
             if let Some(session) = sessions.get_mut(&session_id) {
                 let _ = session.child.start_kill();
             }
@@ -1103,10 +1152,10 @@ impl Harness for CodexHarness {
 
         // Update status if no more active sessions.
         {
-            let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+            let sessions = lock_or_recover(&self.sessions);
             let any_active = sessions.values().any(|s| s.active);
             if !any_active {
-                let mut status = self.status.lock().expect("status mutex poisoned");
+                let mut status = lock_or_recover(&self.status);
                 *status = HarnessStatus::Idle;
             }
         }
@@ -1144,7 +1193,7 @@ impl Harness for CodexHarness {
         &self,
         session_id: SessionId,
     ) -> Result<polkagent_harness_trait::SessionSnapshot, HarnessError> {
-        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        let sessions = lock_or_recover(&self.sessions);
         let session = sessions
             .get(&session_id)
             .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -1173,7 +1222,7 @@ impl Harness for CodexHarness {
             process_pid: pid,
             started_at: chrono::Utc::now(),
             working_directory: session.working_dir.clone(),
-            turn_count: session.messages.len() as u32,
+            turn_count: u32::try_from(session.messages.len()).unwrap_or(u32::MAX),
             backend_state,
         };
 
@@ -1188,7 +1237,8 @@ impl Harness for CodexHarness {
         // Check if the old process is still alive.
         if let Some(pid) = snapshot.process_pid {
             let alive =
-                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok();
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(unix_process_id(pid)?), None)
+                    .is_ok();
 
             if alive {
                 debug!(pid, session_id = %session_id, "Re-attaching to live Codex process");
@@ -1217,7 +1267,7 @@ impl Harness for CodexHarness {
         #[cfg(unix)]
         {
             let raw_pid = {
-                let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                let sessions = lock_or_recover(&self.sessions);
                 let session = sessions
                     .get(&session_id)
                     .ok_or(HarnessError::SessionNotFound { session_id })?;
@@ -1226,14 +1276,14 @@ impl Harness for CodexHarness {
 
             if let Some(pid) = raw_pid {
                 debug!(session_id = %session_id, pid, "Sending SIGTERM to Codex process");
-                let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+                let nix_pid = nix::unistd::Pid::from_raw(unix_process_id(pid)?);
                 let _ = nix::sys::signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM);
 
                 // Wait up to 5 seconds for clean exit.
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 loop {
                     let exited = {
-                        let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
+                        let mut sessions = lock_or_recover(&self.sessions);
                         if let Some(session) = sessions.get_mut(&session_id) {
                             matches!(session.child.try_wait(), Ok(Some(_)))
                         } else {
@@ -1262,6 +1312,9 @@ impl Harness for CodexHarness {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Adapter and mock-protocol tests use `expect` to identify the exact I/O,
+// session, or wire-contract invariant that failed.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -1430,7 +1483,7 @@ mod tests {
     #[tokio::test]
     async fn protocol_handshake_mock() {
         // Simulate a Codex server that responds to initialize.
-        let (mut _client_write, mut server_read, mut server_write, mut client_read) =
+        let (mut client_write, mut server_read, mut server_write, mut client_read) =
             create_mock_session_io();
 
         // Server task: read initialize request, send response.
@@ -1481,11 +1534,11 @@ mod tests {
         };
         let json = serde_json::to_string(&req).expect("ser");
         let line = format!("{json}\n");
-        _client_write
+        client_write
             .write_all(line.as_bytes())
             .await
             .expect("write");
-        _client_write.flush().await.expect("flush");
+        client_write.flush().await.expect("flush");
 
         // Read response.
         let mut reader = BufReader::new(&mut client_read);
@@ -1493,7 +1546,7 @@ mod tests {
         reader.read_line(&mut resp_line).await.expect("read resp");
         let raw: RawIncoming = serde_json::from_str(resp_line.trim()).expect("parse");
         assert!(raw.result.is_some());
-        assert_eq!(raw.id.as_ref().and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(raw.id.as_ref().and_then(serde_json::Value::as_u64), Some(1));
 
         // Send initialized notification.
         let notif = protocol::RpcNotification {
@@ -1502,11 +1555,11 @@ mod tests {
         };
         let json = serde_json::to_string(&notif).expect("ser");
         let line = format!("{json}\n");
-        _client_write
+        client_write
             .write_all(line.as_bytes())
             .await
             .expect("write");
-        _client_write.flush().await.expect("flush");
+        client_write.flush().await.expect("flush");
 
         server.await.expect("server task");
     }
