@@ -187,6 +187,9 @@ pub type GooseHarness = polkagent_harness_acp::AcpHarness<GooseConfigurator>;
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// Serialization assertions use `expect` so a failed fixture identifies the
+// exact encode/decode boundary instead of obscuring it behind boolean checks.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use polkagent_harness_acp::AcpHarness;
