@@ -3701,6 +3701,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkagent-runtime"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "polkagent-chain-fake",
+ "polkagent-chain-subxt",
+ "polkagent-chain-trait",
+ "polkagent-config",
+ "polkagent-core",
+ "polkagent-event",
+ "polkagent-executor-anthropic",
+ "polkagent-executor-fake",
+ "polkagent-executor-gemini",
+ "polkagent-executor-local",
+ "polkagent-executor-openai",
+ "polkagent-executor-openrouter",
+ "polkagent-executor-trait",
+ "polkagent-harness-acp",
+ "polkagent-harness-claude",
+ "polkagent-harness-codex",
+ "polkagent-harness-cursor",
+ "polkagent-harness-trait",
+ "polkagent-memory",
+ "polkagent-service",
+ "polkagent-store-sqlite",
+ "polkagent-store-trait",
+ "polkagent-tool",
+ "polkagent-tool-governance",
+ "polkagent-tool-treasury",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "polkagent-scheduler"
 version = "0.1.0"
 dependencies = [

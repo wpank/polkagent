@@ -1,0 +1,48 @@
+[package]
+name = "polkagent-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Production runtime composition for Polkagent surfaces"
+
+[dependencies]
+polkagent-chain-fake       = { path = "../polkagent-chain-fake" }
+polkagent-chain-subxt      = { path = "../polkagent-chain-subxt" }
+polkagent-chain-trait      = { path = "../polkagent-chain-trait" }
+polkagent-config           = { path = "../polkagent-config" }
+polkagent-core             = { path = "../polkagent-core" }
+polkagent-event            = { path = "../polkagent-event" }
+polkagent-executor-anthropic = { path = "../polkagent-executor-anthropic" }
+polkagent-executor-fake    = { path = "../polkagent-executor-fake" }
+polkagent-executor-gemini  = { path = "../polkagent-executor-gemini" }
+polkagent-executor-local   = { path = "../polkagent-executor-local" }
+polkagent-executor-openai  = { path = "../polkagent-executor-openai" }
+polkagent-executor-openrouter = { path = "../polkagent-executor-openrouter" }
+polkagent-executor-trait   = { path = "../polkagent-executor-trait" }
+polkagent-harness-acp      = { path = "../polkagent-harness-acp" }
+polkagent-harness-claude   = { path = "../polkagent-harness-claude" }
+polkagent-harness-codex    = { path = "../polkagent-harness-codex" }
+polkagent-harness-cursor   = { path = "../polkagent-harness-cursor" }
+polkagent-harness-trait    = { path = "../polkagent-harness-trait" }
+polkagent-memory           = { path = "../polkagent-memory" }
+polkagent-service          = { path = "../polkagent-service" }
+polkagent-store-sqlite     = { path = "../polkagent-store-sqlite" }
+polkagent-tool             = { path = "../polkagent-tool" }
+polkagent-tool-governance  = { path = "../polkagent-tool-governance" }
+polkagent-tool-treasury    = { path = "../polkagent-tool-treasury" }
+
+dirs       = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+tokio      = { workspace = true }
+tracing    = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+polkagent-store-trait = { path = "../polkagent-store-trait" }
+
+[lints]
+workspace = true

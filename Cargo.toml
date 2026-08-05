@@ -90,6 +90,7 @@ members = [
     "crates/polkagent-chain-jam",
     "crates/polkagent-vitality",
     "crates/polkagent-interaction",
+    "crates/polkagent-runtime",
 ]
 
 [workspace.package]
