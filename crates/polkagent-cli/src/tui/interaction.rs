@@ -15,11 +15,11 @@ use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
     format_run_command_output, AgentTargetView, ApprovalDecision, ApprovalView, ClientContext,
     CommandContext, CommandExecutor, CommandInvocation, CommandName, CommandOutput,
-    CommandRegistry, CommandRequest, CreateInteractionRequest, InteractionCommand,
-    InteractionCommandRuntime, InteractionConfig, InteractionContent, InteractionError,
-    InteractionErrorCode, InteractionEvent, InteractionOverrides, InteractionService,
-    InteractionState as DurableInteractionState, InteractionSummary, InteractionTarget,
-    InteractionTurnId, ListInteractionsRequest, ParsedLine,
+    CommandRegistry, CommandRequest, CreateInteractionRequest, InteractionApprovalAuthority,
+    InteractionCommand, InteractionCommandRuntime, InteractionConfig, InteractionContent,
+    InteractionError, InteractionErrorCode, InteractionEvent, InteractionOverrides,
+    InteractionService, InteractionState as DurableInteractionState, InteractionSummary,
+    InteractionTarget, InteractionTurnId, ListInteractionsRequest, ParsedLine,
     PromptRequest as InteractionPromptRequest, RunDetailView, RunSummaryView,
     ServiceCommandExecutor, StreamError, SubscriptionRequest, TranscriptRequest, TurnHandle,
     TurnState, UsageView,
@@ -1907,7 +1907,6 @@ struct ActiveConsoleRun {
     agent_id: String,
     conversation_id: Option<String>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
-    awaiting_approval: bool,
 }
 
 #[cfg(test)]
@@ -2017,7 +2016,6 @@ impl RunController {
                 agent_id: request.agent_id.clone(),
                 conversation_id: request.conversation_id.clone(),
                 cancel: Some(cancel_tx),
-                awaiting_approval: false,
             },
         );
 
@@ -2674,24 +2672,10 @@ impl RunController {
     }
 
     pub fn cancel_activity(&mut self, activity_id: &str) -> bool {
-        if self
-            .active_runs
-            .get(activity_id)
-            .is_some_and(|run| run.awaiting_approval)
-        {
-            return false;
-        }
         self.active_runs
             .get_mut(activity_id)
             .and_then(|run| run.cancel.take())
             .is_some_and(|cancel| cancel.send(()).is_ok())
-    }
-
-    #[must_use]
-    pub fn activity_awaits_approval(&self, activity_id: &str) -> bool {
-        self.active_runs
-            .get(activity_id)
-            .is_some_and(|run| run.awaiting_approval)
     }
 
     /// Compatibility helper for single-run callers. Multi-run surfaces must
@@ -2746,19 +2730,6 @@ impl RunController {
                     if let Some(run) = self.active_runs.get_mut(&update.activity_id) {
                         run.conversation_id = Some(conversation_id.clone());
                     }
-                }
-                match &update.event {
-                    ControllerEvent::TurnApprovalRequested { .. } => {
-                        if let Some(run) = self.active_runs.get_mut(&update.activity_id) {
-                            run.awaiting_approval = true;
-                        }
-                    }
-                    ControllerEvent::TurnApprovalResolved { .. } => {
-                        if let Some(run) = self.active_runs.get_mut(&update.activity_id) {
-                            run.awaiting_approval = false;
-                        }
-                    }
-                    _ => {}
                 }
                 if update.event.is_terminal() {
                     self.active_runs.remove(&update.activity_id);
@@ -2818,15 +2789,16 @@ impl RunController {
     }
 
     /// Cancel, drain, and reap every task spawned by this controller.
+    ///
+    /// Production workers translate this signal into
+    /// [`InteractionService::cancel_turn`]. The service owns the durable
+    /// human-decision-versus-cancellation CAS; the TUI must not preflight or
+    /// reproduce coordinator state locally.
     pub async fn shutdown(&mut self) {
         for run in self.active_runs.values_mut() {
-            if !run.awaiting_approval {
-                if let Some(cancel) = run.cancel.take() {
-                    let _ = cancel.send(());
-                }
+            if let Some(cancel) = run.cancel.take() {
+                let _ = cancel.send(());
             }
-            // For an awaiting approval, retain the sender until after local
-            // tasks are aborted so dropping it cannot look like cancellation.
         }
         let mut tasks = std::mem::take(&mut self.tasks);
         let completed = tokio::time::timeout(self.shutdown_grace, async {
@@ -2868,10 +2840,8 @@ impl Drop for RunController {
             task.abort();
         }
         for run in self.active_runs.values_mut() {
-            if !run.awaiting_approval {
-                if let Some(cancel) = run.cancel.take() {
-                    let _ = cancel.send(());
-                }
+            if let Some(cancel) = run.cancel.take() {
+                let _ = cancel.send(());
             }
         }
     }
@@ -3620,12 +3590,25 @@ pub fn tui_runtime_options(
     pool: &SqlitePool,
     config_path: Option<&Path>,
 ) -> anyhow::Result<RuntimeOptions> {
+    tui_runtime_options_with_approval(pool, config_path, None)
+}
+
+/// Build TUI runtime options with an explicit process-scoped approval
+/// authority. Only the explicit `polkagent tui` command calls this variant;
+/// the default no-subcommand surface uses [`tui_runtime_options`] and remains
+/// authority-unbound.
+pub fn tui_runtime_options_with_approval(
+    pool: &SqlitePool,
+    config_path: Option<&Path>,
+    approval_authority: Option<InteractionApprovalAuthority>,
+) -> anyhow::Result<RuntimeOptions> {
     let workdir = std::env::current_dir()
         .map_err(|error| anyhow::anyhow!("resolving TUI working directory: {error}"))?;
     let mut options = RuntimeOptions::new(workdir);
     options.config_path = config_path.map(Path::to_path_buf);
     options.database_path = Some(pool.path().to_path_buf());
     options.adapter_policy = AdapterPolicy::AllowSimulated;
+    options.approval_authority = approval_authority;
     Ok(options)
 }
 
@@ -3667,7 +3650,7 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    use polkagent_core::{EffectId, RunId};
+    use polkagent_core::{AgentSpec, EffectId, PrincipalId, RunId};
     use polkagent_interaction::ToolCallId;
     use polkagent_runtime::{ConfigSource, RuntimeFactory};
     use polkagent_store_sqlite::{migrations, SqliteRunStore};
@@ -3691,7 +3674,9 @@ mod tests {
         options.disable_harness = true;
         options.discover_environment_providers = false;
         drop(pool);
-        let runtime = RuntimeFactory::build(options).await.expect("build runtime");
+        let runtime = Box::pin(RuntimeFactory::build(options))
+            .await
+            .expect("build runtime");
         (temp, runtime)
     }
 
@@ -5330,7 +5315,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn generic_cancellation_fails_closed_while_durable_approval_is_pending() {
+    async fn pending_approval_no_longer_blocks_tui_turn_cancellation_dispatch() {
         let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
         let gate = Arc::new(ControlledFakeRun::default());
         let agent_id = AgentId::new().to_string();
@@ -5374,15 +5359,116 @@ mod tests {
             requested.event(),
             ControllerEvent::TurnApprovalRequested { .. }
         ));
-        assert!(controller.activity_awaits_approval(&activity_id));
-        assert!(!controller.cancel_activity(&activity_id));
-        assert_eq!(gate.cancellations.load(Ordering::SeqCst), 0);
+        assert!(controller.cancel_activity(&activity_id));
+        let cancelled = controller
+            .recv_update()
+            .await
+            .expect("worker cancellation update");
+        assert!(matches!(cancelled.event(), ControllerEvent::Cancelled(_)));
+        assert_eq!(gate.cancellations.load(Ordering::SeqCst), 1);
 
         controller.shutdown().await;
         assert_eq!(
             gate.cancellations.load(Ordering::SeqCst),
-            0,
-            "shutdown must not request a generic turn cancel that can orphan the durable approval"
+            1,
+            "shutdown must not duplicate a dispatched turn cancellation"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_dispatches_pending_approval_cancellation_through_the_real_service() {
+        use crate::commands::chat::tests::{
+            chat_approval_service, persist_agent, seed_chat_approval,
+        };
+
+        let (_controller_temp, runtime) = Box::pin(controller_test_runtime()).await;
+        let approval_temp = tempfile::TempDir::new().expect("approval tempdir");
+        let pool = SqlitePool::open(approval_temp.path().join("tui-shutdown-approval.db"))
+            .expect("open shutdown approval database");
+        migrations::migrate(&pool.writer()).expect("migrate shutdown approval database");
+        let agent_id = AgentId::new();
+        persist_agent(
+            &pool,
+            &AgentSpec::new(agent_id, "shutdown-approval-agent", "fake/model"),
+        );
+        let fixture = Box::pin(seed_chat_approval(&pool, agent_id)).await;
+        let service = chat_approval_service(&pool, &fixture.authority);
+        assert_eq!(
+            service
+                .list_pending_approvals(fixture.conversation_id)
+                .await
+                .expect("list approval before TUI shutdown")
+                .len(),
+            1
+        );
+
+        let cancellation_service = Arc::clone(&service);
+        let cancellation_turn_id = fixture.interaction_turn_id;
+        let started_run_id = fixture.run_id.to_string();
+        let worker: TestRunWorker = Arc::new(move |request, context, event_tx, mut cancel_rx| {
+            let service = Arc::clone(&cancellation_service);
+            let run_id = started_run_id.clone();
+            Box::pin(async move {
+                let _ = event_tx
+                    .send(
+                        context.update(ControllerEvent::Started {
+                            conversation_id: request
+                                .conversation_id
+                                .clone()
+                                .unwrap_or_else(|| "shutdown-conversation".to_owned()),
+                            model: Some("fake/controlled".to_owned()),
+                            turn_id: cancellation_turn_id.to_string(),
+                            run_id,
+                            agent_name: request.agent_name,
+                            notes: vec!["real approval cancellation fixture".to_owned()],
+                        }),
+                    )
+                    .await;
+                if (&mut cancel_rx).await.is_ok() {
+                    request_turn_cancellation(
+                        service.as_ref(),
+                        cancellation_turn_id,
+                        &event_tx,
+                        &context,
+                    )
+                    .await;
+                }
+            })
+        });
+        let mut controller =
+            RunController::with_test_run_worker(runtime, worker, Duration::from_millis(250));
+        controller
+            .start(PromptRequest {
+                agent_id: agent_id.to_string(),
+                agent_name: "Shutdown approval agent".to_owned(),
+                conversation_id: Some(fixture.conversation_id.to_string()),
+                prompt: "wait for approval".to_owned(),
+            })
+            .expect("start shutdown approval activity");
+        let started = controller.recv_update().await.expect("started update");
+        assert!(matches!(started.event(), ControllerEvent::Started { .. }));
+
+        controller.shutdown().await;
+
+        assert!(service
+            .list_pending_approvals(fixture.conversation_id)
+            .await
+            .expect("list approvals after TUI shutdown")
+            .is_empty());
+        let writer = pool.writer();
+        let (run_state, attempts): (String, i64) = writer
+            .query_row(
+                "SELECT state,
+                        (SELECT COUNT(*) FROM effect_attempts WHERE intent_id = ?2)
+                   FROM runs WHERE id = ?1",
+                rusqlite::params![fixture.run_id.to_string(), fixture.effect_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load TUI shutdown cancellation outcome");
+        assert_eq!(run_state, "cancelled:approval_cancelled");
+        assert_eq!(
+            attempts, 0,
+            "shutdown cancellation must perform no tool I/O"
         );
     }
 
@@ -5605,6 +5691,50 @@ mod tests {
         );
         assert_eq!(options.adapter_policy, AdapterPolicy::AllowSimulated);
         assert!(options.discover_environment_providers);
+        assert!(options.approval_authority.is_none());
+
+        let authority = InteractionApprovalAuthority {
+            tenant_id: "tenant-a".to_owned(),
+            workspace_id: "workspace-a".to_owned(),
+            principal_id: PrincipalId::new(),
+            surface: "tui".to_owned(),
+        };
+        let approval_options =
+            tui_runtime_options_with_approval(&pool, None, Some(authority.clone()))
+                .expect("approval-enabled TUI runtime options");
+        assert_eq!(approval_options.approval_authority, Some(authority));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explicit_tui_authority_composes_the_production_approval_runtime() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("tui-authority.db");
+        let pool = SqlitePool::open(&database_path).expect("open TUI authority database");
+        migrations::migrate(&pool.writer()).expect("migrate TUI authority database");
+        let authority = InteractionApprovalAuthority {
+            tenant_id: "tenant-a".to_owned(),
+            workspace_id: "workspace-a".to_owned(),
+            principal_id: PrincipalId::new(),
+            surface: "tui".to_owned(),
+        };
+        let mut options = tui_runtime_options_with_approval(&pool, None, Some(authority))
+            .expect("approval-enabled TUI runtime options");
+        options.workdir = temp.path().to_path_buf();
+        options.disable_harness = true;
+        options.discover_environment_providers = false;
+        drop(pool);
+
+        let runtime = Box::pin(RuntimeFactory::build(options))
+            .await
+            .expect("build approval-enabled TUI runtime");
+        assert_eq!(
+            runtime.readiness().approval_executor.state,
+            ComponentState::Ready
+        );
+        assert_eq!(
+            runtime.readiness().approval_surfaces.state,
+            ComponentState::Ready
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -5659,7 +5789,9 @@ provider = "fake"
         drop(seed_pool);
 
         let restart_options = options.clone();
-        let runtime = RuntimeFactory::build(options).await.expect("build runtime");
+        let runtime = Box::pin(RuntimeFactory::build(options))
+            .await
+            .expect("build runtime");
         let mut state = InteractionState::default();
         state.select_agent(agent.id.clone(), agent.name.clone());
         let mut controller = RunController::new(runtime.clone());
@@ -5834,7 +5966,7 @@ provider = "fake"
         drop(controller);
         drop(runtime);
 
-        let restarted = RuntimeFactory::build(restart_options)
+        let restarted = Box::pin(RuntimeFactory::build(restart_options))
             .await
             .expect("restart runtime");
         let mut controller = RunController::new(restarted.clone());
@@ -6015,7 +6147,9 @@ provider = "fake"
         drop(seed_pool);
 
         let restart_options = options.clone();
-        let runtime = RuntimeFactory::build(options).await.expect("build runtime");
+        let runtime = Box::pin(RuntimeFactory::build(options))
+            .await
+            .expect("build runtime");
         let service = runtime.interactions();
         let first = service
             .new_interaction(CreateInteractionRequest {
@@ -6066,7 +6200,7 @@ provider = "fake"
         drop(seed_controller);
         drop(runtime);
 
-        let restarted = RuntimeFactory::build(restart_options)
+        let restarted = Box::pin(RuntimeFactory::build(restart_options))
             .await
             .expect("restart runtime");
         let mut controller = RunController::new(restarted.clone());
@@ -6204,7 +6338,7 @@ provider = "fake"
         drop(seed_pool);
 
         let restart_options = options.clone();
-        let runtime = RuntimeFactory::build(options)
+        let runtime = Box::pin(RuntimeFactory::build(options))
             .await
             .expect("build shared TUI runtime");
         assert_eq!(runtime.readiness().recovered_runs, 1);
@@ -6278,7 +6412,7 @@ provider = "fake"
         drop(controller);
         drop(runtime);
 
-        let restarted = RuntimeFactory::build(restart_options)
+        let restarted = Box::pin(RuntimeFactory::build(restart_options))
             .await
             .expect("restart shared TUI runtime");
         let mut controller = RunController::new(restarted.clone());

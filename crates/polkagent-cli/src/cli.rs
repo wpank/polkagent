@@ -246,6 +246,87 @@ pub struct ChatCmd {
     /// Optional title for a newly created conversation.
     #[arg(long, value_name = "TITLE", conflicts_with = "resume")]
     pub title: Option<String>,
+
+    #[command(flatten)]
+    pub approval: ApprovalAuthorityArgs,
+}
+
+/// Explicit process-scoped authority for durable human approval decisions.
+///
+/// Surfaces supply their own fixed name when converting these identifiers into
+/// a runtime authority. No identifier is inferred from requests, sessions,
+/// configuration, cwd, or other runtime state.
+#[derive(Debug, Args, Default)]
+pub struct ApprovalAuthorityArgs {
+    /// Stable tenant identity for durable approval decisions.
+    #[arg(
+        long = "approval-tenant",
+        value_name = "ID",
+        requires_all = ["workspace", "principal"]
+    )]
+    tenant: Option<String>,
+
+    /// Stable workspace identity for durable approval decisions.
+    #[arg(
+        long = "approval-workspace",
+        value_name = "ID",
+        requires_all = ["tenant", "principal"]
+    )]
+    workspace: Option<String>,
+
+    /// Stable non-nil human principal UUID for durable approval decisions.
+    #[arg(
+        long = "approval-principal",
+        value_name = "UUID",
+        requires_all = ["tenant", "workspace"],
+        value_parser = parse_approval_principal
+    )]
+    principal: Option<polkagent_core::PrincipalId>,
+}
+
+fn parse_approval_principal(value: &str) -> Result<polkagent_core::PrincipalId, String> {
+    let principal = value
+        .parse::<polkagent_core::PrincipalId>()
+        .map_err(|error| format!("invalid approval principal UUID: {error}"))?;
+    if principal.as_uuid().is_nil() {
+        return Err("approval principal must be a non-nil UUID".to_owned());
+    }
+    Ok(principal)
+}
+
+impl ApprovalAuthorityArgs {
+    /// Build one validated authority using a surface name owned by the caller.
+    pub fn authority(
+        &self,
+        surface: &str,
+    ) -> Result<
+        Option<polkagent_interaction::InteractionApprovalAuthority>,
+        polkagent_interaction::InteractionError,
+    > {
+        let fields = (
+            self.tenant.as_deref(),
+            self.workspace.as_deref(),
+            self.principal,
+        );
+        let authority = match fields {
+            (None, None, None) => return Ok(None),
+            (Some(tenant_id), Some(workspace_id), Some(principal_id)) => {
+                polkagent_interaction::InteractionApprovalAuthority {
+                    tenant_id: tenant_id.to_owned(),
+                    workspace_id: workspace_id.to_owned(),
+                    principal_id,
+                    surface: surface.to_owned(),
+                }
+            }
+            _ => {
+                return Err(polkagent_interaction::InteractionError::invalid_config(
+                    "--approval-tenant, --approval-workspace, and --approval-principal must be supplied together",
+                ));
+            }
+        };
+        authority.validate()?;
+        Ok(Some(authority))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -273,31 +354,8 @@ pub struct AcpCmd {
     #[arg(long, value_name = "SECS", default_value_t = 300)]
     pub timeout: u64,
 
-    /// Stable tenant identity for durable editor approval decisions.
-    ///
-    /// This local stdio opt-in requires the workspace and principal fields.
-    #[arg(
-        long,
-        value_name = "ID",
-        requires_all = ["approval_workspace", "approval_principal"]
-    )]
-    pub approval_tenant: Option<String>,
-
-    /// Stable workspace identity for durable editor approval decisions.
-    #[arg(
-        long,
-        value_name = "ID",
-        requires_all = ["approval_tenant", "approval_principal"]
-    )]
-    pub approval_workspace: Option<String>,
-
-    /// Stable non-nil human principal UUID for durable editor decisions.
-    #[arg(
-        long,
-        value_name = "UUID",
-        requires_all = ["approval_tenant", "approval_workspace"]
-    )]
-    pub approval_principal: Option<polkagent_core::PrincipalId>,
+    #[command(flatten)]
+    pub approval: ApprovalAuthorityArgs,
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +752,9 @@ pub struct TuiCmd {
     /// Start on a specific tab, including dashboard, agents, runs, or console.
     #[arg(long, value_name = "TAB", default_value = "dashboard")]
     pub tab: String,
+
+    #[command(flatten)]
+    pub approval: ApprovalAuthorityArgs,
 }
 
 // ---------------------------------------------------------------------------
@@ -1337,4 +1398,144 @@ pub struct ServeCmd {
     /// Start the server in read-only mode (reject all mutating requests).
     #[arg(long)]
     pub read_only: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory as _, Parser as _};
+
+    use super::{ApprovalAuthorityArgs, Cli, Commands};
+
+    const PRINCIPAL: &str = "018f4d71-46c7-7a31-8c63-b9020f278b01";
+    const NIL_PRINCIPAL: &str = "00000000-0000-0000-0000-000000000000";
+
+    fn subcommand_help(name: &str) -> String {
+        let mut command = Cli::command();
+        command
+            .find_subcommand_mut(name)
+            .unwrap_or_else(|| panic!("missing {name} subcommand"))
+            .render_long_help()
+            .to_string()
+    }
+
+    #[test]
+    fn approval_authority_help_is_shared_by_only_explicit_local_surfaces() {
+        for surface in ["chat", "tui", "acp"] {
+            let help = subcommand_help(surface);
+            for flag in [
+                "--approval-tenant",
+                "--approval-workspace",
+                "--approval-principal",
+            ] {
+                assert!(help.contains(flag), "{surface} help omitted {flag}: {help}");
+            }
+        }
+
+        let root_help = Cli::command().render_long_help().to_string();
+        assert!(!root_help.contains("--approval-tenant"));
+        assert!(Cli::try_parse_from([
+            "polkagent",
+            "serve",
+            "--approval-tenant",
+            "tenant-a",
+            "--approval-workspace",
+            "workspace-a",
+            "--approval-principal",
+            PRINCIPAL,
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn approval_authority_parser_requires_the_complete_non_nil_tuple() {
+        for partial in [
+            vec![
+                "polkagent",
+                "chat",
+                "--agent",
+                "alice",
+                "--approval-tenant",
+                "tenant-a",
+            ],
+            vec!["polkagent", "tui", "--approval-workspace", "workspace-a"],
+            vec!["polkagent", "acp", "--approval-principal", PRINCIPAL],
+        ] {
+            assert!(Cli::try_parse_from(partial).is_err());
+        }
+
+        for nil in [
+            vec![
+                "polkagent",
+                "chat",
+                "--agent",
+                "alice",
+                "--approval-tenant",
+                "tenant-a",
+                "--approval-workspace",
+                "workspace-a",
+                "--approval-principal",
+                NIL_PRINCIPAL,
+            ],
+            vec![
+                "polkagent",
+                "tui",
+                "--approval-tenant",
+                "tenant-a",
+                "--approval-workspace",
+                "workspace-a",
+                "--approval-principal",
+                NIL_PRINCIPAL,
+            ],
+            vec![
+                "polkagent",
+                "acp",
+                "--approval-tenant",
+                "tenant-a",
+                "--approval-workspace",
+                "workspace-a",
+                "--approval-principal",
+                NIL_PRINCIPAL,
+            ],
+        ] {
+            assert!(Cli::try_parse_from(nil).is_err());
+        }
+    }
+
+    #[test]
+    fn approval_authority_is_absent_by_default_and_surface_is_caller_owned() {
+        assert!(Cli::try_parse_from(["polkagent"])
+            .expect("default TUI CLI parses")
+            .command
+            .is_none());
+
+        let parsed = Cli::try_parse_from([
+            "polkagent",
+            "chat",
+            "--agent",
+            "alice",
+            "--approval-tenant",
+            "tenant-a",
+            "--approval-workspace",
+            "workspace-a",
+            "--approval-principal",
+            PRINCIPAL,
+        ])
+        .expect("complete authority parses");
+        let Some(Commands::Chat(chat)) = parsed.command else {
+            panic!("expected chat command");
+        };
+        let authority = chat
+            .approval
+            .authority("terminal-chat")
+            .expect("authority validates")
+            .expect("authority is configured");
+        assert_eq!(authority.tenant_id, "tenant-a");
+        assert_eq!(authority.workspace_id, "workspace-a");
+        assert_eq!(authority.surface, "terminal-chat");
+
+        assert!(ApprovalAuthorityArgs::default()
+            .authority("must-not-create-a-default")
+            .expect("empty tuple is valid")
+            .is_none());
+    }
 }

@@ -1561,22 +1561,7 @@ impl App {
                     self.tui_state.interaction.mark_cancelling();
                     self.tui_state.last_error = None;
                 } else {
-                    self.tui_state.last_error = Some(
-                        selected.as_deref().map_or_else(
-                            || "no console run is active".to_owned(),
-                            |activity_id| {
-                                if self
-                                    .run_controller
-                                    .activity_awaits_approval(activity_id)
-                                {
-                                    "this turn has a pending durable approval; approve or deny it in F6 before cancelling (atomic approval cancellation is not yet composed)"
-                                        .to_owned()
-                                } else {
-                                    "no console run is active".to_owned()
-                                }
-                            },
-                        ),
-                    );
+                    self.tui_state.last_error = Some("no console run is active".to_owned());
                 }
                 self.tui_state.mark_dirty();
             }

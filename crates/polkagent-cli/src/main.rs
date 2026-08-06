@@ -225,7 +225,8 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                 None => {
                     if std::io::stdout().is_terminal() {
                         let result =
-                            Box::pin(launch_tui(pool, config_path.as_deref(), "dashboard")).await;
+                            Box::pin(launch_tui(pool, config_path.as_deref(), "dashboard", None))
+                                .await;
                         ("tui", result)
                     } else {
                         let _ = Cli::command().print_help();
@@ -234,17 +235,29 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                     }
                 }
                 Some(Commands::Tui(cmd)) => {
-                    if std::io::stdout().is_terminal() {
-                        let result =
-                            Box::pin(launch_tui(pool, config_path.as_deref(), &cmd.tab)).await;
-                        ("tui", result)
-                    } else {
-                        (
+                    match cmd
+                        .approval
+                        .authority("tui")
+                        .map_err(anyhow::Error::new)
+                        .context("invalid TUI approval authority")
+                    {
+                        Err(error) => ("tui", Err(error)),
+                        Ok(approval_authority) if std::io::stdout().is_terminal() => {
+                            let result = Box::pin(launch_tui(
+                                pool,
+                                config_path.as_deref(),
+                                &cmd.tab,
+                                approval_authority,
+                            ))
+                            .await;
+                            ("tui", result)
+                        }
+                        Ok(_) => (
                             "tui",
                             Err(anyhow::anyhow!(
                                 "the TUI requires an interactive terminal; stdout is not a TTY"
                             )),
-                        )
+                        ),
                     }
                 }
                 Some(Commands::Run(cmd)) => {
@@ -456,19 +469,23 @@ async fn launch_tui(
     pool: SqlitePool,
     config_path: Option<&std::path::Path>,
     tab: &str,
+    approval_authority: Option<polkagent_interaction::InteractionApprovalAuthority>,
 ) -> Result<()> {
     use futures::FutureExt as _;
 
     use crate::tui::app::{enter_tui, exit_tui, App, Tab};
-    use crate::tui::interaction::tui_runtime_options;
+    use crate::tui::interaction::{tui_runtime_options, tui_runtime_options_with_approval};
     use crate::tui::theme::Theme;
     use polkagent_runtime::RuntimeFactory;
 
     let theme = Theme::from_env();
     let initial_tab = Tab::from_cli_str(tab);
-    let runtime_options = tui_runtime_options(&pool, config_path)?;
+    let runtime_options = approval_authority.map_or_else(
+        || tui_runtime_options(&pool, config_path),
+        |authority| tui_runtime_options_with_approval(&pool, config_path, Some(authority)),
+    )?;
     drop(pool);
-    let runtime = RuntimeFactory::build(runtime_options)
+    let runtime = Box::pin(RuntimeFactory::build(runtime_options))
         .await
         .context("building shared TUI runtime")?;
     let mut app = App::new(theme, runtime, initial_tab);

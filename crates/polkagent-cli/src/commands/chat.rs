@@ -10,12 +10,12 @@ use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
     format_run_command_output, AgentTargetView, ApprovalDecision, ApprovalView, CancelTarget,
     ClientContext, CommandContext, CommandExecutor, CommandName, CommandOutput, CommandRegistry,
-    CommandRequest, CreateInteractionRequest, InteractionCommand, InteractionCommandRuntime,
-    InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
-    InteractionEvent, InteractionOverrides, InteractionService, InteractionSummary,
-    InteractionTarget, ParsedLine, PromptRequest, RunDetailView, RunSummaryView,
-    ServiceCommandExecutor, StartedTurn, StreamError, SubscriptionRequest, ToolCallView,
-    TranscriptRequest, TurnHandle, UsageView,
+    CommandRequest, CreateInteractionRequest, InteractionApprovalAuthority, InteractionCommand,
+    InteractionCommandRuntime, InteractionConfig, InteractionContent, InteractionError,
+    InteractionErrorCode, InteractionEvent, InteractionOverrides, InteractionService,
+    InteractionSummary, InteractionTarget, ParsedLine, PromptRequest, RunDetailView,
+    RunSummaryView, ServiceCommandExecutor, StartedTurn, StreamError, SubscriptionRequest,
+    ToolCallView, TranscriptRequest, TurnHandle, UsageView,
 };
 use polkagent_runtime::{
     AdapterPolicy, PolkagentRuntime, RunCommandReadModel, RuntimeFactory, RuntimeOptions,
@@ -51,7 +51,12 @@ const SUPPORTED_COMMANDS: [CommandName; 12] = [
 /// Run a durable terminal chat session.
 #[allow(clippy::too_many_lines)]
 pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -> Result<()> {
-    let runtime = Box::pin(build_runtime(pool, config_path)).await?;
+    let approval_authority = cmd
+        .approval
+        .authority("terminal-chat")
+        .map_err(anyhow::Error::new)
+        .context("invalid terminal chat approval authority")?;
+    let runtime = Box::pin(build_runtime(pool, config_path, approval_authority)).await?;
     report_runtime(&runtime);
 
     let service: Arc<dyn InteractionService> = runtime.interactions().clone();
@@ -120,17 +125,22 @@ pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -
     }
 }
 
-async fn build_runtime(pool: &SqlitePool, config_path: Option<&Path>) -> Result<PolkagentRuntime> {
+async fn build_runtime(
+    pool: &SqlitePool,
+    config_path: Option<&Path>,
+    approval_authority: Option<InteractionApprovalAuthority>,
+) -> Result<PolkagentRuntime> {
     let workdir = std::env::current_dir().context("resolving terminal chat workdir")?;
     let mut options = RuntimeOptions::new(workdir);
     options.config_path = config_path.map(Path::to_path_buf);
     options.database_path = Some(pool.path().to_path_buf());
     options.disable_harness = true;
+    options.approval_authority = approval_authority;
     // Match the established local-first CLI path while reporting simulation
     // explicitly on stderr. Durable interaction-scoped model selection is
     // handled by the shared interaction service after composition.
     options.adapter_policy = AdapterPolicy::AllowSimulated;
-    RuntimeFactory::build(options)
+    Box::pin(RuntimeFactory::build(options))
         .await
         .context("building shared terminal chat runtime")
 }
@@ -297,7 +307,7 @@ impl ChatSession {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("waiting for Ctrl-C")?;
-                    if let Err(error) = self.cancel_turn_safely(started.handle.turn_id).await {
+                    if let Err(error) = self.service.cancel_turn(started.handle.turn_id).await {
                         eprintln!("cancellation unavailable: {error:#}");
                     } else {
                         eprintln!("cancellation requested for turn {}", started.handle.turn_id);
@@ -335,7 +345,7 @@ impl ChatSession {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("waiting for Ctrl-C")?;
-                    if let Err(error) = self.cancel_turn_safely(started.handle.turn_id).await {
+                    if let Err(error) = self.service.cancel_turn(started.handle.turn_id).await {
                         eprintln!("cancellation unavailable: {error:#}");
                     } else {
                         eprintln!("cancellation requested for turn {}", started.handle.turn_id);
@@ -393,32 +403,6 @@ impl ChatSession {
         Ok(())
     }
 
-    async fn cancel_turn_safely(
-        &self,
-        turn_id: polkagent_interaction::InteractionTurnId,
-    ) -> Result<()> {
-        match self
-            .service
-            .list_pending_approvals(self.conversation_id)
-            .await
-        {
-            Ok(approvals) if !approvals.is_empty() => anyhow::bail!(
-                "coordinator-backed turn cancellation is not yet available while this conversation has a pending approval; use /deny for the pending request"
-            ),
-            Ok(_) => self
-                .service
-                .cancel_turn(turn_id)
-                .await
-                .context("cancelling active chat turn"),
-            Err(error) if approval_surface_unavailable(&error) => self
-                .service
-                .cancel_turn(turn_id)
-                .await
-                .context("cancelling active grantless chat turn"),
-            Err(error) => Err(error.into()),
-        }
-    }
-
     async fn execute_command_line(&mut self, line: &str, has_active_turn: bool) -> Result<()> {
         refuse_unregistered_configuration_command(line)?;
         let ParsedLine::Command(invocation) = self.registry.parse(line)? else {
@@ -447,13 +431,6 @@ impl ChatSession {
         {
             anyhow::bail!(
                 "terminal approval resolution is unavailable because this runtime has no authenticated approval authority"
-            );
-        }
-        if matches!(invocation.command, InteractionCommand::Cancel { .. })
-            && approvals_available.pending_count() > 0
-        {
-            anyhow::bail!(
-                "coordinator-backed turn cancellation is not yet available while this conversation has a pending approval; use /deny for the pending request"
             );
         }
         let output = self
@@ -1052,7 +1029,7 @@ fn chat_unsupported(capability: &str) -> InteractionError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -1071,10 +1048,10 @@ mod tests {
         HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
     };
     use polkagent_interaction::{
-        InteractionApprovalAuthority, InteractionEventId, InteractionRunLink, InteractionStore,
-        NewInteraction, NewInteractionTurn, RunRole,
+        derive_approval_service_principal, InteractionApprovalAuthority, InteractionEventId,
+        InteractionRunLink, InteractionStore, NewInteraction, NewInteractionTurn, RunRole,
     };
-    use polkagent_runtime::DurableInteractionService;
+    use polkagent_runtime::{ComponentState, DurableInteractionService};
     use polkagent_service::{AppService, ApprovalRuntimeConfig};
     use polkagent_store_sqlite::{migrations, SqliteInteractionStore, SqliteRunStore};
     use polkagent_store_trait::{
@@ -1234,7 +1211,7 @@ mod tests {
         }
     }
 
-    fn persist_agent(pool: &SqlitePool, spec: &AgentSpec) {
+    pub(crate) fn persist_agent(pool: &SqlitePool, spec: &AgentSpec) {
         pool.writer()
             .execute(
                 "INSERT INTO agents (id, name, state, spec_json, created_at, updated_at)
@@ -1338,14 +1315,14 @@ mod tests {
         }
     }
 
-    struct ChatApprovalFixture {
-        authority: InteractionApprovalAuthority,
-        conversation_id: ConversationId,
+    pub(crate) struct ChatApprovalFixture {
+        pub(crate) authority: InteractionApprovalAuthority,
+        pub(crate) conversation_id: ConversationId,
         other_conversation_id: ConversationId,
-        interaction_turn_id: polkagent_interaction::InteractionTurnId,
+        pub(crate) interaction_turn_id: polkagent_interaction::InteractionTurnId,
         approval_id: ApprovalId,
-        run_id: RunId,
-        effect_id: EffectId,
+        pub(crate) run_id: RunId,
+        pub(crate) effect_id: EffectId,
     }
 
     fn seed_conversation_row(
@@ -1372,7 +1349,10 @@ mod tests {
         clippy::too_many_lines,
         reason = "the exact persisted approval lineage remains auditable in one test fixture"
     )]
-    async fn seed_chat_approval(pool: &SqlitePool, agent_id: AgentId) -> ChatApprovalFixture {
+    pub(crate) async fn seed_chat_approval(
+        pool: &SqlitePool,
+        agent_id: AgentId,
+    ) -> ChatApprovalFixture {
         let conversation_id = ConversationId::new();
         let other_conversation_id = ConversationId::new();
         let interaction_turn_id = polkagent_interaction::InteractionTurnId::new();
@@ -1550,7 +1530,7 @@ mod tests {
         }
     }
 
-    fn chat_approval_service(
+    pub(crate) fn chat_approval_service(
         pool: &SqlitePool,
         authority: &InteractionApprovalAuthority,
     ) -> Arc<DurableInteractionService> {
@@ -1573,7 +1553,9 @@ mod tests {
                         tenant_id: authority.tenant_id.clone(),
                         workspace_id: authority.workspace_id.clone(),
                         authorized_principal_id: authority.principal_id,
-                        service_principal_id: PrincipalId::new(),
+                        service_principal_id: derive_approval_service_principal(
+                            authority.principal_id,
+                        ),
                         working_directory: PathBuf::from("/workspace"),
                         security_config: SecurityConfig::default(),
                         approval_timeout: Duration::from_secs(60),
@@ -1635,6 +1617,32 @@ mod tests {
         ));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn explicit_chat_authority_composes_the_production_approval_runtime() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let pool = SqlitePool::open(temp.path().join("chat-authority.db"))
+            .expect("open chat authority database");
+        migrations::migrate(&pool.writer()).expect("migrate chat authority database");
+        let authority = InteractionApprovalAuthority {
+            tenant_id: "tenant-a".to_owned(),
+            workspace_id: "workspace-a".to_owned(),
+            principal_id: PrincipalId::new(),
+            surface: "terminal-chat".to_owned(),
+        };
+
+        let runtime = Box::pin(build_runtime(&pool, None, Some(authority)))
+            .await
+            .expect("build approval-enabled chat runtime");
+        assert_eq!(
+            runtime.readiness().approval_executor.state,
+            ComponentState::Ready
+        );
+        assert_eq!(
+            runtime.readiness().approval_surfaces.state,
+            ComponentState::Ready
+        );
+    }
+
     #[test]
     fn unsupported_surface_commands_are_explicit() {
         assert!(refuse_unregistered_configuration_command("/provider openai").is_err());
@@ -1694,31 +1702,6 @@ mod tests {
             .await
             .expect("render scoped pending identity");
 
-        let cancel_error = session
-            .execute_command_line("/cancel", true)
-            .await
-            .expect_err("generic cancellation must not strand a pending approval");
-        assert!(
-            format!("{cancel_error:#}").contains("pending approval"),
-            "{cancel_error:#}"
-        );
-        let signal_cancel_error = session
-            .cancel_turn_safely(fixture.interaction_turn_id)
-            .await
-            .expect_err("signal cancellation must fail closed while approval is pending");
-        assert!(
-            format!("{signal_cancel_error:#}").contains("pending approval"),
-            "{signal_cancel_error:#}"
-        );
-        assert_eq!(
-            service
-                .list_pending_approvals(fixture.conversation_id)
-                .await
-                .expect("approval remains pending")
-                .len(),
-            1
-        );
-
         let wrong_erased: Arc<dyn InteractionService> = service.clone();
         let mut wrong_scope =
             chat_session(wrong_erased, &pool, agent_id, fixture.other_conversation_id);
@@ -1757,10 +1740,42 @@ mod tests {
             .expect_err("opposite decision must conflict");
         assert!(format!("{conflict:#}").contains("conflict"));
 
-        restarted_session
-            .cancel_turn_safely(fixture.interaction_turn_id)
+        drop(restarted_session);
+        drop(restarted);
+
+        let cancellation = seed_chat_approval(&pool, agent_id).await;
+        let cancellation_service = chat_approval_service(&pool, &cancellation.authority);
+        let cancellation_erased: Arc<dyn InteractionService> = cancellation_service.clone();
+        let mut cancellation_session = chat_session(
+            cancellation_erased,
+            &pool,
+            agent_id,
+            cancellation.conversation_id,
+        );
+        cancellation_session
+            .execute_command_line("/cancel", true)
             .await
-            .expect("approval-capable session with no pending request can cancel normally");
+            .expect("chat cancellation resolves the pending durable approval");
+        assert!(cancellation_service
+            .list_pending_approvals(cancellation.conversation_id)
+            .await
+            .expect("list approvals after cancellation")
+            .is_empty());
+        let writer = pool.writer();
+        let (run_state, attempts): (String, i64) = writer
+            .query_row(
+                "SELECT state,
+                        (SELECT COUNT(*) FROM effect_attempts WHERE intent_id = ?2)
+                   FROM runs WHERE id = ?1",
+                rusqlite::params![
+                    cancellation.run_id.to_string(),
+                    cancellation.effect_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load cancellation outcome");
+        assert_eq!(run_state, "cancelled:approval_cancelled");
+        assert_eq!(attempts, 0, "cancelling approval must perform no tool I/O");
     }
 
     #[tokio::test(flavor = "current_thread")]

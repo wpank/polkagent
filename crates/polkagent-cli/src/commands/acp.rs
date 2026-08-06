@@ -11,9 +11,9 @@ use polkagent_config::model_registry::{BuiltInModelCatalog, ModelCatalog as _};
 use polkagent_core::{AgentId, ConversationId, RunId};
 use polkagent_interaction::{
     ApprovalView, ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate,
-    CreateInteractionRequest, InteractionApprovalAuthority, InteractionConfig, InteractionContent,
-    InteractionError, InteractionErrorCode, InteractionEvent, InteractionOverrides,
-    InteractionService as _, InteractionSummary, InteractionTarget, InteractionTurnId,
+    CreateInteractionRequest, InteractionConfig, InteractionContent, InteractionError,
+    InteractionErrorCode, InteractionEvent, InteractionOverrides, InteractionService as _,
+    InteractionSummary, InteractionTarget, InteractionTurnId,
     PromptRequest as InteractionPromptRequest, RunDetailView, RunSummaryView, StreamError,
     SubscriptionRequest, ToolCallKind, ToolCallStatus, ToolCallView, TranscriptRequest,
 };
@@ -118,10 +118,14 @@ impl PolkagentAcpBackend {
         // Preserve the established local-first ACP behavior while keeping an
         // explicitly selected provider fail-closed in RuntimeFactory.
         options.adapter_policy = AdapterPolicy::AllowSimulated;
-        options.approval_authority = approval_authority(cmd)?;
+        options.approval_authority = cmd
+            .approval
+            .authority("acp-stdio")
+            .map_err(anyhow::Error::new)
+            .context("invalid ACP approval authority")?;
         let approval_enabled = options.approval_authority.is_some();
 
-        let runtime = RuntimeFactory::build(options)
+        let runtime = Box::pin(RuntimeFactory::build(options))
             .await
             .map_err(|error| explicit_provider_error(cmd, error))
             .context("building shared ACP runtime")?;
@@ -508,33 +512,6 @@ impl PolkagentAcpBackend {
         }
         result
     }
-}
-
-fn approval_authority(cmd: &AcpCmd) -> Result<Option<InteractionApprovalAuthority>> {
-    let fields = (
-        cmd.approval_tenant.as_deref(),
-        cmd.approval_workspace.as_deref(),
-        cmd.approval_principal,
-    );
-    let authority = match fields {
-        (None, None, None) => return Ok(None),
-        (Some(tenant_id), Some(workspace_id), Some(principal_id)) => {
-            InteractionApprovalAuthority {
-                tenant_id: tenant_id.to_owned(),
-                workspace_id: workspace_id.to_owned(),
-                principal_id,
-                surface: "acp-stdio".to_owned(),
-            }
-        }
-        _ => anyhow::bail!(
-            "--approval-tenant, --approval-workspace, and --approval-principal must be supplied together"
-        ),
-    };
-    authority
-        .validate()
-        .map_err(anyhow::Error::new)
-        .context("invalid ACP approval authority")?;
-    Ok(Some(authority))
 }
 
 fn stored_agent_model(spec_json: &str) -> Option<String> {
