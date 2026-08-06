@@ -35,6 +35,7 @@ mod factory;
 mod interaction;
 mod options;
 mod readiness;
+mod run_commands;
 
 pub use error::RuntimeError;
 pub use factory::{PolkagentRuntime, RuntimeFactory};
@@ -44,3 +45,4 @@ pub use readiness::{
     ComponentReadiness, ComponentState, ConfigSource, ReadinessWarning, RuntimeReadiness,
     WarningCode,
 };
+pub use run_commands::RunCommandReadModel;

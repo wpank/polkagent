@@ -525,7 +525,7 @@ fn mvp_specs() -> Vec<CommandSpec> {
             Some("<run-id>"),
             CommandCategory::Execution,
             CommandMutability::ReadOnly,
-            CommandAvailability::default(),
+            interaction,
         ),
         spec(
             CommandName::Cancel,
@@ -1112,7 +1112,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            BTreeSet::from([CommandName::Help, CommandName::Agents, CommandName::Inspect])
+            BTreeSet::from([CommandName::Help, CommandName::Agents])
         );
     }
 

@@ -40,6 +40,22 @@ pub trait InteractionCommandRuntime: Send + Sync {
     /// Inspect one run.
     async fn inspect_run(&self, run_id: RunId) -> Result<RunDetailView, InteractionError>;
 
+    /// Inspect one run after proving it belongs to the selected interaction.
+    ///
+    /// The default deliberately fails closed. Legacy runtime adapters may
+    /// implement unscoped inspection for surfaces that do not expose this
+    /// command, but shared slash-command execution never calls it.
+    async fn inspect_run_for_conversation(
+        &self,
+        _conversation_id: ConversationId,
+        _run_id: RunId,
+    ) -> Result<RunDetailView, InteractionError> {
+        Err(InteractionError::new(
+            InteractionErrorCode::Unsupported,
+            "conversation-scoped run inspection is unavailable",
+        ))
+    }
+
     /// Request cancellation of one run outside turn-scoped cancellation.
     async fn cancel_run(&self, run_id: RunId) -> Result<(), InteractionError>;
 
@@ -178,9 +194,15 @@ impl CommandExecutor for ServiceCommandExecutor {
                     runs: self.runtime.list_runs(conversation_id).await?,
                 })
             }
-            InteractionCommand::Inspect { run_id } => Ok(CommandOutput::RunInspected {
-                run: self.runtime.inspect_run(run_id).await?,
-            }),
+            InteractionCommand::Inspect { run_id } => {
+                let conversation_id = selected_interaction(&request)?;
+                Ok(CommandOutput::RunInspected {
+                    run: self
+                        .runtime
+                        .inspect_run_for_conversation(conversation_id, run_id)
+                        .await?,
+                })
+            }
             InteractionCommand::Cancel { target } => self.cancel(&request, target).await,
             InteractionCommand::Approve { approval_id } => {
                 let conversation_id = selected_interaction(&request)?;
@@ -494,6 +516,7 @@ mod tests {
 
     struct FakeRuntime {
         agent: AgentTargetView,
+        conversation_id: ConversationId,
         active: Vec<TurnHandle>,
         approval_id: ApprovalId,
         run: RunSummaryView,
@@ -542,6 +565,20 @@ mod tests {
                 artifacts: vec!["artifact-1".to_owned()],
                 error: None,
             })
+        }
+
+        async fn inspect_run_for_conversation(
+            &self,
+            conversation_id: ConversationId,
+            run_id: RunId,
+        ) -> Result<RunDetailView, InteractionError> {
+            if conversation_id != self.conversation_id {
+                return Err(InteractionError::new(
+                    InteractionErrorCode::NotFound,
+                    "run not found",
+                ));
+            }
+            self.inspect_run(run_id).await
         }
 
         async fn cancel_run(&self, run_id: RunId) -> Result<(), InteractionError> {
@@ -599,6 +636,7 @@ mod tests {
                 state: "active".to_owned(),
                 ready: true,
             },
+            conversation_id,
             active: vec![TurnHandle {
                 turn_id,
                 conversation_id,
@@ -755,6 +793,16 @@ mod tests {
                 .expect("inspect"),
             CommandOutput::RunInspected { .. }
         ));
+
+        let foreign = fixture
+            .executor
+            .execute(request(
+                &format!("/inspect {}", fixture.runtime.run.run_id),
+                Some(ConversationId::new()),
+            ))
+            .await
+            .expect_err("inspection must be scoped to the selected conversation");
+        assert_eq!(foreign.code, InteractionErrorCode::NotFound);
 
         let cancelled = fixture
             .executor

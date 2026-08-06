@@ -8,16 +8,17 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use polkagent_config::model_registry::{BuiltInModelCatalog, ModelCatalog as _};
-use polkagent_core::{AgentId, ConversationId};
+use polkagent_core::{AgentId, ConversationId, RunId};
 use polkagent_interaction::{
     ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate, CreateInteractionRequest,
     InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
     InteractionEvent, InteractionOverrides, InteractionService as _, InteractionSummary,
-    InteractionTarget, InteractionTurnId, PromptRequest as InteractionPromptRequest, StreamError,
-    SubscriptionRequest, TranscriptRequest,
+    InteractionTarget, InteractionTurnId, PromptRequest as InteractionPromptRequest, RunDetailView,
+    RunSummaryView, StreamError, SubscriptionRequest, TranscriptRequest,
 };
 use polkagent_runtime::{
-    AdapterPolicy, PolkagentRuntime, RuntimeError, RuntimeFactory, RuntimeOptions, WarningCode,
+    AdapterPolicy, PolkagentRuntime, RunCommandReadModel, RuntimeError, RuntimeFactory,
+    RuntimeOptions, WarningCode,
 };
 use polkagent_store_sqlite::SqliteRunStore;
 use polkagent_surface_acp::{
@@ -85,6 +86,7 @@ pub async fn run(
 
 struct PolkagentAcpBackend {
     runtime: PolkagentRuntime,
+    run_commands: RunCommandReadModel,
     startup_model: Option<String>,
     prompt_timeout: Option<Duration>,
     active_turns: Mutex<HashMap<String, InteractionTurnId>>,
@@ -117,9 +119,11 @@ impl PolkagentAcpBackend {
             anyhow::bail!("shared ACP runtime is not operational");
         }
         report_executor_selection(&runtime);
+        let run_commands = RunCommandReadModel::new(runtime.pool().clone());
 
         Ok(Self {
             runtime,
+            run_commands,
             startup_model: cmd.model.clone(),
             prompt_timeout: (cmd.timeout > 0).then(|| Duration::from_secs(cmd.timeout)),
             active_turns: Mutex::new(HashMap::new()),
@@ -691,6 +695,30 @@ impl AcpBackend for PolkagentAcpBackend {
             .await
             .map_err(interaction_backend_error)?;
         backend_session(summary, Vec::new()).map_err(backend_error)
+    }
+
+    async fn list_runs(&self, session_id: &str) -> Result<Vec<RunSummaryView>, BackendError> {
+        let conversation_id = parse_conversation_id(session_id).map_err(invalid_backend_error)?;
+        self.run_commands
+            .list_runs(conversation_id)
+            .await
+            .map_err(interaction_backend_error)
+    }
+
+    async fn inspect_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<RunDetailView, BackendError> {
+        let conversation_id = parse_conversation_id(session_id).map_err(invalid_backend_error)?;
+        let run_id = run_id
+            .parse::<RunId>()
+            .with_context(|| format!("invalid run ID: {run_id}"))
+            .map_err(invalid_backend_error)?;
+        self.run_commands
+            .inspect_run(conversation_id, run_id)
+            .await
+            .map_err(interaction_backend_error)
     }
 
     async fn prompt(

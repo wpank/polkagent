@@ -298,13 +298,81 @@ fn chat_help_does_not_claim_unsupported_commands() {
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     for command in [
-        "/help", "/status", "/agents", "/agent", "/cancel", "/new", "/resume", "/model",
+        "/help", "/status", "/agents", "/agent", "/runs", "/inspect", "/cancel", "/new", "/resume",
+        "/model",
     ] {
         assert!(stdout.contains(command), "missing {command}: {stdout}");
     }
-    for command in ["  /approve", "  /runs"] {
-        assert!(!stdout.contains(command), "advertised {command}: {stdout}");
-    }
+    assert!(
+        !stdout.contains("  /approve"),
+        "advertised /approve: {stdout}"
+    );
+}
+
+#[test]
+fn run_commands_are_durable_conversation_scoped_and_actionable_after_restart() {
+    let temp = tempfile::tempdir().expect("chat tempdir");
+    let database_path = temp.path().join("chat.db");
+    let log_path = temp.path().join("chat.jsonl");
+    let config_path = temp.path().join("polkagent.toml");
+    std::fs::write(&config_path, "").expect("write isolated config");
+    seed_agent(&database_path, "chat-fixture", "fake/test");
+
+    let mut first = chat_command(&database_path, &log_path, &config_path);
+    first.args(["chat", "--agent", "chat-fixture"]);
+    let first = run_with_stdin(first, "Create one durable run.\n");
+    assert_success(&first);
+    let first_stderr = String::from_utf8(first.stderr).expect("UTF-8 chat stderr");
+    let conversation_id = session_id(&first_stderr).to_owned();
+    let connection = rusqlite::Connection::open(&database_path).expect("open durable chat DB");
+    let run_id: String = connection
+        .query_row(
+            "SELECT id FROM runs WHERE conversation_id = ?1",
+            [&conversation_id],
+            |row| row.get(0),
+        )
+        .expect("load durable chat run ID");
+    drop(connection);
+
+    let mut listed = chat_command(&database_path, &log_path, &config_path);
+    listed.args([
+        "chat",
+        "--agent",
+        "chat-fixture",
+        "--resume",
+        &conversation_id,
+    ]);
+    let listed = run_with_stdin(listed, "/runs\n");
+    assert_success(&listed);
+    let listed_stdout = String::from_utf8(listed.stdout).expect("UTF-8 run list output");
+    assert!(listed_stdout.contains("Recent runs for the selected conversation"));
+    assert!(listed_stdout.contains(&run_id), "{listed_stdout}");
+
+    let mut inspected = chat_command(&database_path, &log_path, &config_path);
+    inspected.args([
+        "chat",
+        "--agent",
+        "chat-fixture",
+        "--resume",
+        &conversation_id,
+    ]);
+    let inspected = run_with_stdin(inspected, &format!("/inspect {run_id}\n"));
+    assert_success(&inspected);
+    let inspected_stdout =
+        String::from_utf8(inspected.stdout).expect("UTF-8 run inspection output");
+    assert!(inspected_stdout.contains(&format!("Run: {run_id}")));
+    assert!(inspected_stdout.contains("State:"));
+
+    let mut foreign = chat_command(&database_path, &log_path, &config_path);
+    foreign.args(["chat", "--agent", "chat-fixture"]);
+    let foreign = run_with_stdin(foreign, &format!("/inspect {run_id}\n"));
+    assert!(!foreign.status.success());
+    let stderr = String::from_utf8_lossy(&foreign.stderr);
+    assert!(stderr.contains("not_found"), "{stderr}");
+    assert!(
+        stderr.contains("run was not found in the selected conversation"),
+        "{stderr}"
+    );
 }
 
 #[test]

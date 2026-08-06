@@ -29,8 +29,9 @@ use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
 use futures::FutureExt as _;
 use polkagent_interaction::{
-    validate_working_directory, CancelTarget, CommandName, CommandRegistry, CommandSpec,
-    InteractionCommand, ParsedLine, ToolCallKind, ToolCallStatus, ToolCallView,
+    format_run_inspection, format_run_list, validate_working_directory, CancelTarget, CommandName,
+    CommandRegistry, CommandSpec, InteractionCommand, ParsedLine, RunDetailView, RunSummaryView,
+    ToolCallKind, ToolCallStatus, ToolCallView,
 };
 use tokio::sync::Mutex;
 
@@ -43,11 +44,13 @@ const TURN_RESULT_META_KEY: &str = "polkagent";
 const PROMPT_UPDATE_BUFFER: usize = 32;
 const ALLOW_ONCE_OPTION_ID: &str = "polkagent.allow_once";
 const REJECT_ONCE_OPTION_ID: &str = "polkagent.reject_once";
-const ACP_COMMANDS: [CommandName; 6] = [
+const ACP_COMMANDS: [CommandName; 8] = [
     CommandName::Help,
     CommandName::Status,
     CommandName::Agents,
     CommandName::Agent,
+    CommandName::Runs,
+    CommandName::Inspect,
     CommandName::Model,
     CommandName::Cancel,
 ];
@@ -342,6 +345,24 @@ pub trait AcpBackend: Send + Sync + 'static {
         session_id: &str,
         model: Option<&str>,
     ) -> Result<BackendSession, BackendError>;
+
+    /// List bounded, safe run projections for one durable ACP session.
+    async fn list_runs(&self, _session_id: &str) -> Result<Vec<RunSummaryView>, BackendError> {
+        Err(BackendError::unsupported(
+            "run listing is unavailable from this backend",
+        ))
+    }
+
+    /// Inspect one run after proving it belongs to the durable ACP session.
+    async fn inspect_run(
+        &self,
+        _session_id: &str,
+        _run_id: &str,
+    ) -> Result<RunDetailView, BackendError> {
+        Err(BackendError::unsupported(
+            "run inspection is unavailable from this backend",
+        ))
+    }
 
     /// Execute one prompt through Polkagent's orchestration runtime.
     ///
@@ -1297,6 +1318,20 @@ async fn handle_slash_command(
                     .unwrap_or("agent default")
             )))
         }
+        InteractionCommand::Runs => {
+            let runs = call_backend(backend.list_runs(session_id.0.as_ref()))
+                .await
+                .map_err(|error| backend_protocol_error(&error))?;
+            Ok(BackendTurn::completed(format_run_list(&runs)))
+        }
+        InteractionCommand::Inspect { run_id } => {
+            let run = call_backend(
+                backend.inspect_run(session_id.0.as_ref(), &run_id.to_string()),
+            )
+            .await
+            .map_err(|error| backend_protocol_error(&error))?;
+            Ok(BackendTurn::completed(format_run_inspection(&run)))
+        }
         InteractionCommand::Cancel {
             target: CancelTarget::CurrentTurn,
         } if session.busy => {
@@ -1316,7 +1351,7 @@ async fn handle_slash_command(
             "ACP supports only /cancel without arguments (or /stop) for the current durable turn; run-ID and all-session cancellation are not exposed by this adapter.",
         )),
         unsupported => Ok(BackendTurn::completed(format!(
-            "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Run-history and approval commands are not exposed by this adapter.",
+            "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Approval commands are not exposed by this adapter.",
             unsupported.name().as_str()
         ))),
     }
@@ -1376,7 +1411,7 @@ fn help_text(registry: &CommandRegistry, command: Option<CommandName>) -> String
     if let Some(command) = command {
         if !ACP_COMMANDS.contains(&command) {
             return format!(
-                "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Run-history and approval commands are not exposed by this adapter.",
+                "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Approval commands are not exposed by this adapter.",
                 command.as_str()
             );
         }
@@ -2170,7 +2205,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            vec!["help", "status", "agents", "agent", "model", "cancel"]
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model", "cancel"]
         );
         let Some(agent) = commands.iter().find(|command| command.name == "agent") else {
             panic!("agent command was not advertised");
@@ -2179,20 +2214,38 @@ mod tests {
             panic!("agent command should expose its registry input hint");
         };
         assert_eq!(input.hint, "<name-or-id>");
+
+        let registry = CommandRegistry::mvp();
+        for name in [CommandName::Runs, CommandName::Inspect] {
+            let spec = registry.resolve(name.as_str()).expect("registry command");
+            let advertised = commands
+                .iter()
+                .find(|command| command.name == spec.name)
+                .expect("run command is advertised");
+            assert_eq!(advertised.description, spec.description);
+            assert_eq!(
+                advertised.input.as_ref().and_then(|input| match input {
+                    AvailableCommandInput::Unstructured(input) => Some(input.hint.as_str()),
+                    _ => None,
+                }),
+                spec.input_hint.as_deref()
+            );
+        }
     }
 
     #[test]
-    fn help_uses_registry_aliases_without_claiming_unexposed_commands() {
+    fn help_uses_registry_aliases_and_exposes_run_commands() {
         let registry = CommandRegistry::mvp();
         let help = help_text(&registry, None);
         assert!(help.contains("/agent <name-or-id>"));
         assert!(help.contains("/use"));
         assert!(help.contains("/model [id]"));
         assert!(help.contains("/cancel"));
+        assert!(help.contains("/runs"));
+        assert!(help.contains("/inspect <run-id>"));
 
         let runs = help_text(&registry, Some(CommandName::Runs));
-        assert!(runs.contains("shared Polkagent command registry"));
-        assert!(runs.contains("not supported by ACP yet"));
+        assert!(runs.contains("List recent and active runs for the interaction"));
     }
 
     #[test]

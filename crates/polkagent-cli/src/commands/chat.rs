@@ -8,16 +8,17 @@ use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
-    AgentTargetView, CancelTarget, ClientContext, CommandContext, CommandExecutor, CommandName,
-    CommandOutput, CommandRegistry, CommandRequest, CreateInteractionRequest, InteractionCommand,
-    InteractionCommandRuntime, InteractionConfig, InteractionContent, InteractionError,
-    InteractionErrorCode, InteractionEvent, InteractionOverrides, InteractionService,
-    InteractionSummary, InteractionTarget, ParsedLine, PromptRequest, RunDetailView,
-    RunSummaryView, ServiceCommandExecutor, StartedTurn, StreamError, SubscriptionRequest,
-    ToolCallView, TranscriptRequest, TurnHandle, UsageView,
+    format_run_command_output, AgentTargetView, CancelTarget, ClientContext, CommandContext,
+    CommandExecutor, CommandName, CommandOutput, CommandRegistry, CommandRequest,
+    CreateInteractionRequest, InteractionCommand, InteractionCommandRuntime, InteractionConfig,
+    InteractionContent, InteractionError, InteractionErrorCode, InteractionEvent,
+    InteractionOverrides, InteractionService, InteractionSummary, InteractionTarget, ParsedLine,
+    PromptRequest, RunDetailView, RunSummaryView, ServiceCommandExecutor, StartedTurn, StreamError,
+    SubscriptionRequest, ToolCallView, TranscriptRequest, TurnHandle, UsageView,
 };
 use polkagent_runtime::{
-    AdapterPolicy, PolkagentRuntime, RuntimeFactory, RuntimeOptions, WarningCode,
+    AdapterPolicy, PolkagentRuntime, RunCommandReadModel, RuntimeFactory, RuntimeOptions,
+    WarningCode,
 };
 use polkagent_store_sqlite::SqlitePool;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader, Lines, Stdin};
@@ -28,11 +29,13 @@ use crate::commands::interaction_agents::{
     resolve_active_agent_target,
 };
 
-const SUPPORTED_COMMANDS: [CommandName; 8] = [
+const SUPPORTED_COMMANDS: [CommandName; 10] = [
     CommandName::Help,
     CommandName::Status,
     CommandName::Agents,
     CommandName::Agent,
+    CommandName::Runs,
+    CommandName::Inspect,
     CommandName::Cancel,
     CommandName::New,
     CommandName::Resume,
@@ -81,6 +84,7 @@ pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -
     let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(ChatCommandRuntime {
         service: Arc::clone(&service),
         pool: runtime.pool().clone(),
+        run_commands: RunCommandReadModel::new(runtime.pool().clone()),
         agent_id: agent.agent_id,
     });
     let executor =
@@ -411,6 +415,7 @@ impl ChatSession {
         let runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(ChatCommandRuntime {
             service: Arc::clone(&self.service),
             pool: self.pool.clone(),
+            run_commands: RunCommandReadModel::new(self.pool.clone()),
             agent_id: self.agent_id,
         });
         self.executor =
@@ -431,6 +436,11 @@ impl ChatSession {
         reason = "one exhaustive surface projection keeps every typed shared-command result auditable"
     )]
     async fn apply_command_output(&mut self, output: CommandOutput) -> Result<()> {
+        if let Some(rendered) = format_run_command_output(&output) {
+            println!("{rendered}");
+            std::io::stdout().flush().context("flushing chat output")?;
+            return Ok(());
+        }
         match output {
             CommandOutput::Help { commands } => {
                 println!("Supported terminal chat commands:");
@@ -476,7 +486,7 @@ impl ChatSession {
                     println!("  /{}{hint} — {description}", command.name);
                 }
                 println!(
-                    "Provider/harness/autonomy, approval, run-inspection, and group commands are not available in terminal chat."
+                    "Provider/harness/autonomy, approval, and group commands are not available in terminal chat."
                 );
             }
             CommandOutput::Status {
@@ -666,9 +676,6 @@ fn refuse_unsupported_command(command: &InteractionCommand) -> Result<()> {
         } if !SUPPORTED_COMMANDS.contains(name) => {
             anyhow::bail!("/{} is not supported by terminal chat", name.as_str())
         }
-        InteractionCommand::Runs | InteractionCommand::Inspect { .. } => anyhow::bail!(
-            "terminal chat does not expose run inspection; use the top-level inspect commands"
-        ),
         InteractionCommand::Cancel {
             target: CancelTarget::Run(_),
         } => anyhow::bail!(
@@ -823,6 +830,7 @@ impl TurnRenderer {
 struct ChatCommandRuntime {
     service: Arc<dyn InteractionService>,
     pool: SqlitePool,
+    run_commands: RunCommandReadModel,
     agent_id: AgentId,
 }
 
@@ -844,13 +852,21 @@ impl InteractionCommandRuntime for ChatCommandRuntime {
 
     async fn list_runs(
         &self,
-        _conversation_id: ConversationId,
+        conversation_id: ConversationId,
     ) -> Result<Vec<RunSummaryView>, InteractionError> {
-        Err(chat_unsupported("run listing"))
+        self.run_commands.list_runs(conversation_id).await
     }
 
     async fn inspect_run(&self, _run_id: RunId) -> Result<RunDetailView, InteractionError> {
         Err(chat_unsupported("run inspection"))
+    }
+
+    async fn inspect_run_for_conversation(
+        &self,
+        conversation_id: ConversationId,
+        run_id: RunId,
+    ) -> Result<RunDetailView, InteractionError> {
+        self.run_commands.inspect_run(conversation_id, run_id).await
     }
 
     async fn cancel_run(&self, _run_id: RunId) -> Result<(), InteractionError> {
@@ -1139,6 +1155,7 @@ mod tests {
         let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(ChatCommandRuntime {
             service: Arc::clone(&service),
             pool: pool.clone(),
+            run_commands: RunCommandReadModel::new(pool.clone()),
             agent_id,
         });
         let executor =
@@ -1213,6 +1230,11 @@ mod tests {
         .is_ok());
         assert!(refuse_unsupported_command(&InteractionCommand::Model { model: None }).is_ok());
         assert!(refuse_unsupported_command(&InteractionCommand::Status).is_ok());
+        assert!(refuse_unsupported_command(&InteractionCommand::Runs).is_ok());
+        assert!(refuse_unsupported_command(&InteractionCommand::Inspect {
+            run_id: RunId::new(),
+        })
+        .is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]

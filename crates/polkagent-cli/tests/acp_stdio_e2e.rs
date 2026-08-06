@@ -315,6 +315,8 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
 
     let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
     let observed_by_client = Arc::clone(&observed);
+    let inspected_run_id = Arc::new(Mutex::new(None::<String>));
+    let inspected_run_id_by_client = Arc::clone(&inspected_run_id);
     let agent = observed_agent(
         AcpAgentConfig::new(binary)
             .args([
@@ -379,13 +381,7 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
                     .block_task()
                     .await?;
 
-                for command in [
-                    "/commands stop",
-                    "/st",
-                    "/agents",
-                    "/use editor-fixture",
-                    "/runs",
-                ] {
+                for command in ["/commands stop", "/st", "/agents", "/use editor-fixture"] {
                     let response = connection
                         .send_request(PromptRequest::new(
                             session.session_id.clone(),
@@ -398,7 +394,7 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
 
                 let run = connection
                     .send_request(PromptRequest::new(
-                        session.session_id,
+                        session.session_id.clone(),
                         vec![ContentBlock::Text(TextContent::new(
                             "Return a short editor integration greeting.",
                         ))],
@@ -406,6 +402,22 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
                     .block_task()
                     .await?;
                 assert_eq!(run.stop_reason, StopReason::EndTurn);
+                let identity = durable_prompt_identity(&run);
+                assert_eq!(identity.run_ids.len(), 1);
+                let run_id = identity.run_ids[0].clone();
+                for command in ["/runs".to_owned(), format!("/inspect {run_id}")] {
+                    let response = connection
+                        .send_request(PromptRequest::new(
+                            session.session_id.clone(),
+                            vec![ContentBlock::Text(TextContent::new(command))],
+                        ))
+                        .block_task()
+                        .await?;
+                    assert_eq!(response.stop_reason, StopReason::EndTurn);
+                }
+                *inspected_run_id_by_client
+                    .lock()
+                    .expect("inspected run ID lock") = Some(run_id);
                 Ok(())
             },
         )
@@ -414,6 +426,21 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
 
     let observed = observed.lock().expect("observed updates lock");
     assert_editor_command_updates(&observed);
+    let inspected_run_id = inspected_run_id
+        .lock()
+        .expect("inspected run ID lock")
+        .clone()
+        .expect("inspected run identity");
+    assert!(
+        observed
+            .messages
+            .iter()
+            .filter(|message| message.contains(&inspected_run_id))
+            .count()
+            >= 2,
+        "run list and inspection did not retain the durable ID: {:?}",
+        observed.messages
+    );
     assert_safe_success_diagnostics(&log_path);
 }
 
@@ -538,6 +565,7 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
     let second_turn_id = uuid::Uuid::now_v7().to_string();
     let second_turn_id_for_client = second_turn_id.clone();
     let first_conversation_id = first.conversation_id.clone();
+    let first_run_id_for_client = first.run_ids[0].clone();
     let second_project_path = temp.path().to_path_buf();
 
     agent_client_protocol::Client
@@ -591,6 +619,19 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
                     ),
                     "fake/test"
                 );
+                for command in [
+                    "/runs".to_owned(),
+                    format!("/inspect {first_run_id_for_client}"),
+                ] {
+                    let response = connection
+                        .send_request(PromptRequest::new(
+                            session_id.clone(),
+                            vec![ContentBlock::Text(TextContent::new(command))],
+                        ))
+                        .block_task()
+                        .await?;
+                    assert_eq!(response.stop_reason, StopReason::EndTurn);
+                }
                 let follow_up = connection
                     .send_request(prompt_with_turn_id(
                         &session_id,
@@ -628,6 +669,16 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
         .lock()
         .expect("loaded agents lock")
         .is_empty());
+    assert!(
+        loaded_agent_messages
+            .lock()
+            .expect("loaded agents lock")
+            .iter()
+            .filter(|text| text.contains(&first.run_ids[0]))
+            .count()
+            >= 2,
+        "restarted ACP process did not list and inspect the first durable run"
+    );
 
     let resumed_user_chunks = Arc::new(Mutex::new(0_usize));
     let resumed_user_chunks_by_client = Arc::clone(&resumed_user_chunks);
@@ -1329,7 +1380,7 @@ fn assert_safe_success_diagnostics(log_path: &std::path::Path) {
 fn assert_editor_command_updates(observed: &ObservedUpdates) {
     assert_eq!(
         observed.command_names,
-        vec!["help", "status", "agents", "agent", "model", "cancel"]
+        vec!["help", "status", "agents", "agent", "runs", "inspect", "model", "cancel"]
     );
     assert!(
         observed
@@ -1364,15 +1415,23 @@ fn assert_editor_command_updates(observed: &ObservedUpdates) {
         observed.messages
     );
     assert!(
-        observed.messages.iter().any(|message| {
-            message.contains("shared Polkagent command registry")
-                && message.contains("not supported by ACP yet")
-        }),
-        "unsupported durable command was not declined truthfully: {:?}",
+        observed
+            .messages
+            .iter()
+            .any(|message| message.contains("Recent runs for the selected conversation")),
+        "run discovery was not streamed: {:?}",
         observed.messages
     );
     assert!(
-        observed.messages.len() >= 6,
+        observed
+            .messages
+            .iter()
+            .any(|message| message.contains("Run:") && message.contains("State:")),
+        "run inspection was not streamed: {:?}",
+        observed.messages
+    );
+    assert!(
+        observed.messages.len() >= 7,
         "the real Polkagent run did not stream an agent message after commands: {:?}",
         observed.messages
     );
