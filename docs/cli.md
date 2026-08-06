@@ -440,6 +440,7 @@ The actionable Console is intentionally a bounded durable multi-turn surface:
 | `/resume <conversation-id>` | Select an interaction, target, and transcript |
 | `/runs` | List up to 20 newest runs linked to the selected conversation |
 | `/inspect <run-id>` | Inspect one selected-conversation run with bounded artifact IDs and safe terminal error |
+| `/cancel` (alias `/stop`) | Cancel only the selected exact active Console turn |
 | `/model [model-id]` | Show or persist the selected conversation's effective model |
 
 The Console creates one durable interaction for the selected agent and keeps
@@ -451,10 +452,11 @@ history remains unsupported. The Console consumes typed interaction events,
 shows correlated
 conversation/turn/run IDs, reloads history after restart, and keeps one active
 turn per selected conversation, with at most eight across distinct targets, so
-cancellation has an exact target. The slash picker advertises
-only `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`,
-`/inspect`, and `/model`; unavailable interaction-scoped commands are hidden
-until a durable conversation is selected. Those commands use the shared
+cancellation has an exact target. The slash picker advertises only `/help`,
+`/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/model`,
+and—only when the selected activity has an exact active
+durable turn—`/cancel` with its `/stop` alias. Unavailable interaction-scoped
+commands are hidden until their preconditions hold. Those commands use the shared
 registry and service executor, render structured success/error output, and are
 never sent to the model. `/runs` and `/inspect` use the runtime-owned
 conversation-scoped read model and the same bounded redaction-safe formatter as
@@ -480,8 +482,14 @@ persists a same-provider selection for that conversation without changing the
 shared agent specification. Unknown, cross-provider, and harness-backed
 dynamic selections fail with typed errors. Async model results are correlated
 to the initiating request, agent, and conversation before updating the session
-header. `/cancel` is not accepted because the composer is closed while a turn
-is active; `x` remains the exact current-turn cancellation path. Provider,
+header. The composer can open while the selected turn is active so `/cancel` can
+run through the shared executor. The command captures the selected durable turn
+ID and the Console filters the executor's active-turn view to that exact ID;
+stale or terminal requests cannot fall through to another activity. `/cancel
+<run-id>` and `/cancel all` are refused, while `x` remains a shortcut for the
+same exact selected-turn cancellation. Both paths route through
+`InteractionService::cancel_turn`, create no model turn, and leave other
+activities, transcripts, and drafts intact. Provider,
 autonomy, harness, group orchestration, and approval slash commands are
 explicitly refused in the Console prompt path. F6 is the separate approval
 surface: it scopes `InteractionService::list_pending_approvals`, `approve`, and

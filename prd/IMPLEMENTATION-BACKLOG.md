@@ -509,6 +509,13 @@ adapter hooks through small interfaces.
   shared handlers; render structured command state, guard stale results,
   switch/load exact same-agent sessions, and keep commands out of the model
   transcript.
+- [x] Execute `/cancel` and `/stop` only while the selected Console activity has
+  an exact active durable turn. Capture and filter to that turn through the
+  shared service executor, refuse run-ID/all forms, preserve unrelated
+  concurrent activities/transcripts/drafts across stale completion, and create
+  no model turn. A delayed-provider real-runtime fixture proves durable exact-
+  turn cancellation and truthful terminal retry alongside the existing `x`
+  shortcut.
 - [x] Complete shared `/runs` and `/inspect <run-id>` across every interactive
   surface.
   - [x] Terminal chat and ACP/Zed use one runtime-owned, conversation-scoped
