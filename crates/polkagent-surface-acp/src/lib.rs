@@ -1734,6 +1734,15 @@ mod tests {
         let completion = Arc::new(tokio::sync::Notify::new());
         let completion_client = Arc::clone(&completion);
         let (client_transport, agent_transport) = agent_client_protocol::Channel::duplex();
+        let calls = [
+            tool_view(ToolCallStatus::AwaitingApproval),
+            tool_view(ToolCallStatus::AwaitingApproval),
+            tool_view(ToolCallStatus::AwaitingApproval),
+        ];
+        let expected_call_ids = calls
+            .iter()
+            .map(|call| call.call_id.to_string())
+            .collect::<Vec<_>>();
 
         let client = agent_client_protocol::Client
             .builder()
@@ -1764,15 +1773,11 @@ mod tests {
         let agent = agent_client_protocol::Agent.builder().connect_with(
             agent_transport,
             async move |connection| {
-                for status in [
-                    ToolCallStatus::AwaitingApproval,
-                    ToolCallStatus::AwaitingApproval,
-                    ToolCallStatus::AwaitingApproval,
-                ] {
+                for call in calls {
                     let response = connection
                         .send_request(permission_request(
                             SessionId::new("permission-session"),
-                            tool_view(status),
+                            call,
                         ))
                         .block_task()
                         .await?;
@@ -1802,11 +1807,257 @@ mod tests {
         );
         let observed = observed.lock().expect("final permission observation lock");
         assert_eq!(observed.len(), 3);
-        assert!(observed.iter().all(|request| {
-            request.options.len() == 2
-                && request.options[0].kind == PermissionOptionKind::AllowOnce
-                && request.options[1].kind == PermissionOptionKind::RejectOnce
-        }));
+        let observed_call_ids = observed
+            .iter()
+            .map(|request| request.tool_call.tool_call_id.0.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(observed_call_ids, expected_call_ids);
+        for request in observed.iter() {
+            assert_eq!(request.options.len(), 2);
+            assert_eq!(
+                request.options[0].option_id.0.as_ref(),
+                ALLOW_ONCE_OPTION_ID
+            );
+            assert_eq!(request.options[0].kind, PermissionOptionKind::AllowOnce);
+            assert_eq!(
+                request.options[1].option_id.0.as_ref(),
+                REJECT_ONCE_OPTION_ID
+            );
+            assert_eq!(request.options[1].kind, PermissionOptionKind::RejectOnce);
+            let wire = serde_json::to_value(request).expect("encode observed permission request");
+            assert!(wire["toolCall"].get("rawInput").is_none());
+            assert!(wire["toolCall"].get("rawOutput").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn official_client_session_cancel_resolves_pending_permission_as_cancelled() {
+        let session_id = SessionId::new("cancelled-permission-session");
+        let (pending_tx, mut pending_rx) = tokio::sync::mpsc::unbounded_channel::<
+            agent_client_protocol::Responder<RequestPermissionResponse>,
+        >();
+        let cancellation_observed = Arc::new(tokio::sync::Notify::new());
+        let cancellation_observed_by_client = Arc::clone(&cancellation_observed);
+        let observed_session = Arc::new(std::sync::Mutex::new(None));
+        let observed_session_by_agent = Arc::clone(&observed_session);
+        let agent_finished = Arc::new(tokio::sync::Notify::new());
+        let agent_finished_by_client = Arc::clone(&agent_finished);
+        let decision = Arc::new(std::sync::Mutex::new(None));
+        let decision_by_agent = Arc::clone(&decision);
+        let client_session_id = session_id.clone();
+        let agent_session_id = session_id.clone();
+        let (client_transport, agent_transport) = agent_client_protocol::Channel::duplex();
+
+        let client = agent_client_protocol::Client
+            .builder()
+            .on_receive_request(
+                async move |_request: RequestPermissionRequest, responder, _connection| {
+                    pending_tx.send(responder).map_err(|_| {
+                        agent_client_protocol::Error::internal_error()
+                            .data("permission responder receiver dropped")
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_with(client_transport, async move |connection| {
+                let responder = pending_rx.recv().await.ok_or_else(|| {
+                    agent_client_protocol::Error::internal_error()
+                        .data("permission request was not observed")
+                })?;
+                connection.send_notification(CancelNotification::new(client_session_id))?;
+                cancellation_observed_by_client.notified().await;
+                responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ))?;
+                agent_finished_by_client.notified().await;
+                Ok(())
+            });
+        let agent = agent_client_protocol::Agent
+            .builder()
+            .on_receive_notification(
+                async move |notification: CancelNotification, _connection| {
+                    *observed_session_by_agent
+                        .lock()
+                        .expect("cancel observation lock") = Some(notification.session_id);
+                    cancellation_observed.notify_one();
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            .connect_with(agent_transport, async move |connection| {
+                let response = connection
+                    .send_request(permission_request(
+                        agent_session_id,
+                        tool_view(ToolCallStatus::AwaitingApproval),
+                    ))
+                    .block_task()
+                    .await?;
+                *decision_by_agent.lock().expect("cancel decision lock") =
+                    Some(permission_decision(&response)?);
+                agent_finished.notify_one();
+                Ok(())
+            });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            futures::try_join!(client, agent)
+        })
+        .await
+        .expect("official ACP cancellation harness timed out")
+        .expect("official ACP cancellation harness failed");
+
+        assert_eq!(
+            *observed_session
+                .lock()
+                .expect("final cancel observation lock"),
+            Some(session_id)
+        );
+        assert_eq!(
+            *decision.lock().expect("final cancel decision lock"),
+            Some(PermissionDecision::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn official_client_unknown_permission_option_and_protocol_error_fail_closed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use agent_client_protocol::schema::v1::SelectedPermissionOutcome;
+
+        let response_index = Arc::new(AtomicUsize::new(0));
+        let response_index_by_client = Arc::clone(&response_index);
+        let agent_finished = Arc::new(tokio::sync::Notify::new());
+        let agent_finished_by_client = Arc::clone(&agent_finished);
+        let observed_error_codes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_error_codes_by_agent = Arc::clone(&observed_error_codes);
+        let (client_transport, agent_transport) = agent_client_protocol::Channel::duplex();
+
+        let client = agent_client_protocol::Client
+            .builder()
+            .on_receive_request(
+                async move |_request: RequestPermissionRequest, responder, _connection| {
+                    match response_index_by_client.fetch_add(1, Ordering::SeqCst) {
+                        0 => responder.respond(RequestPermissionResponse::new(
+                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                                "polkagent.allow_always",
+                            )),
+                        )),
+                        _ => responder.respond_with_error(
+                            agent_client_protocol::Error::invalid_request()
+                                .data("synthetic client permission failure"),
+                        ),
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_with(client_transport, async move |_connection| {
+                agent_finished_by_client.notified().await;
+                Ok(())
+            });
+        let agent = agent_client_protocol::Agent.builder().connect_with(
+            agent_transport,
+            async move |connection| {
+                let unknown_response = connection
+                    .send_request(permission_request(
+                        SessionId::new("unknown-option-session"),
+                        tool_view(ToolCallStatus::AwaitingApproval),
+                    ))
+                    .block_task()
+                    .await?;
+                let unknown_error = permission_decision(&unknown_response)
+                    .expect_err("an unknown option must not become an approval");
+
+                let protocol_error = connection
+                    .send_request(permission_request(
+                        SessionId::new("permission-error-session"),
+                        tool_view(ToolCallStatus::AwaitingApproval),
+                    ))
+                    .block_task()
+                    .await
+                    .expect_err("a client protocol error must remain an error");
+                observed_error_codes_by_agent
+                    .lock()
+                    .expect("permission error code lock")
+                    .extend([unknown_error.code, protocol_error.code]);
+                agent_finished.notify_one();
+                Ok(())
+            },
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            futures::try_join!(client, agent)
+        })
+        .await
+        .expect("official ACP permission error harness timed out")
+        .expect("official ACP permission error harness failed");
+
+        assert_eq!(response_index.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *observed_error_codes
+                .lock()
+                .expect("final permission error code lock"),
+            vec![
+                agent_client_protocol::Error::invalid_params().code,
+                agent_client_protocol::Error::invalid_request().code,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn official_client_disconnect_fails_pending_permission_without_a_decision() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let request_observed = Arc::new(tokio::sync::Notify::new());
+        let request_observed_by_client = Arc::clone(&request_observed);
+        let request_failed_closed = Arc::new(AtomicBool::new(false));
+        let request_failed_closed_by_agent = Arc::clone(&request_failed_closed);
+        let agent_finished = Arc::new(tokio::sync::Notify::new());
+        let agent_finished_by_client = Arc::clone(&agent_finished);
+        let (client_transport, agent_transport) = agent_client_protocol::Channel::duplex();
+        let close_client_output = client_transport.tx.clone();
+
+        let client = agent_client_protocol::Client
+            .builder()
+            .on_receive_request(
+                async move |_request: RequestPermissionRequest, _responder, _connection| {
+                    request_observed_by_client.notify_one();
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_with(client_transport, async move |_connection| {
+                request_observed.notified().await;
+                close_client_output.close_channel();
+                agent_finished_by_client.notified().await;
+                Ok(())
+            });
+        let agent = agent_client_protocol::Agent.builder().connect_with(
+            agent_transport,
+            async move |connection| {
+                let error = connection
+                    .send_request(permission_request(
+                        SessionId::new("disconnected-permission-session"),
+                        tool_view(ToolCallStatus::AwaitingApproval),
+                    ))
+                    .block_task()
+                    .await
+                    .expect_err("disconnect must fail a pending permission request");
+                request_failed_closed_by_agent.store(
+                    agent_client_protocol::is_incoming_transport_closed(&error),
+                    Ordering::SeqCst,
+                );
+                agent_finished.notify_one();
+                Ok(())
+            },
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            futures::try_join!(client, agent)
+        })
+        .await
+        .expect("official ACP permission disconnect harness timed out")
+        .expect("official ACP permission disconnect harness failed");
+
+        assert!(request_failed_closed.load(Ordering::SeqCst));
     }
 
     #[test]
