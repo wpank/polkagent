@@ -776,19 +776,21 @@ separate files.
 ## Next safe parallel-agent allocation
 
 The contract/runtime foundation and first TUI, chat, HTTP, and ACP slices are
-already present. New agents should start from the remaining rows below rather
-than replaying historical foundation work.
+already present. Completed rows below freeze dependency state; new agents start
+from an explicitly ready remaining row rather than replaying foundation work.
 
 | Lane | Packet and next deliverable | Exclusive primary ownership | Integration gate |
 |---|---|---|---|
-| Integration | APR-00 freezes ADR/domain/serialized contracts; APR-01 implements stores/coordinator/CAS/checkpoints | Contract package, store traits, SQLite coordinator, run CAS, checkpoint schema | APR-01 starts after APR-00; atomicity, idempotent retry, and restart-without-duplicate-I/O pass. |
-| Policy | APR-02 composes policy approval effects, config, resolver, and readiness | Policy/config/runtime-composition modules | Starts after APR-00; default deny, permit, and escalation composition tests pass. |
-| Execution | APR-03/EXE-01 implements orchestrator pause/recovery and one approval-required tool | `polkagent-run` orchestrator and narrow service bridges | Starts after APR-01/APR-02; AllowOnce executes once and reject/cancel/timeout execute zero times. |
-| ACP harness | APR-04 builds the fake ACP permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Starts after APR-00 and does not mutate production runtime state. |
+| Integration | **Complete:** APR-00/01 contracts, V18 SQLite coordinator, run CAS, checkpoint leases, and conformance | Contract package, store traits, SQLite coordinator, run CAS, checkpoint schema | Preserve atomic/idempotent/reopen/generic-path-isolation evidence; do not create a second coordinator. |
+| Policy | **Complete:** APR-02 strict opt-in policy approval effects, config, resolver injection, and readiness | Policy/config/runtime-composition modules | Preserve default deny, permit, escalation precedence, and strict config tests. |
+| Execution | **In progress:** APR-03/EXE-01 orchestrator pause/recovery and one approval-required tool | `polkagent-run` orchestrator and narrow service bridges | APR-01/APR-02 are satisfied; AllowOnce executes once and reject/cancel/timeout execute zero times, with unknown post-attempt recovery fail-closed. |
+| ACP harness | **Complete:** APR-04 fake permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Preserve once-only identity/redaction/cancel/error/disconnect coverage; production binding remains APR-07. |
 | Projection/API | APR-05 adds durable approval projection/query/approve-deny and HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | Starts after APR-01 plus APR-03's event contract; replay and wrong-scope tests pass. |
 | Terminal | APR-06 adds chat/TUI approval queue/detail/actions and removes direct DB writes | CLI chat/TUI modules | Starts after APR-05; exact approval identities survive cancel/restart with no accidental prompts. |
 | Editor | APR-07 binds production ACP permission requests to the coordinator | `polkagent-surface-acp` production backend | Starts after APR-03/APR-04/APR-05; official client allow/reject/cancel/reconnect tests pass. |
 | Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
+| TUI orchestration | **In progress:** TUI-03 replaces the single-active-turn controller with bounded simultaneous durable sessions | CLI TUI controller/state/render/tests only | Two conversations progress independently; selection and exact cancellation do not cross streams; shutdown reaps all owned tasks. |
+| Observability | **In progress:** OBS-01 persists complete canonical SQLite run-event correlation/causation metadata | Event contract/recorder and forward SQLite migration | Legacy cursor order survives migration; populated/null metadata round-trips and corrupted rows fail closed; tenant/principal isolation remains open. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |
