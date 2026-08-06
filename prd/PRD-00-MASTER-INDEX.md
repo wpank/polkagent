@@ -16,12 +16,14 @@ exist. TUI, terminal chat, HTTP, and ACP now consume the interaction service;
 one exact restarted conversation is proven across all four surfaces, and a
 bounded grantless registered-tool loop now persists intent before real handler
 I/O and projects one stable effect-backed tool identity through terminal/TUI/
-ACP. The dominant gaps are role-safe harness history, durable approval/policy/
-resume, raw tool-data redaction, and manual-editor evidence.
+ACP. The dominant gaps are durable approval execution/resume and surface
+binding, simultaneous orchestration, provider/harness parity, raw tool-data
+redaction, and manual-editor evidence.
 
 The next milestone is therefore not “add more crates.” It is extending the
-grantless tool slice into the atomic approval coordinator/checkpoint design,
-permission surfaces, and recovery, followed by real-editor validation.
+grantless tool slice through the implemented policy and SQLite approval/
+checkpoint foundation into orchestrator recovery, permission surfaces, and
+real-editor validation.
 
 Current execution truth lives in:
 
@@ -48,8 +50,8 @@ percentage.
 |---|---|---|
 | [PRD-01](PRD-01-VISION-PRINCIPLES-PERSONAS.md) | Vision, principles, personas, pillars | Normative product direction; implementation prose is historical. |
 | [PRD-02](PRD-02-VOCABULARY-ARCHITECTURE.md) | Vocabulary, invariants, architecture | Preserve invariants; reconcile sketches with current types during touched work. |
-| [PRD-03](PRD-03-EXECUTION-MODEL.md) | Runs, turns, effects, recovery | Active; bounded grantless registered-tool execution exists, while approval/policy/recovery remain P0 gaps. |
-| [PRD-04](PRD-04-PROVIDERS-MODELS-TOOLS.md) | Providers, models, harnesses, tools, skills | Active; grantless allowlisted registered tools now execute in a bounded model loop, while approvals/policy/external-adapter evidence remain. |
+| [PRD-03](PRD-03-EXECUTION-MODEL.md) | Runs, turns, effects, recovery | Active; bounded grantless registered-tool execution and the durable approval/checkpoint store foundation exist, while orchestrator approval/recovery remains a P0 gap. |
+| [PRD-04](PRD-04-PROVIDERS-MODELS-TOOLS.md) | Providers, models, harnesses, tools, skills | Active; grantless allowlisted registered tools execute in a bounded model loop and strict policy composition exists, while approval enforcement and external-adapter evidence remain. |
 | [PRD-04a](PRD-04a-PROVIDER-HARNESS-EXPANSION.md) | Provider/harness expansion | Active component scope; prove each adapter through the shared runtime. |
 | [PRD-05](PRD-05-POLKADOT-INTEGRATIONS.md) | Polkadot read/write integrations | Active; live finality, signing, dry-run/XCM, and action E2E remain. |
 | [PRD-06](PRD-06-PCA-COMPATIBILITY.md) | PCA compatibility and transport | Active; durable encrypted TCP/control delivery is cross-process tested, but reference PCA framing, signed identity, attachments, and runtime composition remain. |
@@ -69,7 +71,7 @@ percentage.
 |---|---|---|
 | [PRD-17](PRD-17-LOCAL-TESTNET-E2E.md) | Real local Polkadot network, signed actions, finality, and reproducible CI evidence | Runtime/action wiring, real signer, corrected live-test workflow |
 | [PRD-19](PRD-19-INTERACTIVE-CONSOLE-ACP.md) | Terminal chat, actionable TUI, shared commands, ACP server, Zed, and orchestration | Shared runtime and interaction contracts |
-| [Approval pause/resume design](APPROVAL-PAUSE-RESUME-DESIGN.md) | Atomic durable permission coordinator, checkpoint recovery, and cross-surface approval | Freeze APR-ADR-01 through APR-ADR-05 before parallel store/policy/orchestrator/surface work |
+| [Approval pause/resume design](APPROVAL-PAUSE-RESUME-DESIGN.md) | Atomic durable permission coordinator, checkpoint recovery, and cross-surface approval | APR-00/01/02/04 are complete; APR-03 orchestrator/recovery now unblocks the interaction and surface packets |
 
 PRD-19 supersedes the implementation role of archived PRD-18 while preserving
 its useful prompt/TUI requirements. PRD-16 and the diagnostic ledger were
@@ -81,16 +83,18 @@ backlog.
 ```text
 shared production runtime (implemented; run/TUI/chat/ACP/serve migrated)
         |
-        +--> real tool/effect/policy/approval execution
+        +--> real tool/effect/policy-enforcement/approval execution
         |
         +--> durable interaction/session/event service
              (prompt/transcript/cancel/replay and target/model config implemented)
                     |
                     +--> terminal chat + durable/actionable TUI
-                         (single-agent session/model/restart/cancel slices exist)
+                         (responsive single-active-turn session/model/restart/
+                          cancel slices exist; simultaneous orchestration open)
                     +--> complete rich ACP + Zed support
-                         (durable stdio new/load/resume/cwd/tool slice exists;
-                          permissions/list/import/manual Zed remain)
+                         (durable stdio new/load/resume/cwd/tool slice and
+                          permission protocol harness exist; production
+                          permission binding/list/import/manual Zed remain)
                     +--> durable API control plane
                          (interaction/core HTTP slice exists)
                     +--> group/feed orchestration
