@@ -1,15 +1,16 @@
 //! APR-08 recovery evidence around the external-I/O attempt boundary.
 //!
 //! The fixture crosses only production ports: a real file-backed `SQLite`
-//! coordinator persists an approval, claim, and checkpoint. A newly composed
-//! `AppService` then proves the paired outcomes: a pre-I/O claim is safely
-//! reclaimed exactly once, while a recorded attempt without an outcome stops
-//! for manual reconciliation and is never retried.
+//! coordinator persists an approval and checkpoint, then optionally a claim
+//! and attempt. A newly composed `AppService` proves three adjacent outcomes:
+//! an approved resumable checkpoint is claimed and executed exactly once, a
+//! pre-I/O claim is safely reclaimed exactly once, and a recorded attempt
+//! without an outcome stops for manual reconciliation and is never retried.
 
 #![allow(
     clippy::expect_used,
     clippy::too_many_lines,
-    reason = "the paired crash fixture keeps exact durable lineage visible from seed through two process replacements"
+    reason = "the adjacent crash fixtures keep exact durable lineage visible from seed through two process replacements"
 )]
 
 use std::collections::HashMap;
@@ -57,7 +58,8 @@ const REQUIRED_RESOURCE: &str = "tool/test.possible_io";
 const TOOL_CALL_ID: &str = "call-apr08-possible-io";
 const RECONCILIATION_REASON: &str =
     "an attempt may have started but no durable outcome exists; automatic retry is forbidden";
-const LEASE: Duration = Duration::from_millis(25);
+const SEEDED_CRASH_LEASE: Duration = Duration::from_millis(25);
+const RECOVERY_LEASE: Duration = Duration::from_secs(1);
 
 struct CountingTool {
     invocations: Arc<AtomicUsize>,
@@ -124,16 +126,17 @@ struct DurableLineage {
     outcome_count: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct ActiveLeaseLineage {
-    effect_worker_id: String,
-    effect_expires_at: String,
-    checkpoint_worker_id: String,
-    checkpoint_expires_at: String,
+    effect_worker_id: Option<String>,
+    effect_expires_at: Option<String>,
+    checkpoint_worker_id: Option<String>,
+    checkpoint_expires_at: Option<String>,
 }
 
 #[derive(Clone, Copy)]
 enum CrashBoundary {
+    ApprovedResumableBeforeClaim,
     PreIoClaimed,
     AttemptStarted,
 }
@@ -221,7 +224,7 @@ fn build_service(
                 working_directory: workdir.to_path_buf(),
                 security_config: SecurityConfig::default(),
                 approval_timeout: Duration::from_secs(300),
-                recovery_lease: LEASE,
+                recovery_lease: RECOVERY_LEASE,
                 poll_interval: Duration::from_millis(5),
             },
         )
@@ -557,26 +560,34 @@ impl CrashFixture {
         let _: Vec<InferenceMessage> =
             serde_json::from_value(checkpoint.checkpoint.messages.clone())
                 .expect("checkpoint messages must round-trip");
-        let claim = pool
-            .claim_approved_effect(ClaimApprovedEffect {
-                approval_id,
-                effect_id,
-                run_id,
-                subject_digest: subject.subject_digest,
-                expected_checkpoint_version: checkpoint.checkpoint.version,
-                worker_id: initial_worker_id,
-                lease_duration: LEASE,
-            })
-            .await
-            .expect("claim exact approved APR-08 effect");
+        let claim = if matches!(boundary, CrashBoundary::ApprovedResumableBeforeClaim) {
+            None
+        } else {
+            Some(
+                pool.claim_approved_effect(ClaimApprovedEffect {
+                    approval_id,
+                    effect_id,
+                    run_id,
+                    subject_digest: subject.subject_digest,
+                    expected_checkpoint_version: checkpoint.checkpoint.version,
+                    worker_id: initial_worker_id,
+                    lease_duration: SEEDED_CRASH_LEASE,
+                })
+                .await
+                .expect("claim exact approved APR-08 effect"),
+            )
+        };
         let seeded_attempt_id = match boundary {
-            CrashBoundary::PreIoClaimed => None,
+            CrashBoundary::ApprovedResumableBeforeClaim | CrashBoundary::PreIoClaimed => None,
             CrashBoundary::AttemptStarted => {
                 let attempt_id = EffectAttemptId::new();
                 pool.record_attempt_start(
                     attempt_id,
                     effect_id,
-                    claim.worker_id,
+                    claim
+                        .as_ref()
+                        .expect("attempt boundary requires an effect claim")
+                        .worker_id,
                     serde_json::json!({"boundary": "possible_io"}),
                 )
                 .await
@@ -585,8 +596,29 @@ impl CrashFixture {
             }
         };
         let lease = active_lease_lineage(&pool, effect_id);
-        assert_eq!(lease.effect_worker_id, initial_worker_id.to_string());
-        assert_eq!(lease.checkpoint_worker_id, initial_worker_id.to_string());
+        if claim.is_some() {
+            let expected_worker_id = initial_worker_id.to_string();
+            assert_eq!(
+                lease.effect_worker_id.as_deref(),
+                Some(expected_worker_id.as_str())
+            );
+            assert_eq!(
+                lease.checkpoint_worker_id.as_deref(),
+                Some(expected_worker_id.as_str())
+            );
+            assert!(lease.effect_expires_at.is_some());
+            assert!(lease.checkpoint_expires_at.is_some());
+        } else {
+            assert_eq!(
+                lease,
+                ActiveLeaseLineage {
+                    effect_worker_id: None,
+                    effect_expires_at: None,
+                    checkpoint_worker_id: None,
+                    checkpoint_expires_at: None,
+                }
+            );
+        }
         assert_eq!(invocations.load(Ordering::SeqCst), 0);
 
         drop(original_service);
@@ -661,24 +693,131 @@ impl CrashFixture {
     }
 
     async fn wait_for_expired_claim(&self) {
-        tokio::time::sleep(LEASE.saturating_mul(3)).await;
+        tokio::time::sleep(SEEDED_CRASH_LEASE.saturating_mul(3)).await;
         let pool = self.open_pool();
         let lease = active_lease_lineage(&pool, self.effect_id);
         let now = Utc::now();
-        let effect_expiry = chrono::DateTime::parse_from_rfc3339(&lease.effect_expires_at)
-            .expect("parse effect lease expiry")
-            .with_timezone(&Utc);
-        let checkpoint_expiry = chrono::DateTime::parse_from_rfc3339(&lease.checkpoint_expires_at)
-            .expect("parse checkpoint lease expiry")
-            .with_timezone(&Utc);
-        assert_eq!(lease.effect_worker_id, self.initial_worker_id.to_string());
+        let effect_expiry = chrono::DateTime::parse_from_rfc3339(
+            lease
+                .effect_expires_at
+                .as_deref()
+                .expect("claimed effect must retain its lease expiry"),
+        )
+        .expect("parse effect lease expiry")
+        .with_timezone(&Utc);
+        let checkpoint_expiry = chrono::DateTime::parse_from_rfc3339(
+            lease
+                .checkpoint_expires_at
+                .as_deref()
+                .expect("leased checkpoint must retain its lease expiry"),
+        )
+        .expect("parse checkpoint lease expiry")
+        .with_timezone(&Utc);
+        let expected_worker_id = self.initial_worker_id.to_string();
         assert_eq!(
-            lease.checkpoint_worker_id,
-            self.initial_worker_id.to_string()
+            lease.effect_worker_id.as_deref(),
+            Some(expected_worker_id.as_str())
+        );
+        assert_eq!(
+            lease.checkpoint_worker_id.as_deref(),
+            Some(expected_worker_id.as_str())
         );
         assert!(effect_expiry <= now);
         assert!(checkpoint_expiry <= now);
     }
+}
+
+#[tokio::test]
+async fn approved_resumable_effect_before_claim_executes_once_across_restarts() {
+    let fixture = CrashFixture::seed(CrashBoundary::ApprovedResumableBeforeClaim).await;
+    let before_pool = fixture.open_pool();
+    let before_crash = durable_lineage(&before_pool, fixture.approval_id);
+    fixture.assert_exact_identity(&before_crash);
+    assert_eq!(before_crash.approval_status, "approved");
+    assert_eq!(before_crash.effect_state, "approved");
+    assert_eq!(
+        before_crash.run_state,
+        format!("waiting_effect:{}", fixture.effect_id)
+    );
+    assert_eq!(before_crash.run_state_version, 2);
+    assert_eq!(before_crash.checkpoint_version, 2);
+    assert_eq!(before_crash.checkpoint_status, "resumable");
+    assert!(!before_crash.step_completed);
+    assert_eq!(before_crash.attempt_count, 0);
+    assert_eq!(before_crash.outcome_count, 0);
+    assert_eq!(fixture.invocations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        active_lease_lineage(&before_pool, fixture.effect_id),
+        ActiveLeaseLineage {
+            effect_worker_id: None,
+            effect_expires_at: None,
+            checkpoint_worker_id: None,
+            checkpoint_expires_at: None,
+        }
+    );
+    drop(before_pool);
+
+    let first_pool = fixture.open_pool();
+    let first_restart = fixture.restarted_service(&first_pool);
+    let recovered = first_restart
+        .recover_approval_checkpoints()
+        .await
+        .expect("approved resumable recovery must complete");
+    assert_eq!(recovered, 1);
+    assert_eq!(fixture.invocations.load(Ordering::SeqCst), 1);
+    let after_recovery = durable_lineage(&first_pool, fixture.approval_id);
+    fixture.assert_exact_identity(&after_recovery);
+    assert_eq!(after_recovery.approval_status, "approved");
+    assert_eq!(after_recovery.effect_state, "resolved");
+    assert_eq!(after_recovery.run_state, "completed");
+    assert_eq!(after_recovery.run_state_version, 3);
+    assert_eq!(after_recovery.checkpoint_status, "terminal");
+    assert_eq!(after_recovery.checkpoint_version, 3);
+    assert!(after_recovery.step_completed);
+    assert_eq!(after_recovery.attempt_count, 1);
+    assert_eq!(after_recovery.attempt_number, Some(1));
+    let effect_id = fixture.effect_id.to_string();
+    let run_id = fixture.run_id.to_string();
+    assert_eq!(
+        after_recovery.attempt_intent_id.as_deref(),
+        Some(effect_id.as_str())
+    );
+    assert!(after_recovery.attempt_worker_id.is_some());
+    let attempt_id = after_recovery
+        .attempt_id
+        .as_deref()
+        .expect("recovery persists one exact attempt");
+    assert_eq!(after_recovery.outcome_count, 1);
+    assert_eq!(
+        after_recovery.outcome_intent_id.as_deref(),
+        Some(effect_id.as_str())
+    );
+    assert_eq!(
+        after_recovery.outcome_attempt_id.as_deref(),
+        Some(attempt_id)
+    );
+    assert_eq!(
+        after_recovery.outcome_run_id.as_deref(),
+        Some(run_id.as_str())
+    );
+    assert_eq!(after_recovery.outcome_status.as_deref(), Some("success"));
+    assert_eq!(after_recovery.outcome_consumed, Some(true));
+    assert!(after_recovery.outcome_id.is_some());
+    drop(first_restart);
+    drop(first_pool);
+
+    let second_pool = fixture.open_pool();
+    let second_restart = fixture.restarted_service(&second_pool);
+    let recovered_again = second_restart
+        .recover_approval_checkpoints()
+        .await
+        .expect("terminal checkpoint recovery is idempotent");
+    assert_eq!(recovered_again, 0);
+    assert_eq!(fixture.invocations.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        durable_lineage(&second_pool, fixture.approval_id),
+        after_recovery
+    );
 }
 
 #[tokio::test]
@@ -810,7 +949,7 @@ async fn executing_approved_effect_without_outcome_fails_closed_across_restarts(
     );
     drop(first_restart);
     drop(first_pool);
-    tokio::time::sleep(LEASE.saturating_mul(3)).await;
+    tokio::time::sleep(RECOVERY_LEASE.saturating_mul(3)).await;
 
     let second_pool = fixture.open_pool();
     let second_restart = fixture.restarted_service(&second_pool);
