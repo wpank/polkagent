@@ -106,11 +106,11 @@ rather than broad suppression.
 | REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool/skill/memory composition, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity; scoped approval routes are implemented but production-unavailable | Versioned interaction lifecycle, persisted target/model configuration, finite replay, checkpointed SSE, global run-event replay/reconnect, and versioned command-socket reconnect/lag recovery are composed; 9 optional skill-mutation/audit/registry routes plus 3 principal-bound approval routes, broader command channels, and full shutdown remain. |
 | Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers; an explicit principal-bound fixture enables scoped pending status plus `/approve` and `/deny` | Usable single-agent, target/model-selectable line-mode session; approval adapter is test-composable but production-unbound | Interactive/non-TTY prompt, multiline input, contextual follow-up, transcript resume, persisted conversation-scoped `/agent` and `/model`, bounded `/runs` and `/inspect`, safe tool/approval status, lag replay, and SIGINT cancellation work. Ordinary `RuntimeFactory` composition hides approval commands and rejects explicit mutations because no authenticated authority or grant-bearing tool path exists; provider/harness/autonomy changes, harness follow-up, rich content, and groups remain unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
-| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio adapter over the durable interaction service, with stable conversation IDs, new/load/resume, state-aware shared-registry commands, persisted agent/model selectors, immutable cwd provenance, native tool updates, and a protocol-only permission harness | Restart-resumable protocol slice; command discovery tracks idle/active/terminal state, while permission mapping is tested but production APR-07 coordinator binding and editor interoperability remain unverified | Session list/import are unsupported by the pinned SDK/surface; provider/autonomy selectors, production permission round-trips, raw tool-data redaction policy, MCP passthrough, and manual Zed tool/approval/restart smoke remain. |
+| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio adapter over the durable interaction service, with stable conversation IDs, new/load/resume, state-aware shared-registry commands, persisted agent/model selectors, immutable cwd provenance, native tool updates, and APR-07 durable native permissions | Restart-resumable protocol slice; an explicit local-process authority enables exact allow/reject/cancel and crash-recovered permission decisions, while default startup remains fail-closed | Session list/import are unsupported by the pinned SDK/surface; provider/autonomy selectors, rich plans, MCP passthrough, shared/remote authentication, and manual Zed tool/approval/restart smoke remain. |
 | Providers/harnesses | Many adapters exist | Partially composed | Each adapter needs shared-runtime conformance and real failure/readiness evidence. |
 | Tools/skills | Registries and handlers plus real bounded grantless and injected approval-capable orchestrator paths with effect-backed projection | Grantless allowlisted tools execute in the normal composed loop; an explicit APR-03 SQLite fixture proves one approval-gated call executes once with an exact grant and returns to the model | Production surfaces still withhold grant-bearing tools until stable authenticated authority is composed; raw arguments/output redaction, schema-wide validation, cancellation during I/O, broader recovery, and external-tool proof remain. |
-| Effects/approvals/policy | Strict opt-in policy composition, SQLite V18 approval/checkpoint coordination, bounded APR-03 pause/recovery, APR-05 scoped service/HTTP operations, and APR-06 terminal-chat/TUI adapter seams | Atomic pause, stable policy/tool/checkpoint digests, exact one-shot grant execution, no-I/O denial/expiry/cancel reduction, stable restart projection, idempotent decision retry, wrong-scope refusal, recovery wake, and terminal dispatch are proved in injected/test-composed paths | `RuntimeFactory` does not bind a stable authenticated principal, so production HTTP/chat/TUI resolution and grant-bearing tools remain disabled. ACP binding, the cross-surface crash matrix, coordinator-aware approval cancellation, cancellation during handler I/O, budgets, and effect drain remain. |
-| Conversations/memory | `InteractionService` atomically persists transcript/run correlation/replay/context and exposes scoped durable approval operations; API, terminal chat, and TUI consume that approval boundary, and the API projects the runtime-owned SQLite memory store | Headless service, TUI, terminal chat, HTTP API, and ACP consume the durable lifecycle; typed memory operations and scoped approval retry survive service/controller restart | One exact successful restarted interaction is cross-surface tested; approval projection plus terminal/API/TUI dispatch are restart-tested, but production authority and ACP actions are unbound; general memory is not assembled into prompt context. |
+| Effects/approvals/policy | Strict opt-in policy composition, SQLite V18 approval/checkpoint coordination, bounded APR-03 pause/recovery, APR-05 scoped service/HTTP operations, APR-06 terminal-chat/TUI seams, and APR-07 local-stdio ACP binding | Atomic pause, stable policy/tool/checkpoint digests, exact one-shot grant execution, no-I/O denial/expiry/cancel reduction, stable restart projection, idempotent decision retry, wrong-scope refusal, recovery wake, and native ACP dispatch are proved | `RuntimeFactory` remains unbound by default; production HTTP/chat/TUI authority, shared/remote authentication, the cross-surface crash matrix, cancellation during handler I/O, budgets, and effect drain remain. |
+| Conversations/memory | `InteractionService` atomically persists transcript/run correlation/replay/context and exposes scoped durable approval operations; API, terminal chat, TUI, and ACP consume that boundary, and the API projects the runtime-owned SQLite memory store | Headless service, TUI, terminal chat, HTTP API, and ACP consume the durable lifecycle; typed memory operations and scoped approval retry survive service/controller restart | One exact successful restarted interaction is cross-surface tested; APR-07 binds ACP actions locally, while other production authority remains unbound and general memory is not assembled into prompt context. |
 | Groups/feeds/evals | Significant libraries/tests | Mostly unsurfaced | No production caller creates durable child runs or evaluates the real composed runtime. |
 | Polkadot reads | RPC/metadata/codec components exist | Partially usable | Pinned live metadata and network behavior need real-path validation. |
 | Polkadot writes | Effect/signing/finality components exist | Not end-to-end proven | Real signer, exact bytes, transaction matching, finality, dry-run/XCM, and local-chain tests remain. |
@@ -343,9 +343,9 @@ rather than broad suppression.
   exact scoped coordinator operations plus deterministic restart projection.
   The narrow HTTP adapter is auth/read-only/OpenAPI tested, but the real runtime
   intentionally leaves stable principal authority and grant-bearing readiness
-  unbound. The design keeps default-deny rules, crash/disconnect invariants,
-  APR-07 ACP and APR-08 production/crash packets,
-  and the acceptance matrix explicit.
+  unbound. The design keeps default-deny rules and crash/disconnect invariants.
+  APR-07's bounded local-stdio ACP packet is complete; APR-08 retains broader
+  production/crash closure and the acceptance matrix.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent
   harnesses, not a Polkagent ACP agent server.
 - `crates/polkagent-surface-acp` is the separate server-side adapter. The
@@ -367,7 +367,7 @@ rather than broad suppression.
   cancel only while a prompt is active, and restores the idle catalog after
   success, cancellation, or backend failure. Native `/new`/`/resume` lifecycle
   guidance points to ACP session operations, and `/approve`/`/deny` remain
-  withheld pending APR-07. Native configuration advertises exactly an active-agent
+  withheld in favor of native permission requests. Native configuration advertises exactly an active-agent
   selector and the standard model selector, both persisted per interaction.
   A two-session race fixture proves each concurrent real provider request
   retains its own chosen agent/model without mutating the shared AgentSpec;
@@ -381,9 +381,11 @@ rather than broad suppression.
   protocol stdout or record exercised prompt/response bodies. Schema v17 also
   persists one immutable lexical origin cwd; every prompt/load/resume verifies
   it before replay/work, wrong/traversal roots fail with zero new events/turns/
-  runs, and legacy rows fail closed for editor attachment. Session list/import,
-  provider HTTP/SSE token streaming, permission round-trips, raw tool-data
-  redaction, and manual Zed evidence remain open.
+  runs, and legacy rows fail closed for editor attachment. APR-07 adds explicit
+  local-process authority plus native allow/reject/cancel and SIGKILL/restart/
+  load evidence with bounded redacted metadata. Session list/import, provider
+  HTTP/SSE token streaming, rich plans, MCP passthrough, and manual Zed evidence
+  remain open.
 - `crates/polkagent-cli/tests/cross_surface_interaction_e2e.rs` freezes one
   exact SQLite conversation across HTTP creation/configuration, a real
   terminal-chat subprocess, ACP load/follow-up after subprocess restart, a

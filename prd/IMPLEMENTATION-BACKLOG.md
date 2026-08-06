@@ -617,7 +617,7 @@ the stable execution event path; can run fully parallel to ACP-01.
   new/load/resume sessions omit `/cancel`, active normal prompts add it, and
   success/cancellation/backend-error paths restore the idle catalog. Treat
   `/new` and `/resume` as native ACP session lifecycle guidance, and keep
-  `/approve`/`/deny` withheld until APR-07 binds the durable coordinator.
+  `/approve`/`/deny` withheld in favor of native permission requests.
 - [x] Add native ACP configuration for active-agent and standard model
   selection, backed by the same durable interaction config as `/agent` and
   `/model`; prove restart persistence and that concurrent sessions retain their
@@ -628,8 +628,9 @@ the stable execution event path; can run fully parallel to ACP-01.
   with one stable effect-derived ID, safe content, lag recovery, and restart
   replay. ACP v1 lacks cancelled/unknown statuses, so both map to failed with a
   safe detail.
-- [ ] Map durable approval/plan events after the coordinator/checkpoint runtime
-  produces them; raw arguments/output remain withheld pending redaction policy.
+- [x] Map durable approval events to native ACP permission requests with exact
+  IDs and bounded/redacted metadata. Rich plan events remain open; raw
+  arguments/output remain withheld.
 - [ ] Add durable command-executor routing plus truthful group/auto-target,
   provider, harness, and autonomy configuration after those settings can be
   isolated per execution. Active-agent target selection is already composed.
@@ -642,9 +643,10 @@ the stable execution event path; can run fully parallel to ACP-01.
 - [x] Forward bounded real runtime text updates before the terminal response,
   reconcile exact final text without duplication, and emit ACP usage only from
   real terminal token counts plus a known model context window.
-- [ ] Add permission round-trips, default deny on timeout/disconnect, rich plan
-  updates, and client filesystem/terminal capabilities. Native safe tool
-  start/update projection is implemented.
+- [x] Add APR-07 permission round-trips with durable cancellation on timeout,
+  disconnect, or protocol error and official-client allow/reject/cancel/
+  SIGKILL-restart evidence. Rich plans and client filesystem/terminal
+  capabilities remain open.
 - [x] Add an official-client cancellation/stop-reason test covering
   cancellation during an active provider request and the durable terminal run
   state/timestamp.
@@ -867,15 +869,15 @@ from an explicitly ready remaining row rather than replaying foundation work.
 | Integration | **Complete:** APR-00/01 contracts, V18 SQLite coordinator, run CAS, checkpoint leases, and conformance | Contract package, store traits, SQLite coordinator, run CAS, checkpoint schema | Preserve atomic/idempotent/reopen/generic-path-isolation evidence; do not create a second coordinator. |
 | Policy | **Complete:** APR-02 strict opt-in policy approval effects, config, resolver injection, and readiness | Policy/config/runtime-composition modules | Preserve default deny, permit, escalation precedence, and strict config tests. |
 | Execution | **Complete bounded slice:** APR-03/EXE-01 adds atomic pause/recovery, one approval-required tool per model group, AllowOnce one-I/O reduction, reject/expiry/cancel zero-I/O reduction, and fail-closed unknown post-attempt recovery | `polkagent-run` orchestrator and narrow service bridges | Preserve exact checkpoint/effect lineage and keep production activation disabled until stable authenticated authority is composed. |
-| ACP harness | **Complete:** APR-04 fake permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Preserve once-only identity/redaction/cancel/error/disconnect coverage; production binding remains APR-07. |
+| ACP harness | **Complete:** APR-04 fake permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Preserve once-only identity/redaction/cancel/error/disconnect coverage; APR-07 owns the bounded production binding. |
 | Projection/API | **Complete bounded slice:** APR-05 adds durable approval projection/query/approve-deny and a test-composable HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | Replay, restart, idempotent retry/conflict, auth/read-only, denial bound, OpenAPI parity, and wrong-scope tests pass. The query is capped at 100 without pagination; production authority is intentionally unbound. |
 | Terminal chat | **Complete test-composed slice:** APR-06 lists scoped pending IDs and routes approve/deny only through the shared durable service; ordinary production composition stays fail-closed | CLI chat module | Exact scope, idempotent restart retry, opposite-decision conflict, bounded/redaction-safe output, pending-cancel refusal, no-pending cancel, and authority-unavailable subprocess gates pass. |
 | TUI approvals | **Complete bounded slice:** APR-06 F6 lists and resolves exact selected-conversation approvals only through the shared service; direct approval SQL is gone | CLI TUI modules | Async/concurrent control, exact IDs, redaction/bounds, stale-switch rejection, wrong scope, retry/conflict/restart, unavailable authority, full-ID confirmation, and pending-cancel preservation gates pass. Production authority and pagination remain open. |
-| Editor | **Ready:** APR-07 binds production ACP permission requests to the coordinator | `polkagent-surface-acp` production backend | APR-03/APR-04/APR-05 dependencies are satisfied; official client allow/reject/cancel/reconnect tests pass. |
+| Editor | **Complete bounded slice:** APR-07 binds local-stdio ACP permission requests to the durable coordinator under one explicit process authority | `polkagent-surface-acp`, CLI ACP backend, and `RuntimeFactory` authority seam | Official client allow/reject/cancel and SIGKILL/restart/load tests pass with exact identity and one-I/O/zero-I/O evidence; manual Zed remains open. |
 | Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
 | TUI orchestration | **Complete bounded slice:** TUI-03 supports eight simultaneous agent/conversation activities, a 32-entry redaction-safe retained strip, per-conversation viewports, exact cancellation, duplicate refusal, and deterministic backpressure/eviction | CLI TUI controller/state/render/tests only | Preserve independent progress and shutdown reaping; durable group plans/child-run orchestration and rich structured plans remain separate work. |
 | Observability | **Complete bounded replay/reconnect slice:** SQLite V19 preserves canonical run-event metadata; the global run-event socket and `/ws/v1alpha1` recover from durable cursors, while the command socket exposes a versioned public cursor and `ready` barrier | Event/API projection and protocol tests | Preserve bounded paging, cursor order, filtering, replay/live dedupe, forced-lag recovery, auth-before-store validation, and sanitized failures. Tenant/principal isolation, best-effort delta policy, metrics, retention, audit/telemetry, automatic client reconnect, and broader command channels remain open. |
-| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green; approval parity remains open for ACP and production authority composition. |
+| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green; APR-07 adds native ACP approvals while other production authority composition remains open. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |

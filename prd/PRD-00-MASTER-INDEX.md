@@ -17,17 +17,18 @@ one exact restarted conversation is proven across all four surfaces, and a
 bounded grantless registered-tool loop now persists intent before real handler
 I/O and projects one stable effect-backed tool identity through terminal/TUI/
 ACP. The TUI additionally has a bounded simultaneous agent/conversation
-activity slice with exact switching and cancellation. The dominant gaps are
-production approval authority/activation and cross-surface closure, durable
-group/child-run orchestration, provider/harness parity, raw tool-data
-redaction, and manual-editor evidence. Terminal chat and the TUI F6 surface
-already consume the bounded durable approval service seam; this does not make
-normal production decisions available.
+activity slice with exact switching and cancellation. The durable approval
+coordinator/executor and bounded local-stdio ACP binding now exist. The dominant
+gaps are authenticated authority for the other production surfaces, APR-08
+cross-surface closure, durable group/child-run orchestration, provider/harness
+parity, rich plans, and manual-editor evidence. Terminal chat and the TUI F6
+surface already consume the bounded durable approval service seam; this does
+not make normal production decisions available.
 
-The next milestone is therefore not “add more crates.” It is extending the
-grantless tool slice through the implemented policy and SQLite approval/
-checkpoint foundation into orchestrator recovery, permission surfaces, and
-real-editor validation.
+The next milestone is therefore not “add more crates.” It is closing the
+cross-surface approval/security/crash matrix, validating the implemented ACP
+permission path in a real editor, and extending the proven interaction runtime
+into durable group orchestration.
 
 Current execution truth lives in:
 
@@ -75,7 +76,7 @@ percentage.
 |---|---|---|
 | [PRD-17](PRD-17-LOCAL-TESTNET-E2E.md) | Real local Polkadot network, signed actions, finality, and reproducible CI evidence | Runtime/action wiring, real signer, corrected live-test workflow |
 | [PRD-19](PRD-19-INTERACTIVE-CONSOLE-ACP.md) | Terminal chat, actionable TUI, shared commands, ACP server, Zed, and orchestration | Shared runtime and interaction contracts |
-| [Approval pause/resume design](APPROVAL-PAUSE-RESUME-DESIGN.md) | Atomic durable permission coordinator, checkpoint recovery, and cross-surface approval | APR-00/01/02/04 are complete; APR-03 orchestrator/recovery now unblocks the interaction and surface packets |
+| [Approval pause/resume design](APPROVAL-PAUSE-RESUME-DESIGN.md) | Atomic durable permission coordinator, checkpoint recovery, and cross-surface approval | APR-00 through APR-07 have bounded implementations; APR-08 retains cross-surface production closure |
 
 PRD-19 supersedes the implementation role of archived PRD-18 while preserving
 its useful prompt/TUI requirements. PRD-16 and the diagnostic ledger were
@@ -99,8 +100,8 @@ shared production runtime (implemented; run/TUI/chat/ACP/serve migrated)
                           group execution remain open)
                     +--> complete rich ACP + Zed support
                          (durable stdio new/load/resume/cwd/tool slice and
-                          permission protocol harness exist; production
-                          permission binding/list/import/manual Zed remain)
+                          bounded local-stdio native permissions exist;
+                          list/import/rich plans/manual Zed remain)
                     +--> durable API control plane
                          (interaction/core HTTP slice exists)
                     +--> group/feed orchestration

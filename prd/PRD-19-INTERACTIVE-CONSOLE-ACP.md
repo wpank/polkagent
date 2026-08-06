@@ -39,11 +39,10 @@ switches/reloads exact durable conversations without creating model turns. ACP
 now maps its session ID exactly to the durable conversation UUID and uses the
 same prompt, cancel, config, replay, and restart lifecycle. Effect-backed tool
 updates and immutable origin-cwd verification now cross restart. Session list/
-import, production permissions, raw tool-data redaction, MCP passthrough, and
-manual Zed validation remain open. APR-07's production-permission implementation
-is in a pending code gate; the operator contract is specified in Section 7 but
-must not be treated as shipped until that code merges. Its manual Zed smoke is
-also unverified.
+import, rich plans, MCP passthrough, and manual Zed validation remain open. The
+bounded APR-07 local-stdio production-permission binding is implemented under
+the explicit process authority contract in Section 7; its manual Zed smoke is
+still unverified.
 
 One deterministic SQLite conformance fixture now carries the same exact
 conversation through HTTP creation/config, terminal-chat prompting, ACP
@@ -51,10 +50,10 @@ restart/load/follow-up, TUI load/prompt/render, and final HTTP projection. The
 ordered transcript, turn/run links, persisted model, usage, lifecycle, and ACP
 checkpoint agree, while commands and refusal create no work. Active-turn
 cancel remains covered by separate adapter-specific durable tests so the
-linear three-turn fixture can continue; production approval-surface binding and
-rich plan/redaction-safe structured-tool projection remain open. APR-07 has
-automated code-gate coverage for its bounded ACP binding, but that does not
-close the merge or manual-editor gates.
+linear three-turn fixture can continue; broader cross-surface production
+authority and rich plan/redaction-safe structured-tool projection remain open.
+APR-07 has automated official-client coverage for its bounded ACP binding, but
+that does not close the manual-editor gate.
 
 FND-02 now includes shared IDs/config/requests/handles, structured events and
 projections, the service/store traits, a bounded durable/live replay hub, typed
@@ -70,9 +69,9 @@ before activation and changes only the cloned prepared-run spec. TUI, terminal
 chat, HTTP, and ACP bind the service. Model-executor prompts include
 bounded typed prior completed turns; string-only harness history fails role-
 safely. Effect-backed tool lifecycle and durable approval projection/service
-operations are implemented with stable IDs and safe status, while production
-approval authority remains unbound by default and its APR-07 ACP opt-in is
-pending merge. Provider/harness/autonomy/max-turn/budget overrides remain open,
+operations are implemented with stable IDs and safe status. Production
+approval authority remains unbound by default; APR-07 supplies an explicit
+local ACP opt-in. Provider/harness/autonomy/max-turn/budget overrides remain open,
 so the full headless exit criterion is not closed.
 
 **Supersedes:** the implementation role of archived PRD-18; unresolved work is
@@ -181,7 +180,7 @@ It remains design input rather than the completion contract.
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
-| Use Polkagent *from* Zed | Protocol/tool slice implemented; APR-07 and manual Zed gates pending | `polkagent acp` uses the official SDK, durable cwd isolation, native tool updates, state-aware command discovery, and executable client fixtures. APR-07 defines an explicit process-bound native permission opt-in, but it is not shipped until its code merges, and its manual Zed permission/restart smoke is unverified. |
+| Use Polkagent *from* Zed | Protocol/tool/native-permission slice implemented; manual Zed gate pending | `polkagent acp` uses the official SDK, durable cwd isolation, native tool updates, state-aware command discovery, and executable client fixtures. APR-07 adds the explicit process-bound native permission opt-in with allow/reject/cancel/restart evidence; its manual Zed permission/restart smoke is unverified. |
 | ACP slash commands/config selectors | Durable state-aware shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/runs`, `/inspect`, and `/model` are advertised while idle; current-prompt `/cancel` plus `/stop` is added only while busy and withdrawn after success/cancel/error. `/new` and `/resume` map truthfully to native ACP lifecycle operations; run reads are bounded, redaction-safe, and conversation-scoped, while native selectors write the same durable interaction config and provider/autonomy settings remain unavailable |
 | REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, checkpointed SSE, immutable skill reads, durable memory operations, and scoped approval route contracts exist; 9 optional routes and 3 production-unbound approval routes remain unavailable |
 
@@ -941,18 +940,18 @@ cwd comparison, persisted native active-agent/model options, and live
 registry-backed command availability are implemented. ACP publishes the idle
 catalog on new/load/resume, adds current-turn cancel while a prompt is active,
 and restores the idle catalog after success, cancellation, or backend failure.
-Remaining work is session list/import, permission/rich-plan events, raw tool-data
-redaction, MCP/client capabilities, provider/autonomy configuration, and manual
-Zed evidence. Production permission binding is explicitly APR-07. Opt-in
-protocol-safe file diagnostics are implemented. It
+Remaining work is session list/import, rich-plan events, MCP/client
+capabilities, provider/autonomy configuration, and manual Zed evidence. The
+bounded APR-07 local-stdio permission binding and opt-in protocol-safe file
+diagnostics are implemented. It
 may depend on `polkagent-service`, the interaction/command crate, and ACP SDK.
 Core/service crates must not depend on ACP types.
 
-#### APR-07 approval authority contract (implementation-gated)
+#### APR-07 approval authority contract (bounded complete)
 
-APR-07 is a deliberately narrow local-stdio binding. It is not complete until
-its code gate merges, and it is not manually validated until the Zed smoke below
-passes. The executable surface must obey all of these requirements together:
+APR-07 is a deliberately narrow local-stdio binding. Its automated code gate is
+complete; it is not manually validated until the Zed smoke below passes. The
+executable surface obeys all of these requirements together:
 
 - `--approval-tenant`, `--approval-workspace`, and `--approval-principal` are
   supplied as an all-or-none tuple; partial input fails before protocol stdout;
@@ -987,9 +986,9 @@ passes. The executable surface must obey all of these requirements together:
   secrets.
 
 The CLI help/error gate, official-client allow/reject/cancel fixture, and
-SIGKILL/restart/load pending-approval fixture are required automated evidence.
-They do not replace the manual Zed permission/restart smoke. `/approve` and
-`/deny` stay unadvertised because the native ACP request owns the interaction.
+SIGKILL/restart/load pending-approval fixture pass. They do not replace the
+manual Zed permission/restart smoke. `/approve` and `/deny` stay unadvertised
+because the native ACP request owns the interaction.
 
 ### 7.2 CLI boot safety
 
@@ -1027,10 +1026,8 @@ reason, but stream updates throughout.
 The shared `/new` and `/resume` command names are lifecycle documentation in
 ACP, not advertised mutations: editor clients use `session/new`,
 `session/load`, and `session/resume` so a prompt cannot silently replace its
-current session ID. Approval commands remain unadvertised until APR-07 binds
-the durable coordinator to production permission requests; after that binding,
-they remain unadvertised because native ACP permission requests own approval
-presentation and resolution.
+current session ID. Approval commands remain unadvertised because native ACP
+permission requests own approval presentation and resolution.
 
 ### 7.4 Event mapping
 
@@ -1304,8 +1301,8 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [x] Map effect-backed tool start/update events with stable effect-derived IDs
   to native ACP tool messages, including lag/restart replay and safe terminal
   status mapping.
-- [ ] Map durable approval and rich plan events. APR-07's bounded approval
-  mapping is in a pending code gate; rich plan mapping remains separate.
+- [x] Map durable approval events through APR-07's bounded native permission
+  path. Rich plan mapping remains separate.
 - [x] Advertise the initial MVP slash commands.
 - [x] Move discovery/parsing/help/aliases onto the shared registry and execute
   the truthful durable subset, including current-prompt cancellation.
@@ -1313,7 +1310,7 @@ work, approve/deny, cancel, and prompt again without leaving.
   catalog on new/load/resume, add `/cancel` only while a normal prompt is
   active, and restore idle discovery after success, cancellation, and backend
   error. Document `/new`/`/resume` as native ACP lifecycle operations and keep
-  `/approve`/`/deny` withheld pending APR-07.
+  `/approve`/`/deny` withheld in favor of native permission requests.
 - [x] Expose `/runs` and `/inspect <run-id>` in ACP through the runtime-owned
   conversation-scoped read model and shared bounded formatter; prove durable
   IDs before and after subprocess restart with the official ACP client.
@@ -1325,10 +1322,10 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [ ] Expose group/auto targets plus autonomy/provider/harness options only
   after execution-scoped semantics can be guaranteed. Active-agent target
   selection is already persisted and advertised.
-- [ ] Merge and validate the APR-07 production tool-permission round-trip under
-  the exact process-bound contract in Section 7.1. Keep this unchecked until
-  the code lands; the existing protocol-only harness is not a coordinator
-  binding, and the manual Zed smoke remains unverified.
+- [x] Validate the APR-07 production tool-permission round-trip under the exact
+  process-bound contract in Section 7.1, including official-client
+  allow/reject/cancel and SIGKILL/restart/load evidence. The manual Zed smoke
+  remains unverified.
 - [x] Write the Zed custom-agent setup guide.
 - [x] Add an official-SDK subprocess protocol fixture.
 - [x] Add official-client active-run cancellation/stop-reason coverage and
@@ -1431,10 +1428,10 @@ Zed, not merely a single-agent chat wrapper.
   production factory; TUI/chat/HTTP/ACP consume the headless interaction
   service. A bounded grantless registered-tool/effect loop is composed;
   production approval authority remains unbound by default. APR-07's local ACP
-  opt-in and crash recovery are pending merge and manual Zed validation.
+  opt-in and crash recovery are implemented; manual Zed validation remains.
 - **Event loss:** TUI/chat/HTTP/ACP use durable interaction replay and stable
   effect-backed tool and approval projection; rich plan projection and ACP
-  approval actions remain incomplete.
+  manual-editor evidence remain incomplete.
 - **Protocol drift:** ACP v2 is draft. Pin the official SDK, test v1, and isolate
   conversions in the adapter.
 - **SQLite concurrency:** Zed may spawn processes while TUI/API is open. Enable
@@ -1472,7 +1469,7 @@ Zed, not merely a single-agent chat wrapper.
 | `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection, shared commands, safe tool status, bounded simultaneous activity switching, async input, and background monitoring workers exist; add approvals/rich plans and group/child-run orchestration |
 | `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime plus skill reads and all four memory routes exist; compose the remaining published 9-route optional boundary one truthful family at a time |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
-| Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; the APR-07 operator contract is frozen but implementation-gated, and manual Zed permission/cancel/restart evidence remains open |
+| Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; APR-07's bounded implementation and operator contract are recorded, while manual Zed permission/cancel/restart evidence remains open |
 
 ## 13. Source trail
 
@@ -1532,8 +1529,9 @@ The TUI now supports bounded simultaneous turns across independently selected
 agent/conversation activities, but it does not yet build or execute group plans.
 The coordinator/checkpoint foundation and test-composable HTTP/chat/TUI
 adapters are tracked in
-[`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md). Next add
-authenticated production/ACP authority with crash-safe resume (APR-07 is
-code-gated and not yet complete), complete manual Zed evidence, define role-safe
-harness history, expand truthful command coverage, and compose durable group/
+[`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md). APR-07
+adds bounded local-stdio ACP authority with crash-safe resume. Next complete
+manual Zed evidence, add authenticated authority for the other production
+surfaces, define role-safe harness history, expand truthful command coverage,
+and compose durable group/
 child-run orchestration on top of the proven activity surface.

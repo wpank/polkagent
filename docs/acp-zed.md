@@ -11,11 +11,10 @@ repository tests launch the real binary through the official ACP Rust client,
 including cancellation while a provider request is active, official
 `session/load`/`session/resume` across subprocess restarts, idempotent turn
 retry, and durable agent/model isolation across concurrent sessions. Real typed
-interaction events are forwarded before the terminal prompt response. A manual
-Zed smoke test and session listing/import are still open. APR-07's native
-permission path is implementation-gated and is not considered shipped until
-its code gate merges; its operator contract is frozen below so it can be
-reviewed and exercised consistently.
+interaction events are forwarded before the terminal prompt response. The
+bounded APR-07 local-stdio native-permission path is implemented and covered by
+official-client subprocess tests. A manual Zed smoke test and session
+listing/import are still open.
 
 ## Prerequisites
 
@@ -55,11 +54,11 @@ your Zed settings. Replace the command with the absolute path printed above:
 }
 ```
 
-## Durable approval opt-in (APR-07 implementation-gated)
+## Durable approval opt-in (APR-07)
 
 APR-07 defines one explicit approval authority for an entire local ACP stdio
-process. The code gate is still pending merge: if `polkagent acp --help` does
-not show these flags, that binary does not contain the opt-in.
+process. Verify the installed binary exposes the flags with `polkagent acp
+--help` before configuring the editor.
 
 The three flags are an all-or-none tuple:
 
@@ -75,7 +74,7 @@ invalid identifier fails startup before any protocol output is written to
 stdout. Omitting all three flags leaves approval authority unbound and keeps
 approval-required effects fail-closed.
 
-After the code gate lands, an approval-enabled Zed entry has this shape:
+An approval-enabled Zed entry has this shape:
 
 ```json
 {
@@ -134,11 +133,10 @@ redacted metadata crosses the editor boundary, never raw tool arguments,
 output, diffs, or locations. `/approve` and `/deny` remain unadvertised because
 the native permission request owns this interaction.
 
-Automated official-client coverage in the APR-07 code gate exercises
-allow-once, reject-once, cancellation, exact identity checks, and pending-
-approval restart/load without duplicate effects. This is not a completion
-claim: the code must merge, and the manual Zed permission/restart smoke remains
-unverified.
+Automated official-client coverage exercises allow-once, reject-once,
+cancellation, exact identity checks, and pending-approval restart/load without
+duplicate effects. This closes only the bounded local-stdio implementation;
+the manual Zed permission/restart smoke remains unverified.
 
 The editor-provided `session/new` working directory becomes the interaction's
 immutable durable origin; there is no separate `--workdir` flag. It must be an
@@ -202,8 +200,8 @@ existing durable thread through native `session/load` or `session/resume` with
 its conversation ID and exact original workspace. `/help new`, `/help resume`,
 and direct invocation explain those native mappings instead of pretending a
 slash command can replace the current ACP session ID. `/approve` and `/deny`
-remain unadvertised: after APR-07 lands, native ACP permission requests—not
-slash-command mutations—bind the editor response to the durable coordinator.
+remain unadvertised: native ACP permission requests—not slash-command
+mutations—bind the editor response to the durable coordinator.
 
 `/runs` and `/inspect` use the same registry metadata, runtime read model, and
 formatter as terminal chat. Inspection exposes stable run/agent/artifact IDs,
@@ -229,15 +227,16 @@ silently skipping events. The current runtime orchestrator may emit one event
 containing a provider's complete response, so this does not claim HTTP/SSE
 token-level streaming from every provider adapter.
 
-Registered grantless tools use the same durable effect-backed interaction
-projection as terminal chat and the Console. ACP receives a native `tool_call`
+Registered tools use the same durable effect-backed interaction projection as
+terminal chat and the Console. ACP receives a native `tool_call`
 with `in_progress`, followed by `tool_call_update` with `completed` or `failed`.
 The ACP tool-call ID is the exact persisted effect-intent UUID and is unchanged
 across live delivery, checkpoint replay, and process restart. Arguments and raw
 output are deliberately absent; only canonical registry metadata and a safe
-policy/outcome summary cross the editor boundary. Refused, malformed,
-unallowlisted, and approval-required calls have no durable attempt and therefore
-cannot fabricate a tool update.
+policy/outcome summary cross the editor boundary. Refused, malformed, and
+unallowlisted calls have no durable attempt. With the explicit APR-07 authority
+tuple, an approval-required call emits one native permission request: reject or
+cancel performs zero tool I/O, while allow executes the exact effect once.
 
 The server negotiates the SDK's stable ACP v1 schema. That schema has no
 cancelled or unknown tool status, so those two interaction states use ACP's
@@ -347,6 +346,9 @@ Implemented and covered by executable protocol evidence:
 - one shared `RuntimeFactory` composition for ACP, including file-backed SQLite
   migration, abandoned-run recovery, active-agent rehydration, provider/model
   overrides, the `AppService`, and its event bus;
+- opt-in native `session/request_permission` for exact durable approvals, with
+  once-only allow/reject choices, coordinator-backed cancellation, a 100-row
+  pending bound, and restart/load recovery without duplicate effect I/O;
 - opt-in JSONL file diagnostics with bounded rotation, restrictive Unix file
   permissions, non-regular-path refusal, and known-pattern secret redaction;
 - controlled diagnostic categories that omit the exercised prompt and response
@@ -390,9 +392,6 @@ Not implemented yet:
 - `session/list` and thread import (the pinned stable ACP v1 SDK has no import request);
 - dynamic provider, target, or autonomy configuration options;
 - structured plans;
-- the APR-07 native permission gate is pending merge, and its manual Zed
-  permission/restart path remains unverified; the default authority-unbound
-  path remains fail-closed;
 - provider HTTP/SSE token-level streaming where the runtime currently emits a
   complete response as one `StreamingToken` event;
 - client filesystem/terminal support and MCP-server passthrough;
@@ -433,8 +432,8 @@ responds, response chunks appear before the terminal turn response, known-model
 usage appears without duplicating text, `/cancel` appears only during active
 work and disappears after completion/failure/cancellation, cancellation stops
 active work, and Zed's ACP log contains only JSON-RPC frames on the server's
-stdout channel. Once the APR-07 code gate lands, repeat with the complete
-approval tuple: confirm the cwd equals the process launch workdir; a pending
+stdout channel. Repeat with the complete approval tuple: confirm the cwd equals
+the process launch workdir; a pending
 tool shows only allow-once and reject-once; allow executes exactly once; reject,
 cancel, and disconnect perform no tool I/O; and killing/restarting the process
 against the same database, tuple, and cwd recovers one pending request without

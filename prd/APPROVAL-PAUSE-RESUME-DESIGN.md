@@ -4,9 +4,10 @@
 policy composition, the bounded APR-03 executor/store continuation, the
 APR-04 ACP protocol harness, and the bounded APR-05 interaction/service/HTTP
 contract are implemented. APR-06 terminal chat and the TUI F6 adapter are
-implemented over the shared service boundary. `RuntimeFactory` still has no
-stable authenticated principal binding, so production decisions, ACP binding,
-and cross-surface closure remain incomplete.
+implemented over the shared service boundary. APR-07 implements one explicit
+process-bound local-stdio ACP authority and durable native permission path.
+Authenticated authority for shared/non-ACP surfaces, manual Zed validation,
+and APR-08 cross-surface closure remain incomplete.
 
 **Prepared:** 2026-08-06
 
@@ -22,28 +23,29 @@ resumed without external I/O occurring before authorization. The decision and
 execution continuation survive client disconnect and process restart. Every
 surface uses the same approval identity and application operation.
 
-This document does not claim that the end-to-end capability exists today.
+This document claims only the bounded local-stdio ACP slice, not general
+cross-surface production authority or full end-to-end completion.
 
 ## 1. Status quo and evidence
 
 | Area | Present | Blocking gap |
 |---|---|---|
-| Interaction contract | `ApprovalView`, stable `ApprovalRequested`/`ApprovalResolved` replay, a pending query, and real `approve`/`deny` results exist in `polkagent-interaction` and the durable runtime adapter. Terminal chat consumes them through the shared registry/executor when a principal-bound service is explicitly composed. | TUI and production ACP do not bind those operations; production `RuntimeFactory` still constructs the interaction service without approval authority, so ordinary chat remains truthfully unavailable. |
-| Tool execution | Grantless tools retain the generic durable pipeline. An injected APR-03-capable coordinator/checkpoint pair enables tri-state grant resolution, atomic pause, one-shot exact claim, immediate policy/security revalidation, one handler call, durable outcome, and typed reject continuation. | Production `RuntimeFactory` deliberately does not compose that executor path because it cannot bind an authenticated decision to a stable principal. The bounded slice accepts exactly one approval-gated call in a model tool group and one approval checkpoint per run. |
-| Policy | Default-deny evaluation, explicit deny/permit/`RequireApproval` effects, strict named-file loading, gate escalation, exact resolver injection, stable policy snapshots, and immediate pre-I/O revalidation are implemented | Production activation remains fail-closed until principal-bound surface composition exists; broader grant kinds and production principal authorization remain open |
+| Interaction contract | `ApprovalView`, stable `ApprovalRequested`/`ApprovalResolved` replay, a bounded pending query, and real `approve`/`deny` results exist in `polkagent-interaction` and the durable runtime adapter. APR-07 explicitly binds one authority to ACP; terminal chat and TUI consume the same boundary when explicitly composed. | Authority remains unbound by default. Shared/remote production authentication and pagination beyond the hard 100-row bound remain open. |
+| Tool execution | Grantless tools retain the generic durable pipeline. With an explicit authority, `RuntimeFactory` composes the APR-03 coordinator/checkpoint path for tri-state grant resolution, atomic pause, one-shot exact claim, immediate revalidation, one handler call, durable outcome, and typed reject continuation. | It remains disabled without authority. The bounded slice accepts exactly one approval-gated call in a model tool group and one approval checkpoint per run. |
+| Policy | Default-deny evaluation, explicit deny/permit/`RequireApproval` effects, strict named-file loading, gate escalation, exact resolver injection, stable policy snapshots, and immediate pre-I/O revalidation are implemented | Activation remains fail-closed by default; broader grant kinds and authenticated production principal authorization beyond local ACP remain open |
 | Effect persistence | SQLite V18 adds durable approval/checkpoint records, makes `effect_intents.state` authoritative, clears legacy `claimed_by` sentinels, enforces approval/lease invariants, and supplies the APR-03 atomic reducer used by the injected orchestrator path | Non-SQLite adapters do not advertise this capability; retention, operator reconciliation, and the broader crash matrix remain open |
-| Application service | `AppService` retains the injected coordinator and exposes scoped list/get/resolve operations. Process-local approval broadcasts are removed; effect-ID-only compatibility methods fail explicitly because they lack authority scope. Decided checkpoints can recover after agents rehydrate. | Production composition must bind a real authenticated tenant/workspace/principal before enabling the resolver or grant-bearing executor. |
+| Application service | `AppService` retains the injected coordinator and exposes scoped list/get/resolve operations. Process-local approval broadcasts are removed; effect-ID-only compatibility methods fail explicitly because they lack authority scope. Decided checkpoints can recover after agents rehydrate. | APR-07 binds a local-process tuple; shared services still need authenticated tenant/workspace/principal derivation before enabling the resolver or grant-bearing executor. |
 | API | Scoped `GET /interactions/{id}/approvals` and `POST .../{approval_id}/approve|deny` route through the shared service. Auth, explicit principal-bound service composition, read-only refusal, OpenAPI parity, idempotent retry, and wrong-conversation denial are tested. Legacy `/effects/{id}/approve|deny` are deprecated 501 migration stubs. | `app_state_from_runtime` intentionally does not install the authenticated approval service, so the production server returns unavailable. API keys currently authenticate a deployment credential but do not supply a stable per-key principal mapping. |
-| Run lifecycle | The injected APR-03 path consumes `AwaitingApproval` and `WaitingEffect`, uses exact-state run CAS, and commits run/effect/approval/checkpoint/event transitions through the SQLite coordinator. APR-05 decisions trigger the shared recovery path. | The complete grant-bearing path remains withheld from normal production composition. |
+| Run lifecycle | The APR-03 path consumes `AwaitingApproval` and `WaitingEffect`, uses exact-state run CAS, and commits run/effect/approval/checkpoint/event transitions through the SQLite coordinator. APR-05 decisions trigger recovery, and APR-07 composes this path for explicit local ACP authority. | Default and non-ACP production composition remains authority-unbound. |
 | Recovery | Resumable decided checkpoints lease by exact version/worker and reduce before another model request. An approved `Executing`/`Resolved` effect without one durable outcome returns typed manual reconciliation and is never rerun. Startup calls approval recovery before the generic reaper, which no longer destroys approval-owned states. APR-05 wakes recovery after a durable decision and replays deterministic approval events after restart. | Full retry-class reconciliation UI/operations and the cross-surface crash matrix remain APR-08. |
-| ACP | Durable sessions, prompts, cancellation, tool updates, slash discovery, safe permission-request projection, and an official-SDK protocol harness exist | The production backend does not issue native permission requests or bind decisions to the durable coordinator/effect path |
+| ACP | The bounded local-stdio path issues native permission requests and binds allow/reject/cancel to the durable coordinator with exact identities, redaction, one-I/O allow, zero-I/O reject/cancel, and restart/load recovery | Manual Zed validation and shared/remote multi-principal authentication remain open; authority is explicit and unbound by default |
 | Terminal chat | `/status` projects at most 100 exact pending approval IDs; `/approve` and `/deny` route only through `InteractionService`, remain usable during an active turn, bound denial reasons to 4,096 Unicode characters, and preserve coordinator scope/idempotency/conflict behavior across a service restart in a real SQLite fixture. Stable event output excludes untrusted approval metadata and denial text. | This is an explicitly composed authority fixture, not normal production usability. `RuntimeFactory` supplies no authenticated authority or grant-bearing tool path. Generic cancel is refused while the scoped pending set is non-empty and remains an APR-07/08 coordinator-lifecycle gap rather than directly mutating approval state. |
 | TUI F6 | The selected durable Console conversation scopes an asynchronous pending queue and exact approve/deny CAS through `InteractionService`. The view shows bounded/redacted service title, description, policy reason, expiry, and full confirmation identities. Legacy direct approval queries/writes are removed. | Normal `RuntimeFactory` composition has no authority, so F6 truthfully reports unavailable. The first 100 rows are shown with an explicit total/reveal-remainder message; pagination remains open. Atomic coordinator cancellation is not composed, so a turn known to await approval refuses generic cancel and preserves the durable pending row. |
 
-The durable center and its bounded interaction/HTTP adapter now exist. The
-remaining blocker to product exposure is production composition: derive and
-bind stable tenant/workspace/principal authority from authenticated transport,
-then connect terminal and ACP surfaces without bypassing the coordinator.
+The durable center and its bounded interaction/HTTP/ACP adapters now exist.
+APR-07 supplies a local-process authority seam for ACP only. The remaining
+production blocker is authenticated tenant/workspace/principal derivation for
+shared surfaces, plus APR-08 cross-surface and manual-editor closure.
 
 ## 2. Blocking ADR decisions
 
@@ -313,7 +315,7 @@ APR-05 -> APR-06 chat/TUI
 | APR-04 | Fake ACP backend and official-SDK permission request/response/cancel harness only | APR-00 | Protocol tests pass without production backend |
 | APR-05 — bounded complete | Durable interaction projection, pending query, real approve/deny service, HTTP adapter | APR-01, APR-03 event contract | Replay, restart, retry/conflict, auth/read-only, OpenAPI parity, and wrong-scope tests pass; production authority remains unbound |
 | APR-06 — bounded complete | Terminal chat and TUI F6 list/resolve exact scoped approvals through `InteractionService`; TUI direct approval SQL is removed. | APR-05 | Chat plus TUI scope/retry/conflict/restart/concurrency/cancel/fail-closed, reducer, redaction, and render tests pass. Production authority remains unbound. |
-| APR-07 | Production ACP backend update and coordinator binding | APR-03, APR-04, APR-05 | Official client allow/reject/cancel/reconnect tests pass |
+| APR-07 — bounded complete | Local-stdio ACP backend update and explicit process-authority coordinator binding | APR-03, APR-04, APR-05 | Official client allow/reject/cancel and SIGKILL/restart/load tests pass; manual Zed remains open |
 | APR-08 | Cross-surface fixture, crash matrix, security and observability closure | APR-03, APR-05, APR-06, APR-07 | User-path E2E and required workspace gates pass |
 
 APR-00 and the SQLite scope of APR-01 completed on 2026-08-06. The
@@ -359,8 +361,9 @@ or output. Its response decoder maps those two selections and `Cancelled`, and
 fails closed for unadvertised options. The official-SDK duplex harness covers
 allow, reject, a pending request resolved after a matching `session/cancel`, an
 unknown option, a client protocol error, and disconnect while pending. This
-does not connect ACP to a production backend, persist a decision, or authorize
-an effect; those remain APR-07 integration and APR-08 end-to-end work.
+does not itself connect ACP to a production backend, persist a decision, or
+authorize an effect; APR-07 now supplies that bounded integration, while APR-08
+retains the cross-surface end-to-end work.
 
 APR-03 delivered its bounded executor/store continuation on 2026-08-06.
 Canonical domain-separated BLAKE3 digests now bind approval subjects,
@@ -383,9 +386,10 @@ registered and before generic abandoned-run recovery. The generic reaper now
 excludes `AwaitingApproval` and `WaitingEffect`. A durable attempt without a
 durable outcome is a manual-reconciliation error and is never retried. The
 production runtime reports approval storage, executor, and surface readiness
-separately and keeps the executor disabled because no production surface binds
-stable authenticated authority. Therefore normal chat, TUI, API, and ACP still
-do not advertise grant-bearing tools. A real SQLite counting-tool
+separately. It keeps them disabled by default and enables them only when an
+explicit stable authority is bound; APR-07 does so for local ACP stdio. Normal
+chat, TUI, API, and authority-unbound ACP still do not advertise grant-bearing
+tools. A real SQLite counting-tool
 fixture now proves AllowOnce executes exactly once, receives one exact grant,
 feeds the result back to the model, and completes. Remaining APR-03 closure
 evidence is the equivalent reject/default-deny and restart crash matrix; the
@@ -406,14 +410,29 @@ and routes through `InteractionService`; it performs no database writes.
 Legacy effect-only mutations now always return 501 because possession of an
 effect UUID cannot establish approval authority.
 
-This is a contract and test-composition claim, not production usability.
-`RuntimeFactory` does not construct `DurableInteractionService` with approval
-authority, `app_state_from_runtime` does not populate
-`authenticated_approval_service`, and readiness continues to report the
-approval surface unavailable and executor disabled. No normal runtime surface
-advertises grant-bearing tools. APR-06's terminal-chat and TUI adapters are
-complete at their bounded service seams. APR-07 owns ACP binding, and APR-08
-owns production authority plus full crash/security/observability closure.
+APR-05 remains a contract and test-composition claim outside explicitly bound
+surfaces. `app_state_from_runtime` does not populate
+`authenticated_approval_service`, and default runtime readiness reports the
+approval surface unavailable and executor disabled. APR-06's terminal-chat and
+TUI adapters are complete at their bounded service seams. APR-07 now completes
+the bounded local-stdio ACP binding; APR-08 owns broader production authority
+plus full crash/security/observability closure.
+
+APR-07 delivered its bounded local-stdio binding on 2026-08-06. The CLI accepts
+`--approval-tenant`, `--approval-workspace`, and a non-nil
+`--approval-principal` only as an all-or-none tuple, fixes the surface to
+`acp-stdio`, and emits no protocol stdout on invalid startup. `RuntimeFactory`
+binds that authority to the interaction service and the APR-03 executor using
+one SQLite pool, derives a stable versioned service principal, recovers approval
+checkpoints before generic runs, and reports readiness from the actual bound
+capability. Native ACP permission requests contain bounded/redacted metadata
+and exactly allow-once/reject-once; cancellation, disconnect, protocol error,
+and timeout use the coordinator cancel path and never grant. Pending recovery
+is hard-bounded to 100 and fails closed on overflow. Official-client tests prove
+allow executes one attempt/outcome, reject and cancel execute none, racing
+decisions have one winner, and SIGKILL followed by `session/load` re-presents
+one pending request and completes one effect. Manual Zed validation remains an
+APR-08/editor evidence item.
 
 Hot files have one integration owner at a time: SQLite migration registration,
 `store-trait/src/lib.rs`, `service/src/app.rs`, `run/src/orchestrator.rs`,
@@ -606,9 +625,9 @@ and why approval never overrides policy denial.
 - [x] Freeze and test the ACP permission protocol projection with once-only
   options, exact tool identity, withheld payloads, cancellation, disconnect,
   and unknown-option/error handling in the official-SDK harness.
-- [ ] Bind ACP permission requests and responses to the production durable
-  coordinator and effect continuation; do not infer approval on disconnect or
-  protocol failure.
+- [x] Bind ACP permission requests and responses to the production durable
+  coordinator and effect continuation under an explicit local-stdio authority;
+  disconnect and protocol failure cancel durably and never grant.
 
 ### Closure
 

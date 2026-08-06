@@ -170,10 +170,25 @@ reports.
   before adding an event, turn, or run, and generic legacy rows remain readable/
   archivable. This is runtime-event progress, not provider HTTP/SSE token
   streaming or a real editor run.
-  EVD-07 remains open for a real Zed run, session list/import, permission
-  round-trips, raw tool-data redaction, provider/autonomy options, MCP
-  passthrough, editor-side ACP log inspection, and provider HTTP/SSE token-level
-  streaming.
+  EVD-07 remains open for a real Zed run, session list/import, rich plans,
+  provider/autonomy options, MCP passthrough, editor-side ACP log inspection,
+  and provider HTTP/SSE token-level streaming.
+
+- **APR-07 / bounded local-stdio ACP approvals (2026-08-06):** commit
+  `d659c35` composes one explicit all-or-none tenant/workspace/non-nil-principal
+  authority through `RuntimeFactory`, `InteractionService`, and the existing
+  APR-03 coordinator/checkpoint executor on one SQLite pool. Authority remains
+  absent by default and invalid input fails before protocol stdout. The official
+  ACP client proves native allow executes exactly one attempt and outcome,
+  reject and cancel execute zero attempts, exact approval/run/effect identities
+  are enforced, raw arguments/output/locations/diffs stay withheld, and
+  disconnect/protocol failure never grants. A SIGKILL-before-decision fixture
+  leaves one pending approval, then `session/load` with the same authority,
+  database, and cwd re-presents exactly one request and completes exactly one
+  effect. The pending recovery query is hard-capped at 100 and overflow fails
+  closed. Focused interaction/surface/runtime tests and all 16 ACP stdio E2E
+  cases pass. Manual Zed permission/cancel/restart/log inspection remains open;
+  this is not shared or remote multi-principal authentication.
 
 - **EVD-11 / terminal interaction slices (2026-08-05):** the TUI lifecycle test
   runs the real integration binary inside a Unix PTY and proves ordered
