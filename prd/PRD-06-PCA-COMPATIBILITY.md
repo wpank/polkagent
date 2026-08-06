@@ -18,6 +18,15 @@
 > remain in
 > [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md#pca-01--production-pca-network-transport).
 
+> **Pinned-reference checkpoint (2026-08-06):** the exact PCA commit, tree,
+> codec/protocol/lockfile blobs, deterministic opener inputs, encrypted bytes,
+> and decoded remote-model bytes are frozen in
+> [PCA-01 reference compatibility evidence](PCA-01-REFERENCE-COMPATIBILITY-EVIDENCE.md).
+> A default Rust test reproduces the reference SCALE/P-256/HKDF/AES-GCM
+> framing and ciphertext. This is a reference oracle, not C0 completion:
+> production encode/decode, sr25519 proof verification, Statement Store I/O,
+> the JS codec bridge, device channels, and real-device interop remain open.
+
 **Status:** definitive product requirements document
 
 **Audience:** engineers, product designers, and operators who may have no
@@ -4333,6 +4342,12 @@ test IDs from section 13.
   pinned PCA commit (`2adddcc8`). Acceptance criteria: C0-T01 passes
   against JS codec bridge.
   Maps to: C0-T01.
+  - [x] Freeze exact commit/tree/source-blob provenance and one deterministic
+    opener output; independently reproduce its SCALE/P-256/HKDF/AES-GCM bytes
+    in a default Rust test.
+  - [ ] Run the same corpus through a production PCA codec boundary and the
+    pinned JS codec bridge. The current bespoke TCP codec is not an acceptable
+    implementation of this gate.
 
 - [ ] **TEST-02:** Implement device-channel follow-up integration test.
   Acceptance criteria: C0-T02 passes.

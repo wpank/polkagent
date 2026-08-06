@@ -827,13 +827,23 @@ produce a reply.
   `tcp_network.rs` covers offline cancellation restart/reconnect and duplicate
   retry, status receiver restart, structured status/error exchange across a
   child process, corrupted inbound rejection, and size/backpressure failures.
+- [x] Freeze the pinned reference commit/tree and codec/protocol/lockfile Git
+  objects plus one deterministic `encodeNativeChatRequestV2` byte vector. A
+  default Rust oracle independently reproduces its nested SCALE framing,
+  P-256 ECDH, HKDF-SHA256, and AES-256-GCM ciphertext/tag. See
+  [PCA-01 reference compatibility evidence](PCA-01-REFERENCE-COMPATIBILITY-EVIDENCE.md).
+  This closes source discovery and the fixture prerequisite only; it does not
+  close PRD-06 TEST-01 or C0-T01.
 - [ ] Replace the bounded TCP protocol with (or adapt it behind) the pinned PCA
   reference application's Statement Store/Polkadot App wire protocol; add
   cryptographic SS58 authentication rather than trusting a configured identity
   string, multi-process state-file exclusion, dedup retention/compaction, and
   attachment/file frames.
 - [ ] Connect delivery to shared interaction/runtime and map replies/status.
-- [ ] Add compatibility fixtures against the PCA reference implementation.
+- [ ] Implement bounded production opener/session encode/decode, sr25519 and
+  keyed identity proof verification, and a pinned JS codec-bridge runner that
+  consumes the frozen corpus. Pass C0-T01 through that real adapter; do not
+  label the X25519/ChaCha TCP wire protocol C0-compatible.
 
 **Exit checks:** cross-process interoperability test covers normal message,
 duplicate, crash-before-ack, reconnect, cancellation, error reply, and file

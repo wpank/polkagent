@@ -417,6 +417,17 @@ rather than broad suppression.
   transport seam, not yet the pinned PCA Statement Store/Polkadot App protocol
   or a shared-runtime surface; receiving a cancellation frame does not yet
   cancel a runtime run.
+- PCA-01 now has an immutable pinned-reference opener oracle: exact commit,
+  tree, codec/protocol/lockfile Git objects, deterministic inputs, encrypted
+  bytes, and decoded remote-model bytes are checked in. The exact JS encoder
+  and decoder accept the corpus, while a default Rust test independently
+  reproduces the nested SCALE framing, P-256 ECDH, HKDF-SHA256, and AES-GCM
+  ciphertext/tag. The comparison confirms the current TCP/JSON +
+  X25519/ChaCha20-Poly1305 transport is a different protocol. Production
+  opener/session encode/decode, sr25519 proof verification, Statement Store
+  I/O, the JS bridge, device channels, and real-device interop remain open, so
+  TEST-01/C0-T01 and C0 compatibility remain unclaimed. See
+  [the evidence packet](PCA-01-REFERENCE-COMPATIBILITY-EVIDENCE.md).
 - `crates/polkagent-payment/src/ledger.rs` labels its signature as an
   experimental placeholder.
 - PRD-17 now has an honest live-node target that queries relay/Asset Hub RPC and

@@ -24,6 +24,19 @@ reports.
 
 ## Captured evidence and remaining gaps
 
+- **PCA-01 / pinned opener reference oracle (2026-08-06):** the PCA checkout
+  is verified at exact commit `2adddcc8cfd732804cd9bbcbcd26974b44b47f66`,
+  and one deterministic opener freezes its source-object provenance, inputs,
+  SCALE framing, P-256 keys, encrypted bytes, and decoded remote model. The
+  exact pinned JS encoder/decoder accepts it; a default Rust test independently
+  reproduces P-256 ECDH, HKDF-SHA256, and AES-256-GCM ciphertext/tag. The
+  [evidence packet](PCA-01-REFERENCE-COMPATIBILITY-EVIDENCE.md) records the
+  exact incompatibilities with the current TCP/JSON + X25519/ChaCha transport
+  and the implementation handoff. EVD-06 remains open: no production reference
+  codec or JS bridge consumes the fixture, no signed Statement Store boundary
+  exists, and device/restart/attachment/real-client interoperability is not
+  proved.
+
 - **FND-02 / durable headless interaction slice (2026-08-05):** runtime tests
   prove the user transcript, caller turn identity, conversation-correlated run,
   and turn/run link exist before the first observable `RunCreated`; a completed
