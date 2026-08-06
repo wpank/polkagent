@@ -79,6 +79,9 @@ const SCHEMA_V18: &str = include_str!("v18_approval_foundation.sql");
 /// V19: Preserve the complete durable run-event metadata envelope.
 const SCHEMA_V19: &str = include_str!("v19_run_event_metadata.sql");
 
+/// V20: Normalize legacy approval coordinator event IDs to stable UUIDs.
+const SCHEMA_V20: &str = include_str!("v20_approval_event_ids.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -100,6 +103,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (17, "immutable interaction origin cwd", SCHEMA_V17),
     (18, "durable approval and checkpoint foundation", SCHEMA_V18),
     (19, "complete run event metadata", SCHEMA_V19),
+    (20, "normalize approval event identifiers", SCHEMA_V20),
 ];
 
 // ---------------------------------------------------------------------------
@@ -258,7 +262,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -267,7 +271,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -337,8 +341,8 @@ mod tests {
         };
 
         let pool = SqlitePool::open(&path).expect("open legacy database through pool");
-        migrate(&pool.writer()).expect("migrate V18 database to V19");
-        assert_eq!(current_version(&pool.writer()).expect("version"), 19);
+        migrate(&pool.writer()).expect("migrate V18 database through V20");
+        assert_eq!(current_version(&pool.writer()).expect("version"), 20);
 
         let rows: Vec<(String, i64, String, Option<String>, String)> = {
             let writer = pool.writer();
@@ -409,6 +413,95 @@ mod tests {
             all[1].global_sequence,
             u64::try_from(diagnostic_rowid).expect("positive diagnostic rowid")
         );
+    }
+
+    #[tokio::test]
+    async fn v20_normalizes_legacy_approval_event_ids_without_moving_cursors() {
+        let directory = tempfile::tempdir().expect("legacy approval database directory");
+        let path = directory.path().join("approval-events-v19.sqlite");
+        let approval_id = uuid::Uuid::now_v7().to_string();
+        let run_id = uuid::Uuid::now_v7().to_string();
+        let agent_id = uuid::Uuid::now_v7().to_string();
+        let legacy_ids = [
+            format!("approval:{approval_id}:requested"),
+            format!("approval:{approval_id}:resolved"),
+            format!("approval:{approval_id}:effects-resolved"),
+        ];
+        let expected_ids = [
+            format!("a1{}", &approval_id[2..]),
+            format!("a2{}", &approval_id[2..]),
+            format!("a3{}", &approval_id[2..]),
+        ];
+        let kinds = [
+            polkagent_core::EventKind::ApprovalRequested {
+                request_id: approval_id.clone(),
+            },
+            polkagent_core::EventKind::ApprovalGranted {
+                approval_id: approval_id.clone(),
+            },
+            polkagent_core::EventKind::EffectsResolved,
+        ];
+        let event_types = ["approval_requested", "approval_granted", "effects_resolved"];
+        let rowids = {
+            let conn = Connection::open(&path).expect("open V19 database");
+            migrate_through(&conn, 19);
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO agents (id, name, created_at, updated_at)
+                 VALUES (?1, 'legacy-approval-event-agent', ?2, ?2)",
+                rusqlite::params![agent_id, now],
+            )
+            .expect("seed legacy approval agent");
+            conn.execute(
+                "INSERT INTO runs (id, agent_id, state, created_at, updated_at)
+                 VALUES (?1, ?2, 'running', ?3, ?3)",
+                rusqlite::params![run_id, agent_id, now],
+            )
+            .expect("seed legacy approval run");
+            let mut rowids = Vec::new();
+            for (index, ((legacy_id, kind), event_type)) in
+                legacy_ids.iter().zip(&kinds).zip(event_types).enumerate()
+            {
+                conn.execute(
+                    "INSERT INTO run_events
+                        (id, run_id, sequence, kind, data_json, timestamp,
+                         correlation_id, schema_version, durability, scope_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 'durable', '')",
+                    rusqlite::params![
+                        legacy_id,
+                        run_id,
+                        u64::try_from(index + 1).expect("small sequence"),
+                        event_type,
+                        serde_json::to_string(kind).expect("serialize approval event"),
+                        now,
+                        approval_id,
+                    ],
+                )
+                .expect("seed legacy approval event");
+                rowids.push(conn.last_insert_rowid());
+            }
+            rowids
+        };
+
+        let pool = SqlitePool::open(&path).expect("open V19 approval database through pool");
+        migrate(&pool.writer()).expect("migrate V19 database to V20");
+        assert_eq!(current_version(&pool.writer()).expect("version"), 20);
+
+        let events = pool
+            .read_from_cursor(0, 16)
+            .await
+            .expect("read normalized approval events");
+        assert_eq!(events.len(), 3);
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event.id, expected_ids[index]);
+            assert!(uuid::Uuid::parse_str(&event.id).is_ok());
+            assert_eq!(
+                event.global_sequence,
+                u64::try_from(rowids[index]).expect("positive approval event rowid")
+            );
+            polkagent_event::decode_run_event(event.clone())
+                .expect("decode normalized approval event");
+        }
     }
 
     #[test]

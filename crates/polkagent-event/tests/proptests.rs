@@ -44,6 +44,7 @@ const ALL_EVENT_TYPES: &[EventType] = &[
     EventType::EffectIntentCreated,
     EventType::EffectAttemptStarted,
     EventType::EffectOutcomeRecorded,
+    EventType::EffectsResolved,
     EventType::EffectRetryScheduled,
     EventType::EffectCancelled,
     EventType::EffectLeaseExpired,

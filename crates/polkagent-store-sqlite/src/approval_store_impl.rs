@@ -322,7 +322,7 @@ fn pause_tx(
     let checkpoint_json = serialize(&request.checkpoint, "execution checkpoint")?;
     let effect_payload = serialize(&request.effect_payload, "effect payload")?;
     let conditions_json = "[]";
-    let requested_event_id = approval_event_id(request.approval_id, "requested");
+    let requested_event_id = approval_event_id(request.approval_id, "requested")?;
     let kind = request
         .effect_payload
         .get("kind")
@@ -500,11 +500,12 @@ fn load_matching_pause_retry(
         )
     };
     let approval = load_approval(connection, request.approval_id).map_err(|_| mismatch())?;
+    let expected_requested_event_id = approval_event_id(request.approval_id, "requested")?;
     if approval.subject != request.subject
         || approval.metadata != request.metadata
         || approval.deadline_at != request.deadline_at
         || approval.status != ApprovalStatus::Pending
-        || approval.requested_event_id != approval_event_id(request.approval_id, "requested")
+        || approval.requested_event_id != expected_requested_event_id
     {
         return Err(mismatch());
     }
@@ -643,7 +644,7 @@ fn resolve_tx(
     let principal_type = principal_type_str(request.principal_type);
     let decision = decision_str(request.decision);
     let conditions_json = serialize(&request.conditions, "approval conditions")?;
-    let decision_event_id = approval_event_id(request.approval_id, "resolved");
+    let decision_event_id = approval_event_id(request.approval_id, "resolved")?;
     let updated = connection
         .execute(
             "UPDATE approval_requests
@@ -1174,7 +1175,7 @@ fn resume_after_effect_tx(
         .ok_or_else(|| ApprovalStoreError::Integrity {
             message: "run state version is exhausted".to_owned(),
         })?;
-    let event_id = approval_event_id(request.approval_id, "effects-resolved");
+    let event_id = approval_event_id(request.approval_id, "effects-resolved")?;
     let current: (String, u64) = connection
         .query_row(
             "SELECT state, state_version FROM runs WHERE id = ?1",
@@ -1941,8 +1942,19 @@ fn require_changed(
     }
 }
 
-fn approval_event_id(approval_id: ApprovalId, kind: &str) -> String {
-    format!("approval:{approval_id}:{kind}")
+fn approval_event_id(approval_id: ApprovalId, kind: &str) -> Result<String, ApprovalStoreError> {
+    let prefix = match kind {
+        "requested" => "a1",
+        "resolved" => "a2",
+        "effects-resolved" => "a3",
+        _ => {
+            return Err(ApprovalStoreError::Integrity {
+                message: "unsupported approval event identity kind".to_owned(),
+            });
+        }
+    };
+    let approval_id = approval_id.to_string();
+    Ok(format!("{prefix}{}", &approval_id[2..]))
 }
 
 fn chrono_duration(duration: Duration) -> Result<chrono::Duration, ApprovalStoreError> {
