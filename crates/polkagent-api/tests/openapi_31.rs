@@ -138,7 +138,20 @@ fn operational_access_contract_and_lint_exceptions_are_exact() {
         .expect("ignore rules scoped to openapi.yaml");
     assert_eq!(
         ignored_rules.keys().collect::<Vec<_>>(),
-        vec!["operation-4xx-response"]
+        vec!["operation-2xx-response", "operation-4xx-response"]
+    );
+    let ignored_2xx_pointers = ignored_rules["operation-2xx-response"]
+        .as_array()
+        .expect("operation-specific 2xx ignore pointers")
+        .iter()
+        .map(|value| value.as_str().expect("ignore pointer"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        ignored_2xx_pointers,
+        BTreeSet::from([
+            "#/paths/~1api~1v1alpha1~1effects~1{id}~1approve/post/responses",
+            "#/paths/~1api~1v1alpha1~1effects~1{id}~1deny/post/responses",
+        ])
     );
     let ignored_pointers = ignored_rules["operation-4xx-response"]
         .as_array()

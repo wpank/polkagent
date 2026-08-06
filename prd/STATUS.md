@@ -93,8 +93,9 @@ startup still has a wiring gap.
 The published schema now uses OpenAPI 3.1 null unions throughout. Recursive
 contract tests reject legacy `nullable`, preserve representative primitive and
 `$ref` null semantics, and keep router parity exact. Redocly 2 now reports zero
-active warnings or errors; five deliberately public operational operations use
-exact ignored rule pointers rather than broad suppression.
+active warnings or errors; five deliberately public operational operations and
+two deliberately disabled legacy mutations use exact ignored rule pointers
+rather than broad suppression.
 
 ## Product-surface status
 
