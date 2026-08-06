@@ -160,7 +160,7 @@ It remains design input rather than the completion contract.
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
 | Use Polkagent *from* Zed | Protocol/tool slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK, durable cwd isolation, native tool updates, and executable client fixtures; editor permission acceptance is still open |
 | ACP slash commands/config selectors | Durable shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/model`, and current-prompt `/cancel` plus aliases are registry-derived; native selectors write the same durable interaction config, while provider/autonomy settings remain unavailable |
-| REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, checkpointed SSE, immutable skill reads, and durable memory query/lookup use exact runtime-owned components; 11 optional mutation/stats/audit/registry routes remain unavailable |
+| REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, checkpointed SSE, immutable skill reads, and durable memory query/lookup/stats/deletion use exact runtime-owned components; 9 optional skill-mutation/audit/registry routes remain unavailable |
 
 ## 1. What Polkagent actually has today
 
@@ -293,10 +293,10 @@ event bus. Black-box restart tests create an agent/run over HTTP, preserve
 verified artifact content/classification/lineage, and reload them from the same
 database. Tool list/detail/grant routes project the exact runtime registry with
 deterministic ordering and truthful empty behavior when registration is
-disabled. Immutable configured-skill reads and durable memory query/exact lookup
-use exact runtime-owned components. Eleven remaining mutation/stats/audit/
-registry routes publish and test an explicit 501 boundary rather than falling
-back to in-memory implementations.
+disabled. Immutable configured-skill reads and durable memory query/exact
+lookup/non-mutating stats/atomic deletion use exact runtime-owned components.
+Nine remaining skill-mutation/audit/registry routes publish and test an
+explicit 501 boundary rather than falling back to in-memory implementations.
 The exact runtime `InteractionService` also backs versioned create/list/load/
 archive/turn/prompt/cancel and strict target/model config routes. A finite JSON
 event route provides
@@ -1327,7 +1327,7 @@ Zed, not merely a single-agent chat wrapper.
 | `polkagent-cli/src/main.rs` | Early ACP dispatch, one-shot/TUI/chat/ACP/serve runtime convergence, and ACP-safe bounded diagnostics exist |
 | `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation agent/model selection exists; add richer editing/config only after execution semantics are truthful |
 | `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection plus shared command execution and safe tool status exists; add async input, approvals/rich plans, and orchestration |
-| `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime plus skill/memory reads exists; compose the remaining published 11-route optional boundary one truthful family at a time |
+| `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime plus skill reads and all four memory routes exist; compose the remaining published 9-route optional boundary one truthful family at a time |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
 | Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; attach manual Zed and active-turn permission/cancel evidence |
 

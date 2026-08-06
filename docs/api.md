@@ -210,11 +210,16 @@ Runtime-composed servers query the exact durable SQLite memory store already
 owned by `AppService`; they do not open a second store. Query namespaces are
 the canonical memory types (`episodic`, `semantic`, and `procedural`). Exact
 entry lookup uses a non-mutating port, so it does not update access timestamps
-or counters. When memory is disabled, queries return an empty list and exact
-lookups return `404`. Aggregate statistics and deletion remain explicit `501
-Not Implemented` responses until global statistics and durable batch-deletion
-semantics are composed. The query is a `POST`, so server-wide read-only mode
-rejects it with `405`; the exact-entry `GET` remains available.
+or counters. Statistics are equally non-mutating: `total_bytes` is the sum of
+UTF-8 content bytes and `namespaces` counts the distinct canonical memory types
+currently stored. Batch deletion accepts one to 1,000 UUIDs, validates the
+whole request before mutation, commits atomically, and treats unknown or
+duplicate IDs idempotently. When memory is disabled, queries return an empty
+list, exact lookups return `404`, statistics return zero values, and deletion
+returns `deleted: 0`. Query and deletion are `POST` operations, so server-wide
+read-only mode rejects them with `405`; statistics and exact-entry lookup
+remain available as authenticated `GET` operations. Custom API composition
+without any memory store still returns `501 Not Implemented`.
 
 ### Audit
 

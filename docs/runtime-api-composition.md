@@ -19,7 +19,7 @@ in-memory agent or run stores.
 | `ArtifactStore` | `SqliteApiArtifactStore` over the runtime pool | Durable metadata, verified BLAKE3 content, classification, and lineage |
 | `SkillRegistry` | Read-only projection of `AppService::skill_manifests()` | Exact immutable startup snapshot; deterministic list, or an empty view when loading is disabled |
 | `ToolRegistryStore` | Read-only projection of `AppService::tool_registry()` | Exact process-wide registry; deterministic list, or an empty view when chain-backed registration is disabled |
-| `MemoryStore` | Read-only projection of `AppService::memory_store()` | Exact runtime-owned SQLite store; typed queries and non-mutating lookup survive restart, or expose an empty view when memory is disabled |
+| `MemoryStore` | Projection of `AppService::memory_store()` | Exact runtime-owned SQLite store; typed queries, non-mutating lookup/statistics, and atomic deletion survive restart, or expose an empty/zero view when memory is disabled |
 | `PaymentStore` | Runtime `SqlitePool` | Durable |
 | `ConversationStore` | Runtime `SqlitePool` | Durable |
 | `InteractionService` | The exact `Arc` returned by `PolkagentRuntime::interactions()` | Durable prompts, turns, transcripts, correlation, cancellation, and recovery use the process-wide runtime |
@@ -123,8 +123,6 @@ is `polkagent_api::RUNTIME_UNAVAILABLE_ROUTES`.
 | Skills | `POST` | `/api/v1alpha1/skills/install` | Package trust, installation, and runtime activation are not composed |
 | Skills | `POST` | `/api/v1alpha1/skills/{skill_id}/uninstall` | Package deactivation and removal are not composed |
 | Skills | `PUT` | `/api/v1alpha1/skills/{skill_id}/config` | Durable skill configuration and activation are not composed |
-| Memory | `GET` | `/api/v1alpha1/memory/stats` | Canonical store has no global byte and namespace statistics port |
-| Memory | `POST` | `/api/v1alpha1/memory/forget` | Durable batch-deletion policy and mutation semantics are not composed |
 | Audit | `GET` | `/api/v1alpha1/audit` | `RuntimeFactory` does not compose an `AuditStore` |
 | Audit | `GET` | `/api/v1alpha1/audit/verify` | Same missing store |
 | Audit | `GET` | `/api/v1alpha1/audit/{id}` | Same missing store |
@@ -134,13 +132,11 @@ is `polkagent_api::RUNTIME_UNAVAILABLE_ROUTES`.
 
 ## Next implementation slices
 
-1. Define truthful global byte/namespace statistics and durable batch-deletion
-   policy before enabling the two remaining memory operations.
-2. Compose durable audit and service-registry stores in `RuntimeFactory` before
+1. Compose durable audit and service-registry stores in `RuntimeFactory` before
    enabling those routes.
-3. Define package trust, activation, and durable mutation semantics before
+2. Define package trust, activation, and durable mutation semantics before
    enabling skill install, uninstall, or configuration routes.
-4. Expose explicit runtime shutdown and await background-task termination
+3. Expose explicit runtime shutdown and await background-task termination
    after HTTP connection draining.
 
 Artifact projection is now closed by a forward V15 migration and a strict
@@ -178,23 +174,29 @@ loading is a successful empty read view, unknown names are `404`, and runtime
 readiness distinguishes disabled, ready, and degraded directory states. Package
 and configuration mutations remain in the exact `501` inventory.
 
-Memory query and exact lookup now follow that ownership rule as well. When the
-SQLite memory backend is enabled, `RuntimeFactory` injects one canonical store
-into `AppService`, and the API adapter retains that exact `Arc`. Typed query
-maps only the canonical episodic, semantic, and procedural namespaces. Exact
-lookup uses `MemoryStore::peek_memory`, which does not update access metadata.
-The same entries survive runtime restart. Disabled memory yields an empty query
-and ordinary `404` lookup; statistics and batch deletion remain in the exact
-`501` inventory. The existing method-based read-only middleware still rejects
-the query's `POST`, while authenticated exact-entry `GET` remains available.
+All four memory routes follow that ownership rule. When the SQLite backend is
+enabled, `RuntimeFactory` injects one canonical store into `AppService`, and the
+API adapter retains that exact `Arc`. Typed query maps only the canonical
+episodic, semantic, and procedural namespaces. Exact lookup uses
+`MemoryStore::peek_memory`, and aggregate statistics use one direct SQLite
+aggregate; neither updates access metadata. `total_bytes` is explicitly the
+sum of UTF-8 memory-content bytes rather than a claim about database file or
+index size. Batch deletion validates one to 1,000 UUIDs before mutation, uses a
+single SQLite transaction, ignores unknown and duplicate IDs idempotently, and
+returns the number of distinct existing entries removed. Deletion and updated
+statistics survive runtime restart. Disabled memory yields an empty query,
+ordinary `404` lookup, zero statistics, and zero-count deletion. The existing
+method-based read-only middleware rejects query and deletion because both are
+`POST`; statistics and exact lookup remain authenticated `GET` operations.
 
 The black-box test `durable_runtime_api` constructs the server through the same
 runtime composition helper used by `serve`, creates an agent and a run over
 HTTP, rebuilds the runtime on the same database, and verifies both projections
 after restart. It also verifies the composed optional stores, skill snapshot
-ordering and restart stability, exact durable memory projection without access
-metadata mutation, disabled and unknown skill/memory reads, authentication and
-read-only policy, and every remaining `501` response.
+ordering and restart stability, exact durable memory query/lookup/statistics/
+deletion without access-metadata mutation, disabled/unknown/invalid behavior,
+authentication and read-only policy, restart-safe deletion, and every remaining
+`501` response.
 
 The deployment-level `scripts/container-smoke.sh` crosses the process and
 container boundary with that composition. It creates an HTTP agent plus a

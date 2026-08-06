@@ -165,11 +165,12 @@ reports.
   the runtime's exact tool registry is exposed with deterministic schema/grant/
   classification reads plus auth/read-only/disabled-registry coverage. The
   runtime's immutable configured-skill snapshot is exposed with deterministic
-  restart/disabled/unknown/mutation-boundary evidence. Typed memory query and
-  non-mutating exact lookup retain the exact `AppService`-owned SQLite store,
-  survive restart, preserve access counters/timestamps, and cover disabled,
-  unknown, invalid, auth, and read-only behavior. A machine-readable list proves
-  11 optional routes remain explicit 501s. The
+  restart/disabled/unknown/mutation-boundary evidence. Typed memory query,
+  non-mutating exact lookup/statistics, and atomic deletion retain the exact
+  `AppService`-owned SQLite store, survive restart, preserve access counters/
+  timestamps, and cover disabled, unknown, invalid, auth, and read-only
+  behavior. A machine-readable list proves 9 optional routes remain explicit
+  501s. The
   API now injects the exact runtime `InteractionService` and exposes durable
   create/list/load/archive, turns, prompt, cancel, target/model config, and
   finite event-replay routes. Black-box fixtures prove user/assistant

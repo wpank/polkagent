@@ -55,12 +55,12 @@ percentage.
 | [PRD-06](PRD-06-PCA-COMPATIBILITY.md) | PCA compatibility and transport | Active; durable encrypted TCP/control delivery is cross-process tested, but reference PCA framing, signed identity, attachments, and runtime composition remain. |
 | [PRD-07](PRD-07-IDENTITY-SECURITY.md) | Identity, grants, policy, secrets, signers | Active; shared-key API auth is composed and deployment-tested, while TLS/key rotation, secret custody, policy wiring, principal authorization, and tenant enforcement remain. |
 | [PRD-08](PRD-08-PAYMENTS-AUTONOMY.md) | Payments, budgets, autonomy | Active; domain code is not a value-moving composed product. |
-| [PRD-09](PRD-09-MEMORY-GROUPS-EVALS.md) | Memory, groups, feeds, evals | Active; runtime-owned durable memory query/exact lookup is API-composed, while prompt-context, stats/deletion, groups, feeds, and eval orchestration remain. |
+| [PRD-09](PRD-09-MEMORY-GROUPS-EVALS.md) | Memory, groups, feeds, evals | Active; runtime-owned durable memory query/exact lookup/non-mutating stats/atomic deletion are API-composed, while prompt-context, groups, feeds, and eval orchestration remain. |
 | [PRD-10](PRD-10-DATA-OBSERVABILITY.md) | Events, artifacts, telemetry, recovery | Active; interaction replay/lag recovery and core artifact/event injection are proved, while product-wide transports, audit/telemetry, retention, and operator recovery remain. |
 | [PRD-11](PRD-11-DEPLOYMENT-CLOUD.md) | Deployment and cloud | Active; authenticated single-instance container/config/shutdown/replacement/cold-restore persistence is proven, while successful backend output and production operations remain. |
 | [PRD-12](PRD-12-MARKETPLACE-EXTENSIONS.md) | Extensions and marketplace | Active; durable local package lifecycle and operator CLI work, while activation, sandbox execution, cryptographic trust, and registry paths remain. |
 | [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; durable terminal chat and TUI Console provide contextual follow-up, persisted agent/model selection, safe tool status, and restart/cancel, while harness context, approvals/orchestration, and studio/mobile surfaces remain. |
-| [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; shared-runtime interaction/core/skill/memory reads, checkpointed SSE, zero-drift ordinary HTTP parity, and an OpenAPI 3.1 contract exist, while 11 optional routes remain. |
+| [PRD-14](PRD-14-APIs-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; shared-runtime interaction/core/skill/memory operations, checkpointed SSE, zero-drift ordinary HTTP parity, and an OpenAPI 3.1 contract exist, while 9 optional routes remain. |
 | [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; broad component coverage, stable/Rust-1.89 checks, strict rustdoc, and mandatory/extended Clippy gates pass locally; production/live/client conformance remains incomplete. |
 
 ## Active delivery PRDs

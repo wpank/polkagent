@@ -115,9 +115,9 @@ but not TUI widgets or ACP protocol mapping.
 - [ ] Open/migrate durable run, effect, event, artifact, conversation, memory,
   payment, audit, agent, group/feed, and registry stores as applicable. The
   current factory wires SQLite run/effect/event/conversation/payment and
-  configured memory; the API now projects typed query/non-mutating exact reads
-  from that same store. Audit, group/feed, registry, and memory statistics/
-  deletion remain incomplete.
+  configured memory; the API now projects typed query/non-mutating exact reads,
+  non-mutating aggregate statistics, and atomic deletion from that same store.
+  Audit, group/feed, and registry persistence remain incomplete.
 - [ ] Remove `NoopEffectStore` and in-memory production fallbacks from
   executable configurations; missing required dependencies fail at startup.
   One-shot run, TUI, ACP, and `serve` now consume the shared runtime; the
@@ -129,9 +129,9 @@ but not TUI widgets or ACP protocol mapping.
 - [x] Make `serve` use the shared runtime and durable agents/runs/effects/events/
   artifacts/payments/conversations. Artifact metadata, verified content,
   classification, and lineage survive restart; the exact runtime tool registry
-  backs deterministic read-only API discovery. Runtime-owned skill and memory
-  read adapters are now composed; eleven optional skill mutation, memory stats/
-  deletion, audit, and registry routes remain registered with a published,
+  backs deterministic read-only API discovery. Runtime-owned skill reads and
+  the four-route bounded memory API adapter are now composed; nine optional skill
+  mutation, audit, and registry routes remain registered with a published,
   tested 501 boundary until truthful contracts/stores are composed.
 
 **2026-08-05 runtime checkpoint:** `polkagent-runtime` now provides strict or
@@ -298,11 +298,11 @@ own runtime construction or orchestrator internals.
 - [x] Inject a truthful read-only projection of the exact runtime tool registry,
   including deterministic list/detail/grant behavior and an empty view when
   registration is disabled.
-- [x] Inject immutable skill list/detail and durable memory query/exact lookup
-  through exact runtime-owned read adapters.
-- [ ] Inject skill mutation, memory stats/deletion, audit, registry, and
-  service-registry adapters. Their exact uncomposed routes remain in the
-  published 501 list.
+- [x] Inject immutable skill list/detail and durable memory query/exact lookup,
+  non-mutating statistics, and atomic deletion through exact runtime-owned
+  adapters.
+- [ ] Inject skill mutation, audit, and service-registry adapters. Their exact
+  uncomposed routes remain in the published 501 list.
 - [x] Expose interaction create/list/load/archive/turn/prompt/cancel plus strict
   target/model config endpoints over the exact runtime `InteractionService`;
   caller-supplied turn IDs provide retry idempotency and conflict detection.
@@ -326,10 +326,10 @@ own runtime construction or orchestrator internals.
 - [x] Use OpenAPI 3.1 null unions throughout. A recursive regression rejects
   legacy `nullable`, representative null semantics are protected, and Redocly
   reports zero active warnings/errors with five exact public-operation ignores.
-- [ ] Compose the 11 intentionally unavailable optional skill mutation, memory
-  stats/deletion, audit, and registry routes with real contracts/stores while
-  preserving auth/read-only policy. Immutable skill reads and durable memory
-  query/exact lookup are composed and restart-tested.
+- [ ] Compose the 9 intentionally unavailable optional skill mutation, audit,
+  and registry routes with real contracts/stores while preserving auth/read-only
+  policy. Immutable skill reads and durable memory query/exact lookup/stats/
+  deletion are composed and restart-tested.
 - [ ] Unify root config selection, bind address/port, auth, CORS, read-only,
   and rate-limit provenance. The canonical deployment smoke now proves the
   current shared-key auth boundary with rate limiting explicitly disabled; it
