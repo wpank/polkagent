@@ -36,6 +36,11 @@ use std::time::Duration;
 
 use chrono::Utc;
 
+use crate::approval::{
+    ApprovalCoordinatorStore, ApprovalDecision, ApprovalPage, ApprovalScope, ApprovalStoreError,
+    CheckpointCommitStatus, CheckpointProgress, CheckpointStatus, ClaimApprovedEffect,
+    ExecutionCheckpointStore, PauseForApproval, ResolveApproval, ResolveDisposition,
+};
 use crate::event::{EventStore, EventStoreError, StoredEvent};
 use crate::{
     ArtifactStore, EffectStore, RunStatus, RunStore, StoreError, StoreRetryClass, StoredIntent,
@@ -44,6 +49,19 @@ use crate::{
 use polkagent_core::ids::{
     ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, TurnId, WorkerId,
 };
+
+/// Complete pre-seeded fixture for the shared approval foundation contract.
+#[derive(Debug, Clone)]
+pub struct ApprovalConformanceFixture {
+    /// Atomic pause request whose parent rows already exist.
+    pub pause: PauseForApproval,
+    /// Authorized scope for reads.
+    pub scope: ApprovalScope,
+    /// Winning allow-once request.
+    pub allow: ResolveApproval,
+    /// Exact continuation claim.
+    pub claim: ClaimApprovedEffect,
+}
 
 // ---------------------------------------------------------------------------
 // Builder helpers
@@ -860,4 +878,169 @@ pub async fn test_artifact_store_list_for_run(store: &dyn ArtifactStore) {
         "list_for_run() must return 1 artifact for run_b; got {}",
         for_run_b.len()
     );
+}
+
+/// Conformance: expected-state run updates have exactly one winning prior state.
+///
+/// **Precondition:** `run_id` exists in the `running` state.
+pub async fn test_run_store_compare_and_swap(store: &dyn RunStore, run_id: RunId) {
+    store
+        .compare_and_swap_state(
+            run_id,
+            RunStatus::new("running"),
+            RunStatus::new("awaiting_approval:test"),
+        )
+        .await
+        .expect("first expected-state run CAS must win");
+
+    let stale = store
+        .compare_and_swap_state(
+            run_id,
+            RunStatus::new("running"),
+            RunStatus::new("cancelled:stale"),
+        )
+        .await
+        .expect_err("stale expected-state run CAS must fail");
+    assert!(
+        matches!(stale, StoreError::InvalidTransition { .. }),
+        "stale run CAS must be an invalid transition, got {stale:?}"
+    );
+    let stored = store.get(run_id).await.expect("load CAS-updated run");
+    assert_eq!(stored.status.as_str(), "awaiting_approval:test");
+}
+
+/// Conformance: the APR-00/APR-01 coordinator persists one atomic, resumable,
+/// idempotent approval foundation.
+///
+/// **Precondition:** all run/turn/step/agent lineage referenced by `fixture`
+/// exists, and the run is exactly `running`.
+pub async fn test_approval_foundation<S>(store: &S, fixture: ApprovalConformanceFixture)
+where
+    S: ApprovalCoordinatorStore + ExecutionCheckpointStore + EffectStore,
+{
+    let approval = store
+        .pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("atomic pause_for_approval must succeed");
+    assert_eq!(approval.status, crate::approval::ApprovalStatus::Pending);
+
+    let checkpoint = store
+        .get_checkpoint(fixture.pause.subject.run_id)
+        .await
+        .expect("paused checkpoint must be durable");
+    assert_eq!(checkpoint.status, CheckpointStatus::PausedForApproval);
+    assert_eq!(checkpoint.checkpoint.version, 1);
+
+    // Generic workers cannot claim an approval-gated effect.
+    let generic_claim = store
+        .claim_intent(WorkerId::new(), Duration::from_secs(60))
+        .await
+        .expect("generic effect claim query must succeed");
+    assert!(generic_claim.is_none());
+
+    let listed = store
+        .list_pending(
+            fixture.scope.clone(),
+            ApprovalPage {
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await
+        .expect("pending approval query must succeed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, fixture.pause.approval_id);
+
+    let resolved = store
+        .resolve_approval(fixture.allow.clone())
+        .await
+        .expect("allow-once resolution must succeed");
+    assert_eq!(resolved.disposition, ResolveDisposition::Applied);
+
+    let retry = store
+        .resolve_approval(fixture.allow.clone())
+        .await
+        .expect("identical resolution retry must succeed");
+    assert_eq!(retry.disposition, ResolveDisposition::AlreadyApplied);
+    assert_eq!(retry.approval.decided_at, resolved.approval.decided_at);
+    assert_eq!(
+        retry.approval.decision_event_id,
+        resolved.approval.decision_event_id
+    );
+
+    let mut opposite = fixture.allow.clone();
+    opposite.decision = ApprovalDecision::RejectOnce;
+    let conflict = store
+        .resolve_approval(opposite)
+        .await
+        .expect_err("different terminal decision must conflict");
+    assert!(matches!(conflict, ApprovalStoreError::Conflict { .. }));
+
+    let checkpoint = store
+        .get_checkpoint(fixture.pause.subject.run_id)
+        .await
+        .expect("resolved checkpoint must remain durable");
+    assert_eq!(checkpoint.status, CheckpointStatus::Resumable);
+    assert_eq!(checkpoint.checkpoint.version, 2);
+
+    let claimed = store
+        .claim_approved_effect(fixture.claim.clone())
+        .await
+        .expect("exact continuation must claim approved effect");
+    let retry_claim = store
+        .claim_approved_effect(fixture.claim.clone())
+        .await
+        .expect("same claim retry must be idempotent");
+    assert_eq!(retry_claim.lease_expires_at, claimed.lease_expires_at);
+
+    let mut wrong_worker = fixture.claim.clone();
+    wrong_worker.worker_id = WorkerId::new();
+    let conflict = store
+        .claim_approved_effect(wrong_worker)
+        .await
+        .expect_err("a second worker must not claim the approved effect");
+    assert!(matches!(
+        conflict,
+        ApprovalStoreError::InvalidTransition { .. } | ApprovalStoreError::Conflict { .. }
+    ));
+
+    let leased = store
+        .get_checkpoint(fixture.pause.subject.run_id)
+        .await
+        .expect("claim must lease checkpoint");
+    assert_eq!(leased.status, CheckpointStatus::Leased);
+    assert_eq!(leased.lease_owner, Some(fixture.claim.worker_id));
+
+    let expected_version = leased.checkpoint.version;
+    let mut next_checkpoint = leased.checkpoint;
+    next_checkpoint.version += 1;
+    "conformance-progress-digest".clone_into(&mut next_checkpoint.integrity_digest);
+    let next_version = store
+        .commit_progress(
+            expected_version,
+            CheckpointProgress {
+                worker_id: fixture.claim.worker_id,
+                checkpoint: next_checkpoint.clone(),
+                status: CheckpointCommitStatus::Resumable,
+            },
+        )
+        .await
+        .expect("leased checkpoint progress CAS must succeed");
+    assert_eq!(next_version, expected_version + 1);
+
+    let stale = store
+        .commit_progress(
+            expected_version,
+            CheckpointProgress {
+                worker_id: fixture.claim.worker_id,
+                checkpoint: next_checkpoint,
+                status: CheckpointCommitStatus::Resumable,
+            },
+        )
+        .await
+        .expect_err("stale checkpoint progress CAS must fail");
+    assert!(matches!(
+        stale,
+        ApprovalStoreError::InvalidTransition { .. }
+    ));
 }

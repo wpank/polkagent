@@ -64,6 +64,7 @@
 //! - `mmap_size = 268435456` — 256 MiB memory-mapped I/O.
 
 pub mod api_artifact_store_impl;
+pub mod approval_store_impl;
 pub mod artifact_store_impl;
 pub mod conversation_store_impl;
 pub mod effect_projection;

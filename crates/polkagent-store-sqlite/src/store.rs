@@ -785,9 +785,10 @@ impl SqliteEffectStore {
         // Attempt to claim: update only if unclaimed OR lease expired.
         let n = writer.execute(
             "UPDATE effect_intents
-             SET claimed_by = ?1, claimed_until = ?2
+             SET state = 'claimed', claimed_by = ?1, claimed_until = ?2
              WHERE id = ?3
-               AND (claimed_by IS NULL OR claimed_until < ?4)",
+               AND ((state = 'pending' AND claimed_by IS NULL)
+                    OR (state = 'claimed' AND claimed_until < ?4))",
             rusqlite::params![worker_id, lease_str, intent_id, now_str],
         )?;
 
@@ -806,8 +807,9 @@ impl SqliteEffectStore {
     pub fn release_intent(&self, intent_id: &str, worker_id: &str) -> StoreResult<()> {
         let writer = self.pool.writer();
         writer.execute(
-            "UPDATE effect_intents SET claimed_by = NULL, claimed_until = NULL
-             WHERE id = ?1 AND claimed_by = ?2",
+            "UPDATE effect_intents
+             SET state = 'pending', claimed_by = NULL, claimed_until = NULL
+             WHERE id = ?1 AND state = 'claimed' AND claimed_by = ?2",
             rusqlite::params![intent_id, worker_id],
         )?;
         Ok(())
@@ -820,7 +822,7 @@ impl SqliteEffectStore {
             "SELECT id, run_id, turn_id, step_id, kind, params_json, idempotency_key,
                     created_at, claimed_by, claimed_until
              FROM effect_intents
-             WHERE run_id = ?1 AND claimed_by IS NULL
+             WHERE run_id = ?1 AND state = 'pending' AND claimed_by IS NULL
              ORDER BY created_at ASC",
         )?;
         let rows = stmt
@@ -850,7 +852,7 @@ impl SqliteEffectStore {
             "SELECT id, run_id, turn_id, step_id, kind, params_json, idempotency_key,
                     created_at, claimed_by, claimed_until
              FROM effect_intents
-             WHERE claimed_by IS NOT NULL AND claimed_until < ?1
+             WHERE state = 'claimed' AND claimed_by IS NOT NULL AND claimed_until < ?1
              ORDER BY claimed_until ASC",
         )?;
         let rows = stmt
@@ -975,7 +977,8 @@ impl SqliteEffectStore {
         };
 
         let writer = self.pool.writer();
-        writer
+        writer.execute_batch("BEGIN IMMEDIATE")?;
+        let result = writer
             .execute(
                 "INSERT INTO effect_outcomes (id, intent_id, status, result_json, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -993,7 +996,29 @@ impl SqliteEffectStore {
                 } else {
                     StoreError::Sqlite(e)
                 }
-            })?;
+            })
+            .and_then(|_| {
+                let changed = writer.execute(
+                    "UPDATE effect_intents
+                     SET state = 'resolved', claimed_by = NULL, claimed_until = NULL
+                     WHERE id = ?1 AND state IN ('pending', 'claimed', 'executing')",
+                    [intent_id],
+                )?;
+                if changed == 1 {
+                    Ok(())
+                } else {
+                    Err(StoreError::Immutable(format!(
+                        "effect intent {intent_id} is not eligible for an outcome"
+                    )))
+                }
+            });
+        match result {
+            Ok(()) => writer.execute_batch("COMMIT")?,
+            Err(error) => {
+                let _ = writer.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
 
         debug!(outcome_id = %row.id, %intent_id, %status, "outcome recorded");
         Ok(row)
@@ -1381,9 +1406,9 @@ fn map_sqlite_err(e: rusqlite::Error) -> TraitStoreError {
 
 /// Read a `StoredIntent` from a row.  The SELECT columns must be:
 ///
-/// 0: id, 1: `run_id`, 2: `step_id`, 3: state (derived), 4: `claimed_by`,
+/// 0: id, 1: `run_id`, 2: `step_id`, 3: state, 4: `claimed_by`,
 /// 5: `claimed_until`, 6: kind, 7: `params_json`, 8: `idempotency_key`,
-/// 9: `created_at`
+/// 9: `created_at`, 10: `retry_class`
 fn row_to_stored_intent(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredIntentRaw> {
     Ok(StoredIntentRaw {
         id: r.get(0)?,
@@ -1396,6 +1421,7 @@ fn row_to_stored_intent(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredIntentR
         params_json: r.get(7)?,
         idempotency_key: r.get(8)?,
         created_at: r.get(9)?,
+        retry_class: r.get(10)?,
     })
 }
 
@@ -1411,6 +1437,7 @@ struct StoredIntentRaw {
     params_json: String,
     idempotency_key: String,
     created_at: String,
+    retry_class: String,
 }
 
 impl StoredIntentRaw {
@@ -1428,9 +1455,7 @@ impl StoredIntentRaw {
             "params": payload_inner,
         });
 
-        // `claimed_by` may hold a real worker UUID or a sentinel state
-        // string ("resolved", "failed", "permanently_failed").  Only parse
-        // it as a WorkerId when it looks like a valid UUID.
+        // V18 guarantees claimed_by contains only a worker UUID or NULL.
         let lease_owner = self
             .claimed_by
             .as_deref()
@@ -1455,8 +1480,16 @@ impl StoredIntentRaw {
             state: self.state,
             lease_owner,
             lease_expires,
-            // retry_class is not stored in the DB; default to Idempotent.
-            retry_class: StoreRetryClass::Idempotent,
+            retry_class: match self.retry_class.as_str() {
+                "idempotent" => StoreRetryClass::Idempotent,
+                "check_before_retry" => StoreRetryClass::CheckBeforeRetry,
+                "no_auto_retry" => StoreRetryClass::NoAutoRetry,
+                other => {
+                    return Err(TraitStoreError::Internal {
+                        message: format!("invalid stored retry class '{other}'"),
+                    });
+                }
+            },
             payload,
             idempotency_key: self.idempotency_key,
             created_at: parse_ts(&self.created_at)?,
@@ -1466,23 +1499,12 @@ impl StoredIntentRaw {
 
 /// The SELECT clause used by all intent queries.
 ///
-/// The production schema has no `state` column.  We derive the logical state
-/// from `claimed_by`:
-///   - NULL                   => "pending"
-///   - 'resolved'             => "resolved"
-///   - 'failed'               => "failed"
-///   - `permanently_failed`     => `permanently_failed`
-///   - anything else          => "claimed"  (a real worker UUID holds the lease)
+/// V18 makes `state` authoritative. `claimed_by` contains only a worker UUID
+/// while an execution lease is active.
 const INTENT_SELECT: &str = "SELECT id, run_id, step_id, \
-            CASE \
-                WHEN claimed_by IS NULL THEN 'pending' \
-                WHEN claimed_by = 'resolved' THEN 'resolved' \
-                WHEN claimed_by = 'failed' THEN 'failed' \
-                WHEN claimed_by = 'permanently_failed' THEN 'permanently_failed' \
-                ELSE 'claimed' \
-            END AS state, \
+            state, \
             claimed_by, claimed_until, \
-            kind, params_json, idempotency_key, created_at \
+            kind, params_json, idempotency_key, created_at, retry_class \
      FROM effect_intents";
 
 #[async_trait]
@@ -1535,14 +1557,27 @@ impl EffectStore for SqlitePool {
                     _ => Some(1),
                 })
                 .unwrap_or(1);
+            if intent.state != "pending"
+                || intent.lease_owner.is_some()
+                || intent.lease_expires.is_some()
+            {
+                return Err(TraitStoreError::InvalidTransition {
+                    message: "new effect intents must begin pending and unleased".to_owned(),
+                });
+            }
+            let retry_class = match intent.retry_class {
+                StoreRetryClass::Idempotent => "idempotent",
+                StoreRetryClass::CheckBeforeRetry => "check_before_retry",
+                StoreRetryClass::NoAutoRetry => "no_auto_retry",
+            };
 
             let writer = pool.writer();
             writer
                 .execute(
                     "INSERT INTO effect_intents \
                      (id, run_id, turn_id, step_id, kind, params_json, idempotency_key, \
-                      created_at, priority) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      created_at, priority, state, retry_class) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10)",
                     rusqlite::params![
                         id_str,
                         run_id_str,
@@ -1553,6 +1588,7 @@ impl EffectStore for SqlitePool {
                         intent.idempotency_key,
                         created_at_str,
                         priority,
+                        retry_class,
                     ],
                 )
                 .map_err(|e| {
@@ -1599,11 +1635,13 @@ impl EffectStore for SqlitePool {
                 .map_err(map_sqlite_err)?;
 
             let result = (|| -> Result<Option<StoredIntent>, TraitStoreError> {
-                // Find the highest-priority pending intent (claimed_by IS NULL).
+                // Generic workers may claim only ordinary pending effects.
+                // Approval-gated effects remain unclaimable until the exact
+                // coordinator continuation uses claim_approved_effect.
                 let maybe_id: Option<String> = writer
                     .query_row(
                         "SELECT id FROM effect_intents \
-                         WHERE claimed_by IS NULL \
+                         WHERE state = 'pending' AND claimed_by IS NULL \
                          ORDER BY priority DESC, created_at ASC LIMIT 1",
                         [],
                         |r| r.get(0),
@@ -1625,8 +1663,8 @@ impl EffectStore for SqlitePool {
                 writer
                     .execute(
                         "UPDATE effect_intents \
-                         SET claimed_by = ?1, claimed_until = ?2 \
-                         WHERE id = ?3 AND claimed_by IS NULL",
+                         SET state = 'claimed', claimed_by = ?1, claimed_until = ?2 \
+                         WHERE id = ?3 AND state = 'pending' AND claimed_by IS NULL",
                         rusqlite::params![worker_str, lease_until, intent_id],
                     )
                     .map_err(map_sqlite_err)?;
@@ -1683,14 +1721,15 @@ impl EffectStore for SqlitePool {
                 .map_err(map_sqlite_err)?;
 
             let result = (|| -> Result<StoredIntent, TraitStoreError> {
-                // Attempt to claim: only if pending (unclaimed), or the lease has expired.
+                // Claim an ordinary pending intent or re-lease an expired
+                // ordinary claim. Approval-gated states are excluded.
                 let n = writer
                     .execute(
                         "UPDATE effect_intents \
-                         SET claimed_by = ?1, claimed_until = ?2 \
+                         SET state = 'claimed', claimed_by = ?1, claimed_until = ?2 \
                          WHERE id = ?3 \
-                           AND (claimed_by IS NULL \
-                                OR (claimed_by != 'resolved' AND claimed_until < ?4))",
+                           AND ((state = 'pending' AND claimed_by IS NULL) \
+                                OR (state = 'claimed' AND claimed_until < ?4))",
                         rusqlite::params![worker_str, lease_until, id_str, now_str],
                     )
                     .map_err(map_sqlite_err)?;
@@ -1760,8 +1799,8 @@ impl EffectStore for SqlitePool {
             writer
                 .execute(
                     "UPDATE effect_intents \
-                     SET claimed_by = NULL, claimed_until = NULL \
-                     WHERE id = ?1 AND claimed_by = ?2",
+                     SET state = 'pending', claimed_by = NULL, claimed_until = NULL \
+                     WHERE id = ?1 AND state = 'claimed' AND claimed_by = ?2",
                     rusqlite::params![id_str, worker_str],
                 )
                 .map_err(map_sqlite_err)?;
@@ -1881,8 +1920,8 @@ impl EffectStore for SqlitePool {
 
             let mut stmt = writer
                 .prepare(&format!(
-                    "{INTENT_SELECT} WHERE claimed_by IS NOT NULL \
-                     AND claimed_by != 'resolved' AND claimed_until < ?1 \
+                    "{INTENT_SELECT} WHERE state = 'claimed' \
+                     AND claimed_by IS NOT NULL AND claimed_until < ?1 \
                      ORDER BY claimed_until ASC"
                 ))
                 .map_err(map_sqlite_err)?;
@@ -2049,16 +2088,23 @@ impl EffectStore for SqlitePool {
                         }
                     })?;
 
-                // Transition the intent to resolved by setting claimed_by
-                // to the sentinel value 'resolved'.
-                writer
+                // V18 state is authoritative; lease ownership contains no
+                // terminal-state sentinels.
+                let changed = writer
                     .execute(
                         "UPDATE effect_intents \
-                         SET claimed_by = 'resolved', claimed_until = NULL \
-                         WHERE id = ?1",
+                         SET state = 'resolved', claimed_by = NULL, claimed_until = NULL \
+                         WHERE id = ?1 AND state IN ('pending', 'claimed', 'executing')",
                         [&intent_str],
                     )
                     .map_err(map_sqlite_err)?;
+                if changed != 1 {
+                    return Err(TraitStoreError::InvalidTransition {
+                        message: format!(
+                            "effect intent {intent_str} is not eligible for an outcome"
+                        ),
+                    });
+                }
 
                 Ok(())
             })();
@@ -2212,37 +2258,42 @@ impl EffectStore for SqlitePool {
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
-
-            // The production schema has no `state` column.  The logical state
-            // is derived from `claimed_by` via a CASE expression (see
-            // `INTENT_SELECT`).  To transition:
-            //   - "pending"            => claimed_by = NULL, claimed_until = NULL
-            //   - "failed" / "permanently_failed" / "resolved"
-            //                          => claimed_by = <state>, claimed_until = NULL
-            let n = if new_state == "pending" {
-                writer
-                    .execute(
-                        "UPDATE effect_intents \
-                         SET claimed_by = NULL, claimed_until = NULL \
-                         WHERE id = ?1",
-                        [&id_str],
-                    )
-                    .map_err(map_sqlite_err)?
-            } else {
-                writer
-                    .execute(
-                        "UPDATE effect_intents \
-                         SET claimed_by = ?1, claimed_until = NULL \
-                         WHERE id = ?2",
-                        rusqlite::params![new_state, id_str],
-                    )
-                    .map_err(map_sqlite_err)?
-            };
+            if !matches!(
+                new_state.as_str(),
+                "pending" | "failed" | "permanently_failed" | "dead_lettered"
+            ) {
+                return Err(TraitStoreError::InvalidTransition {
+                    message: format!("unsupported generic effect state transition to {new_state}"),
+                });
+            }
+            let n = writer
+                .execute(
+                    "UPDATE effect_intents
+                     SET state = ?1, claimed_by = NULL, claimed_until = NULL
+                     WHERE id = ?2
+                       AND state NOT IN ('awaiting_approval', 'resolved', 'expired', 'cancelled')",
+                    rusqlite::params![new_state, id_str],
+                )
+                .map_err(map_sqlite_err)?;
 
             if n == 0 {
-                return Err(TraitStoreError::NotFound {
-                    resource_type: "EffectIntent",
-                    id: id_str.clone(),
+                let actual = writer
+                    .query_row(
+                        "SELECT state FROM effect_intents WHERE id = ?1",
+                        [&id_str],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| match error {
+                        rusqlite::Error::QueryReturnedNoRows => TraitStoreError::NotFound {
+                            resource_type: "EffectIntent",
+                            id: id_str.clone(),
+                        },
+                        other => map_sqlite_err(other),
+                    })?;
+                return Err(TraitStoreError::InvalidTransition {
+                    message: format!(
+                        "generic transition from effect state {actual} to {new_state} is forbidden"
+                    ),
                 });
             }
 

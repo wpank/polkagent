@@ -12,6 +12,7 @@
 //! - [`ArtifactStore`] — Content-addressed artifact storage.
 //! - [`event::EventStore`] — Append-only ordered event log (see [`event`] module).
 
+pub mod approval;
 pub mod event;
 
 #[cfg(feature = "test-contracts")]
@@ -452,6 +453,24 @@ pub trait RunStore: Send + Sync + 'static {
 
     /// Atomically update the status of an existing run.
     async fn update_state(&self, run_id: RunId, new_status: RunStatus) -> Result<(), StoreError>;
+
+    /// Compare-and-swap one run from an exact expected status to a new status.
+    ///
+    /// The default fails closed so an adapter cannot claim approval-safe state
+    /// transitions while still providing only unconditional updates.
+    async fn compare_and_swap_state(
+        &self,
+        _run_id: RunId,
+        expected: RunStatus,
+        _new_status: RunStatus,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::InvalidTransition {
+            message: format!(
+                "expected-state run updates are unavailable for state {}",
+                expected.as_str()
+            ),
+        })
+    }
 
     /// List runs belonging to a specific agent, ordered by creation time
     /// descending.

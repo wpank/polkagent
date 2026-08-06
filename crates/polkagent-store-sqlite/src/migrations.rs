@@ -73,6 +73,9 @@ const SCHEMA_V16: &str = include_str!("v16_effect_outcome_lineage.sql");
 /// V17: Preserve immutable interaction-origin working-directory provenance.
 const SCHEMA_V17: &str = include_str!("v17_interaction_origin.sql");
 
+/// V18: Durable approval/checkpoint coordinator and authoritative effect state.
+const SCHEMA_V18: &str = include_str!("v18_approval_foundation.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -92,6 +95,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (15, "complete artifact projection", SCHEMA_V15),
     (16, "immutable effect outcome lineage", SCHEMA_V16),
     (17, "immutable interaction origin cwd", SCHEMA_V17),
+    (18, "durable approval and checkpoint foundation", SCHEMA_V18),
 ];
 
 // ---------------------------------------------------------------------------
@@ -228,7 +232,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
@@ -237,7 +241,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
@@ -293,6 +297,8 @@ mod tests {
             "interaction_turn_runs",
             "interaction_events",
             "interaction_sessions",
+            "approval_requests",
+            "execution_checkpoints",
         ];
 
         for table in &tables {

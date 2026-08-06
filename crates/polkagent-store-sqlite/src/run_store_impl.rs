@@ -324,6 +324,71 @@ impl RunStore for SqlitePool {
         })?
     }
 
+    async fn compare_and_swap_state(
+        &self,
+        run_id: RunId,
+        expected: RunStatus,
+        new_status: RunStatus,
+    ) -> Result<(), StoreError> {
+        let pool = self.clone();
+        let expected_status = expected.0;
+        let next_status = new_status.0;
+
+        tokio::task::spawn_blocking(move || {
+            let id = run_id.to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            let is_terminal = next_status == "completed"
+                || next_status == "timed_out"
+                || next_status.starts_with("failed")
+                || next_status.starts_with("cancelled");
+            let completed_at = is_terminal.then(|| now.clone());
+            let started_at = (next_status == "running").then(|| now.clone());
+            let writer = pool.writer();
+            let changed = writer
+                .execute(
+                    "UPDATE runs
+                     SET state = ?1, state_version = state_version + 1,
+                         updated_at = ?2,
+                         started_at = COALESCE(started_at, ?3),
+                         completed_at = COALESCE(?4, completed_at)
+                     WHERE id = ?5 AND state = ?6",
+                    rusqlite::params![
+                        next_status,
+                        now,
+                        started_at,
+                        completed_at,
+                        id,
+                        expected_status,
+                    ],
+                )
+                .map_err(map_sqlite_err)?;
+            if changed == 1 {
+                return Ok(());
+            }
+
+            let actual = writer
+                .query_row("SELECT state FROM runs WHERE id = ?1", [&id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| match error {
+                    rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound {
+                        resource_type: "Run",
+                        id: id.clone(),
+                    },
+                    other => map_sqlite_err(other),
+                })?;
+            Err(StoreError::InvalidTransition {
+                message: format!(
+                    "run {id} expected state {expected_status}, current state is {actual}"
+                ),
+            })
+        })
+        .await
+        .map_err(|error| StoreError::Internal {
+            message: format!("blocking task panicked: {error}"),
+        })?
+    }
+
     async fn list_by_agent(
         &self,
         agent_id: &str,
