@@ -71,10 +71,12 @@ fn proposed_v1_fixture_has_explicit_version_and_normalized_edge_list() {
     assert_eq!(fixture["contract"], "polkagent.group-execution-plan");
     assert_eq!(fixture["schema_version"], 1);
     assert_eq!(fixture["tasks"][0]["ordinal"], 0);
+    assert_eq!(fixture["tasks"][0]["task_id"], "10");
+    assert_eq!(fixture["tasks"][0]["grant_override"]["max_budget"], "10.5");
     assert_eq!(fixture["tasks"][1]["ordinal"], 1);
     assert!(fixture["dependency_edges"].is_array());
     assert_eq!(
         fixture["dependency_edges"],
-        json!([{"blocked_by": 10, "task_id": 20}])
+        json!([{"blocked_by": "10", "task_id": "20"}])
     );
 }

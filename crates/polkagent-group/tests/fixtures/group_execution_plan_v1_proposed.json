@@ -5,7 +5,7 @@
   "tasks": [
     {
       "ordinal": 0,
-      "task_id": 10,
+      "task_id": "10",
       "agent_id": "018f1000-0000-7000-8000-000000000001",
       "input": {
         "limit": 2,
@@ -18,12 +18,12 @@
         "capabilities": [
           "chain.read"
         ],
-        "max_budget": 10.5
+        "max_budget": "10.5"
       }
     },
     {
       "ordinal": 1,
-      "task_id": 20,
+      "task_id": "20",
       "agent_id": "018f1000-0000-7000-8000-000000000002",
       "input": {
         "format": "brief"
@@ -33,8 +33,8 @@
   ],
   "dependency_edges": [
     {
-      "blocked_by": 10,
-      "task_id": 20
+      "blocked_by": "10",
+      "task_id": "20"
     }
   ]
 }
