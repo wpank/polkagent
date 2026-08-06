@@ -870,7 +870,7 @@ handler, but it must not share the same semantic action variants.
 
 ### 6.4 Approvals
 
-After APR-01/APR-05, replace direct `TuiDb::approve_effect`/`deny_effect` writes
+After APR-05, replace direct `TuiDb::approve_effect`/`deny_effect` writes
 with coordinator-backed `InteractionService` calls. Do not route the modal to
 the current bus-only `AppService` methods. An approval modal must show:
 
@@ -1342,10 +1342,10 @@ Zed, not merely a single-agent chat wrapper.
 | `polkagent-service` | Replace bus-only approval with coordinator-backed interaction mutations; integrate group service |
 | `polkagent-run` | Add approval checkpoint/CAS pause-resume without regressing effect-backed tool identity and interaction correlation |
 | `polkagent-conversation` | Treat as durable transcript store under interaction service |
-| `polkagent-store-sqlite` | Session/turn/run-link/event persistence is composed; add the approval coordinator/checkpoint migration and atomic store operations |
+| `polkagent-store-sqlite` | Session/turn/run-link/event persistence and the V18 approval/checkpoint coordinator are composed; keep surface code behind the serialized store operations |
 | `polkagent-cli/src/main.rs` | Early ACP dispatch, one-shot/TUI/chat/ACP/serve runtime convergence, and ACP-safe bounded diagnostics exist |
 | `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation agent/model selection exists; add richer editing/config only after execution semantics are truthful |
-| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection plus shared command execution and safe tool status exists; add async input, approvals/rich plans, and orchestration |
+| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection, shared commands, safe tool status, bounded async input, and background monitoring workers exist; add approvals/rich plans and simultaneous orchestration |
 | `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime plus skill reads and all four memory routes exist; compose the remaining published 9-route optional boundary one truthful family at a time |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
 | Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; attach manual Zed and active-turn permission/cancel evidence |
