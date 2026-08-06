@@ -1547,6 +1547,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
+    use std::time::Duration;
 
     use futures::Stream;
     use polkagent_config::Config;
@@ -3521,12 +3522,18 @@ mod tests {
         )
         .await
         .expect("persist tool intent");
+        let worker_id = WorkerId::new();
+        let claimed = EffectStore::claim_intent(&pool, worker_id, Duration::from_secs(30))
+            .await
+            .expect("claim tool intent")
+            .expect("seeded tool intent is claimable");
+        assert_eq!(claimed.id, intent_id);
         let attempt_id = EffectAttemptId::new();
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,
             intent_id,
-            WorkerId::new(),
+            worker_id,
             serde_json::json!({"secret": "attempt-secret"}),
         )
         .await
