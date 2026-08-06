@@ -38,6 +38,10 @@ rand = "0.8"
 zeroize = { workspace = true }
 
 [dev-dependencies]
+aes-gcm = "0.10"
+hkdf = "0.12"
+p256 = { version = "0.13", features = ["ecdh"] }
+sha2 = "0.10"
 tokio = { workspace = true }
 tokio-test = "0.4"
 tempfile = { workspace = true }
