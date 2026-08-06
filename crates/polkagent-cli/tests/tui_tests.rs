@@ -1395,16 +1395,18 @@ fn test_console_renders_multiline_unicode_composer_and_cursor() {
 #[test]
 fn test_console_renders_registry_slash_completions_and_truthful_scope() {
     use polkagent_cli::tui::interaction::InteractionState;
+    use polkagent_core::ConversationId;
 
     let backend = TestBackend::new(110, 24);
     let mut terminal = Terminal::new(backend).expect("terminal");
     let theme = Theme::dark();
     let mut interaction = InteractionState::default();
     interaction.select_agent("agent-id", "Treasury Agent");
+    interaction.conversation_id = Some(ConversationId::new().to_string());
     for character in "/".chars() {
         interaction.push_char(character);
     }
-    let state = TuiState {
+    let mut state = TuiState {
         interaction,
         ..TuiState::default()
     };
@@ -1421,9 +1423,29 @@ fn test_console_renders_registry_slash_completions_and_truthful_scope() {
     assert!(text.contains("/agent <name-or-id>"), "{text}");
     assert!(text.contains("/new [title]"), "{text}");
     assert!(text.contains("/resume <conversation-id>"), "{text}");
-    assert!(text.contains("/model [id]"), "{text}");
+    assert!(text.contains("/runs"), "{text}");
     assert!(text.contains("Executable Console commands"), "{text}");
     assert!(text.contains("x cancels the active turn"), "{text}");
+
+    state.interaction.clear_prompt();
+    for character in "/in".chars() {
+        state.interaction.push_char(character);
+    }
+    terminal
+        .draw(|frame| console::render(frame, frame.area(), &state, InputMode::Prompt, &theme))
+        .expect("draw scoped inspect completion");
+    let text = buffer_text(&terminal);
+    assert!(text.contains("/inspect <run-id>"), "{text}");
+
+    state.interaction.clear_prompt();
+    for character in "/mo".chars() {
+        state.interaction.push_char(character);
+    }
+    terminal
+        .draw(|frame| console::render(frame, frame.area(), &state, InputMode::Prompt, &theme))
+        .expect("draw scoped model completion");
+    let text = buffer_text(&terminal);
+    assert!(text.contains("/model [id]"), "{text}");
 }
 
 #[test]
@@ -1613,6 +1635,69 @@ fn test_console_renders_structured_command_failure_over_completed_turn_status() 
     assert!(text.contains("failed"), "{text}");
     assert!(text.contains("Command failed"), "{text}");
     assert!(text.contains("invalid_request: unknown model"), "{text}");
+}
+
+#[test]
+fn test_console_renders_shared_redaction_safe_run_inspection() {
+    use polkagent_cli::tui::interaction::{
+        ConsoleCommandResult, ConsoleCommandStatus, InteractionState,
+    };
+    use polkagent_core::{AgentId, RunId};
+    use polkagent_interaction::{
+        format_run_command_output, CommandOutput, RunDetailView, RunSummaryView,
+    };
+
+    let run_id = RunId::new();
+    let output = CommandOutput::RunInspected {
+        run: RunDetailView {
+            run: RunSummaryView {
+                run_id,
+                agent_id: AgentId::new(),
+                state: "failed".to_owned(),
+                summary: Some("private prompt summary".to_owned()),
+            },
+            artifacts: Vec::new(),
+            error: Some("run failed".to_owned()),
+        },
+    };
+    let lines = format_run_command_output(&output)
+        .expect("shared run formatter")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let mut interaction = InteractionState::default();
+    interaction.select_agent("agent-id", "Treasury Agent");
+    interaction.command_result = Some(ConsoleCommandResult {
+        request_id: "request-id".to_owned(),
+        line: format!("/inspect {run_id}"),
+        status: ConsoleCommandStatus::Completed,
+        title: "Durable run inspection".to_owned(),
+        lines,
+    });
+    let state = TuiState {
+        interaction,
+        ..TuiState::default()
+    };
+    let backend = TestBackend::new(120, 28);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+
+    terminal
+        .draw(|frame| {
+            console::render(
+                frame,
+                frame.area(),
+                &state,
+                InputMode::Normal,
+                &Theme::dark(),
+            );
+        })
+        .expect("draw run inspection");
+    let text = buffer_text(&terminal);
+    assert!(text.contains("Durable run inspection"), "{text}");
+    assert!(text.contains(&run_id.to_string()), "{text}");
+    assert!(text.contains("State: failed"), "{text}");
+    assert!(text.contains("Error: run failed"), "{text}");
+    assert!(!text.contains("private prompt summary"), "{text}");
 }
 
 #[test]

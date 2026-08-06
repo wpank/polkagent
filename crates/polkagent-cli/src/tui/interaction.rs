@@ -13,18 +13,19 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
-    AgentTargetView, ClientContext, CommandContext, CommandExecutor, CommandInvocation,
-    CommandName, CommandOutput, CommandRegistry, CommandRequest, CreateInteractionRequest,
-    InteractionCommand, InteractionCommandRuntime, InteractionConfig, InteractionContent,
-    InteractionError, InteractionErrorCode, InteractionEvent, InteractionOverrides,
-    InteractionService, InteractionState as DurableInteractionState, InteractionSummary,
-    InteractionTarget, InteractionTurnId, ListInteractionsRequest, ParsedLine,
+    format_run_command_output, AgentTargetView, ClientContext, CommandContext, CommandExecutor,
+    CommandInvocation, CommandName, CommandOutput, CommandRegistry, CommandRequest,
+    CreateInteractionRequest, InteractionCommand, InteractionCommandRuntime, InteractionConfig,
+    InteractionContent, InteractionError, InteractionErrorCode, InteractionEvent,
+    InteractionOverrides, InteractionService, InteractionState as DurableInteractionState,
+    InteractionSummary, InteractionTarget, InteractionTurnId, ListInteractionsRequest, ParsedLine,
     PromptRequest as InteractionPromptRequest, RunDetailView, RunSummaryView,
     ServiceCommandExecutor, StreamError, SubscriptionRequest, TranscriptRequest, TurnHandle,
     TurnState, UsageView,
 };
 use polkagent_runtime::{
-    AdapterPolicy, ComponentState, PolkagentRuntime, RuntimeOptions, RuntimeReadiness, WarningCode,
+    AdapterPolicy, ComponentState, PolkagentRuntime, RunCommandReadModel, RuntimeOptions,
+    RuntimeReadiness, WarningCode,
 };
 use polkagent_store_sqlite::SqlitePool;
 use tokio::sync::mpsc;
@@ -55,11 +56,13 @@ const MAX_RETAINED_CONSOLE_VIEWPORTS: usize = 32;
 const MAX_CONSOLE_TRANSCRIPT_TURNS: usize = 100;
 const CONTROLLER_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
-const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 7] = [
+const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 9] = [
     CommandName::Help,
     CommandName::Status,
     CommandName::Agents,
     CommandName::Agent,
+    CommandName::Runs,
+    CommandName::Inspect,
     CommandName::New,
     CommandName::Resume,
     CommandName::Model,
@@ -623,11 +626,13 @@ impl InteractionState {
             });
         let typed_name = typed_name.to_ascii_lowercase();
         let registry = command_registry();
+        let context = self.command_context();
 
         let candidates = if has_arguments || registry.resolve(&typed_name).is_some() {
             registry
                 .resolve(&typed_name)
                 .filter(|spec| SUPPORTED_CONSOLE_COMMANDS.contains(&spec.command))
+                .filter(|spec| spec.is_available(&context))
                 .into_iter()
                 .map(slash_candidate)
                 .collect()
@@ -636,6 +641,7 @@ impl InteractionState {
                 .specs()
                 .into_iter()
                 .filter(|spec| SUPPORTED_CONSOLE_COMMANDS.contains(&spec.command))
+                .filter(|spec| spec.is_available(&context))
                 .filter(|spec| {
                     spec.name.starts_with(&typed_name)
                         || spec
@@ -656,6 +662,21 @@ impl InteractionState {
             candidates,
             selected,
         })
+    }
+
+    fn command_context(&self) -> CommandContext {
+        CommandContext {
+            conversation_id: self
+                .conversation_id
+                .as_deref()
+                .and_then(|id| id.parse::<ConversationId>().ok()),
+            has_active_turn: self
+                .run
+                .as_ref()
+                .is_some_and(|run| !run.status.is_terminal()),
+            pending_approval_count: 0,
+            can_mutate: true,
+        }
     }
 
     /// Replace the typed slash name with the highlighted canonical command.
@@ -972,6 +993,20 @@ impl InteractionState {
         };
         if let Err(reason) = validate_console_command(&invocation.command) {
             self.reject_command(&line, reason);
+            return Ok(ConsoleCommandSubmission::Rejected);
+        }
+        let context = self.command_context();
+        if command_registry()
+            .resolve(invocation.command.name().as_str())
+            .is_some_and(|spec| !spec.is_available(&context))
+        {
+            self.reject_command(
+                &line,
+                format!(
+                    "/{} requires a selected durable Console conversation",
+                    invocation.command.name().as_str()
+                ),
+            );
             return Ok(ConsoleCommandSubmission::Rejected);
         }
 
@@ -1488,10 +1523,6 @@ fn validate_console_command(command: &InteractionCommand) -> Result<(), String> 
             "/{} is not supported in the Console",
             command.as_str()
         )),
-        InteractionCommand::Runs | InteractionCommand::Inspect { .. } => Err(
-            "run inspection commands are unavailable in the Console; use F3 Runs and F5 Timeline"
-                .to_owned(),
-        ),
         InteractionCommand::Cancel { .. } => Err(
             "/cancel is unavailable because the composer is closed during an active turn; press x for exact current-turn cancellation"
                 .to_owned(),
@@ -2181,6 +2212,7 @@ impl RunController {
             let command_runtime: Arc<dyn InteractionCommandRuntime> = Arc::new(TuiCommandRuntime {
                 service: Arc::clone(&service),
                 pool: polkagent_runtime.pool().clone(),
+                run_commands: RunCommandReadModel::new(polkagent_runtime.pool().clone()),
                 agent_id: typed_agent_id,
             });
             let executor = match ServiceCommandExecutor::new(
@@ -2725,6 +2757,20 @@ async fn project_console_command_output(
     agent_id: AgentId,
     output: CommandOutput,
 ) -> Result<ProjectedConsoleCommand, String> {
+    if let Some(rendered) = format_run_command_output(&output) {
+        let title = match &output {
+            CommandOutput::Runs { .. } => "Durable conversation runs",
+            CommandOutput::RunInspected { .. } => "Durable run inspection",
+            _ => "Durable run command",
+        };
+        return Ok(ProjectedConsoleCommand {
+            title: title.to_owned(),
+            lines: rendered.lines().map(str::to_owned).collect(),
+            selection: None,
+            model_update: ConsoleModelUpdate::Unchanged,
+            agent_update: None,
+        });
+    }
     match output {
         CommandOutput::Help { commands } => {
             let mut commands = commands
@@ -2744,7 +2790,7 @@ async fn project_console_command_output(
                 .collect::<Vec<_>>();
             lines.push("x — cancel the exact current turn (not a slash command)".to_owned());
             lines.push(
-                "Provider/harness/autonomy, approval, group, and run-inspection commands are unavailable in Console."
+                "Provider/harness/autonomy, approval, and group commands are unavailable in Console."
                     .to_owned(),
             );
             Ok(ProjectedConsoleCommand {
@@ -2923,10 +2969,10 @@ async fn project_console_command_output(
             model_update: ConsoleModelUpdate::Selected(model),
             agent_update: None,
         }),
-        CommandOutput::Runs { .. }
-        | CommandOutput::RunInspected { .. }
-        | CommandOutput::CancellationRequested { .. }
-        | CommandOutput::ApprovalResolved { .. } => {
+        CommandOutput::Runs { .. } | CommandOutput::RunInspected { .. } => {
+            Err("shared run command output could not be rendered safely".to_owned())
+        }
+        CommandOutput::CancellationRequested { .. } | CommandOutput::ApprovalResolved { .. } => {
             Err("shared command returned an output unsupported by Console".to_owned())
         }
     }
@@ -2943,6 +2989,7 @@ fn display_interaction_target(target: &InteractionTarget) -> String {
 struct TuiCommandRuntime {
     service: Arc<dyn InteractionService>,
     pool: SqlitePool,
+    run_commands: RunCommandReadModel,
     agent_id: AgentId,
 }
 
@@ -2964,13 +3011,21 @@ impl InteractionCommandRuntime for TuiCommandRuntime {
 
     async fn list_runs(
         &self,
-        _conversation_id: ConversationId,
+        conversation_id: ConversationId,
     ) -> Result<Vec<RunSummaryView>, InteractionError> {
-        Err(tui_command_unsupported("run listing"))
+        self.run_commands.list_runs(conversation_id).await
     }
 
     async fn inspect_run(&self, _run_id: RunId) -> Result<RunDetailView, InteractionError> {
         Err(tui_command_unsupported("run inspection"))
+    }
+
+    async fn inspect_run_for_conversation(
+        &self,
+        conversation_id: ConversationId,
+        run_id: RunId,
+    ) -> Result<RunDetailView, InteractionError> {
+        self.run_commands.inspect_run(conversation_id, run_id).await
     }
 
     async fn cancel_run(&self, _run_id: RunId) -> Result<(), InteractionError> {
@@ -3818,6 +3873,7 @@ mod tests {
     #[test]
     fn slash_completion_uses_shared_registry_metadata_and_aliases() {
         let mut state = InteractionState::default();
+        state.conversation_id = Some(ConversationId::new().to_string());
         type_prompt(&mut state, "/st");
 
         let menu = state.slash_command_menu().expect("status completion");
@@ -3830,6 +3886,17 @@ mod tests {
             "Show the current target, model, runs, approvals, usage, and budget"
         );
         assert_eq!(candidate.usage(), "/status");
+
+        state.clear_prompt();
+        type_prompt(&mut state, "/ru");
+        let run = state
+            .slash_command_menu()
+            .and_then(|menu| menu.selected_candidate().cloned())
+            .expect("run completion");
+        let registry_run = command_registry().resolve("runs").expect("registry run");
+        assert_eq!(run.name, registry_run.name);
+        assert_eq!(run.description, registry_run.description);
+        assert_eq!(run.input_hint, registry_run.input_hint);
     }
 
     #[test]
@@ -3843,20 +3910,36 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["help", "status", "agents", "agent", "new", "resume", "model"]
+            vec!["help", "agents", "new", "resume"]
         );
         assert_eq!(menu.selected, 0);
 
         state.move_down();
         assert_eq!(state.slash_command_menu().unwrap().selected, 1);
         assert!(state.accept_slash_completion());
-        assert_eq!(state.prompt_buffer, "/status");
+        assert_eq!(state.prompt_buffer, "/agents");
         assert_eq!(state.cursor(), state.prompt_buffer.len());
 
         assert!(state.dismiss_slash_completion());
         assert!(state.slash_command_menu().is_none());
+        state.conversation_id = Some(ConversationId::new().to_string());
         state.backspace();
         assert!(state.slash_command_menu().is_some());
+
+        state.clear_prompt();
+        state.conversation_id = Some(ConversationId::new().to_string());
+        type_prompt(&mut state, "/");
+        let available = state
+            .slash_command_menu()
+            .expect("conversation-scoped completions")
+            .candidates
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            available,
+            vec!["help", "status", "agents", "agent", "new", "resume", "runs", "inspect", "model"]
+        );
     }
 
     #[test]
@@ -3878,9 +3961,20 @@ mod tests {
         );
         let result = state.command_result.as_ref().expect("structured refusal");
         assert_eq!(result.status, ConsoleCommandStatus::Failed);
-        assert!(result.lines[0].contains("run inspection commands"));
+        assert!(result.lines[0].contains("requires a selected durable"));
         assert!(state.run.is_none());
         assert!(state.prompt_buffer.is_empty());
+
+        state.conversation_id = Some(ConversationId::new().to_string());
+        type_prompt(&mut state, "/runs");
+        let ConsoleCommandSubmission::Execute(runs) = state
+            .submit_command()
+            .expect("conversation-scoped runs command")
+        else {
+            panic!("runs command was rejected")
+        };
+        assert!(matches!(runs.invocation.command, InteractionCommand::Runs));
+        assert!(state.run.is_none());
 
         type_prompt(&mut state, "/harness codex");
         assert_eq!(
@@ -3914,6 +4008,56 @@ mod tests {
             state.command_result.as_ref().map(|result| result.status),
             Some(ConsoleCommandStatus::Running)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_command_projection_uses_shared_bounds_and_redaction() {
+        let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
+        let runs = (0..25)
+            .map(|_| RunSummaryView {
+                run_id: RunId::new(),
+                agent_id: AgentId::new(),
+                state: "failed:provider-token".to_owned(),
+                summary: Some("private prompt summary".to_owned()),
+            })
+            .collect();
+
+        let list =
+            project_console_command_output(&runtime, AgentId::new(), CommandOutput::Runs { runs })
+                .await
+                .expect("project run list");
+        assert_eq!(list.title, "Durable conversation runs");
+        assert_eq!(list.lines.len(), 21);
+        assert!(!list.lines.join("\n").contains("provider-token"));
+        assert!(!list.lines.join("\n").contains("private prompt"));
+
+        let artifacts = (0..25)
+            .map(|_| polkagent_core::ArtifactId::new().to_string())
+            .collect();
+        let inspection = project_console_command_output(
+            &runtime,
+            AgentId::new(),
+            CommandOutput::RunInspected {
+                run: RunDetailView {
+                    run: RunSummaryView {
+                        run_id: RunId::new(),
+                        agent_id: AgentId::new(),
+                        state: "cancelled:secret reason".to_owned(),
+                        summary: Some("private summary".to_owned()),
+                    },
+                    artifacts,
+                    error: Some("provider credential leaked".to_owned()),
+                },
+            },
+        )
+        .await
+        .expect("project run inspection");
+        let rendered = inspection.lines.join("\n");
+        assert_eq!(inspection.title, "Durable run inspection");
+        assert_eq!(inspection.lines.len(), 24);
+        assert!(!rendered.contains("secret reason"));
+        assert!(!rendered.contains("private summary"));
+        assert!(!rendered.contains("provider credential"));
     }
 
     #[test]
@@ -3970,6 +4114,51 @@ mod tests {
             Some(ConsoleCommandStatus::Completed)
         );
         assert!(state.run.is_none(), "model commands never become turns");
+    }
+
+    #[test]
+    fn stale_run_command_result_cannot_replace_the_selected_conversation_viewport() {
+        let first_id = ConversationId::new().to_string();
+        let second_id = ConversationId::new().to_string();
+        let mut state = InteractionState::default();
+        state.select_agent("agent-id", "Alice");
+        state.conversation_id = Some(first_id.clone());
+        type_prompt(&mut state, "/runs");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("typed runs command")
+        else {
+            panic!("runs command was rejected")
+        };
+        let mismatched_completion = ControllerEvent::CommandCompleted {
+            agent_id: request.agent_id,
+            conversation_id: request.conversation_id,
+            request_id: request.request_id.clone(),
+            result: ConsoleCommandResult {
+                request_id: request.request_id,
+                line: request.line,
+                status: ConsoleCommandStatus::Completed,
+                title: "Durable conversation runs".to_owned(),
+                lines: vec!["stale run projection".to_owned()],
+            },
+            selection: None,
+            model_update: ConsoleModelUpdate::Unchanged,
+            agent_update: None,
+        };
+
+        state.replace_conversation(Some(second_id.clone()), None, Vec::new());
+        type_prompt(&mut state, "draft for selected conversation");
+        state.apply(mismatched_completion);
+
+        assert_eq!(state.conversation_id.as_deref(), Some(second_id.as_str()));
+        assert_eq!(state.prompt_buffer, "draft for selected conversation");
+        assert_ne!(
+            state
+                .command_result
+                .as_ref()
+                .map(|result| result.title.as_str()),
+            Some("Durable conversation runs")
+        );
+        assert!(state.run.is_none());
     }
 
     #[test]
@@ -4034,13 +4223,14 @@ mod tests {
 
     #[test]
     fn agent_command_reducer_preserves_session_state_and_rejects_stale_completion() {
+        let selected_conversation = ConversationId::new().to_string();
         let mut state = InteractionState::default();
         state.select_agent("old-agent", "Old Agent");
-        state.conversation_id = Some("selected-conversation".to_owned());
+        state.conversation_id = Some(selected_conversation.clone());
         state.selected_model = Some("fake/selected".to_owned());
         state.transcript.push(ConsoleRun {
             activity_id: None,
-            conversation_id: Some("selected-conversation".to_owned()),
+            conversation_id: Some(selected_conversation.clone()),
             turn_id: Some("old-turn".to_owned()),
             run_id: Some("old-run".to_owned()),
             prompt: "retained prompt".to_owned(),
@@ -4080,7 +4270,7 @@ mod tests {
             conversation_id, ..
         } = &mut stale_event
         {
-            *conversation_id = Some("other-conversation".to_owned());
+            *conversation_id = Some(ConversationId::new().to_string());
         }
         state.apply(stale_event);
         assert_eq!(state.agent_id.as_deref(), Some("old-agent"));
@@ -4090,7 +4280,7 @@ mod tests {
         assert_eq!(state.agent_name.as_deref(), Some("New Agent"));
         assert_eq!(
             state.conversation_id.as_deref(),
-            Some("selected-conversation")
+            Some(selected_conversation.as_str())
         );
         assert_eq!(state.selected_model.as_deref(), Some("fake/selected"));
         assert_eq!(state.transcript.len(), 1);
@@ -4212,7 +4402,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn controller_runs_two_sessions_concurrently_and_cancels_exactly_one() {
-        let (_temp, runtime) = controller_test_runtime().await;
+        let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
         let gate_a = Arc::new(ControlledFakeRun::default());
         let gate_b = Arc::new(ControlledFakeRun::default());
         let gates = Arc::new(BTreeMap::from([
@@ -4340,8 +4530,191 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::too_many_lines)]
+    async fn run_commands_are_scoped_and_non_blocking_during_concurrent_activities() {
+        let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
+        let agent_a = AgentId::new().to_string();
+        let agent_b = AgentId::new().to_string();
+        let conversation_a = ConversationId::new().to_string();
+        let conversation_b = ConversationId::new().to_string();
+        let run_a = RunId::new().to_string();
+        let run_b = RunId::new().to_string();
+        let timestamp = "2026-01-01T00:00:00Z";
+        {
+            let connection = runtime.pool().writer();
+            connection
+                .execute(
+                    "INSERT INTO agents
+                     (id, name, description, state, spec_json, created_at, updated_at)
+                     VALUES (?1, ?2, NULL, 'active', '{}', ?3, ?3)",
+                    [agent_a.as_str(), "Alice", timestamp],
+                )
+                .expect("seed first agent");
+            connection
+                .execute(
+                    "INSERT INTO agents
+                     (id, name, description, state, spec_json, created_at, updated_at)
+                     VALUES (?1, ?2, NULL, 'active', '{}', ?3, ?3)",
+                    [agent_b.as_str(), "Bob", timestamp],
+                )
+                .expect("seed second agent");
+            connection
+                .execute(
+                    "INSERT INTO runs
+                     (id, agent_id, conversation_id, state, params_json, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'completed', '{\"prompt\":\"private a\"}', ?4, ?4)",
+                    [
+                        run_a.as_str(),
+                        agent_a.as_str(),
+                        conversation_a.as_str(),
+                        timestamp,
+                    ],
+                )
+                .expect("seed selected run");
+            connection
+                .execute(
+                    "INSERT INTO runs
+                     (id, agent_id, conversation_id, state, params_json, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'failed:private reason', '{\"prompt\":\"private b\"}', ?4, ?4)",
+                    [
+                        run_b.as_str(),
+                        agent_b.as_str(),
+                        conversation_b.as_str(),
+                        timestamp,
+                    ],
+                )
+                .expect("seed foreign run");
+        }
+
+        let gate_a = Arc::new(ControlledFakeRun::default());
+        let gate_b = Arc::new(ControlledFakeRun::default());
+        let gates = Arc::new(BTreeMap::from([
+            (agent_a.clone(), Arc::clone(&gate_a)),
+            (agent_b.clone(), Arc::clone(&gate_b)),
+        ]));
+        let mut controller = RunController::with_test_run_worker(
+            runtime.clone(),
+            controlled_worker(gates),
+            Duration::from_millis(100),
+        );
+        let mut state = InteractionState::default();
+
+        state.select_agent(agent_a.clone(), "Alice");
+        state.conversation_id = Some(conversation_a.clone());
+        type_prompt(&mut state, "active prompt a");
+        let activity_a = controller
+            .start(state.submit().expect("submit a"))
+            .expect("start a");
+        state
+            .bind_activity(activity_a.clone())
+            .expect("bind activity a");
+
+        state.select_agent(agent_b.clone(), "Bob");
+        state.conversation_id = Some(conversation_b.clone());
+        type_prompt(&mut state, "active prompt b");
+        let activity_b = controller
+            .start(state.submit().expect("submit b"))
+            .expect("start b");
+        state.bind_activity(activity_b).expect("bind activity b");
+
+        for _ in 0..2 {
+            let update = tokio::time::timeout(Duration::from_secs(1), controller.recv_update())
+                .await
+                .expect("started update timeout")
+                .expect("started update");
+            assert!(matches!(update.event(), ControllerEvent::Started { .. }));
+            state.apply_update(update);
+        }
+        assert!(state.select_activity_relative(-1));
+        assert_eq!(state.selected_activity_id(), Some(activity_a.as_str()));
+        assert_eq!(
+            state.conversation_id.as_deref(),
+            Some(conversation_a.as_str())
+        );
+        let activities_before = state.activity_summaries();
+
+        type_prompt(&mut state, "/runs");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("runs command")
+        else {
+            panic!("runs command rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute runs command alongside active work");
+        state.apply(wait_for_control_terminal(&mut controller).await);
+        let runs = state.command_result.as_ref().expect("runs result");
+        assert_eq!(runs.status, ConsoleCommandStatus::Completed);
+        assert!(runs.lines.join("\n").contains(&run_a));
+        assert!(!runs.lines.join("\n").contains(&run_b));
+        assert_eq!(controller.active_run_count(), 2);
+        assert_eq!(state.active_activity_count(), 2);
+        assert_eq!(state.activity_summaries(), activities_before);
+        assert_eq!(
+            runtime
+                .pool()
+                .writer()
+                .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get::<_, i64>(0))
+                .expect("count runs after list"),
+            2,
+            "read commands must not create durable runs"
+        );
+
+        type_prompt(&mut state, &format!("/inspect {run_a}"));
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("inspect selected run")
+        else {
+            panic!("inspect selected run rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute selected inspection");
+        state.apply(wait_for_control_terminal(&mut controller).await);
+        let inspection = state.command_result.as_ref().expect("inspection result");
+        assert_eq!(inspection.status, ConsoleCommandStatus::Completed);
+        assert!(inspection.lines.join("\n").contains(&run_a));
+
+        type_prompt(&mut state, &format!("/inspect {run_b}"));
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("inspect foreign run")
+        else {
+            panic!("foreign inspect rejected before scoped service lookup")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute foreign inspection");
+        state.apply(wait_for_control_terminal(&mut controller).await);
+        let refusal = state.command_result.as_ref().expect("foreign refusal");
+        assert_eq!(refusal.status, ConsoleCommandStatus::Failed);
+        assert!(refusal.lines.join("\n").contains("not_found"));
+        assert!(!refusal.lines.join("\n").contains(&conversation_b));
+        let foreign_refusal = refusal.lines.clone();
+
+        let missing_run = RunId::new();
+        type_prompt(&mut state, &format!("/inspect {missing_run}"));
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("inspect missing run")
+        else {
+            panic!("missing inspect rejected before scoped service lookup")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute missing inspection");
+        state.apply(wait_for_control_terminal(&mut controller).await);
+        let missing_refusal = state.command_result.as_ref().expect("missing refusal");
+        assert_eq!(missing_refusal.status, ConsoleCommandStatus::Failed);
+        assert_eq!(missing_refusal.lines, foreign_refusal);
+        assert_eq!(controller.active_run_count(), 2);
+        assert_eq!(state.activity_summaries(), activities_before);
+
+        controller.shutdown().await;
+        assert_eq!(gate_a.cancellations.load(Ordering::SeqCst), 1);
+        assert_eq!(gate_b.cancellations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn controller_enforces_run_capacity_and_channel_backpressure() {
-        let (_temp, runtime) = controller_test_runtime().await;
+        let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
         let gates = Arc::new(
             (0..MAX_CONCURRENT_CONSOLE_RUNS)
                 .map(|index| {
@@ -4484,6 +4857,27 @@ mod tests {
         })
         .await
         .expect("controller terminal event timeout")
+    }
+
+    async fn wait_for_control_terminal(controller: &mut RunController) -> ControllerEvent {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match controller
+                    .recv_update()
+                    .await
+                    .expect("controller update channel remains open")
+                {
+                    ControllerUpdate::Control(event) if event.is_terminal() => return event,
+                    ControllerUpdate::Control(_) => {}
+                    ControllerUpdate::Activity(update) => panic!(
+                        "unexpected activity update while waiting for command: {:?}",
+                        update.event
+                    ),
+                }
+            }
+        })
+        .await
+        .expect("controller command event timeout")
     }
 
     async fn wait_for_history(controller: &mut RunController) -> ControllerEvent {
@@ -4796,6 +5190,56 @@ provider = "fake"
             resumed.run.as_ref().map(|run| run.prompt.as_str()),
             Some("prompt in explicitly selected session")
         );
+        let resumed_run_id = resumed
+            .run
+            .as_ref()
+            .and_then(|run| run.run_id.clone())
+            .expect("resumed durable run ID");
+
+        type_prompt(&mut resumed, "/runs");
+        let ConsoleCommandSubmission::Execute(request) =
+            resumed.submit_command().expect("runs after restart")
+        else {
+            panic!("runs after restart rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute runs after restart");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            resumed.apply(event);
+        }
+        let runs = resumed
+            .command_result
+            .as_ref()
+            .expect("restarted runs result");
+        assert_eq!(runs.status, ConsoleCommandStatus::Completed);
+        assert_eq!(runs.title, "Durable conversation runs");
+        assert!(runs.lines.join("\n").contains(&resumed_run_id));
+
+        type_prompt(&mut resumed, &format!("/inspect {resumed_run_id}"));
+        let ConsoleCommandSubmission::Execute(request) = resumed
+            .submit_command()
+            .expect("inspect durable run after restart")
+        else {
+            panic!("inspect after restart rejected")
+        };
+        controller
+            .execute_command(request)
+            .expect("execute inspect after restart");
+        let (_, events) = wait_for_controller_terminal(&mut controller).await;
+        for event in events {
+            resumed.apply(event);
+        }
+        let inspection = resumed
+            .command_result
+            .as_ref()
+            .expect("restarted inspection result");
+        assert_eq!(inspection.status, ConsoleCommandStatus::Completed);
+        assert_eq!(inspection.title, "Durable run inspection");
+        let inspection_lines = inspection.lines.join("\n");
+        assert!(inspection_lines.contains(&resumed_run_id));
+        assert!(inspection_lines.contains("State: completed"));
 
         type_prompt(&mut resumed, "/model missing-model");
         let ConsoleCommandSubmission::Execute(request) =
@@ -4844,6 +5288,8 @@ provider = "fake"
         assert!(help.lines.iter().any(|line| line.starts_with("/model")));
         assert!(help.lines.iter().any(|line| line.starts_with("/agents")));
         assert!(help.lines.iter().any(|line| line.starts_with("/agent ")));
+        assert!(help.lines.iter().any(|line| line.starts_with("/runs")));
+        assert!(help.lines.iter().any(|line| line.starts_with("/inspect")));
         assert!(help.lines.iter().any(|line| line.starts_with("x —")));
         let turns = restarted
             .interactions()
