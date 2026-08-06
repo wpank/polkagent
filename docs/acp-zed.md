@@ -12,7 +12,10 @@ including cancellation while a provider request is active, official
 `session/load`/`session/resume` across subprocess restarts, idempotent turn
 retry, and durable agent/model isolation across concurrent sessions. Real typed
 interaction events are forwarded before the terminal prompt response. A manual
-Zed smoke test, session listing/import, and permission updates are still open.
+Zed smoke test and session listing/import are still open. APR-07's native
+permission path is implementation-gated and is not considered shipped until
+its code gate merges; its operator contract is frozen below so it can be
+reviewed and exercised consistently.
 
 ## Prerequisites
 
@@ -51,6 +54,91 @@ your Zed settings. Replace the command with the absolute path printed above:
   }
 }
 ```
+
+## Durable approval opt-in (APR-07 implementation-gated)
+
+APR-07 defines one explicit approval authority for an entire local ACP stdio
+process. The code gate is still pending merge: if `polkagent acp --help` does
+not show these flags, that binary does not contain the opt-in.
+
+The three flags are an all-or-none tuple:
+
+```text
+--approval-tenant <ID>
+--approval-workspace <ID>
+--approval-principal <UUID>
+```
+
+`--approval-principal` must be a non-nil UUID. Tenant and workspace IDs must be
+non-empty bounded identifiers. A partial tuple, malformed UUID, nil UUID, or
+invalid identifier fails startup before any protocol output is written to
+stdout. Omitting all three flags leaves approval authority unbound and keeps
+approval-required effects fail-closed.
+
+After the code gate lands, an approval-enabled Zed entry has this shape:
+
+```json
+{
+  "agent_servers": {
+    "polkagent": {
+      "type": "custom",
+      "command": "/absolute/path/to/polkagent",
+      "args": [
+        "acp", "--agent", "editor-agent",
+        "--approval-tenant", "local-tenant",
+        "--approval-workspace", "zed-workspace",
+        "--approval-principal", "018f4d6b-1a2b-7c3d-8e4f-0123456789ab"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+These values are stable authorization identifiers, not credentials. Do not put
+API keys, tokens, passwords, private keys, seeds, mnemonics, or other secrets in
+Zed JSON arguments or `env`; keep secrets outside version-controlled editor
+settings and supply them through an appropriate protected local mechanism.
+
+The approval surface is fixed internally to `acp-stdio`; it is not a user
+option. Polkagent does not infer or replace any part of the authority from the
+agent, working directory, configuration, database, ACP request/client metadata,
+session, or a default. A single process cannot switch principals between
+requests or sessions.
+
+This is a local-process trust boundary: the OS user who owns the stdio process
+and its launch configuration is trusted to assert the tuple. It is not
+multi-user or multi-principal authentication and must not be treated as an
+authorization layer for a shared or remotely exposed ACP service.
+
+Approval-enabled ACP additionally requires every `session/new`, `session/load`,
+and `session/resume` cwd to equal the runtime workdir exactly. That runtime
+workdir is the ACP process's current directory at launch. Comparison is lexical:
+there is no canonicalization or symlink resolution. Consequently, launch
+Polkagent from the workspace Zed will send as its cwd; a mismatch fails before
+session attachment or work begins. Without approval opt-in, the existing
+immutable editor-origin cwd contract below remains unchanged.
+
+The runtime binds the same authority to the durable interaction service and to
+the approval executor. The same SQLite pool backs the coordinator and the
+checkpoint/effect stores. Restart recovery therefore requires the same
+database, exact authority tuple, and exact runtime workdir; it must not invent
+identity from a recovered row.
+
+An approval is presented as a native ACP permission request with exactly two
+choices: `polkagent.allow_once` and `polkagent.reject_once`. There is no
+remember/always grant. Protocol cancellation, disconnect, or error uses the
+service cancellation path and is not a third permission choice. The request is
+bound to the exact pending approval/run/tool-call identities; only bounded,
+redacted metadata crosses the editor boundary, never raw tool arguments,
+output, diffs, or locations. `/approve` and `/deny` remain unadvertised because
+the native permission request owns this interaction.
+
+Automated official-client coverage in the APR-07 code gate exercises
+allow-once, reject-once, cancellation, exact identity checks, and pending-
+approval restart/load without duplicate effects. This is not a completion
+claim: the code must merge, and the manual Zed permission/restart smoke remains
+unverified.
 
 The editor-provided `session/new` working directory becomes the interaction's
 immutable durable origin; there is no separate `--workdir` flag. It must be an
@@ -114,8 +202,8 @@ existing durable thread through native `session/load` or `session/resume` with
 its conversation ID and exact original workspace. `/help new`, `/help resume`,
 and direct invocation explain those native mappings instead of pretending a
 slash command can replace the current ACP session ID. `/approve` and `/deny`
-remain withheld until APR-07 binds production ACP permission requests to the
-durable coordinator.
+remain unadvertised: after APR-07 lands, native ACP permission requests—not
+slash-command mutations—bind the editor response to the durable coordinator.
 
 `/runs` and `/inspect` use the same registry metadata, runtime read model, and
 formatter as terminal chat. Inspection exposes stable run/agent/artifact IDs,
@@ -198,9 +286,11 @@ notification, so a slash-command change cannot proactively refresh an editor's
 native selector; a later load/resume and the next prompt use the persisted
 value.
 
-Provider, group/automatic-target, autonomy, tool, and permission controls are
-intentionally not advertised. Only the single-agent target and model option are
-wired through the durable interaction service.
+Provider, group/automatic-target, autonomy, and tool controls are intentionally
+not advertised. Permission authority is not a session configuration option;
+APR-07 binds one explicit process-level tuple from the three CLI flags above.
+Only the single-agent target and model option are wired through ACP session
+configuration.
 
 ## Restart, load, and resume
 
@@ -299,7 +389,10 @@ Not implemented yet:
 
 - `session/list` and thread import (the pinned stable ACP v1 SDK has no import request);
 - dynamic provider, target, or autonomy configuration options;
-- structured plans and production permission request/response (APR-07);
+- structured plans;
+- the APR-07 native permission gate is pending merge, and its manual Zed
+  permission/restart path remains unverified; the default authority-unbound
+  path remains fail-closed;
 - provider HTTP/SSE token-level streaming where the runtime currently emits a
   complete response as one `StreamingToken` event;
 - client filesystem/terminal support and MCP-server passthrough;
@@ -339,5 +432,12 @@ selector affects the next prompt, `/model` affects a later prompt, `/status`
 responds, response chunks appear before the terminal turn response, known-model
 usage appears without duplicating text, `/cancel` appears only during active
 work and disappears after completion/failure/cancellation, cancellation stops
-active work, and Zed's ACP log contains only JSON-RPC frames on the server's stdout channel.
-This manual matrix remains unverified in the repository status.
+active work, and Zed's ACP log contains only JSON-RPC frames on the server's
+stdout channel. Once the APR-07 code gate lands, repeat with the complete
+approval tuple: confirm the cwd equals the process launch workdir; a pending
+tool shows only allow-once and reject-once; allow executes exactly once; reject,
+cancel, and disconnect perform no tool I/O; and killing/restarting the process
+against the same database, tuple, and cwd recovers one pending request without
+duplicating the effect. Confirm partial/nil authority startup fails with empty
+stdout and that `/approve` and `/deny` are never advertised. This manual matrix
+remains unverified in the repository status.

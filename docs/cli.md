@@ -183,13 +183,34 @@ context retains the newest 32 completed user/assistant pairs from the latest
 Start an ACP v1 stdio server for editor integrations such as Zed.
 
 ```text
-polkagent acp [--agent <AGENT>] [--provider <PROVIDER>] [--model <MODEL>] [--timeout <SECS>]
+polkagent acp [--agent <AGENT>] [--provider <PROVIDER>] [--model <MODEL>]
+              [--timeout <SECS>]
+              [--approval-tenant <ID> --approval-workspace <ID>
+               --approval-principal <UUID>]
 ```
 
 Stdout is reserved for ACP JSON-RPC traffic. When `--agent` is omitted, use
 `/agents` and `/agent <name-or-id>` from the editor session. See
 [ACP and Zed integration](acp-zed.md) for setup, verified behavior, and current
 gaps.
+
+The approval flags are the APR-07 implementation-gated local-stdio opt-in and
+must be supplied together. The principal must be a non-nil UUID; tenant and
+workspace are non-empty identifiers of at most 128 bytes. Partial or invalid
+input fails before protocol stdout. With all three omitted, no authority is
+inferred from defaults, requests, sessions, cwd, agent/config state, or the
+database, so approval-required work remains fail-closed. The authority surface
+is fixed to `acp-stdio`.
+
+Approval-enabled sessions must send a cwd exactly equal to the runtime workdir
+(the ACP process's launch directory), including on load/resume. The same SQLite
+pool backs durable approval coordination and checkpoint/effect state. The tuple
+asserts one principal for the entire locally owned stdio process; it is not
+multi-principal authentication. Do not place secrets in Zed JSON arguments or
+environment entries. Native ACP permission requests expose allow-once and
+reject-once only; `/approve` and `/deny` are not advertised. Until the APR-07
+code gate merges, a built binary may not expose these flags, and manual Zed
+approval/restart validation remains open.
 
 ---
 

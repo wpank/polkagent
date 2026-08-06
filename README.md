@@ -214,8 +214,14 @@ cancellation, agent/model selection, and `/help`, `/status`, `/agents`,
 `/agent`, `/model`, and `/cancel`.
 The official SDK subprocess test proves handshake, command discovery, and one
 real `AppService` run. Durable session load/resume and native structured
-effect-backed tool updates are implemented; manual Zed interoperability,
-structured permissions, MCP passthrough, and rich editor UX remain open.
+effect-backed tool updates are implemented. APR-07 has a pending code gate for
+native allow-once/reject-once permissions under an explicit all-or-none
+`--approval-tenant`/`--approval-workspace`/`--approval-principal` tuple; the
+default remains authority-unbound and fail-closed. This is a single-principal
+local stdio process trust boundary, not remote or multi-principal
+authentication, and secrets must not be placed in Zed JSON. Manual Zed
+interoperability (including permission/restart validation), MCP passthrough,
+and rich editor UX remain open.
 See [ACP and Zed setup](docs/acp-zed.md).
 
 ### Agent Memory
