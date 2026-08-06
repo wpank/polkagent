@@ -2,15 +2,17 @@
 //!
 //! The fixture crosses only production ports: a real file-backed `SQLite`
 //! coordinator persists an approval and checkpoint, then optionally a claim
-//! and attempt. A newly composed `AppService` proves three adjacent outcomes:
+//! and attempt. A newly composed `AppService` proves four adjacent outcomes:
 //! an approved resumable checkpoint is claimed and executed exactly once, a
 //! pre-I/O claim is safely reclaimed exactly once, and a recorded attempt
 //! without an outcome stops for manual reconciliation and is never retried.
+//! The same fail-closed result holds if external database corruption deletes
+//! the outcome from a transactionally valid resolved-effect/outcome pair.
 
 #![allow(
     clippy::expect_used,
     clippy::too_many_lines,
-    reason = "the adjacent crash fixtures keep exact durable lineage visible from seed through two process replacements"
+    reason = "the adjacent crash/corruption fixtures keep exact durable lineage visible from seed through two process replacements"
 )]
 
 use std::collections::HashMap;
@@ -25,7 +27,7 @@ use polkagent_config::{Config, SecurityConfig};
 use polkagent_conversation::{Conversation, ConversationStore};
 use polkagent_core::{
     turn::TokenUsage, AgentId, AgentSpec, ApprovalId, ConversationId, DataClassification,
-    EffectAttemptId, EffectId, PrincipalId, RunId, StepId, TurnId, WorkerId,
+    EffectAttemptId, EffectId, EffectOutcomeId, PrincipalId, RunId, StepId, TurnId, WorkerId,
 };
 use polkagent_effect::{idempotency::IdempotencyKey, types::EffectKind};
 use polkagent_event::{EventBus, EventRecorder};
@@ -47,7 +49,7 @@ use polkagent_store_trait::approval::{
     ClaimApprovedEffect, ExecutionCheckpoint, ExecutionCheckpointStore, PauseForApproval,
     ResolveApproval, APPROVAL_SUBJECT_SCHEMA_VERSION, EXECUTION_CHECKPOINT_SCHEMA_VERSION,
 };
-use polkagent_store_trait::{EffectStore, RunStatus, RunStore, StoreRetryClass};
+use polkagent_store_trait::{EffectStore, RunStatus, RunStore, StoreRetryClass, StoredOutcome};
 use polkagent_tool::{ToolContext, ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSpec};
 
 const TENANT: &str = "apr08-possible-io-tenant";
@@ -139,6 +141,7 @@ enum CrashBoundary {
     ApprovedResumableBeforeClaim,
     PreIoClaimed,
     AttemptStarted,
+    ResolvedWithoutOutcome,
 }
 
 struct CrashFixture {
@@ -579,7 +582,7 @@ impl CrashFixture {
         };
         let seeded_attempt_id = match boundary {
             CrashBoundary::ApprovedResumableBeforeClaim | CrashBoundary::PreIoClaimed => None,
-            CrashBoundary::AttemptStarted => {
+            CrashBoundary::AttemptStarted | CrashBoundary::ResolvedWithoutOutcome => {
                 let attempt_id = EffectAttemptId::new();
                 pool.record_attempt_start(
                     attempt_id,
@@ -595,29 +598,80 @@ impl CrashFixture {
                 Some(attempt_id)
             }
         };
+        if matches!(boundary, CrashBoundary::ResolvedWithoutOutcome) {
+            let attempt_id = seeded_attempt_id.expect("resolved boundary requires an attempt");
+            let outcome_id = EffectOutcomeId::new();
+            EffectStore::record_outcome(
+                &pool,
+                StoredOutcome {
+                    id: outcome_id,
+                    intent_id: effect_id,
+                    attempt_id,
+                    run_id,
+                    consumed: false,
+                    payload: serde_json::json!({
+                        "variant": "success",
+                        "data": {"executed": true},
+                    }),
+                    observed_at: Utc::now(),
+                },
+            )
+            .await
+            .expect("production outcome transaction must create the valid pair");
+            let valid_pair = durable_lineage(&pool, approval_id);
+            assert_eq!(valid_pair.effect_state, "resolved");
+            assert_eq!(valid_pair.outcome_count, 1);
+            assert_eq!(valid_pair.outcome_id, Some(outcome_id.to_string()));
+            assert_eq!(valid_pair.outcome_attempt_id, Some(attempt_id.to_string()));
+
+            let deleted = pool
+                .writer()
+                .execute(
+                    "DELETE FROM effect_outcomes WHERE id = ?1 AND intent_id = ?2",
+                    [outcome_id.to_string(), effect_id.to_string()],
+                )
+                .expect("inject explicit outcome-row corruption");
+            assert_eq!(deleted, 1);
+            let corrupted = durable_lineage(&pool, approval_id);
+            assert_eq!(corrupted.effect_state, "resolved");
+            assert_eq!(corrupted.outcome_count, 0);
+        }
         let lease = active_lease_lineage(&pool, effect_id);
-        if claim.is_some() {
-            let expected_worker_id = initial_worker_id.to_string();
-            assert_eq!(
-                lease.effect_worker_id.as_deref(),
-                Some(expected_worker_id.as_str())
-            );
-            assert_eq!(
-                lease.checkpoint_worker_id.as_deref(),
-                Some(expected_worker_id.as_str())
-            );
-            assert!(lease.effect_expires_at.is_some());
-            assert!(lease.checkpoint_expires_at.is_some());
-        } else {
-            assert_eq!(
-                lease,
-                ActiveLeaseLineage {
-                    effect_worker_id: None,
-                    effect_expires_at: None,
-                    checkpoint_worker_id: None,
-                    checkpoint_expires_at: None,
-                }
-            );
+        match boundary {
+            CrashBoundary::ApprovedResumableBeforeClaim => {
+                assert_eq!(
+                    lease,
+                    ActiveLeaseLineage {
+                        effect_worker_id: None,
+                        effect_expires_at: None,
+                        checkpoint_worker_id: None,
+                        checkpoint_expires_at: None,
+                    }
+                );
+            }
+            CrashBoundary::PreIoClaimed | CrashBoundary::AttemptStarted => {
+                let expected_worker_id = initial_worker_id.to_string();
+                assert_eq!(
+                    lease.effect_worker_id.as_deref(),
+                    Some(expected_worker_id.as_str())
+                );
+                assert_eq!(
+                    lease.checkpoint_worker_id.as_deref(),
+                    Some(expected_worker_id.as_str())
+                );
+                assert!(lease.effect_expires_at.is_some());
+                assert!(lease.checkpoint_expires_at.is_some());
+            }
+            CrashBoundary::ResolvedWithoutOutcome => {
+                let expected_worker_id = initial_worker_id.to_string();
+                assert!(lease.effect_worker_id.is_none());
+                assert!(lease.effect_expires_at.is_none());
+                assert_eq!(
+                    lease.checkpoint_worker_id.as_deref(),
+                    Some(expected_worker_id.as_str())
+                );
+                assert!(lease.checkpoint_expires_at.is_some());
+            }
         }
         assert_eq!(invocations.load(Ordering::SeqCst), 0);
 
@@ -724,6 +778,28 @@ impl CrashFixture {
         );
         assert!(effect_expiry <= now);
         assert!(checkpoint_expiry <= now);
+    }
+
+    async fn wait_for_expired_checkpoint_without_effect_lease(&self) {
+        tokio::time::sleep(SEEDED_CRASH_LEASE.saturating_mul(3)).await;
+        let pool = self.open_pool();
+        let lease = active_lease_lineage(&pool, self.effect_id);
+        let checkpoint_expiry = chrono::DateTime::parse_from_rfc3339(
+            lease
+                .checkpoint_expires_at
+                .as_deref()
+                .expect("corrupt resolved boundary retains the checkpoint lease expiry"),
+        )
+        .expect("parse checkpoint lease expiry")
+        .with_timezone(&Utc);
+        let expected_worker_id = self.initial_worker_id.to_string();
+        assert!(lease.effect_worker_id.is_none());
+        assert!(lease.effect_expires_at.is_none());
+        assert_eq!(
+            lease.checkpoint_worker_id.as_deref(),
+            Some(expected_worker_id.as_str())
+        );
+        assert!(checkpoint_expiry <= Utc::now());
     }
 }
 
@@ -957,6 +1033,73 @@ async fn executing_approved_effect_without_outcome_fails_closed_across_restarts(
         .recover_approval_checkpoints()
         .await
         .expect_err("second recovery must preserve manual reconciliation");
+    assert_manual_reconciliation(second_error, fixture.run_id, fixture.effect_id);
+    assert_eq!(fixture.invocations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        durable_lineage(&second_pool, fixture.approval_id),
+        before_crash
+    );
+}
+
+#[tokio::test]
+async fn corrupted_resolved_effect_without_outcome_fails_closed_across_restarts() {
+    let fixture = CrashFixture::seed(CrashBoundary::ResolvedWithoutOutcome).await;
+    let before_pool = fixture.open_pool();
+    let before_crash = durable_lineage(&before_pool, fixture.approval_id);
+    fixture.assert_exact_identity(&before_crash);
+    assert_eq!(before_crash.approval_status, "approved");
+    assert_eq!(before_crash.effect_state, "resolved");
+    assert_eq!(
+        before_crash.run_state,
+        format!("waiting_effect:{}", fixture.effect_id)
+    );
+    assert_eq!(before_crash.run_state_version, 2);
+    assert_eq!(before_crash.checkpoint_version, 2);
+    assert_eq!(before_crash.checkpoint_status, "leased");
+    assert!(!before_crash.step_completed);
+    assert_eq!(
+        before_crash.attempt_id,
+        fixture.seeded_attempt_id.map(|id| id.to_string())
+    );
+    assert_eq!(before_crash.attempt_count, 1);
+    assert_eq!(before_crash.outcome_count, 0);
+    assert_eq!(fixture.invocations.load(Ordering::SeqCst), 0);
+    let lease = active_lease_lineage(&before_pool, fixture.effect_id);
+    let expected_worker_id = fixture.initial_worker_id.to_string();
+    assert!(lease.effect_worker_id.is_none());
+    assert!(lease.effect_expires_at.is_none());
+    assert_eq!(
+        lease.checkpoint_worker_id.as_deref(),
+        Some(expected_worker_id.as_str())
+    );
+    assert!(lease.checkpoint_expires_at.is_some());
+    drop(before_pool);
+    fixture
+        .wait_for_expired_checkpoint_without_effect_lease()
+        .await;
+
+    let first_pool = fixture.open_pool();
+    let first_restart = fixture.restarted_service(&first_pool);
+    let first_error = first_restart
+        .recover_approval_checkpoints()
+        .await
+        .expect_err("resolved-without-outcome recovery must fail closed");
+    assert_manual_reconciliation(first_error, fixture.run_id, fixture.effect_id);
+    assert_eq!(fixture.invocations.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        durable_lineage(&first_pool, fixture.approval_id),
+        before_crash
+    );
+    drop(first_restart);
+    drop(first_pool);
+    tokio::time::sleep(RECOVERY_LEASE.saturating_mul(3)).await;
+
+    let second_pool = fixture.open_pool();
+    let second_restart = fixture.restarted_service(&second_pool);
+    let second_error = second_restart
+        .recover_approval_checkpoints()
+        .await
+        .expect_err("second recovery must preserve resolved manual reconciliation");
     assert_manual_reconciliation(second_error, fixture.run_id, fixture.effect_id);
     assert_eq!(fixture.invocations.load(Ordering::SeqCst), 0);
     assert_eq!(
