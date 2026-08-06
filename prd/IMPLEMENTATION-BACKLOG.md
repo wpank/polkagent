@@ -310,6 +310,20 @@ same typed manual-reconciliation run/effect identity with zero handler calls
 and no fabricated outcome. This does not implement operator resolution or
 close the remaining crash-point matrix.
 
+The APR-00 serialized-contract remainder is also closed with executable static
+snapshots. `polkagent-store-trait` pins all current approval/checkpoint state,
+retry-class, and `ApprovalStoreError` representations with compile-time
+no-wildcard enum guards, exact round trips, and unknown-tag refusal.
+`polkagent-core` pins the exact approval-coordinator `EventKind` payload set
+written to the outbox; this is intentionally not a claim about every event in
+the system. The snapshot wrappers' `fixture_schema_version` fields version the
+test corpus only and add no production wire envelope or migration.
+`ServiceError::ManualReconciliation` remains an internal non-serialized typed
+error; its production surface projection is frozen as a bounded, generic,
+non-retryable `InteractionError` that leaks neither durable IDs nor internal
+reason text. Operator resolution and the remaining crash matrix are still
+open.
+
 **Checklist:**
 
 - [x] Advertise only exact registered definitions in the agent's allowlist and

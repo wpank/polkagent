@@ -472,6 +472,27 @@ This proves only these adjacent pre-I/O/possible-I/O boundaries. It does not
 provide an operator reconciliation workflow, prove the `Resolved` corruption
 case, or close the remaining crash-point matrix.
 
+The APR-00 contract-freeze remainder is now executable. Static
+[`approval_state_v1.json`](../crates/polkagent-store-trait/tests/fixtures/approval_state_v1.json)
+and
+[`approval_error_v1.json`](../crates/polkagent-store-trait/tests/fixtures/approval_error_v1.json)
+snapshots pin the serialized approval/checkpoint lifecycle values, retry
+classes, and every current `ApprovalStoreError` representation. No-wildcard
+matches make additions to those bounded enums a compile-time test update, and
+unknown serialized tags fail closed. Static
+[`approval_outbox_events_v1.json`](../crates/polkagent-core/tests/fixtures/approval_outbox_events_v1.json)
+pins the exact `EventKind` payload set emitted by the approval coordinator; it
+does not claim to enumerate unrelated `EventKind` variants.
+
+`ServiceError::ManualReconciliation` remains an internal typed process error,
+not a persistence or wire type. Its actual serialized surface boundary is the
+runtime's `InteractionError` projection, now pinned to non-retryable
+`unavailable`, the generic durable-approval failure message, no details, and
+no run ID, effect ID, or reconciliation-reason leakage. The
+`fixture_schema_version` fields in these snapshots version only the test
+corpus; they are not new production envelopes or production schema versions.
+No production representation or migration changed for this freeze.
+
 Hot files have one integration owner at a time: SQLite migration registration,
 `store-trait/src/lib.rs`, `service/src/app.rs`, `run/src/orchestrator.rs`,
 `runtime/src/factory.rs`, `runtime/src/interaction.rs`, CLI TUI application
@@ -488,6 +509,20 @@ names, then APR-08 runs them together:
   - wrong conversation/digest/principal fails;
   - unapproved effect cannot be claimed; approved effect claims once;
   - close/reopen preserves request, decision, and outbox event.
+- `cargo test -p polkagent-store-trait --test approval_contract_freeze`
+  - exact state and store-error snapshots round-trip;
+  - compiler-checked variant matches require fixture review for a new bounded
+    enum variant;
+  - unknown tags and unsupported test-fixture versions fail closed.
+- `cargo test -p polkagent-core --test approval_outbox_contract`
+  - the exact coordinator-emitted approval event payload set round-trips;
+  - unknown event tags and unsupported test-fixture versions fail closed.
+- `cargo test -p polkagent-service manual_reconciliation_preserves_typed_run_error_identity`
+  - the internal run-to-service conversion preserves exact typed identity and
+    stable diagnostic text.
+- `cargo test -p polkagent-runtime manual_reconciliation_projects_as_bounded_surface_error`
+  - the serialized interaction projection is exact, round-trips, and excludes
+    internal reconciliation identifiers and reason text.
 - `cargo test -p polkagent-grant approval_policy`
   - default and explicit deny never prompt;
   - escalation is explicit; permit and resolved-grant scope are exact.
@@ -629,9 +664,14 @@ and why approval never overrides policy denial.
 
 - [x] Accept APR-ADR-01 through APR-ADR-05 as the implementation decisions in
   this design.
-- [ ] Freeze serialized approval, checkpoint, state, error, and outbox fixtures.
-  Approval/checkpoint envelopes and duration encoding are frozen; dedicated
-  state, error, and outbox fixture snapshots remain.
+- [x] Freeze serialized approval, checkpoint, state, error, and the exact
+  approval-coordinator outbox payload set. Approval/checkpoint envelopes and
+  duration encoding were already frozen; dedicated state/error snapshots use
+  compiler-checked no-wildcard variant guards, and the outbox snapshot is
+  deliberately limited to coordinator-emitted events. Test-fixture wrapper
+  versions are test metadata, not production envelopes. Internal
+  `ServiceError::ManualReconciliation` is not serialized; its real
+  `InteractionError` surface projection is frozen and redaction-tested.
 - [ ] Assign one owner for each hot file and packet.
 
 ### Durable foundation
