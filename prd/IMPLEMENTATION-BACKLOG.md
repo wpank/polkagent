@@ -447,6 +447,11 @@ adapter hooks through small interfaces.
   the Console through shared handlers; render structured command state, guard
   stale results, switch/load exact same-agent sessions, and keep commands out
   of the model transcript.
+- [ ] Expose the already-implemented shared `/runs` and `/inspect <run-id>`
+  handlers through terminal chat, the TUI, and ACP/Zed with one safe output
+  projection and identical availability/help metadata. Do not add adapter-local
+  run queries or subprocess fallback; prove wrong-interaction/run scope,
+  bounded output, restart, and editor protocol behavior.
 - [x] Execute `/model [id]` through the same service executor, persist the
   selection per durable conversation, project it into Console status/header,
   guard stale original-conversation results, and prove restart/isolation/
@@ -791,6 +796,7 @@ from an explicitly ready remaining row rather than replaying foundation work.
 | Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
 | TUI orchestration | **In progress:** TUI-03 replaces the single-active-turn controller with bounded simultaneous durable sessions | CLI TUI controller/state/render/tests only | Two conversations progress independently; selection and exact cancellation do not cross streams; shutdown reaps all owned tasks. |
 | Observability | **In progress:** OBS-01 persists complete canonical SQLite run-event correlation/causation metadata | Event contract/recorder and forward SQLite migration | Legacy cursor order survives migration; populated/null metadata round-trips and corrupted rows fail closed; tenant/principal isolation remains open. |
+| Shared IDE commands | **Ready next:** expose existing `/runs` and `/inspect` service handlers in chat/TUI/ACP | Surface adapters and shared safe command-output formatting; no new run-store business logic | All three surfaces advertise the same registry entries, enforce interaction/run scope, bound/redact output, and pass restart plus official-ACP-client tests. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |
