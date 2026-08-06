@@ -479,6 +479,14 @@ impl RunManager {
         self.current_state(run_id).await
     }
 
+    /// Read the exact monotonic run-state revision used by approval CAS.
+    pub async fn state_version(&self, run_id: RunId) -> Result<u64, RunError> {
+        self.store
+            .state_version(run_id)
+            .await
+            .map_err(|error| RunError::Store(error.to_string()))
+    }
+
     /// Persist a wall-clock deadline for a run.
     ///
     /// The deadline is stored as an absolute `DateTime<Utc>` so that it

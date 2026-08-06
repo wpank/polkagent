@@ -15,6 +15,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+blake3 = { workspace = true }
 
 [features]
 test-contracts = ["tokio", "uuid"]

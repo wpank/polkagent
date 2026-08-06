@@ -18,6 +18,7 @@ polkagent-grant = { path = "../polkagent-grant" }
 polkagent-card = { path = "../polkagent-card" }
 polkagent-harness-trait = { path = "../polkagent-harness-trait" }
 polkagent-tool = { path = "../polkagent-tool" }
+polkagent-config = { path = "../polkagent-config" }
 polkagent-payment = { path = "../polkagent-payment", optional = true }
 polkagent-context = { path = "../polkagent-context", optional = true }
 

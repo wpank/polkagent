@@ -24,9 +24,9 @@ use polkagent_card::{ActionCard, EffectKindTag, IntentCardSpec};
 use polkagent_core::{
     agent::AgentSpec,
     event::{EventCorrelation, EventKind, RunEvent},
-    ids::{EffectAttemptId, EffectOutcomeId, EventId},
+    ids::{ApprovalId, EffectAttemptId, EffectOutcomeId, EventId, GrantId},
     turn::TokenUsage,
-    ArtifactId, RetryClass, RunId, RunState, StepId,
+    ArtifactId, ConversationId, DataClassification, RetryClass, RunId, RunState, StepId, WorkerId,
 };
 use polkagent_effect::{
     AttemptState, EffectAttempt, EffectIntent, EffectIntentSpec, EffectKind, EffectOutcome,
@@ -37,14 +37,27 @@ use polkagent_executor_trait::{
     ContentBlock, InferenceMessage, InferenceRequest, MessageRole, ModelExecutor, ToolCall,
     ToolDefinition,
 };
-use polkagent_grant::grant::GrantResolver;
+use polkagent_grant::{
+    EffectSet, EvaluationContext, GrantDecision, GrantLimits, GrantResolver, ResolvedGrant,
+};
 use polkagent_harness_trait::{
     validate_for_task, Harness, HarnessEvent, HarnessTaskRequirements, SessionConfig,
 };
+use polkagent_store_trait::approval::{
+    compute_approval_subject_digest, compute_execution_checkpoint_digest,
+    compute_policy_snapshot_digest, compute_tool_spec_digest, is_canonical_digest,
+    ApprovalCoordinatorStore, ApprovalDecision, ApprovalPage, ApprovalPrincipalType,
+    ApprovalRequestMetadata, ApprovalScope, ApprovalStatus, ApprovalStoreError, ApprovalSubject,
+    CheckpointCommitStatus, CheckpointEffect, CheckpointEffectStatus, CheckpointProgress,
+    CheckpointStatus, ClaimApprovedEffect, ExecutionCheckpoint, ExecutionCheckpointStore,
+    LeasedCheckpoint, PauseForApproval, ResolveApproval, ResumeApprovalEffect, StoredApproval,
+    APPROVAL_SUBJECT_SCHEMA_VERSION, EXECUTION_CHECKPOINT_SCHEMA_VERSION,
+};
+use polkagent_store_trait::{StoreRetryClass, StoredOutcome};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
-use polkagent_tool::{ToolContext, ToolError, ToolRegistry};
+use polkagent_tool::{ToolContext, ToolError, ToolRegistry, ToolSpec};
 
 #[cfg(feature = "context")]
 use polkagent_context::ContextAssembler;
@@ -53,6 +66,68 @@ use crate::cost_tracker::CostTracker;
 use crate::error::RunError;
 use crate::manager::RunManager;
 use crate::turn::{TurnInput, TurnManager, TurnOutput};
+use crate::ApprovalRuntimeConfig;
+
+#[derive(Clone)]
+struct ApprovalRuntime {
+    coordinator: Arc<dyn ApprovalCoordinatorStore>,
+    checkpoints: Arc<dyn ExecutionCheckpointStore>,
+    config: ApprovalRuntimeConfig,
+}
+
+impl std::fmt::Debug for ApprovalRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ApprovalRuntime")
+            .field("tenant_id", &self.config.tenant_id)
+            .field("workspace_id", &self.config.workspace_id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CheckpointToolGroup {
+    approval_id: ApprovalId,
+    calls: Vec<ToolCall>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveCheckpoint {
+    checkpoint: ExecutionCheckpoint,
+    worker_id: WorkerId,
+    outcome_ids: Vec<EffectOutcomeId>,
+}
+
+#[derive(Debug, Clone)]
+struct ExecutionSeed {
+    messages: Vec<InferenceMessage>,
+    total_usage: TokenUsage,
+    turn_count: u32,
+    deadline: Option<chrono::DateTime<chrono::Utc>>,
+    active_checkpoint: ActiveCheckpoint,
+}
+
+struct ToolExecution {
+    block: Option<ContentBlock>,
+    terminal_state: Option<RunState>,
+    active_checkpoint: Option<ActiveCheckpoint>,
+}
+
+impl ToolExecution {
+    fn continued(block: ContentBlock) -> Self {
+        Self {
+            block: Some(block),
+            terminal_state: None,
+            active_checkpoint: None,
+        }
+    }
+
+    fn error(tool_call: &ToolCall, error_type: &str, message: &str) -> Self {
+        Self::continued(RunOrchestrator::tool_error_block(
+            tool_call, error_type, message,
+        ))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // RunOrchestratorConfig
@@ -130,8 +205,10 @@ pub struct RunOrchestrator {
     config: RunOrchestratorConfig,
     turn_manager: TurnManager,
     /// Registered handlers available to explicitly allowlisted agents.
-    /// Grant-bearing tools are withheld until approval/resume is implemented.
     tool_registry: Option<Arc<ToolRegistry>>,
+    /// Durable approval/checkpoint composition. Its absence keeps every
+    /// grant-bearing tool fail-closed and unadvertised.
+    approval_runtime: Option<ApprovalRuntime>,
     /// Optional harness for delegating runs to an external agent CLI.
     /// When present, the run is driven through the harness instead of
     /// the executor.
@@ -196,6 +273,7 @@ impl RunOrchestrator {
             config: RunOrchestratorConfig::default(),
             turn_manager: TurnManager::new(),
             tool_registry: None,
+            approval_runtime: None,
             harness: None,
             task_requirements: None,
             #[cfg(feature = "context")]
@@ -219,6 +297,153 @@ impl RunOrchestrator {
     pub fn with_tool_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
         self
+    }
+
+    /// Attach the durable approval coordinator, checkpoint store, and exact
+    /// runtime authorization context used by grant-bearing tools.
+    #[must_use]
+    pub fn with_approval_runtime(
+        mut self,
+        coordinator: Arc<dyn ApprovalCoordinatorStore>,
+        checkpoints: Arc<dyn ExecutionCheckpointStore>,
+        config: ApprovalRuntimeConfig,
+    ) -> Self {
+        self.approval_runtime = Some(ApprovalRuntime {
+            coordinator,
+            checkpoints,
+            config,
+        });
+        self
+    }
+
+    /// Whether this orchestrator has a valid durable approval composition.
+    #[must_use]
+    pub fn approval_ready(&self) -> bool {
+        self.approval_runtime.as_ref().is_some_and(|runtime| {
+            runtime.config.validate().is_ok()
+                && runtime.coordinator.supports_atomic_approval_resume()
+                && runtime.checkpoints.supports_exact_checkpoint_recovery()
+        }) && self.tool_registry.is_some()
+    }
+
+    /// Lease durable continuations that are ready after an approval decision.
+    /// This is an executor/store capability; callers must not equate it with
+    /// availability of an authenticated user-facing decision surface.
+    pub async fn lease_resumable_checkpoints(&self) -> Result<Vec<LeasedCheckpoint>, RunError> {
+        let runtime = self.approval_runtime.as_ref().ok_or_else(|| {
+            RunError::Unsupported("durable approval recovery is not configured".to_owned())
+        })?;
+        if !self.approval_ready() {
+            return Err(RunError::Unsupported(
+                "durable approval recovery adapter is not APR-03 capable".to_owned(),
+            ));
+        }
+        runtime
+            .checkpoints
+            .lease_resumable(
+                self.effect_pipeline.worker_id(),
+                runtime.config.recovery_lease,
+                ApprovalPage {
+                    limit: 100,
+                    offset: 0,
+                },
+            )
+            .await
+            .map_err(|error| approval_store_error("lease resumable checkpoints", error))
+    }
+
+    /// Recover one leased checkpoint, reducing its exact decided effect before
+    /// issuing any further model request.
+    pub async fn recover_checkpoint(
+        &self,
+        leased: LeasedCheckpoint,
+        agent_spec: &AgentSpec,
+    ) -> Result<RunOutcome, RunError> {
+        let started = Instant::now();
+        let runtime = self.approval_runtime.as_ref().ok_or_else(|| {
+            RunError::Unsupported("durable approval recovery is not configured".to_owned())
+        })?;
+        let checkpoint = leased.stored.checkpoint.clone();
+        verify_checkpoint(&checkpoint)?;
+        if checkpoint.agent_id != agent_spec.id {
+            return Err(RunError::Store(
+                "checkpoint agent does not match the registered agent".to_owned(),
+            ));
+        }
+        let group: CheckpointToolGroup = serde_json::from_value(checkpoint.tool_calls.clone())?;
+        let [tool_call] = group.calls.as_slice() else {
+            return Err(RunError::Unsupported(
+                "APR-03 recovery requires exactly one checkpointed tool call".to_owned(),
+            ));
+        };
+        let registry = self.tool_registry.as_ref().ok_or_else(|| {
+            RunError::Unsupported("tool registry is unavailable during recovery".to_owned())
+        })?;
+        let handler = registry.get(&tool_call.tool_name).ok_or_else(|| {
+            RunError::Unsupported("checkpointed tool is no longer registered".to_owned())
+        })?;
+        let spec = handler.spec();
+        let approval = runtime
+            .coordinator
+            .get_approval(
+                group.approval_id,
+                ApprovalScope {
+                    tenant_id: runtime.config.tenant_id.clone(),
+                    workspace_id: runtime.config.workspace_id.clone(),
+                    conversation_id: Some(checkpoint.conversation_id),
+                    principal_id: runtime.config.authorized_principal_id,
+                },
+            )
+            .await
+            .map_err(|error| approval_store_error("load recovery approval", error))?;
+        let execution = self
+            .resume_decided_approval(
+                runtime,
+                agent_spec,
+                tool_call,
+                &spec,
+                approval,
+                Some(leased),
+            )
+            .await?;
+        let total_usage: TokenUsage = serde_json::from_value(checkpoint.accumulated_usage.clone())?;
+        if let Some(final_state) = execution.terminal_state {
+            return Ok(RunOutcome {
+                run_id: checkpoint.run_id,
+                final_state,
+                total_tokens: total_usage,
+                turn_count: checkpoint.next_model_turn.saturating_sub(1),
+                artifacts: Vec::new(),
+                duration: started.elapsed(),
+            });
+        }
+        let mut messages: Vec<InferenceMessage> =
+            serde_json::from_value(checkpoint.messages.clone())?;
+        if let Some(block) = execution.block {
+            messages.push(InferenceMessage {
+                role: MessageRole::User,
+                content: vec![block],
+            });
+        }
+        let active_checkpoint = execution.active_checkpoint.ok_or_else(|| {
+            RunError::Store("recovered effect did not retain its checkpoint lease".to_owned())
+        })?;
+        self.execute_run_inner(
+            checkpoint.run_id,
+            agent_spec,
+            messages.clone(),
+            "approval recovery".to_owned(),
+            false,
+            Some(checkpoint.conversation_id),
+            Some(ExecutionSeed {
+                messages,
+                total_usage,
+                turn_count: checkpoint.next_model_turn.saturating_sub(1),
+                deadline: checkpoint.deadline_at,
+                active_checkpoint,
+            }),
+        )
+        .await
     }
 
     /// Attach a [`Harness`] for delegating runs to an external agent CLI.
@@ -467,6 +692,30 @@ impl RunOrchestrator {
             messages,
             initial_prompt.to_owned(),
             true,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Execute a prompt in one durably correlated conversation. Grant-bearing
+    /// tools are advertised only on this path and only when approval runtime
+    /// composition is complete.
+    pub async fn execute_run_in_conversation(
+        &self,
+        run_id: RunId,
+        conversation_id: ConversationId,
+        agent_spec: &AgentSpec,
+        initial_prompt: &str,
+    ) -> Result<RunOutcome, RunError> {
+        self.execute_run_inner(
+            run_id,
+            agent_spec,
+            Self::build_initial_messages(agent_spec, initial_prompt),
+            initial_prompt.to_owned(),
+            true,
+            Some(conversation_id),
+            None,
         )
         .await
     }
@@ -504,6 +753,37 @@ impl RunOrchestrator {
             initial_messages,
             current_user_text,
             false,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Execute an exact typed transcript in one durable conversation.
+    pub async fn execute_run_with_messages_in_conversation(
+        &self,
+        run_id: RunId,
+        conversation_id: ConversationId,
+        agent_spec: &AgentSpec,
+        initial_messages: Vec<InferenceMessage>,
+    ) -> Result<RunOutcome, RunError> {
+        self.validate_initial_messages(&initial_messages)?;
+        let current_user_text = initial_messages
+            .last()
+            .and_then(|message| message.content.first())
+            .and_then(|block| match block {
+                ContentBlock::Text { text } => Some(text.clone()),
+                ContentBlock::ToolResult { .. } | ContentBlock::ToolUse { .. } => None,
+            })
+            .unwrap_or_else(|| "typed user input".to_owned());
+        self.execute_run_inner(
+            run_id,
+            agent_spec,
+            initial_messages,
+            current_user_text,
+            false,
+            Some(conversation_id),
+            None,
         )
         .await
     }
@@ -551,6 +831,7 @@ impl RunOrchestrator {
     }
 
     #[allow(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the execution loop keeps ordered durable transitions and early terminal paths together"
     )]
@@ -561,6 +842,8 @@ impl RunOrchestrator {
         initial_messages: Vec<InferenceMessage>,
         initial_prompt: String,
         apply_legacy_context_assembly: bool,
+        conversation_id: Option<ConversationId>,
+        seed: Option<ExecutionSeed>,
     ) -> Result<RunOutcome, RunError> {
         let start = Instant::now();
         #[cfg(not(feature = "context"))]
@@ -578,8 +861,10 @@ impl RunOrchestrator {
         // included in the returned `RunOutcome`. Individual turn records
         // (including per-turn token counts) are persisted to the `turns`
         // table via `RunManager::record_turn`.
-        let mut total_usage = TokenUsage::default();
-        let mut turn_count: u32 = 0;
+        let mut total_usage = seed
+            .as_ref()
+            .map_or_else(TokenUsage::default, |seed| seed.total_usage);
+        let mut turn_count: u32 = seed.as_ref().map_or(0, |seed| seed.turn_count);
         let artifacts: Vec<ArtifactId> = Vec::new();
 
         // Merge agent-level resource limits on top of the static orchestrator
@@ -603,16 +888,23 @@ impl RunOrchestrator {
         // survives process restarts. On recovery, the RunManager can read the
         // persisted `deadline_at` from the database instead of creating a new
         // process-local Instant.
-        let run_deadline: Option<chrono::DateTime<chrono::Utc>> = agent_spec
-            .resource_limits
-            .as_ref()
-            .and_then(|rl| rl.timeout_secs)
-            .map(deadline_from_timeout);
+        let run_deadline: Option<chrono::DateTime<chrono::Utc>> = seed.as_ref().map_or_else(
+            || {
+                agent_spec
+                    .resource_limits
+                    .as_ref()
+                    .and_then(|rl| rl.timeout_secs)
+                    .map(deadline_from_timeout)
+            },
+            |seed| seed.deadline,
+        );
 
         // Persist the deadline to the store so it can be restored after a crash.
-        if let Some(deadline) = run_deadline {
-            if let Err(e) = self.run_manager.set_deadline(run_id, Some(deadline)).await {
-                warn!(%run_id, error = %e, "failed to persist run deadline");
+        if seed.is_none() {
+            if let Some(deadline) = run_deadline {
+                if let Err(e) = self.run_manager.set_deadline(run_id, Some(deadline)).await {
+                    warn!(%run_id, error = %e, "failed to persist run deadline");
+                }
             }
         }
 
@@ -661,7 +953,8 @@ impl RunOrchestrator {
         // Advertise only exact registered definitions that the agent names
         // and that require no grant. Grant-bearing tools stay invisible until
         // approval + durable resume is implemented end to end.
-        let advertised_tools = self.advertised_tools(agent_spec);
+        let approval_capable = conversation_id.is_some() && self.approval_ready();
+        let advertised_tools = self.advertised_tools(agent_spec, approval_capable);
         let advertised_tool_names: HashSet<String> = advertised_tools
             .iter()
             .map(|definition| definition.name.clone())
@@ -675,11 +968,20 @@ impl RunOrchestrator {
         let current_state = self.run_manager.get_state(run_id).await?;
         if current_state == RunState::Created {
             self.run_manager.enqueue_run(run_id).await?;
+            self.run_manager.start_run(run_id).await?;
+        } else if current_state == RunState::Queued {
+            self.run_manager.start_run(run_id).await?;
+        } else if current_state != RunState::Running {
+            return Err(RunError::Store(format!(
+                "executor cannot begin from run state {current_state}"
+            )));
         }
-        self.run_manager.start_run(run_id).await?;
 
         // Step 2: Build initial message list.
-        let mut messages = initial_messages;
+        let mut messages = seed
+            .as_ref()
+            .map_or(initial_messages, |seed| seed.messages.clone());
+        let mut active_checkpoint = seed.map(|seed| seed.active_checkpoint);
 
         // Build a CostTracker for this run.
         //
@@ -713,7 +1015,7 @@ impl RunOrchestrator {
         };
 
         // Step 3: Turn loop.
-        let outcome = loop {
+        let outcome = 'run_loop: loop {
             // Guard: wall-clock timeout.
             if let Some(deadline) = run_deadline {
                 if chrono::Utc::now() >= deadline {
@@ -972,18 +1274,46 @@ impl RunOrchestrator {
                     let step_sequence = u32::try_from(call_index + 1).unwrap_or(u32::MAX);
                     let effect_sequence =
                         (u64::from(turn_count) << 32).saturating_add(u64::from(step_sequence));
-                    tool_result_content.push(
-                        self.execute_tool_call(
+                    let execution = self
+                        .execute_tool_call(
                             run_id,
                             agent_spec,
                             completed_turn.id,
                             step_sequence,
                             effect_sequence,
                             tool_call,
+                            &response.tool_calls,
+                            &messages,
+                            &effective_model_id,
+                            turn_count,
+                            &total_usage,
+                            run_deadline,
+                            conversation_id,
                             &advertised_tool_names,
                         )
-                        .await?,
-                    );
+                        .await?;
+                    if let Some(terminal_state) = execution.terminal_state {
+                        break 'run_loop RunOutcome {
+                            run_id,
+                            final_state: terminal_state,
+                            total_tokens: total_usage,
+                            turn_count,
+                            artifacts: artifacts.clone(),
+                            duration: start.elapsed(),
+                        };
+                    }
+                    if let Some(checkpoint) = execution.active_checkpoint {
+                        if active_checkpoint.is_some() {
+                            return Err(RunError::Unsupported(
+                                "more than one approval checkpoint in a run is not supported by the APR-03 vertical slice"
+                                    .to_owned(),
+                            ));
+                        }
+                        active_checkpoint = Some(checkpoint);
+                    }
+                    if let Some(block) = execution.block {
+                        tool_result_content.push(block);
+                    }
                 }
 
                 if !tool_result_content.is_empty() {
@@ -1010,6 +1340,9 @@ impl RunOrchestrator {
             }
         };
 
+        if let Some(checkpoint) = active_checkpoint {
+            self.finalize_checkpoint(checkpoint, &messages).await?;
+        }
         Ok(outcome)
     }
 
@@ -1017,7 +1350,11 @@ impl RunOrchestrator {
     // Private helpers
     // -----------------------------------------------------------------------
 
-    fn advertised_tools(&self, agent_spec: &AgentSpec) -> Vec<ToolDefinition> {
+    fn advertised_tools(
+        &self,
+        agent_spec: &AgentSpec,
+        approval_capable: bool,
+    ) -> Vec<ToolDefinition> {
         let Some(registry) = &self.tool_registry else {
             return Vec::new();
         };
@@ -1029,11 +1366,13 @@ impl RunOrchestrator {
             .filter_map(|name| {
                 let handler = registry.get(name)?;
                 let spec = handler.spec();
-                (spec.name == *name && spec.required_grant.is_none()).then(|| ToolDefinition {
-                    name: spec.name,
-                    description: spec.description,
-                    input_schema_json: spec.input_schema.to_string(),
-                })
+                (spec.name == *name && (spec.required_grant.is_none() || approval_capable)).then(
+                    || ToolDefinition {
+                        name: spec.name,
+                        description: spec.description,
+                        input_schema_json: spec.input_schema.to_string(),
+                    },
+                )
             })
             .collect()
     }
@@ -1051,10 +1390,17 @@ impl RunOrchestrator {
         step_sequence: u32,
         effect_sequence: u64,
         tool_call: &ToolCall,
+        tool_group: &[ToolCall],
+        messages: &[InferenceMessage],
+        model_id: &str,
+        turn_count: u32,
+        total_usage: &TokenUsage,
+        run_deadline: Option<chrono::DateTime<chrono::Utc>>,
+        conversation_id: Option<ConversationId>,
         advertised_tool_names: &HashSet<String>,
-    ) -> Result<ContentBlock, RunError> {
+    ) -> Result<ToolExecution, RunError> {
         let Some(registry) = &self.tool_registry else {
-            return Ok(Self::tool_error_block(
+            return Ok(ToolExecution::error(
                 tool_call,
                 "registry_unavailable",
                 "no runtime tool registry is configured",
@@ -1065,14 +1411,14 @@ impl RunOrchestrator {
             .iter()
             .any(|name| name == &tool_call.tool_name)
         {
-            return Ok(Self::tool_error_block(
+            return Ok(ToolExecution::error(
                 tool_call,
                 "not_allowlisted",
                 "the agent spec does not allow this tool",
             ));
         }
         let Some(handler) = registry.get(&tool_call.tool_name) else {
-            return Ok(Self::tool_error_block(
+            return Ok(ToolExecution::error(
                 tool_call,
                 "not_registered",
                 "the requested tool is not registered",
@@ -1080,29 +1426,150 @@ impl RunOrchestrator {
         };
         let spec = handler.spec();
         if spec.name != tool_call.tool_name {
-            return Ok(Self::tool_error_block(
+            return Ok(ToolExecution::error(
                 tool_call,
                 "registry_mismatch",
                 "the registered handler definition changed after registration",
             ));
         }
-        if spec.required_grant.is_some() || !advertised_tool_names.contains(&tool_call.tool_name) {
-            return Ok(Self::tool_error_block(
+        if !advertised_tool_names.contains(&tool_call.tool_name) {
+            if spec.required_grant.is_some() {
+                return Ok(ToolExecution::error(
+                    tool_call,
+                    "approval_required",
+                    "the tool requires a durable approval path that is unavailable in this execution context",
+                ));
+            }
+            return Ok(ToolExecution::error(
                 tool_call,
-                "approval_required",
-                "grant-bearing tools are unavailable until durable approval resume is implemented",
+                "not_advertised",
+                "the tool was not advertised for this execution context",
             ));
         }
         let input: serde_json::Value = match serde_json::from_str(&tool_call.arguments_json) {
             Ok(input) => input,
             Err(error) => {
-                return Ok(Self::tool_error_block(
+                return Ok(ToolExecution::error(
                     tool_call,
                     "invalid_input",
                     &format!("tool arguments are not valid JSON: {error}"),
                 ));
             }
         };
+
+        let Some(required_action) = spec.required_grant.as_deref() else {
+            let block = self
+                .execute_immediate_tool(
+                    run_id,
+                    agent_spec,
+                    turn_id,
+                    step_sequence,
+                    effect_sequence,
+                    tool_call,
+                    input,
+                    Vec::new(),
+                    self.approval_runtime
+                        .as_ref()
+                        .map(|runtime| runtime.config.security_config.clone()),
+                )
+                .await?;
+            return Ok(ToolExecution::continued(block));
+        };
+
+        let (Some(runtime), Some(conversation_id)) =
+            (self.approval_runtime.as_ref(), conversation_id)
+        else {
+            return Ok(ToolExecution::error(
+                tool_call,
+                "approval_unavailable",
+                "durable approval context is unavailable",
+            ));
+        };
+        let resource = format!("tool/{}", spec.name);
+        let (decision, policy_snapshot_digest) = self
+            .resolve_with_stable_policy(runtime, required_action, &resource, run_id)
+            .await?;
+        match decision {
+            GrantDecision::Deny(denial) => Ok(ToolExecution::error(
+                tool_call,
+                "permission_denied",
+                &denial.reason,
+            )),
+            GrantDecision::Defer(deferred) => Ok(ToolExecution::error(
+                tool_call,
+                "authorization_unavailable",
+                &deferred.reason,
+            )),
+            GrantDecision::Permit(grant) => {
+                let block = self
+                    .execute_immediate_tool(
+                        run_id,
+                        agent_spec,
+                        turn_id,
+                        step_sequence,
+                        effect_sequence,
+                        tool_call,
+                        input,
+                        vec![grant],
+                        Some(runtime.config.security_config.clone()),
+                    )
+                    .await?;
+                Ok(ToolExecution::continued(block))
+            }
+            GrantDecision::RequireApproval(requirement) => {
+                if tool_group.len() != 1 {
+                    return Ok(ToolExecution::error(
+                        tool_call,
+                        "approval_group_unsupported",
+                        "the APR-03 approval slice accepts exactly one tool call per model group",
+                    ));
+                }
+                self.pause_and_resume_tool(
+                    runtime,
+                    run_id,
+                    conversation_id,
+                    agent_spec,
+                    turn_id,
+                    step_sequence,
+                    effect_sequence,
+                    tool_call,
+                    tool_group,
+                    input,
+                    &spec,
+                    required_action,
+                    &resource,
+                    requirement.reason,
+                    policy_snapshot_digest,
+                    messages,
+                    model_id,
+                    turn_count,
+                    total_usage,
+                    run_deadline,
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the immediate effect path preserves exact durable lineage around one handler call"
+    )]
+    async fn execute_immediate_tool(
+        &self,
+        run_id: RunId,
+        agent_spec: &AgentSpec,
+        turn_id: polkagent_core::TurnId,
+        step_sequence: u32,
+        effect_sequence: u64,
+        tool_call: &ToolCall,
+        input: serde_json::Value,
+        grants: Vec<ResolvedGrant>,
+        security_config: Option<polkagent_config::SecurityConfig>,
+    ) -> Result<ContentBlock, RunError> {
+        let registry = self.tool_registry.as_ref().ok_or_else(|| {
+            RunError::Unsupported("no runtime tool registry is configured".to_owned())
+        })?;
 
         // The normalized step and its parent turn are durable before the
         // effect intent can reference them. This keeps SQLite FK enforcement
@@ -1183,8 +1650,8 @@ impl RunOrchestrator {
             run_id,
             agent_id: agent_spec.id,
             step_id,
-            grants: Vec::new(),
-            security_config: None,
+            grants,
+            security_config,
         };
         let execution = registry
             .execute(&tool_call.tool_name, input, &tool_context)
@@ -1235,6 +1702,665 @@ impl RunOrchestrator {
             content,
             is_error,
         })
+    }
+
+    async fn resolve_with_stable_policy(
+        &self,
+        runtime: &ApprovalRuntime,
+        action: &str,
+        resource: &str,
+        run_id: RunId,
+    ) -> Result<(GrantDecision, String), RunError> {
+        let before = self.grant_resolver.policy_snapshot().await;
+        let before_digest = compute_policy_snapshot_digest(&before)?;
+        let principal = runtime.config.authorized_principal_id.to_string();
+        let mut context = EvaluationContext {
+            evaluated_at: Some(chrono::Utc::now().to_rfc3339()),
+            ..EvaluationContext::default()
+        };
+        context
+            .attributes
+            .insert("principal.id".to_owned(), principal.clone());
+        context
+            .attributes
+            .insert("tenant.id".to_owned(), runtime.config.tenant_id.clone());
+        context.attributes.insert(
+            "workspace.id".to_owned(),
+            runtime.config.workspace_id.clone(),
+        );
+        let decision = self
+            .grant_resolver
+            .resolve(&principal, action, resource, &context, None, Some(run_id))
+            .await
+            .map_err(|error| RunError::Store(format!("grant resolution failed: {error}")))?;
+        let after = self.grant_resolver.policy_snapshot().await;
+        let after_digest = compute_policy_snapshot_digest(&after)?;
+        if before_digest != after_digest {
+            return Err(RunError::Store(
+                "policy changed during grant resolution; retry from a fresh model turn".to_owned(),
+            ));
+        }
+        Ok((decision, before_digest))
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the pause construction binds one complete typed executor checkpoint to one exact effect"
+    )]
+    async fn pause_and_resume_tool(
+        &self,
+        runtime: &ApprovalRuntime,
+        run_id: RunId,
+        conversation_id: ConversationId,
+        agent_spec: &AgentSpec,
+        turn_id: polkagent_core::TurnId,
+        step_sequence: u32,
+        effect_sequence: u64,
+        tool_call: &ToolCall,
+        tool_group: &[ToolCall],
+        input: serde_json::Value,
+        spec: &ToolSpec,
+        required_action: &str,
+        required_resource: &str,
+        reason: String,
+        policy_snapshot_digest: String,
+        messages: &[InferenceMessage],
+        model_id: &str,
+        turn_count: u32,
+        total_usage: &TokenUsage,
+        run_deadline: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<ToolExecution, RunError> {
+        let step_id = self
+            .run_manager
+            .start_step(run_id, turn_id, step_sequence, "tool_call")
+            .await?;
+        let effect_id = polkagent_core::EffectId::new();
+        let approval_id = ApprovalId::new();
+        let effect_payload = serde_json::json!({
+            "kind": "tool_call",
+            "tool_call_id": tool_call.tool_call_id,
+            "tool_name": tool_call.tool_name,
+            "arguments": input,
+        });
+        let payload_bytes = serde_json::to_vec(&effect_payload)?;
+        let idempotency_key = IdempotencyKey::generate(
+            run_id,
+            effect_sequence,
+            0,
+            EffectKind::ToolCall,
+            IdempotencyKey::hash_params(&payload_bytes),
+        );
+        let approval_deadline = {
+            let fallback = chrono::Utc::now()
+                + chrono::Duration::from_std(runtime.config.approval_timeout).map_err(|error| {
+                    RunError::Store(format!("approval timeout is outside chrono range: {error}"))
+                })?;
+            run_deadline.map_or(fallback, |deadline| deadline.min(fallback))
+        };
+        let working_directory = runtime
+            .config
+            .working_directory
+            .to_str()
+            .ok_or_else(|| {
+                RunError::Unsupported("approval working directory is not UTF-8".to_owned())
+            })?
+            .to_owned();
+        let security_scope = serde_json::json!({
+            "tenant_id": runtime.config.tenant_id,
+            "workspace_id": runtime.config.workspace_id,
+            "working_directory": working_directory,
+            "security_config": runtime.config.security_config,
+        });
+        let mut subject = ApprovalSubject {
+            schema_version: APPROVAL_SUBJECT_SCHEMA_VERSION,
+            conversation_id,
+            turn_id,
+            step_id,
+            run_id,
+            agent_id: agent_spec.id,
+            effect_id,
+            tool_call_id: tool_call.tool_call_id.clone(),
+            tool_name: tool_call.tool_name.clone(),
+            validated_arguments: input,
+            required_action: required_action.to_owned(),
+            required_resource: required_resource.to_owned(),
+            working_directory: Some(working_directory),
+            security_scope,
+            tool_spec_digest: compute_tool_spec_digest(spec)?,
+            policy_snapshot_digest,
+            subject_digest: String::new(),
+        };
+        subject.subject_digest = compute_approval_subject_digest(&subject)?;
+        let tool_group = CheckpointToolGroup {
+            approval_id,
+            calls: tool_group.to_vec(),
+        };
+        let mut checkpoint = ExecutionCheckpoint {
+            schema_version: EXECUTION_CHECKPOINT_SCHEMA_VERSION,
+            run_id,
+            turn_id,
+            conversation_id,
+            agent_id: agent_spec.id,
+            model_id: model_id.to_owned(),
+            executor_id: split_model_id(model_id).0.to_owned(),
+            messages: serde_json::to_value(messages)?,
+            tool_calls: serde_json::to_value(tool_group)?,
+            next_model_turn: turn_count.saturating_add(1),
+            next_step_sequence: step_sequence.saturating_add(1),
+            next_effect_sequence: effect_sequence.saturating_add(1),
+            accumulated_usage: serde_json::to_value(total_usage)?,
+            accumulated_cost: None,
+            deadline_at: Some(approval_deadline),
+            retry_class: StoreRetryClass::CheckBeforeRetry,
+            effects: vec![CheckpointEffect {
+                effect_id,
+                status: CheckpointEffectStatus::AwaitingApproval,
+            }],
+            version: 1,
+            classification: DataClassification::Private,
+            retention_expires_at: None,
+            integrity_digest: String::new(),
+        };
+        checkpoint.integrity_digest = compute_execution_checkpoint_digest(&checkpoint)?;
+        let expected_run_state_version = self.run_manager.state_version(run_id).await?;
+        let stored = runtime
+            .coordinator
+            .pause_for_approval(PauseForApproval {
+                approval_id,
+                expected_run_state_version,
+                subject,
+                effect_payload,
+                effect_idempotency_key: idempotency_key.to_hex(),
+                retry_class: StoreRetryClass::CheckBeforeRetry,
+                checkpoint,
+                metadata: ApprovalRequestMetadata {
+                    title: format!("Approve {}", spec.name),
+                    description: "Allow this exact registered tool call once".to_owned(),
+                    reason,
+                    tenant_id: runtime.config.tenant_id.clone(),
+                    workspace_id: runtime.config.workspace_id.clone(),
+                    authorized_principal_id: runtime.config.authorized_principal_id,
+                },
+                deadline_at: approval_deadline,
+            })
+            .await
+            .map_err(|error| approval_store_error("pause for approval", error))?;
+        let decided = self.wait_for_approval(runtime, stored).await?;
+        self.resume_decided_approval(runtime, agent_spec, tool_call, spec, decided, None)
+            .await
+    }
+
+    async fn wait_for_approval(
+        &self,
+        runtime: &ApprovalRuntime,
+        mut approval: StoredApproval,
+    ) -> Result<StoredApproval, RunError> {
+        let read_scope = ApprovalScope {
+            tenant_id: runtime.config.tenant_id.clone(),
+            workspace_id: runtime.config.workspace_id.clone(),
+            conversation_id: Some(approval.subject.conversation_id),
+            principal_id: runtime.config.authorized_principal_id,
+        };
+        loop {
+            if approval.status != ApprovalStatus::Pending {
+                return Ok(approval);
+            }
+            if chrono::Utc::now() >= approval.deadline_at {
+                let expected_run_state_version = self
+                    .run_manager
+                    .state_version(approval.subject.run_id)
+                    .await?;
+                let service_scope = ApprovalScope {
+                    principal_id: runtime.config.service_principal_id,
+                    ..read_scope.clone()
+                };
+                match runtime
+                    .coordinator
+                    .resolve_approval(ResolveApproval {
+                        approval_id: approval.id,
+                        expected_run_state_version,
+                        effect_id: approval.subject.effect_id,
+                        run_id: approval.subject.run_id,
+                        turn_id: approval.subject.turn_id,
+                        conversation_id: approval.subject.conversation_id,
+                        subject_digest: approval.subject.subject_digest.clone(),
+                        scope: service_scope,
+                        principal_id: runtime.config.service_principal_id,
+                        principal_type: ApprovalPrincipalType::Service,
+                        surface: "runtime-deadline".to_owned(),
+                        decision: ApprovalDecision::Expire,
+                        rationale: Some("approval deadline elapsed".to_owned()),
+                        conditions: Vec::new(),
+                    })
+                    .await
+                {
+                    Ok(result) => return Ok(result.approval),
+                    Err(ApprovalStoreError::Conflict { .. }) => {}
+                    Err(error) => {
+                        return Err(approval_store_error("expire approval", error));
+                    }
+                }
+            }
+            tokio::time::sleep(runtime.config.poll_interval).await;
+            approval = runtime
+                .coordinator
+                .get_approval(approval.id, read_scope.clone())
+                .await
+                .map_err(|error| approval_store_error("reload approval", error))?;
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "recovery must keep outcome detection, attempt boundary, revalidation, and reduction ordered"
+    )]
+    async fn resume_decided_approval(
+        &self,
+        runtime: &ApprovalRuntime,
+        agent_spec: &AgentSpec,
+        tool_call: &ToolCall,
+        current_spec: &ToolSpec,
+        approval: StoredApproval,
+        preleased: Option<LeasedCheckpoint>,
+    ) -> Result<ToolExecution, RunError> {
+        match approval.status {
+            ApprovalStatus::Expired => {
+                return Ok(ToolExecution {
+                    block: None,
+                    terminal_state: Some(RunState::TimedOut),
+                    active_checkpoint: None,
+                });
+            }
+            ApprovalStatus::Cancelled => {
+                return Ok(ToolExecution {
+                    block: None,
+                    terminal_state: Some(RunState::Cancelled {
+                        reason: "approval cancelled".to_owned(),
+                    }),
+                    active_checkpoint: None,
+                });
+            }
+            ApprovalStatus::Pending => {
+                return Err(RunError::Store(
+                    "pending approval cannot be resumed".to_owned(),
+                ));
+            }
+            ApprovalStatus::Approved | ApprovalStatus::Denied => {}
+        }
+        verify_subject(&approval.subject)?;
+        let current_tool_digest = compute_tool_spec_digest(current_spec)?;
+        if current_tool_digest != approval.subject.tool_spec_digest
+            || current_spec.name != approval.subject.tool_name
+            || tool_call.tool_call_id != approval.subject.tool_call_id
+            || tool_call.tool_name != approval.subject.tool_name
+        {
+            return Err(RunError::Store(
+                "registered tool or tool-call identity changed after approval".to_owned(),
+            ));
+        }
+        let expected_arguments: serde_json::Value =
+            serde_json::from_str(&tool_call.arguments_json)?;
+        if expected_arguments != approval.subject.validated_arguments {
+            return Err(RunError::Store(
+                "tool arguments changed after approval".to_owned(),
+            ));
+        }
+        let leased = if let Some(leased) = preleased {
+            leased
+        } else {
+            let checkpoint = runtime
+                .checkpoints
+                .get_checkpoint(approval.subject.run_id)
+                .await
+                .map_err(|error| approval_store_error("load decided checkpoint", error))?;
+            runtime
+                .checkpoints
+                .lease_checkpoint(
+                    approval.subject.run_id,
+                    checkpoint.checkpoint.version,
+                    self.effect_pipeline.worker_id(),
+                    runtime.config.recovery_lease,
+                )
+                .await
+                .map_err(|error| approval_store_error("lease decided checkpoint", error))?
+        };
+        verify_checkpoint(&leased.stored.checkpoint)?;
+        if leased.stored.status != CheckpointStatus::Leased
+            || leased.stored.lease_owner != Some(self.effect_pipeline.worker_id())
+        {
+            return Err(RunError::Store(
+                "checkpoint is not leased by the orchestrator worker".to_owned(),
+            ));
+        }
+        let waiting_version = approval
+            .decision_run_state_version
+            .and_then(|version| version.checked_add(1))
+            .ok_or_else(|| RunError::Store("approval is missing its run revision".to_owned()))?;
+
+        if approval.status == ApprovalStatus::Denied {
+            runtime
+                .coordinator
+                .resume_after_effect(ResumeApprovalEffect {
+                    approval_id: approval.id,
+                    effect_id: approval.subject.effect_id,
+                    run_id: approval.subject.run_id,
+                    subject_digest: approval.subject.subject_digest.clone(),
+                    expected_checkpoint_version: leased.stored.checkpoint.version,
+                    worker_id: self.effect_pipeline.worker_id(),
+                    expected_run_state_version: waiting_version,
+                })
+                .await
+                .map_err(|error| approval_store_error("reduce rejected effect", error))?;
+            return Ok(ToolExecution {
+                block: Some(Self::tool_error_block(
+                    tool_call,
+                    "permission_denied",
+                    approval
+                        .rationale
+                        .as_deref()
+                        .unwrap_or("the exact tool call was rejected"),
+                )),
+                terminal_state: None,
+                active_checkpoint: Some(ActiveCheckpoint {
+                    checkpoint: leased.stored.checkpoint,
+                    worker_id: self.effect_pipeline.worker_id(),
+                    outcome_ids: Vec::new(),
+                }),
+            });
+        }
+
+        let outcomes = self
+            .effect_pipeline
+            .store()
+            .unconsumed_outcomes(approval.subject.run_id)
+            .await
+            .map_err(|error| RunError::Store(format!("load approval outcome: {error}")))?
+            .into_iter()
+            .filter(|outcome| outcome.intent_id == approval.subject.effect_id)
+            .collect::<Vec<_>>();
+        if outcomes.len() > 1 {
+            return Err(RunError::Store(
+                "approval effect has more than one durable outcome".to_owned(),
+            ));
+        }
+        let (block, outcome_id, attempt_id) = if let Some(outcome) = outcomes.first() {
+            let block = outcome_to_tool_block(tool_call, outcome)?;
+            (block, outcome.id, outcome.attempt_id)
+        } else {
+            let intent = self
+                .effect_pipeline
+                .get_intent(approval.subject.effect_id)
+                .await
+                .map_err(|error| RunError::Store(format!("load approval effect: {error}")))?;
+            if matches!(intent.state.as_str(), "executing" | "resolved") {
+                return Err(RunError::ManualReconciliation {
+                    run_id: approval.subject.run_id,
+                    effect_id: approval.subject.effect_id,
+                    reason: "an attempt may have started but no durable outcome exists; automatic retry is forbidden"
+                        .to_owned(),
+                });
+            }
+            let claimed = runtime
+                .coordinator
+                .claim_approved_effect(ClaimApprovedEffect {
+                    approval_id: approval.id,
+                    effect_id: approval.subject.effect_id,
+                    run_id: approval.subject.run_id,
+                    subject_digest: approval.subject.subject_digest.clone(),
+                    expected_checkpoint_version: leased.stored.checkpoint.version,
+                    worker_id: self.effect_pipeline.worker_id(),
+                    lease_duration: runtime.config.recovery_lease,
+                })
+                .await
+                .map_err(|error| approval_store_error("claim approved effect", error))?;
+            if claimed.effect_payload
+                != serde_json::json!({
+                    "kind": "tool_call",
+                    "tool_call_id": approval.subject.tool_call_id,
+                    "tool_name": approval.subject.tool_name,
+                    "arguments": approval.subject.validated_arguments,
+                })
+            {
+                return Err(RunError::Store(
+                    "claimed effect payload does not match approval subject".to_owned(),
+                ));
+            }
+            let intent = self
+                .effect_pipeline
+                .get_intent(approval.subject.effect_id)
+                .await
+                .map_err(|error| RunError::Store(format!("reload claimed effect: {error}")))?;
+            let idempotency_key = polkagent_effect::idempotency::parse_from_hex(
+                &intent.idempotency_key,
+            )
+            .ok_or_else(|| RunError::Store("stored idempotency key is invalid".to_owned()))?;
+            let now = chrono::Utc::now();
+            let attempt = EffectAttempt {
+                id: EffectAttemptId::new(),
+                intent_id: approval.subject.effect_id,
+                run_id: approval.subject.run_id,
+                attempt_number: 1,
+                idempotency_key,
+                worker_id: claimed.worker_id,
+                lease_expires: claimed.lease_expires_at,
+                retry_class: RetryClass::CheckBeforeRetry,
+                state: AttemptState::InProgress,
+                created_at: now,
+                claimed_at: now,
+                started_at: Some(now),
+                completed_at: None,
+            };
+            self.effect_pipeline
+                .record_attempt(approval.subject.effect_id, &attempt)
+                .await
+                .map_err(|error| {
+                    RunError::Store(format!("persist approval attempt boundary: {error}"))
+                })?;
+            self.record_tool_event(
+                approval.subject.run_id,
+                approval.subject.turn_id,
+                approval.subject.step_id,
+                approval.subject.effect_id,
+                attempt.id,
+                EventKind::ToolCallStarted {
+                    tool_name: approval.subject.tool_name.clone(),
+                },
+            )
+            .await?;
+
+            let grant = self
+                .revalidate_approved_subject(runtime, &approval.subject, current_spec)
+                .await;
+            let registry = self.tool_registry.as_ref().ok_or_else(|| {
+                RunError::Unsupported("tool registry disappeared during approval".to_owned())
+            })?;
+            let execution = match grant {
+                Ok(grant) => {
+                    registry
+                        .execute(
+                            &approval.subject.tool_name,
+                            approval.subject.validated_arguments.clone(),
+                            &ToolContext {
+                                run_id: approval.subject.run_id,
+                                agent_id: agent_spec.id,
+                                step_id: approval.subject.step_id,
+                                grants: vec![grant],
+                                security_config: Some(runtime.config.security_config.clone()),
+                            },
+                        )
+                        .await
+                }
+                Err(reason) => Err(ToolError::PermissionDenied { reason }),
+            };
+            let (block, outcome_result) = match execution {
+                Ok(result) => {
+                    let content = serde_json::to_string(&result)?;
+                    let data = serde_json::to_value(result)?;
+                    (
+                        ContentBlock::ToolResult {
+                            tool_call_id: tool_call.tool_call_id.clone(),
+                            content,
+                            is_error: false,
+                        },
+                        OutcomeResult::Success { data },
+                    )
+                }
+                Err(error) => (
+                    ContentBlock::ToolResult {
+                        tool_call_id: tool_call.tool_call_id.clone(),
+                        content: Self::serialize_tool_error(&error),
+                        is_error: true,
+                    },
+                    Self::tool_error_outcome(&error),
+                ),
+            };
+            let outcome = EffectOutcome {
+                id: EffectOutcomeId::new(),
+                attempt_id: attempt.id,
+                intent_id: approval.subject.effect_id,
+                run_id: approval.subject.run_id,
+                result: outcome_result,
+                observed_at: chrono::Utc::now(),
+                digest: [0; 32],
+            };
+            self.effect_pipeline
+                .record_outcome(approval.subject.effect_id, &outcome)
+                .await
+                .map_err(|error| {
+                    RunError::Store(format!("persist approval effect outcome: {error}"))
+                })?;
+            (block, outcome.id, attempt.id)
+        };
+
+        self.run_manager
+            .complete_step(
+                approval.subject.run_id,
+                approval.subject.turn_id,
+                approval.subject.step_id,
+            )
+            .await?;
+        self.record_tool_event(
+            approval.subject.run_id,
+            approval.subject.turn_id,
+            approval.subject.step_id,
+            approval.subject.effect_id,
+            attempt_id,
+            EventKind::ToolCallCompleted {
+                tool_name: approval.subject.tool_name.clone(),
+            },
+        )
+        .await?;
+        runtime
+            .coordinator
+            .resume_after_effect(ResumeApprovalEffect {
+                approval_id: approval.id,
+                effect_id: approval.subject.effect_id,
+                run_id: approval.subject.run_id,
+                subject_digest: approval.subject.subject_digest.clone(),
+                expected_checkpoint_version: leased.stored.checkpoint.version,
+                worker_id: self.effect_pipeline.worker_id(),
+                expected_run_state_version: waiting_version,
+            })
+            .await
+            .map_err(|error| approval_store_error("reduce approved effect", error))?;
+        Ok(ToolExecution {
+            block: Some(block),
+            terminal_state: None,
+            active_checkpoint: Some(ActiveCheckpoint {
+                checkpoint: leased.stored.checkpoint,
+                worker_id: self.effect_pipeline.worker_id(),
+                outcome_ids: vec![outcome_id],
+            }),
+        })
+    }
+
+    async fn revalidate_approved_subject(
+        &self,
+        runtime: &ApprovalRuntime,
+        subject: &ApprovalSubject,
+        current_spec: &ToolSpec,
+    ) -> Result<ResolvedGrant, String> {
+        verify_subject(subject).map_err(|error| error.to_string())?;
+        let tool_digest =
+            compute_tool_spec_digest(current_spec).map_err(|error| error.to_string())?;
+        if tool_digest != subject.tool_spec_digest {
+            return Err("registered tool specification changed after approval".to_owned());
+        }
+        let current_security_scope = serde_json::json!({
+            "tenant_id": runtime.config.tenant_id,
+            "workspace_id": runtime.config.workspace_id,
+            "working_directory": runtime.config.working_directory.to_string_lossy(),
+            "security_config": runtime.config.security_config,
+        });
+        if current_security_scope != subject.security_scope {
+            return Err("security or workspace scope changed after approval".to_owned());
+        }
+        let (decision, policy_digest) = self
+            .resolve_with_stable_policy(
+                runtime,
+                &subject.required_action,
+                &subject.required_resource,
+                subject.run_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if policy_digest != subject.policy_snapshot_digest {
+            return Err("policy snapshot changed after approval".to_owned());
+        }
+        if !matches!(decision, GrantDecision::RequireApproval(_)) {
+            return Err("policy no longer returns the approved escalation".to_owned());
+        }
+        Ok(ResolvedGrant {
+            grant_id: GrantId::new(),
+            principal: runtime.config.authorized_principal_id.to_string(),
+            action: subject.required_action.clone(),
+            resource: subject.required_resource.clone(),
+            allowed_effects: EffectSet::new([subject.required_action.clone()]),
+            limits: GrantLimits {
+                deadline: None,
+                ..GrantLimits::default()
+            },
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        })
+    }
+
+    async fn finalize_checkpoint(
+        &self,
+        active: ActiveCheckpoint,
+        messages: &[InferenceMessage],
+    ) -> Result<(), RunError> {
+        let runtime = self.approval_runtime.as_ref().ok_or_else(|| {
+            RunError::Unsupported("approval runtime disappeared during reduction".to_owned())
+        })?;
+        let expected_version = active.checkpoint.version;
+        let mut checkpoint = active.checkpoint;
+        checkpoint.version = expected_version
+            .checked_add(1)
+            .ok_or_else(|| RunError::Store("checkpoint version is exhausted".to_owned()))?;
+        checkpoint.messages = serde_json::to_value(messages)?;
+        checkpoint.tool_calls = serde_json::json!([]);
+        checkpoint.integrity_digest = compute_execution_checkpoint_digest(&checkpoint)?;
+        runtime
+            .checkpoints
+            .commit_progress(
+                expected_version,
+                CheckpointProgress {
+                    worker_id: active.worker_id,
+                    checkpoint,
+                    status: CheckpointCommitStatus::Terminal,
+                },
+            )
+            .await
+            .map_err(|error| approval_store_error("terminalize checkpoint", error))?;
+        if !active.outcome_ids.is_empty() {
+            self.effect_pipeline
+                .store()
+                .mark_outcomes_consumed(&active.outcome_ids)
+                .await
+                .map_err(|error| RunError::Store(format!("consume approval outcome: {error}")))?;
+        }
+        Ok(())
     }
 
     async fn record_tool_event(
@@ -1585,6 +2711,85 @@ pub fn build_card_for_effect(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "map_err closures transfer the typed store error into the run error boundary"
+)]
+fn approval_store_error(context: &str, error: ApprovalStoreError) -> RunError {
+    RunError::Store(format!("{context}: {error}"))
+}
+
+fn verify_subject(subject: &ApprovalSubject) -> Result<(), RunError> {
+    if !is_canonical_digest(&subject.subject_digest) {
+        return Err(RunError::Store(
+            "approval subject does not use the canonical APR-03 digest encoding".to_owned(),
+        ));
+    }
+    let expected = compute_approval_subject_digest(subject)?;
+    if expected != subject.subject_digest {
+        return Err(RunError::Store(
+            "approval subject failed its canonical integrity check".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_checkpoint(checkpoint: &ExecutionCheckpoint) -> Result<(), RunError> {
+    if !is_canonical_digest(&checkpoint.integrity_digest) {
+        return Err(RunError::Store(
+            "execution checkpoint does not use the canonical APR-03 digest encoding".to_owned(),
+        ));
+    }
+    let expected = compute_execution_checkpoint_digest(checkpoint)?;
+    if expected != checkpoint.integrity_digest {
+        return Err(RunError::Store(
+            "execution checkpoint failed its canonical integrity check".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn outcome_to_tool_block(
+    tool_call: &ToolCall,
+    outcome: &StoredOutcome,
+) -> Result<ContentBlock, RunError> {
+    let result: OutcomeResult = serde_json::from_value(outcome.payload.clone())?;
+    let (content, is_error) = match result {
+        OutcomeResult::Success { data } => (serde_json::to_string(&data)?, false),
+        OutcomeResult::Failure {
+            error_class,
+            message,
+            retriable,
+        } => (
+            serde_json::json!({
+                "error": {
+                    "type": "effect_failure",
+                    "class": error_class,
+                    "message": message,
+                    "retriable": retriable,
+                }
+            })
+            .to_string(),
+            true,
+        ),
+        other => (
+            serde_json::json!({
+                "error": {
+                    "type": "indeterminate_effect_outcome",
+                    "outcome": other,
+                }
+            })
+            .to_string(),
+            true,
+        ),
+    };
+    Ok(ContentBlock::ToolResult {
+        tool_call_id: tool_call.tool_call_id.clone(),
+        content,
+        is_error,
+    })
+}
 
 /// Convert executor token usage to core token usage.
 fn convert_token_usage(usage: &polkagent_executor_trait::TokenUsage) -> TokenUsage {

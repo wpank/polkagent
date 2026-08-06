@@ -28,8 +28,11 @@ use polkagent_grant::{
 use polkagent_harness_trait::Harness;
 use polkagent_memory::{MemoryEntry, MemoryId, MemoryQuery, MemoryStore};
 use polkagent_payment::{Amount, CostRecord, PaymentStore, UsageSummary};
-use polkagent_run::{RunManager, RunOrchestrator, TimeoutConfig, TimeoutEnforcer};
+use polkagent_run::{
+    ApprovalRuntimeConfig, RunManager, RunOrchestrator, TimeoutConfig, TimeoutEnforcer,
+};
 use polkagent_signer_trait::Signer;
+use polkagent_store_trait::approval::{ApprovalCoordinatorStore, ExecutionCheckpointStore};
 use polkagent_store_trait::{
     EffectStore, RunStore, RunSummary, StoreError, StoredIntent, StoredOutcome,
 };
@@ -218,6 +221,14 @@ impl EffectStore for NoopEffectStore {
 // AppServiceBuilder
 // ---------------------------------------------------------------------------
 
+/// Complete internal approval executor/store composition.
+#[derive(Clone)]
+struct ServiceApprovalRuntime {
+    coordinator: Arc<dyn ApprovalCoordinatorStore>,
+    checkpoints: Arc<dyn ExecutionCheckpointStore>,
+    config: ApprovalRuntimeConfig,
+}
+
 /// Builder for [`AppService`].
 ///
 /// All required components must be provided via the `with_*` methods before
@@ -245,6 +256,7 @@ pub struct AppServiceBuilder {
     scheduler: Option<crate::scheduled::ScheduledTaskManager>,
     plugin_manager: Option<crate::plugins::ServicePluginManager>,
     metadata_watcher: Option<crate::metadata_watcher::MetadataDriftWatcher>,
+    approval_runtime: Option<ServiceApprovalRuntime>,
 }
 
 impl AppServiceBuilder {
@@ -360,6 +372,27 @@ impl AppServiceBuilder {
     #[must_use]
     pub fn with_tool_registry(mut self, registry: Arc<polkagent_tool::ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
+        self
+    }
+
+    /// Attach the complete executor/store half of durable approvals.
+    ///
+    /// This does not install an authenticated user-facing resolver surface;
+    /// production callers must keep it absent until such a surface is also
+    /// composed. Tests and embedded callers may resolve through the supplied
+    /// coordinator directly.
+    #[must_use]
+    pub fn with_approval_runtime(
+        mut self,
+        coordinator: Arc<dyn ApprovalCoordinatorStore>,
+        checkpoints: Arc<dyn ExecutionCheckpointStore>,
+        config: ApprovalRuntimeConfig,
+    ) -> Self {
+        self.approval_runtime = Some(ServiceApprovalRuntime {
+            coordinator,
+            checkpoints,
+            config,
+        });
         self
     }
 
@@ -485,6 +518,19 @@ impl AppServiceBuilder {
             .grant_resolver
             .unwrap_or_else(|| GrantResolver::new(PolicySet::default(), ResolverConfig::default()));
 
+        if let Some(approval) = &self.approval_runtime {
+            if self.executor.is_none()
+                || self.tool_registry.is_none()
+                || approval.config.validate().is_err()
+                || !approval.coordinator.supports_atomic_approval_resume()
+                || !approval.checkpoints.supports_exact_checkpoint_recovery()
+            {
+                return Err(ServiceError::NotInitialized {
+                    component: "complete APR-03 approval executor/store composition".into(),
+                });
+            }
+        }
+
         // Build orchestrator when executor OR harness is present.
         let orchestrator = if self.executor.is_some() || self.harness.is_some() {
             let exec: Arc<dyn ModelExecutor> = self.executor.clone().unwrap_or_else(|| {
@@ -517,6 +563,13 @@ impl AppServiceBuilder {
             }
             if let Some(ref tool_registry) = self.tool_registry {
                 orch = orch.with_tool_registry(Arc::clone(tool_registry));
+            }
+            if let Some(approval) = &self.approval_runtime {
+                orch = orch.with_approval_runtime(
+                    Arc::clone(&approval.coordinator),
+                    Arc::clone(&approval.checkpoints),
+                    approval.config.clone(),
+                );
             }
             Some(Arc::new(orch))
         } else {
@@ -707,6 +760,46 @@ impl AppService {
     #[must_use]
     pub fn builder() -> AppServiceBuilder {
         AppServiceBuilder::new()
+    }
+
+    /// Whether the executor/store half of APR-03 is composed. This is not a
+    /// claim that API, TUI, ACP, or another authenticated decision surface is
+    /// available.
+    #[must_use]
+    pub fn approval_executor_ready(&self) -> bool {
+        self.orchestrator
+            .as_ref()
+            .is_some_and(|orchestrator| orchestrator.approval_ready())
+    }
+
+    /// Recover every decided approval checkpoint currently resumable by the
+    /// configured worker. Call this after persisted agents are registered and
+    /// before any generic abandoned-run reaper.
+    pub async fn recover_approval_checkpoints(&self) -> Result<usize, ServiceError> {
+        let Some(orchestrator) = &self.orchestrator else {
+            return Ok(0);
+        };
+        if !orchestrator.approval_ready() {
+            return Ok(0);
+        }
+        let leased = orchestrator.lease_resumable_checkpoints().await?;
+        let agents = self
+            .agents
+            .lock()
+            .map_err(|error| ServiceError::Internal {
+                message: format!("agent lock poisoned during approval recovery: {error}"),
+            })?
+            .clone();
+        let mut recovered = 0usize;
+        for checkpoint in leased {
+            let agent_id = checkpoint.stored.checkpoint.agent_id;
+            let agent = agents
+                .get(&agent_id)
+                .ok_or(ServiceError::AgentNotFound { agent_id })?;
+            orchestrator.recover_checkpoint(checkpoint, agent).await?;
+            recovered = recovered.saturating_add(1);
+        }
+        Ok(recovered)
     }
 
     /// Return the exact policy/grant resolver retained by this service.
@@ -1341,12 +1434,22 @@ impl AppService {
                 let result = match execution {
                     PreparedRunExecution::Prompt(prompt) => {
                         orchestrator
-                            .execute_run(run_id, &prepared.agent_spec, &prompt)
+                            .execute_run_in_conversation(
+                                run_id,
+                                prepared.conversation_id,
+                                &prepared.agent_spec,
+                                &prompt,
+                            )
                             .await
                     }
                     PreparedRunExecution::Messages(messages) => {
                         orchestrator
-                            .execute_run_with_messages(run_id, &prepared.agent_spec, messages)
+                            .execute_run_with_messages_in_conversation(
+                                run_id,
+                                prepared.conversation_id,
+                                &prepared.agent_spec,
+                                messages,
+                            )
                             .await
                     }
                 };

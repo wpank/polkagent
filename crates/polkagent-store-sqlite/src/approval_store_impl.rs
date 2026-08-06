@@ -6,12 +6,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use polkagent_core::{ApprovalId, EventKind, RunId, Timestamp, WorkerId};
 use polkagent_store_trait::approval::{
+    compute_approval_subject_digest, compute_execution_checkpoint_digest, is_canonical_digest,
     ApprovalCoordinatorStore, ApprovalDecision, ApprovalPage, ApprovalPrincipalType,
     ApprovalRequestMetadata, ApprovalScope, ApprovalStatus, ApprovalStoreError, ApprovalSubject,
     CheckpointCommitStatus, CheckpointEffectStatus, CheckpointProgress, CheckpointStatus,
     ClaimApprovedEffect, ClaimedEffect, ExecutionCheckpoint, ExecutionCheckpointStore,
     LeasedCheckpoint, PauseForApproval, ResolveApproval, ResolveApprovalResult, ResolveDisposition,
-    StoredApproval, StoredCheckpoint, APPROVAL_SUBJECT_SCHEMA_VERSION,
+    ResumeApprovalEffect, StoredApproval, StoredCheckpoint, APPROVAL_SUBJECT_SCHEMA_VERSION,
     EXECUTION_CHECKPOINT_SCHEMA_VERSION, MAX_APPROVAL_PAGE_SIZE,
 };
 use polkagent_store_trait::StoreRetryClass;
@@ -28,6 +29,10 @@ const MAX_CONDITION_BYTES: usize = 500;
 
 #[async_trait]
 impl ApprovalCoordinatorStore for SqlitePool {
+    fn supports_atomic_approval_resume(&self) -> bool {
+        true
+    }
+
     async fn pause_for_approval(
         &self,
         request: PauseForApproval,
@@ -137,10 +142,28 @@ impl ApprovalCoordinatorStore for SqlitePool {
         .await
         .map_err(map_join)?
     }
+
+    async fn resume_after_effect(
+        &self,
+        request: ResumeApprovalEffect,
+    ) -> Result<u64, ApprovalStoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            with_immediate_transaction(&pool, |connection| {
+                resume_after_effect_tx(connection, &request)
+            })
+        })
+        .await
+        .map_err(map_join)?
+    }
 }
 
 #[async_trait]
 impl ExecutionCheckpointStore for SqlitePool {
+    fn supports_exact_checkpoint_recovery(&self) -> bool {
+        true
+    }
+
     async fn get_checkpoint(&self, run_id: RunId) -> Result<StoredCheckpoint, ApprovalStoreError> {
         let pool = self.clone();
         tokio::task::spawn_blocking(move || {
@@ -165,6 +188,32 @@ impl ExecutionCheckpointStore for SqlitePool {
         tokio::task::spawn_blocking(move || {
             with_immediate_transaction(&pool, |connection| {
                 lease_resumable_tx(connection, worker_id, lease_duration, page)
+            })
+        })
+        .await
+        .map_err(map_join)?
+    }
+
+    async fn lease_checkpoint(
+        &self,
+        run_id: RunId,
+        expected_version: u64,
+        worker_id: WorkerId,
+        lease_duration: Duration,
+    ) -> Result<LeasedCheckpoint, ApprovalStoreError> {
+        if lease_duration.is_zero() {
+            return Err(invalid("Checkpoint", run_id, "positive lease", "zero"));
+        }
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            with_immediate_transaction(&pool, |connection| {
+                lease_checkpoint_tx(
+                    connection,
+                    run_id,
+                    expected_version,
+                    worker_id,
+                    lease_duration,
+                )
             })
         })
         .await
@@ -682,6 +731,12 @@ fn resolve_tx(
             .ok_or_else(|| ApprovalStoreError::Integrity {
                 message: "checkpoint version is exhausted".to_owned(),
             })?;
+    checkpoint.checkpoint.integrity_digest =
+        compute_execution_checkpoint_digest(&checkpoint.checkpoint).map_err(|error| {
+            ApprovalStoreError::Integrity {
+                message: format!("cannot compute resolved checkpoint digest: {error}"),
+            }
+        })?;
     let checkpoint_status = match request.decision {
         ApprovalDecision::AllowOnce | ApprovalDecision::RejectOnce => CheckpointStatus::Resumable,
         ApprovalDecision::Expire | ApprovalDecision::Cancel => CheckpointStatus::Terminal,
@@ -691,12 +746,14 @@ fn resolve_tx(
         .execute(
             "UPDATE execution_checkpoints
              SET version = ?1, status = ?2, checkpoint_json = ?3,
-                 updated_at = ?4, lease_owner = NULL, lease_expires_at = NULL
-             WHERE run_id = ?5 AND version = ?6 AND status = 'paused_for_approval'",
+                 integrity_digest = ?4, updated_at = ?5,
+                 lease_owner = NULL, lease_expires_at = NULL
+             WHERE run_id = ?6 AND version = ?7 AND status = 'paused_for_approval'",
             rusqlite::params![
                 checkpoint.checkpoint.version,
                 checkpoint_status_str(checkpoint_status),
                 checkpoint_json,
+                checkpoint.checkpoint.integrity_digest,
                 now.to_rfc3339(),
                 request.run_id.to_string(),
                 expected_checkpoint_version,
@@ -1029,6 +1086,157 @@ fn claim_approved_tx(
     })
 }
 
+fn resume_after_effect_tx(
+    connection: &Connection,
+    request: &ResumeApprovalEffect,
+) -> Result<u64, ApprovalStoreError> {
+    let approval = load_approval(connection, request.approval_id)?;
+    if approval.subject.effect_id != request.effect_id || approval.subject.run_id != request.run_id
+    {
+        return Err(ApprovalStoreError::ScopeMismatch);
+    }
+    if approval.subject.subject_digest != request.subject_digest {
+        return Err(ApprovalStoreError::DigestMismatch);
+    }
+    if !matches!(
+        approval.status,
+        ApprovalStatus::Approved | ApprovalStatus::Denied
+    ) {
+        return Err(invalid(
+            "Approval",
+            request.approval_id,
+            "approved or denied",
+            approval_status_str(approval.status),
+        ));
+    }
+    let checkpoint = load_checkpoint(connection, request.run_id)?;
+    if checkpoint.checkpoint.version != request.expected_checkpoint_version
+        || checkpoint.status != CheckpointStatus::Leased
+        || checkpoint.lease_owner != Some(request.worker_id)
+        || checkpoint
+            .lease_expires_at
+            .is_none_or(|expiry| expiry <= Utc::now())
+    {
+        return Err(invalid(
+            "Checkpoint",
+            request.run_id,
+            format!(
+                "active lease version {} by {}",
+                request.expected_checkpoint_version, request.worker_id
+            ),
+            format!(
+                "{} version {}",
+                checkpoint_status_str(checkpoint.status),
+                checkpoint.checkpoint.version
+            ),
+        ));
+    }
+    let (effect_state, outcome_count, attempt_count): (String, u64, u64) = connection
+        .query_row(
+            "SELECT state,
+                    (SELECT COUNT(*) FROM effect_outcomes outcome WHERE outcome.intent_id = effect_intents.id),
+                    (SELECT COUNT(*) FROM effect_attempts attempt WHERE attempt.intent_id = effect_intents.id)
+             FROM effect_intents
+             WHERE id = ?1 AND approval_id = ?2 AND run_id = ?3",
+            rusqlite::params![
+                request.effect_id.to_string(),
+                request.approval_id.to_string(),
+                request.run_id.to_string(),
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(map_sqlite)?
+        .ok_or_else(|| not_found("Effect", request.effect_id))?;
+    let effect_ready = match approval.status {
+        ApprovalStatus::Approved => effect_state == "resolved" && outcome_count == 1,
+        ApprovalStatus::Denied => {
+            effect_state == "denied" && outcome_count == 0 && attempt_count == 0
+        }
+        _ => false,
+    };
+    if !effect_ready {
+        return Err(invalid(
+            "Effect",
+            request.effect_id,
+            match approval.status {
+                ApprovalStatus::Approved => "one durable outcome",
+                ApprovalStatus::Denied => "denied with zero attempts/outcomes",
+                _ => "resolved approval",
+            },
+            effect_state,
+        ));
+    }
+
+    let next_version = request
+        .expected_run_state_version
+        .checked_add(1)
+        .ok_or_else(|| ApprovalStoreError::Integrity {
+            message: "run state version is exhausted".to_owned(),
+        })?;
+    let event_id = approval_event_id(request.approval_id, "effects-resolved");
+    let current: (String, u64) = connection
+        .query_row(
+            "SELECT state, state_version FROM runs WHERE id = ?1",
+            [request.run_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(map_sqlite)?
+        .ok_or_else(|| not_found("Run", request.run_id))?;
+    if current == ("running".to_owned(), next_version) {
+        let event_exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM run_events WHERE id = ?1 AND run_id = ?2)",
+                rusqlite::params![event_id, request.run_id.to_string()],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(map_sqlite)?;
+        return if event_exists {
+            Ok(next_version)
+        } else {
+            Err(ApprovalStoreError::Integrity {
+                message: "running approval continuation is missing EffectsResolved event"
+                    .to_owned(),
+            })
+        };
+    }
+
+    let expected_state = format!("waiting_effect:{}", request.effect_id);
+    let changed = connection
+        .execute(
+            "UPDATE runs
+             SET state = 'running', state_version = state_version + 1, updated_at = ?1
+             WHERE id = ?2 AND state = ?3 AND state_version = ?4",
+            rusqlite::params![
+                Utc::now().to_rfc3339(),
+                request.run_id.to_string(),
+                expected_state,
+                request.expected_run_state_version,
+            ],
+        )
+        .map_err(map_sqlite)?;
+    require_changed(
+        changed,
+        "Run",
+        request.run_id,
+        format!(
+            "waiting effect at version {}",
+            request.expected_run_state_version
+        ),
+        format!("{} at version {}", current.0, current.1),
+    )?;
+    insert_approval_event(
+        connection,
+        &event_id,
+        request.run_id,
+        request.approval_id,
+        &EventKind::EffectsResolved,
+        Utc::now(),
+    )?;
+    Ok(next_version)
+}
+
 fn lease_resumable_tx(
     connection: &Connection,
     worker_id: WorkerId,
@@ -1080,6 +1288,54 @@ fn lease_resumable_tx(
         }
     }
     Ok(leased)
+}
+
+fn lease_checkpoint_tx(
+    connection: &Connection,
+    run_id: RunId,
+    expected_version: u64,
+    worker_id: WorkerId,
+    lease_duration: Duration,
+) -> Result<LeasedCheckpoint, ApprovalStoreError> {
+    let current = load_checkpoint(connection, run_id)?;
+    if current.checkpoint.version != expected_version {
+        return Err(invalid(
+            "Checkpoint",
+            run_id,
+            expected_version,
+            current.checkpoint.version,
+        ));
+    }
+    let now = Utc::now();
+    let expiry = now + chrono_duration(lease_duration)?;
+    let changed = connection
+        .execute(
+            "UPDATE execution_checkpoints
+             SET status = 'leased', lease_owner = ?1, lease_expires_at = ?2,
+                 updated_at = ?3
+             WHERE run_id = ?4 AND version = ?5
+               AND (status = 'resumable'
+                    OR (status = 'leased' AND lease_expires_at < ?3)
+                    OR (status = 'leased' AND lease_owner = ?1 AND lease_expires_at > ?3))",
+            rusqlite::params![
+                worker_id.to_string(),
+                expiry.to_rfc3339(),
+                now.to_rfc3339(),
+                run_id.to_string(),
+                expected_version,
+            ],
+        )
+        .map_err(map_sqlite)?;
+    require_changed(
+        changed,
+        "Checkpoint",
+        run_id,
+        "resumable, expired, or already leased by this worker",
+        checkpoint_status_str(current.status),
+    )?;
+    Ok(LeasedCheckpoint {
+        stored: load_checkpoint(connection, run_id)?,
+    })
 }
 
 fn commit_progress_tx(
@@ -1211,6 +1467,7 @@ fn load_approval(
             message: "approval subject does not match immutable lineage columns".to_owned(),
         });
     }
+    verify_subject_digest_if_canonical(&subject)?;
     Ok(StoredApproval {
         id: approval_id,
         subject,
@@ -1303,6 +1560,7 @@ fn load_checkpoint(
             message: "checkpoint payload does not match indexed envelope".to_owned(),
         });
     }
+    verify_checkpoint_digest_if_canonical(&checkpoint)?;
     Ok(StoredCheckpoint {
         checkpoint,
         status: parse_checkpoint_status(&raw.3)?,
@@ -1390,6 +1648,7 @@ fn approval_event_type(event_kind: &EventKind) -> Result<&'static str, ApprovalS
         EventKind::ApprovalDenied { .. } => Ok("approval_denied"),
         EventKind::RunTimedOut => Ok("run_timed_out"),
         EventKind::RunCancelled { .. } => Ok("run_cancelled"),
+        EventKind::EffectsResolved => Ok("effects_resolved"),
         _ => Err(ApprovalStoreError::Integrity {
             message: "unsupported approval coordinator event kind".to_owned(),
         }),
@@ -1467,6 +1726,7 @@ fn validate_pause(request: &PauseForApproval) -> Result<(), ApprovalStoreError> 
         });
     }
     validate_checkpoint(&request.checkpoint)?;
+    verify_subject_digest_if_canonical(&request.subject)?;
     let subject = &request.subject;
     if subject.run_id != request.checkpoint.run_id
         || subject.turn_id != request.checkpoint.turn_id
@@ -1537,7 +1797,44 @@ fn validate_checkpoint(checkpoint: &ExecutionCheckpoint) -> Result<(), ApprovalS
         "checkpoint integrity digest",
         &checkpoint.integrity_digest,
         MAX_LABEL_BYTES,
-    )
+    )?;
+    verify_checkpoint_digest_if_canonical(checkpoint)
+}
+
+fn verify_subject_digest_if_canonical(subject: &ApprovalSubject) -> Result<(), ApprovalStoreError> {
+    if !is_canonical_digest(&subject.subject_digest) {
+        return Ok(());
+    }
+    let expected = compute_approval_subject_digest(subject).map_err(|error| {
+        ApprovalStoreError::Integrity {
+            message: format!("cannot compute approval subject digest: {error}"),
+        }
+    })?;
+    if subject.subject_digest == expected {
+        Ok(())
+    } else {
+        Err(ApprovalStoreError::DigestMismatch)
+    }
+}
+
+fn verify_checkpoint_digest_if_canonical(
+    checkpoint: &ExecutionCheckpoint,
+) -> Result<(), ApprovalStoreError> {
+    if !is_canonical_digest(&checkpoint.integrity_digest) {
+        return Ok(());
+    }
+    let expected = compute_execution_checkpoint_digest(checkpoint).map_err(|error| {
+        ApprovalStoreError::Integrity {
+            message: format!("cannot compute checkpoint digest: {error}"),
+        }
+    })?;
+    if checkpoint.integrity_digest == expected {
+        Ok(())
+    } else {
+        Err(ApprovalStoreError::Integrity {
+            message: "checkpoint canonical integrity digest does not match payload".to_owned(),
+        })
+    }
 }
 
 fn validate_resolution(request: &ResolveApproval) -> Result<(), ApprovalStoreError> {

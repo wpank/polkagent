@@ -3701,6 +3701,7 @@ dependencies = [
  "chrono",
  "futures",
  "polkagent-card",
+ "polkagent-config",
  "polkagent-context",
  "polkagent-core",
  "polkagent-effect",
@@ -4068,6 +4069,7 @@ name = "polkagent-store-trait"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "chrono",
  "polkagent-core",
  "serde",

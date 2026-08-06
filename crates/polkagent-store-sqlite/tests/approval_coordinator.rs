@@ -20,7 +20,8 @@ use polkagent_store_trait::approval::{
     ApprovalRequestMetadata, ApprovalScope, ApprovalStatus, ApprovalStoreError, ApprovalSubject,
     CheckpointEffect, CheckpointEffectStatus, CheckpointStatus, ClaimApprovedEffect,
     ExecutionCheckpoint, ExecutionCheckpointStore, PauseForApproval, ResolveApproval,
-    ResolveDisposition, APPROVAL_SUBJECT_SCHEMA_VERSION, EXECUTION_CHECKPOINT_SCHEMA_VERSION,
+    ResolveDisposition, ResumeApprovalEffect, APPROVAL_SUBJECT_SCHEMA_VERSION,
+    EXECUTION_CHECKPOINT_SCHEMA_VERSION,
 };
 use polkagent_store_trait::conformance::{self, ApprovalConformanceFixture};
 use polkagent_store_trait::event::EventStore as _;
@@ -899,6 +900,118 @@ async fn approved_claim_uses_the_same_durable_executing_boundary() {
             .expect("resolved approval effect")
             .state,
         "resolved"
+    );
+}
+
+#[tokio::test]
+async fn approved_outcome_reduces_run_and_event_in_one_idempotent_transaction() {
+    let pool = open_pool(None);
+    let fixture = seed_fixture(&pool);
+    pool.pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("pause");
+    pool.resolve_approval(fixture.allow.clone())
+        .await
+        .expect("approve");
+    pool.claim_approved_effect(fixture.claim.clone())
+        .await
+        .expect("claim exact approval");
+    let attempt_id = EffectAttemptId::new();
+    pool.record_attempt_start(
+        attempt_id,
+        fixture.effect_id,
+        fixture.claim.worker_id,
+        serde_json::json!({"boundary":"before-io"}),
+    )
+    .await
+    .expect("attempt boundary");
+    pool.record_outcome(StoredOutcome {
+        id: EffectOutcomeId::new(),
+        intent_id: fixture.effect_id,
+        attempt_id,
+        run_id: fixture.run_id,
+        consumed: false,
+        payload: serde_json::json!({"variant":"success","data":{"ok":true}}),
+        observed_at: Utc::now(),
+    })
+    .await
+    .expect("durable outcome");
+    let resume = ResumeApprovalEffect {
+        approval_id: fixture.approval_id,
+        effect_id: fixture.effect_id,
+        run_id: fixture.run_id,
+        subject_digest: fixture.pause.subject.subject_digest,
+        expected_checkpoint_version: 2,
+        worker_id: fixture.claim.worker_id,
+        expected_run_state_version: 2,
+    };
+    assert_eq!(
+        pool.resume_after_effect(resume.clone())
+            .await
+            .expect("atomic reduction"),
+        3
+    );
+    assert_eq!(
+        pool.resume_after_effect(resume)
+            .await
+            .expect("identical reduction retry"),
+        3
+    );
+    assert_eq!(
+        pool.get(fixture.run_id).await.expect("run").status.as_str(),
+        "running"
+    );
+    let events = pool.read_run_events(fixture.run_id).await.expect("events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "effects_resolved")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn reject_once_reduces_without_attempt_or_outcome() {
+    let pool = open_pool(None);
+    let fixture = seed_fixture(&pool);
+    pool.pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("pause");
+    let mut reject = fixture.allow.clone();
+    reject.decision = ApprovalDecision::RejectOnce;
+    reject.rationale = Some("operator rejected exact call".to_owned());
+    pool.resolve_approval(reject).await.expect("reject");
+    pool.lease_checkpoint(
+        fixture.run_id,
+        2,
+        fixture.claim.worker_id,
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("lease denied checkpoint");
+    pool.resume_after_effect(ResumeApprovalEffect {
+        approval_id: fixture.approval_id,
+        effect_id: fixture.effect_id,
+        run_id: fixture.run_id,
+        subject_digest: fixture.pause.subject.subject_digest,
+        expected_checkpoint_version: 2,
+        worker_id: fixture.claim.worker_id,
+        expected_run_state_version: 2,
+    })
+    .await
+    .expect("reduce rejection");
+    assert!(pool
+        .unconsumed_outcomes(fixture.run_id)
+        .await
+        .expect("outcomes")
+        .is_empty());
+    assert_eq!(
+        pool.get_intent(fixture.effect_id)
+            .await
+            .expect("effect")
+            .state,
+        "denied"
     );
 }
 

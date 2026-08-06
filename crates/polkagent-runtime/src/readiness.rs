@@ -150,6 +150,12 @@ pub struct RuntimeReadiness {
     pub tools: ComponentReadiness,
     /// Durable effect pipeline readiness.
     pub effects: ComponentReadiness,
+    /// Approval coordinator/checkpoint persistence readiness.
+    pub approval_storage: ComponentReadiness,
+    /// Approval-aware executor composition readiness.
+    pub approval_executor: ComponentReadiness,
+    /// Authenticated user-facing approval decision readiness.
+    pub approval_surfaces: ComponentReadiness,
     /// Conversation persistence readiness.
     pub conversations: ComponentReadiness,
     /// Payment persistence readiness.
@@ -166,6 +172,8 @@ pub struct RuntimeReadiness {
     pub read_only_requested: bool,
     /// Number of abandoned non-terminal runs failed during startup recovery.
     pub recovered_runs: usize,
+    /// Number of decided approval checkpoints resumed before the generic reaper.
+    pub recovered_approval_checkpoints: usize,
     /// Number of active persisted agents registered in the service facade.
     pub rehydrated_agents: usize,
     /// Safe diagnostics for degraded or unsupported components.
@@ -182,6 +190,9 @@ impl RuntimeReadiness {
             &self.chain,
             &self.tools,
             &self.effects,
+            &self.approval_storage,
+            &self.approval_executor,
+            &self.approval_surfaces,
             &self.conversations,
             &self.payments,
             &self.memory,

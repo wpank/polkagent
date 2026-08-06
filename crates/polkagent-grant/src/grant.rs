@@ -296,6 +296,13 @@ impl GrantResolver {
         debug!("policy set updated");
     }
 
+    /// Return the exact immutable policy snapshot used for digest binding at
+    /// an approval boundary. Callers must re-read and compare this snapshot
+    /// immediately before dispatch because hot reload may replace it.
+    pub async fn policy_snapshot(&self) -> PolicySet {
+        self.policy_set.read().await.clone()
+    }
+
     /// Resolve authorization for `(principal, action, resource, context)`.
     ///
     /// # Algorithm

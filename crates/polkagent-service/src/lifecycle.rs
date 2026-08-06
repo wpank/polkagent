@@ -148,27 +148,20 @@ pub fn startup(config: Config, context: StartupContext) -> Result<AppService, Se
 // recover_stuck_runs (startup reaper)
 // ---------------------------------------------------------------------------
 
-/// Non-terminal run states that should not survive a process restart.
-///
-/// Any run found in one of these states during startup is assumed to have been
-/// abandoned when the previous process exited and is transitioned to `failed`.
-const STUCK_STATES: &[&str] = &[
-    "running",
-    "queued",
-    "completing",
-    "awaiting_approval",
-    "waiting_effect",
-];
+/// Non-checkpointed run states that should not survive a process restart.
+/// Approval-owned states are deliberately excluded: their coordinator and
+/// checkpoint are the recovery authority and a generic reaper must never
+/// destroy a pending or decided continuation.
+const STUCK_STATES: &[&str] = &["running", "queued", "completing"];
 
 /// Reason retained when crash recovery terminates an abandoned run.
 const RESTART_RECOVERY_REASON: &str = "recovered after restart";
 
 /// Scan for runs stuck in non-terminal states and transition them to `failed`.
 ///
-/// This should be called once during startup, **after** the database is
-/// available but before the service begins accepting new work. It acts as a
-/// crash-recovery mechanism: any run that was in-flight when the previous
-/// process exited is marked as failed with a recovery reason.
+/// This should be called once during startup, **after** approval checkpoint
+/// recovery and before the service begins accepting new work. It marks only
+/// non-checkpointed abandoned execution as failed.
 ///
 /// Returns the total number of recovered runs.
 ///
@@ -335,11 +328,18 @@ mod tests {
 
         async fn list_by_state(
             &self,
-            _status: RunStatus,
+            status: RunStatus,
             _limit: u32,
             _offset: u32,
         ) -> Result<Vec<RunSummary>, StoreError> {
-            Ok(vec![])
+            Ok(self
+                .runs
+                .lock()
+                .expect("lock")
+                .values()
+                .filter(|run| run.status == status)
+                .cloned()
+                .collect())
         }
 
         async fn insert_turn(
@@ -495,5 +495,62 @@ mod tests {
         assert_eq!(state, polkagent_core::RunState::Queued);
 
         shutdown(service);
+    }
+
+    #[tokio::test]
+    async fn generic_reaper_never_destroys_approval_owned_states() {
+        let store = FakeRunStore::default();
+        let running = RunId::new();
+        let awaiting = RunId::new();
+        let waiting = RunId::new();
+        store
+            .create(running, "agent", RunStatus::new("running"))
+            .await
+            .expect("seed running");
+        store
+            .create(
+                awaiting,
+                "agent",
+                RunStatus::new(format!(
+                    "awaiting_approval:{}",
+                    polkagent_core::ApprovalId::new()
+                )),
+            )
+            .await
+            .expect("seed awaiting approval");
+        store
+            .create(
+                waiting,
+                "agent",
+                RunStatus::new(format!(
+                    "waiting_effect:{}",
+                    polkagent_core::EffectId::new()
+                )),
+            )
+            .await
+            .expect("seed waiting effect");
+
+        assert_eq!(recover_stuck_runs(&store).await.expect("recover"), 1);
+        assert!(store
+            .get(running)
+            .await
+            .expect("running")
+            .status
+            .as_str()
+            .starts_with("failed:"));
+        assert!(store
+            .get(awaiting)
+            .await
+            .expect("awaiting")
+            .status
+            .as_str()
+            .starts_with("awaiting_approval:"));
+        assert!(store
+            .get(waiting)
+            .await
+            .expect("waiting")
+            .status
+            .as_str()
+            .starts_with("waiting_effect:"));
     }
 }

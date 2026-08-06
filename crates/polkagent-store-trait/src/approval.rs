@@ -25,6 +25,14 @@ pub const APPROVAL_SUBJECT_SCHEMA_VERSION: u32 = 1;
 /// Maximum number of approval rows returned by one store query.
 pub const MAX_APPROVAL_PAGE_SIZE: u32 = 100;
 
+/// Algorithm-qualified prefix used by APR-03 canonical approval digests.
+pub const CANONICAL_DIGEST_PREFIX: &str = "blake3:";
+
+const APPROVAL_SUBJECT_DIGEST_DOMAIN: &[u8] = b"polkagent.approval-subject.v1\0";
+const EXECUTION_CHECKPOINT_DIGEST_DOMAIN: &[u8] = b"polkagent.execution-checkpoint.v1\0";
+const TOOL_SPEC_DIGEST_DOMAIN: &[u8] = b"polkagent.tool-spec.v1\0";
+const POLICY_SNAPSHOT_DIGEST_DOMAIN: &[u8] = b"polkagent.policy-snapshot.v1\0";
+
 /// Durable approval lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -191,6 +199,60 @@ pub struct ExecutionCheckpoint {
     pub retention_expires_at: Option<Timestamp>,
     /// Integrity digest of the canonical checkpoint contents.
     pub integrity_digest: String,
+}
+
+/// Compute the canonical, domain-separated BLAKE3 digest for an approval
+/// subject. The digest field itself is blanked before serialization.
+pub fn compute_approval_subject_digest(
+    subject: &ApprovalSubject,
+) -> Result<String, serde_json::Error> {
+    let mut canonical = subject.clone();
+    canonical.subject_digest.clear();
+    canonical_json_digest(APPROVAL_SUBJECT_DIGEST_DOMAIN, &canonical)
+}
+
+/// Compute the canonical, domain-separated BLAKE3 digest for an execution
+/// checkpoint. The digest field itself is blanked before serialization.
+pub fn compute_execution_checkpoint_digest(
+    checkpoint: &ExecutionCheckpoint,
+) -> Result<String, serde_json::Error> {
+    let mut canonical = checkpoint.clone();
+    canonical.integrity_digest.clear();
+    canonical_json_digest(EXECUTION_CHECKPOINT_DIGEST_DOMAIN, &canonical)
+}
+
+/// Compute the canonical digest for one serialized registered tool spec.
+pub fn compute_tool_spec_digest<T: Serialize>(spec: &T) -> Result<String, serde_json::Error> {
+    canonical_json_digest(TOOL_SPEC_DIGEST_DOMAIN, spec)
+}
+
+/// Compute the canonical digest for the exact loaded policy snapshot.
+pub fn compute_policy_snapshot_digest<T: Serialize>(
+    policy: &T,
+) -> Result<String, serde_json::Error> {
+    canonical_json_digest(POLICY_SNAPSHOT_DIGEST_DOMAIN, policy)
+}
+
+/// Return whether a digest uses the APR-03 algorithm-qualified encoding.
+#[must_use]
+pub fn is_canonical_digest(digest: &str) -> bool {
+    digest
+        .strip_prefix(CANONICAL_DIGEST_PREFIX)
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn canonical_json_digest<T: Serialize>(
+    domain: &[u8],
+    value: &T,
+) -> Result<String, serde_json::Error> {
+    let bytes = serde_json::to_vec(value)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain);
+    hasher.update(&bytes);
+    Ok(format!(
+        "{CANONICAL_DIGEST_PREFIX}{}",
+        hasher.finalize().to_hex()
+    ))
 }
 
 /// Runtime state of a stored checkpoint.
@@ -445,6 +507,26 @@ pub struct ClaimedEffect {
     pub checkpoint_version: u64,
 }
 
+/// Atomic reducer request after an approved outcome or denied no-I/O result
+/// has been reconstructed into the executor transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeApprovalEffect {
+    /// Stable approval identity.
+    pub approval_id: ApprovalId,
+    /// Exact effect identity.
+    pub effect_id: EffectId,
+    /// Exact run identity.
+    pub run_id: RunId,
+    /// Exact canonical subject digest.
+    pub subject_digest: String,
+    /// Leased checkpoint version used by the reducer.
+    pub expected_checkpoint_version: u64,
+    /// Recovery worker that must own the checkpoint lease.
+    pub worker_id: WorkerId,
+    /// Exact `WaitingEffect` run-state revision.
+    pub expected_run_state_version: u64,
+}
+
 /// Store-neutral approval/checkpoint error taxonomy.
 #[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case")]
@@ -511,6 +593,13 @@ pub enum ApprovalStoreError {
 /// Atomic approval/effect/run/checkpoint transaction boundary.
 #[async_trait]
 pub trait ApprovalCoordinatorStore: Send + Sync + 'static {
+    /// Whether this adapter implements the APR-03 atomic pause, exact claim,
+    /// and atomic reducer boundary. The default is deliberately false so a
+    /// pair of compatibility trait objects cannot make a runtime look ready.
+    fn supports_atomic_approval_resume(&self) -> bool {
+        false
+    }
+
     /// Atomically pause a running run for one exact approval.
     async fn pause_for_approval(
         &self,
@@ -542,11 +631,32 @@ pub trait ApprovalCoordinatorStore: Send + Sync + 'static {
         &self,
         request: ClaimApprovedEffect,
     ) -> Result<ClaimedEffect, ApprovalStoreError>;
+
+    /// Atomically transition the exact `WaitingEffect` run to `Running` and
+    /// append its stable `EffectsResolved` event after the reducer has a
+    /// durable approved outcome or a denied no-I/O result.
+    async fn resume_after_effect(
+        &self,
+        _request: ResumeApprovalEffect,
+    ) -> Result<u64, ApprovalStoreError> {
+        Err(ApprovalStoreError::InvalidTransition {
+            resource_type: "Run".to_owned(),
+            id: "unsupported".to_owned(),
+            expected: "atomic approval reduction support".to_owned(),
+            actual: "adapter does not implement resume_after_effect".to_owned(),
+        })
+    }
 }
 
 /// Durable versioned execution-checkpoint boundary.
 #[async_trait]
 pub trait ExecutionCheckpointStore: Send + Sync + 'static {
+    /// Whether this adapter implements exact checkpoint leasing and guarded
+    /// progress commits required by APR-03 recovery.
+    fn supports_exact_checkpoint_recovery(&self) -> bool {
+        false
+    }
+
     /// Load one checkpoint by run identity.
     async fn get_checkpoint(&self, run_id: RunId) -> Result<StoredCheckpoint, ApprovalStoreError>;
 
@@ -557,6 +667,24 @@ pub trait ExecutionCheckpointStore: Send + Sync + 'static {
         lease_duration: Duration,
         page: ApprovalPage,
     ) -> Result<Vec<LeasedCheckpoint>, ApprovalStoreError>;
+
+    /// Lease one exact resumable checkpoint without taking leases for
+    /// unrelated runs. The default fails closed for adapters that have not
+    /// implemented the APR-03 recovery CAS.
+    async fn lease_checkpoint(
+        &self,
+        _run_id: RunId,
+        _expected_version: u64,
+        _worker_id: WorkerId,
+        _lease_duration: Duration,
+    ) -> Result<LeasedCheckpoint, ApprovalStoreError> {
+        Err(ApprovalStoreError::InvalidTransition {
+            resource_type: "Checkpoint".to_owned(),
+            id: "unsupported".to_owned(),
+            expected: "exact checkpoint leasing support".to_owned(),
+            actual: "adapter does not implement lease_checkpoint".to_owned(),
+        })
+    }
 
     /// Commit progress only from the expected version and current lease owner.
     async fn commit_progress(
@@ -718,5 +846,34 @@ mod tests {
         assert_eq!(value["lease_duration"], 1_500);
         let back: ClaimApprovedEffect = serde_json::from_value(value).expect("deserialize claim");
         assert_eq!(back, request);
+    }
+
+    #[test]
+    fn canonical_digests_are_domain_separated_and_ignore_only_their_digest_field() {
+        let mut request = fixture();
+        let subject = compute_approval_subject_digest(&request.subject).expect("subject digest");
+        let checkpoint =
+            compute_execution_checkpoint_digest(&request.checkpoint).expect("checkpoint digest");
+        assert!(is_canonical_digest(&subject));
+        assert!(is_canonical_digest(&checkpoint));
+        assert_ne!(subject, checkpoint);
+
+        request.subject.subject_digest = subject.clone();
+        request.checkpoint.integrity_digest = checkpoint.clone();
+        assert_eq!(
+            compute_approval_subject_digest(&request.subject).expect("repeat subject digest"),
+            subject
+        );
+        assert_eq!(
+            compute_execution_checkpoint_digest(&request.checkpoint)
+                .expect("repeat checkpoint digest"),
+            checkpoint
+        );
+
+        request.subject.validated_arguments = serde_json::json!({"path":"other.txt"});
+        assert_ne!(
+            compute_approval_subject_digest(&request.subject).expect("changed subject digest"),
+            subject
+        );
     }
 }

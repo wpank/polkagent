@@ -20,6 +20,7 @@
 // lifecycle assertion that failed. Non-test library targets remain strict.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
 
+pub mod approval;
 pub mod budget;
 pub mod cost_tracker;
 pub mod dag;
@@ -35,6 +36,7 @@ pub mod turn;
 // Flat re-exports — the public API surface
 // ---------------------------------------------------------------------------
 
+pub use approval::ApprovalRuntimeConfig;
 pub use budget::{BudgetEnforcer, BudgetViolation};
 pub use cost_tracker::{BudgetExceededReason, CostTracker};
 pub use dag::{DagError, DagExecutor, ExecutionDag, NodeId, NodeState};

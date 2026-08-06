@@ -153,6 +153,15 @@ impl From<polkagent_run::RunError> for ServiceError {
                 message: format!("harness validation error: {msg}"),
             },
             polkagent_run::RunError::Unsupported(message) => Self::Unsupported { message },
+            polkagent_run::RunError::ManualReconciliation {
+                run_id,
+                effect_id,
+                reason,
+            } => Self::Internal {
+                message: format!(
+                    "manual reconciliation required for run {run_id}, effect {effect_id}: {reason}"
+                ),
+            },
         }
     }
 }

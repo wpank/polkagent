@@ -90,6 +90,13 @@ impl EffectPipeline {
         &self.store
     }
 
+    /// Return the stable worker identity shared by generic and
+    /// approval-coordinated effect claims in this pipeline.
+    #[must_use]
+    pub const fn worker_id(&self) -> WorkerId {
+        self.worker_id
+    }
+
     /// Persist a new effect intent BEFORE any I/O occurs (EFF-INV-1).
     pub async fn propose(&self, spec: EffectIntentSpec) -> Result<EffectId, PipelineError> {
         let kind = spec.kind;

@@ -3,8 +3,8 @@
 use thiserror::Error;
 
 use crate::state_machine::RunTransition;
-use polkagent_core::RunId;
 use polkagent_core::RunState;
+use polkagent_core::{EffectId, RunId};
 
 // ---------------------------------------------------------------------------
 // RunError
@@ -48,6 +48,15 @@ pub enum RunError {
     /// The selected execution backend cannot preserve the requested input.
     #[error("unsupported execution input: {0}")]
     Unsupported(String),
+
+    /// External I/O may have started but no durable outcome exists. Automatic
+    /// retry is forbidden and an operator must reconcile the effect.
+    #[error("manual reconciliation required for run {run_id}, effect {effect_id}: {reason}")]
+    ManualReconciliation {
+        run_id: RunId,
+        effect_id: EffectId,
+        reason: String,
+    },
 
     /// Serialization error.
     #[error("serialization error: {0}")]

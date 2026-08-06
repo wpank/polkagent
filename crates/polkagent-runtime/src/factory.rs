@@ -137,12 +137,6 @@ impl RuntimeFactory {
         }
         let pool = open_and_migrate(&database_path, config.database.sqlite.checkpoint_on_startup)?;
 
-        let recovered_runs = polkagent_service::lifecycle::recover_stuck_runs(&pool)
-            .await
-            .map_err(|error| RuntimeError::Recovery {
-                message: error.to_string(),
-            })?;
-
         let provider = provider::build(&config, &options)?;
         let harness = harness::build(&config, &options, &workdir)?;
         if provider.executor.is_none() && harness.harness.is_none() {
@@ -242,6 +236,18 @@ impl RuntimeFactory {
         })?);
         let (rehydrated_agents, normalized_legacy_agents) =
             rehydrate_agents(&service, &pool, options.model_override.as_deref())?;
+        let recovered_approval_checkpoints =
+            service
+                .recover_approval_checkpoints()
+                .await
+                .map_err(|error| RuntimeError::Recovery {
+                    message: format!("approval checkpoint recovery failed: {error}"),
+                })?;
+        let recovered_runs = polkagent_service::lifecycle::recover_stuck_runs(&pool)
+            .await
+            .map_err(|error| RuntimeError::Recovery {
+                message: error.to_string(),
+            })?;
 
         let interactions = Arc::new(DurableInteractionService::new(
             Arc::clone(&service),
@@ -316,6 +322,15 @@ impl RuntimeFactory {
             chain: chain_readiness,
             tools: tools_readiness,
             effects: ComponentReadiness::ready("durable SQLite EffectStore configured"),
+            approval_storage: ComponentReadiness::ready(
+                "SQLite approval coordinator and execution checkpoints are migrated",
+            ),
+            approval_executor: ComponentReadiness::disabled(
+                "not composed until an authenticated approval surface is available",
+            ),
+            approval_surfaces: ComponentReadiness::unavailable(
+                "APR-05 has not exposed authenticated lookup and approve/deny operations",
+            ),
             conversations: ComponentReadiness::ready("durable SQLite ConversationStore configured"),
             payments: ComponentReadiness::ready("durable SQLite PaymentStore configured"),
             memory: memory_readiness,
@@ -326,6 +341,7 @@ impl RuntimeFactory {
             policy_and_grants: policy_readiness,
             read_only_requested: options.read_only,
             recovered_runs,
+            recovered_approval_checkpoints,
             rehydrated_agents,
             warnings,
         };
@@ -334,6 +350,7 @@ impl RuntimeFactory {
             database = %database_path.display(),
             rehydrated_agents,
             recovered_runs,
+            recovered_approval_checkpoints,
             recovered_interaction_turns,
             loaded_skill_count,
             degraded = readiness.is_degraded(),

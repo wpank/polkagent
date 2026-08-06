@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use chrono::DateTime;
 use polkagent_core::{RunId, StepId, TurnId};
 use polkagent_store_trait::{RunStatus, RunStore, RunSummary, StoreError, TurnSummaryRecord};
+use rusqlite::OptionalExtension as _;
 
 use crate::pool::SqlitePool;
 
@@ -595,6 +596,17 @@ impl RunStore for SqlitePool {
                 )
                 .map_err(map_sqlite_err)?;
             if changed == 0 {
+                let already_completed = writer
+                    .query_row(
+                        "SELECT completed_at IS NOT NULL FROM steps WHERE id = ?1",
+                        [&step_id_str],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .optional()
+                    .map_err(map_sqlite_err)?;
+                if already_completed == Some(true) {
+                    return Ok(());
+                }
                 return Err(StoreError::NotFound {
                     resource_type: "Step",
                     id: step_id_str,
