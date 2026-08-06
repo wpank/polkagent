@@ -93,8 +93,18 @@ The server publishes these through ACP `available_commands_update`:
 | `/status` | Show the session ID, workspace, selected agent, and prompt activity (`/st`). |
 | `/agents` | List active agents from the configured SQLite database. |
 | `/agent <name-or-id>` | Select the agent used for subsequent prompts (`/use`). |
+| `/runs` | List up to 20 newest runs linked to this durable editor session. |
+| `/inspect <run-id>` | Inspect a session-owned run through a bounded, redaction-safe projection. |
 | `/model [id]` | Show or select the session model; use `default` or `inherit` to return to the selected agent's model. |
 | `/cancel` | Cancel the active editor prompt (`/stop`). |
+
+`/runs` and `/inspect` use the same registry metadata, runtime read model, and
+formatter as terminal chat. Inspection exposes stable run/agent/artifact IDs,
+a normalized state, and at most a generic terminal error. It does not expose
+prompt parameters, provider error strings, artifact bodies, or metadata. Both
+commands are bounded to 20 rows. `/inspect` requires exact ownership by the
+selected ACP conversation; foreign and missing run IDs are rejected with the
+same not-found result.
 
 Normal text prompts call the durable `InteractionService`, creating a stable
 turn and linked run before execution. Typed `AgentMessageDelta` events become
@@ -221,7 +231,8 @@ Implemented and covered by executable protocol evidence:
   fail-closed legacy-row policy;
 - text and resource-link prompts;
 - shared-registry slash-command discovery, aliases, detailed help, agent
-  selection, status, and active-prompt cancellation;
+  selection, status, bounded conversation-scoped run listing/inspection, and
+  active-prompt cancellation;
 - CLI early dispatch before telemetry so stdout belongs to ACP;
 - one shared `RuntimeFactory` composition for ACP, including file-backed SQLite
   migration, abandoned-run recovery, active-agent rehydration, provider/model

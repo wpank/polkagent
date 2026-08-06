@@ -476,11 +476,14 @@ adapter hooks through small interfaces.
   the Console through shared handlers; render structured command state, guard
   stale results, switch/load exact same-agent sessions, and keep commands out
   of the model transcript.
-- [ ] Expose the already-implemented shared `/runs` and `/inspect <run-id>`
-  handlers through terminal chat, the TUI, and ACP/Zed with one safe output
-  projection and identical availability/help metadata. Do not add adapter-local
-  run queries or subprocess fallback; prove wrong-interaction/run scope,
-  bounded output, restart, and editor protocol behavior.
+- [ ] Complete shared `/runs` and `/inspect <run-id>` across every interactive
+  surface.
+  - [x] Terminal chat and ACP/Zed use one runtime-owned, conversation-scoped
+    read model and the same bounded/redaction-safe formatter and registry
+    metadata. Process/restart, wrong-conversation, and official-client tests
+    cover their paths; neither adapter queries SQLite or launches a subprocess.
+  - [ ] Wire the same read model and formatter into the TUI Console, preserving
+    its request-generation/stale-result guards and bounded activity model.
 - [x] Execute `/model [id]` through the same service executor, persist the
   selection per durable conversation, project it into Console status/header,
   guard stale original-conversation results, and prove restart/isolation/
@@ -841,7 +844,7 @@ from an explicitly ready remaining row rather than replaying foundation work.
 | Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
 | TUI orchestration | **Complete bounded slice:** TUI-03 supports eight simultaneous agent/conversation activities, a 32-entry redaction-safe retained strip, per-conversation viewports, exact cancellation, duplicate refusal, and deterministic backpressure/eviction | CLI TUI controller/state/render/tests only | Preserve independent progress and shutdown reaping; durable group plans/child-run orchestration and rich structured plans remain separate work. |
 | Observability | **Metadata slice complete; reconnect packet in progress:** SQLite V19 preserves complete canonical run-event metadata, and `/ws/v1alpha1` is gaining a versioned public reconnect cursor | Command-WebSocket protocol/API tests only for the active packet | Preserve legacy durable cursor order and fail-closed projection; prove reconnect replay/dedupe/version errors while tenant/principal isolation remains open. |
-| Shared IDE commands | **In progress:** expose existing `/runs` and `/inspect` service handlers in chat and ACP through shared safe formatting; add TUI consumption after the shared port lands | Interaction and chat/ACP adapters first; no new run-store business logic or TUI hot-file overlap | Surfaces advertise the same supported registry entries, enforce interaction/run scope, bound/redact output, and pass restart plus official-ACP-client tests. |
+| Shared IDE commands | **Terminal chat + ACP complete; TUI pending:** both shipped `/runs` and `/inspect` through one scoped read model and formatter | TUI consumes the landed interaction/runtime ports without adapter-local queries | Add the same registry entries to the Console while preserving stale-result guards; chat/ACP scope, bounds, redaction, restart, and official-client gates are green. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |

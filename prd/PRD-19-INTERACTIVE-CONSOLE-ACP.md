@@ -166,7 +166,7 @@ It remains design input rather than the completion contract.
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
 | Use Polkagent *from* Zed | Protocol/tool slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK, durable cwd isolation, native tool updates, and executable client fixtures; editor permission acceptance is still open |
-| ACP slash commands/config selectors | Durable shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/model`, and current-prompt `/cancel` plus aliases are registry-derived; native selectors write the same durable interaction config, while provider/autonomy settings remain unavailable |
+| ACP slash commands/config selectors | Durable shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/runs`, `/inspect`, `/model`, and current-prompt `/cancel` plus aliases are registry-derived; run reads are bounded, redaction-safe, and conversation-scoped, while native selectors write the same durable interaction config and provider/autonomy settings remain unavailable |
 | REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, checkpointed SSE, immutable skill reads, and durable memory query/lookup/stats/deletion use exact runtime-owned components; 9 optional skill-mutation/audit/registry routes remain unavailable |
 
 ## 1. What Polkagent actually has today
@@ -1217,6 +1217,9 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [x] Advertise the initial MVP slash commands.
 - [x] Move discovery/parsing/help/aliases onto the shared registry and execute
   the truthful durable subset, including current-prompt cancellation.
+- [x] Expose `/runs` and `/inspect <run-id>` in ACP through the runtime-owned
+  conversation-scoped read model and shared bounded formatter; prove durable
+  IDs before and after subprocess restart with the official ACP client.
 - [x] Expose native active-agent/model config options and route `/agent` and
   `/model` through the same persisted interaction configuration.
 - [x] Persist and compare immutable lexical origin cwd before prompt/load/resume;

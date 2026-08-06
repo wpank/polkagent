@@ -58,6 +58,11 @@ supported commands execute through its shared service executor:
 - `/agent <name-or-id>` — validate an exact active name or UUID and persist it
   as this conversation's target. Unknown, inactive, and ambiguous selectors
   fail closed. A conversation with non-terminal durable work cannot switch.
+- `/runs` — list up to 20 newest runs linked to this durable conversation.
+- `/inspect <run-id>` — show the run's stable ID, normalized state, owning
+  agent, up to 20 stable artifact IDs, and a generic terminal error when
+  applicable. A missing run and a run owned by another conversation return the
+  same not-found error.
 - `/cancel [all]` (alias `/stop`) — cancel the active turn or all active turns
   in the selected interaction.
 - `/new [title]` — create and select another durable interaction for the
@@ -73,9 +78,15 @@ The following capabilities are explicitly unavailable rather than simulated:
 - Provider, harness, or autonomy changes: configure the runtime or agent and
   restart. `/provider`, `/harness`, and `/autonomy` return an error.
 - Approvals (`/approve`, `/deny`): use the durable `polkagent inbox` commands.
-- Run listing/inspection and run-ID cancellation: use the top-level inspection
-  surfaces. Terminal `/cancel` is turn-scoped.
+- Run-ID cancellation: use the top-level run commands. Terminal `/cancel` is
+  turn-scoped.
 - Group orchestration and rich resource input.
+
+Run commands use the runtime-owned read model shared with ACP. Surface adapters
+do not query SQLite or launch an inspection subprocess. The projection never
+includes prompts, run parameters, provider error text, artifact bodies or
+artifact metadata; both the read and render boundaries enforce the 20-item
+limits.
 
 Approval visibility is also reported as unavailable in `/status`; a synthetic
 zero is not presented as authoritative.

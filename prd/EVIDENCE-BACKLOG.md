@@ -87,6 +87,12 @@ reports.
   fixture proves exact durable conversation/turn/run links, no duplicate retry
   run, transcript replay on load, no replay on resume, persisted model config,
   and continued use of the same interaction after subprocess replacement.
+  That official-client path now advertises registry-identical `/runs` and
+  `/inspect` entries, lists and inspects the exact durable run ID, then repeats
+  both reads after `session/load` in a replacement subprocess. The shared read
+  model caps runs/artifacts at 20, removes stored reason suffixes and all prompt,
+  parameter, body, metadata, and provider-error fields, and returns the same
+  not-found result for missing and foreign-conversation run IDs.
   Separate fixtures prove JSON-only protocol stdout, missing/unavailable
   startup failure before protocol output, provider/backend secret redaction,
   backend panic containment, ACP-scoped panic-payload suppression, and opt-in
@@ -151,6 +157,11 @@ reports.
   create zero turns/runs/events; leave AgentSpec JSON unchanged; survive process
   restart; and route the next real run to the persisted target without claiming
   unproved per-agent readiness.
+  A terminal-chat process fixture creates one durable run, lists and inspects
+  its exact ID from later `--resume` processes, and proves a fresh conversation
+  cannot inspect it. Terminal chat and ACP render those projections through
+  the same bounded formatter; TUI consumption remains an open implementation
+  item.
   A single deterministic SQLite fixture now creates and configures one exact
   conversation through the in-process HTTP router, prompts it through a real
   `polkagent chat --resume` subprocess, restarts and loads it through an
