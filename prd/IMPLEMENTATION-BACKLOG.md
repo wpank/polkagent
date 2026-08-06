@@ -298,17 +298,21 @@ reject/default-deny and full crash-boundary counting-tool matrix; APR-08 owns
 operator reconciliation, manual Zed, authenticated shared/remote composition,
 and broader security/observability closure.
 
-APR-08 now also has one paired attempt-boundary proof in
-`approval_possible_io_recovery.rs`. For the pre-I/O side, a real file-backed
-SQLite approval is claimed and the process stops with zero attempts; after the
-effect/checkpoint leases expire, a restarted `AppService` reclaims under a new
-worker and produces exactly one handler call, attempt, consumed success
-outcome, and completed/terminal reduction. A second restart recovers zero work
-and preserves every recorded identity. For the adjacent possible-I/O side, an
-attempt start with no outcome still makes two restarted recoveries return the
-same typed manual-reconciliation run/effect identity with zero handler calls
-and no fabricated outcome. This does not implement operator resolution or
-close the remaining crash-point matrix.
+APR-08 now also has three adjacent claim/attempt-boundary proofs in
+`approval_possible_io_recovery.rs`. The first stops after durable approval but
+before any effect claim or checkpoint lease: the effect remains `Approved`,
+the checkpoint `Resumable`, both lease pairs null, and attempt/outcome counts
+zero. A fresh `AppService` claims and executes once, persists one linked
+consumed success outcome, completes/terminalizes the exact lineage, and a
+second restart recovers zero work with the full queried lineage unchanged.
+For the next pre-I/O side, a real file-backed SQLite approval is claimed and
+the process stops with zero attempts; after the effect/checkpoint leases
+expire, a restarted service reclaims under a new worker and reaches the same
+exact-once terminal result. For the adjacent possible-I/O side, an attempt
+start with no outcome still makes two restarted recoveries return the same
+typed manual-reconciliation run/effect identity with zero handler calls and no
+fabricated outcome. This does not implement operator resolution or close the
+remaining crash-point matrix.
 
 The APR-00 serialized-contract remainder is also closed with executable static
 snapshots. `polkagent-store-trait` pins all current approval/checkpoint state,
@@ -962,7 +966,7 @@ packet sections above and must not be rebuilt under a new ID.
 
 | Lane | Packet and next deliverable | Exclusive primary ownership | Dependency / integration gate |
 |---|---|---|---|
-| Approval recovery | APR-08/EXE-01: add the pause/decision/claim/pre-I/O/post-I/O crash matrix, including handler-I/O cancellation and possible-I/O operator reconciliation | `polkagent-run` recovery fixtures and the narrow coordinator test adapters; no surface widgets | Ready on APR-03 and `20dbcb1`. Preserve exact attempt/outcome lineage and never auto-retry an indeterminate effect. Coordinate any SQLite migration with the integration owner. |
+| Approval recovery | APR-08/EXE-01: finish the remaining pause/decision/claim/pre-I/O/post-I/O crash matrix, including handler-I/O cancellation and possible-I/O operator reconciliation | `polkagent-run` recovery fixtures and the narrow coordinator test adapters; no surface widgets | Ready on APR-03 and `20dbcb1`; approval-before-claim, expired claim-before-attempt, and attempt-without-outcome now have real-file service evidence. Preserve exact attempt/outcome lineage and never auto-retry an indeterminate effect. Coordinate any SQLite migration with the integration owner. |
 | Shared authority | SEC-01 + APR-08: derive authenticated tenant/workspace/principal for the API/shared service, map credentials to stable principals, and prove wrong-tenant/default-deny behavior | Auth/principal ports plus the minimal runtime/API approval composition seam | Ready on APR-05/07. This lane owns API approval authority; it must not turn CLI-supplied local tuples into remote authentication. Serialize `RuntimeFactory`, API state, and OpenAPI edits. |
 | Editor validation | ACP-01/EVD-07: run the documented Zed tool/allow/reject/cancel/restart/load/log smoke and preserve screenshots/log conclusions | Evidence and ACP/Zed docs only unless the smoke exposes a reproducible adapter defect | Ready now on APR-07 and the non-GUI Zed config contract. Manual evidence cannot be replaced by another protocol fixture. |
 | Headless orchestration | ORC-01: durable group CRUD, child-run attribution/cancellation, quorum/synthesis, then feed/eval execution through the shared runtime | Group/feed/eval service and store modules; no TUI/ACP rendering until the headless exit passes | Ready on FND-01/FND-02 and the bounded EXE-01 path. Keep group migration registration and runtime injection as integration-owner handoffs. |
