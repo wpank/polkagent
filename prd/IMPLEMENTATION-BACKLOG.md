@@ -428,6 +428,12 @@ adapter hooks through small interfaces.
   key/paste input, coalesces resize and tick bursts, awaits the bounded
   interaction-controller channel, and cancels/drains/reaps producer tasks on
   normal exit or error with abort-on-unwind fallback.
+- [x] Move periodic aggregate SQLite projections and blocking chain HTTP polls
+  off the terminal thread. Each class is single-flight, database refreshes
+  collapse to one newest-generation follow-up, results cross a four-slot
+  bounded channel, stale run-selection generations cannot apply, partial
+  redacted failures remain visible, and production tracks the actual blocking
+  handles through bounded shutdown rather than only their async wrappers.
 - [x] Pass one long-lived `PolkagentRuntime`, not only a SQLite pool, into the
   TUI and reuse its exact service/event bus/pool across sequential prompts.
 - [x] Pass the full durable interaction-service handle into the TUI and route
@@ -486,11 +492,20 @@ approvals remain open.
 
 The TUI shell is now event-driven rather than a Crossterm poll/read frame loop.
 Headless tests cover bounded ordered input, latest-resize and tick coalescing,
-background completion wakeups, idle blocking, input failure, and joined
-shutdown. Existing controller tests continue to cover prompt, follow-up,
-cancellation, commands, and session selection through awaited events; the Unix
-PTY lifecycle test continues to prove terminal restoration. Monitoring tabs
-and their existing refresh projections are unchanged.
+background completion wakeups, idle blocking, input failure, and bounded
+shutdown. Periodic SQLite projection and chain HTTP work now run as separately
+single-flight tracked jobs behind a bounded result queue: missed database
+refreshes coalesce to the newest selected-run generation and missed chain ticks
+are satisfied by the in-flight poll. Deterministic blocked/failing-worker tests
+prove cancel, prompt-entry, resize, and controller events remain responsive;
+stale generations cannot overwrite the newest selected run. SQLite lock waits
+and each RPC exchange are bounded. Normal shutdown joins the actual blocking
+handles within a six-second ceiling; an abnormal job that exceeds that ceiling
+is reported explicitly rather than being described as joined. Existing
+controller tests continue to cover prompt, follow-up, cancellation, commands,
+and session selection through awaited events; the Unix PTY lifecycle test
+continues to prove terminal restoration. Monitoring-tab content and rendering
+remain unchanged.
 
 **Exit checks:** user can launch, select/create an agent, prompt, see tokens and
 tools, approve/deny, cancel, prompt again, restart, and resume. Headless event

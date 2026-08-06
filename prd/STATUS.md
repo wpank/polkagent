@@ -55,7 +55,11 @@ The same suite checks that successful-session stdout lines are JSON and that a
 missing explicit config exits 4 with empty stdout and its diagnostic on stderr.
 Focused TUI tests cover reducer/input/render behavior, grapheme-safe editing,
 bounded bracketed paste, multiline prompts, durable target/model selection,
-follow-up/restart, stale-load race protection, and exact cancellation.
+follow-up/restart, stale-load race protection, and exact cancellation. The
+headless async-pump suite also covers bounded ordered input, resize/tick
+coalescing, blocked projection and failing chain workers, newest-generation
+refresh selection, responsive cancel/prompt/controller delivery, and bounded
+worker shutdown.
 Terminal-chat subprocess tests cover clean non-TTY output, durable transcript/
 target/model resume, unsupported configuration, and SIGINT cancellation. HTTP interaction tests cover retry/
 conflict, filtered checkpoint replay, cancellation, restart, auth, and read-only
@@ -91,7 +95,7 @@ exact ignored rule pointers rather than broad suppression.
 | Surface/capability | Component state | Product state | Decisive gap |
 |---|---|---|---|
 | One-shot CLI run | Uses the shared `RuntimeFactory`; subprocess and durable-restart coverage pass | Partially usable; the bounded grantless registered-tool path is composed below its CLI boundary | The path is `AppService`-tested, but no one-shot CLI subprocess proves schema advertisement through handler I/O and next inference; policy, approvals, crash recovery, cancellation during I/O, and external-tool evidence remain. |
-| Monitoring TUI | Rich views plus a durable F9 Console, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, and durable session/agent selection | Actionable for one turn at a time and restart-resumable | Prompt/follow-up/live typed output/cancel, bounded contextual model-executor history, help/status/agents/agent/new/resume/model, exact session switching, and safe tool status lines run through shared services; simultaneous orchestration, harness context, rich plans, and service-routed approvals remain. |
+| Monitoring TUI | Rich views plus a durable F9 Console, bounded async input/controller pump, single-flight background SQLite/chain projections, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, and durable session/agent selection | Responsive and actionable for one turn at a time, including while monitoring I/O is blocked, and restart-resumable | Prompt/follow-up/live typed output/cancel, bounded contextual model-executor history, help/status/agents/agent/new/resume/model, exact session switching, and safe tool status lines run through shared services; simultaneous orchestration, harness context, rich plans, and service-routed approvals remain. |
 | REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool/skill/memory composition, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, persisted target/model configuration, finite replay, checkpointed SSE, global run-event replay/reconnect, and command-socket in-session lag recovery are composed; 9 optional skill-mutation/audit/registry routes, command-socket reconnect/cursor semantics, and full shutdown remain. |
 | Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable single-agent, target/model-selectable line-mode session | Interactive/non-TTY prompt, multiline input, contextual follow-up, transcript resume, persisted conversation-scoped `/agent` and `/model`, safe tool status, lag replay, and SIGINT cancellation work; provider/harness/autonomy changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
@@ -195,6 +199,17 @@ exact ignored rule pointers rather than broad suppression.
   and stale-result cases fail closed; a successful switch preserves the exact
   conversation/transcript/model, survives restart, routes the next run to the
   persisted target, creates no turn/run/event, and does not mutate AgentSpec.
+- `crates/polkagent-cli/src/tui/app.rs` now selects terminal, controller, tick,
+  resize, and monitoring events asynchronously. Aggregate SQLite projections
+  and chain HTTP calls run off the terminal thread with at most one job per
+  class, a bounded four-result queue, newest-only refresh coalescing, and
+  selected-run generation guards. The scheduler tracks the actual production
+  blocking handles; SQLite busy waits and individual RPC exchanges are bounded,
+  ordinary shutdown joins within a finite ceiling, and an over-ceiling job is
+  surfaced as a shutdown error. Headless blocked/failing-worker tests prove
+  input, cancel, resize, and controller responsiveness without changing the
+  existing monitoring views. This does not add simultaneous orchestration or
+  make legacy approval/database actions safe.
 - `crates/polkagent-cli/src/commands/chat.rs` implements retained-runtime
   interactive and non-TTY durable chat. It creates or resumes an interaction,
   accepts multiline input, streams typed updates with checkpoint resubscribe,

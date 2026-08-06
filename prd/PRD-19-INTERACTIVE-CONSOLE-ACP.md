@@ -184,12 +184,21 @@ coverage; the broader baseline remains recorded in `STATUS.md`.
 
 The event loop in `crates/polkagent-cli/src/tui/app.rs`:
 
-- is synchronous;
-- polls keyboard input;
-- polls SQLite every five seconds;
-- optionally polls a chain endpoint;
+- asynchronously selects bounded terminal input, runtime/controller events,
+  monitoring completions, resize updates, and coalesced ticks;
+- applies backpressure to key and paste input while retaining only the newest
+  resize and avoiding accumulated idle ticks;
+- schedules the five-second SQLite aggregate projection on a tracked blocking
+  job, with one in flight and one newest-generation follow-up;
+- schedules an optional chain poll on a separate tracked, single-flight
+  blocking job, with bounded HTTP exchanges;
+- carries monitoring snapshots through a four-slot bounded result channel and
+  rejects stale run-selection generations before they can update live state;
 - renders at an effective 10 fps (5 fps when idle);
-- drains a typed controller channel for run output and task completion.
+- awaits a bounded typed controller channel for run output and task completion;
+- joins input/controller/monitoring producers on ordinary shutdown, with an
+  explicit error if a blocking monitoring job exceeds the finite shutdown
+  ceiling rather than silently claiming it was joined.
 
 `App` owns a long-lived `PolkagentRuntime`, its `SqlitePool`, and a
 `RunController`. The Console reads the shared typed command registry for
@@ -197,7 +206,10 @@ discovery/help and routes prompt/cancel through the runtime's exact durable
 `InteractionService`. Sequential prompts reuse one durable per-agent
 interaction; `s` lists and selects same-agent interactions through that service,
 typed events and conversation/turn/run IDs project without blocking the UI,
-and bounded transcript/composer history reloads after restart.
+and bounded transcript/composer history reloads after restart. Deliberately
+blocked/failing refresh fixtures prove cancel, prompt entry, resize, and
+controller completion stay responsive, and that only the latest selected-run
+projection can apply.
 
 The TUI is not completely read-only: legacy approvals, denials, and memory
 deletion write directly through `TuiDb`. Those approval writes are unsafe
@@ -1122,7 +1134,8 @@ a role-safe harness/session context contract.
 
 - [x] Convert the TUI event loop to a bounded async channel-driven architecture
   with lossless key/paste backpressure, coalesced resize/tick signals, awaited
-  runtime completions, and tracked shutdown.
+  runtime completions, tracked shutdown, and separately single-flight
+  background SQLite/chain projections.
 - [x] Pass one retained `PolkagentRuntime`, not only `SqlitePool`, into `App`.
 - [x] Add the first single-run Console workspace and composer.
 - [x] Preserve root explicit config selection through the TUI run bootstrap.
@@ -1161,10 +1174,10 @@ a role-safe harness/session context contract.
   bootstrap tests.
 - [x] Add real Unix PTY proof for terminal restoration after normal exit,
   ordinary error, and caught panic.
-- [ ] Add simultaneous-run event-loop tests. Deterministic headless coverage now
-  proves bounded ordered input, resize/tick coalescing, background wakeups,
-  idle blocking, input failure, and joined shutdown; simultaneous orchestration
-  remains unavailable.
+- [x] Add deterministic headless event-loop, resize/coalescing, blocked/failing
+  projection, stale-generation, and bounded-shutdown tests.
+- [ ] Add simultaneous-run orchestration and its surface tests; the controller
+  intentionally remains single-active-turn today.
 - [x] Add focused real-runtime restart/history/follow-up/cancellation tests plus
   stale-history race and UTF-8 output-bound regressions.
 
