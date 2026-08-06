@@ -77,7 +77,7 @@ pub async fn run(
         return Ok(());
     }
 
-    let started = start_one_shot_run(cmd, pool, config_path).await?;
+    let started = Box::pin(start_one_shot_run(cmd, pool, config_path)).await?;
     for note in &started.notes {
         eprintln!("{note}");
     }
@@ -569,7 +569,7 @@ mod tests {
             timeout: 10,
         };
 
-        let mut started = start_one_shot_run(&command, &pool, Some(&config_path))
+        let mut started = Box::pin(start_one_shot_run(&command, &pool, Some(&config_path)))
             .await
             .expect("start runtime-backed run");
         assert!(started.service.has_timeout_enforcer());

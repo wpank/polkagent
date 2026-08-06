@@ -43,22 +43,27 @@ pub async fn run(
         "acp.backend_initializing",
         "ACP runtime backend initialization started",
     );
-    let backend = PolkagentAcpBackend::build(cmd, database_path, config_path, diagnostics.clone())
-        .await
-        .inspect_err(|error| {
-            if is_database_initialization_error(error) {
-                diagnostics.record(
-                    "error",
-                    "acp.database_open_failed",
-                    "ACP database initialization failed",
-                );
-            }
+    let backend = Box::pin(PolkagentAcpBackend::build(
+        cmd,
+        database_path,
+        config_path,
+        diagnostics.clone(),
+    ))
+    .await
+    .inspect_err(|error| {
+        if is_database_initialization_error(error) {
             diagnostics.record(
                 "error",
-                "acp.backend_initialization_failed",
-                "ACP runtime backend initialization failed",
+                "acp.database_open_failed",
+                "ACP database initialization failed",
             );
-        })?;
+        }
+        diagnostics.record(
+            "error",
+            "acp.backend_initialization_failed",
+            "ACP runtime backend initialization failed",
+        );
+    })?;
     diagnostics.record("info", "acp.runtime_ready", "ACP shared runtime is ready");
     diagnostics.record(
         "info",

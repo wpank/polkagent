@@ -45,7 +45,7 @@ const SUPPORTED_COMMANDS: [CommandName; 10] = [
 /// Run a durable terminal chat session.
 #[allow(clippy::too_many_lines)]
 pub async fn run(cmd: &ChatCmd, pool: &SqlitePool, config_path: Option<&Path>) -> Result<()> {
-    let runtime = build_runtime(pool, config_path).await?;
+    let runtime = Box::pin(build_runtime(pool, config_path)).await?;
     report_runtime(&runtime);
 
     let service: Arc<dyn InteractionService> = runtime.interactions().clone();

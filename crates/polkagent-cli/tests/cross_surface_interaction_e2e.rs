@@ -346,7 +346,7 @@ async fn one_interaction_conforms_across_http_chat_acp_and_tui_restarts() {
 
     // HTTP is the first public owner: it creates the agent and exact durable
     // interaction, then persists the model without creating a turn.
-    let api_runtime = runtime_at(workdir, &database_path, &config_path).await;
+    let api_runtime = Box::pin(runtime_at(workdir, &database_path, &config_path)).await;
     let server = http_server(&api_runtime);
     let created_agent = server
         .post("/api/v1alpha1/agents")
@@ -799,7 +799,7 @@ async fn one_interaction_conforms_across_http_chat_acp_and_tui_restarts() {
 
     // Reconstruct HTTP one final time and compare its public projection to the
     // identities already observed from chat, ACP, and TUI.
-    let final_api_runtime = runtime_at(workdir, &database_path, &config_path).await;
+    let final_api_runtime = Box::pin(runtime_at(workdir, &database_path, &config_path)).await;
     let final_server = http_server(&final_api_runtime);
     let interaction_response = final_server
         .get(&format!("/api/v1alpha1/interactions/{conversation_id}"))

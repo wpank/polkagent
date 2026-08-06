@@ -99,7 +99,7 @@ fn run_acp_panic_probe(_diagnostics: &AcpDiagnostics) {}
 
 #[tokio::main]
 async fn main() {
-    let (code, error) = run_main().await;
+    let (code, error) = Box::pin(run_main()).await;
     if let Some(ref err) = error {
         eprintln!("Error: {err:#}");
     }
@@ -224,7 +224,8 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
             let (name, res) = match &cli.command {
                 None => {
                     if std::io::stdout().is_terminal() {
-                        let result = launch_tui(pool, config_path.as_deref(), "dashboard").await;
+                        let result =
+                            Box::pin(launch_tui(pool, config_path.as_deref(), "dashboard")).await;
                         ("tui", result)
                     } else {
                         let _ = Cli::command().print_help();
@@ -234,7 +235,8 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                 }
                 Some(Commands::Tui(cmd)) => {
                     if std::io::stdout().is_terminal() {
-                        let result = launch_tui(pool, config_path.as_deref(), &cmd.tab).await;
+                        let result =
+                            Box::pin(launch_tui(pool, config_path.as_deref(), &cmd.tab)).await;
                         ("tui", result)
                     } else {
                         (
