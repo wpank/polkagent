@@ -36,7 +36,7 @@ mod output;
 mod tui;
 
 use acp_diagnostics::AcpDiagnostics;
-use cli::{AcpCmd, Cli, Commands};
+use cli::{AcpCmd, Cli, Commands, TuiCmd};
 use output::OutputFormat;
 
 const ACP_PANIC_DIAGNOSTIC: &str =
@@ -234,32 +234,10 @@ async fn run_main() -> (i32, Option<anyhow::Error>) {
                         ("help", Ok(()))
                     }
                 }
-                Some(Commands::Tui(cmd)) => {
-                    match cmd
-                        .approval
-                        .authority("tui")
-                        .map_err(anyhow::Error::new)
-                        .context("invalid TUI approval authority")
-                    {
-                        Err(error) => ("tui", Err(error)),
-                        Ok(approval_authority) if std::io::stdout().is_terminal() => {
-                            let result = Box::pin(launch_tui(
-                                pool,
-                                config_path.as_deref(),
-                                &cmd.tab,
-                                approval_authority,
-                            ))
-                            .await;
-                            ("tui", result)
-                        }
-                        Ok(_) => (
-                            "tui",
-                            Err(anyhow::anyhow!(
-                                "the TUI requires an interactive terminal; stdout is not a TTY"
-                            )),
-                        ),
-                    }
-                }
+                Some(Commands::Tui(cmd)) => (
+                    "tui",
+                    Box::pin(run_explicit_tui(cmd, pool, config_path.as_deref())).await,
+                ),
                 Some(Commands::Run(cmd)) => {
                     let _span = tracing::info_span!(
                         "run",
@@ -461,6 +439,22 @@ fn open_pool(db_path: &str) -> Result<SqlitePool> {
 // ---------------------------------------------------------------------------
 // TUI launcher
 // ---------------------------------------------------------------------------
+
+async fn run_explicit_tui(
+    cmd: &TuiCmd,
+    pool: SqlitePool,
+    config_path: Option<&std::path::Path>,
+) -> Result<()> {
+    let approval_authority = cmd
+        .approval
+        .authority("tui")
+        .map_err(anyhow::Error::new)
+        .context("invalid TUI approval authority")?;
+    if !std::io::stdout().is_terminal() {
+        anyhow::bail!("the TUI requires an interactive terminal; stdout is not a TTY");
+    }
+    Box::pin(launch_tui(pool, config_path, &cmd.tab, approval_authority)).await
+}
 
 /// Launch the interactive ROSEDUST TUI and ensure teardown on exit.
 ///
