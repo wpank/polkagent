@@ -5940,15 +5940,19 @@ criteria. Phase annotations reference the implementation timeline.
   - Current: Both token entry paths are implemented. Invalid first-message auth
     returns an error but does not close, so the stated acceptance is not met.
 
-- [ ] **E-WS-03** Channel subscription with cursor-based replay
+- [x] **E-WS-03a** Bounded channel subscription with durable cursor replay and
+  reconnect
   - Phase: 0
-  - Acceptance: Replay delivers events in sequence; gap event on buffer miss
-  - Current: An additive opaque `v1:<global_sequence>` durable event cursor and
-    upgrade query plus an explicit post-subscription `ready` barrier provide
-    ordered bounded multi-channel replay/reconnect with filtering and dedupe.
-    Cursor auth precedes store access and malformed/stale/future cursors fail
-    closed. A distinct gap-event snapshot is not implemented, so the stated
-    acceptance remains open.
+  - Acceptance: An additive opaque `v1:<global_sequence>` cursor, upgrade query,
+    and explicit post-subscription `ready` barrier deliver ordered bounded
+    run/agent replay/reconnect with filtering and replay/live dedupe. Cursor auth
+    precedes store access; malformed/stale/future cursors and backend failures
+    fail closed. Real-TCP fixtures cover page boundaries and forced-lag recovery.
+- [ ] **E-WS-03b** Gap-event snapshot contract for non-durable buffer misses
+  - Phase: 1
+  - Acceptance: Emit the specified gap/snapshot envelope without weakening the
+    completed durable replay path. Diagnostic and ephemeral frames currently
+    remain explicitly best-effort.
 
 - [ ] **E-WS-04** Back-pressure mode declaration
   - Phase: 1

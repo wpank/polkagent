@@ -239,10 +239,11 @@ polkagent memory sweep --dry-run
 
 The HTTP schema at `/api/v1alpha1` defines routes for agents, runs, effects,
 artifacts, events, providers, skills, tools, payments, memory, audit,
-conversations, and registry. The current `serve` composition still uses
-in-memory agents/runs and leaves optional dependencies unwired, so this is not
-yet a durable production control plane and some routes intentionally return
-`501 Not Implemented`.
+conversations, and registry. The current `serve` composition uses the shared
+runtime and durable SQLite-backed core stores rather than in-memory agent/run
+substitutes. Nine optional skill-mutation, audit, and registry routes remain
+explicit `501 Not Implemented` boundaries, and principal-bound approval routes
+remain unavailable in the ordinary production factory.
 
 ```bash
 # Start the API server
@@ -262,7 +263,16 @@ curl -X POST http://localhost:9090/api/v1alpha1/runs \
 websocat ws://localhost:9090/api/v1alpha1/events/stream?run_id=<RUN_ID>
 ```
 
-Rate limiting (100 req/s default, token bucket), health checks (`/health/{live,ready,startup}`), and cursor-based pagination included.
+The run-event socket replays and follows durable events from
+`after_sequence=<global-sequence>`. The separate command socket at
+`/ws/v1alpha1` supports a versioned `v1:<global-sequence>` reconnect cursor,
+initial run/agent subscriptions, and a `ready` replay barrier; both paths have
+bounded replay, reconnect, lag-recovery, filtering, deduplication, and
+fail-closed recovery tests. Diagnostic and ephemeral frames remain best-effort,
+and automatic client/SDK reconnect is separate open work.
+
+Health checks (`/health/{live,ready,startup}`) and cursor-based pagination are
+included. Production rate-limit policy/provenance remains an operational gap.
 
 ### Skills & Marketplace
 

@@ -4011,19 +4011,20 @@ task lists its acceptance criterion from section 20 where applicable.
   read-time upgrade, dead-letter table, `UnknownEventPolicy::DeadLetter`.
   _Acceptance: replay across schema version boundaries without hard failure._
 
-- [ ] **EVT-06** Implement cursor-based event subscription: pull API
-  (`read_from_cursor`) and push via WebSocket (section 9.3).
-  _Acceptance: AC-EVT-05, AC-EVT-07._
-  _Partial evidence (2026-08-06): the global API WebSocket passes bounded
-  replay, reconnect, filter, concurrent follow, forced-lag, dedupe, auth, and
-  sanitized failure fixtures, including canonical recorder-to-SQLite payload
-  projection and rowid checkpoint proof. The command WebSocket separately
-  passes real-TCP run/agent multi-subscription, unsubscribe, subscription-cap,
-  forced-lag recovery/dedupe, pre-checkpoint fail-closed, invalid-projection,
-  missing-store, and sanitized-backend fixtures. It now also passes initial
-  replay, versioned reconnect, filtering across pages, dedupe, lag/reconnect
-  interaction, and malformed/stale/future cursor fixtures. The remaining
-  section 9.3/9.4 requirements above keep this item open._
+- [x] **EVT-06a** Implement bounded durable cursor subscription through the
+  `read_from_cursor` pull API and both WebSocket push protocols (section 9.3).
+  _Acceptance: AC-EVT-05 and AC-EVT-07 are covered. The global run-event socket
+  passes bounded replay/reconnect, filtering, concurrent follow, forced-lag
+  recovery, dedupe, authentication, sanitized failure, canonical recorder-to-
+  SQLite projection, and rowid checkpoint fixtures. The command socket passes
+  real-TCP run/agent subscription, unsubscribe/cap, initial replay, versioned
+  reconnect plus `ready` barrier, bounded-page filtering, replay/live dedupe,
+  lag interaction, auth-before-store validation, and malformed/stale/future
+  cursor fixtures._
+- [ ] **EVT-06b** Complete the broader section 9.3/9.4 stream contract beyond
+  durable reconnect: per-class buffer policy, backpressure metrics, coalescing,
+  graceful stream-end behavior, automatic client reconnect, and broader
+  command-socket channels remain open.
 
 ### D.3 Artifacts
 
