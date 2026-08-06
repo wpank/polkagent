@@ -21,7 +21,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 
 #[derive(Default)]
 struct ObservedUpdates {
-    command_names: Vec<String>,
+    command_catalogs: Vec<Vec<String>>,
     messages: Vec<String>,
     usage_updates: Vec<(u64, u64)>,
     timeline: Vec<String>,
@@ -342,11 +342,12 @@ async fn official_client_drives_editor_commands_and_a_real_run() {
                 let mut observed = observed_by_client.lock().expect("observed updates lock");
                 match notification.update {
                     SessionUpdate::AvailableCommandsUpdate(update) => {
-                        observed.command_names.extend(
+                        observed.command_catalogs.push(
                             update
                                 .available_commands
                                 .into_iter()
-                                .map(|command| command.name),
+                                .map(|command| command.name)
+                                .collect(),
                         );
                     }
                     SessionUpdate::AgentMessageChunk(chunk) => {
@@ -546,8 +547,10 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
 
     let loaded_user_messages = Arc::new(Mutex::new(Vec::new()));
     let loaded_agent_messages = Arc::new(Mutex::new(Vec::new()));
+    let loaded_command_catalogs = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
     let users_by_client = Arc::clone(&loaded_user_messages);
     let agents_by_client = Arc::clone(&loaded_agent_messages);
+    let catalogs_by_client = Arc::clone(&loaded_command_catalogs);
     let second_identity = Arc::new(Mutex::new(None));
     let second_identity_by_client = Arc::clone(&second_identity);
     let second_observed = Arc::new(Mutex::new(ObservedUpdates::default()));
@@ -588,6 +591,18 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
                                 .expect("loaded agents lock")
                                 .push(text.text);
                         }
+                    }
+                    SessionUpdate::AvailableCommandsUpdate(update) => {
+                        catalogs_by_client
+                            .lock()
+                            .expect("loaded command catalogs lock")
+                            .push(
+                                update
+                                    .available_commands
+                                    .into_iter()
+                                    .map(|command| command.name)
+                                    .collect(),
+                            );
                     }
                     _ => {}
                 }
@@ -679,9 +694,22 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
             >= 2,
         "restarted ACP process did not list and inspect the first durable run"
     );
+    assert_eq!(
+        *loaded_command_catalogs
+            .lock()
+            .expect("loaded command catalogs lock"),
+        vec![
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "cancel", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+        ],
+        "loaded subprocess did not restore and refresh truthful discovery"
+    );
 
     let resumed_user_chunks = Arc::new(Mutex::new(0_usize));
     let resumed_user_chunks_by_client = Arc::clone(&resumed_user_chunks);
+    let resumed_command_catalogs = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    let resumed_catalogs_by_client = Arc::clone(&resumed_command_catalogs);
     let third_observed = Arc::new(Mutex::new(ObservedUpdates::default()));
     let third_agent = observed_agent(
         AcpAgentConfig::new(binary)
@@ -699,10 +727,25 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
         .builder()
         .on_receive_notification(
             async move |notification: SessionNotification, _connection| {
-                if matches!(notification.update, SessionUpdate::UserMessageChunk(_)) {
-                    *resumed_user_chunks_by_client
-                        .lock()
-                        .expect("resume user chunk lock") += 1;
+                match notification.update {
+                    SessionUpdate::UserMessageChunk(_) => {
+                        *resumed_user_chunks_by_client
+                            .lock()
+                            .expect("resume user chunk lock") += 1;
+                    }
+                    SessionUpdate::AvailableCommandsUpdate(update) => {
+                        resumed_catalogs_by_client
+                            .lock()
+                            .expect("resumed command catalogs lock")
+                            .push(
+                                update
+                                    .available_commands
+                                    .into_iter()
+                                    .map(|command| command.name)
+                                    .collect(),
+                            );
+                    }
+                    _ => {}
                 }
                 Ok(())
             },
@@ -737,6 +780,15 @@ async fn official_client_retries_and_loads_the_same_durable_interaction_after_re
         *resumed_user_chunks.lock().expect("resume user chunk lock"),
         0,
         "session/resume must not replay transcript chunks"
+    );
+    assert_eq!(
+        *resumed_command_catalogs
+            .lock()
+            .expect("resumed command catalogs lock"),
+        vec![vec![
+            "help", "status", "agents", "agent", "runs", "inspect", "model"
+        ]],
+        "resumed subprocess did not advertise its truthful inactive catalog"
     );
 
     let connection = rusqlite::Connection::open(&db_path).expect("open durable ACP database");
@@ -1060,14 +1112,23 @@ async fn official_client_configures_agent_and_model_for_the_next_real_run() {
         .builder()
         .on_receive_notification(
             async move |notification: SessionNotification, _connection| {
-                if let SessionUpdate::AgentMessageChunk(chunk) = notification.update {
-                    if let ContentBlock::Text(text) = chunk.content {
-                        observed_by_client
-                            .lock()
-                            .expect("observed updates lock")
-                            .messages
-                            .push(text.text);
+                let mut observed = observed_by_client.lock().expect("observed updates lock");
+                match notification.update {
+                    SessionUpdate::AvailableCommandsUpdate(update) => {
+                        observed.command_catalogs.push(
+                            update
+                                .available_commands
+                                .into_iter()
+                                .map(|command| command.name)
+                                .collect(),
+                        );
                     }
+                    SessionUpdate::AgentMessageChunk(chunk) => {
+                        if let ContentBlock::Text(text) = chunk.content {
+                            observed.messages.push(text.text);
+                        }
+                    }
+                    _ => {}
                 }
                 Ok(())
             },
@@ -1112,6 +1173,18 @@ async fn official_client_configures_agent_and_model_for_the_next_real_run() {
     assert_runs_used_agent(&db_path, &first_id, 2, 1);
     assert_runs_used_agent(&db_path, &second_id, 2, 1);
     let observed = observed.lock().expect("observed updates lock");
+    assert_eq!(
+        observed.command_catalogs,
+        vec![
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "cancel", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "cancel", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+        ],
+        "command discovery did not track both configured prompt lifecycles"
+    );
     assert_protocol_stdout(&observed.stdout_lines);
     assert!(observed
         .messages
@@ -1379,8 +1452,12 @@ fn assert_safe_success_diagnostics(log_path: &std::path::Path) {
 
 fn assert_editor_command_updates(observed: &ObservedUpdates) {
     assert_eq!(
-        observed.command_names,
-        vec!["help", "status", "agents", "agent", "runs", "inspect", "model", "cancel"]
+        observed.command_catalogs,
+        vec![
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "cancel", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+        ]
     );
     assert!(
         observed
@@ -1601,14 +1678,23 @@ async fn official_client_cancels_active_run_and_persists_terminal_state() {
         .builder()
         .on_receive_notification(
             async move |notification: SessionNotification, _connection| {
-                if let SessionUpdate::AgentMessageChunk(chunk) = notification.update {
-                    if let ContentBlock::Text(text) = chunk.content {
-                        observed_by_client
-                            .lock()
-                            .expect("observed updates lock")
-                            .messages
-                            .push(text.text);
+                let mut observed = observed_by_client.lock().expect("observed updates lock");
+                match notification.update {
+                    SessionUpdate::AvailableCommandsUpdate(update) => {
+                        observed.command_catalogs.push(
+                            update
+                                .available_commands
+                                .into_iter()
+                                .map(|command| command.name)
+                                .collect(),
+                        );
                     }
+                    SessionUpdate::AgentMessageChunk(chunk) => {
+                        if let ContentBlock::Text(text) = chunk.content {
+                            observed.messages.push(text.text);
+                        }
+                    }
+                    _ => {}
                 }
                 Ok(())
             },
@@ -1686,6 +1772,15 @@ async fn official_client_cancels_active_run_and_persists_terminal_state() {
     assert_eq!(interaction_state, "cancelled");
 
     let observed = observed.lock().expect("observed updates lock");
+    assert_eq!(
+        observed.command_catalogs,
+        vec![
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "cancel", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+        ],
+        "cancel discovery did not track the active prompt lifecycle"
+    );
     assert_protocol_stdout(&observed.stdout_lines);
     assert!(
         observed
@@ -1731,6 +1826,7 @@ async fn provider_failure_is_redacted_and_keeps_stdout_protocol_only() {
     write_local_provider_config(&config_path, "failing-provider", &failing_provider.base_url);
 
     let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let observed_by_client = Arc::clone(&observed);
     let config_arg = config_path.to_string_lossy().into_owned();
     let agent = observed_agent(
         AcpAgentConfig::new(binary)
@@ -1763,6 +1859,26 @@ async fn provider_failure_is_redacted_and_keeps_stdout_protocol_only() {
     );
 
     agent_client_protocol::Client
+        .builder()
+        .on_receive_notification(
+            async move |notification: SessionNotification, _connection| {
+                if let SessionUpdate::AvailableCommandsUpdate(update) = notification.update {
+                    observed_by_client
+                        .lock()
+                        .expect("observed updates lock")
+                        .command_catalogs
+                        .push(
+                            update
+                                .available_commands
+                                .into_iter()
+                                .map(|command| command.name)
+                                .collect(),
+                        );
+                }
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
         .connect_with(
             agent,
             |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
@@ -1802,6 +1918,15 @@ async fn provider_failure_is_redacted_and_keeps_stdout_protocol_only() {
         .expect("failing provider task completed");
 
     let observed = observed.lock().expect("observed updates lock");
+    assert_eq!(
+        observed.command_catalogs,
+        vec![
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "cancel", "model"],
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"],
+        ],
+        "provider failure left the active-only command catalog advertised"
+    );
     assert_protocol_stdout(&observed.stdout_lines);
     let protocol_output = observed.stdout_lines.join("\n");
     assert!(protocol_output.contains("sk-***REDACTED***"));

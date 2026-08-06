@@ -8,6 +8,7 @@ repository.workspace = true
 description = "ACP stdio server surface for Polkagent editor integrations"
 
 [dependencies]
+polkagent-core = { path = "../polkagent-core" }
 polkagent-interaction = { path = "../polkagent-interaction" }
 polkagent-telemetry = { path = "../polkagent-telemetry" }
 
@@ -18,9 +19,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-
-[dev-dependencies]
-polkagent-core = { path = "../polkagent-core" }
 
 [lints]
 workspace = true

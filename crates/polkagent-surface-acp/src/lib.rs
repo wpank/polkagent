@@ -28,10 +28,11 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
 use futures::FutureExt as _;
+use polkagent_core::ConversationId;
 use polkagent_interaction::{
-    format_run_inspection, format_run_list, validate_working_directory, CancelTarget, CommandName,
-    CommandRegistry, CommandSpec, InteractionCommand, ParsedLine, RunDetailView, RunSummaryView,
-    ToolCallKind, ToolCallStatus, ToolCallView,
+    format_run_inspection, format_run_list, validate_working_directory, CancelTarget,
+    CommandContext, CommandName, CommandRegistry, CommandSpec, InteractionCommand, ParsedLine,
+    RunDetailView, RunSummaryView, ToolCallKind, ToolCallStatus, ToolCallView,
 };
 use tokio::sync::Mutex;
 
@@ -493,7 +494,7 @@ pub async fn serve_stdio(
                     LoadSessionResponse::new()
                         .config_options(session_config_options(&session, &agents, &models)),
                 )?;
-                send_available_commands(&connection, session_id)
+                send_available_commands(&connection, session_id, false)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -518,7 +519,7 @@ pub async fn serve_stdio(
                     ResumeSessionResponse::new()
                         .config_options(session_config_options(&session, &agents, &models)),
                 )?;
-                send_available_commands(&connection, session_id)
+                send_available_commands(&connection, session_id, false)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -540,7 +541,7 @@ pub async fn serve_stdio(
                 connection.send_notification(SessionNotification::new(
                     session_id,
                     SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
-                        available_commands(),
+                        available_commands(false),
                     )),
                 ))
             },
@@ -758,10 +759,13 @@ fn replay_transcript(
 fn send_available_commands(
     connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
     session_id: SessionId,
+    has_active_prompt: bool,
 ) -> Result<(), agent_client_protocol::Error> {
     connection.send_notification(SessionNotification::new(
         session_id,
-        SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(available_commands())),
+        SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(available_commands(
+            has_active_prompt,
+        ))),
     ))
 }
 
@@ -945,7 +949,7 @@ async fn handle_prompt(
         Err(error) => (
             BackendTurn::completed(format!(
                 "Command error: {error}\n\n{}",
-                help_text(&registry, None)
+                help_text(&registry, None, snapshot.busy)
             )),
             false,
         ),
@@ -1044,6 +1048,12 @@ async fn handle_regular_prompt(
         current.busy = true;
         current.cwd.clone()
     };
+    if let Err(error) = send_available_commands(connection, session_id.clone(), true) {
+        if let Some(current) = sessions.lock().await.get_mut(session_id) {
+            current.busy = false;
+        }
+        return Err(error);
+    }
     let (updates_tx, mut updates_rx) = tokio::sync::mpsc::channel(PROMPT_UPDATE_BUFFER);
     let backend_call = call_backend(backend.prompt(
         session_id.0.as_ref(),
@@ -1086,7 +1096,9 @@ async fn handle_regular_prompt(
     if let Some(current) = sessions.lock().await.get_mut(session_id) {
         current.busy = false;
     }
+    let availability_refresh = send_available_commands(connection, session_id.clone(), false);
     let turn = backend_result.map_err(|error| backend_protocol_error(&error))?;
+    availability_refresh?;
     if let Some(error) = forwarding_error {
         return Err(error);
     }
@@ -1223,7 +1235,11 @@ async fn handle_slash_command(
 ) -> Result<BackendTurn, agent_client_protocol::Error> {
     match command {
         InteractionCommand::Help { command } => {
-            Ok(BackendTurn::completed(help_text(registry, command)))
+            Ok(BackendTurn::completed(help_text(
+                registry,
+                command,
+                session.busy,
+            )))
         }
         InteractionCommand::Status => Ok(BackendTurn::completed(format!(
             "Session: {session_id}\nWorkspace: {}\nAgent: {}\nModel: {}\nActive prompt: {}",
@@ -1370,12 +1386,30 @@ fn find_agent_in<'a>(agents: &'a [AgentSummary], selector: &str) -> Option<&'a A
         .find(|agent| agent.id == selector || agent.name == selector)
 }
 
-fn available_commands() -> Vec<AvailableCommand> {
+fn available_commands(has_active_prompt: bool) -> Vec<AvailableCommand> {
     let registry = CommandRegistry::mvp();
-    ACP_COMMANDS
-        .iter()
-        .filter_map(|name| registry.resolve(name.as_str()))
+    available_command_specs(&registry, has_active_prompt)
+        .into_iter()
         .map(available_command)
+        .collect()
+}
+
+fn available_command_specs(
+    registry: &CommandRegistry,
+    has_active_prompt: bool,
+) -> Vec<&CommandSpec> {
+    // An ACP session is always backed by a durable conversation; availability only
+    // needs to know that one is present, not its persisted identifier.
+    let context = CommandContext {
+        conversation_id: Some(ConversationId::new()),
+        has_active_turn: has_active_prompt,
+        pending_approval_count: 0,
+        can_mutate: true,
+    };
+    registry
+        .available(&context)
+        .into_iter()
+        .filter(|spec| ACP_COMMANDS.contains(&spec.command))
         .collect()
 }
 
@@ -1407,27 +1441,56 @@ fn acp_input_hint(spec: &CommandSpec) -> Option<&str> {
     }
 }
 
-fn help_text(registry: &CommandRegistry, command: Option<CommandName>) -> String {
+fn help_text(
+    registry: &CommandRegistry,
+    command: Option<CommandName>,
+    has_active_prompt: bool,
+) -> String {
     if let Some(command) = command {
         if !ACP_COMMANDS.contains(&command) {
-            return format!(
-                "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Approval commands are not exposed by this adapter.",
-                command.as_str()
-            );
+            return unsupported_command_help(command);
         }
-        return registry.resolve(command.as_str()).map_or_else(
+        let detail = registry.resolve(command.as_str()).map_or_else(
             || format!("No help is available for /{}.", command.as_str()),
             command_help,
         );
+        if command == CommandName::Cancel && !has_active_prompt {
+            return format!(
+                "{detail}\nCurrently unavailable: this editor session has no active prompt."
+            );
+        }
+        return detail;
     }
 
-    let commands = ACP_COMMANDS
-        .iter()
-        .filter_map(|name| registry.resolve(name.as_str()))
+    let commands = available_command_specs(registry, has_active_prompt)
+        .into_iter()
         .map(command_help)
         .collect::<Vec<_>>()
         .join("\n");
-    format!("Polkagent ACP commands:\n{commands}")
+    format!("Polkagent ACP commands currently available:\n{commands}")
+}
+
+fn unsupported_command_help(command: CommandName) -> String {
+    match command {
+        CommandName::New => concat!(
+            "/new is represented by ACP session/new. Create a new editor thread instead; ",
+            "a slash command cannot replace the current ACP session ID."
+        )
+        .to_owned(),
+        CommandName::Resume => concat!(
+            "/resume is represented by ACP session/load and session/resume. Reopen the durable ",
+            "editor thread with its conversation ID and exact original workspace."
+        )
+        .to_owned(),
+        CommandName::Approve | CommandName::Deny => format!(
+            "/{} is not exposed by ACP until durable permission coordination is bound.",
+            command.as_str()
+        ),
+        _ => format!(
+            "/{} is part of the shared Polkagent registry but is not supported by ACP.",
+            command.as_str()
+        ),
+    }
 }
 
 fn command_help(spec: &CommandSpec) -> String {
@@ -2197,15 +2260,24 @@ mod tests {
     }
 
     #[test]
-    fn advertises_supported_commands() {
-        let commands = available_commands();
+    fn advertises_only_registry_commands_available_in_the_editor_state() {
+        let commands = available_commands(false);
         let names = commands
             .iter()
             .map(|command| command.name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            vec!["help", "status", "agents", "agent", "runs", "inspect", "model", "cancel"]
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "model"]
+        );
+        assert!(commands.iter().all(|command| command.name != "cancel"));
+        let active_names = available_commands(true)
+            .into_iter()
+            .map(|command| command.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            active_names,
+            vec!["help", "status", "agents", "agent", "runs", "inspect", "cancel", "model"]
         );
         let Some(agent) = commands.iter().find(|command| command.name == "agent") else {
             panic!("agent command was not advertised");
@@ -2236,16 +2308,36 @@ mod tests {
     #[test]
     fn help_uses_registry_aliases_and_exposes_run_commands() {
         let registry = CommandRegistry::mvp();
-        let help = help_text(&registry, None);
+        let help = help_text(&registry, None, false);
         assert!(help.contains("/agent <name-or-id>"));
         assert!(help.contains("/use"));
         assert!(help.contains("/model [id]"));
-        assert!(help.contains("/cancel"));
+        assert!(!help.contains("/cancel"));
         assert!(help.contains("/runs"));
         assert!(help.contains("/inspect <run-id>"));
 
-        let runs = help_text(&registry, Some(CommandName::Runs));
+        let active_help = help_text(&registry, None, true);
+        assert!(active_help.contains("/cancel"));
+        assert!(active_help.contains("/stop"));
+
+        let inactive_cancel = help_text(&registry, Some(CommandName::Cancel), false);
+        assert!(inactive_cancel.contains("Currently unavailable"));
+        assert!(inactive_cancel.contains("/stop"));
+
+        let runs = help_text(&registry, Some(CommandName::Runs), false);
         assert!(runs.contains("List recent and active runs for the interaction"));
+    }
+
+    #[test]
+    fn help_maps_session_lifecycle_commands_to_native_acp_operations() {
+        let registry = CommandRegistry::mvp();
+        let new = help_text(&registry, Some(CommandName::New), false);
+        let resume = help_text(&registry, Some(CommandName::Resume), false);
+        assert!(new.contains("ACP session/new"));
+        assert!(new.contains("cannot replace the current ACP session ID"));
+        assert!(resume.contains("ACP session/load and session/resume"));
+        assert!(!new.contains("Approval commands"));
+        assert!(!resume.contains("Approval commands"));
     }
 
     #[test]
