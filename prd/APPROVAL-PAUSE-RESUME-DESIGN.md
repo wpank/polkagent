@@ -41,7 +41,7 @@ authority or full end-to-end completion.
 | Application service | `AppService` retains the injected coordinator and exposes scoped list/get/resolve operations. Process-local approval broadcasts are removed; effect-ID-only compatibility methods fail explicitly because they lack authority scope. Decided checkpoints can recover after agents rehydrate. | APR-07 binds a local-process tuple; shared services still need authenticated tenant/workspace/principal derivation before enabling the resolver or grant-bearing executor. |
 | API | Scoped `GET /interactions/{id}/approvals` and `POST .../{approval_id}/approve|deny` route through the shared service. Auth, explicit principal-bound service composition, read-only refusal, OpenAPI parity, idempotent retry, and wrong-conversation denial are tested. Legacy `/effects/{id}/approve|deny` are deprecated 501 migration stubs. | `app_state_from_runtime` intentionally does not install the authenticated approval service, so the production server returns unavailable. API keys currently authenticate a deployment credential but do not supply a stable per-key principal mapping. |
 | Run lifecycle | The APR-03 path consumes `AwaitingApproval` and `WaitingEffect`, uses exact-state run CAS, and commits run/effect/approval/checkpoint/event transitions through the SQLite coordinator. APR-05 decisions trigger recovery. Explicit local-process chat, TUI, and ACP authority compose this path through the same `RuntimeFactory`. | Default/no-subcommand TUI, surfaces without the all-or-none authority tuple, and the production API remain authority-unbound. Shared/remote authentication is not supplied by the local tuple. |
-| Recovery | Resumable decided checkpoints lease by exact version/worker and reduce before another model request. An approved `Executing`/`Resolved` effect without one durable outcome returns typed manual reconciliation and is never rerun. Startup calls approval recovery before the generic reaper, which no longer destroys approval-owned states. APR-05 wakes recovery after a durable decision and replays deterministic approval events after restart. APR-08 now proves exact identity and one immutable outcome across one cross-surface restart fixture. | Full retry-class reconciliation UI/operations and the pause/decision/claim/pre-I/O/post-I/O crash matrix remain APR-08. |
+| Recovery | Resumable decided checkpoints lease by exact version/worker and reduce before another model request. An approved `Executing`/`Resolved` effect without one durable outcome returns typed manual reconciliation and is never rerun. Startup calls approval recovery before the generic reaper, which no longer destroys approval-owned states. APR-05 wakes recovery after a durable decision and replays deterministic approval events after restart. APR-08 proves exact identity and one immutable outcome across one cross-surface restart fixture, plus the real-file `Executing`/no-outcome boundary through two fail-closed service recoveries. | Operator resolution remains unimplemented, and the other pause/decision/claim/pre-I/O/post-I/O crash points remain APR-08 work. |
 | ACP | The bounded local-stdio path issues native permission requests and binds allow/reject/cancel to the durable coordinator with exact identities, redaction, one-I/O allow, zero-I/O reject/cancel, and restart/load recovery | Manual Zed validation and shared/remote multi-principal authentication remain open; authority is explicit and unbound by default |
 | Terminal chat | `/status` projects at most 100 exact pending approval IDs; `/approve` and `/deny` route only through `InteractionService`, remain usable during an active turn, bound denial reasons to 4,096 Unicode characters, and preserve coordinator scope/idempotency/conflict behavior across restart. Explicit `polkagent chat` accepts the all-or-none authority tuple and fixes the surface to `terminal-chat`; omission stays fail-closed. Stable event output excludes untrusted approval metadata and denial text. | The tuple is a process-owner assertion, not shared/remote authentication. Cancellation of a turn pending approval now coordinator-cancels the approval/run with zero tool I/O; cancellation during handler I/O remains open. |
 | TUI F6 | The selected durable Console conversation scopes an asynchronous pending queue and exact approve/deny CAS through `InteractionService`. Explicit `polkagent tui` accepts the all-or-none local authority tuple and fixes the surface to `tui`. The view shows bounded/redacted service title, description, policy reason, expiry, and full confirmation identities. Legacy direct approval queries/writes are removed. | The no-subcommand TUI and explicit TUI without the tuple remain authority-unbound. The first 100 rows are shown with an explicit total/reveal-remainder message; pagination and shared/remote authentication remain open. Cancel/shutdown coordinator-cancels a pending approval/run with zero tool I/O; cancellation during handler I/O remains open. |
@@ -456,6 +456,18 @@ proved. This does not close the broader crash-boundary matrix, possible-I/O
 operator reconciliation, manual Zed, shared/remote authentication,
 observability/security, or cancellation during handler I/O.
 
+The focused real-file SQLite
+[`approval_possible_io_recovery.rs`](../crates/polkagent-service/tests/approval_possible_io_recovery.rs)
+fixture now closes one additional APR-08 crash point. It uses the production
+coordinator to pause, approve, claim, and persist an attempt start, then drops
+and reopens the service with an `Executing` effect and no durable outcome. Two
+expired-lease recovery attempts return the same typed manual-reconciliation
+run/effect identity, invoke the registered counting handler zero times, create
+no outcome, and preserve the exact approval/effect/run/turn/step/checkpoint/
+attempt lineage. This proves only the possible-I/O fail-closed detector. It
+does not provide an operator reconciliation workflow, prove the `Resolved`
+corruption case, or close the remaining crash-point matrix.
+
 Hot files have one integration owner at a time: SQLite migration registration,
 `store-trait/src/lib.rs`, `service/src/app.rs`, `run/src/orchestrator.rs`,
 `runtime/src/factory.rs`, `runtime/src/interaction.rs`, CLI TUI application
@@ -526,8 +538,15 @@ names, then APR-08 runs them together:
   - exact durable identities, wrong scope/principal refusal, retry/conflict,
     one attempt/outcome, zero pending/orphans, projection bounds, and sentinel
     redaction pass without seeded approval rows.
+- `cargo test -p polkagent-service --test approval_possible_io_recovery`
+  - one production SQLite approval/checkpoint/effect seam restarts twice from
+    `Executing` with one attempt and no outcome;
+  - typed manual reconciliation remains stable, the registered handler stays
+    at zero invocations, no outcome is synthesized, and exact lineage is
+    unchanged after both recovery attempts.
 - Full APR-08 closure still requires the HTTP/ACP-inclusive user path and the
-  pause/decision/claim/pre-I/O/post-I/O crash matrix without duplicate I/O.
+  remaining pause/decision/claim/pre-I/O/post-I/O crash points without
+  duplicate I/O, plus an operator reconciliation workflow.
 
 Final closure also runs the repository's required format, check, test, Clippy,
 and documentation gates.
@@ -664,6 +683,10 @@ and why approval never overrides policy denial.
 - [x] Pass the bounded APR-08 TUI/chat happy-path and restart fixture with one
   effect attempt/outcome, stable identities, zero pending/orphans, and bounded
   redacted projection (`20dbcb1`).
+- [x] Prove the APR-08 real-file possible-I/O boundary for one approved
+  `Executing` effect with one attempt and no outcome: two service recoveries
+  return typed manual reconciliation, perform zero handler calls, synthesize
+  no outcome, and preserve exact durable lineage.
 - [ ] Pass the cross-surface restart and crash-point matrix.
 - [ ] Complete authorization, redaction, retention, backup, readiness,
   metrics, traces, alerts, and operator documentation.

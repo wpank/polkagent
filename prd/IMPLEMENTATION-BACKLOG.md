@@ -298,6 +298,14 @@ reject/default-deny and full crash-boundary counting-tool matrix; APR-08 owns
 operator reconciliation, manual Zed, authenticated shared/remote composition,
 and broader security/observability closure.
 
+APR-08 now also has one bounded possible-I/O crash proof in
+`approval_possible_io_recovery.rs`: a real file-backed SQLite approval is
+allowed and advanced through the durable attempt-start boundary, then two
+restarted service recoveries return the same typed manual-reconciliation
+run/effect identity. The registered handler remains uncalled, no outcome is
+fabricated, and approval/effect/run lineage stays unchanged. This does not
+implement operator resolution or close the remaining crash-point matrix.
+
 **Checklist:**
 
 - [x] Advertise only exact registered definitions in the agent's allowlist and
