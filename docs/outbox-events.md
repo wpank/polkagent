@@ -393,7 +393,10 @@ See [api.md](api.md) for the `/api/v1alpha1/artifacts` endpoints.
 
 ## WebSocket Event Stream
 
-Clients connect to the run-scoped event stream to receive live events as they are published on the `EventBus`. The server relays all events — durable, diagnostic, and ephemeral — over the WebSocket connection.
+Clients connect to the global run-event stream with an optional `run_id` filter.
+The server attaches to the `EventBus` first, replays authoritative durable
+events in bounded pages, and then follows live notifications. This ordering
+removes the replay/follow race.
 
 ```mermaid
 sequenceDiagram
@@ -402,49 +405,32 @@ sequenceDiagram
     participant Bus as EventBus
     participant Store as EventStore
 
-    C->>WS: GET /api/v1alpha1/runs/{run_id}/events/stream<br/>Upgrade: websocket
-
-    WS->>Store: events_for_run(run_id, since=None)<br/>(replay historical events)
-    Store-->>WS: [RunCreated, RunQueued, RunStarted, ...]
-    WS-->>C: RunCreated  {sequence: 1, durability: "durable"}
-    WS-->>C: RunQueued   {sequence: 2, durability: "durable"}
-    WS-->>C: RunStarted  {sequence: 3, durability: "durable"}
-
-    Note over WS: Switch to live bus subscription
-
-    Bus->>WS: TurnStarted {turn_number: 0, turn_id: ...}
-    WS-->>C: TurnStarted {sequence: 4, durability: "durable"}
-
-    Bus->>WS: StreamingToken {text: "Hello"}
-    WS-->>C: StreamingToken {sequence: 5, durability: "ephemeral"}
-
-    Bus->>WS: StreamingToken {text: ", world"}
-    WS-->>C: StreamingToken {sequence: 6, durability: "ephemeral"}
-
-    Bus->>WS: EffectIntentCreated {intent_id: ...}
-    WS-->>C: EffectIntentCreated {sequence: 7, durability: "durable"}
-
-    Bus->>WS: EffectOutcomeRecorded {outcome_id: ...}
-    WS-->>C: EffectOutcomeRecorded {sequence: 8, durability: "durable"}
-
-    Bus->>WS: TurnCompleted {turn_number: 0, turn_id: ...}
-    WS-->>C: TurnCompleted {sequence: 9, durability: "durable"}
-
-    Bus->>WS: RunCompleted {output_artifact_id: "01je..."}
-    WS-->>C: RunCompleted {sequence: 10, durability: "durable"}
-
-    Note over C,WS: Connection closed (server sends close frame after terminal event)
+    C->>WS: GET /api/v1alpha1/events/stream?after_sequence=41&run_id={run_id}<br/>Upgrade: websocket
+    WS->>Bus: subscribe before replay
+    WS->>Store: read_from_cursor(41, 256)
+    Store-->>WS: durable records 42..N
+    WS-->>C: RunCreated {sequence: 1, global_sequence: 42}
+    WS-->>C: RunStarted {sequence: 2, global_sequence: 43}
+    Bus->>WS: durable event notification
+    WS->>Store: read_from_cursor(43, 256)
+    Store-->>WS: committed record 44
+    WS-->>C: TurnStarted {sequence: 3, global_sequence: 44}
+    Bus->>WS: StreamingToken (ephemeral)
+    WS-->>C: StreamingToken {sequence: 4, no global_sequence}
+    Note over WS: On Lagged, read durable records after the last consumed global_sequence
 ```
 
 ### Wire format
 
-Each message sent over the WebSocket is a JSON-serialised `RunEvent`:
+Each message is a JSON-serialized `RunEvent`. Durable messages add the
+backward-compatible `global_sequence` checkpoint:
 
 ```json
 {
   "id": "01jeabcdef...",
   "run_id": "01je000000...",
   "sequence": 7,
+  "global_sequence": 1042,
   "kind": { "effect_intent_created": { "intent_id": "01je111111..." } },
   "durability": "durable",
   "correlation": {
@@ -463,7 +449,17 @@ Each message sent over the WebSocket is a JSON-serialised `RunEvent`:
 
 ### Reconnection
 
-Clients that disconnect can reconnect and provide a `?since=<sequence>` query parameter (or `?cursor=<global_sequence>`) to receive only events after the last-seen sequence number. The server replays durable events from the store and then resumes the live bus subscription. Ephemeral events that occurred during the disconnection window are permanently lost; clients must not rely on them for correctness.
+Clients persist the last durable `global_sequence` and reconnect with
+`?after_sequence=<global_sequence>`. Replay scans strictly after that global
+checkpoint. `run_id` and `kinds` filters still advance through hidden records,
+so later matches are not skipped. Ephemeral and diagnostic events have no
+global checkpoint and remain best-effort; clients must not rely on them for
+correctness.
+
+If the durable store is absent, the HTTP upgrade is rejected with `501`. If a
+bounded receiver lags, the server replays after the last consumed checkpoint
+and deduplicates live overlap. A backend or invalid-projection failure closes
+the accepted socket with status `1011` and a generic reason.
 
 ---
 
@@ -473,7 +469,7 @@ Clients that disconnect can reconnect and provide a `?since=<sequence>` query pa
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1alpha1/runs/{run_id}/events/stream` | WebSocket upgrade; streams `RunEvent` JSON frames |
+| `GET` | `/api/v1alpha1/events/stream` | Checkpointed replay-then-follow WebSocket; optional `run_id`, `kinds`, and `after_sequence` |
 | `GET` | `/api/v1alpha1/runs/{run_id}/events` | REST: paginated list of durable events for a run |
 | `GET` | `/api/v1alpha1/events` | REST: global event feed with cursor-based pagination |
 

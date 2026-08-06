@@ -349,17 +349,24 @@ state. OpenAPI conformance and authenticated/read-only tests pass.
 
 **Checklist:**
 
-- [ ] Persist remaining run-event user-visible deltas/checkpoints with stable
-  event and sequence IDs. Interaction checkpoints are complete.
-- [x] Replace silent interaction broadcast-lag drops with an explicit lag
-  checkpoint and durable resubscribe; run-event transports still need the same
-  product-wide contract.
+- [ ] Persist remaining user-visible diagnostic/ephemeral deltas when they are
+  required for correctness. Interaction checkpoints and durable run-event
+  global checkpoints are complete; best-effort run frames remain explicitly
+  non-replayable.
+- [x] Replace silent broadcast-lag drops with durable checkpoint recovery for
+  interaction SSE and `GET /api/v1alpha1/events/stream`. The run-event socket
+  attaches live delivery before bounded replay, scans filters across pages,
+  deduplicates by global sequence, and closes explicitly on recovery failure.
+  `/ws/v1alpha1` remains a distinct bidirectional command protocol rather than
+  an alias for this stream.
 - [x] Remove the fixed first-10k event-ID scan: the object-safe store contract
   has an uncapped validated 1,000-row cursor fallback, SQLite uses its primary-
   key index, and API lookup sanitizes backend failures.
 - [ ] Wire telemetry, audit, retention, backup, and recovery into lifecycle.
-- [ ] Add restart, slow-consumer, duplicate, retention, and corrupted-projection
-  tests plus operator diagnostics.
+- [ ] Add restart, retention, corrupted-projection, and broader operator
+  diagnostics. The API run-event socket now has deterministic slow-consumer,
+  duplicate, reconnect, filter/page-bound, authentication, unavailable-store,
+  and sanitized backend-recovery coverage.
 
 **Ownership:** event/artifact/telemetry/projection modules; coordinate API/TUI
 adapter hooks through small interfaces.

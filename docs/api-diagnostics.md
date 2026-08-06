@@ -381,21 +381,27 @@ GET /api/v1alpha1/audit?actor=agent-1&action=run_started&since=2026-08-01T00:00:
 **Location:** `/crates/polkagent-api/src/routes/events.rs`
 
 ### 5.1 `GET /api/v1alpha1/events/stream` (WebSocket)
-**Purpose:** Stream real-time run events via WebSocket.
+**Purpose:** Replay durable run events from a global checkpoint, then follow
+live run events via WebSocket.
 
 **Protocol:**
 - Upgrade: WebSocket
-- Frames: JSON text frames containing `RunEvent` objects
+- Frames: JSON text frames containing `RunEvent` objects; durable frames add
+  `global_sequence`
 - Keepalive: Server sends Ping frames every 30 seconds
 - Filtering: Optional query parameters for selective streaming
+- Recovery: Receiver attaches before bounded durable replay; lag resumes after
+  the last consumed global checkpoint
 
 **Query Parameters:**
+- `after_sequence` (optional, default `0`) — replay durable events whose global
+  sequence is strictly greater than this non-negative integer
 - `run_id` (optional) — filter events to a specific run
 - `kinds` (optional) — comma-separated event kind names (e.g., `run_created,turn_started,run_completed`)
 
 **Example Connection:**
 ```
-GET /api/v1alpha1/events/stream?run_id=run-123&kinds=run_created,turn_started,run_completed HTTP/1.1
+GET /api/v1alpha1/events/stream?after_sequence=42&run_id=0198bd19-40c0-7000-8000-000000000001&kinds=run_created,turn_started,run_completed HTTP/1.1
 Upgrade: websocket
 Connection: Upgrade
 ```
@@ -403,19 +409,16 @@ Connection: Upgrade
 **Event Frame Format:**
 ```json
 {
-  "id": "event-550e8400-e29b-41d4-a716-446655440000",
-  "run_id": "run-123",
+  "id": "0198bd19-40c0-7000-8000-000000000002",
+  "run_id": "0198bd19-40c0-7000-8000-000000000001",
   "sequence": 1,
+  "global_sequence": 43,
   "kind": "run_created",
+  "durability": "durable",
   "timestamp": "2026-08-03T10:30:00Z",
   "correlation": {
-    "run_id": "run-123",
-    "turn_id": null,
-    "agent_id": "agent-1"
-  },
-  "payload": {
-    "state": "created",
-    "trigger": "api"
+    "run_id": "0198bd19-40c0-7000-8000-000000000001",
+    "turn_id": null
   }
 }
 ```
@@ -434,15 +437,16 @@ Connection: Upgrade
 - Additional kinds available (see `/crates/polkagent-core/src/event.rs`)
 
 **Filter Examples:**
-- `/events/stream` — all events from all runs
+- `/events/stream` — replay all retained durable events, then follow live events
+- `/events/stream?after_sequence=42` — resume strictly after global sequence 42
 - `/events/stream?run_id=run-123` — only events from run-123
 - `/events/stream?kinds=run_started,run_completed` — only run lifecycle events
 - `/events/stream?run_id=run-456&kinds=turn_started` — only turn starts for run-456
 
 **Status Code (Upgrade):**
 - `101 Switching Protocols` — WebSocket upgrade accepted
-- `400 Bad Request` — invalid query parameters
-- `422 Unprocessable Entity` — invalid run_id format
+- `422 Unprocessable Entity` — invalid `run_id` or `after_sequence`
+- `501 Not Implemented` — no durable event store is configured
 
 **WebSocket Control Frames:**
 - Ping: Sent by server every 30 seconds for keepalive
@@ -451,9 +455,19 @@ Connection: Upgrade
 
 **Error Handling:**
 - Client disconnect: Server cleanly exits the event loop
-- EventBus closed: Server sends Close frame and exits
-- Lagged receiver: Server logs warning and continues from new tail
-- Serialization error: Server logs warning and skips malformed event
+- EventBus closed: Server exits the stream
+- Lagged receiver: Server reloads durable pages strictly after its last consumed
+  global checkpoint and deduplicates replay/live overlap
+- Durable store/backend failure: Server sends close status `1011` with the
+  generic reason `durable event recovery unavailable`; backend text is never
+  serialized
+- Invalid durable projection: Server sends close status `1011` with the generic
+  reason `durable event recovery invalid`
+
+Durable replay reads at most 256 records at a time. Filters advance the global
+checkpoint through non-matching rows, so a matching event on a later page is
+not skipped. Diagnostic and ephemeral events remain live-only and may be lost
+during disconnect or lag; clients must use durable events for correctness.
 
 **Use Case:** Real-time dashboards; event logging systems; real-time status updates; debugging run execution.
 

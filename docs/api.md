@@ -308,7 +308,23 @@ These endpoints are served without the `/api/v1alpha1` prefix.
 
 ## WebSocket event streaming
 
-Connect to `/api/v1alpha1/events/stream` to receive real-time events. The stream delivers run lifecycle events including `RunStarted`, `TurnCompleted`, `EffectResolved`, `TokensStreamed`, and others.
+Connect to `/api/v1alpha1/events/stream` to replay and then follow run events.
+The server attaches the bounded live receiver before reading the authoritative
+`EventStore`, so commits that race with replay are delivered exactly once.
+Replay uses bounded 256-record pages and an optional non-negative
+`after_sequence` global checkpoint. `run_id` and comma-separated `kinds`
+filters advance across hidden durable records instead of stopping at the first
+page.
+
+Durable frames preserve every existing `RunEvent` field and add
+`global_sequence`. Persist that value and reconnect with
+`?after_sequence=<global_sequence>`. Live diagnostic and ephemeral frames keep
+the existing shape and omit `global_sequence` because they are best-effort and
+cannot be replayed. A broadcast lag triggers durable replay after the last
+consumed global checkpoint; replay/live overlap is deduplicated by that
+checkpoint. Missing durable storage rejects the upgrade with `501`. A replay
+or recovery backend failure closes an accepted socket with WebSocket status
+`1011` and a generic reason; backend details are not sent to clients.
 
 The WebSocket upgrade endpoints `/api/v1alpha1/events/stream` and
 `/ws/v1alpha1` are intentionally excluded from `openapi.yaml`. OpenAPI can
@@ -320,6 +336,8 @@ those transports.
 This WebSocket remains a run-event protocol and is not reused for durable
 interaction delivery. Interaction clients use the separate checkpointed SSE
 route documented above, or finite JSON replay when streaming is unsuitable.
+The distinct `/ws/v1alpha1` command socket is not an alias for this checkpoint
+protocol.
 
 ```mermaid
 stateDiagram-v2

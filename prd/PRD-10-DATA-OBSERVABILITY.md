@@ -979,6 +979,17 @@ client only).
 **REQ-STREAM-023.** Both WebSocket and SSE streams encode events as JSON
 using the wire format defined in section 18.
 
+**Implementation status (2026-08-06).** The global run-event endpoint
+`GET /api/v1alpha1/events/stream` implements the WebSocket portion with
+upgrade-time authentication; query-based `after_sequence`, `run_id`, and
+`kinds`; live-attach-before-replay; bounded 256-record store pages; global
+checkpoint dedupe; 30-second pings; and durable recovery after broadcast lag.
+It fails a missing store at the upgrade and sends a sanitized 1011 close if
+replay/recovery fails. This does not complete the aspirational first-message
+subscription, three-missed-pong, graceful `StreamEnd`, SSE fallback, or
+per-class buffer/metrics requirements below. Diagnostic and ephemeral frames
+remain best-effort.
+
 ### 9.4 Backpressure handling
 
 **REQ-STREAM-030.** When a WebSocket or SSE client cannot consume events
@@ -3961,6 +3972,10 @@ task lists its acceptance criterion from section 20 where applicable.
 - [ ] **EVT-06** Implement cursor-based event subscription: pull API
   (`read_from_cursor`) and push via WebSocket (section 9.3).
   _Acceptance: AC-EVT-05, AC-EVT-07._
+  _Partial evidence (2026-08-06): the global API WebSocket passes bounded
+  replay, reconnect, filter, concurrent follow, forced-lag, dedupe, auth, and
+  sanitized failure fixtures. The remaining section 9.3/9.4 requirements above
+  keep this item open._
 
 ### D.3 Artifacts
 

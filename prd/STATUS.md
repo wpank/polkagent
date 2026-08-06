@@ -92,7 +92,7 @@ exact ignored rule pointers rather than broad suppression.
 |---|---|---|---|
 | One-shot CLI run | Uses the shared `RuntimeFactory`; subprocess and durable-restart coverage pass | Partially usable; the bounded grantless registered-tool path is composed below its CLI boundary | The path is `AppService`-tested, but no one-shot CLI subprocess proves schema advertisement through handler I/O and next inference; policy, approvals, crash recovery, cancellation during I/O, and external-tool evidence remain. |
 | Monitoring TUI | Rich views plus a durable F9 Console, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, and durable session/agent selection | Actionable for one turn at a time and restart-resumable | Prompt/follow-up/live typed output/cancel, bounded contextual model-executor history, help/status/agents/agent/new/resume/model, exact session switching, and safe tool status lines run through shared services; simultaneous orchestration, harness context, rich plans, and service-routed approvals remain. |
-| REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool/skill/memory composition, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, persisted target/model configuration, finite replay, checkpointed SSE, immutable skill reads, and durable memory query/lookup/stats/deletion survive restart; 9 optional skill-mutation/audit/registry routes, two separately documented WebSocket transports, and full shutdown remain. |
+| REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool/skill/memory composition, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, persisted target/model configuration, finite replay, checkpointed SSE, checkpointed run-event WebSocket replay/lag recovery, immutable skill reads, and durable memory query/lookup/stats/deletion are composed; 9 optional skill-mutation/audit/registry routes, the distinct command WebSocket, and full shutdown remain. |
 | Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable single-agent, target/model-selectable line-mode session | Interactive/non-TTY prompt, multiline input, contextual follow-up, transcript resume, persisted conversation-scoped `/agent` and `/model`, safe tool status, lag replay, and SIGINT cancellation work; provider/harness/autonomy changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
 | Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio adapter over the durable interaction service, with stable conversation IDs, new/load/resume, shared-registry commands, persisted agent/model selectors, immutable cwd provenance, and native tool updates | Restart-resumable protocol slice; editor interoperability and permissions unverified | Session list/import are unsupported by the pinned SDK/surface; provider/autonomy selectors, permission round-trips, raw tool-data redaction policy, MCP passthrough, and manual Zed tool/approval/restart smoke remain. |
@@ -122,7 +122,7 @@ exact ignored rule pointers rather than broad suppression.
 | 07 Security | Strong primitives/tests | Partial/unsafe defaults | No production security proof | Active P1 |
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Typed memory API query/lookup/stats/deletion composed; broader components exist | Prompt context and groups/feeds/evals remain | Restart-safe exact-store API operations; no orchestration proof | Active P1 |
-| 10 Observability | Interaction replay/lag recovery and core artifact/event injection are proved | Product-wide run transports, audit/telemetry, retention, and operator recovery remain | Interaction recovery/replay proof only | Active P1 |
+| 10 Observability | Interaction and run-event API replay/lag recovery plus core artifact/event injection are proved | Best-effort deltas, the distinct command socket, audit/telemetry, retention, and operator recovery remain | Live HTTP/WebSocket checkpoint, reconnect, forced-lag, dedupe, and bounded-replay proof | Active P1 |
 | 11 Deployment/cloud | Authenticated container boot/config/HTTP drain/same-volume interaction recovery and fresh-volume cold SQLite restore verified | Single-instance SQLite only | Exact auth matrix and failed lifecycle restore; successful backend output, online/encrypted/PostgreSQL recovery, and worker/run/effect recovery remain unproved | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | Durable terminal chat plus monitoring TUI with durable actionable Console | Partial | Contextual follow-up/restart/cancel, persisted `/agent` and `/model`, session selection, safe tool status, and a truthful command subset are tested; harness context, approvals, broader commands, and orchestration remain | Active P0/P1 + PRD-19 |
@@ -226,6 +226,15 @@ exact ignored rule pointers rather than broad suppression.
   The shared hub attaches live delivery first and demand-loads at most one
   1,000-event replay page, avoiding full-backlog materialization without a
   publish/replay race.
+  The separate `/events/stream` run-event WebSocket now applies the same
+  durable principle against the injected `EventStore`: it attaches the bus
+  receiver before replay, demand-loads 256-record pages, advances global
+  checkpoints through filtered rows, deduplicates replay/live overlap, and
+  recovers a forced broadcast lag after the last consumed checkpoint. Durable
+  frames add `global_sequence`; diagnostic/ephemeral frames remain explicitly
+  best-effort. Missing storage rejects the upgrade, while backend recovery
+  failure sends only a generic 1011 close reason. `/ws/v1alpha1` remains a
+  distinct command socket.
   Separate event-ID reads no longer stop at 10,000 rows: the generic store
   fallback pages to completion with progress validation, SQLite performs an
   indexed point lookup, and API backend failures are sanitized.

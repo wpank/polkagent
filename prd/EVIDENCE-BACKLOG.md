@@ -212,6 +212,19 @@ reports.
   returns typed 404 for absence and a generic 500 for backend failure, while a
   private backend sentinel appears in neither response nor typed log fields.
 
+- **OBS-01 / run-event WebSocket recovery slice (2026-08-06):** a live TCP
+  fixture proves `GET /api/v1alpha1/events/stream` attaches its bounded bus
+  receiver before replay, reads the injected `EventStore` in 256-record pages,
+  reaches filtered matches beyond a page boundary, follows new durable commits,
+  and reconnects strictly after the durable `global_sequence` carried by each
+  durable frame. A deterministic capacity-two overflow proves forced lag
+  replays after the last consumed checkpoint and deduplicates replay/live
+  overlap. Separate handshake/close assertions cover invalid checkpoints,
+  authentication, missing durable storage, and a lag-recovery backend failure:
+  the last closes with status 1011 and a generic reason containing no private
+  backend sentinel. Diagnostic and ephemeral frames remain explicitly
+  best-effort. The distinct `/ws/v1alpha1` command socket is unchanged.
+
 - **EVD-08 / OPS-01 container lifecycle slices (2026-08-05):**
   `scripts/container-smoke.sh`, invoked by the `container-smoke` CI job,
   validates the Compose model, builds the canonical image with `Cargo.lock`,
