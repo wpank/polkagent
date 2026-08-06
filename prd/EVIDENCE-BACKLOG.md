@@ -247,7 +247,11 @@ reports.
   cover null and fully populated turn/step/effect-intent/effect-attempt/
   causation metadata. Corrupt JSON, timestamps, typed IDs, and mismatched
   event-type/payload pairs fail closed, including a real-SQLite WebSocket 1011
-  assertion. PostgreSQL schema/adapter mapping is present, but its live test
+  assertion. The APR-03 integration gate then exposed V18 approval events with
+  non-UUID IDs; V20 deterministically normalizes those IDs without moving their
+  rowid/global cursors and catalogs `effects_resolved`, with migration replay
+  plus all 16 coordinator tests passing. PostgreSQL schema/adapter mapping is
+  present, but its live test
   returned early because `TEST_DATABASE_URL` was unset; production upgrade
   evidence remains open. Conversation/scope filters do not prove tenant or
   principal isolation.

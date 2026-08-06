@@ -921,7 +921,9 @@ implemented global cursor) unchanged and truthfully defaults fields that did
 not exist. Diagnostic storage prefixes are backfilled to diagnostic durability
 and normalized away on reads. Canonical recorder/store/API replay tests cover
 null and populated metadata; malformed JSON, timestamps, typed IDs,
-durability, and event-type/payload pairs fail closed. PostgreSQL has matching
+durability, and event-type/payload pairs fail closed. V20 normalizes legacy
+approval coordinator event IDs to stable UUIDs without changing rowid cursors
+and catalogs `effects_resolved`. PostgreSQL has matching
 schema/adapter fields, but live migration/conformance evidence remains pending.
 This is metadata fidelity, not authorization: conversation/scope filters do
 not enforce a tenant or principal boundary. OBS-01 remains open for trace and

@@ -273,7 +273,10 @@ exact ignored rule pointers rather than broad suppression.
   exact legacy rowids/global cursors. Legacy diagnostic prefixes are backfilled
   and normalized on read. Shared replay rejects malformed JSON, timestamps,
   typed IDs, durability, and event-type/payload mismatches instead of creating
-  defaults. PostgreSQL schema/adapter mapping has the same fields, but live
+  defaults. SQLite V20 repairs the legacy V18 approval coordinator's non-UUID
+  event IDs into stable UUIDs without moving the durable rowid cursor and adds
+  `effects_resolved` to the canonical event catalog. PostgreSQL schema/adapter
+  mapping has the same fields, but live
   upgrade/conformance remains environment-gated. Conversation/scope metadata
   and filters do not provide tenant/principal authorization.
   Black-box tests prove prompt transcript, caller-turn retry and conflict,
