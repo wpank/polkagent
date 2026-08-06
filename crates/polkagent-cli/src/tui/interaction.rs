@@ -59,13 +59,14 @@ const MAX_RETAINED_CONSOLE_VIEWPORTS: usize = 32;
 const MAX_CONSOLE_TRANSCRIPT_TURNS: usize = 100;
 const CONTROLLER_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
-const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 9] = [
+const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 10] = [
     CommandName::Help,
     CommandName::Status,
     CommandName::Agents,
     CommandName::Agent,
     CommandName::Runs,
     CommandName::Inspect,
+    CommandName::Cancel,
     CommandName::New,
     CommandName::Resume,
     CommandName::Model,
@@ -126,6 +127,8 @@ pub struct ConsoleCommandRequest {
     pub agent_id: String,
     pub agent_name: String,
     pub conversation_id: Option<String>,
+    /// Exact selected durable turn for dynamic help and bounded `/cancel`.
+    pub selected_turn_id: Option<InteractionTurnId>,
     pub line: String,
     pub invocation: CommandInvocation,
 }
@@ -159,7 +162,7 @@ pub struct ConsoleCommandResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsoleCommandSubmission {
-    Execute(ConsoleCommandRequest),
+    Execute(Box<ConsoleCommandRequest>),
     Rejected,
 }
 
@@ -687,13 +690,22 @@ impl InteractionState {
                 .conversation_id
                 .as_deref()
                 .and_then(|id| id.parse::<ConversationId>().ok()),
-            has_active_turn: self
-                .run
-                .as_ref()
-                .is_some_and(|run| !run.status.is_terminal()),
+            has_active_turn: self.selected_cancel_turn_id().is_some(),
             pending_approval_count: 0,
             can_mutate: true,
         }
+    }
+
+    fn selected_cancel_turn_id(&self) -> Option<InteractionTurnId> {
+        let run = self.run.as_ref()?;
+        let activity_id = run.activity_id.as_deref()?;
+        if run.status.is_terminal()
+            || Some(activity_id) != self.selected_activity_id.as_deref()
+            || run.conversation_id != self.conversation_id
+        {
+            return None;
+        }
+        run.turn_id.as_deref()?.parse().ok()
     }
 
     /// Replace the typed slash name with the highlighted canonical command.
@@ -1017,17 +1029,25 @@ impl InteractionState {
             .resolve(invocation.command.name().as_str())
             .is_some_and(|spec| !spec.is_available(&context))
         {
-            self.reject_command(
-                &line,
+            let reason = if matches!(
+                invocation.command,
+                InteractionCommand::Cancel {
+                    target: polkagent_interaction::CancelTarget::CurrentTurn
+                }
+            ) {
+                "/cancel is available only for the selected exact active durable turn".to_owned()
+            } else {
                 format!(
                     "/{} requires a selected durable Console conversation",
                     invocation.command.name().as_str()
-                ),
-            );
+                )
+            };
+            self.reject_command(&line, reason);
             return Ok(ConsoleCommandSubmission::Rejected);
         }
 
         let request_id = uuid::Uuid::now_v7().to_string();
+        let selected_turn_id = self.selected_cancel_turn_id();
         self.command_result = Some(ConsoleCommandResult {
             request_id: request_id.clone(),
             line: line.clone(),
@@ -1035,14 +1055,17 @@ impl InteractionState {
             title: "Executing shared command".to_owned(),
             lines: vec!["Waiting for the durable interaction service.".to_owned()],
         });
-        Ok(ConsoleCommandSubmission::Execute(ConsoleCommandRequest {
-            request_id,
-            agent_id,
-            agent_name,
-            conversation_id: self.conversation_id.clone(),
-            line,
-            invocation,
-        }))
+        Ok(ConsoleCommandSubmission::Execute(Box::new(
+            ConsoleCommandRequest {
+                request_id,
+                agent_id,
+                agent_name,
+                conversation_id: self.conversation_id.clone(),
+                selected_turn_id,
+                line,
+                invocation,
+            },
+        )))
     }
 
     fn reject_command(&mut self, line: &str, reason: String) {
@@ -1559,8 +1582,11 @@ fn validate_console_command(command: &InteractionCommand) -> Result<(), String> 
             "/{} is not supported in the Console",
             command.as_str()
         )),
-        InteractionCommand::Cancel { .. } => Err(
-            "/cancel is unavailable because the composer is closed during an active turn; press x for exact current-turn cancellation"
+        InteractionCommand::Cancel {
+            target: polkagent_interaction::CancelTarget::Run(_)
+                | polkagent_interaction::CancelTarget::All,
+        } => Err(
+            "the Console supports only /cancel (or /stop) for the selected exact active turn; run-ID and all-activity cancellation are unavailable"
                 .to_owned(),
         ),
         InteractionCommand::Approve { .. } | InteractionCommand::Deny { .. } => Err(
@@ -1603,8 +1629,14 @@ fn slash_candidate(spec: &polkagent_interaction::CommandSpec) -> SlashCommandCan
     SlashCommandCandidate {
         name: spec.name.clone(),
         aliases: spec.aliases.clone(),
-        description: spec.description.clone(),
-        input_hint: spec.input_hint.clone(),
+        description: if spec.command == CommandName::Cancel {
+            "Cancel the selected exact active Console turn".to_owned()
+        } else {
+            spec.description.clone()
+        },
+        input_hint: (spec.command != CommandName::Cancel)
+            .then(|| spec.input_hint.clone())
+            .flatten(),
     }
 }
 
@@ -2193,7 +2225,10 @@ impl RunController {
         clippy::too_many_lines,
         reason = "the async command boundary keeps validation, execution, and correlated completion together"
     )]
-    pub fn execute_command(&mut self, request: ConsoleCommandRequest) -> Result<(), &'static str> {
+    pub fn execute_command(
+        &mut self,
+        request: Box<ConsoleCommandRequest>,
+    ) -> Result<(), &'static str> {
         if self.control_active {
             return Err("a Console action is already active");
         }
@@ -2209,9 +2244,10 @@ impl RunController {
                 agent_id,
                 agent_name: _,
                 conversation_id,
+                selected_turn_id,
                 line,
                 invocation,
-            } = request;
+            } = *request;
             let selected_conversation_id = conversation_id.clone();
             let typed_agent_id = match agent_id.parse::<AgentId>() {
                 Ok(agent_id) => agent_id,
@@ -2251,6 +2287,27 @@ impl RunController {
                     return;
                 }
             };
+            let current_turn_cancel = matches!(
+                invocation.command,
+                InteractionCommand::Cancel {
+                    target: polkagent_interaction::CancelTarget::CurrentTurn
+                }
+            );
+            let selected_has_active_turn = selected_turn_id.is_some();
+            let selected_turn_id = selected_turn_id.filter(|_| current_turn_cancel);
+            if current_turn_cancel && selected_turn_id.is_none() {
+                send_command_failure(
+                    &event_tx,
+                    agent_id,
+                    selected_conversation_id,
+                    request_id,
+                    line,
+                    "the selected Console activity no longer has an exact cancellable durable turn"
+                        .to_owned(),
+                )
+                .await;
+                return;
+            }
             let service: Arc<dyn InteractionService> = polkagent_runtime.interactions().clone();
             if matches!(&invocation.command, InteractionCommand::Agent { .. }) {
                 let Some(selected) = conversation_id else {
@@ -2298,6 +2355,7 @@ impl RunController {
                 pool: polkagent_runtime.pool().clone(),
                 run_commands: RunCommandReadModel::new(polkagent_runtime.pool().clone()),
                 agent_id: typed_agent_id,
+                exact_turn_filter: selected_turn_id,
             });
             let executor = match ServiceCommandExecutor::new(
                 command_registry().clone(),
@@ -2338,7 +2396,7 @@ impl RunController {
                     invocation,
                     context: CommandContext {
                         conversation_id,
-                        has_active_turn: false,
+                        has_active_turn: selected_has_active_turn,
                         pending_approval_count: 0,
                         can_mutate: true,
                     },
@@ -2984,6 +3042,9 @@ async fn project_console_command_output(
             let mut lines = commands
                 .into_iter()
                 .map(|spec| {
+                    if spec.command == CommandName::Cancel {
+                        return "/cancel (/stop) — Cancel the selected exact active Console turn; run-ID and all-activity forms are unavailable".to_owned();
+                    }
                     let hint = spec
                         .input_hint
                         .as_deref()
@@ -2991,7 +3052,7 @@ async fn project_console_command_output(
                     format!("/{}{hint} — {}", spec.name, spec.description)
                 })
                 .collect::<Vec<_>>();
-            lines.push("x — cancel the exact current turn (not a slash command)".to_owned());
+            lines.push("x — shortcut for the same selected exact active turn".to_owned());
             lines.push(
                 "Provider/harness/autonomy, approval, and group commands are unavailable in Console."
                     .to_owned(),
@@ -3175,7 +3236,22 @@ async fn project_console_command_output(
         CommandOutput::Runs { .. } | CommandOutput::RunInspected { .. } => {
             Err("shared run command output could not be rendered safely".to_owned())
         }
-        CommandOutput::CancellationRequested { .. } | CommandOutput::ApprovalResolved { .. } => {
+        CommandOutput::CancellationRequested {
+            turn_id: Some(turn_id),
+            run_ids,
+        } => {
+            let mut lines = vec![format!("turn: {turn_id}")];
+            lines.extend(run_ids.into_iter().map(|run_id| format!("run: {run_id}")));
+            Ok(ProjectedConsoleCommand {
+                title: "Cancellation requested for selected Console turn".to_owned(),
+                lines,
+                selection: None,
+                model_update: ConsoleModelUpdate::Unchanged,
+                agent_update: None,
+            })
+        }
+        CommandOutput::CancellationRequested { turn_id: None, .. }
+        | CommandOutput::ApprovalResolved { .. } => {
             Err("shared command returned an output unsupported by Console".to_owned())
         }
     }
@@ -3194,6 +3270,7 @@ struct TuiCommandRuntime {
     pool: SqlitePool,
     run_commands: RunCommandReadModel,
     agent_id: AgentId,
+    exact_turn_filter: Option<InteractionTurnId>,
 }
 
 #[async_trait]
@@ -3245,6 +3322,10 @@ impl InteractionCommandRuntime for TuiCommandRuntime {
             .await?
             .into_iter()
             .filter(|turn| !turn.state.is_terminal())
+            .filter(|turn| {
+                self.exact_turn_filter
+                    .is_none_or(|turn_id| turn.handle.turn_id == turn_id)
+            })
             .map(|turn| turn.handle)
             .collect())
     }
@@ -4359,6 +4440,98 @@ mod tests {
     }
 
     #[test]
+    fn cancel_completion_and_submission_require_the_selected_exact_durable_turn() {
+        let mut state = InteractionState::default();
+        let agent_id = AgentId::new().to_string();
+        let conversation_id = ConversationId::new().to_string();
+        let turn_id = InteractionTurnId::new().to_string();
+        state.select_agent(agent_id.clone(), "Alice");
+        state.conversation_id = Some(conversation_id.clone());
+        type_prompt(&mut state, "active prompt");
+        state.submit().expect("submit active prompt");
+        state
+            .bind_activity("activity-a".to_owned())
+            .expect("bind active prompt");
+
+        type_prompt(&mut state, "/");
+        assert!(!state
+            .slash_command_menu()
+            .expect("starting command menu")
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "cancel"));
+        state.clear_prompt();
+        state.apply_update(ControllerUpdate::Activity(RunActivityUpdate {
+            activity_id: "activity-a".to_owned(),
+            agent_id,
+            requested_conversation_id: Some(conversation_id.clone()),
+            event: ControllerEvent::Started {
+                conversation_id,
+                model: None,
+                turn_id: turn_id.clone(),
+                run_id: RunId::new().to_string(),
+                agent_name: "Alice".to_owned(),
+                notes: Vec::new(),
+            },
+        }));
+
+        type_prompt(&mut state, "/");
+        let cancel = state
+            .slash_command_menu()
+            .expect("active command menu")
+            .candidates
+            .into_iter()
+            .find(|candidate| candidate.name == "cancel")
+            .expect("selected-turn cancel command");
+        assert_eq!(cancel.aliases, vec!["stop"]);
+        assert_eq!(cancel.usage(), "/cancel");
+        assert!(cancel.description.contains("selected exact active"));
+
+        state.clear_prompt();
+        type_prompt(&mut state, "/stop");
+        let ConsoleCommandSubmission::Execute(request) =
+            state.submit_command().expect("submit exact cancellation")
+        else {
+            panic!("exact cancellation was rejected");
+        };
+        assert!(matches!(
+            request.invocation.command,
+            InteractionCommand::Cancel {
+                target: polkagent_interaction::CancelTarget::CurrentTurn
+            }
+        ));
+        assert_eq!(
+            request.selected_turn_id.map(|id| id.to_string()).as_deref(),
+            Some(turn_id.as_str())
+        );
+        assert_eq!(
+            state.run.as_ref().map(|run| &run.status),
+            Some(&ConsoleRunStatus::Running),
+            "command submission must not manufacture a model turn or terminal state"
+        );
+    }
+
+    #[test]
+    fn cancel_run_and_all_forms_are_structured_refusals() {
+        let mut state = InteractionState::default();
+        state.select_agent(AgentId::new().to_string(), "Alice");
+        state.conversation_id = Some(ConversationId::new().to_string());
+        for line in [
+            format!("/cancel {}", RunId::new()),
+            "/cancel all".to_owned(),
+        ] {
+            type_prompt(&mut state, &line);
+            assert_eq!(
+                state.submit_command(),
+                Ok(ConsoleCommandSubmission::Rejected)
+            );
+            let refusal = state.command_result.as_ref().expect("structured refusal");
+            assert_eq!(refusal.status, ConsoleCommandStatus::Failed);
+            assert!(refusal.lines[0].contains("selected exact active turn"));
+        }
+    }
+
+    #[test]
     fn slash_submission_is_not_misrouted_as_an_agent_prompt() {
         let mut state = InteractionState::default();
         state.select_agent("agent-id", "Alice");
@@ -4943,6 +5116,356 @@ mod tests {
 
         controller.shutdown().await;
         assert!(controller.tasks.is_empty());
+    }
+
+    #[test]
+    fn cancel_command_targets_one_exact_runtime_turn_without_touching_other_activity() {
+        const CHILD_TEST: &str = "tui::interaction::tests::cancel_command_targets_one_exact_runtime_turn_without_touching_other_activity_child";
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("resolve current test binary"),
+        )
+        .args(["--exact", CHILD_TEST, "--nocapture"])
+        .env("POLKAGENT_TUI_CANCEL_FIXTURE_KEY", "fixture-key")
+        .output()
+        .expect("run isolated provider-backed cancellation child");
+        assert!(
+            output.status.success(),
+            "provider-backed cancellation child failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the real-runtime cancellation proof keeps two provider-backed turns, exact command scope, stale selection guards, and durable no-extra-work assertions together"
+    )]
+    async fn cancel_command_targets_one_exact_runtime_turn_without_touching_other_activity_child() {
+        use tokio::io::{AsyncBufReadExt as _, BufReader};
+
+        const API_KEY_ENV: &str = "POLKAGENT_TUI_CANCEL_FIXTURE_KEY";
+        if std::env::var(API_KEY_ENV).as_deref() != Ok("fixture-key") {
+            return;
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind delayed TUI provider");
+        let address = listener.local_addr().expect("delayed provider address");
+        let (request_tx, mut request_rx) = mpsc::channel(2);
+        let provider_task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.expect("accept provider request");
+                let mut reader = BufReader::new(stream);
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .await
+                    .expect("read provider request line");
+                assert!(request_line.starts_with("POST /v1/chat/completions "));
+                request_tx
+                    .send(())
+                    .await
+                    .expect("signal delayed provider request");
+                connections.spawn(async move {
+                    std::future::pending::<()>().await;
+                    drop(reader);
+                });
+            }
+            while connections.join_next().await.is_some() {}
+        });
+
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("tui-cancel.db");
+        let config_path = temp.path().join("polkagent.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[[providers]]\n\
+                 id = \"cancel-provider\"\n\
+                 provider_type = \"local\"\n\
+                 base_url = \"http://{address}/v1\"\n\
+                 api_key_env = \"{API_KEY_ENV}\"\n\
+                 default_model = \"fixture-model\"\n"
+            ),
+        )
+        .expect("write delayed provider config");
+        let pool = SqlitePool::open(&database_path).expect("open database");
+        migrations::migrate(&pool.writer()).expect("migrate database");
+        let store = SqliteRunStore::new(pool.clone());
+        let timestamp = "2026-01-01T00:00:00Z";
+        let create_agent = |name: &str| {
+            let spec = serde_json::json!({
+                "name": name,
+                "description": null,
+                "model": "fixture/model",
+                "tools": [],
+                "system_prompt": null,
+                "autonomy_level": "supervised",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            });
+            store
+                .create_agent(name, None, &spec.to_string())
+                .expect("create active agent")
+        };
+        let agent_a = create_agent("cancel-agent-a");
+        let agent_b = create_agent("cancel-agent-b");
+        let mut options =
+            tui_runtime_options(&pool, Some(&config_path)).expect("TUI runtime options");
+        options.workdir = temp.path().to_path_buf();
+        options.disable_harness = true;
+        options.discover_environment_providers = false;
+        options.provider_override = Some("cancel-provider".to_owned());
+        drop(store);
+        drop(pool);
+        let runtime = Box::pin(RuntimeFactory::build(options))
+            .await
+            .expect("build provider-backed TUI runtime");
+        let mut controller = RunController::new(runtime.clone());
+        let mut state = InteractionState::default();
+
+        state.select_agent(agent_a.id.clone(), agent_a.name.clone());
+        type_prompt(&mut state, "provider-backed prompt a");
+        let activity_a = controller
+            .start(state.submit().expect("submit prompt a"))
+            .expect("start prompt a");
+        state
+            .bind_activity(activity_a.clone())
+            .expect("bind prompt a");
+        type_prompt(&mut state, "preserved draft a");
+        state.select_agent(agent_b.id.clone(), agent_b.name.clone());
+        type_prompt(&mut state, "provider-backed prompt b");
+        let activity_b = controller
+            .start(state.submit().expect("submit prompt b"))
+            .expect("start prompt b");
+        state
+            .bind_activity(activity_b.clone())
+            .expect("bind prompt b");
+        type_prompt(&mut state, "preserved draft b");
+
+        let mut started = 0;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while started < 2 {
+                let update = controller
+                    .recv_update()
+                    .await
+                    .expect("controller update channel remains open");
+                if matches!(update.event(), ControllerEvent::Started { .. }) {
+                    started += 1;
+                }
+                state.apply_update(update);
+            }
+            request_rx.recv().await.expect("first provider request");
+            request_rx.recv().await.expect("second provider request");
+        })
+        .await
+        .expect("provider-backed turns did not become active");
+        assert_eq!(controller.active_run_count(), 2);
+
+        assert!(state.select_activity_relative(-1));
+        assert_eq!(state.selected_activity_id(), Some(activity_a.as_str()));
+        let conversation_a = state.conversation_id.clone().expect("conversation a");
+        let turn_a = state
+            .run
+            .as_ref()
+            .and_then(|run| run.turn_id.clone())
+            .expect("turn a");
+        state.clear_prompt();
+        type_prompt(&mut state, "/help cancel");
+        let ConsoleCommandSubmission::Execute(help_request) = state
+            .submit_command()
+            .expect("submit selected cancellation help")
+        else {
+            panic!("selected cancellation help was rejected");
+        };
+        controller
+            .execute_command(help_request)
+            .expect("execute selected cancellation help");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match controller
+                    .recv_update()
+                    .await
+                    .expect("controller update channel remains open")
+                {
+                    ControllerUpdate::Control(event) if event.is_terminal() => {
+                        state.apply(event);
+                        break;
+                    }
+                    ControllerUpdate::Control(_) => {}
+                    activity @ ControllerUpdate::Activity(_) => state.apply_update(activity),
+                }
+            }
+        })
+        .await
+        .expect("selected cancellation help did not complete");
+        let help = state.command_result.as_ref().expect("cancellation help");
+        assert!(help
+            .lines
+            .iter()
+            .any(|line| line.contains("/cancel (/stop)")));
+        assert!(help
+            .lines
+            .iter()
+            .any(|line| line.contains("run-ID and all-activity forms are unavailable")));
+
+        state.clear_prompt();
+        type_prompt(&mut state, "/cancel");
+        let ConsoleCommandSubmission::Execute(cancel_request) = state
+            .submit_command()
+            .expect("submit selected cancellation")
+        else {
+            panic!("selected exact cancellation was rejected");
+        };
+        assert_eq!(
+            cancel_request.conversation_id.as_deref(),
+            Some(conversation_a.as_str())
+        );
+        assert_eq!(
+            cancel_request
+                .selected_turn_id
+                .map(|id| id.to_string())
+                .as_deref(),
+            Some(turn_a.as_str())
+        );
+        let duplicate_request = ConsoleCommandRequest {
+            request_id: uuid::Uuid::now_v7().to_string(),
+            ..(*cancel_request).clone()
+        };
+        controller
+            .execute_command(cancel_request)
+            .expect("execute shared cancellation command");
+
+        assert!(state.select_activity_relative(1));
+        assert_eq!(state.selected_activity_id(), Some(activity_b.as_str()));
+        assert_eq!(state.prompt_buffer, "preserved draft b");
+        let conversation_b = state.conversation_id.clone().expect("conversation b");
+        let turn_b = state
+            .run
+            .as_ref()
+            .and_then(|run| run.turn_id.clone())
+            .expect("turn b");
+
+        let mut saw_command = false;
+        let mut saw_cancelled_a = false;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !(saw_command && saw_cancelled_a) {
+                let update = controller
+                    .recv_update()
+                    .await
+                    .expect("controller update channel remains open");
+                match &update {
+                    ControllerUpdate::Control(ControllerEvent::CommandCompleted { .. }) => {
+                        saw_command = true;
+                    }
+                    ControllerUpdate::Activity(activity)
+                        if activity.activity_id == activity_a
+                            && matches!(activity.event, ControllerEvent::Cancelled(_)) =>
+                    {
+                        saw_cancelled_a = true;
+                    }
+                    _ => {}
+                }
+                state.apply_update(update);
+            }
+        })
+        .await
+        .expect("exact cancellation did not complete");
+        assert_eq!(controller.active_run_count(), 1);
+        assert_eq!(state.selected_activity_id(), Some(activity_b.as_str()));
+        assert_eq!(
+            state.conversation_id.as_deref(),
+            Some(conversation_b.as_str())
+        );
+        assert_eq!(state.prompt_buffer, "preserved draft b");
+        assert_eq!(
+            state.run.as_ref().map(|run| &run.status),
+            Some(&ConsoleRunStatus::Running)
+        );
+        assert!(state.command_result.is_none());
+
+        controller
+            .execute_command(Box::new(duplicate_request))
+            .expect("execute duplicate terminal cancellation");
+        let duplicate = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let ControllerUpdate::Control(event) = controller
+                    .recv_update()
+                    .await
+                    .expect("controller update channel remains open")
+                {
+                    if event.is_terminal() {
+                        break event;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("duplicate cancellation did not report a result");
+        assert!(matches!(duplicate, ControllerEvent::CommandFailed { .. }));
+        state.apply(duplicate);
+        assert_eq!(state.selected_activity_id(), Some(activity_b.as_str()));
+        assert_eq!(state.prompt_buffer, "preserved draft b");
+
+        assert!(controller.cancel_activity(&activity_b));
+        state.mark_cancelling();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let update = controller
+                    .recv_update()
+                    .await
+                    .expect("controller update channel remains open");
+                let cancelled_b = matches!(
+                    &update,
+                    ControllerUpdate::Activity(activity)
+                        if activity.activity_id == activity_b
+                            && matches!(activity.event, ControllerEvent::Cancelled(_))
+                );
+                state.apply_update(update);
+                if cancelled_b {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("shortcut cancellation for activity b did not complete");
+        assert_eq!(controller.active_run_count(), 0);
+        assert_eq!(state.prompt_buffer, "preserved draft b");
+
+        let (turn_count, run_count, cancelled_turns) = {
+            let writer = runtime.pool().writer();
+            let turn_count: i64 = writer
+                .query_row("SELECT COUNT(*) FROM interaction_turns", [], |row| {
+                    row.get(0)
+                })
+                .expect("count durable turns");
+            let run_count: i64 = writer
+                .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+                .expect("count durable runs");
+            let cancelled_turns: i64 = writer
+                .query_row(
+                    "SELECT COUNT(*) FROM interaction_turns WHERE state = 'cancelled'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count cancelled turns");
+            (turn_count, run_count, cancelled_turns)
+        };
+        assert_eq!((turn_count, run_count, cancelled_turns), (2, 2, 2));
+        let turn_b_state = runtime
+            .interactions()
+            .list_turns(conversation_b.parse().expect("conversation b UUID"))
+            .await
+            .expect("load conversation b turns")
+            .into_iter()
+            .find(|turn| turn.handle.turn_id.to_string() == turn_b)
+            .map(|turn| turn.state);
+        assert_eq!(turn_b_state, Some(TurnState::Cancelled));
+
+        provider_task.abort();
+        controller.shutdown().await;
     }
 
     #[tokio::test(flavor = "current_thread")]

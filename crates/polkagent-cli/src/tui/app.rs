@@ -1333,16 +1333,7 @@ impl App {
                     self.tui_state.mark_dirty();
                     return;
                 }
-                let run_active = self
-                    .tui_state
-                    .interaction
-                    .run
-                    .as_ref()
-                    .is_some_and(|run| !run.status.is_terminal());
-                if run_active {
-                    self.tui_state.last_error =
-                        Some("this conversation already has an active turn; switch activity/session or press x to cancel it".to_owned());
-                } else if self.run_controller.is_control_active() {
+                if self.run_controller.is_control_active() {
                     self.tui_state.last_error =
                         Some("a Console command is still running".to_owned());
                 } else {
