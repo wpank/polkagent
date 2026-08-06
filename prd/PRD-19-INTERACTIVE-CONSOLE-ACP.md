@@ -28,9 +28,9 @@ activities without losing per-conversation transcript, prompt draft, or history;
 `x` cancels the selected exact activity. Its terminal lifecycle is proven in a
 real Unix PTY. `polkagent chat` now provides a focused
 interactive/non-TTY adapter with explicit resume, multiline input, shared
-help/status/agents/agent/cancel/new/resume/model handlers, checkpoint
+help/status/agents/agent/runs/inspect/cancel/new/resume/model handlers, checkpoint
 resubscribe, and SIGINT cancellation. The TUI now executes the truthful
-help/status/agents/agent/new/resume/model subset
+help/status/agents/agent/new/resume/runs/inspect/model subset
 through the same registry and service executor, renders structured results, and
 switches/reloads exact durable conversations without creating model turns. ACP
 now maps its session ID exactly to the durable conversation UUID and uses the
@@ -90,7 +90,9 @@ The actionable TUI slice now includes:
   bounded history, bracketed paste, draft restoration, and a scrolling wide-
   character-aware composer;
 - shared-registry slash discovery/help with aliases, argument hints, keyboard
-  selection, and executable `/help`, `/status`, `/new`, and `/resume` results;
+  selection, truthful conversation availability, and executable `/help`,
+  `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, and
+  `/model` results;
 - drop-backed best-effort terminal restoration, with real Unix PTY evidence for
   normal exit, ordinary error, and caught-panic unwind.
 
@@ -106,8 +108,8 @@ newest 32 completed pairs among the latest 1,000 prior turn records; harness-
 backed follow-up is explicitly unsupported because its string ingress cannot
 preserve roles. Direct legacy
 approval/database actions remain outside the Console; group plans/child-run
-orchestration, attachments, word navigation, and shared command/session
-execution parity with ACP are not implemented.
+orchestration, attachments, word navigation, and approval/configuration command
+parity are not implemented.
 The architecture below remains the target rather than retroactively treating
 this slice as TUI-01 completion.
 
@@ -160,7 +162,7 @@ It remains design input rather than the completion contract.
 | Prompt Polkagent interactively | Implemented for single-agent turns with per-conversation model selection | `polkagent chat` and the F9 Console call the durable interaction service; model executors receive bounded typed completed history, while harness follow-up fails explicitly |
 | Prompt from inside the TUI | Implemented for bounded simultaneous agent/conversation turns | `p` opens the selected Console conversation; distinct targets continue in the background, `[`/`]` switches retained activities, and same-conversation duplicates fail before draft loss |
 | Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns and `x` cancels only the selected exact activity |
-| Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, and `/model` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns; unavailable capabilities fail explicitly |
+| Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, and `/model` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns; run reads share ACP/chat scope, bounds, and redaction while unavailable capabilities fail explicitly |
 | Approve/deny in the TUI | Not safely implemented | Legacy Approvals-tab writes mutate display-state rows but cannot durably resolve and resume the exact paused effect; coordinator-backed interaction approval remains required |
 | See live run output in the TUI | Implemented for correlated foreground/background activity | Controller projects bounded per-activity interaction events and resubscribes from a durable checkpoint after lag; a 32-entry redaction-safe strip exposes identity/status without prompt/output/error detail, while approval/rich plan projection remains absent |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
@@ -247,8 +249,8 @@ gaps are:
   opens the shared-registry picker;
 - Command mode handles only Escape;
 - registry-derived completion/help and the truthful help/status/agents/agent/
-  new/resume/model subset execute, but word navigation and broader command
-  parity remain open;
+  new/resume/runs/inspect/model subset execute, but word navigation and
+  approval/configuration command parity remain open;
 - composer history and transcript reload durably, and `s` opens a bounded
   asynchronous same-agent session picker with stale-result guards;
 - target selection can begin from the highlighted/first active agent and then
@@ -1140,8 +1142,8 @@ a role-safe harness/session context contract.
   runtime and durable interaction service.
 - [x] Implement line-oriented multiline composition, durable transcript resume,
   typed streaming, checkpoint resubscribe, and Ctrl-C cancellation.
-- [x] Execute the truthful help/status/agents/agent/cancel/new/resume/model
-  subset through shared slash-command handlers.
+- [x] Execute the truthful help/status/agents/agent/runs/inspect/cancel/new/
+  resume/model subset through shared slash-command handlers.
 - [x] Persist `/agent` per conversation with restart/next-run proof, active/
   ambiguous/unknown refusal, and no AgentSpec/turn/run/event mutation.
 - [x] Add persisted execution-scoped `/model` selection with same-provider
@@ -1167,9 +1169,14 @@ a role-safe harness/session context contract.
   128-KiB whole-grapheme bounds, and scrolling viewport behavior.
 - [x] Add registry-derived slash-command discovery/help/completion with aliases,
   input hints, selection, and acceptance.
-- [x] Execute `/help`, `/status`, `/agents`, `/agent`, `/new`, and `/resume` through the shared
-  command executor with structured pending/completed/failed output, stale-result
-  guards, exact conversation switching, and no accidental model turn.
+- [x] Execute `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`,
+  `/runs`, and `/inspect` through the shared command executor with structured
+  pending/completed/failed output, stale-result guards, exact conversation
+  switching/scope, and no accidental model turn.
+- [x] Consume the runtime-owned run read model and shared formatter without
+  adapter SQL or event-loop blocking. Same/foreign/missing, restart,
+  redaction/bounds, stale-selection, and concurrent-activity fixtures preserve
+  the selected viewport and exact cancellation path.
 - [x] Persist exact active-agent selection per conversation in chat and Console;
   reject unknown/inactive/ambiguous/active-work/stale changes, preserve transcript
   and model, survive restart, route the next run to the selected target, and

@@ -393,6 +393,8 @@ durable multi-turn surface:
 | `/agent <name-or-id>` | Persist the selected conversation's active target |
 | `/new [title]` | Create and select a new durable single-agent interaction |
 | `/resume <conversation-id>` | Select an interaction, target, and transcript |
+| `/runs` | List up to 20 newest runs linked to the selected conversation |
+| `/inspect <run-id>` | Inspect one selected-conversation run with bounded artifact IDs and safe terminal error |
 | `/model [model-id]` | Show or persist the selected conversation's effective model |
 
 The Console creates one durable interaction for the selected agent and keeps
@@ -403,10 +405,19 @@ pending, and partial turns are omitted as whole pairs. Contextual harness
 history remains unsupported. The Console consumes typed interaction events,
 shows correlated
 conversation/turn/run IDs, reloads history after restart, and keeps one active
-turn at a time so cancellation has an exact target. The slash picker advertises
-only `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, and `/model`;
-those commands use the shared registry and service executor, render structured
-success/error output, and are never sent to the model. `/agents` reads active
+turn per selected conversation, with at most eight across distinct targets, so
+cancellation has an exact target. The slash picker advertises
+only `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`,
+`/inspect`, and `/model`; unavailable interaction-scoped commands are hidden
+until a durable conversation is selected. Those commands use the shared
+registry and service executor, render structured success/error output, and are
+never sent to the model. `/runs` and `/inspect` use the runtime-owned
+conversation-scoped read model and the same bounded redaction-safe formatter as
+terminal chat and ACP. A foreign run is indistinguishable from a missing run;
+prompt parameters, summaries, artifact bodies/metadata, provider errors, and
+stored reason suffixes never reach the Console. Both reads execute
+asynchronously while unrelated activities continue and stale results cannot
+replace a newly selected conversation. `/agents` reads active
 targets from the retained runtime registry and deliberately reports lifecycle,
 not unproven per-agent readiness. `/agent <name-or-id>` requires an exact,
 unambiguous active target and persists it through the interaction service's
@@ -426,8 +437,8 @@ dynamic selections fail with typed errors. Async model results are correlated
 to the initiating request, agent, and conversation before updating the session
 header. `/cancel` is not accepted because the composer is closed while a turn
 is active; `x` remains the exact current-turn cancellation path. Provider,
-autonomy, harness, group orchestration, approval, and run-inspection commands
-are explicitly refused in the Console. Approval events are displayed
+autonomy, harness, group orchestration, and approval commands are explicitly
+refused in the Console. Approval events are displayed
 as unavailable rather than mutating
 effect rows directly. The separate legacy Approvals tab retains its existing
 direct approve/deny behavior. Transcript reloads use the interaction service's
@@ -440,8 +451,9 @@ shows at most 50 exact same-agent sessions with title, lifecycle state, turn
 count, and UTC update time. Use `j`/`k` or the arrow keys to navigate, Enter to
 load the selected turn-correlated transcript, and Escape to close it. The
 selector and transcript load are asynchronous, ignore stale results by request
-and agent identity, and refuse to open or switch while a turn or Console action
-is active. Empty and service-error states remain visible in the selector;
+and agent identity, and serialize with other Console control actions while
+unrelated active turns continue. Empty and service-error states remain visible
+in the selector;
 `/new [title]` remains the supported creation path.
 
 The composer edits extended Unicode grapheme clusters, so cursor movement,

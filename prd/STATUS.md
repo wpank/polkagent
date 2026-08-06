@@ -101,9 +101,9 @@ exact ignored rule pointers rather than broad suppression.
 | Surface/capability | Component state | Product state | Decisive gap |
 |---|---|---|---|
 | One-shot CLI run | Uses the shared `RuntimeFactory`; subprocess and durable-restart coverage pass | Partially usable; the bounded grantless registered-tool path is composed below its CLI boundary | The path is `AppService`-tested, but no one-shot CLI subprocess proves schema advertisement through handler I/O and next inference; policy enforcement, approvals, crash recovery, cancellation during I/O, and external-tool evidence remain. |
-| Monitoring TUI | Rich views plus a durable F9 Console, bounded async input/controller pump, single-flight background SQLite/chain projections, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, durable session/agent selection, and correlated multi-activity control | Responsive and actionable for up to eight distinct agent/conversation turns, including while monitoring I/O is blocked, and restart-resumable | A 32-entry redaction-safe strip, per-conversation viewport restore, `[`/`]` switching, exact selected cancel, duplicate refusal, bounded backpressure/eviction, prompt/follow-up/live output, shared commands, exact session switching, and safe tool status are composed; durable group plans/child runs, harness context, rich plans, and service-routed approvals remain. |
+| Monitoring TUI | Rich views plus a durable F9 Console, bounded async input/controller pump, single-flight background SQLite/chain projections, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, durable session/agent selection, scoped run list/inspection, and correlated multi-activity control | Responsive and actionable for up to eight distinct agent/conversation turns, including while monitoring or read-only run commands execute, and restart-resumable | A 32-entry redaction-safe strip, per-conversation viewport restore, `[`/`]` switching, exact selected cancel, duplicate refusal, bounded backpressure/eviction, prompt/follow-up/live output, shared redaction-safe `/runs` and `/inspect`, exact session switching, and safe tool status are composed; durable group plans/child runs, harness context, rich plans, and service-routed approvals remain. |
 | REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool/skill/memory composition, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, persisted target/model configuration, finite replay, checkpointed SSE, global run-event replay/reconnect, and versioned command-socket reconnect/lag recovery are composed; 9 optional skill-mutation/audit/registry routes, broader command channels, and full shutdown remain. |
-| Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable single-agent, target/model-selectable line-mode session | Interactive/non-TTY prompt, multiline input, contextual follow-up, transcript resume, persisted conversation-scoped `/agent` and `/model`, safe tool status, lag replay, and SIGINT cancellation work; provider/harness/autonomy changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
+| Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable single-agent, target/model-selectable line-mode session | Interactive/non-TTY prompt, multiline input, contextual follow-up, transcript resume, persisted conversation-scoped `/agent` and `/model`, bounded `/runs` and `/inspect`, safe tool status, lag replay, and SIGINT cancellation work; provider/harness/autonomy changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
 | Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio adapter over the durable interaction service, with stable conversation IDs, new/load/resume, state-aware shared-registry commands, persisted agent/model selectors, immutable cwd provenance, native tool updates, and a protocol-only permission harness | Restart-resumable protocol slice; command discovery tracks idle/active/terminal state, while permission mapping is tested but production APR-07 coordinator binding and editor interoperability remain unverified | Session list/import are unsupported by the pinned SDK/surface; provider/autonomy selectors, production permission round-trips, raw tool-data redaction policy, MCP passthrough, and manual Zed tool/approval/restart smoke remain. |
 | Providers/harnesses | Many adapters exist | Partially composed | Each adapter needs shared-runtime conformance and real failure/readiness evidence. |
@@ -139,7 +139,7 @@ exact ignored rule pointers rather than broad suppression.
 | 14 API/config | Shared-runtime durable core, interaction routes, and broad control-plane routes | Agent/run/artifact/tool/skill/memory/interaction reads and core mutations plus checkpointed interaction SSE are composed; 9 optional skill-mutation/audit/registry routes remain explicitly unavailable | HTTP retry/cancel/replay/live reconnect/restart/auth/read-only proof, durable skill/memory operations, zero-drift ordinary HTTP parity, and an OpenAPI 3.1-valid schema exist; two WebSocket frame protocols are separately documented | Active P0/P1 |
 | 15 Testing | Broad passing check/test/rustdoc suite; mandatory and extended Clippy gates are locally green | Production paths remain under-tested | Hosted CI confirmation plus live/client/ops gates missing | Active cross-cutting |
 | 17 Local testnet | Pinned native fixture, provisioning, CI gate, and live RPC/finality test target | Read-only baseline wired; signed action path missing | No real write proof; CI network artifact pending | Active P1 |
-| 19 Interactive/ACP | ACP server, durable terminal chat/TUI, shared runtime, headless interaction service, HTTP adapter, and command handlers implemented | TUI, chat, API, and ACP consume `InteractionService`; TUI adds bounded correlated multi-activity control, while ACP maps its session ID exactly to the durable conversation UUID and projects effect-backed tool updates | Cross-surface restart identity and controlled simultaneous TUI execution pass; harness context, approvals, durable group/child-run orchestration, ACP session list/import, and manual Zed remain | Active P0/P1 |
+| 19 Interactive/ACP | ACP server, durable terminal chat/TUI, shared runtime, headless interaction service, HTTP adapter, and command handlers implemented | TUI, chat, and ACP share conversation-scoped `/runs` and `/inspect`; TUI adds bounded correlated multi-activity control, while ACP maps its session ID exactly to the durable conversation UUID and projects effect-backed tool updates | Cross-surface restart identity, scoped/redacted run reads, and controlled simultaneous TUI execution pass; harness context, approvals, durable group/child-run orchestration, ACP session list/import, and manual Zed remain | Active P0/P1 |
 
 ## Decisive implementation evidence
 
@@ -186,14 +186,15 @@ exact ignored rule pointers rather than broad suppression.
   continues that transcript, immediate cancellation becomes durably terminal,
   and a stale history result cannot overwrite newer work. Transcript reloads
   now use the interaction service's bounded, turn-correlated projection rather
-  than scanning raw conversation rows. `/help`, `/status`, `/new`, and
-  `/resume` execute through shared handlers, render guarded structured results,
-  switch exact same-agent sessions, and never become model turns. Pressing `s`
+  than scanning raw conversation rows. `/help`, `/status`, `/agents`, `/agent`,
+  `/new`, `/resume`, `/runs`, `/inspect`, and `/model` execute through shared
+  handlers, render guarded structured results, switch or inspect exact selected
+  conversations, and never become model turns. Pressing `s`
   opens an asynchronous selector over the newest same-agent durable sessions;
-  it bounds discovery to 1,000 summaries and rendering to 50, refuses while a
-  turn or command is active, guards stale list/load results, and has restart
-  evidence that a foreign-agent session is excluded and the selected exact
-  transcript receives the next prompt.
+  it bounds discovery to 1,000 summaries and rendering to 50, serializes with
+  other control actions while unrelated turns continue, guards stale list/load
+  results, and has restart evidence that a foreign-agent session is excluded
+  and the selected exact transcript receives the next prompt.
   `/model [id]` uses the same service executor and persisted per-conversation
   config; the header/status/result projection follows the selection and rejects
   stale request, agent, or original-conversation results. Restart, two-session
@@ -205,6 +206,11 @@ exact ignored rule pointers rather than broad suppression.
   and stale-result cases fail closed; a successful switch preserves the exact
   conversation/transcript/model, survives restart, routes the next run to the
   persisted target, creates no turn/run/event, and does not mutate AgentSpec.
+  `/runs` and `/inspect` consume the runtime-owned conversation-scoped read
+  model and shared chat/ACP formatter through the nonblocking control channel.
+  Tests prove same-conversation list/inspection across restart, identical
+  foreign/missing refusal, 20-item bounds, redaction, stale-result rejection,
+  zero created work, and unchanged concurrent activity/viewports/cancellation.
 - `crates/polkagent-cli/src/tui/app.rs` now selects terminal, controller, tick,
   resize, and monitoring events asynchronously. Aggregate SQLite projections
   and chain HTTP calls run off the terminal thread with at most one job per
@@ -221,9 +227,9 @@ exact ignored rule pointers rather than broad suppression.
   interactive and non-TTY durable chat. It creates or resumes an interaction,
   accepts multiline input, streams typed updates with checkpoint resubscribe,
   and keeps assistant text on stdout while lifecycle/usage diagnostics use
-  stderr. Shared handlers execute the truthful help/status/agents/agent/cancel/
-  new/resume/model subset; unsupported provider/harness/autonomy, approval,
-  inspection, and group commands fail explicitly. Process tests prove clean
+  stderr. Shared handlers execute the truthful help/status/agents/agent/runs/
+  inspect/cancel/new/resume/model subset; unsupported provider/harness/autonomy,
+  approval, and group commands fail explicitly. Process tests prove clean
   output, restart transcript/target/model resume, next-run target routing,
   zero-work command behavior, refusal, and SIGINT cancellation with durable
   terminal state.

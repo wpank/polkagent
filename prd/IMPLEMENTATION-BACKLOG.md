@@ -227,12 +227,12 @@ remain, so this checkpoint is not FND-02 completion.
   `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/cancel`, `/approve`,
   `/deny`, and `/model` against shared service/runtime ports.
 - [ ] Wire the shared command executor through every applicable surface.
-  Terminal chat executes help/status/agents/agent/cancel/new/resume/model; the
-  TUI executes help/status/agents/agent/new/resume/model with structured
-  results; ACP executes a truthful
-  durable help/status/agents/agent/model/cancel subset; HTTP exposes typed
-  resource operations rather than slash text. Broader cross-surface parity
-  remains open.
+  Terminal chat executes help/status/agents/agent/runs/inspect/cancel/new/
+  resume/model; the TUI executes help/status/agents/agent/new/resume/runs/
+  inspect/model with structured results; ACP executes a truthful durable
+  help/status/agents/agent/runs/inspect/model/cancel subset; HTTP exposes typed
+  resource operations rather than slash text. Approval and broader
+  configuration parity remain open.
 
 **Exit checks:** current headless tests create, contextually prompt, stream,
 retry, cancel, restart, load, and replay without CLI, Ratatui, Axum, or ACP
@@ -455,10 +455,10 @@ adapter hooks through small interfaces.
   both one-shot and TUI run composition instead of silently rediscovering
   provider/harness/execution settings.
 - [x] Add `polkagent chat` using `InteractionService` and the truthful
-  help/status/agents/agent/cancel/new/resume/model subset of the shared command
-  handlers. Process tests cover non-TTY stdout, multiline input, restart target/
-  model resume, zero-work target changes, refusal, lag resubscribe, and SIGINT
-  cancellation.
+  help/status/agents/agent/runs/inspect/cancel/new/resume/model subset of the
+  shared command handlers. Process tests cover non-TTY stdout, multiline input,
+  restart target/model/run reads, zero-work target changes, refusal, lag
+  resubscribe, and SIGINT cancellation.
 - [x] Convert the TUI loop to async/channel-driven input, runtime events, and
   background completion. The bounded pump applies backpressure to lossless
   key/paste input, coalesces resize and tick bursts, awaits the bounded
@@ -479,18 +479,23 @@ adapter hooks through small interfaces.
   limits, safe bracketed-paste normalization, and reducer/render/PTY coverage.
 - [x] Add registry-derived slash-command discovery/help/completion, including
   aliases, argument hints, keyboard selection, and truthful surface filtering.
-- [x] Execute the truthful `/help`, `/status`, `/new`, and `/resume` subset in
-  the Console through shared handlers; render structured command state, guard
-  stale results, switch/load exact same-agent sessions, and keep commands out
-  of the model transcript.
-- [ ] Complete shared `/runs` and `/inspect <run-id>` across every interactive
+- [x] Execute the truthful `/help`, `/status`, `/agents`, `/agent`, `/new`,
+  `/resume`, `/runs`, `/inspect`, and `/model` subset in the Console through
+  shared handlers; render structured command state, guard stale results,
+  switch/load exact same-agent sessions, and keep commands out of the model
+  transcript.
+- [x] Complete shared `/runs` and `/inspect <run-id>` across every interactive
   surface.
   - [x] Terminal chat and ACP/Zed use one runtime-owned, conversation-scoped
     read model and the same bounded/redaction-safe formatter and registry
     metadata. Process/restart, wrong-conversation, and official-client tests
     cover their paths; neither adapter queries SQLite or launches a subprocess.
-  - [ ] Wire the same read model and formatter into the TUI Console, preserving
-    its request-generation/stale-result guards and bounded activity model.
+  - [x] Wire the same read model and formatter into the TUI Console, preserving
+    exact conversation scope, request-generation/stale-result guards, the
+    non-blocking controller, and its bounded concurrent activity/viewports.
+    Restart and active-concurrency tests prove same-conversation reads,
+    indistinguishable foreign/missing refusal, redaction/bounds, zero created
+    work, and unchanged exact cancellation behavior.
 - [x] Execute `/model [id]` through the same service executor, persist the
   selection per durable conversation, project it into Console status/header,
   guard stale original-conversation results, and prove restart/isolation/
@@ -856,7 +861,7 @@ from an explicitly ready remaining row rather than replaying foundation work.
 | Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
 | TUI orchestration | **Complete bounded slice:** TUI-03 supports eight simultaneous agent/conversation activities, a 32-entry redaction-safe retained strip, per-conversation viewports, exact cancellation, duplicate refusal, and deterministic backpressure/eviction | CLI TUI controller/state/render/tests only | Preserve independent progress and shutdown reaping; durable group plans/child-run orchestration and rich structured plans remain separate work. |
 | Observability | **Metadata slice complete; reconnect packet in progress:** SQLite V19 preserves complete canonical run-event metadata, and `/ws/v1alpha1` is gaining a versioned public reconnect cursor | Command-WebSocket protocol/API tests only for the active packet | Preserve legacy durable cursor order and fail-closed projection; prove reconnect replay/dedupe/version errors while tenant/principal isolation remains open. |
-| Shared IDE commands | **Terminal chat + ACP complete; TUI pending:** both shipped `/runs` and `/inspect` through one scoped read model and formatter | TUI consumes the landed interaction/runtime ports without adapter-local queries | Add the same registry entries to the Console while preserving stale-result guards; chat/ACP scope, bounds, redaction, restart, and official-client gates are green. |
+| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green; approval/configuration parity remains separate. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |

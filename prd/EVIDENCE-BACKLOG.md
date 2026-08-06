@@ -160,8 +160,13 @@ reports.
   A terminal-chat process fixture creates one durable run, lists and inspects
   its exact ID from later `--resume` processes, and proves a fresh conversation
   cannot inspect it. Terminal chat and ACP render those projections through
-  the same bounded formatter; TUI consumption remains an open implementation
-  item.
+  the same bounded formatter. The TUI now consumes that exact runtime-owned
+  scoped read model and formatter through its asynchronous control channel.
+  Focused controller/reducer/render fixtures prove selected-conversation list
+  and inspection, byte-identical foreign/missing refusal, 20-run/artifact
+  bounds, reason/summary/provider-error redaction, stale-selection rejection,
+  restart survival, zero created turns/runs, and unchanged concurrent activity,
+  viewport, shutdown, and exact-cancellation behavior.
   A single deterministic SQLite fixture now creates and configures one exact
   conversation through the in-process HTTP router, prompts it through a real
   `polkagent chat --resume` subprocess, restarts and loads it through an
