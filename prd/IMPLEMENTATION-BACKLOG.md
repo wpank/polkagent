@@ -193,9 +193,9 @@ remain, so this checkpoint is not FND-02 completion.
   replay and chat/TUI/ACP with exact effect-derived tool-call identity, safe
   status/error summaries, lag recovery, and restart evidence. Raw arguments and
   output remain withheld until one explicit redaction/classification contract.
-- [ ] Project durable approval observations and permission decisions with exact
+- [x] Project durable approval observations and permission decisions with exact
   effect/run/conversation identity through the coordinator and checkpoint
-  design in
+  design in the bounded APR-05 runtime/service/HTTP slice in
   [`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md).
 - [x] Implement new/list/load/archive/prompt/cancel/target-config/subscribe.
 - [x] Project the durable user/assistant transcript through the service with
@@ -210,9 +210,11 @@ remain, so this checkpoint is not FND-02 completion.
   prompt > session > agent precedence, canonical same-provider validation, a
   cloned prepared-run spec, retry conflict semantics, and strict harness
   refusal unless unchanged/fixed-model evidence exists.
-- [ ] Implement approve/deny and execution-scoped provider/harness/autonomy/
-  max-turn/budget configuration; current methods fail explicitly rather than
-  accepting ignored settings.
+- [x] Implement real scoped approve/deny through the shared coordinator. The
+  production factory deliberately leaves authenticated authority unbound.
+- [ ] Implement execution-scoped provider/harness/autonomy/max-turn/budget
+  configuration; current methods fail explicitly rather than accepting ignored
+  settings.
 - [x] Implement bounded live broadcast plus durable checkpoint recovery when a
   subscriber lags; TUI and terminal chat resubscribe, while HTTP exposes finite
   checkpoint pages and a checkpoint-aware replay-then-follow SSE adapter.
@@ -275,13 +277,14 @@ possible I/O without an outcome is typed manual reconciliation and never
 automatically retried. A real SQLite service fixture proves AllowOnce executes
 one counting handler call with one exact grant and resumes the model.
 
-This is not yet a production surface claim. `RuntimeFactory` reports approval
-storage, executor, and user-surface readiness separately and deliberately does
-not compose the approval executor until APR-05 supplies authenticated pending
-lookup and approve/deny. Chat, TUI, HTTP, and ACP therefore continue to
-withhold grant-bearing tools. APR-03 still needs its reject/default-deny and
-restart counting-tool matrix; APR-05/APR-08 own pending wake after
-restart, operator reconciliation, and cross-surface crash evidence.
+This is not yet a production surface claim. APR-05 now supplies authenticated-
+surface-ready pending lookup and approve/deny contracts, stable projection,
+and a narrow HTTP adapter. `RuntimeFactory` still cannot bind a stable
+tenant/workspace/principal to HTTP authentication, so it deliberately leaves
+the approval executor and production approval service uncomposed. Chat, TUI,
+HTTP, and ACP therefore continue to withhold grant-bearing tools. APR-03 still
+needs its reject/default-deny and restart counting-tool matrix; APR-08 owns
+operator reconciliation and cross-surface crash evidence.
 
 **Checklist:**
 
@@ -853,11 +856,11 @@ from an explicitly ready remaining row rather than replaying foundation work.
 |---|---|---|---|
 | Integration | **Complete:** APR-00/01 contracts, V18 SQLite coordinator, run CAS, checkpoint leases, and conformance | Contract package, store traits, SQLite coordinator, run CAS, checkpoint schema | Preserve atomic/idempotent/reopen/generic-path-isolation evidence; do not create a second coordinator. |
 | Policy | **Complete:** APR-02 strict opt-in policy approval effects, config, resolver injection, and readiness | Policy/config/runtime-composition modules | Preserve default deny, permit, escalation precedence, and strict config tests. |
-| Execution | **Complete bounded slice:** APR-03/EXE-01 adds atomic pause/recovery, one approval-required tool per model group, AllowOnce one-I/O reduction, reject/expiry/cancel zero-I/O reduction, and fail-closed unknown post-attempt recovery | `polkagent-run` orchestrator and narrow service bridges | Preserve exact checkpoint/effect lineage and keep production activation disabled until APR-05 provides an authenticated surface. |
+| Execution | **Complete bounded slice:** APR-03/EXE-01 adds atomic pause/recovery, one approval-required tool per model group, AllowOnce one-I/O reduction, reject/expiry/cancel zero-I/O reduction, and fail-closed unknown post-attempt recovery | `polkagent-run` orchestrator and narrow service bridges | Preserve exact checkpoint/effect lineage and keep production activation disabled until stable authenticated authority is composed. |
 | ACP harness | **Complete:** APR-04 fake permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Preserve once-only identity/redaction/cancel/error/disconnect coverage; production binding remains APR-07. |
-| Projection/API | **In progress:** APR-05 adds durable approval projection/query/approve-deny and HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | APR-01/APR-03 are satisfied; replay, restart, idempotent retry, auth/read-only, and wrong-scope tests must pass. |
-| Terminal | APR-06 adds chat/TUI approval queue/detail/actions and removes direct DB writes | CLI chat/TUI modules | Starts after APR-05; exact approval identities survive cancel/restart with no accidental prompts. |
-| Editor | APR-07 binds production ACP permission requests to the coordinator | `polkagent-surface-acp` production backend | Starts after APR-03/APR-04/APR-05; official client allow/reject/cancel/reconnect tests pass. |
+| Projection/API | **Complete bounded slice:** APR-05 adds durable approval projection/query/approve-deny and a test-composable HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | Replay, restart, idempotent retry/conflict, auth/read-only, denial bound, OpenAPI parity, and wrong-scope tests pass. The query is capped at 100 without pagination; production authority is intentionally unbound. |
+| Terminal | **Ready:** APR-06 adds chat/TUI approval queue/detail/actions and removes direct DB writes | CLI chat/TUI modules | APR-05 dependency is satisfied; exact approval identities survive cancel/restart with no accidental prompts. |
+| Editor | **Ready:** APR-07 binds production ACP permission requests to the coordinator | `polkagent-surface-acp` production backend | APR-03/APR-04/APR-05 dependencies are satisfied; official client allow/reject/cancel/reconnect tests pass. |
 | Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
 | TUI orchestration | **Complete bounded slice:** TUI-03 supports eight simultaneous agent/conversation activities, a 32-entry redaction-safe retained strip, per-conversation viewports, exact cancellation, duplicate refusal, and deterministic backpressure/eviction | CLI TUI controller/state/render/tests only | Preserve independent progress and shutdown reaping; durable group plans/child-run orchestration and rich structured plans remain separate work. |
 | Observability | **Metadata slice complete; reconnect packet in progress:** SQLite V19 preserves complete canonical run-event metadata, and `/ws/v1alpha1` is gaining a versioned public reconnect cursor | Command-WebSocket protocol/API tests only for the active packet | Preserve legacy durable cursor order and fail-closed projection; prove reconnect replay/dedupe/version errors while tenant/principal isolation remains open. |

@@ -45,8 +45,8 @@ restart/load/follow-up, TUI load/prompt/render, and final HTTP projection. The
 ordered transcript, turn/run links, persisted model, usage, lifecycle, and ACP
 checkpoint agree, while commands and refusal create no work. Active-turn
 cancel remains covered by separate adapter-specific durable tests so the
-linear three-turn fixture can continue; approval and rich plan/redaction-safe
-structured-tool projection remain open.
+linear three-turn fixture can continue; production approval-surface binding and
+rich plan/redaction-safe structured-tool projection remain open.
 
 FND-02 now includes shared IDs/config/requests/handles, structured events and
 projections, the service/store traits, a bounded durable/live replay hub, typed
@@ -61,9 +61,10 @@ prompt override, persisted interaction, then agent default; validation happens
 before activation and changes only the cloned prepared-run spec. TUI, terminal
 chat, HTTP, and ACP bind the service. Model-executor prompts include
 bounded typed prior completed turns; string-only harness history fails role-
-safely. Effect-backed tool lifecycle projection is implemented with stable IDs
-and safe status, while approval and provider/harness/autonomy/max-turn/budget
-overrides remain open, so the full headless exit criterion is not closed.
+safely. Effect-backed tool lifecycle and durable approval projection/service
+operations are implemented with stable IDs and safe status, while production
+approval authority plus provider/harness/autonomy/max-turn/budget overrides
+remain open, so the full headless exit criterion is not closed.
 
 **Supersedes:** the implementation role of archived PRD-18; unresolved work is
 tracked in `IMPLEMENTATION-BACKLOG.md`
@@ -163,14 +164,14 @@ It remains design input rather than the completion contract.
 | Prompt from inside the TUI | Implemented for bounded simultaneous agent/conversation turns | `p` opens the selected Console conversation; distinct targets continue in the background, `[`/`]` switches retained activities, and same-conversation duplicates fail before draft loss |
 | Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns and `x` cancels only the selected exact activity |
 | Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, and `/model` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns; run reads share ACP/chat scope, bounds, and redaction while unavailable capabilities fail explicitly |
-| Approve/deny in the TUI | Not safely implemented | Legacy Approvals-tab writes mutate display-state rows but cannot durably resolve and resume the exact paused effect; coordinator-backed interaction approval remains required |
+| Approve/deny in the TUI | Not safely implemented | APR-05 provides coordinator-backed interaction approval, but the legacy Approvals-tab still writes display-state rows and has not been replaced by the shared service; APR-06 owns that binding |
 | See live run output in the TUI | Implemented for correlated foreground/background activity | Controller projects bounded per-activity interaction events and resubscribes from a durable checkpoint after lag; a 32-entry redaction-safe strip exposes identity/status without prompt/output/error detail, while approval/rich plan projection remains absent |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
 | Use Polkagent *from* Zed | Protocol/tool slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK, durable cwd isolation, native tool updates, state-aware command discovery, and executable client fixtures; editor permission acceptance remains APR-07 |
 | ACP slash commands/config selectors | Durable state-aware shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/runs`, `/inspect`, and `/model` are advertised while idle; current-prompt `/cancel` plus `/stop` is added only while busy and withdrawn after success/cancel/error. `/new` and `/resume` map truthfully to native ACP lifecycle operations; run reads are bounded, redaction-safe, and conversation-scoped, while native selectors write the same durable interaction config and provider/autonomy settings remain unavailable |
-| REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, checkpointed SSE, immutable skill reads, and durable memory query/lookup/stats/deletion use exact runtime-owned components; 9 optional skill-mutation/audit/registry routes remain unavailable |
+| REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, checkpointed SSE, immutable skill reads, durable memory operations, and scoped approval route contracts exist; 9 optional routes and 3 production-unbound approval routes remain unavailable |
 
 ## 1. What Polkagent actually has today
 
@@ -227,10 +228,9 @@ projection can apply.
 
 The TUI is not completely read-only: legacy approvals, denials, and memory
 deletion write directly through `TuiDb`. Those approval writes are unsafe
-display-state mutations, not a usable permission workflow. Replace them only
-with coordinator-backed `InteractionService::approve`/`deny` in APR-05; the
-APR-01 SQLite coordinator now exists, but current `AppService` approval methods
-remain bus-only and the orchestrator does not invoke the durable boundary.
+display-state mutations, not a usable permission workflow. APR-05 now provides
+coordinator-backed `InteractionService::approve`/`deny`; APR-06 must replace
+the TUI writes with those operations and bind authenticated authority.
 Starting runs by inserting database rows would be even more dangerous and must
 not be done.
 
@@ -279,8 +279,9 @@ Useful components already present:
 
 - `polkagent-conversation` defines conversations and typed messages.
 - SQLite migration v5 and `conversation_store_impl.rs` provide durable storage.
-- `AppService::start_run`, `cancel_run`, `approve_effect`, and `deny_effect`
-  provide application operations.
+- `AppService` provides start/cancel plus exact scoped approval list/get/resolve
+  operations over the durable coordinator. Legacy effect-ID-only approval
+  methods fail explicitly because they cannot establish authority.
 - `EventBus`, `RunEvent`, and `RunProgressStream` provide live progress.
 - The orchestrator publishes streaming text, tool status, approvals, and
   terminal events.
@@ -299,18 +300,18 @@ Gaps that matter to an IDE-quality session:
   projects stable effect-derived tool-call identity plus safe title/kind/status.
   Raw input, output, locations, and diff content remain withheld pending a
   redaction contract.
-- The legacy approval mapping still manufactures a new `ApprovalId` instead of
-  carrying the underlying request/effect identity. The interaction contract has
-  the right identity shape, but no durable coordinator currently produces it.
+- APR-05 carries the real coordinator approval/effect/run identity into stable
+  interaction requested/resolved events and replays it after restart. Normal
+  production surfaces still lack stable authenticated authority binding.
 - The runtime interaction service now maps run lifecycle/text into durable
   envelopes, accumulates assistant text, and commits transcript plus terminal
   state atomically. Completed-run restart recovery uses a durable output
   artifact when present and otherwise fails closed instead of fabricating an
   empty successful transcript. Model-executor calls receive typed bounded prior
   completed pairs; failed/cancelled/timed-out partial pairs are excluded and
-  harness history is refused rather than flattened. Effect-backed tool status
-  is projected with stable IDs; approvals remain absent and raw tool data is
-  withheld pending redaction policy.
+  harness history is refused rather than flattened. Effect-backed tool and
+  approval status are projected with stable IDs; raw tool data is withheld
+  pending redaction policy.
 
 ### 1.5 The HTTP server now shares the durable core runtime
 
@@ -641,7 +642,7 @@ The factory owns this composition boundary and must consistently:
 - expose readiness warnings without panicking.
 
 Those surface migrations are complete. Remaining composition gaps are signer/
-policy/approval, shutdown/background-worker ownership, optional API stores,
+production approval authority, shutdown/background-worker ownership, optional API stores,
 execution-scoped interaction settings, and groups; parity claims for those
 capabilities remain intentionally withheld.
 
@@ -884,9 +885,10 @@ handler, but it must not share the same semantic action variants.
 
 ### 6.4 Approvals
 
-After APR-05, replace direct `TuiDb::approve_effect`/`deny_effect` writes
-with coordinator-backed `InteractionService` calls. Do not route the modal to
-the current bus-only `AppService` methods. An approval modal must show:
+APR-05 has made coordinator-backed `InteractionService` calls available.
+APR-06 must replace direct `TuiDb::approve_effect`/`deny_effect` writes with
+those calls and must not use legacy effect-ID-only compatibility methods. An
+approval modal must show:
 
 - requesting agent/run/tool;
 - exact operation and target;
@@ -1087,8 +1089,9 @@ available for inspection.
 - [x] Make `serve` use the strict production runtime and durable core stores;
   retain a machine-readable/tested 501 boundary for missing optional adapters.
 - [x] Define structured `InteractionEvent` and effect-backed tool identity.
-- [ ] Carry real durable approval/effect identity end to end through the
-  coordinator, checkpoint, service, and surfaces.
+- [x] Carry real durable approval/effect identity through the coordinator,
+  checkpoint, interaction service, restart projection, and scoped HTTP adapter.
+- [ ] Bind that identity to authenticated terminal/TUI and ACP surfaces.
 - [x] Add runtime startup/readiness, recovery, rehydration, durability, and
   strict/simulated-policy integration tests.
 
@@ -1119,8 +1122,10 @@ available for inspection.
   multi-page, and restart/pre-activation crash service tests.
 - [x] Carry real effect identity through structured tool start/update replay and
   restart tests across terminal/TUI/ACP.
-- [ ] Carry durable approval identity through service approve/deny and add the
-  coordinator/checkpoint restart matrix.
+- [x] Carry durable approval identity through scoped service approve/deny and
+  add projection/retry/wrong-scope/restart evidence.
+- [ ] Add the complete coordinator/checkpoint crash matrix across terminal/TUI
+  and ACP bindings.
 - [x] Assemble the newest 32 completed pairs among the latest 1,000 prior
   records as typed model-executor input, append the current user once, omit
   partial failed/cancelled/timed-out pairs, and reject string-only harness
@@ -1382,8 +1387,8 @@ Zed, not merely a single-agent chat wrapper.
 | Area | Suggested change |
 |---|---|
 | Workspace | `polkagent-surface-acp`, `polkagent-interaction`, and `polkagent-runtime` now exist; converge every executable surface on them |
-| `polkagent-service` | Replace bus-only approval with coordinator-backed interaction mutations; integrate group service |
-| `polkagent-run` | Add approval checkpoint/CAS pause-resume without regressing effect-backed tool identity and interaction correlation |
+| `polkagent-service` | Coordinator-backed scoped approval mutations exist; bind surfaces and integrate group service |
+| `polkagent-run` | Bounded approval checkpoint/CAS pause-resume exists; complete the APR-08 crash/reconciliation matrix without regressing effect-backed identity |
 | `polkagent-conversation` | Treat as durable transcript store under interaction service |
 | `polkagent-store-sqlite` | Session/turn/run-link/event persistence and the V18 approval/checkpoint coordinator are composed; keep surface code behind the serialized store operations |
 | `polkagent-cli/src/main.rs` | Early ACP dispatch, one-shot/TUI/chat/ACP/serve runtime convergence, and ACP-safe bounded diagnostics exist |

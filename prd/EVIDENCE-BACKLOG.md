@@ -46,11 +46,11 @@ reports.
   agent-default precedence, cloned prepared-spec isolation, restart persistence,
   prompt-clear/no-leak behavior, effective-config retry conflict, refusal before
   turn/executor creation for unknown models, and discovery-only harness model
-  rejection. Unsupported provider/harness/autonomy/budget config and approval/
-  deny return typed errors.
+  rejection. Unsupported provider/harness/autonomy/budget config returns typed
+  errors. Approval operations require an explicitly bound exact authority.
   This is strong headless evidence. The successful/restarted EVD-11 path now
-  has one cross-surface fixture; FND-02 remains open for real effect approvals,
-  raw tool-data redaction, and a role-safe harness contract.
+  has one cross-surface fixture; FND-02 remains open for production-bound effect
+  approvals, raw tool-data redaction, and a role-safe harness contract.
 
 - **EXE-01 / grantless registered-tool slice (2026-08-05):** a SQLite-backed
   `AppService` fixture runs a real registered handler selected only from the
@@ -76,6 +76,29 @@ reports.
   detail. Arguments and raw output are deliberately absent because no common
   classification/redaction contract exists. This proves projection, not
   approval, permission, or external-tool safety.
+
+- **APR-05 / scoped durable approval projection and HTTP contract
+  (2026-08-06):** a real SQLite runtime fixture seeds one APR-03 lineage and
+  proves the pending query returns stable approval/effect/run IDs in the exact
+  tenant/workspace/conversation/principal scope. Wrong conversation and
+  principal fail closed, AllowOnce persists, an identical retry returns the
+  same decision, an opposite retry conflicts, and reopen/reprojection yields
+  exactly one requested and one resolved deterministic interaction event. The
+  shared `AppService` coordinator is the sole mutation path; the process-local
+  approval broadcast and fabricated effect-only success path are removed.
+  Focused HTTP tests prove missing/invalid credentials fail, explicit
+  principal-bound composition succeeds, wrong conversation is forbidden,
+  read-only mode blocks decisions, and the denial limit matches OpenAPI at
+  4,096 Unicode characters. Router/source/embedded/served OpenAPI parity passes.
+  The pending HTTP response is a non-paginated first page capped at 100.
+
+  This evidence is test-composable, not production-usable:
+  `RuntimeFactory` supplies no stable authenticated approval principal,
+  `app_state_from_runtime` leaves the approval service unset, readiness remains
+  unavailable/disabled, and normal surfaces advertise no grant-bearing tools.
+  APR-06 terminal/TUI, APR-07 ACP, and APR-08 cross-surface crash/security work
+  remain open. Legacy `/effects/{id}/approve|deny` are deprecated 501 stubs
+  because an effect UUID alone is not authority.
 
 - **EVD-07 / ACP client-protocol slices (2026-08-05):** the official ACP Rust
   client launches `polkagent acp` as a subprocess and proves initialization,
@@ -195,7 +218,8 @@ reports.
   `AppService`-owned SQLite store, survive restart, preserve access counters/
   timestamps, and cover disabled, unknown, invalid, auth, and read-only
   behavior. A machine-readable list proves 9 optional routes remain explicit
-  501s. The
+  501s and the 3 principal-bound approval routes remain explicit 503s in the
+  normal runtime. The
   API now injects the exact runtime `InteractionService` and exposes durable
   create/list/load/archive, turns, prompt, cancel, target/model config, and
   finite event-replay routes. Black-box fixtures prove user/assistant
