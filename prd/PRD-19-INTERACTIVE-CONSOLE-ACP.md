@@ -140,10 +140,9 @@ The delivered slices establish two distinct product surfaces that still need
 to be completed:
 
 1. The delivered terminal chat/TUI session must gain role-safe harness
-   follow-up, rich redaction-safe tool detail, service-routed TUI approvals,
-   production approval authority, broader command coverage, and multi-agent
-   orchestration. Terminal chat's approval adapter is complete under explicit
-   test composition.
+   follow-up, rich redaction-safe tool detail, production approval authority,
+   broader command coverage, and multi-agent orchestration. Terminal chat and
+   the TUI F6 approval adapter are complete at their shared service seams.
 2. The ACP **agent server** (`polkagent acp`) must grow from its protocol MVP
    into full Zed and other ACP-client support.
 
@@ -167,11 +166,11 @@ It remains design input rather than the completion contract.
 | Run `polkagent` with no arguments | Launches the monitoring TUI when stdout is a TTY | `polkagent-cli/src/main.rs` dispatches `None` to `launch_tui` |
 | Prompt Polkagent interactively | Implemented for single-agent turns with per-conversation model selection | `polkagent chat` and the F9 Console call the durable interaction service; model executors receive bounded typed completed history, while harness follow-up fails explicitly |
 | Prompt from inside the TUI | Implemented for bounded simultaneous agent/conversation turns | `p` opens the selected Console conversation; distinct targets continue in the background, `[`/`]` switches retained activities, and same-conversation duplicates fail before draft loss |
-| Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns and `x` cancels only the selected exact activity |
+| Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns and `x` cancels only the selected exact activity. If that turn is known to await a durable approval, generic cancellation refuses with F6 guidance until atomic coordinator cancellation is composed. |
 | Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, and `/model` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns; run reads share ACP/chat scope, bounds, and redaction while unavailable capabilities fail explicitly |
 | Approve/deny in terminal chat | Test-composable, production-unbound | `/status` lists exact scoped pending IDs and `/approve`/`/deny` use the shared executor and `InteractionService`; real SQLite tests cover scope, restart retry, conflict, bounds, and cancellation guards. Normal `RuntimeFactory` composition has no authenticated approval authority, hides the commands, and refuses explicit mutation. |
-| Approve/deny in the TUI | Not safely implemented | APR-05 provides coordinator-backed interaction approval, but the legacy Approvals-tab still writes display-state rows and has not been replaced by the shared service; the remaining APR-06 TUI half owns that binding |
-| See live run output in the TUI | Implemented for correlated foreground/background activity | Controller projects bounded per-activity interaction events and resubscribes from a durable checkpoint after lag; a 32-entry redaction-safe strip exposes identity/status without prompt/output/error detail, while approval/rich plan projection remains absent |
+| Approve/deny in the TUI | Bounded service adapter implemented; production-unbound | F6 uses the selected durable Console conversation plus exact approval ID for asynchronous list/approve/deny. It renders bounded/redacted shared-service detail and full confirmation IDs, rejects stale switched-session completions, and no longer queries or writes approval tables directly. Normal `RuntimeFactory` composition reports unavailable because authenticated authority remains unbound. |
+| See live run output in the TUI | Implemented for correlated foreground/background activity | Controller projects bounded per-activity interaction events and resubscribes from a durable checkpoint after lag; a 32-entry redaction-safe strip exposes identity/status without prompt/output/error detail. F6 separately projects durable approvals; rich plan projection remains absent. |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
@@ -232,11 +231,11 @@ blocked/failing refresh fixtures prove cancel, prompt entry, resize, and
 controller completion stay responsive, and that only the latest selected-run
 projection can apply.
 
-The TUI is not completely read-only: legacy approvals, denials, and memory
-deletion write directly through `TuiDb`. Those approval writes are unsafe
-display-state mutations, not a usable permission workflow. APR-05 now provides
-coordinator-backed `InteractionService::approve`/`deny`; APR-06 must replace
-the TUI writes with those operations and bind authenticated authority.
+The TUI is not completely read-only: legacy memory deletion still writes
+directly through its database helper. Approval listing and decisions no longer
+do so: APR-06 removes the raw effect query and synthetic outcome inserts, then
+routes F6 through coordinator-backed `InteractionService` operations. Stable
+authenticated production authority remains a composition task.
 Starting runs by inserting database rows would be even more dangerous and must
 not be done.
 
@@ -891,10 +890,10 @@ handler, but it must not share the same semantic action variants.
 
 ### 6.4 Approvals
 
-APR-05 has made coordinator-backed `InteractionService` calls available.
-APR-06 must replace direct `TuiDb::approve_effect`/`deny_effect` writes with
-those calls and must not use legacy effect-ID-only compatibility methods. An
-approval modal must show:
+APR-06 routes F6 through coordinator-backed `InteractionService` calls and
+removes direct `TuiDb::approve_effect`/`deny_effect` writes plus the raw pending
+effect query. The selected durable Console conversation and exact approval ID
+survive list, detail, confirmation, and decision. The delivered modal shows:
 
 - requesting agent/run/tool;
 - exact operation and target;
@@ -1213,8 +1212,12 @@ session context contract.
 - [x] Render the real effect-backed tool lifecycle with one durable effect-
   derived identity and safe status through lag/restart. Raw arguments/output are
   withheld pending one redaction/classification contract.
-- [ ] Render rich plans and durable approvals once the runtime produces them.
-- [ ] Replace direct approval/denial database writes.
+- [x] Render bounded/redacted durable approval queue/detail/status/expiry with
+  exact conversation/approval/effect/run/tool identities and fail-closed
+  authority guidance.
+- [ ] Render rich plans once the runtime produces them.
+- [x] Replace direct approval/denial database queries and writes with the
+  shared asynchronous service boundary.
 - [ ] Add create-agent modal; durable list/select is available through
   `/agents` and `/agent`, while full agent-spec editing is deferred.
 - [x] Add reducer, key mapping, TestBackend rendering, and durable fake-run
@@ -1372,13 +1375,14 @@ Zed, not merely a single-agent chat wrapper.
   production approval authority/policy execution and crash recovery remain
   incomplete.
 - **Event loss:** TUI/chat/HTTP/ACP use durable interaction replay and stable
-  effect-backed tool and approval projection; rich plan projection and TUI/ACP
+  effect-backed tool and approval projection; rich plan projection and ACP
   approval actions remain incomplete.
 - **Protocol drift:** ACP v2 is draft. Pin the official SDK, test v1, and isolate
   conversions in the adapter.
 - **SQLite concurrency:** Zed may spawn processes while TUI/API is open. Enable
   WAL/busy timeouts, keep transactions short, and test multi-process access.
-- **Approval bypass:** current TUI direct DB writes must not be reused.
+- **Approval bypass:** keep TUI decisions behind the shared service; direct DB
+  approval queries/writes have been removed and must not return.
 - **Command drift:** one registry is mandatory; avoid Roko-style duplicated
   terminal/ACP catalogs and CLI subprocess mapping.
 - **False orchestration:** group UI before durable group execution would be
@@ -1468,10 +1472,10 @@ store/event/command service now exist. One-shot run, TUI, chat, ACP, and `serve`
 share that runtime; TUI/chat/HTTP/ACP share the durable interaction lifecycle.
 The TUI now supports bounded simultaneous turns across independently selected
 agent/conversation activities, but it does not yet build or execute group plans.
-The coordinator/checkpoint foundation and test-composable HTTP/chat adapters are
-tracked in
+The coordinator/checkpoint foundation and test-composable HTTP/chat/TUI
+adapters are tracked in
 [`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md). Next add
-service-routed TUI approval actions, bind authenticated production/ACP
-authority with crash-safe resume, complete manual Zed evidence, define role-safe
-harness history, expand truthful command coverage, and compose durable group/
-child-run orchestration on top of the proven activity surface.
+authenticated production/ACP authority with crash-safe resume, complete manual
+Zed evidence, define role-safe harness history, expand truthful command
+coverage, and compose durable group/child-run orchestration on top of the
+proven activity surface.

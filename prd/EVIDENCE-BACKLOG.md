@@ -113,10 +113,26 @@ reports.
   progress emits only stable IDs and fixed status text, never untrusted titles,
   descriptions, policy reasons, or denial text. A subprocess proves the normal
   authority-unbound `RuntimeFactory` hides both commands and rejects explicit
-  mutation without creating a turn, run, or approval row. This closes only the
-  test-composable chat half of APR-06: TUI service routing/direct-SQL removal,
-  production authority, grant-bearing execution, and APR-08 crash closure stay
-  open.
+  mutation without creating a turn, run, or approval row. Production authority,
+  grant-bearing execution, and APR-08 crash closure stay open.
+
+- **APR-06 / TUI F6 approval adapter (2026-08-06):** F6 now scopes the shared
+  `InteractionService` pending/approve/deny operations to the selected durable
+  F9 Console conversation. List and decisions run on the existing bounded
+  async controller alongside active turns; request plus conversation IDs reject
+  stale completions after a session switch. The first 100 pending rows expose
+  exact approval/effect/run/tool IDs and only bounded, redacted service title,
+  description, policy reason, status, and expiry. Full conversation and
+  approval IDs are retained through confirmation. The old raw
+  `effect_intents` query and synthetic `effect_outcomes` inserts are deleted.
+  Controller/reducer/render fixtures prove wrong scope, identical retry,
+  opposite-decision conflict, controller restart, active-run concurrency,
+  unavailable/unsupported authority, truncation visibility, selection by
+  stable ID, oversized metadata redaction, and no fabricated risk/pallet data.
+  Until coordinator-aware approval cancellation is composed, a turn known to
+  await approval refuses generic cancel/shutdown cancellation and preserves the
+  durable pending request. Normal `RuntimeFactory` composition therefore shows
+  truthful unavailable guidance rather than claiming production usability.
 
 - **EVD-07 / ACP client-protocol slices (2026-08-05):** the official ACP Rust
   client launches `polkagent acp` as a subprocess and proves initialization,

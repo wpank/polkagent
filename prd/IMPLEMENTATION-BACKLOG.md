@@ -536,10 +536,12 @@ adapter hooks through small interfaces.
   registry, command executor, and `InteractionService` under explicit
   principal-bound test composition. Production `RuntimeFactory` remains
   authority-unbound, hides the commands, and fails explicit mutations closed.
-- [ ] Add service-routed TUI queue/detail/approve/deny; legacy Approvals-tab
-  mutations remain outside the Console interaction path. Agent list/selection
-  is service-routed for the delivered slice.
-- [ ] Remove UI direct DB mutations.
+- [x] Add a selected-conversation-scoped asynchronous TUI queue/detail/
+  approve/deny path through `InteractionService`. Exact conversation and
+  approval IDs are revalidated at confirmation; stale results cannot replace a
+  switched scope, and normal authority-unbound composition reports unavailable.
+- [x] Remove the TUI's direct approval DB query and synthetic effect-outcome
+  writes. Memory deletion remains a separate legacy UI mutation.
 - [x] Preserve all existing monitoring tabs while adding the Console.
 - [x] Prove terminal restoration on normal error and panic unwind through the
   lifecycle guard and a real Unix PTY, including escape ordering and termios
@@ -556,8 +558,8 @@ same-agent durable session selector, and terminal chat can resume one.
 Prior completed turns enter model-executor context; string-only harness follow-
 up is unsupported. Group plans, durable child-run orchestration, richer
 redaction-safe plan/tool rendering, broader shared-command coverage, and
-service-routed TUI approvals remain open. Terminal chat has a tested
-coordinator-backed adapter seam, but normal production composition has no
+production approval authority remains open. Terminal chat and TUI have tested
+service-routed adapter seams, but normal production composition has no
 authenticated approval authority or grant-bearing executor. This activity
 slice must not be described as group orchestration or production approval-
 capable execution.
@@ -868,12 +870,12 @@ from an explicitly ready remaining row rather than replaying foundation work.
 | ACP harness | **Complete:** APR-04 fake permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Preserve once-only identity/redaction/cancel/error/disconnect coverage; production binding remains APR-07. |
 | Projection/API | **Complete bounded slice:** APR-05 adds durable approval projection/query/approve-deny and a test-composable HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | Replay, restart, idempotent retry/conflict, auth/read-only, denial bound, OpenAPI parity, and wrong-scope tests pass. The query is capped at 100 without pagination; production authority is intentionally unbound. |
 | Terminal chat | **Complete test-composed slice:** APR-06 lists scoped pending IDs and routes approve/deny only through the shared durable service; ordinary production composition stays fail-closed | CLI chat module | Exact scope, idempotent restart retry, opposite-decision conflict, bounded/redaction-safe output, pending-cancel refusal, no-pending cancel, and authority-unavailable subprocess gates pass. |
-| TUI approvals | **Ready:** finish APR-06 queue/detail/actions and remove direct approval SQL | CLI TUI modules | Reuse the chat/service authority boundary; scripted reducer/render plus exact-scope/restart/cancel gates must pass. |
+| TUI approvals | **Complete bounded slice:** APR-06 F6 lists and resolves exact selected-conversation approvals only through the shared service; direct approval SQL is gone | CLI TUI modules | Async/concurrent control, exact IDs, redaction/bounds, stale-switch rejection, wrong scope, retry/conflict/restart, unavailable authority, full-ID confirmation, and pending-cancel preservation gates pass. Production authority and pagination remain open. |
 | Editor | **Ready:** APR-07 binds production ACP permission requests to the coordinator | `polkagent-surface-acp` production backend | APR-03/APR-04/APR-05 dependencies are satisfied; official client allow/reject/cancel/reconnect tests pass. |
 | Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
 | TUI orchestration | **Complete bounded slice:** TUI-03 supports eight simultaneous agent/conversation activities, a 32-entry redaction-safe retained strip, per-conversation viewports, exact cancellation, duplicate refusal, and deterministic backpressure/eviction | CLI TUI controller/state/render/tests only | Preserve independent progress and shutdown reaping; durable group plans/child-run orchestration and rich structured plans remain separate work. |
 | Observability | **Complete bounded replay/reconnect slice:** SQLite V19 preserves canonical run-event metadata; the global run-event socket and `/ws/v1alpha1` recover from durable cursors, while the command socket exposes a versioned public cursor and `ready` barrier | Event/API projection and protocol tests | Preserve bounded paging, cursor order, filtering, replay/live dedupe, forced-lag recovery, auth-before-store validation, and sanitized failures. Tenant/principal isolation, best-effort delta policy, metrics, retention, audit/telemetry, automatic client reconnect, and broader command channels remain open. |
-| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green; approval parity remains open for TUI/ACP and production authority composition. |
+| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green; approval parity remains open for ACP and production authority composition. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |
