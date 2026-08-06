@@ -64,7 +64,7 @@ pub async fn run(cmd: &ServeCmd, config_path: Option<&Path>) -> Result<()> {
         println!("  CORS:        {}", effective_cors_origins.join(", "));
     }
     println!(
-        "  Unavailable: {} optional routes return 501 (skills, memory, audit, registry)",
+        "  Unavailable: {} optional routes return 501 (skills, audit, registry)",
         RUNTIME_UNAVAILABLE_ROUTES.len()
     );
     println!("  Press Ctrl+C to stop.");
