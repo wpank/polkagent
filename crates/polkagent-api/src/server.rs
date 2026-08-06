@@ -190,7 +190,8 @@ impl ApiServer {
 
         // Auth middleware — validates Bearer / X-Api-Key headers on protected
         // paths when `config.auth.enabled = true`. Public operational paths
-        // bypass it; it is a no-op everywhere when disabled.
+        // bypass it; the command WebSocket performs its own query/first-frame
+        // authentication; it is a no-op everywhere when disabled.
         let auth_state = Arc::new(AuthState::from_config(&self.state.config.auth));
 
         // Read-only guard: when `config.api.read_only` is true, any request

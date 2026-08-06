@@ -24,10 +24,13 @@
 //! ```
 //!
 //! Durable event envelopes include an opaque `cursor` such as `"v1:42"`.
-//! Reconnect with `?cursor=v1:42`, then send the same subscribe commands. The
-//! server replays matching durable events strictly after that checkpoint before
-//! following live delivery. Omitting `cursor` preserves the legacy live-only
-//! connection behavior.
+//! Reconnect with a valid query token and `?cursor=v1:42`, send every intended
+//! subscribe command, then send `{"msg_type":"ready"}`. The explicit barrier
+//! prevents a connection-global replay from advancing before the complete
+//! initial subscription set is installed. The server then replays matching
+//! durable events strictly after that checkpoint before following live
+//! delivery. Omitting `cursor` preserves the legacy live-only behavior and
+//! does not require `ready`.
 //!
 //! # Channels
 //!
@@ -46,7 +49,9 @@ use std::time::Duration;
 use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
-    response::IntoResponse,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
 };
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -275,6 +280,8 @@ pub enum ClientMessage {
     Subscribe { id: Option<String>, channel: String },
     /// Unsubscribe from a channel.
     Unsubscribe { id: Option<String>, channel: String },
+    /// Seal the reconnect subscription set and start durable replay.
+    Ready { id: Option<String> },
     /// Client ping — server responds with `"pong"`.
     Ping { id: Option<String> },
 }
@@ -286,12 +293,27 @@ pub enum ClientMessage {
 /// Per-connection WebSocket session state.
 ///
 /// Tracks the set of channels the client has subscribed to.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WsSession {
     /// Active subscriptions for this connection.
     subscriptions: HashSet<Channel>,
     /// Whether the client has been authenticated.
     authenticated: bool,
+    /// Whether event delivery may advance the connection-global checkpoint.
+    event_delivery_ready: bool,
+    /// Whether a reconnect cursor requires an explicit subscription barrier.
+    reconnect_barrier: bool,
+}
+
+impl Default for WsSession {
+    fn default() -> Self {
+        Self {
+            subscriptions: HashSet::new(),
+            authenticated: false,
+            event_delivery_ready: true,
+            reconnect_barrier: false,
+        }
+    }
 }
 
 impl WsSession {
@@ -305,6 +327,8 @@ impl WsSession {
         Self {
             subscriptions: HashSet::new(),
             authenticated: true,
+            event_delivery_ready: true,
+            reconnect_barrier: false,
         }
     }
 
@@ -316,6 +340,23 @@ impl WsSession {
     /// Returns `true` if the client has authenticated.
     pub fn is_authenticated(&self) -> bool {
         self.authenticated
+    }
+
+    fn require_reconnect_ready(&mut self) {
+        self.event_delivery_ready = false;
+        self.reconnect_barrier = true;
+    }
+
+    fn mark_event_delivery_ready(&mut self) {
+        self.event_delivery_ready = true;
+    }
+
+    const fn is_event_delivery_ready(&self) -> bool {
+        self.event_delivery_ready
+    }
+
+    fn reconnect_subscription_set_is_sealed(&self) -> bool {
+        self.reconnect_barrier && self.event_delivery_ready
     }
 
     /// Subscribe to a channel. Returns `true` if the channel was newly added.
@@ -722,12 +763,27 @@ fn validate_ws_token(token: &str, state: &AppState) -> bool {
 ///
 /// When `config.auth.enabled` is `true`, the token is validated by SHA-256
 /// hash against `config.auth.api_keys`. When disabled, any non-empty token
-/// is accepted for development convenience.
+/// is accepted for development convenience. A reconnect cursor always requires
+/// a valid query token so unauthenticated callers cannot probe durable history;
+/// first-message authentication remains available for no-cursor connections.
 pub async fn ws_handler(
     State(state): State<AppState>,
     Query(query): Query<WsQuery>,
     ws: WebSocketUpgrade,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Response, ApiError> {
+    let query_token_valid = query
+        .token
+        .as_deref()
+        .is_some_and(|token| validate_ws_token(token, &state));
+    if query.cursor.is_some() && !query_token_valid {
+        let body = serde_json::json!({
+            "error": {
+                "code": "UNAUTHORIZED",
+                "message": "valid query token required for reconnect cursor"
+            }
+        });
+        return Ok((StatusCode::UNAUTHORIZED, Json(body)).into_response());
+    }
     let store = state
         .event_store
         .clone()
@@ -741,31 +797,33 @@ pub async fn ws_handler(
         validate_reconnect_cursor(store.as_ref(), cursor).await?;
     }
     // Check if a token was provided as query parameter and validate it.
-    let pre_authenticated = query
-        .token
-        .as_deref()
-        .is_some_and(|t| validate_ws_token(t, &state));
+    let pre_authenticated = query_token_valid;
 
     debug!(pre_authenticated, "WebSocket v1alpha1 upgrade accepted");
 
-    let session = if pre_authenticated {
+    let mut session = if pre_authenticated {
         WsSession::authenticated()
     } else {
         WsSession::new()
     };
+    if reconnect_cursor.is_some() {
+        session.require_reconnect_ready();
+    }
     // Attach before the upgrade task begins. Any durable event that races with
     // subscription commands remains observable for checkpointing or recovery.
     let event_rx = state.event_bus.subscribe();
     let run_manager = state.run_manager.clone();
 
-    Ok(ws.on_upgrade(move |socket| {
-        handle_ws_session(
-            socket,
-            session,
-            state,
-            CommandEventFollower::new(store, run_manager, event_rx, reconnect_cursor),
-        )
-    }))
+    Ok(ws
+        .on_upgrade(move |socket| {
+            handle_ws_session(
+                socket,
+                session,
+                state,
+                CommandEventFollower::new(store, run_manager, event_rx, reconnect_cursor),
+            )
+        })
+        .into_response())
 }
 
 /// Drive a single WebSocket connection: handle subscribe/unsubscribe messages,
@@ -836,7 +894,7 @@ async fn handle_ws_session(
             }
 
             // ── Event bus messages ───────────────────────────────────────
-            result = events.next(&subscriptions), if !subscriptions.is_empty() => {
+            result = events.next(&subscriptions), if session.is_event_delivery_ready() && !subscriptions.is_empty() => {
                 match result {
                     Ok(outbound) => {
                         let channel_str = format!("runs:{}", outbound.event.run_id);
@@ -965,6 +1023,13 @@ fn handle_client_text(
             }
             match Channel::parse(&channel) {
                 Some(ch) => {
+                    if session.reconnect_subscription_set_is_sealed() && !session.is_subscribed(&ch)
+                    {
+                        return WsMessage::error(
+                            id,
+                            "reconnect subscription set is sealed after ready",
+                        );
+                    }
                     if !session.is_subscribed(&ch)
                         && session.subscription_count() >= MAX_SUBSCRIPTIONS
                     {
@@ -978,6 +1043,17 @@ fn handle_client_text(
                 }
                 None => WsMessage::error(id, format!("unknown channel: {channel}")),
             }
+        }
+
+        ClientMessage::Ready { id } => {
+            if !session.is_authenticated() {
+                return WsMessage::error(id, "not authenticated");
+            }
+            if session.subscription_count() == 0 {
+                return WsMessage::error(id, "at least one subscription required before ready");
+            }
+            session.mark_event_delivery_ready();
+            WsMessage::ack(id, None)
         }
 
         ClientMessage::Unsubscribe { id, channel } => {
@@ -1250,6 +1326,13 @@ mod tests {
     }
 
     #[test]
+    fn client_message_ready_parses() {
+        let json = r#"{"msg_type":"ready","id":"r3"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).expect("parse");
+        assert!(matches!(msg, ClientMessage::Ready { id: Some(ref i) } if i == "r3"));
+    }
+
+    #[test]
     fn client_message_ping_parses() {
         let json = r#"{"msg_type":"ping","id":"p1"}"#;
         let msg: ClientMessage = serde_json::from_str(json).expect("parse");
@@ -1345,6 +1428,46 @@ mod tests {
         let msg = handle_client_text(&json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "ack");
         assert!(session.is_subscribed(&Channel::Agent(agent_id)));
+    }
+
+    #[test]
+    fn handle_text_ready_requires_auth_and_subscription_then_seals_reconnect_set() {
+        let mut unauthenticated = WsSession::new();
+        let ready = r#"{"msg_type":"ready","id":"ready"}"#;
+        let error = handle_client_text(ready, &mut unauthenticated, &any_nonempty);
+        assert_eq!(error.payload["reason"], "not authenticated");
+
+        let mut session = WsSession::authenticated();
+        session.require_reconnect_ready();
+        let error = handle_client_text(ready, &mut session, &any_nonempty);
+        assert_eq!(
+            error.payload["reason"],
+            "at least one subscription required before ready"
+        );
+        assert!(!session.is_event_delivery_ready());
+
+        let run_id = RunId::new();
+        let subscribe = format!(r#"{{"msg_type":"subscribe","channel":"runs:{run_id}"}}"#);
+        assert_eq!(
+            handle_client_text(&subscribe, &mut session, &any_nonempty).msg_type,
+            "ack"
+        );
+        assert_eq!(
+            handle_client_text(ready, &mut session, &any_nonempty).msg_type,
+            "ack"
+        );
+        assert!(session.is_event_delivery_ready());
+
+        let late = format!(
+            r#"{{"msg_type":"subscribe","channel":"runs:{}"}}"#,
+            RunId::new()
+        );
+        let error = handle_client_text(&late, &mut session, &any_nonempty);
+        assert_eq!(error.msg_type, "error");
+        assert_eq!(
+            error.payload["reason"],
+            "reconnect subscription set is sealed after ready"
+        );
     }
 
     #[test]

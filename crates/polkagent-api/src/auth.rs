@@ -10,6 +10,9 @@
 //! the pre-hashed entries in `config.auth.api_keys`.  An exact match against
 //! any entry grants access; otherwise the request is rejected with
 //! `401 Unauthorized`.
+//! The command WebSocket path is passed to its protocol handler because it
+//! supports query-token and first-message authentication; that handler still
+//! requires a valid query token before it validates a reconnect cursor.
 //!
 //! The exact probe and discovery paths in the crate's access policy remain
 //! public so orchestrators and API tooling can reach them. When
@@ -40,6 +43,8 @@ use tracing::warn;
 use polkagent_config::AuthConfig;
 
 use crate::access_policy::is_public_operational_path;
+
+const SELF_AUTHENTICATED_WEBSOCKET_PATH: &str = "/ws/v1alpha1";
 
 // ---------------------------------------------------------------------------
 // AuthState
@@ -122,8 +127,13 @@ pub async fn auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    // Public probes/tooling and auth-disabled deployments pass through.
-    if is_public_operational_path(req.uri().path()) || !state.enabled {
+    // Public probes/tooling, the self-authenticating command WebSocket, and
+    // auth-disabled deployments pass through. The WebSocket handler enforces
+    // its query-token/first-message protocol itself.
+    if is_public_operational_path(req.uri().path())
+        || req.uri().path() == SELF_AUTHENTICATED_WEBSOCKET_PATH
+        || !state.enabled
+    {
         return next.run(req).await;
     }
 
@@ -186,6 +196,7 @@ mod tests {
         let state = Arc::new(AuthState::from_config(config));
         Router::new()
             .route("/test", get(|| async { "ok" }))
+            .route("/ws/v1alpha1", get(|| async { "ws handler reached" }))
             .layer(middleware::from_fn_with_state(state, auth_middleware))
     }
 
@@ -226,6 +237,24 @@ mod tests {
 
         let resp = app.oneshot(get_req(None)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn command_websocket_defers_to_its_protocol_authentication() {
+        let config = AuthConfig {
+            enabled: true,
+            api_keys: vec![sha256_hex("secret")],
+            ..Default::default()
+        };
+        let app = test_router(&config);
+        let request = Request::builder()
+            .uri(SELF_AUTHENTICATED_WEBSOCKET_PATH)
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     // ── bearer token ────────────────────────────────────────────────────────

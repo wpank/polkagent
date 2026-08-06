@@ -153,6 +153,20 @@ async fn subscribe(socket: &mut ClientSocket, channel: &str, request_id: &str) {
     assert_eq!(ack["channel"], channel);
 }
 
+async fn ready(socket: &mut ClientSocket, request_id: &str) {
+    send_command(
+        socket,
+        serde_json::json!({
+            "msg_type": "ready",
+            "id": request_id,
+        }),
+    )
+    .await;
+    let ack = next_json(socket).await;
+    assert_eq!(ack["msg_type"], "ack");
+    assert_eq!(ack["id"], request_id);
+}
+
 async fn unsubscribe(socket: &mut ClientSocket, channel: &str, request_id: &str) {
     send_command(
         socket,
@@ -919,6 +933,7 @@ async fn command_socket_cursor_replays_filters_reconnects_and_dedupes_across_pag
     let channel = format!("runs:{target_run}");
     let mut initial = connect_command_at_cursor(&server, "v1:0").await;
     subscribe(&mut initial, &channel, "initial-subscribe").await;
+    ready(&mut initial, "initial-ready").await;
 
     let first = next_json(&mut initial).await;
     let across_page = next_json(&mut initial).await;
@@ -941,6 +956,7 @@ async fn command_socket_cursor_replays_filters_reconnects_and_dedupes_across_pag
     store.insert(replay_stored).await;
     let mut resumed = connect_command_at_cursor(&server, "v1:258").await;
     subscribe(&mut resumed, &channel, "resume-subscribe").await;
+    ready(&mut resumed, "resume-ready").await;
     let replayed = next_json(&mut resumed).await;
     assert_eq!(replayed["payload"]["sequence"], 259);
     assert_eq!(replayed["cursor"], "v1:259");
@@ -968,6 +984,57 @@ async fn command_socket_cursor_replays_filters_reconnects_and_dedupes_across_pag
 }
 
 #[tokio::test]
+async fn command_socket_cursor_waits_for_ready_and_replays_all_initial_subscriptions() {
+    let first_run = RunId::new();
+    let second_run = RunId::new();
+    let late_run = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    let (first_stored, _) = stored_event(1, first_run, EventKind::RunCreated);
+    let (second_stored, _) = stored_event(2, second_run, EventKind::RunCreated);
+    store.insert(first_stored).await;
+    store.insert(second_stored).await;
+    let server = spawn_server(Config::default(), EventBus::new(4), Some(store.clone())).await;
+    let mut socket = connect_command_at_cursor(&server, "v1:0").await;
+
+    subscribe(&mut socket, &format!("runs:{first_run}"), "first-subscribe").await;
+    expect_no_frame(&mut socket).await;
+    subscribe(
+        &mut socket,
+        &format!("runs:{second_run}"),
+        "second-subscribe",
+    )
+    .await;
+    expect_no_frame(&mut socket).await;
+
+    ready(&mut socket, "all-subscriptions-ready").await;
+    let first = next_json(&mut socket).await;
+    let second = next_json(&mut socket).await;
+    assert_eq!(first["channel"], format!("runs:{first_run}"));
+    assert_eq!(first["cursor"], "v1:1");
+    assert_eq!(second["channel"], format!("runs:{second_run}"));
+    assert_eq!(second["cursor"], "v1:2");
+    expect_no_frame(&mut socket).await;
+
+    send_command(
+        &mut socket,
+        serde_json::json!({
+            "msg_type": "subscribe",
+            "id": "late-subscribe",
+            "channel": format!("runs:{late_run}"),
+        }),
+    )
+    .await;
+    let rejected = next_json(&mut socket).await;
+    assert_eq!(rejected["msg_type"], "error");
+    assert_eq!(rejected["id"], "late-subscribe");
+    assert_eq!(
+        rejected["payload"]["reason"],
+        "reconnect subscription set is sealed after ready"
+    );
+    assert!(store.reads().await.contains(&(0, 256)));
+}
+
+#[tokio::test]
 async fn command_socket_cursor_replay_and_lag_recovery_do_not_duplicate() {
     let run_id = RunId::new();
     let store = Arc::new(TestEventStore::default());
@@ -977,6 +1044,7 @@ async fn command_socket_cursor_replay_and_lag_recovery_do_not_duplicate() {
     let server = spawn_server(Config::default(), bus.clone(), Some(store.clone())).await;
     let mut socket = connect_command_at_cursor(&server, "v1:0").await;
     subscribe(&mut socket, &format!("runs:{run_id}"), "cursor-lag").await;
+    ready(&mut socket, "cursor-lag-ready").await;
     let first = next_json(&mut socket).await;
     assert_eq!(first["payload"]["sequence"], 1);
     assert_eq!(first["cursor"], "v1:1");
@@ -1069,6 +1137,42 @@ async fn command_socket_cursor_validation_sanitizes_backend_failure() {
         .unwrap_or_default();
     assert!(body.contains("durable reconnect cursor validation unavailable"));
     assert!(!body.contains(PRIVATE_BACKEND_SENTINEL));
+}
+
+#[tokio::test]
+async fn command_socket_cursor_authenticates_before_validation_or_store_access() {
+    let run_id = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    let (stored, _) = stored_event(1, run_id, EventKind::RunCreated);
+    store.insert(stored).await;
+    let valid_token = "cursor-secret";
+    let mut config = Config::default();
+    config.auth.enabled = true;
+    config.auth.api_keys = vec![format!("{:x}", Sha256::digest(valid_token.as_bytes()))];
+    let server = spawn_server(config, EventBus::new(4), Some(store.clone())).await;
+
+    for query in ["cursor=v1:999", "token=wrong&cursor=v1:999"] {
+        let unauthorized = connect_async(format!("{}/ws/v1alpha1?{query}", server.ws_base_url))
+            .await
+            .expect_err("cursor reconnect requires a valid query token");
+        assert_eq!(http_error_status(unauthorized), StatusCode::UNAUTHORIZED);
+    }
+    assert!(
+        store.reads().await.is_empty(),
+        "unauthorized cursor probes must not read durable storage"
+    );
+
+    let authenticated = connect_async(format!(
+        "{}/ws/v1alpha1?token={valid_token}&cursor=v1:999",
+        server.ws_base_url
+    ))
+    .await
+    .expect_err("authenticated future cursor must fail validation");
+    assert_eq!(
+        http_error_status(authenticated),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(store.reads().await, [(998, 1)]);
 }
 
 #[tokio::test]
