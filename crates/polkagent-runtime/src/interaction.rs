@@ -2062,7 +2062,7 @@ mod tests {
     use polkagent_conversation::{types::Conversation, ConversationStore};
     use polkagent_core::{
         AgentSpec, ApprovalId, DataClassification, EffectAttemptId, EffectId, EffectOutcomeId,
-        EventId, PrincipalId, StepId, TurnId, WorkerId,
+        EventId, PrincipalId, RunId, StepId, TurnId, WorkerId,
     };
     use polkagent_event::{EventBus, EventRecorder};
     use polkagent_executor_fake::FakeExecutor;
@@ -2090,6 +2090,47 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn manual_reconciliation_projects_as_bounded_surface_error() {
+        let run_id: RunId = "01900000-0000-7000-8000-000000000001"
+            .parse()
+            .expect("static run id must parse");
+        let effect_id: EffectId = "01900000-0000-7000-8000-000000000002"
+            .parse()
+            .expect("static effect id must parse");
+        let reason = "SENTINEL_MANUAL_RECONCILIATION_DETAIL";
+
+        let projected = approval_service_error(ServiceError::ManualReconciliation {
+            run_id,
+            effect_id,
+            reason: reason.to_owned(),
+        });
+        let expected = InteractionError::new(
+            InteractionErrorCode::Unavailable,
+            "operate on durable approval: shared runtime operation failed",
+        );
+        assert_eq!(projected, expected);
+
+        let value = serde_json::to_value(&projected).expect("serialize interaction error");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "code": "unavailable",
+                "message": "operate on durable approval: shared runtime operation failed",
+                "retryable": false,
+            })
+        );
+        let encoded = value.to_string();
+        assert!(!encoded.contains(&run_id.to_string()));
+        assert!(!encoded.contains(&effect_id.to_string()));
+        assert!(!encoded.contains(reason));
+        assert_eq!(
+            serde_json::from_value::<InteractionError>(value)
+                .expect("deserialize interaction error"),
+            expected
+        );
+    }
 
     #[test]
     fn pending_approval_surface_bound_fails_closed_on_overflow() {

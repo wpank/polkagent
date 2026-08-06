@@ -1,0 +1,44 @@
+{
+  "fixture_schema_version": 1,
+  "errors": [
+    {
+      "error": "not_found",
+      "resource_type": "Approval",
+      "id": "approval-0001"
+    },
+    {
+      "error": "conflict",
+      "resource_type": "Approval",
+      "id": "approval-0001",
+      "message": "a different decision already won"
+    },
+    {
+      "error": "invalid_transition",
+      "resource_type": "Effect",
+      "id": "effect-0001",
+      "expected": "approved",
+      "actual": "executing"
+    },
+    {
+      "error": "scope_mismatch"
+    },
+    {
+      "error": "digest_mismatch"
+    },
+    {
+      "error": "deadline_elapsed"
+    },
+    {
+      "error": "unsupported_checkpoint_version",
+      "version": 2
+    },
+    {
+      "error": "integrity",
+      "message": "checkpoint digest mismatch"
+    },
+    {
+      "error": "backend",
+      "message": "backend unavailable"
+    }
+  ]
+}

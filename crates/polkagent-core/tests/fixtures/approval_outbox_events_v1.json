@@ -1,0 +1,27 @@
+{
+  "fixture_schema_version": 1,
+  "events": [
+    {
+      "approval_requested": {
+        "request_id": "approval-0001"
+      }
+    },
+    {
+      "approval_granted": {
+        "approval_id": "approval-0001"
+      }
+    },
+    {
+      "approval_denied": {
+        "reason": "approval rejected"
+      }
+    },
+    "run_timed_out",
+    {
+      "run_cancelled": {
+        "reason": "approval cancelled"
+      }
+    },
+    "effects_resolved"
+  ]
+}

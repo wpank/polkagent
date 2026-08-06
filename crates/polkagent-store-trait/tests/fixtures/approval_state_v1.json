@@ -1,0 +1,47 @@
+{
+  "fixture_schema_version": 1,
+  "approval_statuses": [
+    "pending",
+    "approved",
+    "denied",
+    "expired",
+    "cancelled"
+  ],
+  "approval_decisions": [
+    "allow_once",
+    "reject_once",
+    "expire",
+    "cancel"
+  ],
+  "principal_types": [
+    "human",
+    "service",
+    "quorum"
+  ],
+  "checkpoint_effect_statuses": [
+    "awaiting_approval",
+    "approved",
+    "denied",
+    "expired",
+    "cancelled"
+  ],
+  "checkpoint_statuses": [
+    "paused_for_approval",
+    "resumable",
+    "leased",
+    "terminal"
+  ],
+  "checkpoint_commit_statuses": [
+    "resumable",
+    "terminal"
+  ],
+  "resolve_dispositions": [
+    "applied",
+    "already_applied"
+  ],
+  "retry_classes": [
+    "idempotent",
+    "check_before_retry",
+    "no_auto_retry"
+  ]
+}

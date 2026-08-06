@@ -254,14 +254,24 @@ mod tests {
 
     #[test]
     fn manual_reconciliation_preserves_typed_run_error_identity() {
-        let run_id = RunId::new();
-        let effect_id = EffectId::new();
-        let reason = "possible I/O has no durable outcome".to_owned();
-        let service_error = ServiceError::from(polkagent_run::RunError::ManualReconciliation {
+        let run_id: RunId = "00000000-0000-7000-8000-000000000101"
+            .parse()
+            .expect("static run ID");
+        let effect_id: EffectId = "00000000-0000-7000-8000-000000000102"
+            .parse()
+            .expect("static effect ID");
+        let reason = "an attempt may have started but no durable outcome exists; automatic retry is forbidden".to_owned();
+        let expected_display = format!(
+            "manual reconciliation required for run {run_id}, effect {effect_id}: {reason}"
+        );
+        let run_error = polkagent_run::RunError::ManualReconciliation {
             run_id,
             effect_id,
             reason: reason.clone(),
-        });
+        };
+        assert_eq!(run_error.to_string(), expected_display);
+        let service_error = ServiceError::from(run_error);
+        assert_eq!(service_error.to_string(), expected_display);
 
         assert!(matches!(
             service_error,
