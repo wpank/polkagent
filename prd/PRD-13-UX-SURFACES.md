@@ -1,6 +1,6 @@
 # PRD-13 — UX, CLI, Studio, Inbox, Mobile and Operator Surfaces
 
-> **Implementation note (audited 2026-08-05):** This PRD remains normative,
+> **Implementation note (audited 2026-08-06):** This PRD remains normative,
 > but its embedded implementation statements and checklists are not current
 > status evidence. Use [STATUS.md](STATUS.md) and
 > [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
@@ -12,11 +12,13 @@
 > F6 scopes asynchronous durable approval list/approve/deny calls to the
 > selected Console conversation, shows at most 100 exact pending identities
 > with bounded/redacted service detail, and confirms the full conversation plus
-> approval IDs. It performs no direct approval SQL. Normal production startup
-> still has no authenticated approval authority, and known pending-approval
-> turns intentionally guard generic cancellation until the approval is
-> resolved. Rich action cards, production authority, group orchestration, and
-> full cross-surface parity remain open.
+> approval IDs. It performs no direct approval SQL. Explicit `polkagent chat`
+> and `polkagent tui` can bind the same all-or-none local-process authority
+> tuple as ACP; omission and the no-subcommand TUI remain fail-closed. Pending-
+> approval cancel/shutdown routes through the coordinator, durably cancels the
+> approval/run, and performs zero tool I/O. Shared/remote/API authentication,
+> pagination, cancellation during handler I/O, rich action cards, group
+> orchestration, and full cross-surface parity remain open.
 
 **Status:** definitive PRD
 **Owner:** unassigned
@@ -27,7 +29,8 @@ PRD-08 (payments), PRD-10 (data/artifacts/events), PRD-11 (cloud/tenancy),
 PRD-12 (marketplace)
 **Implementation status:** broad CLI and monitoring TUI plus a bounded
 actionable Console and service-routed F6 approval adapter; most complete
-product surfaces and production approval composition remain unimplemented
+product surfaces and authenticated shared-service approval composition remain
+unimplemented
 
 ---
 

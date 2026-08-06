@@ -29,12 +29,14 @@ RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps
 ./scripts/container-smoke.sh
 ```
 
-The latest recorded all-feature workspace run exited 0 with 8,063 ordinary
-tests and 84 doc tests passing, zero failures, five ignored ordinary tests, and
-26 ignored doc tests. The recorded baseline includes
+The final recorded all-feature workspace run for code commit `b1dc335` (the
+code state under this documentation snapshot) exited 0 across 189 ordinary
+test suites with 8,210 passed, zero failed, and five ignored, plus 90 doc-test
+suites with 84 passed, zero failed, and 26 ignored. The recorded baseline includes
 extensive unit, property, contract, integration, security, TUI rendering, API,
-and doc coverage. Eighteen PostgreSQL conformance tests plus six cross-tenant
-tests returned early because `TEST_DATABASE_URL` was unset. Two live Polkadot
+and doc coverage. Twenty-four PostgreSQL tests returned early because
+`TEST_DATABASE_URL` was unset and are counted as passed by Cargo; they are not
+external database evidence. Two live Polkadot
 RPC/finality tests likewise returned early because their relay and parachain
 endpoint variables were unset. They are not external-system evidence even
 though Cargo reports them as passed. This is a strong component baseline. The
@@ -128,11 +130,11 @@ rather than broad suppression.
 |---|---|---|---|---|
 | 01 Vision | N/A | N/A | N/A | Active normative direction |
 | 02 Architecture | Strong but drifted | Partial | No | Active invariants; reconcile when touched |
-| 03 Execution | Strong libraries plus bounded grantless real-tool loop | Partial central composition | SQLite-handler vertical slice only | Active P0 |
-| 04/04a Providers/tools/harnesses | Strong adapters plus allowlist/registry tool schema composition | Partial | Scripted-model/SQLite-handler `AppService` vertical slice; external adapters remain | Active P0/P1 |
+| 03 Execution | Strong libraries plus bounded grantless and approval-gated real-tool loops | Partial central composition with explicit local approval authority | One strict-policy SQLite-handler path crosses TUI/chat and restart; full crash/reconciliation matrix remains | Active P0 |
+| 04/04a Providers/tools/harnesses | Strong adapters plus allowlist/registry schemas and strict policy composition | Partial | Scripted-model/SQLite-handler `AppService` vertical slices include one approval-gated tool; external adapters remain | Active P0/P1 |
 | 05 Polkadot | Strong read/action components | Partial | No real write proof | Active P1 + PRD-17 |
 | 06 PCA | Strong primitives plus tested cross-process TCP/control delivery | Transport not composed into runtime or PCA reference network | No runtime or reference-client E2E | Active P1 |
-| 07 Security | Strong primitives/tests | Partial/unsafe defaults | No production security proof | Active P1 |
+| 07 Security | Strong primitives, strict policy enforcement, and exact local-process authority tests | Explicit local chat/TUI/ACP authority; shared/API identity remains partial/unsafe | No authenticated multi-principal, tenant, custody, or production security proof | Active P1 |
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Typed memory API query/lookup/stats/deletion composed; broader components exist | Prompt context and groups/feeds/evals remain | Restart-safe exact-store API operations; no orchestration proof | Active P1 |
 | 10 Observability | Interaction SSE, exact durable run-event metadata/replay, global reconnect, versioned command-socket reconnect/lag recovery, and core artifact/event injection are proved | Bounded durable WebSocket recovery is complete; best-effort deltas, trace/context injection, audit/telemetry, retention, and operator recovery remain | No tenant/principal isolation, per-class backpressure metrics/coalescing, automatic client reconnect, live PostgreSQL upgrade proof, or full operator lifecycle | Active P1 |
@@ -164,8 +166,9 @@ rather than broad suppression.
   next inference request. A SQLite `AppService` test lets the handler observe
   its own pre-existing turn/step/intent and proves restart persistence. Unknown,
   unallowlisted, malformed-JSON, registry-mismatched, and grant-bearing calls
-  never reach a handler. This is not production approval/policy composition,
-  crash-recovery closure, or external-tool evidence.
+  never reach a handler. That grantless fixture alone is not approval/policy
+  proof; the bounded local approval fixture below supplies one such seam, while
+  crash-recovery closure and external-tool evidence remain open.
 - `crates/polkagent-runtime/src/interaction.rs` projects that exact persisted
   effect lifecycle into deterministic tool-started/updated envelopes. The
   effect ID is the stable tool-call ID through replay, lag, restart, terminal
