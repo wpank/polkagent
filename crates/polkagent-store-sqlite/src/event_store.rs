@@ -147,9 +147,6 @@ fn validate_common_event(event: &StoredEvent) -> Result<(), EventStoreError> {
     validate_w3c_id("span_id", event.span_id.as_deref(), 16)?;
     chrono::DateTime::parse_from_rfc3339(&event.timestamp)
         .map_err(|_| invalid_metadata("event timestamp is not RFC 3339"))?;
-    if event.sequence == 0 {
-        return Err(invalid_metadata("event sequence must be greater than zero"));
-    }
     if event.schema_version == 0 {
         return Err(invalid_metadata(
             "event schema_version must be greater than zero",
@@ -166,6 +163,9 @@ fn validate_common_event(event: &StoredEvent) -> Result<(), EventStoreError> {
 
 fn validate_new_event(event: &StoredEvent, durability: &str) -> Result<(), EventStoreError> {
     validate_common_event(event)?;
+    if durability != "durable" && event.sequence == 0 {
+        return Err(invalid_metadata("event sequence must be greater than zero"));
+    }
     if event.global_sequence != 0 {
         return Err(invalid_metadata(
             "new event global_sequence must be zero before assignment",
@@ -179,7 +179,7 @@ fn validate_new_event(event: &StoredEvent, durability: &str) -> Result<(), Event
     Ok(())
 }
 
-fn invalid_row(error: EventStoreError) -> rusqlite::Error {
+fn invalid_row(error: &EventStoreError) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
         0,
         rusqlite::types::Type::Text,
@@ -207,18 +207,18 @@ fn row_to_stored_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent>
     let event_type = match (durability.as_str(), stored_kind.strip_prefix("diagnostic:")) {
         ("diagnostic", Some(event_type)) => event_type.to_owned(),
         ("diagnostic", None) => {
-            return Err(invalid_row(invalid_metadata(
+            return Err(invalid_row(&invalid_metadata(
                 "stored diagnostic event kind is missing its storage prefix",
             )))
         }
         ("durable", Some(_)) => {
-            return Err(invalid_row(invalid_metadata(
+            return Err(invalid_row(&invalid_metadata(
                 "stored durable event kind has a diagnostic storage prefix",
             )))
         }
         ("durable", None) => stored_kind,
         _ => {
-            return Err(invalid_row(invalid_metadata(
+            return Err(invalid_row(&invalid_metadata(
                 "SQLite event durability must be durable or diagnostic",
             )))
         }
@@ -247,9 +247,14 @@ fn row_to_stored_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent>
         effect_intent_id: row.get(17)?,
         effect_attempt_id: row.get(18)?,
     };
-    validate_common_event(&event).map_err(invalid_row)?;
+    validate_common_event(&event).map_err(|error| invalid_row(&error))?;
+    if event.sequence == 0 {
+        return Err(invalid_row(&invalid_metadata(
+            "stored event sequence must be greater than zero",
+        )));
+    }
     if event.global_sequence == 0 {
-        return Err(invalid_row(invalid_metadata(
+        return Err(invalid_row(&invalid_metadata(
             "stored event global_sequence must be greater than zero",
         )));
     }
