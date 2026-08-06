@@ -16,13 +16,14 @@ use agent_client_protocol::schema::v1::{
     AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
     CancelNotification, ContentBlock, ContentChunk, Implementation, InitializeRequest,
     InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-    NewSessionResponse, PromptRequest, PromptResponse, ResourceLink, ResumeSessionRequest,
-    ResumeSessionResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionId, SessionNotification, SessionResumeCapabilities,
-    SessionUpdate, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason,
-    TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallStatus as AcpToolCallStatus,
-    ToolCallUpdate as AcpToolCallUpdate, ToolCallUpdateFields, ToolKind as AcpToolKind,
-    UnstructuredCommandInput, UsageUpdate,
+    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, ResourceLink,
+    ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigSelectOption, SessionId, SessionNotification,
+    SessionResumeCapabilities, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, StopReason, TextContent, ToolCall as AcpToolCall,
+    ToolCallContent, ToolCallStatus as AcpToolCallStatus, ToolCallUpdate as AcpToolCallUpdate,
+    ToolCallUpdateFields, ToolKind as AcpToolKind, UnstructuredCommandInput, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
@@ -40,6 +41,8 @@ const INHERIT_MODEL_VALUE: &str = "_polkagent_agent_model";
 const TURN_ID_META_KEY: &str = "polkagent.turnId";
 const TURN_RESULT_META_KEY: &str = "polkagent";
 const PROMPT_UPDATE_BUFFER: usize = 32;
+const ALLOW_ONCE_OPTION_ID: &str = "polkagent.allow_once";
+const REJECT_ONCE_OPTION_ID: &str = "polkagent.reject_once";
 const ACP_COMMANDS: [CommandName; 6] = [
     CommandName::Help,
     CommandName::Status,
@@ -172,6 +175,78 @@ pub enum BackendPromptUpdate {
     ToolCallStarted(ToolCallView),
     /// Replacement state for the same durable tool call identity.
     ToolCallUpdated(ToolCallView),
+}
+
+/// A once-only decision returned by an ACP permission surface.
+///
+/// Polkagent deliberately does not expose ACP's remembered allow/reject
+/// options until durable mandate scope, expiry, revocation, and audit exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    /// Permit only the exact effect represented by the request.
+    AllowOnce,
+    /// Reject only the exact effect represented by the request.
+    RejectOnce,
+    /// The prompt turn was cancelled before a decision was made.
+    Cancelled,
+}
+
+/// Build the exact ACP permission request for a durable tool projection.
+///
+/// Only once-only choices are offered. Raw arguments and output remain absent
+/// because the shared interaction projection exposes safety-reviewed summaries
+/// rather than unclassified effect payloads.
+#[must_use]
+pub fn permission_request(
+    session_id: impl Into<SessionId>,
+    call: ToolCallView,
+) -> RequestPermissionRequest {
+    RequestPermissionRequest::new(
+        session_id,
+        acp_tool_update(call),
+        vec![
+            PermissionOption::new(
+                ALLOW_ONCE_OPTION_ID,
+                "Allow once",
+                PermissionOptionKind::AllowOnce,
+            ),
+            PermissionOption::new(
+                REJECT_ONCE_OPTION_ID,
+                "Reject once",
+                PermissionOptionKind::RejectOnce,
+            ),
+        ],
+    )
+}
+
+/// Decode an ACP permission response without accepting unadvertised choices.
+///
+/// # Errors
+///
+/// Returns an invalid-parameters protocol error when a client selects an
+/// unknown or remembered option. Such a response never grants authority.
+pub fn permission_decision(
+    response: &RequestPermissionResponse,
+) -> Result<PermissionDecision, agent_client_protocol::Error> {
+    match &response.outcome {
+        RequestPermissionOutcome::Cancelled => Ok(PermissionDecision::Cancelled),
+        RequestPermissionOutcome::Selected(selected)
+            if selected.option_id.0.as_ref() == ALLOW_ONCE_OPTION_ID =>
+        {
+            Ok(PermissionDecision::AllowOnce)
+        }
+        RequestPermissionOutcome::Selected(selected)
+            if selected.option_id.0.as_ref() == REJECT_ONCE_OPTION_ID =>
+        {
+            Ok(PermissionDecision::RejectOnce)
+        }
+        RequestPermissionOutcome::Selected(_) => {
+            Err(agent_client_protocol::Error::invalid_params()
+                .data("ACP client selected an unadvertised permission option"))
+        }
+        _ => Err(agent_client_protocol::Error::invalid_params()
+            .data("ACP client returned an unsupported permission outcome")),
+    }
 }
 
 /// The result of one backend prompt turn.
@@ -1054,6 +1129,10 @@ fn acp_tool_started(call: ToolCallView) -> SessionUpdate {
 }
 
 fn acp_tool_updated(call: ToolCallView) -> SessionUpdate {
+    SessionUpdate::ToolCallUpdate(acp_tool_update(call))
+}
+
+fn acp_tool_update(call: ToolCallView) -> AcpToolCallUpdate {
     let content = safe_tool_content(&call);
     let mut fields = ToolCallUpdateFields::new()
         .title(call.title)
@@ -1062,7 +1141,7 @@ fn acp_tool_updated(call: ToolCallView) -> SessionUpdate {
     if let Some(content) = content {
         fields = fields.content(vec![content]);
     }
-    SessionUpdate::ToolCallUpdate(AcpToolCallUpdate::new(call.call_id.to_string(), fields))
+    AcpToolCallUpdate::new(call.call_id.to_string(), fields)
 }
 
 fn safe_tool_content(call: &ToolCallView) -> Option<ToolCallContent> {
@@ -1595,6 +1674,139 @@ mod tests {
         assert_eq!(wire["status"], "completed");
         assert!(wire.get("rawInput").is_none());
         assert!(wire.get("rawOutput").is_none());
+    }
+
+    #[test]
+    fn permission_contract_offers_only_once_choices_and_safe_tool_data() {
+        let call = tool_view(ToolCallStatus::AwaitingApproval);
+        let call_id = call.call_id.to_string();
+        let request = permission_request(SessionId::new("permission-session"), call);
+
+        assert_eq!(request.session_id.0.as_ref(), "permission-session");
+        assert_eq!(request.tool_call.tool_call_id.0.as_ref(), call_id);
+        assert_eq!(request.options.len(), 2);
+        assert_eq!(
+            request.options[0].option_id.0.as_ref(),
+            ALLOW_ONCE_OPTION_ID
+        );
+        assert_eq!(request.options[0].kind, PermissionOptionKind::AllowOnce);
+        assert_eq!(
+            request.options[1].option_id.0.as_ref(),
+            REJECT_ONCE_OPTION_ID
+        );
+        assert_eq!(request.options[1].kind, PermissionOptionKind::RejectOnce);
+
+        let wire = serde_json::to_value(&request).expect("encode permission request");
+        assert_eq!(wire["toolCall"]["toolCallId"], call_id);
+        assert_eq!(wire["toolCall"]["status"], "pending");
+        assert!(wire["toolCall"].get("rawInput").is_none());
+        assert!(wire["toolCall"].get("rawOutput").is_none());
+        assert_eq!(wire["options"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn permission_response_rejects_unadvertised_or_remembered_choices() {
+        use agent_client_protocol::schema::v1::SelectedPermissionOutcome;
+
+        let response = RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new("polkagent.allow_always"),
+        ));
+        let error = permission_decision(&response)
+            .expect_err("an unadvertised remembered decision must fail closed");
+        assert_eq!(
+            error.code,
+            agent_client_protocol::Error::invalid_params().code
+        );
+    }
+
+    #[tokio::test]
+    async fn official_client_round_trips_allow_reject_and_cancel_permission_outcomes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use agent_client_protocol::schema::v1::SelectedPermissionOutcome;
+
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_client = Arc::clone(&observed);
+        let response_index = Arc::new(AtomicUsize::new(0));
+        let response_index_client = Arc::clone(&response_index);
+        let decisions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let decisions_agent = Arc::clone(&decisions);
+        let completion = Arc::new(tokio::sync::Notify::new());
+        let completion_client = Arc::clone(&completion);
+        let (client_transport, agent_transport) = agent_client_protocol::Channel::duplex();
+
+        let client = agent_client_protocol::Client
+            .builder()
+            .on_receive_request(
+                async move |request: RequestPermissionRequest, responder, _connection| {
+                    observed_client
+                        .lock()
+                        .expect("permission observation lock")
+                        .push(request.clone());
+                    let index = response_index_client.fetch_add(1, Ordering::SeqCst);
+                    let outcome = match index {
+                        0 => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            request.options[0].option_id.clone(),
+                        )),
+                        1 => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            request.options[1].option_id.clone(),
+                        )),
+                        _ => RequestPermissionOutcome::Cancelled,
+                    };
+                    responder.respond(RequestPermissionResponse::new(outcome))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_with(client_transport, async move |_connection| {
+                completion_client.notified().await;
+                Ok(())
+            });
+        let agent = agent_client_protocol::Agent.builder().connect_with(
+            agent_transport,
+            async move |connection| {
+                for status in [
+                    ToolCallStatus::AwaitingApproval,
+                    ToolCallStatus::AwaitingApproval,
+                    ToolCallStatus::AwaitingApproval,
+                ] {
+                    let response = connection
+                        .send_request(permission_request(
+                            SessionId::new("permission-session"),
+                            tool_view(status),
+                        ))
+                        .block_task()
+                        .await?;
+                    decisions_agent
+                        .lock()
+                        .expect("permission decision lock")
+                        .push(permission_decision(&response)?);
+                }
+                completion.notify_one();
+                Ok(())
+            },
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            futures::try_join!(client, agent)
+        })
+        .await
+        .expect("official ACP permission harness timed out")
+        .expect("official ACP permission harness failed");
+
+        assert_eq!(
+            *decisions.lock().expect("final decision lock"),
+            vec![
+                PermissionDecision::AllowOnce,
+                PermissionDecision::RejectOnce,
+                PermissionDecision::Cancelled,
+            ]
+        );
+        let observed = observed.lock().expect("final permission observation lock");
+        assert_eq!(observed.len(), 3);
+        assert!(observed.iter().all(|request| {
+            request.options.len() == 2
+                && request.options[0].kind == PermissionOptionKind::AllowOnce
+                && request.options[1].kind == PermissionOptionKind::RejectOnce
+        }));
     }
 
     #[test]
