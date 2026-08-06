@@ -96,9 +96,27 @@ reports.
   `RuntimeFactory` supplies no stable authenticated approval principal,
   `app_state_from_runtime` leaves the approval service unset, readiness remains
   unavailable/disabled, and normal surfaces advertise no grant-bearing tools.
-  APR-06 terminal/TUI, APR-07 ACP, and APR-08 cross-surface crash/security work
-  remain open. Legacy `/effects/{id}/approve|deny` are deprecated 501 stubs
-  because an effect UUID alone is not authority.
+  APR-06 terminal/TUI adapter work, APR-07 ACP, and APR-08 cross-surface crash/
+  security work were the next gates at that checkpoint. Legacy
+  `/effects/{id}/approve|deny` are deprecated 501 stubs because an effect UUID
+  alone is not authority.
+
+- **APR-06 / terminal-chat approval adapter (2026-08-06):** terminal chat now
+  derives approval-command discovery from the shared registry and its exact
+  scoped pending set, projects at most 100 stable approval IDs in `/status`,
+  and routes `/approve` and `/deny` only through `InteractionService`. A real
+  SQLite coordinator fixture proves wrong-conversation refusal, identical
+  retry after service restart, opposite-decision conflict, preservation of a
+  pending approval when generic cancellation is refused, and ordinary
+  cancellation when an approval-capable service returns no pending requests.
+  Denial reasons are capped at 4,096 Unicode characters; request/resolution
+  progress emits only stable IDs and fixed status text, never untrusted titles,
+  descriptions, policy reasons, or denial text. A subprocess proves the normal
+  authority-unbound `RuntimeFactory` hides both commands and rejects explicit
+  mutation without creating a turn, run, or approval row. This closes only the
+  test-composable chat half of APR-06: TUI service routing/direct-SQL removal,
+  production authority, grant-bearing execution, and APR-08 crash closure stay
+  open.
 
 - **EVD-07 / ACP client-protocol slices (2026-08-05):** the official ACP Rust
   client launches `polkagent acp` as a subprocess and proves initialization,

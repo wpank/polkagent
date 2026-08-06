@@ -3,9 +3,10 @@
 **Status:** active integration design; APR-00/APR-01 SQLite foundation, APR-02
 policy composition, the bounded APR-03 executor/store continuation, the
 APR-04 ACP protocol harness, and the bounded APR-05 interaction/service/HTTP
-contract are implemented. `RuntimeFactory` still has no stable authenticated
-principal binding, so production decision surfaces, terminal/ACP bindings,
-and cross-surface closure remain incomplete.
+contract are implemented. APR-06 terminal chat is implemented under explicit
+principal-bound test composition. `RuntimeFactory` still has no stable
+authenticated principal binding, so production decision surfaces, TUI/ACP
+bindings, and cross-surface closure remain incomplete.
 
 **Prepared:** 2026-08-06
 
@@ -27,7 +28,7 @@ This document does not claim that the end-to-end capability exists today.
 
 | Area | Present | Blocking gap |
 |---|---|---|
-| Interaction contract | `ApprovalView`, stable `ApprovalRequested`/`ApprovalResolved` replay, a pending query, and real `approve`/`deny` results exist in `polkagent-interaction` and the durable runtime adapter | Chat, TUI, and production ACP do not bind those operations; production `RuntimeFactory` constructs the interaction service without approval authority |
+| Interaction contract | `ApprovalView`, stable `ApprovalRequested`/`ApprovalResolved` replay, a pending query, and real `approve`/`deny` results exist in `polkagent-interaction` and the durable runtime adapter. Terminal chat consumes them through the shared registry/executor when a principal-bound service is explicitly composed. | TUI and production ACP do not bind those operations; production `RuntimeFactory` still constructs the interaction service without approval authority, so ordinary chat remains truthfully unavailable. |
 | Tool execution | Grantless tools retain the generic durable pipeline. An injected APR-03-capable coordinator/checkpoint pair enables tri-state grant resolution, atomic pause, one-shot exact claim, immediate policy/security revalidation, one handler call, durable outcome, and typed reject continuation. | Production `RuntimeFactory` deliberately does not compose that executor path because it cannot bind an authenticated decision to a stable principal. The bounded slice accepts exactly one approval-gated call in a model tool group and one approval checkpoint per run. |
 | Policy | Default-deny evaluation, explicit deny/permit/`RequireApproval` effects, strict named-file loading, gate escalation, exact resolver injection, stable policy snapshots, and immediate pre-I/O revalidation are implemented | Production activation remains fail-closed until principal-bound surface composition exists; broader grant kinds and production principal authorization remain open |
 | Effect persistence | SQLite V18 adds durable approval/checkpoint records, makes `effect_intents.state` authoritative, clears legacy `claimed_by` sentinels, enforces approval/lease invariants, and supplies the APR-03 atomic reducer used by the injected orchestrator path | Non-SQLite adapters do not advertise this capability; retention, operator reconciliation, and the broader crash matrix remain open |
@@ -36,7 +37,8 @@ This document does not claim that the end-to-end capability exists today.
 | Run lifecycle | The injected APR-03 path consumes `AwaitingApproval` and `WaitingEffect`, uses exact-state run CAS, and commits run/effect/approval/checkpoint/event transitions through the SQLite coordinator. APR-05 decisions trigger the shared recovery path. | The complete grant-bearing path remains withheld from normal production composition. |
 | Recovery | Resumable decided checkpoints lease by exact version/worker and reduce before another model request. An approved `Executing`/`Resolved` effect without one durable outcome returns typed manual reconciliation and is never rerun. Startup calls approval recovery before the generic reaper, which no longer destroys approval-owned states. APR-05 wakes recovery after a durable decision and replays deterministic approval events after restart. | Full retry-class reconciliation UI/operations and the cross-surface crash matrix remain APR-08. |
 | ACP | Durable sessions, prompts, cancellation, tool updates, slash discovery, safe permission-request projection, and an official-SDK protocol harness exist | The production backend does not issue native permission requests or bind decisions to the durable coordinator/effect path |
-| Terminal/TUI | Approval rendering, commands, and approval views exist | They do not resolve the shared durable approval operation end to end |
+| Terminal chat | `/status` projects at most 100 exact pending approval IDs; `/approve` and `/deny` route only through `InteractionService`, remain usable during an active turn, bound denial reasons to 4,096 Unicode characters, and preserve coordinator scope/idempotency/conflict behavior across a service restart in a real SQLite fixture. Stable event output excludes untrusted approval metadata and denial text. | This is an explicitly composed authority fixture, not normal production usability. `RuntimeFactory` supplies no authenticated authority or grant-bearing tool path. Generic cancel is refused while the scoped pending set is non-empty and remains an APR-07/08 coordinator-lifecycle gap rather than directly mutating approval state. |
+| TUI | Approval rendering, commands, and legacy approval views exist | The Console does not resolve the shared durable approval operation; legacy direct approval SQL must be removed when service-routed queue/detail/actions land. |
 
 The durable center and its bounded interaction/HTTP adapter now exist. The
 remaining blocker to product exposure is production composition: derive and
@@ -310,7 +312,7 @@ APR-05 -> APR-06 chat/TUI
 | APR-03 | Orchestrator pause, checkpoint reducer, grant injection, recovery, retry reconciliation, startup ordering | APR-01, APR-02 | Counting-tool allow/reject/restart tests pass |
 | APR-04 | Fake ACP backend and official-SDK permission request/response/cancel harness only | APR-00 | Protocol tests pass without production backend |
 | APR-05 — bounded complete | Durable interaction projection, pending query, real approve/deny service, HTTP adapter | APR-01, APR-03 event contract | Replay, restart, retry/conflict, auth/read-only, OpenAPI parity, and wrong-scope tests pass; production authority remains unbound |
-| APR-06 | Chat and TUI approval queue/detail/actions; remove direct DB approval writes | APR-05 | Scripted chat and TUI reducer/render tests pass |
+| APR-06 | **Chat half complete:** pending identity/status and approve/deny use the shared service under explicit authority composition. **TUI half open:** add queue/detail/actions and remove direct DB approval writes. | APR-05 | Chat scope/retry/conflict/restart/cancel/fail-closed tests pass; scripted TUI reducer/render tests remain. |
 | APR-07 | Production ACP backend update and coordinator binding | APR-03, APR-04, APR-05 | Official client allow/reject/cancel/reconnect tests pass |
 | APR-08 | Cross-surface fixture, crash matrix, security and observability closure | APR-03, APR-05, APR-06, APR-07 | User-path E2E and required workspace gates pass |
 
@@ -409,8 +411,10 @@ This is a contract and test-composition claim, not production usability.
 authority, `app_state_from_runtime` does not populate
 `authenticated_approval_service`, and readiness continues to report the
 approval surface unavailable and executor disabled. No normal runtime surface
-advertises grant-bearing tools. APR-06 owns terminal/TUI binding, APR-07 owns
-ACP binding, and APR-08 owns full crash/security/observability closure.
+advertises grant-bearing tools. APR-06's terminal-chat adapter is complete
+under explicit test composition; its TUI half remains open. APR-07 owns ACP
+binding, and APR-08 owns production authority plus full crash/security/
+observability closure.
 
 Hot files have one integration owner at a time: SQLite migration registration,
 `store-trait/src/lib.rs`, `service/src/app.rs`, `run/src/orchestrator.rs`,
@@ -452,8 +456,14 @@ names, then APR-08 runs them together:
     4,096 Unicode characters;
   - source, embedded, served OpenAPI, and router operations remain in parity.
 - `cargo test -p polkagent-cli --test chat_e2e approval`
-  - prompt, list, allow/reject, tool result, follow-up, and cancellation use the
-    shared service.
+  - ordinary production composition hides approval commands and explicit
+    `/approve` fails with no turn, run, or approval mutation.
+- `cargo test -p polkagent-cli commands::chat::tests::approval`
+  - the focused real-SQLite chat fixture lists exact scoped IDs and routes
+    allow/reject only through the principal-bound durable interaction service;
+  - wrong conversation, identical retry after service restart, opposite-
+    decision conflict, pending-cancel refusal, no-pending cancellation, Unicode
+    denial bounds, and redaction-safe event rendering pass.
 - `cargo test -p polkagent-surface-acp permission`
   - official SDK client sees exact tool-call identity and only once options;
   - allow/reject map correctly; `session/cancel` resolves pending requests as
@@ -577,7 +587,9 @@ and why approval never overrides policy denial.
   and `deny`.
 - [x] Route HTTP approve/deny through the same coordinator. The router contract
   is test-composable, but production authority composition remains fail-closed.
-- [ ] Enable chat `/approve` and `/deny` plus pending status/detail.
+- [x] Enable chat `/approve` and `/deny` plus pending identity status through
+  the shared service/registry under explicit authority composition. Normal
+  `RuntimeFactory` composition stays unavailable and advertises neither command.
 - [ ] Enable TUI queue/detail/key actions and remove direct approval SQL.
 - [x] Freeze and test the ACP permission protocol projection with once-only
   options, exact tool identity, withheld payloads, cancellation, disconnect,

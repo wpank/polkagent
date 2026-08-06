@@ -28,16 +28,19 @@ activities without losing per-conversation transcript, prompt draft, or history;
 `x` cancels the selected exact activity. Its terminal lifecycle is proven in a
 real Unix PTY. `polkagent chat` now provides a focused
 interactive/non-TTY adapter with explicit resume, multiline input, shared
-help/status/agents/agent/runs/inspect/cancel/new/resume/model handlers, checkpoint
-resubscribe, and SIGINT cancellation. The TUI now executes the truthful
+help/status/agents/agent/runs/inspect/cancel/new/resume/model handlers,
+authority-gated pending approval status/approve/deny handlers, checkpoint
+resubscribe, and SIGINT cancellation. The approval commands use only the shared
+service and are hidden/refused in normal authority-unbound production
+composition. The TUI now executes the truthful
 help/status/agents/agent/new/resume/runs/inspect/model subset
 through the same registry and service executor, renders structured results, and
 switches/reloads exact durable conversations without creating model turns. ACP
 now maps its session ID exactly to the durable conversation UUID and uses the
 same prompt, cancel, config, replay, and restart lifecycle. Effect-backed tool
 updates and immutable origin-cwd verification now cross restart. Session list/
-import, permissions, raw tool-data redaction, MCP passthrough, and manual Zed
-validation remain open.
+import, production permissions, raw tool-data redaction, MCP passthrough, and
+manual Zed validation remain open.
 
 One deterministic SQLite conformance fixture now carries the same exact
 conversation through HTTP creation/config, terminal-chat prompting, ACP
@@ -137,8 +140,10 @@ The delivered slices establish two distinct product surfaces that still need
 to be completed:
 
 1. The delivered terminal chat/TUI session must gain role-safe harness
-   follow-up, rich redaction-safe tool detail, approvals, broader command
-   coverage, and multi-agent orchestration.
+   follow-up, rich redaction-safe tool detail, service-routed TUI approvals,
+   production approval authority, broader command coverage, and multi-agent
+   orchestration. Terminal chat's approval adapter is complete under explicit
+   test composition.
 2. The ACP **agent server** (`polkagent acp`) must grow from its protocol MVP
    into full Zed and other ACP-client support.
 
@@ -164,7 +169,8 @@ It remains design input rather than the completion contract.
 | Prompt from inside the TUI | Implemented for bounded simultaneous agent/conversation turns | `p` opens the selected Console conversation; distinct targets continue in the background, `[`/`]` switches retained activities, and same-conversation duplicates fail before draft loss |
 | Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns and `x` cancels only the selected exact activity |
 | Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, and `/model` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns; run reads share ACP/chat scope, bounds, and redaction while unavailable capabilities fail explicitly |
-| Approve/deny in the TUI | Not safely implemented | APR-05 provides coordinator-backed interaction approval, but the legacy Approvals-tab still writes display-state rows and has not been replaced by the shared service; APR-06 owns that binding |
+| Approve/deny in terminal chat | Test-composable, production-unbound | `/status` lists exact scoped pending IDs and `/approve`/`/deny` use the shared executor and `InteractionService`; real SQLite tests cover scope, restart retry, conflict, bounds, and cancellation guards. Normal `RuntimeFactory` composition has no authenticated approval authority, hides the commands, and refuses explicit mutation. |
+| Approve/deny in the TUI | Not safely implemented | APR-05 provides coordinator-backed interaction approval, but the legacy Approvals-tab still writes display-state rows and has not been replaced by the shared service; the remaining APR-06 TUI half owns that binding |
 | See live run output in the TUI | Implemented for correlated foreground/background activity | Controller projects bounded per-activity interaction events and resubscribes from a durable checkpoint after lag; a 32-entry redaction-safe strip exposes identity/status without prompt/output/error detail, while approval/rich plan projection remains absent |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
@@ -291,8 +297,8 @@ Gaps that matter to an IDE-quality session:
 - A conversation is not the same thing as an executing turn. The new
   `InteractionService` now appends user/assistant transcript, creates and
   associates one target run, projects output, and exposes cancellation; group
-  runs, role-safe harness context, approvals, and rich tool transcript remain
-  absent.
+  runs, role-safe harness context, production approval authority/TUI/ACP
+  actions, and rich tool transcript remain absent.
 - `start_run` accepts only `(agent_id, prompt)` and does not accept a
   conversation/interaction ID or per-session execution overrides.
 - The legacy `RunProgressEvent::ToolUse` adapter still contains only tool name
@@ -1137,9 +1143,10 @@ available for inspection.
   configuration without shared-spec races.
 
 **Exit:** the current headless suite proves create, contextual model-executor
-prompt, stream, retry, cancel, persist, load, replay, and harness refusal
-without TUI or ACP types. Phase 1 remains open for real effect approval/deny and
-a role-safe harness/session context contract.
+prompt, stream, retry, cancel, persist, load, replay, coordinator-backed scoped
+approval operations, and harness refusal without TUI or ACP types. Phase 1
+remains open for production authenticated authority and a role-safe harness/
+session context contract.
 
 ### Phase 2 — focused terminal chat (P0/P1)
 
@@ -1148,7 +1155,12 @@ a role-safe harness/session context contract.
 - [x] Implement line-oriented multiline composition, durable transcript resume,
   typed streaming, checkpoint resubscribe, and Ctrl-C cancellation.
 - [x] Execute the truthful help/status/agents/agent/runs/inspect/cancel/new/
-  resume/model subset through shared slash-command handlers.
+  resume/model subset plus authority-gated pending status/approve/deny through
+  shared slash-command handlers.
+- [x] Prove chat approval scope, identical retry after service restart,
+  opposite-decision conflict, bounded/redaction-safe output, pending-cancel
+  refusal, approval-capable no-pending cancellation, and authority-unavailable
+  subprocess behavior without direct database mutation.
 - [x] Persist `/agent` per conversation with restart/next-run proof, active/
   ambiguous/unknown refusal, and no AgentSpec/turn/run/event mutation.
 - [x] Add persisted execution-scoped `/model` selection with same-provider
@@ -1357,9 +1369,11 @@ Zed, not merely a single-agent chat wrapper.
 - **Runtime duplication:** one-shot run, TUI, chat, ACP, and `serve` share the
   production factory; TUI/chat/HTTP/ACP consume the headless interaction
   service. A bounded grantless registered-tool/effect loop is composed;
-  approval/policy/resume and crash recovery remain incomplete.
+  production approval authority/policy execution and crash recovery remain
+  incomplete.
 - **Event loss:** TUI/chat/HTTP/ACP use durable interaction replay and stable
-  effect-backed tool projection; approval/plan projection remains incomplete.
+  effect-backed tool and approval projection; rich plan projection and TUI/ACP
+  approval actions remain incomplete.
 - **Protocol drift:** ACP v2 is draft. Pin the official SDK, test v1, and isolate
   conversions in the adapter.
 - **SQLite concurrency:** Zed may spawn processes while TUI/API is open. Enable
@@ -1392,7 +1406,7 @@ Zed, not merely a single-agent chat wrapper.
 | `polkagent-conversation` | Treat as durable transcript store under interaction service |
 | `polkagent-store-sqlite` | Session/turn/run-link/event persistence and the V18 approval/checkpoint coordinator are composed; keep surface code behind the serialized store operations |
 | `polkagent-cli/src/main.rs` | Early ACP dispatch, one-shot/TUI/chat/ACP/serve runtime convergence, and ACP-safe bounded diagnostics exist |
-| `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation agent/model selection exists; add richer editing/config only after execution semantics are truthful |
+| `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation agent/model selection and a test-composable service-routed approval adapter exists; add production authority and richer editing/config only after execution semantics are truthful |
 | `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection, shared commands, safe tool status, bounded simultaneous activity switching, async input, and background monitoring workers exist; add approvals/rich plans and group/child-run orchestration |
 | `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime plus skill reads and all four memory routes exist; compose the remaining published 9-route optional boundary one truthful family at a time |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
@@ -1454,8 +1468,10 @@ store/event/command service now exist. One-shot run, TUI, chat, ACP, and `serve`
 share that runtime; TUI/chat/HTTP/ACP share the durable interaction lifecycle.
 The TUI now supports bounded simultaneous turns across independently selected
 agent/conversation activities, but it does not yet build or execute group plans.
-Next implement the durable approval coordinator/checkpoint packet in
-[`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md), connect
-permissions with crash-safe resume, complete manual Zed evidence, define
-role-safe harness history, expand truthful command coverage, and compose durable
-group/child-run orchestration on top of the proven activity surface.
+The coordinator/checkpoint foundation and test-composable HTTP/chat adapters are
+tracked in
+[`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md). Next add
+service-routed TUI approval actions, bind authenticated production/ACP
+authority with crash-safe resume, complete manual Zed evidence, define role-safe
+harness history, expand truthful command coverage, and compose durable group/
+child-run orchestration on top of the proven activity surface.

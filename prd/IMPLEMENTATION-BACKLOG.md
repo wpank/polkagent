@@ -458,7 +458,8 @@ adapter hooks through small interfaces.
   both one-shot and TUI run composition instead of silently rediscovering
   provider/harness/execution settings.
 - [x] Add `polkagent chat` using `InteractionService` and the truthful
-  help/status/agents/agent/runs/inspect/cancel/new/resume/model subset of the
+  help/status/agents/agent/runs/inspect/cancel/new/resume/model subset plus
+  authority-gated approve/deny of the
   shared command handlers. Process tests cover non-TTY stdout, multiline input,
   restart target/model/run reads, zero-work target changes, refusal, lag
   resubscribe, and SIGINT cancellation.
@@ -531,9 +532,13 @@ adapter hooks through small interfaces.
 - [x] Assemble bounded prior completed transcript into typed model-executor
   context with exact roles and whole-turn truncation. Harness-backed follow-up
   fails explicitly because its string ingress cannot preserve roles.
-- [ ] Add service-routed approve/deny after the durable coordinator/checkpoint
-  packet; legacy Approvals-tab mutations remain outside the Console interaction
-  path. Agent list/selection is now service-routed for this slice.
+- [x] Route terminal-chat pending status and approve/deny through the shared
+  registry, command executor, and `InteractionService` under explicit
+  principal-bound test composition. Production `RuntimeFactory` remains
+  authority-unbound, hides the commands, and fails explicit mutations closed.
+- [ ] Add service-routed TUI queue/detail/approve/deny; legacy Approvals-tab
+  mutations remain outside the Console interaction path. Agent list/selection
+  is service-routed for the delivered slice.
 - [ ] Remove UI direct DB mutations.
 - [x] Preserve all existing monitoring tabs while adding the Console.
 - [x] Prove terminal restoration on normal error and panic unwind through the
@@ -551,8 +556,11 @@ same-agent durable session selector, and terminal chat can resume one.
 Prior completed turns enter model-executor context; string-only harness follow-
 up is unsupported. Group plans, durable child-run orchestration, richer
 redaction-safe plan/tool rendering, broader shared-command coverage, and
-service-routed approvals remain open. This activity slice must not be described
-as group orchestration or approval-capable execution.
+service-routed TUI approvals remain open. Terminal chat has a tested
+coordinator-backed adapter seam, but normal production composition has no
+authenticated approval authority or grant-bearing executor. This activity
+slice must not be described as group orchestration or production approval-
+capable execution.
 
 The TUI shell is now event-driven rather than a Crossterm poll/read frame loop.
 Headless tests cover bounded ordered input, latest-resize and tick coalescing,
@@ -859,12 +867,13 @@ from an explicitly ready remaining row rather than replaying foundation work.
 | Execution | **Complete bounded slice:** APR-03/EXE-01 adds atomic pause/recovery, one approval-required tool per model group, AllowOnce one-I/O reduction, reject/expiry/cancel zero-I/O reduction, and fail-closed unknown post-attempt recovery | `polkagent-run` orchestrator and narrow service bridges | Preserve exact checkpoint/effect lineage and keep production activation disabled until stable authenticated authority is composed. |
 | ACP harness | **Complete:** APR-04 fake permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Preserve once-only identity/redaction/cancel/error/disconnect coverage; production binding remains APR-07. |
 | Projection/API | **Complete bounded slice:** APR-05 adds durable approval projection/query/approve-deny and a test-composable HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | Replay, restart, idempotent retry/conflict, auth/read-only, denial bound, OpenAPI parity, and wrong-scope tests pass. The query is capped at 100 without pagination; production authority is intentionally unbound. |
-| Terminal | **Ready:** APR-06 adds chat/TUI approval queue/detail/actions and removes direct DB writes | CLI chat/TUI modules | APR-05 dependency is satisfied; exact approval identities survive cancel/restart with no accidental prompts. |
+| Terminal chat | **Complete test-composed slice:** APR-06 lists scoped pending IDs and routes approve/deny only through the shared durable service; ordinary production composition stays fail-closed | CLI chat module | Exact scope, idempotent restart retry, opposite-decision conflict, bounded/redaction-safe output, pending-cancel refusal, no-pending cancel, and authority-unavailable subprocess gates pass. |
+| TUI approvals | **Ready:** finish APR-06 queue/detail/actions and remove direct approval SQL | CLI TUI modules | Reuse the chat/service authority boundary; scripted reducer/render plus exact-scope/restart/cancel gates must pass. |
 | Editor | **Ready:** APR-07 binds production ACP permission requests to the coordinator | `polkagent-surface-acp` production backend | APR-03/APR-04/APR-05 dependencies are satisfied; official client allow/reject/cancel/reconnect tests pass. |
 | Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
 | TUI orchestration | **Complete bounded slice:** TUI-03 supports eight simultaneous agent/conversation activities, a 32-entry redaction-safe retained strip, per-conversation viewports, exact cancellation, duplicate refusal, and deterministic backpressure/eviction | CLI TUI controller/state/render/tests only | Preserve independent progress and shutdown reaping; durable group plans/child-run orchestration and rich structured plans remain separate work. |
 | Observability | **Metadata slice complete; reconnect packet in progress:** SQLite V19 preserves complete canonical run-event metadata, and `/ws/v1alpha1` is gaining a versioned public reconnect cursor | Command-WebSocket protocol/API tests only for the active packet | Preserve legacy durable cursor order and fail-closed projection; prove reconnect replay/dedupe/version errors while tenant/principal isolation remains open. |
-| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green; approval/configuration parity remains separate. |
+| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green; approval parity remains open for TUI/ACP and production authority composition. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |
