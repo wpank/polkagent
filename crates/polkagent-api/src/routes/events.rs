@@ -148,10 +148,10 @@ impl StreamFilter {
 // ---------------------------------------------------------------------------
 
 /// Maximum number of durable records retained by one replay read.
-const REPLAY_PAGE_SIZE: usize = 256;
+pub(super) const REPLAY_PAGE_SIZE: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamFailure {
+pub(super) enum StreamFailure {
     Backend,
     InvalidProjection,
     Closed,
@@ -282,7 +282,7 @@ impl DurableEventFollower {
     }
 }
 
-fn stored_event_to_run_event(stored: StoredEvent) -> Result<RunEvent, StreamFailure> {
+pub(super) fn stored_event_to_run_event(stored: StoredEvent) -> Result<RunEvent, StreamFailure> {
     let id = stored
         .id
         .parse::<EventId>()

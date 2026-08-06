@@ -14,13 +14,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use polkagent_api::{ApiServer, AppState, InMemoryAgentStore, InMemoryRunManager};
+use polkagent_api::{ApiServer, AppState, InMemoryAgentStore, InMemoryRunManager, RunManagerTrait};
 use polkagent_config::Config;
 use polkagent_core::{
     event::{EventCorrelation, EventKind, RunEvent},
-    EventId, RunId,
+    AgentId, EventId, RunId,
 };
-use polkagent_event::{types::EventType, EventBus};
+use polkagent_event::{types::EventType, EventBus, EventRecorder};
 use polkagent_store_sqlite::{migrations, SqlitePool};
 use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
 use sha2::{Digest, Sha256};
@@ -54,14 +54,23 @@ impl Drop for LiveServer {
 async fn spawn_server(
     config: Config,
     bus: EventBus,
-    store: Option<Arc<TestEventStore>>,
+    store: Option<Arc<dyn EventStore>>,
+) -> LiveServer {
+    spawn_server_with_run_manager(config, bus, store, Arc::new(InMemoryRunManager::new())).await
+}
+
+async fn spawn_server_with_run_manager(
+    config: Config,
+    bus: EventBus,
+    store: Option<Arc<dyn EventStore>>,
+    run_manager: Arc<dyn RunManagerTrait>,
 ) -> LiveServer {
     let pool = SqlitePool::open_in_memory().expect("open effect-store fixture");
     migrations::migrate(&pool.writer()).expect("migrate effect-store fixture");
     let mut state = AppState::new(
         config,
         Arc::new(InMemoryAgentStore::new()),
-        Arc::new(InMemoryRunManager::new()),
+        run_manager,
         Arc::new(pool),
         bus,
     );
@@ -99,6 +108,55 @@ async fn connect(server: &LiveServer, query: &str, bearer: Option<&str>) -> Clie
         .await
         .expect("connect event WebSocket")
         .0
+}
+
+async fn connect_command(server: &LiveServer) -> ClientSocket {
+    connect_async(format!(
+        "{}/ws/v1alpha1?token=test-token",
+        server.ws_base_url
+    ))
+    .await
+    .expect("connect command WebSocket")
+    .0
+}
+
+async fn send_command(socket: &mut ClientSocket, message: serde_json::Value) {
+    socket
+        .send(Message::Text(message.to_string().into()))
+        .await
+        .expect("send command frame");
+}
+
+async fn subscribe(socket: &mut ClientSocket, channel: &str, request_id: &str) {
+    send_command(
+        socket,
+        serde_json::json!({
+            "msg_type": "subscribe",
+            "id": request_id,
+            "channel": channel,
+        }),
+    )
+    .await;
+    let ack = next_json(socket).await;
+    assert_eq!(ack["msg_type"], "ack");
+    assert_eq!(ack["id"], request_id);
+    assert_eq!(ack["channel"], channel);
+}
+
+async fn unsubscribe(socket: &mut ClientSocket, channel: &str, request_id: &str) {
+    send_command(
+        socket,
+        serde_json::json!({
+            "msg_type": "unsubscribe",
+            "id": request_id,
+            "channel": channel,
+        }),
+    )
+    .await;
+    let ack = next_json(socket).await;
+    assert_eq!(ack["msg_type"], "ack");
+    assert_eq!(ack["id"], request_id);
+    assert_eq!(ack["channel"], channel);
 }
 
 async fn next_json(socket: &mut ClientSocket) -> serde_json::Value {
@@ -145,9 +203,13 @@ struct TestEventStore {
     reads: RwLock<Vec<(u64, usize)>>,
     read_calls: AtomicUsize,
     fail_on_read: AtomicUsize,
+    lookup_calls: AtomicUsize,
+    block_lookup_on_call: AtomicUsize,
     block_first_read: AtomicBool,
     first_snapshot_taken: Notify,
     release_first_read: Notify,
+    blocked_lookup_started: Notify,
+    release_blocked_lookup: Notify,
 }
 
 impl TestEventStore {
@@ -165,6 +227,10 @@ impl TestEventStore {
 
     fn block_first_read(&self) {
         self.block_first_read.store(true, Ordering::SeqCst);
+    }
+
+    fn block_lookup_on_call(&self, call: usize) {
+        self.block_lookup_on_call.store(call, Ordering::SeqCst);
     }
 }
 
@@ -210,6 +276,23 @@ impl EventStore for TestEventStore {
             self.release_first_read.notified().await;
         }
         Ok(page)
+    }
+
+    async fn get_event_by_id(&self, id: &str) -> Result<StoredEvent, EventStoreError> {
+        let call = self.lookup_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let event = self
+            .events
+            .read()
+            .await
+            .iter()
+            .find(|event| event.id == id)
+            .cloned()
+            .ok_or_else(|| EventStoreError::NotFound(format!("event {id}")))?;
+        if self.block_lookup_on_call.load(Ordering::SeqCst) == call {
+            self.blocked_lookup_started.notify_one();
+            self.release_blocked_lookup.notified().await;
+        }
+        Ok(event)
     }
 
     async fn read_run_events(&self, run_id: RunId) -> Result<Vec<StoredEvent>, EventStoreError> {
@@ -291,6 +374,83 @@ fn stored_event(global_sequence: u64, run_id: RunId, kind: EventKind) -> (Stored
         schema_version: 1,
     };
     (stored, event)
+}
+
+fn seed_sqlite_run(pool: &SqlitePool, run_id: RunId, agent_id: AgentId) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let writer = pool.writer();
+    writer
+        .execute(
+            "INSERT INTO agents (id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3)",
+            rusqlite::params![agent_id.to_string(), "sqlite-stream-agent", now],
+        )
+        .expect("seed SQLite agent");
+    writer
+        .execute(
+            "INSERT INTO runs (id, agent_id, state, created_at, updated_at)
+             VALUES (?1, ?2, 'created', ?3, ?3)",
+            rusqlite::params![run_id.to_string(), agent_id.to_string(), now],
+        )
+        .expect("seed SQLite run");
+}
+
+#[tokio::test]
+async fn canonical_recorder_replays_real_sqlite_payload_and_rowid_checkpoint() {
+    let pool = SqlitePool::open_in_memory().expect("open SQLite event fixture");
+    migrations::migrate(&pool.writer()).expect("migrate SQLite event fixture");
+    let run_id = RunId::new();
+    seed_sqlite_run(&pool, run_id, AgentId::new());
+    let bus = EventBus::new(8);
+    let event_store: Arc<dyn EventStore> = Arc::new(pool.clone());
+    let recorder = EventRecorder::new(event_store.clone(), bus.clone());
+    recorder
+        .record(RunEvent::new_durable(
+            EventId::new(),
+            run_id,
+            0,
+            EventKind::RunCreated,
+            EventCorrelation {
+                run_id,
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("record canonical RunCreated");
+
+    let server = spawn_server(Config::default(), bus, Some(event_store)).await;
+    let mut first_connection = connect(&server, "?after_sequence=0", None).await;
+    let first = next_json(&mut first_connection).await;
+    assert_eq!(first["run_id"], run_id.to_string());
+    assert_eq!(first["sequence"], 1);
+    assert_eq!(first["kind"], "run_created");
+    let first_global = first["global_sequence"]
+        .as_u64()
+        .expect("SQLite rowid checkpoint");
+    assert!(first_global > 0);
+    first_connection
+        .close(None)
+        .await
+        .expect("close first SQLite stream");
+
+    recorder
+        .record(RunEvent::new_durable(
+            EventId::new(),
+            run_id,
+            0,
+            EventKind::RunStarted,
+            EventCorrelation {
+                run_id,
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("record canonical RunStarted");
+    let mut resumed = connect(&server, &format!("?after_sequence={first_global}"), None).await;
+    let second = next_json(&mut resumed).await;
+    assert_eq!(second["sequence"], 2);
+    assert_eq!(second["kind"], "run_started");
+    assert!(second["global_sequence"].as_u64() > Some(first_global));
 }
 
 #[tokio::test]
@@ -454,5 +614,263 @@ async fn validates_checkpoint_requires_durable_store_and_preserves_auth() {
     ))
     .await
     .expect_err("missing durable store must reject upgrade");
+    assert_eq!(http_error_status(unavailable), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn command_socket_forced_lag_recovers_in_session_without_duplicates() {
+    let run_id = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    let bus = EventBus::new(2);
+    let server = spawn_server(Config::default(), bus.clone(), Some(store.clone())).await;
+    let mut socket = connect_command(&server).await;
+    subscribe(&mut socket, &format!("runs:{run_id}"), "subscribe-run").await;
+
+    let (first_stored, first_live) = stored_event(1, run_id, EventKind::RunCreated);
+    store.insert(first_stored).await;
+    bus.publish(first_live);
+    let first = next_json(&mut socket).await;
+    assert_eq!(first["msg_type"], "event");
+    assert_eq!(first["payload"]["sequence"], 1);
+    assert!(first["payload"].get("global_sequence").is_none());
+
+    store.block_lookup_on_call(2);
+    let (second_stored, second_live) = stored_event(2, run_id, EventKind::RunQueued);
+    store.insert(second_stored).await;
+    bus.publish(second_live);
+    store.blocked_lookup_started.notified().await;
+    for sequence in 3..=6 {
+        let (stored, live) = stored_event(sequence, run_id, EventKind::RunQueued);
+        store.insert(stored).await;
+        bus.publish(live);
+    }
+    store.release_blocked_lookup.notify_one();
+
+    let mut delivered = vec![1];
+    for _ in 2..=6 {
+        let message = next_json(&mut socket).await;
+        assert_eq!(message["msg_type"], "event");
+        delivered.push(
+            message["payload"]["sequence"]
+                .as_u64()
+                .expect("run sequence"),
+        );
+    }
+    assert_eq!(delivered, (1..=6).collect::<Vec<_>>());
+    expect_no_frame(&mut socket).await;
+    let reads = store.reads().await;
+    assert_eq!(reads[0], (1, 256));
+    assert!(
+        reads.contains(&(6, 256)),
+        "forced Lagged must replay after the last delivered checkpoint: {reads:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn command_socket_lag_before_checkpoint_closes_without_fabricating_replay() {
+    let run_id = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    let bus = EventBus::new(1);
+    let server = spawn_server(Config::default(), bus.clone(), Some(store.clone())).await;
+    let mut socket = connect_command(&server).await;
+    subscribe(&mut socket, &format!("runs:{run_id}"), "subscribe-run").await;
+
+    let mut live_events = Vec::new();
+    for sequence in 1..=16 {
+        let (stored, live) = stored_event(sequence, run_id, EventKind::RunQueued);
+        store.insert(stored).await;
+        live_events.push(live);
+    }
+    // There is deliberately no await in this loop. On the current-thread
+    // runtime the attached server receiver cannot observe the first event
+    // before the bounded bus has overwritten it.
+    for event in live_events {
+        bus.publish(event);
+    }
+
+    let protocol_error = next_json(&mut socket).await;
+    assert_eq!(protocol_error["msg_type"], "error");
+    assert_eq!(
+        protocol_error["payload"]["reason"],
+        "durable event checkpoint unavailable"
+    );
+    let close = socket
+        .next()
+        .await
+        .expect("explicit close message")
+        .expect("valid close message");
+    let Message::Close(Some(frame)) = close else {
+        panic!("expected close frame, got {close:?}");
+    };
+    assert_eq!(frame.code, CloseCode::Error);
+    assert_eq!(frame.reason, "durable event checkpoint unavailable");
+    assert!(store.reads().await.is_empty());
+}
+
+#[tokio::test]
+async fn command_socket_rejects_zero_global_sequence_from_point_lookup() {
+    let run_id = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    let bus = EventBus::new(4);
+    let server = spawn_server(Config::default(), bus.clone(), Some(store.clone())).await;
+    let mut socket = connect_command(&server).await;
+    subscribe(&mut socket, &format!("runs:{run_id}"), "subscribe-run").await;
+
+    let (stored, live) = stored_event(0, run_id, EventKind::RunCreated);
+    store.insert(stored).await;
+    bus.publish(live);
+
+    let protocol_error = next_json(&mut socket).await;
+    assert_eq!(protocol_error["msg_type"], "error");
+    assert_eq!(
+        protocol_error["payload"]["reason"],
+        "durable event recovery invalid"
+    );
+    let close = socket
+        .next()
+        .await
+        .expect("explicit close message")
+        .expect("valid close message");
+    let Message::Close(Some(frame)) = close else {
+        panic!("expected close frame, got {close:?}");
+    };
+    assert_eq!(frame.code, CloseCode::Error);
+    assert_eq!(frame.reason, "durable event recovery invalid");
+    assert!(store.reads().await.is_empty());
+}
+
+#[tokio::test]
+async fn command_socket_filters_multiple_run_and_agent_subscriptions_and_unsubscribe() {
+    let agent_a = AgentId::new();
+    let agent_b = AgentId::new();
+    let run_manager = Arc::new(InMemoryRunManager::new());
+    let run_a = run_manager
+        .create_run(agent_a, serde_json::json!({}))
+        .await
+        .expect("create run A")
+        .id;
+    let run_b = run_manager
+        .create_run(agent_b, serde_json::json!({}))
+        .await
+        .expect("create run B")
+        .id;
+    let store = Arc::new(TestEventStore::default());
+    let bus = EventBus::new(8);
+    let server = spawn_server_with_run_manager(
+        Config::default(),
+        bus.clone(),
+        Some(store.clone()),
+        run_manager,
+    )
+    .await;
+    let mut socket = connect_command(&server).await;
+    let run_channel = format!("runs:{run_a}");
+    let agent_channel = format!("agents:{agent_b}");
+    subscribe(&mut socket, &run_channel, "subscribe-a").await;
+    subscribe(&mut socket, &agent_channel, "subscribe-agent-b").await;
+
+    let (a_stored, a_live) = stored_event(1, run_a, EventKind::RunCreated);
+    store.insert(a_stored).await;
+    bus.publish(a_live);
+    let (b_stored, b_live) = stored_event(2, run_b, EventKind::RunCreated);
+    store.insert(b_stored).await;
+    bus.publish(b_live);
+    assert_eq!(next_json(&mut socket).await["channel"], run_channel);
+    assert_eq!(
+        next_json(&mut socket).await["channel"],
+        format!("runs:{run_b}")
+    );
+
+    unsubscribe(&mut socket, &run_channel, "unsubscribe-a").await;
+    let (hidden_stored, hidden_live) = stored_event(3, run_a, EventKind::RunStarted);
+    store.insert(hidden_stored).await;
+    bus.publish(hidden_live);
+    let (visible_stored, visible_live) = stored_event(4, run_b, EventKind::RunStarted);
+    store.insert(visible_stored).await;
+    bus.publish(visible_live);
+    let visible = next_json(&mut socket).await;
+    assert_eq!(visible["channel"], format!("runs:{run_b}"));
+    assert_eq!(visible["payload"]["sequence"], 4);
+    expect_no_frame(&mut socket).await;
+}
+
+#[tokio::test]
+async fn command_socket_reconnect_is_truthfully_live_only_without_cursor_protocol() {
+    let run_id = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    let bus = EventBus::new(8);
+    let server = spawn_server(Config::default(), bus.clone(), Some(store.clone())).await;
+    let channel = format!("runs:{run_id}");
+    let mut first_socket = connect_command(&server).await;
+    subscribe(&mut first_socket, &channel, "first-subscribe").await;
+    let (first_stored, first_live) = stored_event(1, run_id, EventKind::RunCreated);
+    store.insert(first_stored).await;
+    bus.publish(first_live);
+    assert_eq!(next_json(&mut first_socket).await["payload"]["sequence"], 1);
+    first_socket
+        .close(None)
+        .await
+        .expect("close command socket");
+
+    let (disconnected_stored, disconnected_live) = stored_event(2, run_id, EventKind::RunQueued);
+    store.insert(disconnected_stored).await;
+    bus.publish(disconnected_live);
+
+    let mut reconnected = connect_command(&server).await;
+    subscribe(&mut reconnected, &channel, "reconnect-subscribe").await;
+    expect_no_frame(&mut reconnected).await;
+    let (future_stored, future_live) = stored_event(3, run_id, EventKind::RunStarted);
+    store.insert(future_stored).await;
+    bus.publish(future_live);
+    let future = next_json(&mut reconnected).await;
+    assert_eq!(future["payload"]["sequence"], 3);
+    assert_ne!(future["payload"]["sequence"], 2);
+}
+
+#[tokio::test]
+async fn command_socket_recovery_failure_is_explicit_sanitized_and_store_is_required() {
+    let run_id = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    store.fail_on_read(1);
+    let bus = EventBus::new(4);
+    let server = spawn_server(Config::default(), bus.clone(), Some(store.clone())).await;
+    let mut socket = connect_command(&server).await;
+    subscribe(&mut socket, &format!("runs:{run_id}"), "subscribe-run").await;
+    let (first_stored, first_live) = stored_event(1, run_id, EventKind::RunCreated);
+    store.insert(first_stored).await;
+    bus.publish(first_live);
+    assert_eq!(next_json(&mut socket).await["payload"]["sequence"], 1);
+    let (second_stored, second_live) = stored_event(2, run_id, EventKind::RunStarted);
+    store.insert(second_stored).await;
+    bus.publish(second_live);
+
+    let protocol_error = next_json(&mut socket).await;
+    assert_eq!(protocol_error["msg_type"], "error");
+    assert_eq!(
+        protocol_error["payload"]["reason"],
+        "durable event recovery unavailable"
+    );
+    assert!(!protocol_error
+        .to_string()
+        .contains(PRIVATE_BACKEND_SENTINEL));
+    let close = socket
+        .next()
+        .await
+        .expect("explicit close message")
+        .expect("valid close message");
+    let Message::Close(Some(frame)) = close else {
+        panic!("expected close frame, got {close:?}");
+    };
+    assert_eq!(frame.code, CloseCode::Error);
+    assert_eq!(frame.reason, "durable event recovery unavailable");
+    assert!(!frame.reason.contains(PRIVATE_BACKEND_SENTINEL));
+
+    let missing_store = spawn_server(Config::default(), EventBus::new(4), None).await;
+    let unavailable = connect_async(format!(
+        "{}/ws/v1alpha1?token=test-token",
+        missing_store.ws_base_url
+    ))
+    .await
+    .expect_err("command socket requires durable recovery store");
     assert_eq!(http_error_status(unavailable), StatusCode::NOT_IMPLEMENTED);
 }

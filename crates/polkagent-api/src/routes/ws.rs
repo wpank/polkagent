@@ -33,11 +33,11 @@
 //! The server sends a WebSocket `Ping` frame every 30 seconds. If the client
 //! does not respond with a `Pong` within 30 seconds, the connection is closed.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
     response::IntoResponse,
@@ -45,7 +45,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
-use polkagent_core::{AgentId, RunId};
+use polkagent_core::{event::Durability, AgentId, RunId};
+use polkagent_store_trait::event::{EventStore, StoredEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -53,7 +54,12 @@ use tokio::sync::broadcast;
 use tokio::time::Instant;
 use tracing::{debug, trace, warn};
 
-use crate::state::AppState;
+use crate::{
+    error::ApiError,
+    routes::events::{stored_event_to_run_event, REPLAY_PAGE_SIZE},
+    run::RunManagerTrait,
+    state::AppState,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,6 +70,9 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How long to wait for a Pong response before closing the connection.
 const PONG_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum number of distinct channels retained by one connection.
+const MAX_SUBSCRIPTIONS: usize = 256;
 
 // ---------------------------------------------------------------------------
 // Channel
@@ -257,6 +266,11 @@ impl WsSession {
         self.subscriptions.iter()
     }
 
+    /// Clone the small per-session subscription set for one event-loop poll.
+    fn subscription_snapshot(&self) -> HashSet<Channel> {
+        self.subscriptions.clone()
+    }
+
     /// Determine whether an event for `run_id` belonging to `agent_id` should
     /// be forwarded to this session.
     pub fn matches_run_event(&self, run_id: &RunId, agent_id: Option<&AgentId>) -> bool {
@@ -269,6 +283,264 @@ impl WsSession {
             }
         }
         false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Durable in-session recovery
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandStreamFailure {
+    Backend,
+    CheckpointUnavailable,
+    InvalidProjection,
+    Closed,
+}
+
+impl CommandStreamFailure {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Backend => "event_store_backend",
+            Self::CheckpointUnavailable => "durable_checkpoint_unavailable",
+            Self::InvalidProjection => "invalid_event_projection",
+            Self::Closed => "event_bus_closed",
+        }
+    }
+
+    fn safe_reason(self) -> &'static str {
+        match self {
+            Self::Backend => "durable event recovery unavailable",
+            Self::CheckpointUnavailable => "durable event checkpoint unavailable",
+            Self::InvalidProjection => "durable event recovery invalid",
+            Self::Closed => "event stream closed",
+        }
+    }
+}
+
+struct CommandOutboundEvent {
+    event: polkagent_core::event::RunEvent,
+    durable_checkpoint: Option<u64>,
+}
+
+/// Tracks one command socket's durable position without changing its wire
+/// protocol. A new connection has no reconnect cursor: its first successfully
+/// observed durable bus event establishes the in-session checkpoint.
+struct CommandEventFollower {
+    store: Arc<dyn EventStore>,
+    run_manager: Arc<dyn RunManagerTrait>,
+    receiver: polkagent_event::EventReceiver,
+    durable_checkpoint: Option<u64>,
+    pending: VecDeque<StoredEvent>,
+    live_pending: Option<polkagent_core::event::RunEvent>,
+    replay_required: bool,
+    recovery_target: Option<u64>,
+}
+
+impl CommandEventFollower {
+    fn new(
+        store: Arc<dyn EventStore>,
+        run_manager: Arc<dyn RunManagerTrait>,
+        receiver: polkagent_event::EventReceiver,
+    ) -> Self {
+        Self {
+            store,
+            run_manager,
+            receiver,
+            durable_checkpoint: None,
+            pending: VecDeque::new(),
+            live_pending: None,
+            replay_required: false,
+            recovery_target: None,
+        }
+    }
+
+    fn acknowledge(&mut self, checkpoint: Option<u64>) {
+        if let Some(checkpoint) = checkpoint {
+            self.durable_checkpoint = Some(checkpoint);
+        }
+    }
+
+    async fn next(
+        &mut self,
+        subscriptions: &HashSet<Channel>,
+    ) -> Result<CommandOutboundEvent, CommandStreamFailure> {
+        loop {
+            if let Some(stored) = self.pending.front().cloned() {
+                let checkpoint = stored.global_sequence;
+                if self.matches(subscriptions, &stored.run_id).await? {
+                    let event = stored_event_to_run_event(stored)
+                        .map_err(|_| CommandStreamFailure::InvalidProjection)?;
+                    self.pending.pop_front();
+                    return Ok(CommandOutboundEvent {
+                        event,
+                        durable_checkpoint: Some(checkpoint),
+                    });
+                }
+                self.pending.pop_front();
+                self.durable_checkpoint = Some(checkpoint);
+                self.clear_satisfied_target();
+                continue;
+            }
+
+            if let Some(event) = self.live_pending.clone() {
+                if event.durability == Durability::Durable {
+                    let stored = self
+                        .store
+                        .get_event_by_id(&event.id.to_string())
+                        .await
+                        .map_err(|_| CommandStreamFailure::Backend)?;
+                    let checkpoint = stored.global_sequence;
+                    if checkpoint == 0 {
+                        return Err(CommandStreamFailure::InvalidProjection);
+                    }
+                    let projected = stored_event_to_run_event(stored)
+                        .map_err(|_| CommandStreamFailure::InvalidProjection)?;
+                    if projected.id != event.id
+                        || projected.run_id != event.run_id
+                        || projected.sequence != event.sequence
+                        || projected.kind != event.kind
+                    {
+                        return Err(CommandStreamFailure::InvalidProjection);
+                    }
+
+                    if let Some(current) = self.durable_checkpoint {
+                        self.live_pending = None;
+                        if checkpoint <= current {
+                            continue;
+                        }
+                        self.recovery_target = Some(checkpoint);
+                        self.replay_required = true;
+                        continue;
+                    }
+
+                    let matches = self
+                        .matches(subscriptions, &event.run_id.to_string())
+                        .await?;
+                    self.live_pending = None;
+                    if matches {
+                        return Ok(CommandOutboundEvent {
+                            event,
+                            durable_checkpoint: Some(checkpoint),
+                        });
+                    }
+                    self.durable_checkpoint = Some(checkpoint);
+                    continue;
+                }
+
+                if self
+                    .matches(subscriptions, &event.run_id.to_string())
+                    .await?
+                {
+                    self.live_pending = None;
+                    return Ok(CommandOutboundEvent {
+                        event,
+                        durable_checkpoint: None,
+                    });
+                }
+                self.live_pending = None;
+                continue;
+            }
+
+            self.clear_satisfied_target();
+            if self.replay_required {
+                self.load_replay_page().await?;
+                if !self.pending.is_empty() || self.replay_required {
+                    continue;
+                }
+                if self.recovery_target.is_some() {
+                    return Err(CommandStreamFailure::InvalidProjection);
+                }
+            }
+
+            match self.receiver.recv().await {
+                Ok(event) => {
+                    self.live_pending = Some(event);
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    let Some(checkpoint) = self.durable_checkpoint else {
+                        warn!(
+                            skipped,
+                            "WebSocket v1alpha1 lagged before a durable checkpoint"
+                        );
+                        return Err(CommandStreamFailure::CheckpointUnavailable);
+                    };
+                    warn!(
+                        skipped,
+                        durable_checkpoint = checkpoint,
+                        "WebSocket v1alpha1 lagged; replaying durable events"
+                    );
+                    self.replay_required = true;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(CommandStreamFailure::Closed);
+                }
+            }
+        }
+    }
+
+    async fn load_replay_page(&mut self) -> Result<(), CommandStreamFailure> {
+        let checkpoint = self
+            .durable_checkpoint
+            .ok_or(CommandStreamFailure::CheckpointUnavailable)?;
+        let page = self
+            .store
+            .read_from_cursor(checkpoint, REPLAY_PAGE_SIZE)
+            .await
+            .map_err(|_| CommandStreamFailure::Backend)?;
+        if page.len() > REPLAY_PAGE_SIZE {
+            return Err(CommandStreamFailure::InvalidProjection);
+        }
+
+        let mut previous = checkpoint;
+        for event in &page {
+            if event.global_sequence <= previous {
+                return Err(CommandStreamFailure::InvalidProjection);
+            }
+            previous = event.global_sequence;
+        }
+        self.replay_required = page.len() == REPLAY_PAGE_SIZE;
+        self.pending.extend(page);
+        Ok(())
+    }
+
+    fn clear_satisfied_target(&mut self) {
+        if self
+            .recovery_target
+            .is_some_and(|target| self.durable_checkpoint.is_some_and(|seen| seen >= target))
+        {
+            self.recovery_target = None;
+        }
+    }
+
+    async fn matches(
+        &mut self,
+        subscriptions: &HashSet<Channel>,
+        run_id: &str,
+    ) -> Result<bool, CommandStreamFailure> {
+        if subscriptions.is_empty() {
+            return Ok(false);
+        }
+        let run_id = run_id
+            .parse::<RunId>()
+            .map_err(|_| CommandStreamFailure::InvalidProjection)?;
+        if subscriptions.contains(&Channel::Run(run_id)) {
+            return Ok(true);
+        }
+        if !subscriptions
+            .iter()
+            .any(|channel| matches!(channel, Channel::Agent(_)))
+        {
+            return Ok(false);
+        }
+
+        let agent_id = self
+            .run_manager
+            .get_run(run_id)
+            .await
+            .map_err(|_| CommandStreamFailure::InvalidProjection)?
+            .agent_id;
+        Ok(subscriptions.contains(&Channel::Agent(agent_id)))
     }
 }
 
@@ -374,7 +646,11 @@ pub async fn ws_handler(
     State(state): State<AppState>,
     Query(query): Query<WsQuery>,
     ws: WebSocketUpgrade,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
+    let store = state
+        .event_store
+        .clone()
+        .ok_or_else(|| ApiError::NotImplemented("event store not configured".to_owned()))?;
     // Check if a token was provided as query parameter and validate it.
     let pre_authenticated = query
         .token
@@ -388,15 +664,30 @@ pub async fn ws_handler(
     } else {
         WsSession::new()
     };
+    // Attach before the upgrade task begins. Any durable event that races with
+    // subscription commands remains observable for checkpointing or recovery.
+    let event_rx = state.event_bus.subscribe();
+    let run_manager = state.run_manager.clone();
 
-    ws.on_upgrade(move |socket| handle_ws_session(socket, session, state))
+    Ok(ws.on_upgrade(move |socket| {
+        handle_ws_session(
+            socket,
+            session,
+            state,
+            CommandEventFollower::new(store, run_manager, event_rx),
+        )
+    }))
 }
 
 /// Drive a single WebSocket connection: handle subscribe/unsubscribe messages,
 /// forward matching events from the `EventBus`, and maintain keepalive.
-async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: AppState) {
+async fn handle_ws_session(
+    socket: WebSocket,
+    mut session: WsSession,
+    state: AppState,
+    mut events: CommandEventFollower,
+) {
     let (mut sender, mut receiver) = socket.split();
-    let mut event_rx = state.event_bus.subscribe();
 
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     // Consume the immediate first tick so pings start after PING_INTERVAL.
@@ -407,6 +698,7 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
     let mut waiting_for_pong = false;
 
     loop {
+        let subscriptions = session.subscription_snapshot();
         tokio::select! {
             // ── Inbound client messages ─────────────────────────────────
             msg = receiver.next() => {
@@ -455,48 +747,47 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
             }
 
             // ── Event bus messages ───────────────────────────────────────
-            result = event_rx.recv() => {
+            result = events.next(&subscriptions) => {
                 match result {
-                    Ok(event) => {
-                        // Check if any subscription matches this event.
-                        // The event.correlation may carry an agent_id; look it up.
-                        let agent_id: Option<AgentId> = {
-                            // RunEvent's correlation field may hold agent context.
-                            // The `run_id` is always present on RunEvent.
-                            None // agent_id not directly on RunEvent; rely on run_id match
-                        };
-
-                        if !session.matches_run_event(&event.run_id, agent_id.as_ref()) {
-                            continue;
-                        }
-
-                        let channel_str = format!("runs:{}", event.run_id);
-                        let payload = match serde_json::to_value(&event) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                warn!(error = %e, "failed to serialize RunEvent");
-                                continue;
-                            }
+                    Ok(outbound) => {
+                        let channel_str = format!("runs:{}", outbound.event.run_id);
+                        let Ok(payload) = serde_json::to_value(&outbound.event) else {
+                            let error = CommandStreamFailure::InvalidProjection;
+                            warn!(
+                                error_code = error.code(),
+                                "WebSocket v1alpha1 event serialization failed"
+                            );
+                            send_stream_failure(&mut sender, error).await;
+                            break;
                         };
 
                         let msg = WsMessage::new("event", None, Some(channel_str), payload);
-                        let json = match msg.to_json() {
-                            Ok(j) => j,
-                            Err(e) => {
-                                warn!(error = %e, "failed to serialize WsMessage");
-                                continue;
-                            }
+                        let Ok(json) = msg.to_json() else {
+                            let error = CommandStreamFailure::InvalidProjection;
+                            warn!(
+                                error_code = error.code(),
+                                "WebSocket v1alpha1 envelope serialization failed"
+                            );
+                            send_stream_failure(&mut sender, error).await;
+                            break;
                         };
                         if sender.send(Message::Text(json.into())).await.is_err() {
                             debug!("WebSocket v1alpha1: send failed (client disconnected)");
                             break;
                         }
+                        events.acknowledge(outbound.durable_checkpoint);
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(skipped = n, "WebSocket v1alpha1: event receiver lagged");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    Err(CommandStreamFailure::Closed) => {
                         debug!("WebSocket v1alpha1: EventBus closed");
+                        break;
+                    }
+                    Err(error) => {
+                        warn!(
+                            error_code = error.code(),
+                            durable_checkpoint = ?events.durable_checkpoint,
+                            "WebSocket v1alpha1 durable event recovery failed"
+                        );
+                        send_stream_failure(&mut sender, error).await;
                         break;
                     }
                 }
@@ -527,6 +818,22 @@ async fn handle_ws_session(socket: WebSocket, mut session: WsSession, state: App
     }
 
     debug!("WebSocket v1alpha1: session handler exiting");
+}
+
+async fn send_stream_failure(
+    sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    error: CommandStreamFailure,
+) {
+    let protocol_error = WsMessage::error(None, error.safe_reason());
+    if let Ok(json) = protocol_error.to_json() {
+        let _ = sender.send(Message::Text(json.into())).await;
+    }
+    let _ = sender
+        .send(Message::Close(Some(CloseFrame {
+            code: close_code::ERROR,
+            reason: error.safe_reason().into(),
+        })))
+        .await;
 }
 
 /// Parse and dispatch a client text frame.
@@ -566,6 +873,14 @@ fn handle_client_text(
             }
             match Channel::parse(&channel) {
                 Some(ch) => {
+                    if !session.is_subscribed(&ch)
+                        && session.subscription_count() >= MAX_SUBSCRIPTIONS
+                    {
+                        return WsMessage::error(
+                            id,
+                            format!("subscription limit exceeded (max {MAX_SUBSCRIPTIONS})"),
+                        );
+                    }
                     session.subscribe(ch);
                     WsMessage::ack(id, Some(channel))
                 }
@@ -921,6 +1236,42 @@ mod tests {
         let msg = handle_client_text(json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "error");
         assert_eq!(session.subscription_count(), 0);
+    }
+
+    #[test]
+    fn handle_text_enforces_subscription_limit_but_allows_duplicate() {
+        let mut session = WsSession::authenticated();
+        let mut first_channel = None;
+        for index in 0..MAX_SUBSCRIPTIONS {
+            let run_id = RunId::new();
+            let channel = format!("runs:{run_id}");
+            first_channel.get_or_insert_with(|| channel.clone());
+            let json = format!(r#"{{"msg_type":"subscribe","channel":"{channel}"}}"#);
+            let message = handle_client_text(&json, &mut session, &any_nonempty);
+            assert_eq!(message.msg_type, "ack", "subscription {index}");
+        }
+
+        let duplicate = format!(
+            r#"{{"msg_type":"subscribe","channel":"{}"}}"#,
+            first_channel.expect("first channel")
+        );
+        assert_eq!(
+            handle_client_text(&duplicate, &mut session, &any_nonempty).msg_type,
+            "ack"
+        );
+
+        let overflow = format!(
+            r#"{{"msg_type":"subscribe","id":"overflow","channel":"runs:{}"}}"#,
+            RunId::new()
+        );
+        let message = handle_client_text(&overflow, &mut session, &any_nonempty);
+        assert_eq!(message.msg_type, "error");
+        assert_eq!(message.id.as_deref(), Some("overflow"));
+        assert_eq!(
+            message.payload["reason"],
+            format!("subscription limit exceeded (max {MAX_SUBSCRIPTIONS})")
+        );
+        assert_eq!(session.subscription_count(), MAX_SUBSCRIPTIONS);
     }
 
     #[test]
