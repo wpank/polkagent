@@ -172,6 +172,40 @@ flowchart TD
     style F fill:#6bff6b
 ```
 
+### Approval-gated recovery boundaries
+
+Approval-gated tool calls add a durable approval and checkpoint around the
+effect pipeline. Recovery makes a deliberate distinction between work that is
+known not to have started and work that may already have performed external
+I/O:
+
+| Durable checkpoint at restart | Recovery behavior |
+|---|---|
+| Approved, resumable, and not yet claimed | Claim the same effect and checkpoint, execute once, and preserve their identities. |
+| Claimed, lease expired, and no attempt exists | Reclaim under a new worker, then create exactly one attempt. No external I/O was recorded as started. |
+| Executing with an attempt but no outcome | Fail closed with the exact manual-reconciliation identity. Do not call the handler again. |
+| Resolved but its immutable outcome is missing or inconsistent | Treat the database as corrupt, fail closed, and preserve the existing lineage. Never synthesize a replacement outcome. |
+
+```mermaid
+flowchart TD
+    R[Restart] --> P{Possible external I/O?}
+    P -->|No: approved or pre-attempt claim| C[Resume the same durable effect]
+    C --> O[One attempt and immutable outcome]
+    P -->|Yes: attempt exists, outcome absent| M[Manual reconciliation]
+    P -->|Resolved state, outcome corrupt| M
+    M --> N[Zero automatic handler calls]
+    M --> L[Preserve exact approval, effect, attempt, and run lineage]
+
+    style M fill:#ff6b6b,color:#fff
+    style O fill:#6bff6b
+```
+
+The current SQLite service fixtures prove these four bounded restart cases,
+including repeated restart. Operator resolution and the complete
+pause/decision/claim/pre-I/O/post-I/O crash matrix are still in progress. See
+the [approval pause/resume design](../prd/APPROVAL-PAUSE-RESUME-DESIGN.md)
+for the exact evidence and remaining gates.
+
 ---
 
 ## Budget Enforcement
@@ -250,7 +284,12 @@ polkagent inbox deny <EFFECT_ID> --reason "Not authorized"
 polkagent inbox history --limit 20
 ```
 
-Unknown outcomes that require resolution will appear in `polkagent inbox list` until they are explicitly approved, denied, or resolved by a reconciliation process.
+The legacy `inbox` commands operate on unclaimed effect rows directly. They are
+not the same contract as principal-scoped interaction approvals used by chat,
+TUI, ACP, and the approval HTTP adapter. An `Unknown` or manual-reconciliation
+case must not be “fixed” by approving the original effect again; investigate
+the external system and durable lineage first. A complete operator-resolution
+workflow for possible-I/O approval recovery is not implemented yet.
 
 ---
 

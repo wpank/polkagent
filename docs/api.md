@@ -2,6 +2,17 @@
 
 Polkagent exposes a REST and WebSocket API under the `/api/v1alpha1` prefix.
 
+For a copy-paste walkthrough, start with the
+[HTTP demo](demo.md#demo-4-call-polkagent-over-http). The checked-in
+[`openapi.yaml`](../openapi.yaml) is the exact OpenAPI 3.1 request/response
+contract; this page explains how the resource families fit together.
+
+> [!IMPORTANT]
+> The ordinary `serve` composition wires durable core resources but leaves
+> some optional and principal-bound routes deliberately unavailable. A route
+> in OpenAPI can therefore have an explicit `501 Not Implemented` response.
+> See [Runtime/API composition](runtime-api-composition.md).
+
 ## Starting the server
 
 ```bash
@@ -80,10 +91,10 @@ sequenceDiagram
     participant RM as Run Manager
     participant LLM as LLM Provider
 
-    C->>API: POST /agents/:id/runs {prompt}
+    C->>API: POST /agents/:id/runs {input, idempotency_key}
     API->>RM: Create Run
-    RM-->>API: Run (state: created)
-    API-->>C: 201 Created {run_id, state: "created"}
+    RM-->>API: Run accepted and queued
+    API-->>C: 201 Created {id, agent_id, status, input}
 
     Note over RM: Async execution begins
     RM->>RM: Created → Queued → Running
@@ -99,6 +110,12 @@ sequenceDiagram
 ```
 
 ### Effects
+
+These routes describe the effect resource contract. The ordinary production
+factory does not currently bind stable remote human authority, so approval and
+denial can be unavailable. Do not treat API-key authentication as a durable
+multi-principal approval identity. Local chat, TUI, and ACP have a separate
+explicit process-scoped authority seam.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -122,7 +139,7 @@ sequenceDiagram
     C->>API: GET /runs/:id/effects
     API-->>C: [{id, kind, state: "pending"}]
 
-    C->>API: POST /effects/:id/approve
+    C->>API: POST /effects/:id/approve (when authority is composed)
     API->>EP: Approve effect
     EP->>EP: Claim → Execute
     EP->>EXT: Perform I/O

@@ -125,7 +125,7 @@ polkagent run -a <AGENT> -p <TEXT> [FLAGS]
 ```bash
 polkagent run -a my-agent -p "Summarize referendum 1234"
 polkagent run -a my-agent -p "Query balance" --json --no-stream
-polkagent run -a my-agent -p "Research" --model gpt-4o --timeout 120
+polkagent run -a my-agent -p "Research" --model openai/gpt-4o --timeout 120
 ```
 
 #### Output
@@ -677,6 +677,8 @@ polkagent inbox history [--limit N]
 ```
 
 ---
+
+<a id="explain-extrinsic"></a>
 
 ### `explain <EXTRINSIC_HEX>`
 

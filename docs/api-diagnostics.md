@@ -19,9 +19,11 @@ The Polkagent API provides diagnostic endpoints for monitoring system health, co
 Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for load-balancer compatibility. They implement the Kubernetes probe pattern.
 
 ### 1.1 `GET /health/live`
+
 **Purpose:** Liveness probe — always returns 200 if the process is alive.
 
 **Response:**
+
 ```json
 {
   "status": "ok"
@@ -29,6 +31,7 @@ Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for loa
 ```
 
 **Status Code:**
+
 - `200 OK` — always (stateless check)
 
 **Use Case:** Kubernetes liveness probe; detect dead processes.
@@ -36,9 +39,11 @@ Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for loa
 ---
 
 ### 1.2 `GET /health/ready`
+
 **Purpose:** Readiness probe — 200 only when all critical dependencies are healthy.
 
 **Response:**
+
 ```json
 {
   "status": "ok|unavailable",
@@ -65,15 +70,18 @@ Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for loa
 ```
 
 **Status Code:**
+
 - `200 OK` — if `ready` is true and no "error" components exist
 - `503 Service Unavailable` — if any component has status "error" or `ready` is false
 
 **Component Status Levels:**
+
 - `"ok"` — component is fully functional
 - `"degraded"` — component is available but not at full capacity (e.g., optional component unconfigured)
 - `"error"` — component is not functional; readiness probe fails
 
 **Fields:**
+
 - `name` — component identifier (e.g., `"database"`, `"event_bus"`, `"memory_store"`)
 - `status` — component health status
 - `latency_ms` — probe round-trip latency in milliseconds (omitted if not measured)
@@ -84,9 +92,11 @@ Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for loa
 ---
 
 ### 1.3 `GET /health/startup`
+
 **Purpose:** Startup probe — 200 after initial setup completes.
 
 **Response:**
+
 ```json
 {
   "status": "ok|starting",
@@ -95,6 +105,7 @@ Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for loa
 ```
 
 **Status Code:**
+
 - `200 OK` — once `HealthState.ready` has been set to `true`
 - `503 Service Unavailable` — while server is still initializing
 
@@ -103,9 +114,11 @@ Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for loa
 ---
 
 ### 1.4 `GET /health` (Full Health Report)
+
 **Purpose:** Comprehensive health report with component diagnostics (for production deployments).
 
 **Response:**
+
 ```json
 {
   "status": "ok|degraded|error",
@@ -128,15 +141,18 @@ Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for loa
 ```
 
 **Status Code:**
+
 - `200 OK` — when status is "ok" or "degraded"
 - `503 Service Unavailable` — when status is "error"
 
 **Aggregate Status Logic:**
+
 - All components `"ok"` → status is `"ok"`
 - Any component `"degraded"` (but no `"error"`) → status is `"degraded"`
 - Any component `"error"` → status is `"error"`
 
 **Fields:**
+
 - `status` — aggregate health status across all components
 - `version` — Polkagent platform version (from `CARGO_PKG_VERSION`)
 - `uptime_seconds` — elapsed time since process startup
@@ -151,9 +167,11 @@ Health endpoints are mounted at the **root** (not under `/api/v1alpha1`) for loa
 **Location:** `/crates/polkagent-api/src/routes/metrics.rs`
 
 ### 2.1 `GET /metrics`
+
 **Purpose:** Prometheus text exposition format metrics for scraping.
 
 **Response Format:** Prometheus text exposition format (OpenMetrics 0.0.4)
+
 ```
 # HELP polkagent_runs_total Total number of runs executed
 # TYPE polkagent_runs_total counter
@@ -183,14 +201,17 @@ polkagent_effects_total{status="denied"} 8
 ```
 
 **Status Code:**
+
 - `200 OK` — authenticated scrape (returns an empty body if no metrics are registered)
 - `401 Unauthorized` — authentication is enabled and credentials are missing or invalid
 - `429 Too Many Requests` — the collector exceeded its configured token bucket
 
 **Content-Type:**
+
 - `text/plain; version=0.0.4; charset=utf-8`
 
 **Metric Types Exposed:**
+
 - **Counters** — monotonically increasing values
   - `polkagent_runs_total` — cumulative runs completed
   - `polkagent_effects_total` — cumulative effects executed
@@ -214,9 +235,11 @@ polkagent_effects_total{status="denied"} 8
 **Location:** `/crates/polkagent-api/src/routes/system.rs`
 
 ### 3.1 `GET /api/v1alpha1/system/info`
+
 **Purpose:** Return version, uptime, and non-secret configuration summary.
 
 **Response:**
+
 ```json
 {
   "version": "v1alpha1",
@@ -231,9 +254,11 @@ polkagent_effects_total{status="denied"} 8
 ```
 
 **Status Code:**
+
 - `200 OK` — always
 
 **Response Fields:**
+
 - `version` — API version string (currently `"v1alpha1"`)
 - `platform_version` — Polkagent platform version (from `Cargo.toml`)
 - `uptime_secs` — seconds elapsed since server process started
@@ -243,6 +268,7 @@ polkagent_effects_total{status="denied"} 8
   - `max_concurrent_runs` — maximum parallel run executions
 
 **Security Notes:**
+
 - No secrets, API keys, or database connection URLs are exposed
 - Only non-sensitive configuration fields are included
 
@@ -257,9 +283,11 @@ polkagent_effects_total{status="denied"} 8
 All audit endpoints return `501 Not Implemented` if no audit store is configured.
 
 ### 4.1 `GET /api/v1alpha1/audit`
+
 **Purpose:** Query audit entries with optional filtering.
 
 **Query Parameters:**
+
 - `actor` (optional) — filter by actor ID (exact match)
 - `action` (optional) — filter by action type (snake_case, e.g., `"run_started"`, `"tool_invoked"`)
 - `since` (optional) — RFC-3339 timestamp; include entries at or after this time
@@ -267,11 +295,13 @@ All audit endpoints return `501 Not Implemented` if no audit store is configured
 - `limit` (optional) — max entries to return (default: 100, max recommended: 1000)
 
 **Example Request:**
+
 ```
 GET /api/v1alpha1/audit?actor=agent-1&action=run_started&since=2026-08-01T00:00:00Z&limit=50
 ```
 
 **Response:**
+
 ```json
 {
   "version": "v1alpha1",
@@ -299,11 +329,13 @@ GET /api/v1alpha1/audit?actor=agent-1&action=run_started&since=2026-08-01T00:00:
 ```
 
 **Status Code:**
+
 - `200 OK` — query executed successfully
 - `422 Unprocessable Entity` — invalid filter values (malformed timestamp, unknown action)
 - `501 Not Implemented` — audit store not configured
 
 **Filter Examples:**
+
 - `/audit?actor=user-42` — all actions by user-42
 - `/audit?action=tool_invoked` — all tool invocations
 - `/audit?since=2026-08-03T00:00:00Z&until=2026-08-03T23:59:59Z` — events on Aug 3
@@ -312,12 +344,15 @@ GET /api/v1alpha1/audit?actor=agent-1&action=run_started&since=2026-08-01T00:00:
 ---
 
 ### 4.2 `GET /api/v1alpha1/audit/{id}`
+
 **Purpose:** Get a single audit entry by UUID.
 
 **Path Parameters:**
+
 - `id` — UUID of the audit entry
 
 **Response:**
+
 ```json
 {
   "version": "v1alpha1",
@@ -340,6 +375,7 @@ GET /api/v1alpha1/audit?actor=agent-1&action=run_started&since=2026-08-01T00:00:
 ```
 
 **Status Code:**
+
 - `200 OK` — entry found
 - `404 Not Found` — entry does not exist
 - `422 Unprocessable Entity` — invalid UUID format
@@ -348,9 +384,11 @@ GET /api/v1alpha1/audit?actor=agent-1&action=run_started&since=2026-08-01T00:00:
 ---
 
 ### 4.3 `GET /api/v1alpha1/audit/verify`
+
 **Purpose:** Verify the integrity of the audit hash chain.
 
 **Response:**
+
 ```json
 {
   "version": "v1alpha1",
@@ -361,15 +399,18 @@ GET /api/v1alpha1/audit?actor=agent-1&action=run_started&since=2026-08-01T00:00:
 ```
 
 **Status Code:**
+
 - `200 OK` — integrity check completed (regardless of validity)
 - `501 Not Implemented` — audit store not configured
 
 **Response Fields:**
+
 - `valid` — true if the entire hash chain is valid
 - `entries_checked` — number of entries verified
 - `error` — null if valid; error message if hash chain is broken
 
 **Security Notes:**
+
 - Verifies the cryptographic hash chain for audit log tamper-detection
 - Detects insertion, deletion, or modification of entries
 - Can be expensive on large audit logs (check `entries_checked`)
@@ -381,10 +422,12 @@ GET /api/v1alpha1/audit?actor=agent-1&action=run_started&since=2026-08-01T00:00:
 **Location:** `/crates/polkagent-api/src/routes/events.rs`
 
 ### 5.1 `GET /api/v1alpha1/events/stream` (WebSocket)
+
 **Purpose:** Replay durable run events from a global checkpoint, then follow
 live run events via WebSocket.
 
 **Protocol:**
+
 - Upgrade: WebSocket
 - Frames: JSON text frames containing `RunEvent` objects; durable frames add
   `global_sequence`
@@ -394,12 +437,14 @@ live run events via WebSocket.
   the last consumed global checkpoint
 
 **Query Parameters:**
+
 - `after_sequence` (optional, default `0`) — replay durable events whose global
   sequence is strictly greater than this non-negative integer
 - `run_id` (optional) — filter events to a specific run
 - `kinds` (optional) — comma-separated event kind names (e.g., `run_created,turn_started,run_completed`)
 
 **Example Connection:**
+
 ```
 GET /api/v1alpha1/events/stream?after_sequence=42&run_id=0198bd19-40c0-7000-8000-000000000001&kinds=run_created,turn_started,run_completed HTTP/1.1
 Upgrade: websocket
@@ -407,6 +452,7 @@ Connection: Upgrade
 ```
 
 **Event Frame Format:**
+
 ```json
 {
   "id": "0198bd19-40c0-7000-8000-000000000002",
@@ -434,6 +480,7 @@ invalid-recovery reason; the server does not synthesize defaults. Scope and
 conversation metadata are filter values, not tenant/principal authorization.
 
 **Supported Event Kinds:**
+
 - `run_created` — run initialized
 - `run_started` — execution began
 - `run_queued` — queued for execution
@@ -447,6 +494,7 @@ conversation metadata are filter values, not tenant/principal authorization.
 - Additional kinds available (see `/crates/polkagent-core/src/event.rs`)
 
 **Filter Examples:**
+
 - `/events/stream` — replay all retained durable events, then follow live events
 - `/events/stream?after_sequence=42` — resume strictly after global sequence 42
 - `/events/stream?run_id=run-123` — only events from run-123
@@ -454,16 +502,19 @@ conversation metadata are filter values, not tenant/principal authorization.
 - `/events/stream?run_id=run-456&kinds=turn_started` — only turn starts for run-456
 
 **Status Code (Upgrade):**
+
 - `101 Switching Protocols` — WebSocket upgrade accepted
 - `422 Unprocessable Entity` — invalid `run_id` or `after_sequence`
 - `501 Not Implemented` — no durable event store is configured
 
 **WebSocket Control Frames:**
+
 - Ping: Sent by server every 30 seconds for keepalive
 - Pong: Client should echo ping (automatic in most WebSocket libraries)
 - Close: Client or server can close the connection gracefully
 
 **Error Handling:**
+
 - Client disconnect: Server cleanly exits the event loop
 - EventBus closed: Server exits the stream
 - Lagged receiver: Server reloads durable pages strictly after its last consumed
@@ -536,13 +587,16 @@ close.
 **Location:** `/crates/polkagent-api/src/routes/events_rest.rs`
 
 ### 6.1 `GET /api/v1alpha1/events`
+
 **Purpose:** Query historical events (REST alternative to WebSocket stream).
 
 **Query Parameters:**
+
 - Standard pagination: `limit`, `after`
 - Filtering: `run_id`, `kind` (optional)
 
 **Response:**
+
 ```json
 {
   "version": "v1alpha1",
@@ -568,9 +622,11 @@ close.
 ---
 
 ### 6.2 `GET /api/v1alpha1/events/{id}`
+
 **Purpose:** Fetch a single event by ID.
 
 **Status Code:**
+
 - `200 OK` — event found
 - `404 Not Found` — event not found
 
@@ -601,24 +657,28 @@ API VERSIONED (/api/v1alpha1)
 ## 8. Architecture Notes
 
 ### Health State Management
+
 - Defined in `/crates/polkagent-health/src/lib.rs`
 - Tracks per-component status in `Arc<RwLock<HashMap>>`
 - Thread-safe concurrent read/write
 - Components can update their status dynamically during execution
 
 ### Prometheus Registry
+
 - Defined in `/crates/polkagent-telemetry/src/prometheus.rs`
 - Maintains metric families in text exposition format
 - Supports counters, gauges, and histograms
 - Scrapeable by standard Prometheus/Grafana Agent
 
 ### Audit Store Interface
+
 - Defined in `/crates/polkagent-audit/src/lib.rs`
 - Optional: configured via `AppState::audit_store`
 - Returns 501 if not configured
 - Supports hash chain integrity verification
 
 ### Event Bus
+
 - In-process broadcast channel
 - Subscribers receive all events in real-time
 - Capacity is configurable (default from `EventBus::with_default_capacity()`)
@@ -629,6 +689,7 @@ API VERSIONED (/api/v1alpha1)
 ## 9. Configuration
 
 Health endpoints are always available (no version prefix) for load-balancer compatibility:
+
 - Liveness, readiness, and startup probes at root
 - Prometheus metrics at root
 - Full health report available at `/health`
@@ -640,6 +701,7 @@ API diagnostics (system/info, audit, events) are under `/api/v1alpha1/` with sta
 ## 10. Security Considerations
 
 ### Public vs. Authenticated
+
 - **Health probes** (live, ready, startup): No authentication required (load-balancer use)
 - **Metrics endpoint**: Authenticated when API authentication is enabled
 - **System info**: Authenticated; no secrets exposed
@@ -649,6 +711,7 @@ API diagnostics (system/info, audit, events) are under `/api/v1alpha1/` with sta
   frame; cursor reconnect requires the query-token form
 
 ### Data Exposure
+
 - No API keys, connection strings, or secrets in any response
 - System info redacts sensitive configuration
 - Audit entries expose actor/action/resource; details are logged separately

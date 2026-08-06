@@ -5,6 +5,7 @@ integration, Prometheus metrics, distributed tracing, structured logging, the
 `polkagent-audit` tamper-evident audit trail, and `polkagent-health` checks.
 
 Related documents:
+
 - [Deployment](deployment.md) — running a collector sidecar, environment wiring
 - [Configuration](configuration.md) — environment variables and config files
 - [API](api.md) — `/metrics` and `/health` HTTP endpoints
@@ -384,6 +385,7 @@ let clean = redact_string(&log_line);
 ```
 
 Patterns automatically redacted by `redact_string`:
+
 - API keys: `sk-***REDACTED***` / `pk-***REDACTED***` (8+ chars after prefix)
 - Hex seeds: `0x` followed by exactly 64 hex chars
 - BIP-39 mnemonics: sequences of 12 or 24 lowercase words

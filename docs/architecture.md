@@ -1,6 +1,14 @@
 # Polkagent Architecture
 
-This document expands on the overview in [ARCHITECTURE.md](../ARCHITECTURE.md) at the repository root.
+This document expands on the high-level picture in the
+[repository README](../README.md#architecture-at-a-glance). If this is your
+first architecture page, read [Core concepts](concepts.md) first.
+
+> [!NOTE]
+> This page maps crates and dependency direction. It does not imply that every
+> listed adapter is wired into every product surface. For the executable
+> composition boundary, read [Runtime/API composition](runtime-api-composition.md)
+> and the [implementation status](../prd/STATUS.md).
 
 ## Hexagonal Architecture
 
@@ -13,53 +21,87 @@ Polkagent uses a hexagonal (ports and adapters) architecture. Domain logic lives
 - Adapter crates implement ports against real or fake external systems.
 - Surface crates wire domain logic to user-facing interfaces.
 
-## System Overview
+## System overview
 
 ```mermaid
-graph TB
-    subgraph Surfaces["🔷 Surfaces"]
-        CLI["polkagent-cli<br/>CLI + TUI"]
-        API["polkagent-api<br/>REST + WS"]
-        WH["polkagent-surface-webhook"]
+flowchart TB
+    subgraph Surfaces["User surfaces"]
+        CLI["polkagent-cli<br/>one-shot · chat · TUI"]
+        API["polkagent-api<br/>REST · SSE · WebSocket"]
+        ACP["polkagent-surface-acp<br/>ACP stdio server"]
+        WH["polkagent-surface-webhook<br/>webhook adapter"]
     end
 
-    subgraph Core["🔶 Application Core"]
-        RC["polkagent-core<br/>Domain Types"]
-        RUN["polkagent-run<br/>Run Manager"]
-        EFF["polkagent-effect<br/>Effect Pipeline"]
-        GR["polkagent-grant<br/>Policy Engine"]
-        EVT["polkagent-event<br/>Event Bus"]
-        ART["polkagent-artifact<br/>Artifact Store"]
-        OUT["polkagent-outbox<br/>Durable Delivery"]
-        CFG["polkagent-config<br/>Config Loader"]
+    subgraph Composition["Composition"]
+        RT["polkagent-runtime<br/>RuntimeFactory + retained shared services"]
     end
 
-    subgraph Ports["🔷 Ports (Traits)"]
-        PE["executor-trait"]
-        PS["signer-trait"]
-        PT["store-trait"]
-        PC["chain-trait"]
-        PX["transport-trait"]
-        PH["harness-trait"]
+    subgraph Application["Application and domain"]
+        INT["polkagent-interaction<br/>durable session contract"]
+        SVC["polkagent-service<br/>application facade"]
+        RUN["polkagent-run<br/>run orchestration"]
+        EFF["polkagent-effect<br/>effect pipeline"]
+        GR["polkagent-grant<br/>policy and grants"]
+        EVT["polkagent-event / outbox<br/>events and delivery"]
+        CORE["polkagent-core<br/>typed identities and domain values"]
     end
 
-    subgraph Adapters["🔶 Adapters"]
-        EA["executor-anthropic"]
-        EO["executor-openai"]
-        EG["executor-gemini"]
-        EL["executor-local"]
-        ER["executor-openrouter"]
-        SS["store-sqlite"]
-        CS["chain-subxt"]
-        SE["signer-external"]
+    subgraph Ports["Ports"]
+        P["executor · store · signer · chain<br/>transport · harness traits"]
     end
 
-    Surfaces --> Core
-    Core --> Ports
-    Ports --> Adapters
+    subgraph Adapters["Adapters"]
+        MODELS["model providers + fake/local"]
+        STORES["SQLite + PostgreSQL"]
+        CHAINS["Subxt + fake + JAM"]
+        SIGNERS["external + watch-only + proxy + KMS + fake"]
+        HARNESSES["coding harnesses + ACP client + bridge"]
+        PCA["PCA transport"]
+    end
+
+    CLI --> RT
+    API --> RT
+    ACP --> RT
+    WH --> SVC
+    RT --> INT
+    RT --> SVC
+    SVC --> RUN
+    RUN --> EFF
+    RUN --> GR
+    RUN --> EVT
+    INT --> CORE
+    SVC --> CORE
+    EFF --> P
+    SVC --> P
+    P --> MODELS
+    P --> STORES
+    P --> CHAINS
+    P --> SIGNERS
+    P --> HARNESSES
+    P --> PCA
 ```
 
-## Crate Map
+Arrows show runtime collaboration rather than every Cargo dependency. The
+workspace enforces dependency direction through crate boundaries and
+workspace-wide lint/test gates.
+
+## Composition root
+
+`polkagent-runtime` is the production composition root. `RuntimeFactory`
+resolves configuration and builds the shared SQLite-backed stores, provider or
+harness executors, chain/tool registry, event bus, `AppService`, and durable
+interaction service used by CLI run, chat, TUI, ACP, and the ordinary HTTP
+server.
+
+That distinction prevents each surface from opening a private second database
+or inventing its own semantics. It also makes missing composition visible: an
+adapter can exist and pass focused tests while still being unavailable in the
+ordinary product builder.
+
+For the route-by-route production boundary, read
+[Runtime/API composition](runtime-api-composition.md).
+
+## Crate map
 
 ### Domain Crates
 
@@ -74,6 +116,7 @@ graph TB
 | `polkagent-outbox` | Durable ordered effect delivery |
 | `polkagent-card` | Action card rendering |
 | `polkagent-config` | TOML config loader with env overrides |
+| `polkagent-interaction` | Surface-neutral durable session, turn, event, and command contracts |
 
 ### Port Crates (Trait Definitions)
 
@@ -86,19 +129,32 @@ graph TB
 | `polkagent-transport-trait` | External communication |
 | `polkagent-harness-trait` | Coding agent harness abstraction |
 
-### Adapter Crates
+### Adapter crates
 
-**Executors:** `polkagent-executor-anthropic`, `polkagent-executor-openai`, `polkagent-executor-gemini`, `polkagent-executor-local`, `polkagent-executor-openrouter`, `polkagent-executor-fake`
+**Executors:** `polkagent-executor-anthropic`, `polkagent-executor-openai`,
+`polkagent-executor-gemini`, `polkagent-executor-local`,
+`polkagent-executor-openrouter`, `polkagent-executor-fake`.
 
-**Signers:** `polkagent-signer-fake`, `polkagent-signer-external`
+**Signers:** `polkagent-signer-fake`, `polkagent-signer-external`,
+`polkagent-signer-watchonly`, `polkagent-signer-proxy`,
+`polkagent-signer-kms`.
 
-**Stores:** `polkagent-store-sqlite`, `polkagent-store-sqlite-feed`, `polkagent-store-sqlite-group`
+**Stores:** `polkagent-store-sqlite`, `polkagent-store-postgres`,
+`polkagent-store-sqlite-feed`, `polkagent-store-sqlite-group`.
 
-**Chain:** `polkagent-chain-fake`, `polkagent-chain-subxt`
+**Chain:** `polkagent-chain-fake`, `polkagent-chain-subxt`,
+`polkagent-chain-jam`.
 
-**Transport:** `polkagent-transport-fake`, `polkagent-transport-pca`
+**Transport:** `polkagent-transport-fake`, `polkagent-transport-pca`.
 
-**Harnesses:** `polkagent-harness-claude`, `polkagent-harness-codex`, `polkagent-harness-acp`, `polkagent-harness-cursor`, `polkagent-harness-copilot`, `polkagent-harness-goose`, `polkagent-harness-kiro`
+**Harnesses:** `polkagent-harness-claude`, `polkagent-harness-codex`,
+`polkagent-harness-acp`, `polkagent-harness-cursor`,
+`polkagent-harness-copilot`, `polkagent-harness-goose`,
+`polkagent-harness-kiro`, `polkagent-harness-opencode`, and
+`polkagent-harness-bridge`.
+
+`polkagent-harness-acp` is a client adapter for downstream ACP harnesses.
+`polkagent-surface-acp` is the separate inbound ACP agent server used by Zed.
 
 ### Surface Crates
 
@@ -106,7 +162,11 @@ graph TB
 |---|---|
 | `polkagent-cli` | CLI and TUI |
 | `polkagent-api` | REST + WebSocket API |
+| `polkagent-surface-acp` | Inbound ACP v1 stdio agent server |
 | `polkagent-surface-webhook` | Webhook delivery |
+
+The CLI and API use `polkagent-runtime`; a surface crate's presence alone does
+not imply that all adapters are enabled by the ordinary builder.
 
 ### Tool Crates
 
@@ -116,9 +176,23 @@ graph TB
 | `polkagent-tool-governance` | Governance tools (referendum, track, voter, delegation, treasury overview) |
 | `polkagent-tool-treasury` | Treasury tools (balance, staking, portfolio, transfer history, vesting) |
 
-### Feature Crates
+### Feature crates
 
-`polkagent-memory`, `polkagent-skill`, `polkagent-conversation`, `polkagent-context`, `polkagent-identity`, `polkagent-payment`, `polkagent-secret`, `polkagent-group`, `polkagent-feed`, `polkagent-service`, `polkagent-plugin`, `polkagent-codec`, `polkagent-eval`, `polkagent-audit`, `polkagent-batch`, `polkagent-cache`, `polkagent-fault`, `polkagent-health`, `polkagent-migration`, `polkagent-rate-limit`, `polkagent-retry`, `polkagent-scheduler`, `polkagent-telemetry`, `polkagent-metadata`
+Major feature families include:
+
+| Family | Crates |
+|---|---|
+| Runtime/application | `polkagent-runtime`, `polkagent-service`, `polkagent-interaction`, `polkagent-conversation`, `polkagent-context` |
+| Knowledge/extensions | `polkagent-memory`, `polkagent-skill`, `polkagent-plugin`, `polkagent-kit`, `polkagent-marketplace` |
+| Polkadot/actions | `polkagent-metadata`, `polkagent-codec`, `polkagent-identity`, `polkagent-action-sign`, `polkagent-action-governance`, `polkagent-action-transfer` |
+| Coordination/value | `polkagent-group`, `polkagent-feed`, `polkagent-payment`, `polkagent-billing` |
+| Operations | `polkagent-audit`, `polkagent-health`, `polkagent-telemetry`, `polkagent-vitality`, `polkagent-migration` |
+| Reliability | `polkagent-retry`, `polkagent-rate-limit`, `polkagent-cache`, `polkagent-fault`, `polkagent-batch`, `polkagent-scheduler` |
+| Cloud building blocks | `polkagent-cloud-control`, `polkagent-cloud-worker` |
+
+These families have different maturity. Consult the
+[implementation status](../prd/STATUS.md) rather than deriving product support
+from this inventory.
 
 ### Test Crates
 

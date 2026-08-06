@@ -1,6 +1,26 @@
-# Configuration Reference
+# Configuration reference
 
-polkagent uses TOML for configuration. Multiple configuration sources are merged, with later sources taking precedence.
+Polkagent uses TOML for configuration. Multiple sources are merged, with later
+sources taking precedence. Start with [Getting started](getting-started.md) if
+you only need a working local setup.
+
+> [!IMPORTANT]
+> Configuration files are not secret stores. Keep API keys, database
+> credentials, tokens, seed phrases, and private keys in environment variables
+> or a dedicated secret manager.
+
+## Most common setup
+
+```bash
+polkagent init
+export POLKAGENT_DATABASE_SQLITE_PATH="$(pwd)/.polkagent/polkagent.db"
+export ANTHROPIC_API_KEY="<YOUR_KEY>"
+polkagent config validate
+polkagent config show
+```
+
+The database override isolates the project. Omit it when you intentionally want
+the generated user-global data path.
 
 ## Configuration Sources and Precedence
 
@@ -46,9 +66,12 @@ polkagent config show --toml
 polkagent config show --json
 ```
 
-## Full Configuration Reference
+## Full configuration example
 
-All keys and their defaults are shown below.
+The example below collects the major configuration sections in one place. Use
+`polkagent init` for the template shipped by your exact binary and
+`polkagent config show` for resolved values; those commands are authoritative
+when this narrative page and a newer checkout differ.
 
 ```toml
 [meta]

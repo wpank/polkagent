@@ -1,8 +1,11 @@
 # Groups (PRD-09)
 
-Multi-agent groups allow one or more Polkagent agents to coordinate under a
-shared identity, shared budget, and a common quorum policy. The implementation
-lives in two crates:
+The group domain models how multiple Polkagent agents can coordinate under a
+shared identity, budget, grant ceiling, and quorum policy. It currently provides
+durable group-definition services and synchronous execution building blocks;
+it does not yet launch durable child runs from a product surface.
+
+The main implementation lives in two crates:
 
 | Crate | Purpose |
 |---|---|
@@ -10,6 +13,23 @@ lives in two crates:
 | `polkagent-store-sqlite-group` | SQLite-backed `GroupStore` implementation |
 
 ---
+
+## Current product boundary
+
+| Layer | Current state |
+|---|---|
+| Group definitions | `GroupApplicationService` and SQLite-backed CRUD/membership persistence exist |
+| In-memory execution | Sequential, parallel, pipeline, and consensus executors support focused library tests |
+| Durable plan format | The accepted canonical v1 codec produces bounded canonical JSON and a stable BLAKE3 digest |
+| Durable execution ledger | Designed, not implemented; group-definition revision is a prerequisite |
+| Child run launcher/canceller | Not composed |
+| CLI, TUI, ACP, HTTP group execution | Not available |
+
+> [!IMPORTANT]
+> A successful `SequentialExecutor` or codec test is not evidence that a CLI or
+> API request will create durable child interactions/runs. See
+> [ADR-003](adr/ADR-003-Durable-Group-Execution-Plan-Contract.md) and the
+> [implementation status](../prd/STATUS.md).
 
 ## Overview
 
@@ -82,12 +102,13 @@ Key relationships:
 
 ---
 
-## Parent/Child Coordination
+## Parent/child coordination model
 
-A parent agent (playing `MemberRole::Leader`) spawns child agents as
-`Worker` members and delegates tasks through an `ExecutionPlan`. Results are
-gathered back as `TaskResult` records and aggregated into an `ExecutionResult`
-and, eventually, a `GroupEvidence`.
+In the current library model, a parent agent (playing `MemberRole::Leader`)
+delegates tasks to `Worker` members through an `ExecutionPlan`. Synchronous
+executors gather `TaskResult` records into an `ExecutionResult` and, eventually,
+a `GroupEvidence`. The diagram describes this library model, not a composed
+durable runtime launch path.
 
 ```mermaid
 sequenceDiagram
@@ -138,6 +159,49 @@ The four `ExecutionMode` variants drive different executor types:
 An `ExecutionPlan` also carries an explicit dependency map (`dependencies:
 HashMap<TaskId, Vec<TaskId>>`): a task cannot start until all tasks it
 depends on have completed successfully.
+
+## Canonical durable execution plan v1
+
+The derived serde shape of the in-memory `ExecutionPlan` is not safe as a
+persistence protocol: map ordering is not canonical, task IDs can exceed exact
+JavaScript integer range, raw JSON input is unbounded, and floating-point
+budgets need explicit normalization.
+
+`polkagent_group::execution_plan_codec` therefore defines a separate accepted
+v1 contract:
+
+```mermaid
+flowchart LR
+    PLAN["In-memory ExecutionPlan"] --> VALIDATE["Validate graph, modes, limits"]
+    VALIDATE --> NORMALIZE["Sort keys/sets/edges<br/>normalize IDs and budget"]
+    NORMALIZE --> JSON["Canonical UTF-8 JSON bytes"]
+    JSON --> DIGEST["blake3-v1 digest"]
+    JSON --> DECODE["Strict decode + re-encode check"]
+    DIGEST --> DECODE
+    DECODE --> PLAN2["Lossless normalized plan"]
+```
+
+The codec:
+
+- requires unique tasks/ordinals and a non-empty plan;
+- rejects dangling, duplicate, self, and cyclic dependency edges;
+- applies execution-mode constraints;
+- bounds task count, edge count, input size/depth, and total bytes;
+- encodes full-range `u64` task IDs as canonical decimal strings;
+- recursively canonicalizes task-input objects and integer values;
+- normalizes capabilities, pallets, and finite non-negative grant budgets;
+- computes a domain-separated BLAKE3 digest over the exact bytes;
+- rejects unknown versions, duplicate JSON keys, noncanonical re-encoding, and
+  digest mismatches without echoing attacker-controlled content.
+
+The accepted fixtures are:
+
+- [`group_execution_plan_v1.canonical.json`](../crates/polkagent-group/tests/fixtures/group_execution_plan_v1.canonical.json)
+- [`group_execution_plan_v1.blake3`](../crates/polkagent-group/tests/fixtures/group_execution_plan_v1.blake3)
+
+The codec deliberately adds no database execution row, group revision,
+launcher, canceller, or surface. Those are separate gates so stable bytes are
+available before any child I/O can be attempted.
 
 ---
 
@@ -312,7 +376,7 @@ stateDiagram-v2
 
     Creating --> Active: owner added as Leader\ndefault QuorumPolicy::Majority\ndefault budget set
 
-    Active --> Active: add_member / remove_member\nset_budget / set_quorum_policy\nexecute ExecutionPlan\nrecord_spend
+    Active --> Active: add_member / remove_member\nset_budget / set_quorum_policy\nlibrary execute ExecutionPlan\nrecord_spend
 
     Active --> Paused: budget exhausted\nor quorum fails repeatedly\nor operator suspension
 
@@ -335,10 +399,11 @@ pre-built `Group` and returns `GroupError::AlreadyExists` if the ID is taken.
 **Active** — normal operating state. Members can be added and removed (except
 the owner, which returns `GroupError::PermissionDenied`). Budgets and quorum
 policies can be replaced at any time via `set_budget` and `set_quorum_policy`.
-Execution plans are dispatched through one of the four `Executor` types.
-Spend is recorded through `record_spend`, which validates both the group total
-and the per-member limit before committing; an over-limit attempt returns
-`GroupError::BudgetExceeded` without mutating state.
+Execution plans can be dispatched through one of the four in-memory `Executor`
+types by a library caller. No product surface currently turns that operation
+into durable child runs. Spend is recorded through `record_spend`, which
+validates both the group total and the per-member limit before committing; an
+over-limit attempt returns `GroupError::BudgetExceeded` without mutating state.
 
 **Paused** — not a distinct persisted state in the current schema; it is
 managed by the operator layer above `GroupCoordinator`. When the group budget
@@ -444,3 +509,7 @@ All group operations return `GroupResult<T>`, an alias for
   `GrantSpec` capabilities are validated against the agent's identity grants
   before any on-chain action. The group grant intersection ensures that group
   membership never elevates an agent's identity-level permissions.
+- **Durable plan contract** — see
+  [`ADR-003`](adr/ADR-003-Durable-Group-Execution-Plan-Contract.md) for the
+  accepted codec, proposed ledger, group-revision prerequisite, and launcher
+  handoff.

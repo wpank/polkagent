@@ -6,6 +6,7 @@ decoding, identity primitives, and the CLI commands that expose these
 capabilities to operators.
 
 Cross-references:
+
 - Signer isolation and the effect pipeline: [safety.md](safety.md)
 - Governance and treasury tools that use chain reads: [tools-and-skills.md](tools-and-skills.md)
 - CLI chain commands: [cli.md](cli.md#chain)
@@ -22,6 +23,7 @@ The kernel never speaks directly to a node; it depends only on the
 and translates responses into kernel-facing types.
 
 This design means:
+
 - The kernel can be tested against a mock without a running node.
 - A future light-client or WebSocket adapter can be swapped in with no kernel
   changes.
@@ -651,4 +653,4 @@ language explanation of a hex extrinsic.
 | Governance tools using `chain.query` grant and chain reads | [tools-and-skills.md — Governance Tools](tools-and-skills.md#governance-tools) |
 | Treasury tools using `chain.query` grant | [tools-and-skills.md — Treasury Tools](tools-and-skills.md#treasury-tools) |
 | Full CLI reference including all `chain` subcommands | [cli.md — chain](cli.md#chain) |
-| `polkagent explain` command | [cli.md — explain](cli.md#explain-extrinsic_hex) |
+| `polkagent explain` command | [cli.md — explain](cli.md#explain-extrinsic) |

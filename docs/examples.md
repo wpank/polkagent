@@ -1,6 +1,13 @@
-# Examples & Cookbook
+# Examples and cookbook
 
-Practical recipes for common polkagent workflows. Each example is self-contained and can be adapted to your use case.
+Practical recipes for common Polkagent workflows. Start with
+[Getting started](getting-started.md) if you have not yet installed the CLI, or
+[Demos](demo.md) if you want a completely guided tour.
+
+Commands in this page target the current `main` CLI and assume the repository
+root. Replace angle-bracket placeholders, keep secrets in environment variables,
+and use a dedicated database for experiments that should not share normal user
+state.
 
 ## Table of Contents
 
@@ -16,6 +23,7 @@ Practical recipes for common polkagent workflows. Each example is self-contained
 ---
 
 <a id="governance-workflows"></a>
+
 ## Governance Workflows
 
 ```mermaid
@@ -83,6 +91,7 @@ The agent uses `polkagent.governance.treasury_overview` to query the treasury ba
 ---
 
 <a id="treasury-workflows"></a>
+
 ## Treasury Workflows
 
 ### Check Balances Across Chains
@@ -127,6 +136,7 @@ polkagent run --agent-id my-agent \
 ---
 
 <a id="agent-configuration"></a>
+
 ## Agent Configuration
 
 ### Minimal Agent Config
@@ -141,17 +151,22 @@ polkagent agent create minimal-agent \
 
 ### Full-Featured Agent
 
-An agent with all common options:
+An agent using the execution limits and repeatable capability flags accepted by
+the current CLI:
 
 ```bash
 polkagent agent create full-agent \
   --model anthropic/claude-sonnet-4-6 \
   --description "Full-featured governance and treasury agent" \
-  --policy operator \
-  --skills governance-researcher,balance-checker \
+  --capability chain.query \
+  --capability memory.read \
   --timeout 300 \
-  --max-tokens 8192
+  --max-turns 12 \
+  --max-tokens-per-turn 8192
 ```
+
+Policy selection and skill installation are configured separately. The current
+`agent create` command does not accept `--policy` or `--skills` flags.
 
 ### Multi-Model Agent
 
@@ -194,7 +209,8 @@ polkagent agent create gpt-agent --model openai/gpt-4o --description "GPT-powere
 polkagent agent create gemini-agent --model gemini/gemini-2.5-pro --description "Gemini-powered agent"
 
 # Override provider for a single run
-polkagent run --agent-id claude-agent --prompt "Hello" --provider openai --model gpt-4o
+polkagent run --agent-id claude-agent --prompt "Hello" \
+  --provider openai --model openai/gpt-4o
 ```
 
 ### Agent with Custom Timeout and Token Limits
@@ -204,7 +220,7 @@ polkagent agent create constrained-agent \
   --model anthropic/claude-sonnet-4-6 \
   --description "Agent with tight resource limits" \
   --timeout 60 \
-  --max-tokens 2048
+  --max-tokens-per-turn 2048
 ```
 
 Configure global execution limits in `polkagent.toml`:
@@ -223,6 +239,7 @@ warn_threshold_percent = 80
 ---
 
 <a id="policy-examples"></a>
+
 ## Policy Examples
 
 Policies control what actions an agent can perform. Each policy is a TOML file containing a list of rules. Rules are evaluated in order; the first matching rule determines the outcome. Place policy files in your policy directory (default: `~/.config/polkagent/policies`).
@@ -383,6 +400,7 @@ resource_patterns = ["**"]
 ---
 
 <a id="skill-examples"></a>
+
 ## Skill Examples
 
 Skills are packaged extensions defined by a `skill.toml` manifest. They bundle a system prompt, tool requirements, and configuration into a reusable unit. Skills are identified by `name@version`.
@@ -419,9 +437,14 @@ polkagent skill install ./fixtures/skills/balance-checker/
 polkagent skill list
 polkagent agent create balance-bot \
   --model anthropic/claude-sonnet-4-6 \
-  --skills balance-checker \
+  --capability chain.query \
   --description "Balance checking agent"
 ```
+
+Installation validates and records the skill. Runtime activation is a separate
+composition boundary; installing a skill does not by itself guarantee that the
+next agent run advertises or executes it. See
+[Tools and skills](tools-and-skills.md#current-registered-tool-execution-boundary).
 
 ### Governance Researcher Skill
 
@@ -490,6 +513,7 @@ polkagent skill remove governance-researcher    # Uninstall a skill
 ---
 
 <a id="api-cookbook"></a>
+
 ## API Cookbook
 
 All examples use base URL `http://127.0.0.1:9090` with the `/api/v1alpha1` prefix. Start the server first:
@@ -500,57 +524,83 @@ polkagent serve --port 9090 --host 127.0.0.1
 
 See also: [API Reference](api.md)
 
-### Create an Agent
+### Create an agent
 
 ```bash
-curl -s -X POST http://127.0.0.1:9090/api/v1alpha1/agents \
-  -H "Content-Type: application/json" \
-  -d '{
+api_base="http://127.0.0.1:9090"
+
+agent_id="$(
+  curl --fail --silent --request POST \
+    "$api_base/api/v1alpha1/agents" \
+    --header "Content-Type: application/json" \
+    --data '{
     "name": "api-agent",
     "model": "anthropic/claude-sonnet-4-6",
     "description": "Agent created via API"
-  }' | jq .
+    }' | jq --raw-output '.id'
+)"
+
+printf 'agent_id=%s\n' "$agent_id"
 ```
 
-### Create a Run
+### Create a run
+
+The path requires the returned agent UUID, not the friendly name. The request
+body field is `input` and can hold any JSON value.
 
 ```bash
-curl -s -X POST http://127.0.0.1:9090/api/v1alpha1/agents/api-agent/runs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "What is the current status of referendum 1234?"
-  }' | jq .
+run_id="$(
+  curl --fail --silent --request POST \
+    "$api_base/api/v1alpha1/agents/$agent_id/runs" \
+    --header "Content-Type: application/json" \
+    --data '{
+      "input": "What is the current status of referendum 1234?",
+      "idempotency_key": "cookbook-referendum-1234"
+    }' | jq --raw-output '.id'
+)"
+
+printf 'run_id=%s\n' "$run_id"
 ```
 
 ### List Runs
 
 ```bash
-curl -s http://127.0.0.1:9090/api/v1alpha1/runs | jq .
+curl --fail --silent "$api_base/api/v1alpha1/runs" | jq .
 ```
 
 Get details for a specific run:
 
 ```bash
-curl -s http://127.0.0.1:9090/api/v1alpha1/runs/RUN_ID | jq .
+curl --fail --silent "$api_base/api/v1alpha1/runs/$run_id" | jq .
 ```
 
-### Approve an Effect
+### Approval boundary
 
-When an agent action requires human approval (e.g., signing with the operator policy), it produces a pending effect. Approve it:
+The schema includes effect and interaction-scoped approval operations, but the
+ordinary production server intentionally does not bind a stable remote human
+principal. Approval routes can therefore return `501 Not Implemented` or an
+unavailable response. Do not build a remote approval workflow around the
+following legacy shape without supplying a custom, authenticated authority
+composition:
 
 ```bash
-curl -s -X POST http://127.0.0.1:9090/api/v1alpha1/effects/EFFECT_ID/approve \
-  -H "Content-Type: application/json" \
-  -d '{}' | jq .
+curl --fail --silent --request POST \
+  "$api_base/api/v1alpha1/effects/<EFFECT_ID>/approve" \
+  --header "Content-Type: application/json" \
+  --data '{}' | jq .
 ```
 
 Or deny it:
 
 ```bash
-curl -s -X POST http://127.0.0.1:9090/api/v1alpha1/effects/EFFECT_ID/deny \
-  -H "Content-Type: application/json" \
-  -d '{}' | jq .
+curl --fail --silent --request POST \
+  "$api_base/api/v1alpha1/effects/<EFFECT_ID>/deny" \
+  --header "Content-Type: application/json" \
+  --data '{}' | jq .
 ```
+
+For local approval evaluation, use the explicit process-scoped chat/TUI/ACP
+authority described in [Safety](safety.md) and [Durable chat](chat.md).
 
 ### WebSocket Event Stream
 
@@ -569,6 +619,7 @@ websocat ws://127.0.0.1:9090/api/v1alpha1/events/stream
 ---
 
 <a id="eval-examples"></a>
+
 ## Eval Examples
 
 Polkagent includes an evaluation framework for testing agent safety and correctness. Eval suites are JSON files in `fixtures/evals/`.
@@ -612,43 +663,45 @@ polkagent eval run fixtures/evals/safety/suite.json --output current-safety.json
 polkagent eval run fixtures/evals/tool_use/suite.json --output current-tools.json
 
 # Compare results
-polkagent eval diff baseline-safety.json current-safety.json
-polkagent eval diff baseline-tools.json current-tools.json
+polkagent eval compare baseline-safety.json current-safety.json
+polkagent eval compare baseline-tools.json current-tools.json
 ```
 
 ---
 
 <a id="action-card-examples"></a>
+
 ## Action Card Examples
 
 Action cards are structured representations of on-chain operations. They contain the canonical extrinsic data, a human-readable narrative, and a risk assessment. Action cards are produced by the agent when it plans an on-chain action.
 
 ### Balance Transfer
 
-From `fixtures/actions/balance_transfer.json`:
+Exact fixture from `fixtures/actions/balance_transfer.json`:
 
 ```json
 {
   "canonical": {
-    "chain": "polkadot",              // Target chain
-    "pallet": "Balances",             // Runtime pallet
-    "call": "transfer_keep_alive",    // Extrinsic call (keeps account alive)
+    "chain": "polkadot",
+    "pallet": "Balances",
+    "call": "transfer_keep_alive",
     "args": {
-      "dest": "15oF4uVJwmo4TdGW7VfQxNLavjCXviqWrztPu6TA9q7y3MWQ",  // Recipient SS58 address
-      "value": "10000000000"          // Amount in planck (1 DOT = 10^10 planck)
+      "dest": "15oF4uVJwmo4TdGW7VfQxNLavjCXviqWrztPu6TA9q7y3MWQ",
+      "value": "10000000000"
     },
-    "fee_estimate": "15700000",       // Estimated transaction fee in planck
-    "metadata_hash": "0xabc123..."    // Runtime metadata hash for verification
+    "fee_estimate": "15700000",
+    "metadata_hash": "0xabc123..."
   },
   "narrative": {
     "summary": "Transfer 1 DOT to the specified address",
     "risks": ["This transfers real value on mainnet"]
   },
-  "risk_level": "medium"             // Risk assessment: low | medium | high | critical
+  "risk_level": "medium"
 }
 ```
 
 Key points:
+
 - `transfer_keep_alive` ensures the sender's account is not reaped (maintains existential deposit).
 - The `value` is in planck (the smallest unit). 1 DOT = 10,000,000,000 planck.
 - The `fee_estimate` is an approximation; actual fees depend on chain weight.
@@ -656,26 +709,26 @@ Key points:
 
 ### Governance Vote
 
-From `fixtures/actions/governance_vote.json`:
+Exact fixture from `fixtures/actions/governance_vote.json`:
 
 ```json
 {
   "canonical": {
-    "chain": "polkadot",              // Target chain
-    "pallet": "ConvictionVoting",     // OpenGov voting pallet
-    "call": "vote",                   // Cast a vote on a referendum
+    "chain": "polkadot",
+    "pallet": "ConvictionVoting",
+    "call": "vote",
     "args": {
-      "poll_index": 42,              // Referendum number
+      "poll_index": 42,
       "vote": {
         "Standard": {
-          "vote": "Aye",             // Vote direction: Aye | Nay | Abstain
-          "balance": "50000000000",  // 5 DOT committed to the vote
-          "conviction": "Locked1x"   // Conviction multiplier (1x-6x lock period)
+          "vote": "Aye",
+          "balance": "50000000000",
+          "conviction": "Locked1x"
         }
       }
     },
-    "fee_estimate": "12300000",       // Estimated transaction fee in planck
-    "metadata_hash": "0xdef456..."    // Runtime metadata hash for verification
+    "fee_estimate": "12300000",
+    "metadata_hash": "0xdef456..."
   },
   "narrative": {
     "summary": "Vote Aye on referendum #42 with 5 DOT and 1x conviction",
@@ -684,11 +737,12 @@ From `fixtures/actions/governance_vote.json`:
       "Vote is binding and affects governance outcome"
     ]
   },
-  "risk_level": "medium"             // Governance votes are medium risk
+  "risk_level": "medium"
 }
 ```
 
 Key points:
+
 - `Locked1x` conviction means tokens are locked for 1x the base lock period (7 days on Polkadot). Higher convictions (2x-6x) multiply both voting power and lock time.
 - The `balance` field is the amount of tokens committed to the vote, separate from the fee.
 - Conviction options: `None` (no lock, 0.1x voting power), `Locked1x` through `Locked6x`.

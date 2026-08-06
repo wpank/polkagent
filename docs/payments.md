@@ -2,7 +2,7 @@
 
 This document covers the payment pipeline implemented in `polkagent-payment`, the signer isolation boundary enforced by `polkagent-signer-trait`, and the autonomy model that governs how much authority an agent may exercise without human approval.
 
-## Cross-references
+## Related implementation guides
 
 - [safety.md](./safety.md) — INV-01 (model never touches keys), grant authorization, and the broader safety invariant system.
 - [architecture.md](./architecture.md) — Kernel boundary, crate map, and execution model.

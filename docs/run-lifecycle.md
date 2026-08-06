@@ -185,6 +185,7 @@ pub struct Run {
 ```
 
 **Invariants:**
+
 - `token_usage` is monotonically non-decreasing.
 - Once `state` is terminal, the run is immutable (except for operator manual resolution of `TimedOut`).
 - `state` transitions are atomic with their associated `RunEvent`.
@@ -311,19 +312,19 @@ sequenceDiagram
 
 ### Step-by-Step Walkthrough
 
-**1. Creation (`Created`)**
+#### 1. Creation (`Created`)
 
 `RunManager::create_run(agent_id)` calls `Run::new(RunId::new(), agent_id)`. The run starts in `Created` with `event_sequence = 0`, `turns_count = 0`, and zero `token_usage`. A `RunCreated` event is emitted.
 
-**2. Enqueue (`Created -> Queued`)**
+#### 2. Enqueue (`Created -> Queued`)
 
 `RunManager::enqueue_run(run_id)` applies the `Start` transition. Validation and budget pre-checks occur here. A `RunQueued` event is emitted. The run is now visible to the scheduler.
 
-**3. Start (`Queued -> Running`)**
+#### 3. Start (`Queued -> Running`)
 
 A scheduler slot becomes available. `RunManager::start_run(run_id)` applies the `WorkerClaimed` transition. `started_at` is set. A `RunStarted` event is emitted. The turn actor takes ownership.
 
-**4. Turn execution loop**
+#### 4. Turn execution loop
 
 For each turn:
 
@@ -334,7 +335,7 @@ For each turn:
 - **ToolInvocation step (optional):** For each accepted grantless registered tool call, the current orchestrator persists a normalized step, a `ToolCall` intent, its claim and attempt, then a success/error outcome around registry dispatch. It feeds the exact typed result into the next model request without a synthetic completion. The target `WaitingEffect` transition and durable resume remain required for grant-bearing and asynchronously resumed tools.
 - **TurnCompleted event** is emitted; `turns_count` is incremented; `token_usage` is accumulated.
 
-**5. Completing (`Running -> Completing`)**
+#### 5. Completing (`Running -> Completing`)
 
 When the executor determines the final turn has produced terminal output (no pending tool calls, no further turns required), `RunManager::completing_run(run_id)` applies the `Complete` transition. Artifacts are finalized and written to the artifact store. A `RunCompleting` event is emitted.
 
