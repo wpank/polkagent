@@ -17,16 +17,22 @@
 //!   "msg_type": "subscribe",
 //!   "id": "optional-request-id",
 //!   "channel": "runs:01234567-...",
+//!   "cursor": null,
 //!   "payload": {},
 //!   "timestamp": "2024-01-01T00:00:00Z"
 //! }
 //! ```
 //!
+//! Durable event envelopes include an opaque `cursor` such as `"v1:42"`.
+//! Reconnect with `?cursor=v1:42`, then send the same subscribe commands. The
+//! server replays matching durable events strictly after that checkpoint before
+//! following live delivery. Omitting `cursor` preserves the legacy live-only
+//! connection behavior.
+//!
 //! # Channels
 //!
 //! - `runs:{run_id}` — events for a specific run
 //! - `agents:{agent_id}` — events for all runs belonging to an agent
-//! - `system` — platform-wide system events
 //!
 //! # Keepalive
 //!
@@ -74,6 +80,9 @@ const PONG_TIMEOUT: Duration = Duration::from_secs(30);
 /// Maximum number of distinct channels retained by one connection.
 const MAX_SUBSCRIPTIONS: usize = 256;
 
+/// Version prefix for opaque reconnect checkpoint tokens.
+const RECONNECT_CURSOR_VERSION: &str = "v1";
+
 // ---------------------------------------------------------------------------
 // Channel
 // ---------------------------------------------------------------------------
@@ -85,8 +94,6 @@ pub enum Channel {
     Run(RunId),
     /// Events for all runs of an agent: `agents:{agent_id}`
     Agent(AgentId),
-    /// Platform-wide system events: `system`
-    System,
 }
 
 impl Channel {
@@ -94,9 +101,6 @@ impl Channel {
     ///
     /// Returns `None` if the string is not a recognised channel format.
     pub fn parse(s: &str) -> Option<Self> {
-        if s == "system" {
-            return Some(Channel::System);
-        }
         if let Some(id_str) = s.strip_prefix("runs:") {
             return id_str.parse::<RunId>().ok().map(Channel::Run);
         }
@@ -111,7 +115,6 @@ impl Channel {
         match self {
             Channel::Run(id) => format!("runs:{id}"),
             Channel::Agent(id) => format!("agents:{id}"),
-            Channel::System => "system".to_owned(),
         }
     }
 }
@@ -135,6 +138,9 @@ pub struct WsMessage {
     pub id: Option<String>,
     /// Channel this message relates to (e.g. `"runs:01234567-..."`).
     pub channel: Option<String>,
+    /// Opaque reconnect checkpoint on durable event messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
     /// Message body — structure depends on `msg_type`.
     pub payload: Value,
     /// UTC timestamp when the message was created.
@@ -153,6 +159,7 @@ impl WsMessage {
             msg_type: msg_type.into(),
             id,
             channel,
+            cursor: None,
             payload,
             timestamp: Utc::now(),
         }
@@ -182,6 +189,76 @@ impl WsMessage {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
+}
+
+/// Validated opaque reconnect checkpoint for the command WebSocket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReconnectCursor(u64);
+
+impl ReconnectCursor {
+    fn parse(value: &str) -> Result<Self, ApiError> {
+        let Some(sequence) = value.strip_prefix(&format!("{RECONNECT_CURSOR_VERSION}:")) else {
+            return Err(invalid_reconnect_cursor());
+        };
+        if sequence.is_empty()
+            || (sequence.len() > 1 && sequence.starts_with('0'))
+            || !sequence.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(invalid_reconnect_cursor());
+        }
+        sequence
+            .parse::<u64>()
+            .map(Self)
+            .map_err(|_| invalid_reconnect_cursor())
+    }
+
+    fn encode(sequence: u64) -> String {
+        format!("{RECONNECT_CURSOR_VERSION}:{sequence}")
+    }
+
+    const fn sequence(self) -> u64 {
+        self.0
+    }
+}
+
+fn invalid_reconnect_cursor() -> ApiError {
+    ApiError::ValidationError("reconnect cursor is malformed, stale, or from the future".to_owned())
+}
+
+async fn validate_reconnect_cursor(
+    store: &dyn EventStore,
+    cursor: ReconnectCursor,
+) -> Result<(), ApiError> {
+    let sequence = cursor.sequence();
+    if sequence == 0 {
+        return Ok(());
+    }
+    let page = store
+        .read_from_cursor(sequence - 1, 1)
+        .await
+        .map_err(|error| {
+            warn!(
+                error = %error,
+                "WebSocket reconnect cursor validation failed"
+            );
+            ApiError::Unavailable("durable reconnect cursor validation unavailable".to_owned())
+        })?;
+    if page.len() > 1 {
+        warn!(
+            returned = page.len(),
+            "WebSocket reconnect cursor validation exceeded its page bound"
+        );
+        return Err(ApiError::InternalError(
+            "durable reconnect cursor validation failed".to_owned(),
+        ));
+    }
+    if page
+        .first()
+        .is_none_or(|event| event.global_sequence != sequence)
+    {
+        return Err(invalid_reconnect_cursor());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -324,8 +401,9 @@ struct CommandOutboundEvent {
 }
 
 /// Tracks one command socket's durable position without changing its wire
-/// protocol. A new connection has no reconnect cursor: its first successfully
-/// observed durable bus event establishes the in-session checkpoint.
+/// protocol. A legacy connection without a reconnect cursor remains live-only:
+/// its first successfully observed durable bus event establishes the in-session
+/// checkpoint.
 struct CommandEventFollower {
     store: Arc<dyn EventStore>,
     run_manager: Arc<dyn RunManagerTrait>,
@@ -342,15 +420,16 @@ impl CommandEventFollower {
         store: Arc<dyn EventStore>,
         run_manager: Arc<dyn RunManagerTrait>,
         receiver: polkagent_event::EventReceiver,
+        reconnect_cursor: Option<ReconnectCursor>,
     ) -> Self {
         Self {
             store,
             run_manager,
             receiver,
-            durable_checkpoint: None,
+            durable_checkpoint: reconnect_cursor.map(ReconnectCursor::sequence),
             pending: VecDeque::new(),
             live_pending: None,
-            replay_required: false,
+            replay_required: reconnect_cursor.is_some(),
             recovery_target: None,
         }
     }
@@ -553,6 +632,8 @@ impl CommandEventFollower {
 pub struct WsQuery {
     /// Bearer token for authentication (alternative to first-message auth).
     pub token: Option<String>,
+    /// Opaque durable checkpoint emitted by an earlier event envelope.
+    pub cursor: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +732,14 @@ pub async fn ws_handler(
         .event_store
         .clone()
         .ok_or_else(|| ApiError::NotImplemented("event store not configured".to_owned()))?;
+    let reconnect_cursor = query
+        .cursor
+        .as_deref()
+        .map(ReconnectCursor::parse)
+        .transpose()?;
+    if let Some(cursor) = reconnect_cursor {
+        validate_reconnect_cursor(store.as_ref(), cursor).await?;
+    }
     // Check if a token was provided as query parameter and validate it.
     let pre_authenticated = query
         .token
@@ -674,7 +763,7 @@ pub async fn ws_handler(
             socket,
             session,
             state,
-            CommandEventFollower::new(store, run_manager, event_rx),
+            CommandEventFollower::new(store, run_manager, event_rx, reconnect_cursor),
         )
     }))
 }
@@ -747,7 +836,7 @@ async fn handle_ws_session(
             }
 
             // ── Event bus messages ───────────────────────────────────────
-            result = events.next(&subscriptions) => {
+            result = events.next(&subscriptions), if !subscriptions.is_empty() => {
                 match result {
                     Ok(outbound) => {
                         let channel_str = format!("runs:{}", outbound.event.run_id);
@@ -761,7 +850,10 @@ async fn handle_ws_session(
                             break;
                         };
 
-                        let msg = WsMessage::new("event", None, Some(channel_str), payload);
+                        let mut msg = WsMessage::new("event", None, Some(channel_str), payload);
+                        msg.cursor = outbound
+                            .durable_checkpoint
+                            .map(ReconnectCursor::encode);
                         let Ok(json) = msg.to_json() else {
                             let error = CommandStreamFailure::InvalidProjection;
                             warn!(
@@ -927,8 +1019,8 @@ mod tests {
     // ── Channel parsing ─────────────────────────────────────────────────────
 
     #[test]
-    fn channel_parse_system() {
-        assert_eq!(Channel::parse("system"), Some(Channel::System));
+    fn channel_rejects_producer_less_system_channel() {
+        assert_eq!(Channel::parse("system"), None);
     }
 
     #[test]
@@ -966,11 +1058,22 @@ mod tests {
         let s = ch.to_string();
         let parsed = Channel::parse(&s).expect("should parse back");
         assert_eq!(ch, parsed);
+    }
 
-        let ch = Channel::System;
-        let s = ch.to_string();
-        let parsed = Channel::parse(&s).expect("should parse back");
-        assert_eq!(ch, parsed);
+    #[test]
+    fn reconnect_cursor_is_versioned_and_canonical() {
+        assert_eq!(
+            ReconnectCursor::parse("v1:0").expect("zero cursor"),
+            ReconnectCursor(0)
+        );
+        assert_eq!(
+            ReconnectCursor::parse("v1:42").expect("positive cursor"),
+            ReconnectCursor(42)
+        );
+        assert_eq!(ReconnectCursor::encode(42), "v1:42");
+        for invalid in ["", "42", "v2:42", "v1:", "v1:-1", "v1:+1", "v1:01"] {
+            assert!(ReconnectCursor::parse(invalid).is_err(), "{invalid}");
+        }
     }
 
     // ── WsMessage ───────────────────────────────────────────────────────────
@@ -999,15 +1102,17 @@ mod tests {
 
     #[test]
     fn ws_message_serializes_to_json() {
+        let run_id = RunId::new();
         let msg = WsMessage::new(
             "event",
             Some("id-1".into()),
-            Some("system".into()),
+            Some(format!("runs:{run_id}")),
             serde_json::json!({ "foo": "bar" }),
         );
         let json = msg.to_json().expect("serialize");
         assert!(json.contains("\"msg_type\":\"event\""));
-        assert!(json.contains("\"channel\":\"system\""));
+        assert!(json.contains(&format!("\"channel\":\"runs:{run_id}\"")));
+        assert!(!json.contains("\"cursor\""));
     }
 
     #[test]
@@ -1015,13 +1120,22 @@ mod tests {
         let json = r#"{
             "msg_type": "event",
             "id": "r1",
-            "channel": "system",
+            "channel": null,
             "payload": {},
             "timestamp": "2024-01-01T00:00:00Z"
         }"#;
         let msg: WsMessage = serde_json::from_str(json).expect("deserialize");
         assert_eq!(msg.msg_type, "event");
         assert_eq!(msg.id, Some("r1".into()));
+        assert!(msg.cursor.is_none());
+    }
+
+    #[test]
+    fn ws_message_serializes_versioned_cursor_additively() {
+        let mut msg = WsMessage::new("event", None, None, Value::Null);
+        msg.cursor = Some(ReconnectCursor::encode(7));
+        let json = msg.to_json().expect("serialize cursor envelope");
+        assert!(json.contains("\"cursor\":\"v1:7\""));
     }
 
     // ── WsSession ───────────────────────────────────────────────────────────
@@ -1070,7 +1184,7 @@ mod tests {
     #[test]
     fn ws_session_unsubscribe_not_present_returns_false() {
         let mut session = WsSession::authenticated();
-        let channel = Channel::System;
+        let channel = Channel::Run(RunId::new());
         assert!(!session.unsubscribe(&channel));
     }
 
@@ -1099,13 +1213,12 @@ mod tests {
     }
 
     #[test]
-    fn ws_session_system_channel_does_not_match_run_events() {
+    fn ws_session_unrelated_agent_channel_does_not_match_run_events() {
         let mut session = WsSession::authenticated();
         let run_id = RunId::new();
 
-        session.subscribe(Channel::System);
+        session.subscribe(Channel::Agent(AgentId::new()));
 
-        // System channel does not cause run events to match.
         assert!(!session.matches_run_event(&run_id, None));
     }
 
@@ -1120,9 +1233,12 @@ mod tests {
 
     #[test]
     fn client_message_subscribe_parses() {
-        let json = r#"{"msg_type":"subscribe","id":"r1","channel":"system"}"#;
-        let msg: ClientMessage = serde_json::from_str(json).expect("parse");
-        assert!(matches!(msg, ClientMessage::Subscribe { ref channel, .. } if channel == "system"));
+        let run_id = RunId::new();
+        let json = format!(r#"{{"msg_type":"subscribe","id":"r1","channel":"runs:{run_id}"}}"#);
+        let msg: ClientMessage = serde_json::from_str(&json).expect("parse");
+        assert!(
+            matches!(msg, ClientMessage::Subscribe { ref channel, .. } if channel == &format!("runs:{run_id}"))
+        );
     }
 
     #[test]
@@ -1191,20 +1307,22 @@ mod tests {
     #[test]
     fn handle_text_subscribe_without_auth_returns_error() {
         let mut session = WsSession::new();
-        let json = r#"{"msg_type":"subscribe","channel":"system"}"#;
-        let msg = handle_client_text(json, &mut session, &any_nonempty);
+        let run_id = RunId::new();
+        let json = format!(r#"{{"msg_type":"subscribe","channel":"runs:{run_id}"}}"#);
+        let msg = handle_client_text(&json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "error");
-        assert!(!session.is_subscribed(&Channel::System));
+        assert!(!session.is_subscribed(&Channel::Run(run_id)));
     }
 
     #[test]
-    fn handle_text_subscribe_to_system_channel() {
+    fn handle_text_rejects_producer_less_system_channel() {
         let mut session = WsSession::authenticated();
         let json = r#"{"msg_type":"subscribe","id":"req-1","channel":"system"}"#;
         let msg = handle_client_text(json, &mut session, &any_nonempty);
-        assert_eq!(msg.msg_type, "ack");
+        assert_eq!(msg.msg_type, "error");
         assert_eq!(msg.id, Some("req-1".into()));
-        assert!(session.is_subscribed(&Channel::System));
+        assert_eq!(msg.payload["reason"], "unknown channel: system");
+        assert_eq!(session.subscription_count(), 0);
     }
 
     #[test]
@@ -1277,11 +1395,13 @@ mod tests {
     #[test]
     fn handle_text_unsubscribe_removes_subscription() {
         let mut session = WsSession::authenticated();
-        session.subscribe(Channel::System);
-        let json = r#"{"msg_type":"unsubscribe","channel":"system"}"#;
-        let msg = handle_client_text(json, &mut session, &any_nonempty);
+        let run_id = RunId::new();
+        let channel = Channel::Run(run_id);
+        session.subscribe(channel.clone());
+        let json = format!(r#"{{"msg_type":"unsubscribe","channel":"runs:{run_id}"}}"#);
+        let msg = handle_client_text(&json, &mut session, &any_nonempty);
         assert_eq!(msg.msg_type, "ack");
-        assert!(!session.is_subscribed(&Channel::System));
+        assert!(!session.is_subscribed(&channel));
     }
 
     #[test]

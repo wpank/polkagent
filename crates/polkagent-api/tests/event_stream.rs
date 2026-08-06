@@ -120,6 +120,16 @@ async fn connect_command(server: &LiveServer) -> ClientSocket {
     .0
 }
 
+async fn connect_command_at_cursor(server: &LiveServer, cursor: &str) -> ClientSocket {
+    connect_async(format!(
+        "{}/ws/v1alpha1?token=test-token&cursor={cursor}",
+        server.ws_base_url
+    ))
+    .await
+    .expect("connect checkpointed command WebSocket")
+    .0
+}
+
 async fn send_command(socket: &mut ClientSocket, message: serde_json::Value) {
     socket
         .send(Message::Text(message.to_string().into()))
@@ -889,6 +899,200 @@ async fn command_socket_reconnect_is_truthfully_live_only_without_cursor_protoco
     let future = next_json(&mut reconnected).await;
     assert_eq!(future["payload"]["sequence"], 3);
     assert_ne!(future["payload"]["sequence"], 2);
+}
+
+#[tokio::test]
+async fn command_socket_cursor_replays_filters_reconnects_and_dedupes_across_pages() {
+    let target_run = RunId::new();
+    let unrelated_run = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    for sequence in 1..=258 {
+        let (stored, _) = if sequence == 1 || sequence == 258 {
+            stored_event(sequence, target_run, EventKind::RunCreated)
+        } else {
+            stored_event(sequence, unrelated_run, EventKind::RunQueued)
+        };
+        store.insert(stored).await;
+    }
+    let bus = EventBus::new(8);
+    let server = spawn_server(Config::default(), bus.clone(), Some(store.clone())).await;
+    let channel = format!("runs:{target_run}");
+    let mut initial = connect_command_at_cursor(&server, "v1:0").await;
+    subscribe(&mut initial, &channel, "initial-subscribe").await;
+
+    let first = next_json(&mut initial).await;
+    let across_page = next_json(&mut initial).await;
+    assert_eq!(first["payload"]["sequence"], 1);
+    assert_eq!(first["cursor"], "v1:1");
+    assert_eq!(across_page["payload"]["sequence"], 258);
+    assert_eq!(across_page["cursor"], "v1:258");
+    assert_eq!(first["channel"], channel);
+    assert_eq!(across_page["channel"], channel);
+    expect_no_frame(&mut initial).await;
+    let initial_reads = store.reads().await;
+    assert_eq!(initial_reads[..2], [(0, 256), (256, 256)]);
+    assert!(initial_reads.iter().all(|(_, limit)| *limit <= 256));
+    initial
+        .close(None)
+        .await
+        .expect("close initial command socket");
+
+    let (replay_stored, replay_live) = stored_event(259, target_run, EventKind::RunStarted);
+    store.insert(replay_stored).await;
+    let mut resumed = connect_command_at_cursor(&server, "v1:258").await;
+    subscribe(&mut resumed, &channel, "resume-subscribe").await;
+    let replayed = next_json(&mut resumed).await;
+    assert_eq!(replayed["payload"]["sequence"], 259);
+    assert_eq!(replayed["cursor"], "v1:259");
+
+    // A live notification for an event already recovered from the store is a
+    // wake-up only and must not duplicate the public checkpointed event.
+    bus.publish(replay_live);
+    let (future_stored, future_live) = stored_event(260, target_run, EventKind::RunStarted);
+    store.insert(future_stored).await;
+    bus.publish(future_live);
+    let future = next_json(&mut resumed).await;
+    assert_eq!(future["payload"]["sequence"], 260);
+    assert_eq!(future["cursor"], "v1:260");
+    expect_no_frame(&mut resumed).await;
+
+    let reads = store.reads().await;
+    assert!(
+        reads.contains(&(257, 1)),
+        "cursor validation is bounded: {reads:?}"
+    );
+    assert!(
+        reads.contains(&(258, 256)),
+        "resume replay is bounded: {reads:?}"
+    );
+}
+
+#[tokio::test]
+async fn command_socket_cursor_replay_and_lag_recovery_do_not_duplicate() {
+    let run_id = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    let (first_stored, _) = stored_event(1, run_id, EventKind::RunCreated);
+    store.insert(first_stored).await;
+    let bus = EventBus::new(2);
+    let server = spawn_server(Config::default(), bus.clone(), Some(store.clone())).await;
+    let mut socket = connect_command_at_cursor(&server, "v1:0").await;
+    subscribe(&mut socket, &format!("runs:{run_id}"), "cursor-lag").await;
+    let first = next_json(&mut socket).await;
+    assert_eq!(first["payload"]["sequence"], 1);
+    assert_eq!(first["cursor"], "v1:1");
+
+    store.block_lookup_on_call(1);
+    let (second_stored, second_live) = stored_event(2, run_id, EventKind::RunQueued);
+    store.insert(second_stored).await;
+    bus.publish(second_live);
+    store.blocked_lookup_started.notified().await;
+    for sequence in 3..=6 {
+        let (stored, live) = stored_event(sequence, run_id, EventKind::RunQueued);
+        store.insert(stored).await;
+        bus.publish(live);
+    }
+    store.release_blocked_lookup.notify_one();
+
+    let mut delivered = vec![1];
+    for expected in 2..=6 {
+        let event = next_json(&mut socket).await;
+        assert_eq!(event["cursor"], format!("v1:{expected}"));
+        delivered.push(event["payload"]["sequence"].as_u64().expect("sequence"));
+    }
+    assert_eq!(delivered, (1..=6).collect::<Vec<_>>());
+    expect_no_frame(&mut socket).await;
+    let reads = store.reads().await;
+    assert!(
+        reads.contains(&(1, 256)),
+        "lag recovery starts after cursor: {reads:?}"
+    );
+    assert!(
+        reads.contains(&(6, 256)),
+        "lag wake-up deduplicates: {reads:?}"
+    );
+}
+
+#[tokio::test]
+async fn command_socket_cursor_rejects_malformed_stale_and_future_tokens() {
+    let run_id = RunId::new();
+    let store = Arc::new(TestEventStore::default());
+    let (stored, _) = stored_event(2, run_id, EventKind::RunCreated);
+    store.insert(stored).await;
+    let server = spawn_server(Config::default(), EventBus::new(4), Some(store.clone())).await;
+
+    for cursor in ["garbage", "v2:2", "v1:-1", "v1:02"] {
+        let error = connect_async(format!(
+            "{}/ws/v1alpha1?token=test-token&cursor={cursor}",
+            server.ws_base_url
+        ))
+        .await
+        .expect_err("malformed cursor must reject upgrade");
+        assert_eq!(http_error_status(error), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let stale = connect_async(format!(
+        "{}/ws/v1alpha1?token=test-token&cursor=v1:1",
+        server.ws_base_url
+    ))
+    .await
+    .expect_err("retained history no longer proves stale cursor");
+    assert_eq!(http_error_status(stale), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let future = connect_async(format!(
+        "{}/ws/v1alpha1?token=test-token&cursor=v1:3",
+        server.ws_base_url
+    ))
+    .await
+    .expect_err("future cursor must reject upgrade");
+    assert_eq!(http_error_status(future), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn command_socket_cursor_validation_sanitizes_backend_failure() {
+    let store = Arc::new(TestEventStore::default());
+    store.fail_on_read(1);
+    let server = spawn_server(Config::default(), EventBus::new(4), Some(store)).await;
+    let error = connect_async(format!(
+        "{}/ws/v1alpha1?token=test-token&cursor=v1:1",
+        server.ws_base_url
+    ))
+    .await
+    .expect_err("cursor validation backend failure rejects upgrade");
+    let WebSocketError::Http(response) = error else {
+        panic!("expected HTTP handshake failure");
+    };
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response
+        .body()
+        .as_deref()
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default();
+    assert!(body.contains("durable reconnect cursor validation unavailable"));
+    assert!(!body.contains(PRIVATE_BACKEND_SENTINEL));
+}
+
+#[tokio::test]
+async fn command_socket_rejects_the_producer_less_system_channel() {
+    let server = spawn_server(
+        Config::default(),
+        EventBus::new(4),
+        Some(Arc::new(TestEventStore::default())),
+    )
+    .await;
+    let mut socket = connect_command(&server).await;
+    send_command(
+        &mut socket,
+        serde_json::json!({
+            "msg_type": "subscribe",
+            "id": "system-subscribe",
+            "channel": "system",
+        }),
+    )
+    .await;
+    let error = next_json(&mut socket).await;
+    assert_eq!(error["msg_type"], "error");
+    assert_eq!(error["id"], "system-subscribe");
+    assert_eq!(error["payload"]["reason"], "unknown channel: system");
 }
 
 #[tokio::test]
