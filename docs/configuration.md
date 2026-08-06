@@ -95,6 +95,7 @@ connect_timeout_secs = 5
 max_concurrent = 10
 
 [policy]
+enabled = false
 policy_dir = "~/.config/polkagent/policies"
 default_policy = "default"
 
@@ -179,6 +180,13 @@ read_only = true             # write effects require an explicit Cedar grant
 timeout_secs = 120
 ```
 
+Policy loading is opt-in. With `policy.enabled = false`, the runtime installs
+an empty default-deny resolver. When enabled, it loads exactly
+`<policy_dir>/<default_policy>.toml`; a missing, malformed, unknown-field, or
+unsafe relative path fails runtime startup. Policy rule effects are `allow`,
+`deny`, and `require_approval`. A matching deny always wins, and a matching
+approval rule wins over allow without granting immediate authority.
+
 ## Environment Variables
 
 All configuration keys can be overridden via environment variables. Environment variables are applied last and take the highest precedence.
@@ -202,6 +210,7 @@ All configuration keys can be overridden via environment variables. Environment 
 | `POLKAGENT_TUI_ATMOSPHERIC_EFFECTS` | `tui.atmospheric_effects` | |
 | `POLKAGENT_MEMORY_ENABLED` | `memory.enabled` | |
 | `POLKAGENT_MEMORY_BACKEND` | `memory.backend` | |
+| `POLKAGENT_POLICY_ENABLED` | `policy.enabled` | `false` |
 | `POLKAGENT_POLICY_DIR` | `policy.policy_dir` | |
 | `POLKAGENT_POLICY_DEFAULT` | `policy.default_policy` | |
 | `POLKAGENT_SERVER_BIND` | `server.bind_address` | |

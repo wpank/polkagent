@@ -1,6 +1,7 @@
 # Approval pause-and-resume design
 
-**Status:** active execution design; not implemented
+**Status:** active execution design; APR-02 policy/composition implemented,
+durable approval flow not implemented
 
 **Prepared:** 2026-08-06
 
@@ -24,7 +25,7 @@ This document does not claim that capability exists today.
 |---|---|---|
 | Interaction contract | `ApprovalView`, `ApprovalRequested`, `ApprovalResolved`, `approve`, `deny`, and typed `/approve` and `/deny` exist in `polkagent-interaction` | Production `runtime/src/interaction.rs` returns `Unavailable`; pending lookup is empty in chat and TUI adapters |
 | Tool execution | Grantless registered tools persist intent, claim, attempt, outcome, and correlated events before/after I/O | `run/src/orchestrator.rs` withholds every tool with `required_grant`; its `GrantResolver` is unused and `ToolContext.grants` is empty |
-| Policy | Default-deny evaluation, resolved grants, and an escalation-shaped decision exist | Runtime constructs an empty default policy; configured policy is not injected; policy rules cannot express approval, only allow/deny |
+| Policy | Default-deny evaluation, explicit deny/permit/`RequireApproval` effects, strict named-file loading, gate escalation, and exact resolver injection/readiness are implemented | The orchestrator does not yet consume the resolver for grant-bearing tool continuation; durable approval authority remains absent |
 | Effect persistence | `effect_intents`, attempts, immutable outcomes, retry classes, and an `ApprovalRecord` type exist | No approval table/store exists. SQLite ignores the real `effect_intents.state` column, overloads `claimed_by`, and does not enforce documented transitions |
 | Application service | Approval methods and a broadcast channel exist | Methods only verify an effect and send a process-local boolean; no decision is persisted |
 | API | Approve/deny routes exist | They expect unreachable states, create an ephemeral record, and emit bus-only events |
@@ -301,6 +302,17 @@ APR-05 -> APR-06 chat/TUI
 | APR-07 | Production ACP backend update and coordinator binding | APR-03, APR-04, APR-05 | Official client allow/reject/cancel/reconnect tests pass |
 | APR-08 | Cross-surface fixture, crash matrix, security and observability closure | APR-03, APR-05, APR-06, APR-07 | User-path E2E and required workspace gates pass |
 
+APR-02 completed on 2026-08-06. Policy loading is explicitly enabled and
+otherwise composes an empty default-deny resolver. Enabled loading selects one
+safe named TOML file, rejects unknown fields, duplicates, malformed rules,
+relative directory escape, policy-name traversal, and unsupported `~user`
+forms, and fails runtime startup on missing or invalid input. Matching deny
+beats approval and allow; approval beats allow. The exact resolver `Arc` is
+retained by `AppService` and injected into its orchestrator, with truthful
+ready/disabled startup state. This does not make the approval path operational:
+grant-bearing tools remain withheld until APR-01 and APR-03 compose durable
+coordination and continuation.
+
 Hot files have one integration owner at a time: SQLite migration registration,
 `store-trait/src/lib.rs`, `service/src/app.rs`, `run/src/orchestrator.rs`,
 `runtime/src/factory.rs`, `runtime/src/interaction.rs`, CLI TUI application
@@ -425,10 +437,11 @@ and why approval never overrides policy denial.
 
 ### Policy and execution
 
-- [ ] Make approval escalation explicitly configurable and serializable.
-- [ ] Inject the configured resolver through `AppServiceBuilder` and runtime.
+- [x] Make approval escalation explicitly configurable and serializable.
+- [x] Inject the configured resolver through `AppServiceBuilder` and runtime.
 - [ ] Advertise grant-bearing tools only when the complete approval path is
-  ready and policy permits exposure.
+  ready and policy permits exposure. APR-02 preserves the existing fail-closed
+  withholding; durable-path readiness depends on APR-01 and APR-03.
 - [ ] Persist checkpoint/effect/approval before publishing or waiting.
 - [ ] Wake from store-backed state, claim approved effects, pass exact grants,
   and revalidate security before I/O.
