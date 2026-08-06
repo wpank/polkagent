@@ -1176,6 +1176,50 @@ async fn command_socket_cursor_authenticates_before_validation_or_store_access()
 }
 
 #[tokio::test]
+async fn command_socket_first_message_auth_remains_enforced_through_full_server() {
+    let valid_token = "first-message-secret";
+    let mut config = Config::default();
+    config.auth.enabled = true;
+    config.auth.api_keys = vec![format!("{:x}", Sha256::digest(valid_token.as_bytes()))];
+    let server = spawn_server(
+        config,
+        EventBus::new(4),
+        Some(Arc::new(TestEventStore::default())),
+    )
+    .await;
+    let run_id = RunId::new();
+    let channel = format!("runs:{run_id}");
+    let mut socket = connect_async(format!("{}/ws/v1alpha1", server.ws_base_url))
+        .await
+        .expect("outer middleware must defer to command protocol auth")
+        .0;
+
+    send_command(
+        &mut socket,
+        serde_json::json!({
+            "msg_type": "subscribe",
+            "id": "before-auth",
+            "channel": channel.clone(),
+        }),
+    )
+    .await;
+    let rejected = next_json(&mut socket).await;
+    assert_eq!(rejected["msg_type"], "error");
+    assert_eq!(rejected["payload"]["reason"], "not authenticated");
+
+    send_command(
+        &mut socket,
+        serde_json::json!({
+            "msg_type": "auth",
+            "token": valid_token,
+        }),
+    )
+    .await;
+    assert_eq!(next_json(&mut socket).await["msg_type"], "ack");
+    subscribe(&mut socket, &channel, "after-auth").await;
+}
+
+#[tokio::test]
 async fn command_socket_rejects_the_producer_less_system_channel() {
     let server = spawn_server(
         Config::default(),
