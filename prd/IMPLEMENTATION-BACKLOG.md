@@ -474,9 +474,18 @@ adapter hooks through small interfaces.
   readiness remains explicitly unprojected rather than guessed.
 - [x] Add an explicit durable conversation selector. `s` asynchronously lists
   at most 50 same-agent sessions from the newest 1,000 summaries, loads the
-  exact selected transcript through `InteractionService`, refuses while a turn
-  or command is active, and guards stale list/load results. Restart coverage
-  proves exact selection while excluding a foreign-agent session.
+  exact selected transcript through `InteractionService`, remains available
+  while other turns run, serializes overlapping selector/command requests, and
+  guards stale list/load results. Restart coverage proves exact selection while
+  excluding a foreign-agent session.
+- [x] Replace the Console's single-active-turn controller with a bounded,
+  correlated activity controller. Up to eight distinct agent/conversation turns
+  can run concurrently; `[`/`]` switches a 32-entry retained activity window,
+  each conversation restores its bounded transcript/composer draft/history, and
+  `x` cancels only the selected exact activity. Duplicate work in the same
+  agent/conversation is rejected before the draft is cleared. Separate bounded
+  run/control channels apply backpressure, deterministic oldest-terminal
+  eviction bounds retention, and shutdown cancels/drains/reaps all tasks.
 - [ ] Add richer structured tool/plan transcript rendering. The selected
   durable session reloads bounded transcript/composer history after restart and
   renders typed lifecycle/usage/error observations.
@@ -493,16 +502,19 @@ adapter hooks through small interfaces.
   lifecycle guard and a real Unix PTY, including escape ordering and termios
   restoration. Windows ConPTY remains an evidence gap.
 
-**Current boundary:** terminal chat and the TUI Console are single-agent,
-conversation-model-selectable, single-active-turn surfaces over the durable
-`InteractionService`. The Console
-reloads per-agent transcript/history after restart, `/new` and `/resume` switch
-an explicit conversation ID, `s` provides a bounded same-agent durable session
-selector, and terminal chat can resume one.
+**Current boundary:** terminal chat remains a focused single-conversation
+surface. The TUI Console is conversation-model-selectable and now runs up to
+eight independent agent/conversation turns concurrently over the durable
+`InteractionService`. Its compact redaction-safe activity strip retains 32
+summaries, preserves a bounded viewport per conversation, supports background
+session navigation, and routes cancellation by selected activity identity.
+`/new` and `/resume` switch an explicit conversation ID, `s` provides a bounded
+same-agent durable session selector, and terminal chat can resume one.
 Prior completed turns enter model-executor context; string-only harness follow-
-up is unsupported. Broader shared-command coverage, simultaneous orchestration,
-rich plan/redaction-safe structured-tool rendering, and service-routed
-approvals remain open.
+up is unsupported. Group plans, durable child-run orchestration, richer
+redaction-safe plan/tool rendering, broader shared-command coverage, and
+service-routed approvals remain open. This activity slice must not be described
+as group orchestration or approval-capable execution.
 
 The TUI shell is now event-driven rather than a Crossterm poll/read frame loop.
 Headless tests cover bounded ordered input, latest-resize and tick coalescing,
@@ -515,11 +527,15 @@ prove cancel, prompt-entry, resize, and controller events remain responsive;
 stale generations cannot overwrite the newest selected run. SQLite lock waits
 and each RPC exchange are bounded. Normal shutdown joins the actual blocking
 handles within a six-second ceiling; an abnormal job that exceeds that ceiling
-is reported explicitly rather than being described as joined. Existing
-controller tests continue to cover prompt, follow-up, cancellation, commands,
-and session selection through awaited events; the Unix PTY lifecycle test
-continues to prove terminal restoration. Monitoring-tab content and rendering
-remain unchanged.
+is reported explicitly rather than being described as joined. Controller tests
+cover prompt, follow-up, cancellation, commands, and session selection through
+awaited events. A controlled two-execution fixture proves simultaneous
+streaming, background retention, exact-one cancellation, duplicate rejection,
+and draft/transcript restoration; separate cases prove the 8-run capacity,
+256-update channel backpressure, 32-activity terminal eviction, safe debug/
+activity projection, and complete task reaping. Existing real-runtime restart/
+follow-up/cancel coverage and the Unix PTY restoration proof remain green.
+Monitoring tabs remain otherwise unchanged.
 
 **Exit checks:** user can launch, select/create an agent, prompt, see tokens and
 tools, approve/deny, cancel, prompt again, restart, and resume. Headless event

@@ -128,8 +128,17 @@ reports.
   session, opens the `s` selector, excludes the foreign session, loads the exact
   selected transcript through `InteractionService`, and proves the next prompt
   appends to it. Controller/reducer coverage enforces the 1,000-summary scan and
-  50-row display bounds, active-work refusal, empty/error guidance, and stale
-  list/load result guards; selection creates no model turn.
+  50-row display bounds, serialized selector/command requests, background-turn
+  navigation, empty/error guidance, and stale list/load result guards; selection
+  creates no model turn. A controlled two-execution fixture starts distinct
+  agent/conversation activities concurrently, interleaves their output, restores
+  each durable transcript and unsent draft, rejects a same-conversation duplicate
+  without clearing input, cancels exactly one identity, and lets the other finish.
+  Separate tests prove the 8-run admission limit, bounded 256-update channel,
+  deterministic oldest-terminal eviction from a 32-activity window, redacted
+  public/debug projections, compact TestBackend rendering, and full task reaping.
+  Existing real-runtime restart/follow-up/cancel fixtures remain green; durable
+  group/child-run execution is not claimed.
   Durable `/model` fixtures drive two conversations through distinct real
   captured executor model IDs, survive service and process restart, retain the
   selected model in the TUI header/status, and reject unknown, cross-provider,

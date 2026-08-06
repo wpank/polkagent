@@ -21,8 +21,11 @@ protocol-stdout safety on that wire path.
 The F9 Console supports selecting an active agent, Unicode-safe multiline
 editing, registry-derived slash discovery/completion, durable prompts and
 follow-ups through `InteractionService`, typed output/progress/usage,
-cancellation, and transcript/history reload after restart. Its terminal
-lifecycle is proven in a real Unix PTY. `polkagent chat` now provides a focused
+cancellation, transcript/history reload after restart, and bounded simultaneous
+turns across distinct agent/conversation targets. `[`/`]` switches retained
+activities without losing per-conversation transcript, prompt draft, or history;
+`x` cancels the selected exact activity. Its terminal lifecycle is proven in a
+real Unix PTY. `polkagent chat` now provides a focused
 interactive/non-TTY adapter with explicit resume, multiline input, shared
 help/status/agents/agent/cancel/new/resume/model handlers, checkpoint
 resubscribe, and SIGINT cancellation. The TUI now executes the truthful
@@ -92,12 +95,16 @@ The actionable TUI slice now includes:
 
 The Console now has a bounded asynchronous same-agent session selector in
 addition to `/new` and `/resume`; it loads the exact selected durable session
-and refuses session changes while work is active. Deliberate gaps remain:
+while unrelated work continues and serializes overlapping control requests.
+The controller admits at most eight simultaneous agent/conversation turns and
+retains 32 compact activity summaries and bounded per-conversation viewports.
+Same-conversation duplicate work is rejected without clearing the draft, and
+capacity/retention/backpressure behavior is deterministic. Deliberate gaps remain:
 model executors receive the
 newest 32 completed pairs among the latest 1,000 prior turn records; harness-
 backed follow-up is explicitly unsupported because its string ingress cannot
 preserve roles. Direct legacy
-approval/database actions remain outside the Console; simultaneous runs, group
+approval/database actions remain outside the Console; group plans/child-run
 orchestration, attachments, word navigation, and shared command/session
 execution parity with ACP are not implemented.
 The architecture below remains the target rather than retroactively treating
@@ -150,11 +157,11 @@ It remains design input rather than the completion contract.
 |---|---|---|
 | Run `polkagent` with no arguments | Launches the monitoring TUI when stdout is a TTY | `polkagent-cli/src/main.rs` dispatches `None` to `launch_tui` |
 | Prompt Polkagent interactively | Implemented for single-agent turns with per-conversation model selection | `polkagent chat` and the F9 Console call the durable interaction service; model executors receive bounded typed completed history, while harness follow-up fails explicitly |
-| Prompt from inside the TUI | Implemented for one run at a time | `p` selects an active agent and opens the Console composer |
-| Start or cancel a run from the TUI | Implemented for the bounded slice | `InteractionService::prompt` creates correlated conversation/turn/run state; `x` requests exact turn cancellation |
+| Prompt from inside the TUI | Implemented for bounded simultaneous agent/conversation turns | `p` opens the selected Console conversation; distinct targets continue in the background, `[`/`]` switches retained activities, and same-conversation duplicates fail before draft loss |
+| Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns and `x` cancels only the selected exact activity |
 | Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, and `/model` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns; unavailable capabilities fail explicitly |
 | Approve/deny in the TUI | Not safely implemented | Legacy Approvals-tab writes mutate display-state rows but cannot durably resolve and resume the exact paused effect; coordinator-backed interaction approval remains required |
-| See live run output in the TUI | Implemented for typed single-agent events | Controller projects bounded interaction events and resubscribes from a durable checkpoint after lag; the real grantless tool lifecycle appears with stable effect-derived IDs and safe status, while approval/rich plan projection remains absent |
+| See live run output in the TUI | Implemented for correlated foreground/background activity | Controller projects bounded per-activity interaction events and resubscribes from a durable checkpoint after lag; a 32-entry redaction-safe strip exposes identity/status without prompt/output/error detail, while approval/rich plan projection remains absent |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
@@ -164,7 +171,7 @@ It remains design input rather than the completion contract.
 
 ## 1. What Polkagent actually has today
 
-### 1.1 The TUI is now an actionable monitor for one active run
+### 1.1 The TUI is now an actionable monitor for bounded concurrent runs
 
 The current Ratatui application has nine top-level tabs plus run detail:
 
@@ -204,9 +211,13 @@ The event loop in `crates/polkagent-cli/src/tui/app.rs`:
 `RunController`. The Console reads the shared typed command registry for
 discovery/help and routes prompt/cancel through the runtime's exact durable
 `InteractionService`. Sequential prompts reuse one durable per-agent
-interaction; `s` lists and selects same-agent interactions through that service,
-typed events and conversation/turn/run IDs project without blocking the UI,
-and bounded transcript/composer history reloads after restart. Deliberately
+interaction. Distinct selected agent/conversation targets may also execute
+concurrently: activity UUIDs correlate every update, the selected viewport
+restores its transcript/draft/history, and exact cancellation does not affect
+background turns. `s` lists and selects same-agent interactions through the
+service even while unrelated turns run; typed events and conversation/turn/run
+IDs project without blocking the UI, and bounded transcript/composer history
+reloads after restart. Deliberately
 blocked/failing refresh fixtures prove cancel, prompt entry, resize, and
 controller completion stay responsive, and that only the latest selected-run
 projection can apply.
@@ -1156,8 +1167,8 @@ a role-safe harness/session context contract.
   restart, typed refusal, and stale-result guards without creating a turn.
 - [x] Add an explicit durable conversation selector. `s` asynchronously lists
   a bounded set of same-agent summaries, loads the exact selected transcript,
-  excludes foreign-agent sessions, refuses during active work, and has restart
-  coverage.
+  excludes foreign-agent sessions, remains usable while unrelated work runs,
+  serializes control requests, and has restart coverage.
 - [x] Start/cancel correlated turns through `InteractionService`.
 - [x] Render live text, lifecycle/tool-name progress, usage, and errors for the
   Console-owned run.
@@ -1176,8 +1187,12 @@ a role-safe harness/session context contract.
   ordinary error, and caught panic.
 - [x] Add deterministic headless event-loop, resize/coalescing, blocked/failing
   projection, stale-generation, and bounded-shutdown tests.
-- [ ] Add simultaneous-run orchestration and its surface tests; the controller
-  intentionally remains single-active-turn today.
+- [x] Add the first simultaneous-run surface slice: eight correlated
+  agent/conversation turns, 32 retained redaction-safe activity summaries,
+  bounded per-conversation viewports, `[`/`]` switching, selected exact cancel,
+  same-conversation duplicate refusal, deterministic terminal eviction,
+  backpressure, and shutdown reaping. Controlled two-execution and TestBackend
+  fixtures cover the surface; group planning/child orchestration remains Phase 5.
 - [x] Add focused real-runtime restart/history/follow-up/cancellation tests plus
   stale-history race and UTF-8 output-bound regressions.
 
@@ -1345,7 +1360,7 @@ Zed, not merely a single-agent chat wrapper.
 | `polkagent-store-sqlite` | Session/turn/run-link/event persistence and the V18 approval/checkpoint coordinator are composed; keep surface code behind the serialized store operations |
 | `polkagent-cli/src/main.rs` | Early ACP dispatch, one-shot/TUI/chat/ACP/serve runtime convergence, and ACP-safe bounded diagnostics exist |
 | `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation agent/model selection exists; add richer editing/config only after execution semantics are truthful |
-| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection, shared commands, safe tool status, bounded async input, and background monitoring workers exist; add approvals/rich plans and simultaneous orchestration |
+| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection, shared commands, safe tool status, bounded simultaneous activity switching, async input, and background monitoring workers exist; add approvals/rich plans and group/child-run orchestration |
 | `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime plus skill reads and all four memory routes exist; compose the remaining published 9-route optional boundary one truthful family at a time |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
 | Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; attach manual Zed and active-turn permission/cancel evidence |
@@ -1404,8 +1419,10 @@ The terminal, TUI, HTTP, and ACP slices are shipped and intentionally bounded.
 `RuntimeFactory` plus the single-agent, model-selectable durable interaction/
 store/event/command service now exist. One-shot run, TUI, chat, ACP, and `serve`
 share that runtime; TUI/chat/HTTP/ACP share the durable interaction lifecycle.
+The TUI now supports bounded simultaneous turns across independently selected
+agent/conversation activities, but it does not yet build or execute group plans.
 Next implement the durable approval coordinator/checkpoint packet in
 [`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md), connect
 permissions with crash-safe resume, complete manual Zed evidence, define
-role-safe harness history, and expand truthful command coverage before
-multi-agent orchestration.
+role-safe harness history, expand truthful command coverage, and compose durable
+group/child-run orchestration on top of the proven activity surface.
