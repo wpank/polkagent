@@ -19,7 +19,10 @@ use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 use polkagent_cli::tui::{
     app::Tab,
     input::{key_to_action, InputMode, TuiAction},
-    state::{ApprovalItem, AuditEvent, ConfirmDialog, MemoryEntry, ScrollState, TuiState},
+    state::{
+        ApprovalActionTarget, ApprovalItem, ApprovalQueueStatus, AuditEvent, ConfirmDialog,
+        MemoryEntry, ScrollState, TuiState,
+    },
     theme::Theme,
     views::{audit::AuditFilter, console},
     widgets::{header_bar, status_bar},
@@ -1034,14 +1037,18 @@ fn test_system_view_narrow_no_panic() {
 // 9. Approval flow tests
 // =========================================================================
 
-fn make_approval_item(effect_id: &str, kind: &str) -> ApprovalItem {
+fn make_approval_item(approval_id: &str, title: &str) -> ApprovalItem {
     ApprovalItem {
-        effect_id: effect_id.to_owned(),
-        kind: kind.to_owned(),
+        conversation_id: "018f0000-0000-7000-8000-000000000001".to_owned(),
+        approval_id: approval_id.to_owned(),
+        effect_id: "018f0000-0000-7000-8000-000000000002".to_owned(),
         run_id: "run-abcdef12".to_owned(),
-        agent_name: "test-agent".to_owned(),
-        created_at: Utc::now(),
-        state: "pending".to_owned(),
+        tool_call_id: Some("tool-call-12".to_owned()),
+        title: title.to_owned(),
+        description: "Transfer the exact requested amount".to_owned(),
+        status: "pending".to_owned(),
+        policy_reason: Some("Operator approval required".to_owned()),
+        expires_at: None,
     }
 }
 
@@ -1051,17 +1058,23 @@ fn render_approvals_view(
     items: Vec<ApprovalItem>,
     confirm: ConfirmDialog,
 ) -> String {
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    let theme = Theme::dark();
     let mut state = TuiState::default();
     state.pending_approvals = items;
     state.confirm_dialog = confirm;
+    state.approval_queue.status = ApprovalQueueStatus::Ready;
+    state.approval_queue.conversation_id = Some("018f0000-0000-7000-8000-000000000001".to_owned());
+    render_approval_state(width, height, &state)
+}
+
+fn render_approval_state(width: u16, height: u16, state: &TuiState) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = Theme::dark();
 
     terminal
         .draw(|frame| {
             let area = Rect::new(0, 0, width, height);
-            polkagent_cli::tui::views::approvals::render(frame, area, &state, &theme);
+            polkagent_cli::tui::views::approvals::render(frame, area, state, &theme);
         })
         .expect("approvals render failed");
 
@@ -1092,17 +1105,52 @@ fn test_approvals_with_items() {
         text.contains("APPROVAL QUEUE"),
         "Approvals view should show APPROVAL QUEUE header, got: {text:?}"
     );
-    // Kind labels should appear.
+    // Exact service titles should appear.
     assert!(
         text.contains("sign") || text.contains("broadcast"),
-        "Approval item kinds should appear in the list, got: {text:?}"
+        "Approval service titles should appear in the list, got: {text:?}"
     );
+}
+
+#[test]
+fn test_approvals_detail_uses_exact_service_fields_without_invented_risk() {
+    let mut state = TuiState::default();
+    state.pending_approvals = vec![make_approval_item("approval-exact-123", "Write notes.txt")];
+    state.approvals_scroll.selected = Some(0);
+    state.approval_queue.status = ApprovalQueueStatus::Ready;
+    state.approval_queue.conversation_id = Some("018f0000-0000-7000-8000-000000000001".to_owned());
+    let text = render_approval_state(120, 30, &state);
+    assert!(text.contains("approval-exact-123"));
+    assert!(text.contains("Transfer the exact requested amount"));
+    assert!(text.contains("Operator approval required"));
+    assert!(text.contains("Tool call"));
+    assert!(!text.contains("Risk:"));
+    assert!(!text.contains("Pallet"));
+}
+
+#[test]
+fn test_approvals_unavailable_guidance_is_truthful_and_actionable() {
+    let mut state = TuiState::default();
+    state.approval_queue.status = ApprovalQueueStatus::Unavailable;
+    state.approval_queue.conversation_id = Some("018f0000-0000-7000-8000-000000000001".to_owned());
+    state.approval_queue.message = Some(
+        "Approval authority is not composed for this process; configure an authenticated durable approval surface and restart."
+            .to_owned(),
+    );
+    let text = render_approval_state(100, 24, &state);
+    assert!(text.contains("Approval authority unavailable"));
+    assert!(text.contains("not composed"));
+    assert!(text.contains("restart"));
+    assert!(text.contains("F9"));
 }
 
 #[test]
 fn test_approvals_confirm_approve_dialog() {
     let items = vec![make_approval_item("eff-abc123def456", "sign")];
-    let dialog = ConfirmDialog::ConfirmApprove("eff-abc123def456".to_owned());
+    let dialog = ConfirmDialog::ConfirmApprove(ApprovalActionTarget {
+        conversation_id: "018f0000-0000-7000-8000-000000000001".to_owned(),
+        approval_id: "eff-abc123def456".to_owned(),
+    });
     let text = render_approvals_view(100, 30, items, dialog);
     // The confirmation dialog should appear.
     assert!(
@@ -1114,7 +1162,10 @@ fn test_approvals_confirm_approve_dialog() {
 #[test]
 fn test_approvals_confirm_deny_dialog() {
     let items = vec![make_approval_item("eff-abc123def456", "sign")];
-    let dialog = ConfirmDialog::ConfirmDeny("eff-abc123def456".to_owned());
+    let dialog = ConfirmDialog::ConfirmDeny(ApprovalActionTarget {
+        conversation_id: "018f0000-0000-7000-8000-000000000001".to_owned(),
+        approval_id: "eff-abc123def456".to_owned(),
+    });
     let text = render_approvals_view(100, 30, items, dialog);
     assert!(
         text.contains("DENY") || text.contains("deny") || text.contains("Confirm"),

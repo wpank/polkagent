@@ -37,13 +37,17 @@ use ratatui::{
     Frame, Terminal,
 };
 
+use polkagent_interaction::{ApprovalDecision, InteractionErrorCode};
 use polkagent_runtime::PolkagentRuntime;
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::{
     input::{key_to_action, InputMode, TuiAction},
-    interaction::{ConsoleCommandSubmission, ControllerEvent, ControllerUpdate, RunController},
-    state::TuiState,
+    interaction::{
+        ApprovalDecisionRequest, ApprovalListRequest, ConsoleCommandSubmission, ControllerEvent,
+        ControllerUpdate, RunController,
+    },
+    state::{ApprovalActionTarget, ApprovalQueueStatus, ScrollState, TuiState},
     theme::Theme,
     views,
     widgets::{header_bar, status_bar},
@@ -585,7 +589,7 @@ pub enum Tab {
     System,
     /// F5 — Event timeline for selected run.
     Timeline,
-    /// F6 — Approval queue for pending effects.
+    /// F6 — Conversation-scoped durable approval queue.
     Approvals,
     /// F7 — Memory browser.
     Memory,
@@ -827,6 +831,9 @@ impl App {
     fn tick(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
         if self.last_refresh.elapsed().as_secs() >= REFRESH_INTERVAL_SECS {
             self.request_data_refresh();
+            if self.active_tab == Tab::Approvals && !self.run_controller.is_control_active() {
+                self.refresh_approvals();
+            }
         }
 
         self.background_jobs.request_chain_poll();
@@ -1151,10 +1158,10 @@ impl App {
                 use crate::tui::state::ConfirmDialog;
                 if self.active_tab == Tab::Approvals {
                     match &self.tui_state.confirm_dialog {
-                        ConfirmDialog::ConfirmApprove(effect_id) => {
+                        ConfirmDialog::ConfirmApprove(target) => {
                             // User confirmed — execute approval.
-                            let effect_id = effect_id.clone();
-                            self.execute_approve(&effect_id);
+                            let target = target.clone();
+                            self.execute_approval(&target, ApprovalDecision::Approve);
                             self.tui_state.confirm_dialog = ConfirmDialog::None;
                         }
                         ConfirmDialog::None => {
@@ -1162,7 +1169,10 @@ impl App {
                             if let Some(sel) = self.tui_state.approvals_scroll.selected {
                                 if let Some(item) = self.tui_state.pending_approvals.get(sel) {
                                     self.tui_state.confirm_dialog =
-                                        ConfirmDialog::ConfirmApprove(item.effect_id.clone());
+                                        ConfirmDialog::ConfirmApprove(ApprovalActionTarget {
+                                            conversation_id: item.conversation_id.clone(),
+                                            approval_id: item.approval_id.clone(),
+                                        });
                                 }
                             }
                         }
@@ -1179,10 +1189,10 @@ impl App {
                 use crate::tui::state::ConfirmDialog;
                 if self.active_tab == Tab::Approvals {
                     match &self.tui_state.confirm_dialog {
-                        ConfirmDialog::ConfirmDeny(effect_id) => {
+                        ConfirmDialog::ConfirmDeny(target) => {
                             // User confirmed denial.
-                            let effect_id = effect_id.clone();
-                            self.execute_deny(&effect_id);
+                            let target = target.clone();
+                            self.execute_approval(&target, ApprovalDecision::Deny { reason: None });
                             self.tui_state.confirm_dialog = ConfirmDialog::None;
                         }
                         ConfirmDialog::None => {
@@ -1190,7 +1200,10 @@ impl App {
                             if let Some(sel) = self.tui_state.approvals_scroll.selected {
                                 if let Some(item) = self.tui_state.pending_approvals.get(sel) {
                                     self.tui_state.confirm_dialog =
-                                        ConfirmDialog::ConfirmDeny(item.effect_id.clone());
+                                        ConfirmDialog::ConfirmDeny(ApprovalActionTarget {
+                                            conversation_id: item.conversation_id.clone(),
+                                            approval_id: item.approval_id.clone(),
+                                        });
                                 }
                             }
                         }
@@ -1548,7 +1561,22 @@ impl App {
                     self.tui_state.interaction.mark_cancelling();
                     self.tui_state.last_error = None;
                 } else {
-                    self.tui_state.last_error = Some("no console run is active".to_owned());
+                    self.tui_state.last_error = Some(
+                        selected.as_deref().map_or_else(
+                            || "no console run is active".to_owned(),
+                            |activity_id| {
+                                if self
+                                    .run_controller
+                                    .activity_awaits_approval(activity_id)
+                                {
+                                    "this turn has a pending durable approval; approve or deny it in F6 before cancelling (atomic approval cancellation is not yet composed)"
+                                        .to_owned()
+                                } else {
+                                    "no console run is active".to_owned()
+                                }
+                            },
+                        ),
+                    );
                 }
                 self.tui_state.mark_dirty();
             }
@@ -1581,6 +1609,9 @@ impl App {
 
             TuiAction::Refresh => {
                 self.request_data_refresh();
+                if self.active_tab == Tab::Approvals {
+                    self.refresh_approvals();
+                }
                 self.tui_state.mark_dirty();
             }
 
@@ -1642,6 +1673,7 @@ impl App {
     /// refresh durable run projections when lifecycle state changes.
     fn apply_controller_event(&mut self, update: ControllerUpdate) {
         let event = update.event();
+        self.apply_approval_controller_event(event);
         if let ControllerEvent::HistoryFailed { reason, .. } = event {
             self.tui_state.last_error = Some(reason.clone());
         }
@@ -1679,6 +1711,130 @@ impl App {
         if refresh {
             self.request_data_refresh();
         }
+    }
+
+    fn apply_approval_controller_event(&mut self, event: &ControllerEvent) {
+        match event {
+            ControllerEvent::ApprovalListLoaded {
+                request_id,
+                conversation_id,
+                approvals,
+                total_count,
+            } => {
+                if !self.approval_event_is_current(*request_id, *conversation_id) {
+                    return;
+                }
+                let conversation = conversation_id.to_string();
+                self.tui_state
+                    .replace_scoped_approvals(&conversation, approvals.clone());
+                self.tui_state.approval_queue.status = ApprovalQueueStatus::Ready;
+                self.tui_state.approval_queue.message = (*total_count > approvals.len()).then(|| {
+                    format!(
+                        "Showing the first {} of {total_count} pending approvals; resolve visible requests, then refresh to reveal the remainder.",
+                        approvals.len()
+                    )
+                });
+                self.tui_state.last_error = None;
+            }
+            ControllerEvent::ApprovalListFailed {
+                request_id,
+                conversation_id,
+                code,
+                reason,
+            } => {
+                if self.approval_event_is_current(*request_id, *conversation_id) {
+                    self.tui_state.pending_approvals.clear();
+                    self.tui_state.approvals_scroll = ScrollState::default();
+                    self.set_approval_failure(*code, reason);
+                }
+            }
+            ControllerEvent::ApprovalDecisionCompleted {
+                request_id,
+                conversation_id,
+                approval_id,
+                decision,
+                approval,
+            } => {
+                if !self.approval_event_is_current(*request_id, *conversation_id) {
+                    return;
+                }
+                if approval.approval_id != *approval_id {
+                    self.fail_approval_surface(
+                        "approval service returned a mismatched durable approval identity",
+                    );
+                    return;
+                }
+                self.tui_state.pending_approvals.retain(|item| {
+                    item.conversation_id != conversation_id.to_string()
+                        || item.approval_id != approval_id.to_string()
+                });
+                let len = self.tui_state.pending_approvals.len();
+                self.tui_state.approvals_scroll.selected = (len > 0).then(|| {
+                    self.tui_state
+                        .approvals_scroll
+                        .selected
+                        .unwrap_or(0)
+                        .min(len - 1)
+                });
+                self.tui_state.approval_queue.status = ApprovalQueueStatus::Ready;
+                let verb = match decision {
+                    ApprovalDecision::Approve => "Approved",
+                    ApprovalDecision::Deny { .. } => "Denied",
+                };
+                self.tui_state.approval_queue.message = Some(format!(
+                    "{verb} approval {}.",
+                    short_id(&approval_id.to_string())
+                ));
+                self.tui_state.last_error = None;
+            }
+            ControllerEvent::ApprovalDecisionFailed {
+                request_id,
+                conversation_id,
+                code,
+                reason,
+                ..
+            } if self.approval_event_is_current(*request_id, *conversation_id) => {
+                self.set_approval_failure(*code, reason);
+            }
+            _ => {}
+        }
+    }
+
+    fn approval_event_is_current(
+        &self,
+        request_id: uuid::Uuid,
+        conversation_id: polkagent_core::ConversationId,
+    ) -> bool {
+        self.tui_state.approval_queue.is_current(
+            &request_id.to_string(),
+            &conversation_id.to_string(),
+            self.tui_state.interaction.conversation_id.as_deref(),
+        )
+    }
+
+    fn set_approval_failure(&mut self, code: InteractionErrorCode, reason: &str) {
+        let unavailable = matches!(
+            code,
+            InteractionErrorCode::Unavailable | InteractionErrorCode::Unsupported
+        );
+        self.tui_state.approval_queue.status = if unavailable {
+            ApprovalQueueStatus::Unavailable
+        } else {
+            ApprovalQueueStatus::Failed
+        };
+        let guidance = if unavailable {
+            " Approval authority is not composed for this process; configure an authenticated durable approval surface and restart."
+        } else {
+            " Refresh and verify the selected durable conversation before retrying."
+        };
+        self.tui_state.approval_queue.message = Some(format!("{code}: {reason}.{guidance}"));
+        self.tui_state.last_error = Some(format!("approvals: {code}: {reason}"));
+    }
+
+    fn fail_approval_surface(&mut self, reason: &str) {
+        self.tui_state.approval_queue.status = ApprovalQueueStatus::Failed;
+        self.tui_state.approval_queue.message = Some(reason.to_owned());
+        self.tui_state.last_error = Some(format!("approvals: {reason}"));
     }
 
     // ── Data refresh ────────────────────────────────────────────────────────
@@ -1735,9 +1891,6 @@ impl App {
         }
         if let Some(health) = snapshot.health {
             self.tui_state.health = health;
-        }
-        if let Some(approvals) = snapshot.pending_approvals {
-            self.tui_state.pending_approvals = approvals;
         }
         if snapshot.selected_run == self.tui_state.selected_run {
             if let crate::tui::db::ProjectionValue::Value(detail) = snapshot.run_detail {
@@ -1797,15 +1950,35 @@ impl App {
 
     /// Refresh only the approval queue.
     fn refresh_approvals(&mut self) {
-        use crate::tui::db::TuiDb;
-
-        if let Ok(db) = TuiDb::from_pool(&self.pool) {
-            match db.pending_effects(100) {
-                Ok(approvals) => self.tui_state.pending_approvals = approvals,
-                Err(e) => {
-                    self.tui_state.last_error = Some(format!("approvals: {e}"));
-                }
-            }
+        let Some(conversation) = self.tui_state.interaction.conversation_id.clone() else {
+            self.tui_state.pending_approvals.clear();
+            self.tui_state.approvals_scroll = ScrollState::default();
+            self.tui_state.approval_queue.conversation_id = None;
+            self.tui_state.approval_queue.request_id = None;
+            self.tui_state.approval_queue.status = ApprovalQueueStatus::Unscoped;
+            self.tui_state.approval_queue.message = Some(
+                "Select, create, or resume a durable Console conversation in F9 first.".to_owned(),
+            );
+            return;
+        };
+        let Ok(conversation_id) = conversation.parse() else {
+            self.fail_approval_surface("the selected Console conversation ID is invalid");
+            return;
+        };
+        let request_id = uuid::Uuid::now_v7();
+        if self.tui_state.approval_queue.conversation_id.as_deref() != Some(&conversation) {
+            self.tui_state.pending_approvals.clear();
+            self.tui_state.approvals_scroll = ScrollState::default();
+        }
+        self.tui_state.approval_queue.conversation_id = Some(conversation);
+        self.tui_state.approval_queue.request_id = Some(request_id.to_string());
+        self.tui_state.approval_queue.status = ApprovalQueueStatus::Loading;
+        self.tui_state.approval_queue.message = None;
+        if let Err(error) = self.run_controller.list_approvals(ApprovalListRequest {
+            request_id,
+            conversation_id,
+        }) {
+            self.fail_approval_surface(error);
         }
     }
 
@@ -1842,45 +2015,47 @@ impl App {
         }
     }
 
-    /// Execute an approve action on an effect intent (write to DB).
-    ///
-    /// Inserts an effect outcome row with status='success'. Errors are stored
-    /// in `tui_state.last_error` rather than propagated.
-    fn execute_approve(&mut self, effect_id: &str) {
-        use crate::tui::db::TuiDb;
-
-        if let Ok(db) = TuiDb::from_pool(&self.pool) {
-            match db.approve_effect(effect_id) {
-                Ok(()) => {
-                    // Remove from the local pending list immediately.
-                    self.tui_state
-                        .pending_approvals
-                        .retain(|a| a.effect_id != effect_id);
-                    self.tui_state.last_error = None;
-                }
-                Err(e) => {
-                    self.tui_state.last_error = Some(format!("approve: {e}"));
-                }
-            }
+    /// Resolve one exact, currently visible approval request through the
+    /// authenticated shared service. A changed scope or stale row fails closed.
+    fn execute_approval(&mut self, target: &ApprovalActionTarget, decision: ApprovalDecision) {
+        if self.tui_state.interaction.conversation_id.as_deref()
+            != Some(target.conversation_id.as_str())
+            || !self.tui_state.pending_approvals.iter().any(|approval| {
+                approval.conversation_id == target.conversation_id
+                    && approval.approval_id == target.approval_id
+                    && approval.status == "pending"
+            })
+        {
+            self.fail_approval_surface(
+                "the selected approval changed or is no longer pending; refresh before deciding",
+            );
+            return;
         }
-    }
-
-    /// Execute a deny action on an effect intent (write to DB).
-    fn execute_deny(&mut self, effect_id: &str) {
-        use crate::tui::db::TuiDb;
-
-        if let Ok(db) = TuiDb::from_pool(&self.pool) {
-            match db.deny_effect(effect_id) {
-                Ok(()) => {
-                    self.tui_state
-                        .pending_approvals
-                        .retain(|a| a.effect_id != effect_id);
-                    self.tui_state.last_error = None;
-                }
-                Err(e) => {
-                    self.tui_state.last_error = Some(format!("deny: {e}"));
-                }
-            }
+        let Ok(conversation_id) = target.conversation_id.parse() else {
+            self.fail_approval_surface("the approval conversation ID is invalid");
+            return;
+        };
+        let Ok(approval_id) = target.approval_id.parse() else {
+            self.fail_approval_surface("the durable approval ID is invalid");
+            return;
+        };
+        let request_id = uuid::Uuid::now_v7();
+        self.tui_state.approval_queue.request_id = Some(request_id.to_string());
+        self.tui_state.approval_queue.status = ApprovalQueueStatus::Resolving;
+        self.tui_state.approval_queue.message = Some(format!(
+            "Resolving approval {}…",
+            short_id(&target.approval_id)
+        ));
+        if let Err(error) = self
+            .run_controller
+            .decide_approval(ApprovalDecisionRequest {
+                request_id,
+                conversation_id,
+                approval_id,
+                decision,
+            })
+        {
+            self.fail_approval_surface(error);
         }
     }
 
@@ -2226,6 +2401,10 @@ impl DerefMut for TuiTerminal {
     }
 }
 
+fn short_id(value: &str) -> &str {
+    &value[..value.len().min(8)]
+}
+
 /// Enter alternate screen mode and return a guarded, configured terminal.
 pub fn enter_tui() -> Result<TuiTerminal> {
     let restoration = RestorationGuard::new(CrosstermRestoreActions);
@@ -2269,7 +2448,6 @@ mod terminal_tests {
             agents: None,
             runs: None,
             health: None,
-            pending_approvals: None,
             run_detail: crate::tui::db::ProjectionValue::Unchanged,
             run_events: None,
             error_count: None,

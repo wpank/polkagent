@@ -1,97 +1,62 @@
-//! Approval Queue view (F6).
+//! Durable approval queue (F6).
 //!
-//! Lists pending effects awaiting approval. Each entry shows the effect kind,
-//! run context, and state. Color indicators:
-//!
-//! - Amber (warning) — pending
-//! - Jade (success) — approved / succeeded
-//! - Crimson (danger) — denied / failed
-//!
-//! Keyboard: Enter to view detail, 'a' to approve, 'd' to deny.
-//! First press shows a confirmation dialog; second press executes.
-//!
-//! ## Widget integration
-//!
-//! The detail panel on the right side now uses `action_card::render` to show
-//! a structured action card for the selected effect intent, with pallet/call
-//! information parsed from the effect kind and a generated narrative.
+//! This view renders only the redaction-safe projection returned by the
+//! shared interaction approval service. It never infers operations, risk, or
+//! policy from effect storage rows.
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table},
+    widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
     Frame,
 };
 
-use crate::tui::state::{ApprovalItem, ConfirmDialog, ScrollState, TuiState};
+use crate::tui::state::{
+    ApprovalActionTarget, ApprovalItem, ApprovalQueueStatus, ConfirmDialog, TuiState,
+};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::action_card;
-use crate::tui::widgets::action_card::{ActionCardData, RiskLevel};
 
-// ---------------------------------------------------------------------------
-// Public render entry point
-// ---------------------------------------------------------------------------
-
-/// Render the approval queue into `area`.
+/// Render the scoped approval queue and optional exact-identity confirmation.
 pub fn render(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
     if area.width >= 100 && state.approvals_scroll.selected.is_some() {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
             .split(area);
-
-        render_list(
-            frame,
-            cols[0],
-            &state.pending_approvals,
-            &state.approvals_scroll,
-            theme,
-        );
-        if let Some(sel) = state.approvals_scroll.selected {
-            if let Some(item) = state.pending_approvals.get(sel) {
-                render_detail(frame, cols[1], item, theme);
-            }
+        render_list(frame, cols[0], state, theme);
+        if let Some(item) = state
+            .approvals_scroll
+            .selected
+            .and_then(|index| state.pending_approvals.get(index))
+        {
+            render_detail(frame, cols[1], item, theme);
         }
     } else {
-        render_list(
-            frame,
-            area,
-            &state.pending_approvals,
-            &state.approvals_scroll,
-            theme,
-        );
+        render_list(frame, area, state, theme);
     }
 
-    // Render confirmation dialog overlay if active.
     match &state.confirm_dialog {
         ConfirmDialog::None => {}
-        ConfirmDialog::ConfirmApprove(effect_id) => {
-            render_confirm_dialog(frame, area, effect_id, true, theme);
+        ConfirmDialog::ConfirmApprove(target) => {
+            render_confirm_dialog(frame, area, target, true, theme);
         }
-        ConfirmDialog::ConfirmDeny(effect_id) => {
-            render_confirm_dialog(frame, area, effect_id, false, theme);
+        ConfirmDialog::ConfirmDeny(target) => {
+            render_confirm_dialog(frame, area, target, false, theme);
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Approval list table
-// ---------------------------------------------------------------------------
-
-fn render_list(
-    frame: &mut Frame,
-    area: Rect,
-    items: &[ApprovalItem],
-    scroll: &ScrollState,
-    theme: &Theme,
-) {
-    let pending_count = items.iter().filter(|i| i.state == "pending").count();
+fn render_list(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
+    let scope = state
+        .approval_queue
+        .conversation_id
+        .as_deref()
+        .map_or("no scope", short_id);
     let title = format!(
-        " APPROVAL QUEUE ({pending_count} pending, {} total) ",
-        items.len()
+        " APPROVAL QUEUE ({} pending · conversation {scope}) ",
+        state.pending_approvals.len()
     );
-
     let block = Block::default()
         .title(Span::styled(
             title,
@@ -101,306 +66,268 @@ fn render_list(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
         .style(Style::default().bg(theme.bg_raised));
-
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if items.is_empty() {
-        let msg = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "  No pending effects.",
-                Style::default().fg(theme.text_dim),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Effects awaiting approval will appear here.",
-                Style::default().fg(theme.text_dim),
-            )),
-        ]);
-        frame.render_widget(msg, inner);
+    if state.pending_approvals.is_empty() {
+        let (headline, guidance) = empty_guidance(state);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  {headline}"),
+                    Style::default().fg(status_color(state.approval_queue.status, theme)),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  {guidance}"),
+                    Style::default().fg(theme.text_dim),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  r: refresh  F9: select/create/resume conversation",
+                    Style::default().fg(theme.text_dim),
+                )),
+            ])
+            .wrap(Wrap { trim: false }),
+            inner,
+        );
         return;
     }
 
-    // Header row.
     let header = Row::new(vec![
-        Cell::from(Span::styled(" ST", Style::default().fg(theme.text_dim))),
-        Cell::from(Span::styled("Kind", Style::default().fg(theme.text_dim))),
-        Cell::from(Span::styled("Agent", Style::default().fg(theme.text_dim))),
-        Cell::from(Span::styled("State", Style::default().fg(theme.text_dim))),
-        Cell::from(Span::styled("Created", Style::default().fg(theme.text_dim))),
+        Cell::from(" ST"),
+        Cell::from("Title"),
+        Cell::from("Status"),
+        Cell::from("Run"),
+        Cell::from("Expires"),
     ])
-    .height(1)
-    .style(Style::default().add_modifier(Modifier::UNDERLINED));
-
-    let selected_idx = scroll.selected.unwrap_or(usize::MAX);
-
-    let rows: Vec<Row> = items
+    .style(
+        Style::default()
+            .fg(theme.text_dim)
+            .add_modifier(Modifier::UNDERLINED),
+    );
+    let selected = state.approvals_scroll.selected.unwrap_or(usize::MAX);
+    let rows = state
+        .pending_approvals
         .iter()
-        .skip(scroll.offset)
-        .take(inner.height.saturating_sub(1) as usize)
+        .skip(state.approvals_scroll.offset)
+        .take(inner.height.saturating_sub(2) as usize)
         .enumerate()
-        .map(|(vis_idx, item)| {
-            let abs_idx = vis_idx + scroll.offset;
-            let is_selected = abs_idx == selected_idx;
-
-            let row_style = if is_selected {
+        .map(|(visible, item)| {
+            let absolute = visible + state.approvals_scroll.offset;
+            let style = if absolute == selected {
                 Style::default()
                     .bg(theme.bg_highlight)
                     .fg(theme.rose_bright)
             } else {
                 Style::default().fg(theme.text_primary)
             };
-
-            let state_color = approval_state_color(&item.state, theme);
-            let glyph = approval_glyph(&item.state);
-            let created = item.created_at.format("%m-%d %H:%M").to_string();
-
-            // Truncate agent name.
-            let agent = if item.agent_name.len() > 16 {
-                format!("{}…", &item.agent_name[..15])
-            } else {
-                item.agent_name.clone()
-            };
-
             Row::new(vec![
                 Cell::from(Span::styled(
-                    format!(" {glyph}"),
-                    Style::default().fg(state_color),
+                    format!(" {}", approval_glyph(&item.status)),
+                    Style::default().fg(approval_state_color(&item.status, theme)),
                 )),
+                Cell::from(item.title.clone()),
                 Cell::from(Span::styled(
-                    item.kind.clone(),
-                    Style::default().fg(kind_color(&item.kind, theme)),
+                    item.status.clone(),
+                    Style::default().fg(approval_state_color(&item.status, theme)),
                 )),
-                Cell::from(agent),
-                Cell::from(Span::styled(
-                    item.state.clone(),
-                    Style::default().fg(state_color),
+                Cell::from(short_id(&item.run_id).to_owned()),
+                Cell::from(item.expires_at.map_or_else(
+                    || "—".to_owned(),
+                    |expiry| expiry.format("%m-%d %H:%M").to_string(),
                 )),
-                Cell::from(Span::styled(created, Style::default().fg(theme.text_dim))),
             ])
-            .height(1)
-            .style(row_style)
+            .style(style)
         })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(4),
-            Constraint::Min(12),
-            Constraint::Min(12),
-            Constraint::Length(10),
-            Constraint::Length(12),
-        ],
-    )
-    .header(header);
-
-    frame.render_widget(table, inner);
-
-    // Footer with key hints.
-    let footer_y = inner.y + inner.height.saturating_sub(1);
-    if footer_y < inner.y + inner.height {
-        let footer_area = Rect {
-            y: footer_y,
-            height: 1,
-            x: inner.x,
-            width: inner.width,
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                " Enter: detail  a: approve  d: deny  j/k: navigate  Esc: back",
-                Style::default().fg(theme.text_dim),
-            )),
-            footer_area,
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Approval detail panel — uses action_card widget
-// ---------------------------------------------------------------------------
-
-fn render_detail(frame: &mut Frame, area: Rect, item: &ApprovalItem, theme: &Theme) {
-    // Parse pallet and call from the effect kind (e.g. "sign", "broadcast",
-    // "tool:balance_transfer").  We produce a best-effort breakdown.
-    let (pallet, call) = parse_kind_to_pallet_call(&item.kind);
-
-    // Build a minimal params list from the effect metadata we have.
-    let short_effect = &item.effect_id[..8.min(item.effect_id.len())];
-    let short_run = &item.run_id[..8.min(item.run_id.len())];
-    let params: Vec<(&str, &str)> = vec![
-        ("effect_id", short_effect),
-        ("run_id", short_run),
-        ("agent", &item.agent_name),
-        ("state", &item.state),
-    ];
-
-    // Determine risk level from the effect kind.
-    let risk = effect_risk_level(&item.kind);
-
-    // Generate a simple narrative summary.
-    let narrative = format!(
-        "Effect '{}' from agent '{}' is in state '{}'. \
-         This action was submitted by run {} and requires your review before it is executed on-chain.",
-        item.kind, item.agent_name, item.state, short_run,
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(4),
+                Constraint::Min(18),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(12),
+            ],
+        )
+        .header(header),
+        inner,
     );
 
-    let card_data = ActionCardData {
-        pallet: &pallet,
-        call: &call,
-        params: &params,
-        narrative: &narrative,
-        risk,
-        hash: &item.effect_id,
+    let footer = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width,
+        height: 1,
     };
-
-    action_card::render(frame, area, &card_data, theme);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            " Enter: detail  a: approve  d: deny  r: refresh  j/k: navigate",
+            Style::default().fg(theme.text_dim),
+        )),
+        footer,
+    );
 }
 
-/// Split an effect kind string into (pallet, call) for the action card.
-fn parse_kind_to_pallet_call(kind: &str) -> (String, String) {
-    // Kinds: "sign", "broadcast", "tool", "tool:balance_transfer", "model", etc.
-    if let Some(sep) = kind.find(':') {
-        let outer = &kind[..sep];
-        let inner = &kind[sep + 1..];
-        // Try to derive pallet/call from inner if it contains a dot or underscore.
-        if let Some(dot) = inner.find('.') {
-            return (inner[..dot].to_owned(), inner[dot + 1..].to_owned());
-        }
-        (outer.to_owned(), inner.to_owned())
-    } else {
-        // Map well-known kinds to pallet::call.
-        let (pallet, call) = match kind {
-            "sign" => ("Crypto", "sign"),
-            "broadcast" => ("Chain", "broadcast"),
-            "tool" => ("Tool", "execute"),
-            "model" => ("Model", "infer"),
-            _ => ("Effect", kind),
-        };
-        (pallet.to_owned(), call.to_owned())
+fn empty_guidance(state: &TuiState) -> (&'static str, String) {
+    let message = state.approval_queue.message.clone().unwrap_or_default();
+    match state.approval_queue.status {
+        ApprovalQueueStatus::Unscoped => (
+            "No durable conversation selected.",
+            if message.is_empty() {
+                "Open F9 and select, create, or resume a durable Console conversation.".to_owned()
+            } else {
+                message
+            },
+        ),
+        ApprovalQueueStatus::Loading => (
+            "Loading scoped approvals…",
+            "The terminal remains interactive while the service responds.".to_owned(),
+        ),
+        ApprovalQueueStatus::Resolving => ("Resolving approval…", message),
+        ApprovalQueueStatus::Unavailable => (
+            "Approval authority unavailable.",
+            if message.is_empty() {
+                "Configure an authenticated durable approval authority and restart.".to_owned()
+            } else {
+                message
+            },
+        ),
+        ApprovalQueueStatus::Failed => ("Approval request failed.", message),
+        ApprovalQueueStatus::Ready => (
+            "No pending approvals in this conversation.",
+            if message.is_empty() {
+                "Pending durable approval requests will appear here.".to_owned()
+            } else {
+                message
+            },
+        ),
     }
 }
 
-/// Derive a `RiskLevel` from an effect kind string.
-fn effect_risk_level(kind: &str) -> RiskLevel {
-    match kind {
-        "sign" | "broadcast" => RiskLevel::High,
-        "tool" => RiskLevel::Medium,
-        _ => RiskLevel::Low,
-    }
+fn render_detail(frame: &mut Frame, area: Rect, item: &ApprovalItem, theme: &Theme) {
+    let block = Block::default()
+        .title(Span::styled(
+            " APPROVAL DETAIL ",
+            Style::default().fg(theme.rose).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border));
+    let expiry = item
+        .expires_at
+        .map_or_else(|| "—".to_owned(), |expiry| expiry.to_rfc3339());
+    let lines = vec![
+        detail_line("Approval", &item.approval_id, theme),
+        detail_line("Effect", &item.effect_id, theme),
+        detail_line("Run", &item.run_id, theme),
+        detail_line(
+            "Tool call",
+            item.tool_call_id.as_deref().unwrap_or("—"),
+            theme,
+        ),
+        detail_line("Status", &item.status, theme),
+        Line::from(""),
+        detail_line("Title", &item.title, theme),
+        detail_line("Description", &item.description, theme),
+        detail_line(
+            "Policy",
+            item.policy_reason.as_deref().unwrap_or("—"),
+            theme,
+        ),
+        detail_line("Expires", &expiry, theme),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
-// ---------------------------------------------------------------------------
-// Confirmation dialog
-// ---------------------------------------------------------------------------
+fn detail_line<'a>(label: &'a str, value: &'a str, theme: &Theme) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(format!(" {label}: "), Style::default().fg(theme.text_dim)),
+        Span::styled(value, Style::default().fg(theme.bone)),
+    ])
+}
 
-/// Render a modal confirmation dialog centered in `area`.
 fn render_confirm_dialog(
     frame: &mut Frame,
     area: Rect,
-    effect_id: &str,
-    is_approve: bool,
+    target: &ApprovalActionTarget,
+    approve: bool,
     theme: &Theme,
 ) {
-    // Center the dialog: 50 cols x 8 rows.
-    let dialog_w: u16 = 52;
-    let dialog_h: u16 = 8;
-    let x = area.x + area.width.saturating_sub(dialog_w) / 2;
-    let y = area.y + area.height.saturating_sub(dialog_h) / 2;
-    let dialog_area = Rect {
-        x,
-        y,
-        width: dialog_w,
-        height: dialog_h,
+    let width = 58;
+    let height = 8;
+    let dialog = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
     };
-
-    let (action, action_color, key_hint) = if is_approve {
-        (
-            "APPROVE",
-            theme.success,
-            "'a' again to confirm  Esc to cancel",
-        )
+    let (action, color, key) = if approve {
+        ("APPROVE", theme.success, 'a')
     } else {
-        ("DENY", theme.danger, "'d' again to confirm  Esc to cancel")
+        ("DENY", theme.danger, 'd')
     };
-
-    let short_eid = &effect_id[..8.min(effect_id.len())];
-
     let block = Block::default()
-        .title(Span::styled(
-            format!(" Confirm: {action} "),
-            Style::default()
-                .fg(action_color)
-                .add_modifier(Modifier::BOLD),
-        ))
+        .title(format!(" Confirm: {action} "))
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(action_color))
+        .border_style(Style::default().fg(color))
         .style(Style::default().bg(theme.bg_void));
-
-    let inner = block.inner(dialog_area);
-
-    // Clear the area first so the dialog appears on top.
-    frame.render_widget(Clear, dialog_area);
-    frame.render_widget(block, dialog_area);
-
-    let lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Effect: ", Style::default().fg(theme.text_dim)),
-            Span::styled(short_eid.to_owned(), Style::default().fg(theme.bone)),
+    let inner = block.inner(dialog);
+    frame.render_widget(Clear, dialog);
+    frame.render_widget(block, dialog);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            detail_line("Approval", &target.approval_id, theme),
+            detail_line("Conversation", &target.conversation_id, theme),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(" Press '{key}' again to {action}; Esc cancels."),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )),
         ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("  Press the key again to {action}."),
-            Style::default()
-                .fg(action_color)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("  {key_hint}"),
-            Style::default().fg(theme.text_dim),
-        )),
-    ];
-
-    frame.render_widget(Paragraph::new(lines), inner);
+        inner,
+    );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+fn short_id(value: &str) -> &str {
+    &value[..value.len().min(8)]
+}
 
-/// Color for the approval state indicator.
-fn approval_state_color(state: &str, theme: &Theme) -> ratatui::style::Color {
-    match state {
+fn status_color(status: ApprovalQueueStatus, theme: &Theme) -> ratatui::style::Color {
+    match status {
+        ApprovalQueueStatus::Unavailable | ApprovalQueueStatus::Failed => theme.danger,
+        ApprovalQueueStatus::Loading | ApprovalQueueStatus::Resolving => theme.warning,
+        ApprovalQueueStatus::Ready => theme.success,
+        ApprovalQueueStatus::Unscoped => theme.text_dim,
+    }
+}
+
+fn approval_state_color(status: &str, theme: &Theme) -> ratatui::style::Color {
+    match status {
         "pending" => theme.warning,
-        "claimed" => theme.rose,
-        "success" | "approved" => theme.success,
-        "failure" | "denied" | "timeout" => theme.danger,
+        "approved" => theme.success,
+        "denied" | "expired" | "cancelled" => theme.danger,
         _ => theme.text_dim,
     }
 }
 
-/// Glyph for an approval state.
-fn approval_glyph(state: &str) -> &'static str {
-    match state {
+fn approval_glyph(status: &str) -> &'static str {
+    match status {
         "pending" => "◦",
-        "claimed" => "▶",
-        "success" | "approved" => "✓",
-        "failure" | "denied" => "✗",
-        "timeout" => "⏱",
+        "approved" => "✓",
+        "denied" => "✗",
+        "expired" => "⏱",
+        "cancelled" => "■",
         _ => "?",
-    }
-}
-
-/// Color for the effect kind.
-fn kind_color(kind: &str, theme: &Theme) -> ratatui::style::Color {
-    match kind {
-        "sign" | "broadcast" => theme.warning,
-        "tool" => theme.dream,
-        "model" => theme.rose,
-        _ => theme.text_primary,
     }
 }

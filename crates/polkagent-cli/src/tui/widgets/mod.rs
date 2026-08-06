@@ -3,6 +3,10 @@
 //! Each widget is a standalone rendering function or type that accepts a
 //! `&Theme` and a `&Frame` area to draw into. Widgets never mutate state.
 
+#[allow(
+    dead_code,
+    reason = "retained reusable widget; approval rendering no longer fabricates action-card data"
+)]
 pub mod action_card;
 pub mod balance_display;
 pub mod chain_status;

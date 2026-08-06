@@ -13,12 +13,13 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
-    format_run_command_output, AgentTargetView, ClientContext, CommandContext, CommandExecutor,
-    CommandInvocation, CommandName, CommandOutput, CommandRegistry, CommandRequest,
-    CreateInteractionRequest, InteractionCommand, InteractionCommandRuntime, InteractionConfig,
-    InteractionContent, InteractionError, InteractionErrorCode, InteractionEvent,
-    InteractionOverrides, InteractionService, InteractionState as DurableInteractionState,
-    InteractionSummary, InteractionTarget, InteractionTurnId, ListInteractionsRequest, ParsedLine,
+    format_run_command_output, AgentTargetView, ApprovalDecision, ApprovalView, ClientContext,
+    CommandContext, CommandExecutor, CommandInvocation, CommandName, CommandOutput,
+    CommandRegistry, CommandRequest, CreateInteractionRequest, InteractionCommand,
+    InteractionCommandRuntime, InteractionConfig, InteractionContent, InteractionError,
+    InteractionErrorCode, InteractionEvent, InteractionOverrides, InteractionService,
+    InteractionState as DurableInteractionState, InteractionSummary, InteractionTarget,
+    InteractionTurnId, ListInteractionsRequest, ParsedLine,
     PromptRequest as InteractionPromptRequest, RunDetailView, RunSummaryView,
     ServiceCommandExecutor, StreamError, SubscriptionRequest, TranscriptRequest, TurnHandle,
     TurnState, UsageView,
@@ -46,6 +47,8 @@ const MAX_PROMPT_HISTORY: usize = 100;
 const MAX_SESSION_SELECTOR_ITEMS: usize = 50;
 const MAX_SESSION_SELECTOR_SCAN: u32 = 1_000;
 const MAX_SESSION_TITLE_BYTES: usize = 256;
+const MAX_PENDING_APPROVALS: usize = 100;
+const MAX_APPROVAL_ERROR_BYTES: usize = 512;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
 const CONTROLLER_EVENT_CAPACITY: usize = 256;
 /// Bound concurrently executing Console turns independently of durable history.
@@ -226,6 +229,20 @@ pub struct SessionLoadRequest {
     pub request_id: String,
     pub agent_id: String,
     pub conversation: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApprovalListRequest {
+    pub request_id: uuid::Uuid,
+    pub conversation_id: ConversationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalDecisionRequest {
+    pub request_id: uuid::Uuid,
+    pub conversation_id: ConversationId,
+    pub approval_id: ApprovalId,
+    pub decision: ApprovalDecision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1171,7 +1188,11 @@ impl InteractionState {
                 }
                 self.replace_conversation(conversation_id, model, turns);
             }
-            ControllerEvent::HistoryFailed { .. } => {}
+            ControllerEvent::HistoryFailed { .. }
+            | ControllerEvent::ApprovalListLoaded { .. }
+            | ControllerEvent::ApprovalListFailed { .. }
+            | ControllerEvent::ApprovalDecisionCompleted { .. }
+            | ControllerEvent::ApprovalDecisionFailed { .. } => {}
             ControllerEvent::CommandCompleted {
                 agent_id,
                 conversation_id,
@@ -1447,6 +1468,17 @@ fn apply_console_run_event(run: &mut ConsoleRun, event: &ControllerEvent) {
         }
         ControllerEvent::Output(text) => append_bounded_output(&mut run.output, text),
         ControllerEvent::Progress(detail) => run.detail.clone_from(detail),
+        ControllerEvent::TurnApprovalRequested { approval_id } => {
+            run.detail = format!(
+                "approval {approval_id} is pending; use F6 to approve or deny before cancelling"
+            );
+        }
+        ControllerEvent::TurnApprovalResolved {
+            approval_id,
+            decision,
+        } => {
+            run.detail = format!("approval {approval_id} resolved: {decision:?}");
+        }
         ControllerEvent::UsageUpdated {
             input_tokens,
             output_tokens,
@@ -1484,7 +1516,11 @@ fn apply_console_run_event(run: &mut ConsoleRun, event: &ControllerEvent) {
         | ControllerEvent::SessionListLoaded { .. }
         | ControllerEvent::SessionListFailed { .. }
         | ControllerEvent::SessionSelected { .. }
-        | ControllerEvent::SessionSelectionFailed { .. } => {}
+        | ControllerEvent::SessionSelectionFailed { .. }
+        | ControllerEvent::ApprovalListLoaded { .. }
+        | ControllerEvent::ApprovalListFailed { .. }
+        | ControllerEvent::ApprovalDecisionCompleted { .. }
+        | ControllerEvent::ApprovalDecisionFailed { .. } => {}
     }
 }
 
@@ -1726,6 +1762,33 @@ pub enum ControllerEvent {
         request_id: String,
         reason: String,
     },
+    ApprovalListLoaded {
+        request_id: uuid::Uuid,
+        conversation_id: ConversationId,
+        approvals: Vec<ApprovalView>,
+        total_count: usize,
+    },
+    ApprovalListFailed {
+        request_id: uuid::Uuid,
+        conversation_id: ConversationId,
+        code: InteractionErrorCode,
+        reason: String,
+    },
+    ApprovalDecisionCompleted {
+        request_id: uuid::Uuid,
+        conversation_id: ConversationId,
+        approval_id: ApprovalId,
+        decision: ApprovalDecision,
+        approval: ApprovalView,
+    },
+    ApprovalDecisionFailed {
+        request_id: uuid::Uuid,
+        conversation_id: ConversationId,
+        approval_id: ApprovalId,
+        decision: ApprovalDecision,
+        code: InteractionErrorCode,
+        reason: String,
+    },
     Started {
         conversation_id: String,
         model: Option<String>,
@@ -1736,6 +1799,13 @@ pub enum ControllerEvent {
     },
     Output(String),
     Progress(String),
+    TurnApprovalRequested {
+        approval_id: ApprovalId,
+    },
+    TurnApprovalResolved {
+        approval_id: ApprovalId,
+        decision: ApprovalDecision,
+    },
     UsageUpdated {
         input_tokens: u64,
         output_tokens: u64,
@@ -1805,6 +1875,10 @@ impl ControllerEvent {
                 | Self::SessionListFailed { .. }
                 | Self::SessionSelected { .. }
                 | Self::SessionSelectionFailed { .. }
+                | Self::ApprovalListLoaded { .. }
+                | Self::ApprovalListFailed { .. }
+                | Self::ApprovalDecisionCompleted { .. }
+                | Self::ApprovalDecisionFailed { .. }
         )
     }
 }
@@ -1833,6 +1907,7 @@ struct ActiveConsoleRun {
     agent_id: String,
     conversation_id: Option<String>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    awaiting_approval: bool,
 }
 
 #[cfg(test)]
@@ -1850,6 +1925,7 @@ type TestRunWorker = Arc<
 pub struct RunController {
     task_runtime: Option<tokio::runtime::Handle>,
     polkagent_runtime: PolkagentRuntime,
+    approval_service: Arc<dyn InteractionService>,
     event_tx: mpsc::Sender<ControllerEvent>,
     event_rx: mpsc::Receiver<ControllerEvent>,
     run_event_tx: mpsc::Sender<RunActivityUpdate>,
@@ -1867,9 +1943,12 @@ impl RunController {
     pub fn new(polkagent_runtime: PolkagentRuntime) -> Self {
         let (event_tx, event_rx) = mpsc::channel(CONTROLLER_EVENT_CAPACITY);
         let (run_event_tx, run_event_rx) = mpsc::channel(CONTROLLER_EVENT_CAPACITY);
+        let approval_service: Arc<dyn InteractionService> =
+            polkagent_runtime.interactions().clone();
         Self {
             task_runtime: tokio::runtime::Handle::try_current().ok(),
             polkagent_runtime,
+            approval_service,
             event_tx,
             event_rx,
             run_event_tx,
@@ -1893,6 +1972,12 @@ impl RunController {
         controller.test_run_worker = Some(worker);
         controller.shutdown_grace = shutdown_grace;
         controller
+    }
+
+    #[cfg(test)]
+    fn with_test_approval_service(mut self, service: Arc<dyn InteractionService>) -> Self {
+        self.approval_service = service;
+        self
     }
 
     fn track_task(&mut self, task: tokio::task::JoinHandle<()>) {
@@ -1932,6 +2017,7 @@ impl RunController {
                 agent_id: request.agent_id.clone(),
                 conversation_id: request.conversation_id.clone(),
                 cancel: Some(cancel_tx),
+                awaiting_approval: false,
             },
         );
 
@@ -2482,11 +2568,130 @@ impl RunController {
         Ok(())
     }
 
+    /// List pending approvals through the authenticated shared service.
+    /// Completion is correlated to the exact durable conversation and never
+    /// performs database I/O on the terminal thread.
+    pub fn list_approvals(&mut self, request: ApprovalListRequest) -> Result<(), &'static str> {
+        if self.control_active {
+            return Err("another Console or approval action is already active");
+        }
+        let Some(task_runtime) = self.task_runtime.clone() else {
+            return Err("interactive approval runtime is unavailable");
+        };
+        self.control_active = true;
+        let service = Arc::clone(&self.approval_service);
+        let event_tx = self.event_tx.clone();
+        let task = task_runtime.spawn(async move {
+            match service
+                .list_pending_approvals(request.conversation_id)
+                .await
+            {
+                Ok(mut approvals) => {
+                    let total_count = approvals.len();
+                    approvals.truncate(MAX_PENDING_APPROVALS);
+                    let _ = event_tx
+                        .send(ControllerEvent::ApprovalListLoaded {
+                            request_id: request.request_id,
+                            conversation_id: request.conversation_id,
+                            approvals,
+                            total_count,
+                        })
+                        .await;
+                }
+                Err(error) => {
+                    let (code, reason) = safe_approval_error(&error);
+                    let _ = event_tx
+                        .send(ControllerEvent::ApprovalListFailed {
+                            request_id: request.request_id,
+                            conversation_id: request.conversation_id,
+                            code,
+                            reason,
+                        })
+                        .await;
+                }
+            }
+        });
+        self.track_task(task);
+        Ok(())
+    }
+
+    /// Resolve one exact approval request through the shared durable CAS.
+    pub fn decide_approval(
+        &mut self,
+        request: ApprovalDecisionRequest,
+    ) -> Result<(), &'static str> {
+        if self.control_active {
+            return Err("another Console or approval action is already active");
+        }
+        let Some(task_runtime) = self.task_runtime.clone() else {
+            return Err("interactive approval runtime is unavailable");
+        };
+        self.control_active = true;
+        let service = Arc::clone(&self.approval_service);
+        let event_tx = self.event_tx.clone();
+        let task = task_runtime.spawn(async move {
+            let result = match &request.decision {
+                ApprovalDecision::Approve => {
+                    service
+                        .approve(request.conversation_id, request.approval_id)
+                        .await
+                }
+                ApprovalDecision::Deny { reason } => {
+                    service
+                        .deny(request.conversation_id, request.approval_id, reason.clone())
+                        .await
+                }
+            };
+            match result {
+                Ok(approval) => {
+                    let _ = event_tx
+                        .send(ControllerEvent::ApprovalDecisionCompleted {
+                            request_id: request.request_id,
+                            conversation_id: request.conversation_id,
+                            approval_id: request.approval_id,
+                            decision: request.decision,
+                            approval,
+                        })
+                        .await;
+                }
+                Err(error) => {
+                    let (code, reason) = safe_approval_error(&error);
+                    let _ = event_tx
+                        .send(ControllerEvent::ApprovalDecisionFailed {
+                            request_id: request.request_id,
+                            conversation_id: request.conversation_id,
+                            approval_id: request.approval_id,
+                            decision: request.decision,
+                            code,
+                            reason,
+                        })
+                        .await;
+                }
+            }
+        });
+        self.track_task(task);
+        Ok(())
+    }
+
     pub fn cancel_activity(&mut self, activity_id: &str) -> bool {
+        if self
+            .active_runs
+            .get(activity_id)
+            .is_some_and(|run| run.awaiting_approval)
+        {
+            return false;
+        }
         self.active_runs
             .get_mut(activity_id)
             .and_then(|run| run.cancel.take())
             .is_some_and(|cancel| cancel.send(()).is_ok())
+    }
+
+    #[must_use]
+    pub fn activity_awaits_approval(&self, activity_id: &str) -> bool {
+        self.active_runs
+            .get(activity_id)
+            .is_some_and(|run| run.awaiting_approval)
     }
 
     /// Compatibility helper for single-run callers. Multi-run surfaces must
@@ -2541,6 +2746,19 @@ impl RunController {
                     if let Some(run) = self.active_runs.get_mut(&update.activity_id) {
                         run.conversation_id = Some(conversation_id.clone());
                     }
+                }
+                match &update.event {
+                    ControllerEvent::TurnApprovalRequested { .. } => {
+                        if let Some(run) = self.active_runs.get_mut(&update.activity_id) {
+                            run.awaiting_approval = true;
+                        }
+                    }
+                    ControllerEvent::TurnApprovalResolved { .. } => {
+                        if let Some(run) = self.active_runs.get_mut(&update.activity_id) {
+                            run.awaiting_approval = false;
+                        }
+                    }
+                    _ => {}
                 }
                 if update.event.is_terminal() {
                     self.active_runs.remove(&update.activity_id);
@@ -2602,9 +2820,13 @@ impl RunController {
     /// Cancel, drain, and reap every task spawned by this controller.
     pub async fn shutdown(&mut self) {
         for run in self.active_runs.values_mut() {
-            if let Some(cancel) = run.cancel.take() {
-                let _ = cancel.send(());
+            if !run.awaiting_approval {
+                if let Some(cancel) = run.cancel.take() {
+                    let _ = cancel.send(());
+                }
             }
+            // For an awaiting approval, retain the sender until after local
+            // tasks are aborted so dropping it cannot look like cancellation.
         }
         let mut tasks = std::mem::take(&mut self.tasks);
         let completed = tokio::time::timeout(self.shutdown_grace, async {
@@ -2631,15 +2853,26 @@ impl RunController {
     }
 }
 
+fn safe_approval_error(error: &InteractionError) -> (InteractionErrorCode, String) {
+    let code = error.code;
+    let redacted = polkagent_telemetry::redact_string(&error.message);
+    (
+        code,
+        bounded_grapheme_prefix(&redacted, MAX_APPROVAL_ERROR_BYTES).to_owned(),
+    )
+}
+
 impl Drop for RunController {
     fn drop(&mut self) {
-        for run in self.active_runs.values_mut() {
-            if let Some(cancel) = run.cancel.take() {
-                let _ = cancel.send(());
-            }
-        }
         for task in &self.tasks {
             task.abort();
+        }
+        for run in self.active_runs.values_mut() {
+            if !run.awaiting_approval {
+                if let Some(cancel) = run.cancel.take() {
+                    let _ = cancel.send(());
+                }
+            }
         }
     }
 }
@@ -3350,14 +3583,16 @@ fn project_interaction_event(event: InteractionEvent) -> ControllerEvent {
         InteractionEvent::PlanUpdated { entries } => {
             ControllerEvent::Progress(format!("plan updated: {} step(s)", entries.len()))
         }
-        InteractionEvent::ApprovalRequested { request } => ControllerEvent::Progress(format!(
-            "approval {} is unavailable in Console; use an authorized approval surface",
-            request.approval_id
-        )),
+        InteractionEvent::ApprovalRequested { request } => ControllerEvent::TurnApprovalRequested {
+            approval_id: request.approval_id,
+        },
         InteractionEvent::ApprovalResolved {
             approval_id,
             decision,
-        } => ControllerEvent::Progress(format!("approval {approval_id} resolved: {decision:?}")),
+        } => ControllerEvent::TurnApprovalResolved {
+            approval_id,
+            decision,
+        },
         InteractionEvent::UsageUpdated { usage } => ControllerEvent::UsageUpdated {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -3429,9 +3664,11 @@ fn runtime_notes(readiness: &RuntimeReadiness) -> Vec<String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::time::Duration;
 
-    use polkagent_core::RunId;
+    use polkagent_core::{EffectId, RunId};
+    use polkagent_interaction::ToolCallId;
     use polkagent_runtime::{ConfigSource, RuntimeFactory};
     use polkagent_store_sqlite::{migrations, SqliteRunStore};
     use polkagent_store_trait::{RunStatus, RunStore};
@@ -3456,6 +3693,200 @@ mod tests {
         drop(pool);
         let runtime = RuntimeFactory::build(options).await.expect("build runtime");
         (temp, runtime)
+    }
+
+    #[derive(Clone)]
+    struct ApprovalFixtureService {
+        inner: Arc<dyn InteractionService>,
+        state: Arc<Mutex<ApprovalFixtureState>>,
+    }
+
+    struct ApprovalFixtureState {
+        conversation_id: ConversationId,
+        approval: ApprovalView,
+        decision: Option<ApprovalDecision>,
+    }
+
+    impl ApprovalFixtureService {
+        fn new(inner: Arc<dyn InteractionService>, conversation_id: ConversationId) -> Self {
+            Self {
+                inner,
+                state: Arc::new(Mutex::new(ApprovalFixtureState {
+                    conversation_id,
+                    approval: ApprovalView {
+                        approval_id: ApprovalId::new(),
+                        effect_id: EffectId::new(),
+                        run_id: RunId::new(),
+                        tool_call_id: Some(ToolCallId::new()),
+                        title: "Write notes.txt".to_owned(),
+                        description: "Write one file in the selected workspace".to_owned(),
+                        status: polkagent_interaction::ApprovalStatus::Pending,
+                        policy_reason: Some("filesystem write grant requires approval".to_owned()),
+                        expires_at: None,
+                    },
+                    decision: None,
+                })),
+            }
+        }
+
+        fn approval_id(&self) -> ApprovalId {
+            self.state
+                .lock()
+                .expect("approval fixture lock")
+                .approval
+                .approval_id
+        }
+
+        fn decide(
+            &self,
+            conversation_id: ConversationId,
+            approval_id: ApprovalId,
+            decision: ApprovalDecision,
+        ) -> Result<ApprovalView, InteractionError> {
+            let mut state = self.state.lock().expect("approval fixture lock");
+            if state.conversation_id != conversation_id || state.approval.approval_id != approval_id
+            {
+                return Err(InteractionError::new(
+                    InteractionErrorCode::PermissionDenied,
+                    "approval is outside the authenticated conversation scope",
+                ));
+            }
+            if let Some(existing) = &state.decision {
+                if existing != &decision {
+                    return Err(InteractionError::new(
+                        InteractionErrorCode::Conflict,
+                        "approval already has a different durable decision",
+                    ));
+                }
+                return Ok(state.approval.clone());
+            }
+            state.approval.status = match decision {
+                ApprovalDecision::Approve => polkagent_interaction::ApprovalStatus::Approved,
+                ApprovalDecision::Deny { .. } => polkagent_interaction::ApprovalStatus::Denied,
+            };
+            state.decision = Some(decision);
+            Ok(state.approval.clone())
+        }
+    }
+
+    #[async_trait]
+    impl InteractionService for ApprovalFixtureService {
+        async fn new_interaction(
+            &self,
+            request: CreateInteractionRequest,
+        ) -> Result<InteractionSummary, InteractionError> {
+            self.inner.new_interaction(request).await
+        }
+
+        async fn list_interactions(
+            &self,
+            request: ListInteractionsRequest,
+        ) -> Result<Vec<InteractionSummary>, InteractionError> {
+            self.inner.list_interactions(request).await
+        }
+
+        async fn load_interaction(
+            &self,
+            conversation_id: ConversationId,
+        ) -> Result<InteractionSummary, InteractionError> {
+            self.inner.load_interaction(conversation_id).await
+        }
+
+        async fn verify_interaction_origin(
+            &self,
+            conversation_id: ConversationId,
+            working_directory: &std::path::Path,
+        ) -> Result<(), InteractionError> {
+            self.inner
+                .verify_interaction_origin(conversation_id, working_directory)
+                .await
+        }
+
+        async fn list_turns(
+            &self,
+            conversation_id: ConversationId,
+        ) -> Result<Vec<polkagent_interaction::TurnSummary>, InteractionError> {
+            self.inner.list_turns(conversation_id).await
+        }
+
+        async fn load_transcript(
+            &self,
+            request: TranscriptRequest,
+        ) -> Result<Vec<polkagent_interaction::InteractionTranscriptTurn>, InteractionError>
+        {
+            self.inner.load_transcript(request).await
+        }
+
+        async fn delete_interaction(
+            &self,
+            conversation_id: ConversationId,
+        ) -> Result<(), InteractionError> {
+            self.inner.delete_interaction(conversation_id).await
+        }
+
+        async fn prompt(
+            &self,
+            request: InteractionPromptRequest,
+        ) -> Result<polkagent_interaction::StartedTurn, InteractionError> {
+            self.inner.prompt(request).await
+        }
+
+        async fn cancel_turn(&self, turn_id: InteractionTurnId) -> Result<(), InteractionError> {
+            self.inner.cancel_turn(turn_id).await
+        }
+
+        async fn set_config_option(
+            &self,
+            conversation_id: ConversationId,
+            update: polkagent_interaction::ConfigUpdate,
+        ) -> Result<InteractionConfig, InteractionError> {
+            self.inner.set_config_option(conversation_id, update).await
+        }
+
+        async fn list_pending_approvals(
+            &self,
+            conversation_id: ConversationId,
+        ) -> Result<Vec<ApprovalView>, InteractionError> {
+            let state = self.state.lock().expect("approval fixture lock");
+            if state.conversation_id != conversation_id {
+                return Err(InteractionError::new(
+                    InteractionErrorCode::PermissionDenied,
+                    "conversation is outside the authenticated approval scope",
+                ));
+            }
+            Ok((state.decision.is_none())
+                .then(|| state.approval.clone())
+                .into_iter()
+                .collect())
+        }
+
+        async fn approve(
+            &self,
+            conversation_id: ConversationId,
+            approval_id: ApprovalId,
+        ) -> Result<ApprovalView, InteractionError> {
+            self.decide(conversation_id, approval_id, ApprovalDecision::Approve)
+        }
+
+        async fn deny(
+            &self,
+            conversation_id: ConversationId,
+            approval_id: ApprovalId,
+            reason: Option<String>,
+        ) -> Result<ApprovalView, InteractionError> {
+            self.decide(
+                conversation_id,
+                approval_id,
+                ApprovalDecision::Deny { reason },
+            )
+        }
+
+        async fn subscribe(
+            &self,
+            request: SubscriptionRequest,
+        ) -> Result<polkagent_interaction::BoxInteractionEventStream, InteractionError> {
+            self.inner.subscribe(request).await
+        }
     }
 
     fn controlled_worker(gates: Arc<BTreeMap<String, Arc<ControlledFakeRun>>>) -> TestRunWorker {
@@ -4710,6 +5141,249 @@ mod tests {
         controller.shutdown().await;
         assert_eq!(gate_a.cancellations.load(Ordering::SeqCst), 1);
         assert_eq!(gate_b.cancellations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn approval_controller_fails_closed_without_composed_authority() {
+        let (temp, runtime) = Box::pin(controller_test_runtime()).await;
+        let agent_id = AgentId::new();
+        runtime
+            .pool()
+            .writer()
+            .execute(
+                "INSERT INTO agents
+                 (id, name, description, state, spec_json, created_at, updated_at)
+                 VALUES (?1, 'approval-fixture', NULL, 'active', '{}', ?2, ?2)",
+                [agent_id.to_string(), "2026-01-01T00:00:00Z".to_owned()],
+            )
+            .expect("seed approval fixture agent");
+        let interaction = runtime
+            .interactions()
+            .new_interaction(CreateInteractionRequest {
+                title: Some("approval authority fixture".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                client_context: ClientContext::new(temp.path().to_path_buf())
+                    .expect("fixture client context"),
+            })
+            .await
+            .expect("create durable interaction");
+        let conversation_id = interaction.conversation_id;
+        let mut controller = RunController::new(runtime);
+        let request_id = uuid::Uuid::now_v7();
+        controller
+            .list_approvals(ApprovalListRequest {
+                request_id,
+                conversation_id,
+            })
+            .expect("queue asynchronous approval list");
+        let update = tokio::time::timeout(Duration::from_secs(1), controller.recv_update())
+            .await
+            .expect("approval unavailable timeout")
+            .expect("approval unavailable update");
+        assert!(
+            matches!(
+                update.event(),
+                ControllerEvent::ApprovalListFailed {
+                    request_id: actual_request,
+                    conversation_id: actual_conversation,
+                    code: InteractionErrorCode::Unavailable,
+                    reason,
+                } if *actual_request == request_id
+                    && *actual_conversation == conversation_id
+                    && reason.contains("approval")
+            ),
+            "unexpected unavailable approval event: {update:?}"
+        );
+        assert!(!controller.is_control_active());
+        controller.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn approval_controller_preserves_scope_retry_conflict_and_restart_semantics() {
+        let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
+        let conversation_id = ConversationId::new();
+        let wrong_conversation_id = ConversationId::new();
+        let inner: Arc<dyn InteractionService> = runtime.interactions().clone();
+        let fixture = Arc::new(ApprovalFixtureService::new(inner, conversation_id));
+        let approval_id = fixture.approval_id();
+
+        let service: Arc<dyn InteractionService> = fixture.clone();
+        let activity_gate = Arc::new(ControlledFakeRun::default());
+        let activity_agent = AgentId::new().to_string();
+        let mut controller = RunController::with_test_run_worker(
+            runtime.clone(),
+            controlled_worker(Arc::new(BTreeMap::from([(
+                activity_agent.clone(),
+                Arc::clone(&activity_gate),
+            )]))),
+            Duration::from_millis(100),
+        )
+        .with_test_approval_service(service);
+        controller
+            .start(PromptRequest {
+                agent_id: activity_agent,
+                agent_name: "Active agent".to_owned(),
+                conversation_id: Some(conversation_id.to_string()),
+                prompt: "keep running".to_owned(),
+            })
+            .expect("start concurrent Console activity");
+        let started = controller
+            .recv_update()
+            .await
+            .expect("concurrent activity start");
+        assert!(matches!(started.event(), ControllerEvent::Started { .. }));
+        assert_eq!(controller.active_run_count(), 1);
+        let wrong_request = uuid::Uuid::now_v7();
+        controller
+            .list_approvals(ApprovalListRequest {
+                request_id: wrong_request,
+                conversation_id: wrong_conversation_id,
+            })
+            .expect("queue wrong-scope list");
+        let wrong = controller.recv_update().await.expect("wrong-scope update");
+        assert!(matches!(
+            wrong.event(),
+            ControllerEvent::ApprovalListFailed {
+                request_id,
+                conversation_id,
+                code: InteractionErrorCode::PermissionDenied,
+                ..
+            } if *request_id == wrong_request && *conversation_id == wrong_conversation_id
+        ));
+        assert_eq!(controller.active_run_count(), 1);
+
+        let list_request = uuid::Uuid::now_v7();
+        controller
+            .list_approvals(ApprovalListRequest {
+                request_id: list_request,
+                conversation_id,
+            })
+            .expect("queue exact list");
+        let listed = controller.recv_update().await.expect("exact list update");
+        assert!(matches!(
+            listed.event(),
+            ControllerEvent::ApprovalListLoaded { approvals, .. }
+                if approvals.len() == 1 && approvals[0].approval_id == approval_id
+        ));
+        assert_eq!(controller.active_run_count(), 1);
+        controller.shutdown().await;
+        assert_eq!(activity_gate.cancellations.load(Ordering::SeqCst), 1);
+
+        let service: Arc<dyn InteractionService> = fixture.clone();
+        let mut restarted = RunController::new(runtime).with_test_approval_service(service);
+        let restart_list_request = uuid::Uuid::now_v7();
+        restarted
+            .list_approvals(ApprovalListRequest {
+                request_id: restart_list_request,
+                conversation_id,
+            })
+            .expect("queue list after controller restart");
+        let restarted_list = restarted.recv_update().await.expect("restart list update");
+        assert!(matches!(
+            restarted_list.event(),
+            ControllerEvent::ApprovalListLoaded { approvals, .. }
+                if approvals.len() == 1 && approvals[0].approval_id == approval_id
+        ));
+
+        for _ in 0..2 {
+            let request_id = uuid::Uuid::now_v7();
+            restarted
+                .decide_approval(ApprovalDecisionRequest {
+                    request_id,
+                    conversation_id,
+                    approval_id,
+                    decision: ApprovalDecision::Approve,
+                })
+                .expect("queue idempotent approval");
+            let update = restarted.recv_update().await.expect("approval completion");
+            assert!(matches!(
+                update.event(),
+                ControllerEvent::ApprovalDecisionCompleted {
+                    approval,
+                    decision: ApprovalDecision::Approve,
+                    ..
+                } if approval.approval_id == approval_id
+                    && approval.status == polkagent_interaction::ApprovalStatus::Approved
+            ));
+        }
+
+        let conflict_request = uuid::Uuid::now_v7();
+        restarted
+            .decide_approval(ApprovalDecisionRequest {
+                request_id: conflict_request,
+                conversation_id,
+                approval_id,
+                decision: ApprovalDecision::Deny {
+                    reason: Some("changed decision".to_owned()),
+                },
+            })
+            .expect("queue conflicting denial");
+        let conflict = restarted.recv_update().await.expect("conflict completion");
+        assert!(matches!(
+            conflict.event(),
+            ControllerEvent::ApprovalDecisionFailed {
+                code: InteractionErrorCode::Conflict,
+                ..
+            }
+        ));
+        restarted.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_cancellation_fails_closed_while_durable_approval_is_pending() {
+        let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
+        let gate = Arc::new(ControlledFakeRun::default());
+        let agent_id = AgentId::new().to_string();
+        let conversation_id = ConversationId::new().to_string();
+        let mut controller = RunController::with_test_run_worker(
+            runtime,
+            controlled_worker(Arc::new(BTreeMap::from([(
+                agent_id.clone(),
+                Arc::clone(&gate),
+            )]))),
+            Duration::from_millis(25),
+        );
+        let activity_id = controller
+            .start(PromptRequest {
+                agent_id: agent_id.clone(),
+                agent_name: "Approval waiter".to_owned(),
+                conversation_id: Some(conversation_id.clone()),
+                prompt: "wait for approval".to_owned(),
+            })
+            .expect("start approval waiter");
+        let started = controller.recv_update().await.expect("started update");
+        assert!(matches!(started.event(), ControllerEvent::Started { .. }));
+
+        controller
+            .run_event_tx
+            .send(RunActivityUpdate {
+                activity_id: activity_id.clone(),
+                agent_id,
+                requested_conversation_id: Some(conversation_id),
+                event: ControllerEvent::TurnApprovalRequested {
+                    approval_id: ApprovalId::new(),
+                },
+            })
+            .await
+            .expect("queue approval request update");
+        let requested = controller
+            .recv_update()
+            .await
+            .expect("approval request update");
+        assert!(matches!(
+            requested.event(),
+            ControllerEvent::TurnApprovalRequested { .. }
+        ));
+        assert!(controller.activity_awaits_approval(&activity_id));
+        assert!(!controller.cancel_activity(&activity_id));
+        assert_eq!(gate.cancellations.load(Ordering::SeqCst), 0);
+
+        controller.shutdown().await;
+        assert_eq!(
+            gate.cancellations.load(Ordering::SeqCst),
+            0,
+            "shutdown must not request a generic turn cancel that can orphan the durable approval"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

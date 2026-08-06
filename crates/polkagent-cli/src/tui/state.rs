@@ -227,21 +227,125 @@ pub struct EventSummary {
 // Approval item
 // ---------------------------------------------------------------------------
 
-/// An effect intent awaiting approval, shown in the approval queue.
-#[derive(Debug, Clone)]
+/// Redaction-safe projection of one durable approval request.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalItem {
-    /// Effect intent ID.
+    /// Conversation whose authenticated approval scope owns this request.
+    pub conversation_id: String,
+    /// Stable durable approval-request identity.
+    pub approval_id: String,
+    /// Effect intent guarded by the request.
     pub effect_id: String,
-    /// Effect kind (sign, broadcast, tool, etc.).
-    pub kind: String,
-    /// Run ID that originated this effect.
+    /// Parent run.
     pub run_id: String,
-    /// Agent name for the owning run.
-    pub agent_name: String,
-    /// When the effect was created.
-    pub created_at: DateTime<Utc>,
-    /// Current state of the effect (pending, claimed, etc.).
-    pub state: String,
+    /// Optional linked tool call.
+    pub tool_call_id: Option<String>,
+    /// Safe, bounded operation title supplied by the approval service.
+    pub title: String,
+    /// Safe, bounded operation description supplied by the approval service.
+    pub description: String,
+    /// Durable approval lifecycle state.
+    pub status: String,
+    /// Safe policy explanation, when available.
+    pub policy_reason: Option<String>,
+    /// Decision deadline, when available.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl ApprovalItem {
+    /// Project the shared service view without exposing raw provider payloads.
+    #[must_use]
+    pub fn from_view(conversation_id: &str, view: &polkagent_interaction::ApprovalView) -> Self {
+        use polkagent_interaction::ApprovalStatus;
+
+        let status = match view.status {
+            ApprovalStatus::Pending => "pending",
+            ApprovalStatus::Approved => "approved",
+            ApprovalStatus::Denied => "denied",
+            ApprovalStatus::Expired => "expired",
+            ApprovalStatus::Cancelled => "cancelled",
+        };
+        Self {
+            conversation_id: conversation_id.to_owned(),
+            approval_id: view.approval_id.to_string(),
+            effect_id: view.effect_id.to_string(),
+            run_id: view.run_id.to_string(),
+            tool_call_id: view.tool_call_id.as_ref().map(ToString::to_string),
+            title: approval_display_text(&view.title, 160),
+            description: approval_display_text(&view.description, 1_024),
+            status: status.to_owned(),
+            policy_reason: view
+                .policy_reason
+                .as_deref()
+                .map(|reason| approval_display_text(reason, 512)),
+            expires_at: view.expires_at,
+        }
+    }
+}
+
+fn approval_display_text(value: &str, max_chars: usize) -> String {
+    let redacted = polkagent_telemetry::redact_string(value);
+    let normalized = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        normalized
+    } else {
+        let mut bounded = normalized
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>();
+        bounded.push('…');
+        bounded
+    }
+}
+
+/// Exact target retained by a confirmation dialog and revalidated on submit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalActionTarget {
+    pub conversation_id: String,
+    pub approval_id: String,
+}
+
+/// Current asynchronous state of the scoped F6 approval surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ApprovalQueueStatus {
+    /// No durable Console conversation is selected.
+    #[default]
+    Unscoped,
+    /// A service list request is active.
+    Loading,
+    /// The scoped list is current.
+    Ready,
+    /// An approve/deny compare-and-set is active.
+    Resolving,
+    /// No approval authority is composed for this process.
+    Unavailable,
+    /// A scoped request failed for another reason.
+    Failed,
+}
+
+/// Correlation and guidance for the approval queue.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ApprovalQueueState {
+    pub conversation_id: Option<String>,
+    pub request_id: Option<String>,
+    pub status: ApprovalQueueStatus,
+    pub message: Option<String>,
+}
+
+impl ApprovalQueueState {
+    /// Reject stale async completions after either the request or visible
+    /// conversation changes.
+    #[must_use]
+    pub fn is_current(
+        &self,
+        request_id: &str,
+        conversation_id: &str,
+        selected_conversation_id: Option<&str>,
+    ) -> bool {
+        self.request_id.as_deref() == Some(request_id)
+            && self.conversation_id.as_deref() == Some(conversation_id)
+            && selected_conversation_id == Some(conversation_id)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,10 +402,10 @@ pub enum ConfirmDialog {
     /// No dialog is active.
     #[default]
     None,
-    /// User pressed 'a' — confirm approval for the given `effect_id`.
-    ConfirmApprove(String),
-    /// User pressed 'd' — confirm denial for the given `effect_id`.
-    ConfirmDeny(String),
+    /// User pressed 'a' — confirm an exact scoped approval request.
+    ConfirmApprove(ApprovalActionTarget),
+    /// User pressed 'd' — confirm an exact scoped approval request.
+    ConfirmDeny(ApprovalActionTarget),
 }
 
 // ---------------------------------------------------------------------------
@@ -415,8 +519,11 @@ pub struct TuiState {
     /// Events for the selected run (timeline view).
     pub run_events: Vec<EventSummary>,
 
-    /// Pending effects awaiting approval (approval queue view).
+    /// Pending durable approval requests for the selected Console conversation.
     pub pending_approvals: Vec<ApprovalItem>,
+
+    /// Scope, correlation, and availability of the asynchronous approval queue.
+    pub approval_queue: ApprovalQueueState,
 
     /// Memory entries for the memory browser view.
     pub memory_entries: Vec<MemoryEntry>,
@@ -517,6 +624,35 @@ impl TuiState {
     /// Mark the state as requiring a re-render.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Replace a scoped service result while preserving selection by durable
+    /// approval identity. The queue is independently bounded from transport.
+    pub fn replace_scoped_approvals(
+        &mut self,
+        conversation_id: &str,
+        approvals: Vec<polkagent_interaction::ApprovalView>,
+    ) {
+        let selected_id = self
+            .approvals_scroll
+            .selected
+            .and_then(|index| self.pending_approvals.get(index))
+            .map(|item| item.approval_id.clone());
+        self.pending_approvals = approvals
+            .into_iter()
+            .filter(|approval| approval.status == polkagent_interaction::ApprovalStatus::Pending)
+            .take(100)
+            .map(|approval| ApprovalItem::from_view(conversation_id, &approval))
+            .collect();
+        self.approvals_scroll.selected = selected_id
+            .as_deref()
+            .and_then(|approval_id| {
+                self.pending_approvals
+                    .iter()
+                    .position(|item| item.approval_id == approval_id)
+            })
+            .or_else(|| (!self.pending_approvals.is_empty()).then_some(0));
+        self.approvals_scroll.offset = 0;
     }
 
     /// Recompute derived widget fields from the currently loaded run detail.
@@ -731,5 +867,94 @@ mod tests {
 
         state.chain_name = "Kusama".to_owned();
         assert_eq!(state.chain_name, "Kusama");
+    }
+
+    #[test]
+    fn approval_projection_is_redacted_bounded_and_identity_exact() {
+        let approval_id = polkagent_core::ApprovalId::new();
+        let effect_id = polkagent_core::EffectId::new();
+        let run_id = polkagent_core::RunId::new();
+        let view = polkagent_interaction::ApprovalView {
+            approval_id,
+            effect_id,
+            run_id,
+            tool_call_id: Some(polkagent_interaction::ToolCallId::new()),
+            title: format!(
+                "write\nnotes with sk-abc123def456ghi789 {}",
+                "x".repeat(300)
+            ),
+            description: format!("private\toperation {}", "d".repeat(2_000)),
+            status: polkagent_interaction::ApprovalStatus::Pending,
+            policy_reason: Some("credential sk-abc123def456ghi789".to_owned()),
+            expires_at: None,
+        };
+        let item = ApprovalItem::from_view("conversation-exact", &view);
+
+        assert_eq!(item.conversation_id, "conversation-exact");
+        assert_eq!(item.approval_id, approval_id.to_string());
+        assert_eq!(item.effect_id, effect_id.to_string());
+        assert_eq!(item.run_id, run_id.to_string());
+        assert_eq!(item.status, "pending");
+        assert!(!item.title.contains('\n'));
+        assert!(!item.description.contains('\t'));
+        assert!(!item.title.contains("abc123def456ghi789"));
+        assert!(!item
+            .policy_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("abc123def456ghi789"));
+        assert!(item.title.chars().count() <= 160);
+        assert!(item.description.chars().count() <= 1_024);
+    }
+
+    #[test]
+    fn approval_queue_rejects_stale_request_and_conversation_completions() {
+        let queue = ApprovalQueueState {
+            conversation_id: Some("conversation-new".to_owned()),
+            request_id: Some("request-new".to_owned()),
+            status: ApprovalQueueStatus::Loading,
+            message: None,
+        };
+        assert!(queue.is_current("request-new", "conversation-new", Some("conversation-new")));
+        assert!(!queue.is_current("request-old", "conversation-new", Some("conversation-new")));
+        assert!(!queue.is_current("request-new", "conversation-old", Some("conversation-new")));
+        assert!(!queue.is_current(
+            "request-new",
+            "conversation-new",
+            Some("conversation-switched")
+        ));
+    }
+
+    #[test]
+    fn approval_queue_is_bounded_and_preserves_selection_by_approval_id() {
+        fn view(title: String) -> polkagent_interaction::ApprovalView {
+            polkagent_interaction::ApprovalView {
+                approval_id: polkagent_core::ApprovalId::new(),
+                effect_id: polkagent_core::EffectId::new(),
+                run_id: polkagent_core::RunId::new(),
+                tool_call_id: None,
+                title,
+                description: "safe".to_owned(),
+                status: polkagent_interaction::ApprovalStatus::Pending,
+                policy_reason: None,
+                expires_at: None,
+            }
+        }
+
+        let mut state = TuiState::default();
+        let first = view("first".to_owned());
+        let selected = view("selected".to_owned());
+        state.replace_scoped_approvals("conversation", vec![first.clone(), selected.clone()]);
+        state.approvals_scroll.selected = Some(1);
+        let mut refreshed = vec![selected.clone(), first];
+        refreshed.extend((0..120).map(|index| view(format!("extra-{index}"))));
+        state.replace_scoped_approvals("conversation", refreshed);
+
+        assert_eq!(state.pending_approvals.len(), 100);
+        assert_eq!(state.approvals_scroll.selected, Some(0));
+        assert_eq!(
+            state.pending_approvals[0].approval_id,
+            selected.approval_id.to_string()
+        );
     }
 }

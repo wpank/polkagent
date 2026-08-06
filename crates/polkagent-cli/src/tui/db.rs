@@ -23,8 +23,8 @@ use rusqlite::Connection;
 use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::state::{
-    AgentSummary, ApprovalItem, AuditEvent, EventSummary, MemoryEntry as TuiMemoryEntry, RunDetail,
-    RunSummary, SystemHealth, TurnSummary,
+    AgentSummary, AuditEvent, EventSummary, MemoryEntry as TuiMemoryEntry, RunDetail, RunSummary,
+    SystemHealth, TurnSummary,
 };
 
 // ---------------------------------------------------------------------------
@@ -46,7 +46,6 @@ pub struct TuiProjectionSnapshot {
     pub agents: Option<Vec<AgentSummary>>,
     pub runs: Option<Vec<RunSummary>>,
     pub health: Option<SystemHealth>,
-    pub pending_approvals: Option<Vec<ApprovalItem>>,
     pub run_detail: ProjectionValue<Option<RunDetail>>,
     pub run_events: Option<Vec<EventSummary>>,
     pub error_count: Option<usize>,
@@ -75,7 +74,6 @@ impl TuiProjectionSnapshot {
             agents: None,
             runs: None,
             health: Some(health),
-            pending_approvals: None,
             run_detail: ProjectionValue::Unchanged,
             run_events: None,
             error_count: None,
@@ -100,7 +98,6 @@ pub fn load_projection_snapshot(
     let mut errors = Vec::new();
     let agents = collect_projection(&mut errors, "agents", db.agents());
     let runs = collect_projection(&mut errors, "runs", db.recent_runs(100));
-    let pending_approvals = collect_projection(&mut errors, "approvals", db.pending_effects(100));
     let run_detail = selected_run.map_or(ProjectionValue::Unchanged, |run_id| {
         collect_projection(&mut errors, "run_detail", db.run_detail(run_id))
             .map_or(ProjectionValue::Unchanged, ProjectionValue::Value)
@@ -120,7 +117,6 @@ pub fn load_projection_snapshot(
         agents,
         runs,
         health: Some(db.system_health(&db_path)),
-        pending_approvals,
         run_detail,
         run_events,
         error_count: Some(db.recent_error_count() as usize),
@@ -406,39 +402,6 @@ impl TuiDb {
         Ok(events)
     }
 
-    // ── Pending effects (approval queue) ─────────────────────────────────
-
-    /// Load pending effect intents that have no outcome yet.
-    pub fn pending_effects(&self, limit: usize) -> Result<Vec<ApprovalItem>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT ei.id, ei.kind, ei.run_id, a.name, ei.created_at, ei.state
-             FROM effect_intents ei
-             JOIN runs r ON r.id = ei.run_id
-             JOIN agents a ON a.id = r.agent_id
-             LEFT JOIN effect_outcomes eo ON eo.intent_id = ei.id
-             WHERE eo.id IS NULL
-             ORDER BY ei.created_at DESC
-             LIMIT ?1",
-        )?;
-
-        let items = stmt
-            .query_map([limit], |row| {
-                let created_str: String = row.get(4)?;
-                Ok(ApprovalItem {
-                    effect_id: row.get(0)?,
-                    kind: row.get(1)?,
-                    run_id: row.get(2)?,
-                    agent_name: row.get(3)?,
-                    created_at: parse_datetime(&created_str).unwrap_or_else(Utc::now),
-                    state: row.get(5)?,
-                })
-            })?
-            .filter_map(std::result::Result::ok)
-            .collect();
-
-        Ok(items)
-    }
-
     // ── System health ────────────────────────────────────────────────────
 
     /// Read aggregate counts for the system health panel.
@@ -697,42 +660,6 @@ impl TuiDb {
 
         let spent = total_tokens * DOLLARS_PER_TOKEN;
         (spent, DEFAULT_CEILING)
-    }
-
-    // ── Approvals (write) ─────────────────────────────────────────────────
-
-    /// Mark an effect intent as approved.
-    pub fn approve_effect(&self, effect_id: &str) -> Result<()> {
-        // We need a writer connection, but TuiDb only holds a reader.
-        // Open a separate writable connection to the same DB file.
-        let db_path = self.conn.path().unwrap_or_default().to_owned();
-        let writer = Connection::open(&db_path)
-            .with_context(|| "opening writable connection for approve")?;
-
-        let outcome_id = uuid::Uuid::now_v7().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
-        writer.execute(
-            "INSERT INTO effect_outcomes (id, intent_id, status, result_json, created_at)
-             VALUES (?1, ?2, 'approved', '{\"source\":\"tui\"}', ?3)",
-            rusqlite::params![outcome_id, effect_id, now],
-        )?;
-        Ok(())
-    }
-
-    /// Mark an effect intent as denied.
-    pub fn deny_effect(&self, effect_id: &str) -> Result<()> {
-        let db_path = self.conn.path().unwrap_or_default().to_owned();
-        let writer =
-            Connection::open(&db_path).with_context(|| "opening writable connection for deny")?;
-
-        let outcome_id = uuid::Uuid::now_v7().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
-        writer.execute(
-            "INSERT INTO effect_outcomes (id, intent_id, status, result_json, created_at)
-             VALUES (?1, ?2, 'denied', '{\"source\":\"tui\"}', ?3)",
-            rusqlite::params![outcome_id, effect_id, now],
-        )?;
-        Ok(())
     }
 }
 
