@@ -3864,19 +3864,25 @@ as `Last-Event-ID` on reconnect. The server resumes from `last_seen + 1`.
 If the requested sequence is not in the buffer, the server responds with a
 `gap` event containing a full materialized snapshot.
 
-#### Global events SSE endpoint
+#### Global run-event WebSocket endpoint
 
-A second SSE endpoint streams all events across all runs for the authenticated
-principal:
+The implemented global endpoint uses a WebSocket upgrade and streams events
+across all runs for the authenticated principal:
 
 ```http
-GET /api/v1alpha1/events/stream HTTP/1.1
+GET /api/v1alpha1/events/stream?after_sequence=41&kinds=run_started,run_completed HTTP/1.1
 Authorization: Bearer pak_...
-Accept: text/event-stream
+Connection: Upgrade
+Upgrade: websocket
 ```
 
-This endpoint supports optional `type` query parameter to filter by event
-type (comma-separated).
+It accepts an optional non-negative global `after_sequence`, a UUID `run_id`,
+and comma-separated `kinds`. Durable JSON frames add `global_sequence`; clients
+persist it for reconnect. The receiver attaches before bounded durable replay,
+and broadcast lag replays after the last consumed checkpoint without duplicate
+durable frames. Diagnostic/ephemeral frames are live-only. Missing storage
+rejects the upgrade with `501`; backend recovery failure closes with a generic
+1011 reason. This is distinct from interaction SSE and `/ws/v1alpha1`.
 
 ---
 

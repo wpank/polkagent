@@ -326,6 +326,12 @@ checkpoint. Missing durable storage rejects the upgrade with `501`. A replay
 or recovery backend failure closes an accepted socket with WebSocket status
 `1011` and a generic reason; backend details are not sent to clients.
 
+Replay can only reproduce fields retained by the configured `EventStore`.
+The current SQLite run-event schema retains event/run IDs, kind payload,
+per-run/global sequences, and timestamp, but not every optional correlation or
+causation field; absent replay metadata uses the typed `RunEvent` defaults.
+Persisting that remaining correlation metadata is still an OBS-01 schema gap.
+
 The WebSocket upgrade endpoints `/api/v1alpha1/events/stream` and
 `/ws/v1alpha1` are intentionally excluded from `openapi.yaml`. OpenAPI can
 describe their HTTP upgrade handshakes but not their bidirectional frame

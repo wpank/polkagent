@@ -223,7 +223,9 @@ reports.
   authentication, missing durable storage, and a lag-recovery backend failure:
   the last closes with status 1011 and a generic reason containing no private
   backend sentinel. Diagnostic and ephemeral frames remain explicitly
-  best-effort. The distinct `/ws/v1alpha1` command socket is unchanged.
+  best-effort. The distinct `/ws/v1alpha1` command socket is unchanged. Replay
+  is truthful to the fields currently retained by `EventStore`; full optional
+  correlation/causation persistence remains a separate schema gap.
 
 - **EVD-08 / OPS-01 container lifecycle slices (2026-08-05):**
   `scripts/container-smoke.sh`, invoked by the `container-smoke` CI job,

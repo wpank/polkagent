@@ -352,7 +352,9 @@ state. OpenAPI conformance and authenticated/read-only tests pass.
 - [ ] Persist remaining user-visible diagnostic/ephemeral deltas when they are
   required for correctness. Interaction checkpoints and durable run-event
   global checkpoints are complete; best-effort run frames remain explicitly
-  non-replayable.
+  non-replayable. Extend the SQLite run-event schema to retain the full optional
+  correlation/causation metadata instead of reconstructing absent replay fields
+  with typed defaults.
 - [x] Replace silent broadcast-lag drops with durable checkpoint recovery for
   interaction SSE and `GET /api/v1alpha1/events/stream`. The run-event socket
   attaches live delivery before bounded replay, scans filters across pages,
