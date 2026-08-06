@@ -202,10 +202,11 @@ and bounded transcript/composer history reloads after restart.
 The TUI is not completely read-only: legacy approvals, denials, and memory
 deletion write directly through `TuiDb`. Those approval writes are unsafe
 display-state mutations, not a usable permission workflow. Replace them only
-with coordinator-backed `InteractionService::approve`/`deny` after APR-01 and
-APR-05; the current `AppService` approval methods are bus-only and are not a
-durable permission boundary. Starting runs by inserting database rows would be
-even more dangerous and must not be done.
+with coordinator-backed `InteractionService::approve`/`deny` in APR-05; the
+APR-01 SQLite coordinator now exists, but current `AppService` approval methods
+remain bus-only and the orchestrator does not invoke the durable boundary.
+Starting runs by inserting database rows would be even more dangerous and must
+not be done.
 
 ### 1.2 Input now has a bounded prompt mode
 

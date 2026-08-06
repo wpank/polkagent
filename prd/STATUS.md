@@ -95,16 +95,16 @@ exact ignored rule pointers rather than broad suppression.
 | REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool/skill/memory composition, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, persisted target/model configuration, finite replay, checkpointed SSE, global run-event replay/reconnect, and command-socket in-session lag recovery are composed; 9 optional skill-mutation/audit/registry routes, command-socket reconnect/cursor semantics, and full shutdown remain. |
 | Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable single-agent, target/model-selectable line-mode session | Interactive/non-TTY prompt, multiline input, contextual follow-up, transcript resume, persisted conversation-scoped `/agent` and `/model`, safe tool status, lag replay, and SIGINT cancellation work; provider/harness/autonomy changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
-| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio adapter over the durable interaction service, with stable conversation IDs, new/load/resume, shared-registry commands, persisted agent/model selectors, immutable cwd provenance, and native tool updates | Restart-resumable protocol slice; editor interoperability and permissions unverified | Session list/import are unsupported by the pinned SDK/surface; provider/autonomy selectors, permission round-trips, raw tool-data redaction policy, MCP passthrough, and manual Zed tool/approval/restart smoke remain. |
+| Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio adapter over the durable interaction service, with stable conversation IDs, new/load/resume, shared-registry commands, persisted agent/model selectors, immutable cwd provenance, native tool updates, and a protocol-only permission harness | Restart-resumable protocol slice; permission mapping is tested but production coordinator binding and editor interoperability remain unverified | Session list/import are unsupported by the pinned SDK/surface; provider/autonomy selectors, production permission round-trips, raw tool-data redaction policy, MCP passthrough, and manual Zed tool/approval/restart smoke remain. |
 | Providers/harnesses | Many adapters exist | Partially composed | Each adapter needs shared-runtime conformance and real failure/readiness evidence. |
 | Tools/skills | Registries and handlers plus a real bounded orchestrator path and effect-backed interaction projection | Grantless tools in the exact agent allowlist/registry intersection execute in the normal model loop and project stable tool IDs/status through chat, TUI, replay, and ACP | Unknown, unallowlisted, malformed-JSON, and grant-bearing calls fail without handler I/O; raw arguments/output remain withheld pending a redaction contract, while approval/resume, schema-wide validation, cancellation/recovery, and external-tool proof remain. |
-| Effects/approvals/policy | Strong domain libraries plus a composed grantless tool-effect slice | Tool turn/step/intent/claim/attempt/outcome persist around real handler I/O | Grant resolver/policy/budgets, approval pause/resume, crash unknown-outcome recovery, cancellation during I/O, and effect drain remain. |
+| Effects/approvals/policy | Strict opt-in policy composition plus the SQLite V18 approval/checkpoint coordinator and the grantless tool-effect slice | Policy deny/allow/escalate resolution and durable approval transactions are individually proven; grantless turn/step/intent/claim/attempt/outcome persists around real handler I/O | The orchestrator does not yet consume escalation or resume checkpoints; canonical digest verification, crash/unknown-outcome recovery, cancellation during I/O, budgets, and effect drain remain. |
 | Conversations/memory | `InteractionService` atomically persists transcript/run correlation/replay/context; the API projects the runtime-owned SQLite memory store | Headless service, TUI, terminal chat, HTTP API, and ACP consume the durable lifecycle; typed memory query, non-mutating exact lookup/statistics, and atomic deletion survive restart | One exact successful restarted interaction is cross-surface tested; string-only harness history fails explicitly, approvals are unavailable, and general memory is not assembled into prompt context. |
 | Groups/feeds/evals | Significant libraries/tests | Mostly unsurfaced | No production caller creates durable child runs or evaluates the real composed runtime. |
 | Polkadot reads | RPC/metadata/codec components exist | Partially usable | Pinned live metadata and network behavior need real-path validation. |
 | Polkadot writes | Effect/signing/finality components exist | Not end-to-end proven | Real signer, exact bytes, transaction matching, finality, dry-run/XCM, and local-chain tests remain. |
 | PCA compatibility | Crypto/queue/sync building blocks plus durable TCP text, cancellation, status, and error peer I/O exist | Cross-process protocol slice; not yet PCA-reference compatible or runtime-composed | The TCP adapter needs Statement Store/Polkadot App adaptation, signed identity, runtime cancellation/reply mapping, attachments, and reference fixtures. |
-| Security | Grants, tests, redaction, signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, and unused policy runtime. |
+| Security | Grants, strict opt-in policy loading/composition, tests, redaction, and signer abstractions exist | Not production hardened | Plaintext file secrets, shared-key API auth, mock KMS/DID paths, missing tenant enforcement, and policy decisions not yet consumed by the orchestrator. |
 | Payments | Intent/store/budget components exist | Not value-moving | Store/runtime integration, real signature/settlement, and failure reconciliation remain. |
 | Marketplace/plugins | Durable local plugin/kit lifecycle, operator CLI, and listing components | Local install/list/get/update/rollback/uninstall is actionable; package execution is missing | Manifest/lock format remains split; no API/runtime activation, actual sandbox engine, or cryptographic trust pipeline. |
 | Deployment/cloud | Canonical image/Compose boot, mounted config, auth boundary, health, graceful HTTP stop, same-volume HTTP recovery, and cold SQLite volume restore smoke pass | Bounded authenticated single-instance SQLite lifecycle with intentionally failed provider execution | Successful production-backend output, TLS/key rotation and principal authorization, worker/run/effect drain, online/encrypted/export or PostgreSQL backup, retention, tenant isolation, release, HA, and control/worker paths remain unproven. |
@@ -158,7 +158,8 @@ exact ignored rule pointers rather than broad suppression.
   effect ID is the stable tool-call ID through replay, lag, restart, terminal
   chat, TUI, and native ACP messages. SQLite v16 protects attempt/run outcome
   lineage. Raw arguments/output stay absent until a shared classification and
-  redaction contract exists; approval/permission remains unimplemented.
+  redaction contract exists; production approval/permission integration remains
+  unimplemented despite the durable store foundation and ACP protocol harness.
 - `crates/polkagent-marketplace/src/local.rs` now persists immutable plugin/kit
   versions and restart-safe selection/history with integrity checks. It
   explicitly records signature bundles as unverified claims because no
@@ -289,10 +290,12 @@ exact ignored rule pointers rather than broad suppression.
   a typed unsupported error and a durable failed linked turn/run rather than
   flattening roles. TUI, terminal chat, HTTP, and ACP bind to this service.
 - [`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md) records
-  the audited approval blocker: current effect approval methods are bus-only and
-  not a durable permission boundary. It freezes the required coordinator/run
-  CAS/checkpoint design, default-deny rules, crash/disconnect invariants,
-  parallel packets, and executable acceptance matrix before UI approval work.
+  the approval boundary. SQLite V18 now implements the serialized coordinator,
+  run CAS, checkpoint leases, and exact effect transitions, while current
+  application-service approval methods remain bus-only and the orchestrator
+  does not yet pause or resume. The design keeps default-deny rules,
+  crash/disconnect invariants, remaining packets, and the executable acceptance
+  matrix explicit before UI approval work.
 - `crates/polkagent-harness-acp` is an ACP client for downstream coding-agent
   harnesses, not a Polkagent ACP agent server.
 - `crates/polkagent-surface-acp` is the separate server-side adapter. The
