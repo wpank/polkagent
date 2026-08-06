@@ -1,0 +1,24 @@
+{
+  "agent_servers": {
+    "polkagent": {
+      "type": "custom",
+      "command": "/absolute/path/to/polkagent",
+      "args": [
+        "--config",
+        "/absolute/path/to/polkagent.toml",
+        "--log-file",
+        "/absolute/private/path/polkagent-acp.jsonl",
+        "acp",
+        "--agent",
+        "editor-agent",
+        "--approval-tenant",
+        "local-tenant",
+        "--approval-workspace",
+        "zed-workspace",
+        "--approval-principal",
+        "018f4d6b-1a2b-7c3d-8e4f-0123456789ab"
+      ],
+      "env": {}
+    }
+  }
+}

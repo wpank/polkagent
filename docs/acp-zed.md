@@ -54,6 +54,13 @@ your Zed settings. Replace the command with the absolute path printed above:
 }
 ```
 
+This `type`/`command`/`args`/`env` shape matches Zed's documented
+[custom External Agent](https://zed.dev/docs/ai/external-agents#custom-agents)
+schema. A complete approval-and-diagnostics example is checked in at
+[`docs/examples/polkagent-zed-agent-server.json`](examples/polkagent-zed-agent-server.json).
+Keep the command and every file path absolute so behavior does not depend on
+Zed's inherited shell `PATH` or another launch directory.
+
 ## Durable approval opt-in (APR-07)
 
 APR-07 defines one explicit approval authority for an entire local ACP stdio
@@ -113,10 +120,13 @@ authorization layer for a shared or remotely exposed ACP service.
 Approval-enabled ACP additionally requires every `session/new`, `session/load`,
 and `session/resume` cwd to equal the runtime workdir exactly. That runtime
 workdir is the ACP process's current directory at launch. Comparison is lexical:
-there is no canonicalization or symlink resolution. Consequently, launch
-Polkagent from the workspace Zed will send as its cwd; a mismatch fails before
-session attachment or work begins. Without approval opt-in, the existing
-immutable editor-origin cwd contract below remains unchanged.
+there is no canonicalization or symlink resolution. Zed 1.14.2's local custom-
+agent implementation starts the child in the first/default project root and
+sends the same ordered root as ACP cwd, satisfying this contract for a normal
+local project. Use a single-root local project for the bounded setup. Remote
+projects require the binary and configuration on the remote side and have not
+been validated. Without approval opt-in, the existing immutable editor-origin
+cwd contract below remains unchanged.
 
 The runtime binds the same authority to the durable interaction service and to
 the approval executor. The same SQLite pool backs the coordinator and the
@@ -156,10 +166,19 @@ ACP file diagnostics are disabled by default. To opt in, add the global
 process:
 
 ```json
-"args": [
-  "--log-file", "/absolute/private/path/polkagent-acp.jsonl",
-  "acp", "--agent", "editor-agent"
-]
+{
+  "agent_servers": {
+    "polkagent": {
+      "type": "custom",
+      "command": "/absolute/path/to/polkagent",
+      "args": [
+        "--log-file", "/absolute/private/path/polkagent-acp.jsonl",
+        "acp", "--agent", "editor-agent"
+      ],
+      "env": {}
+    }
+  }
+}
 ```
 
 The file is structured JSONL, rotates before an append would take it past 1
@@ -402,7 +421,11 @@ Not implemented yet:
 - manual Zed validation, including approval, cancellation, restart, and logs.
 
 Supplied MCP servers and additional workspace roots are rejected instead of
-being silently ignored.
+being silently ignored. Zed can forward enabled MCP servers to External Agents;
+the bounded Polkagent setup therefore requires no forwarded Zed MCP servers.
+This audit deliberately does not inspect user settings, which may contain
+credentials. Leave Zed-side MCP forwarding disabled for this custom agent until
+Polkagent advertises and implements that capability.
 
 ## Troubleshooting and verification
 
@@ -422,8 +445,15 @@ diagnostic fields must preserve that boundary.
 Run the executable conformance slice locally:
 
 ```bash
+cargo test -p polkagent-cli --test acp_zed_config_contract
 cargo test -p polkagent-cli --test acp_stdio_e2e -- --nocapture
 ```
+
+The first target parses every JSON block in this guide, verifies the checked-in
+custom-agent example has absolute paths and an empty environment, and sends its
+argument vector through the real `polkagent acp --help` parser. The second owns
+the JSON-RPC stdout, native command, permission, cancellation, and restart
+protocol evidence. Neither target launches Zed or replaces the manual smoke.
 
 For a manual smoke, verify in order: agent appears, session opens, the native
 agent/model selectors and slash-command completion are visible, changing each

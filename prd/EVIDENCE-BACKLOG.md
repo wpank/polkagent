@@ -190,6 +190,21 @@ reports.
   cases pass. Manual Zed permission/cancel/restart/log inspection remains open;
   this is not shared or remote multi-principal authentication.
 
+- **ZED-LOCAL / non-GUI setup readiness (2026-08-06):** a read-only local audit
+  found Zed stable 1.14.2 (build `20260805.160132`) and Preview 0.167.1 installed;
+  neither exposes `zed` on the shell `PATH`, while each application bundle's CLI
+  reports its version. No GUI was launched and no user settings were inspected.
+  Official Zed 1.14.2 source confirms a local custom agent is spawned in the
+  first/default project root and sends that same root as ACP cwd for new, load,
+  and resume, matching Polkagent's exact approval cwd contract for a local
+  single-root project. `acp_zed_config_contract.rs` parses every guide JSON block
+  and the checked-in complete example, enforces absolute executable/config/log
+  paths, an empty environment, and the complete approval authority tuple, then
+  passes its arguments through the real CLI parser. The existing ACP stdio E2E
+  suite owns live command-catalog and protocol-stdout evidence. Manual GUI
+  permission/cancel/restart smoke, remote projects, and settings-specific MCP
+  forwarding remain open; the current setup requires no forwarded MCP servers.
+
 - **EVD-11 / terminal interaction slices (2026-08-05):** the TUI lifecycle test
   runs the real integration binary inside a Unix PTY and proves ordered
   alternate-screen/mouse/cursor restoration escapes plus termios restoration
