@@ -411,12 +411,19 @@ state. OpenAPI conformance and authenticated/read-only tests pass.
   when recovery cannot be proved. Deterministic TCP tests cover lag before and
   after the first checkpoint, malformed zero sequence, unsubscribe/filtering,
   multi-subscription routing, backend failure, missing store, and reconnect.
-- [ ] Add a public reconnect cursor/checkpoint to `/ws/v1alpha1` only through a
-  versioned protocol decision. The current command envelope carries neither a
-  cursor input nor a global checkpoint output, so reconnect remains truthfully
-  live-only. Also either implement a real `system` producer or remove that
-  advertised channel, and decide whether effect/conversation channels and a
-  cancel command belong here or in the interaction API.
+- [x] Add a public reconnect cursor/checkpoint to `/ws/v1alpha1` through an
+  additive versioned protocol decision. Durable event envelopes expose an
+  opaque `v1:<global_sequence>` cursor; reconnect supplies it with a valid
+  query token, installs every initial subscription, then sends an additive
+  `ready` barrier before replay can advance. Initial replay, multi-subscription
+  reconnect across bounded pages, subscription filtering, replay/live dedupe,
+  lag interaction, auth-before-store access, malformed/stale/future tokens,
+  missing storage, and sanitized backend failure are real-TCP tested. Omitting
+  the cursor preserves legacy live-only behavior. The producer-less `system`
+  channel was removed from the accepted contract rather than continuing to
+  advertise inert behavior. Effect/conversation channels and a cancel command
+  remain a product decision; interaction cancellation already belongs to the
+  interaction API.
 - [x] Remove the fixed first-10k event-ID scan: the object-safe store contract
   has an uncapped validated 1,000-row cursor fallback, SQLite uses its primary-
   key index, and API lookup sanitizes backend failures.

@@ -102,7 +102,7 @@ exact ignored rule pointers rather than broad suppression.
 |---|---|---|---|
 | One-shot CLI run | Uses the shared `RuntimeFactory`; subprocess and durable-restart coverage pass | Partially usable; the bounded grantless registered-tool path is composed below its CLI boundary | The path is `AppService`-tested, but no one-shot CLI subprocess proves schema advertisement through handler I/O and next inference; policy enforcement, approvals, crash recovery, cancellation during I/O, and external-tool evidence remain. |
 | Monitoring TUI | Rich views plus a durable F9 Console, bounded async input/controller pump, single-flight background SQLite/chain projections, grapheme-safe multiline editor/history/paste, executable shared-command subset, guarded terminal lifecycle, durable session/agent selection, and correlated multi-activity control | Responsive and actionable for up to eight distinct agent/conversation turns, including while monitoring I/O is blocked, and restart-resumable | A 32-entry redaction-safe strip, per-conversation viewport restore, `[`/`]` switching, exact selected cancel, duplicate refusal, bounded backpressure/eviction, prompt/follow-up/live output, shared commands, exact session switching, and safe tool status are composed; durable group plans/child runs, harness context, rich plans, and service-routed approvals remain. |
-| REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool/skill/memory composition, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, persisted target/model configuration, finite replay, checkpointed SSE, global run-event replay/reconnect, and command-socket in-session lag recovery are composed; 9 optional skill-mutation/audit/registry routes, command-socket reconnect/cursor semantics, and full shutdown remain. |
+| REST/WebSocket API | `serve` uses the strict shared runtime plus durable core stores, exact runtime tool/skill/memory composition, and the exact runtime `InteractionService` | Durable interaction/control-plane slice with ordinary HTTP/OpenAPI route parity | Versioned interaction lifecycle, persisted target/model configuration, finite replay, checkpointed SSE, global run-event replay/reconnect, and versioned command-socket reconnect/lag recovery are composed; 9 optional skill-mutation/audit/registry routes, broader command channels, and full shutdown remain. |
 | Interactive terminal chat | `polkagent chat` uses the durable runtime interaction service and shared command handlers | Usable single-agent, target/model-selectable line-mode session | Interactive/non-TTY prompt, multiline input, contextual follow-up, transcript resume, persisted conversation-scoped `/agent` and `/model`, safe tool status, lag replay, and SIGINT cancellation work; provider/harness/autonomy changes, approvals, harness follow-up, rich content, and groups are explicitly unavailable. |
 | ACP from Polkagent to other harnesses | ACP client exists and tests pass | Useful downstream adapter | This is client-side harness support only. |
 | Polkagent inside Zed/ACP clients | Official-SDK ACP v1 stdio adapter over the durable interaction service, with stable conversation IDs, new/load/resume, shared-registry commands, persisted agent/model selectors, immutable cwd provenance, native tool updates, and a protocol-only permission harness | Restart-resumable protocol slice; permission mapping is tested but production coordinator binding and editor interoperability remain unverified | Session list/import are unsupported by the pinned SDK/surface; provider/autonomy selectors, production permission round-trips, raw tool-data redaction policy, MCP passthrough, and manual Zed tool/approval/restart smoke remain. |
@@ -132,7 +132,7 @@ exact ignored rule pointers rather than broad suppression.
 | 07 Security | Strong primitives/tests | Partial/unsafe defaults | No production security proof | Active P1 |
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Typed memory API query/lookup/stats/deletion composed; broader components exist | Prompt context and groups/feeds/evals remain | Restart-safe exact-store API operations; no orchestration proof | Active P1 |
-| 10 Observability | Interaction SSE, exact durable run-event metadata/replay, global reconnect, command-socket in-session lag recovery, and core artifact/event injection are proved | Command-socket reconnect, best-effort deltas, trace/context injection, audit/telemetry, retention, and operator recovery remain | Live HTTP/WebSocket checkpoint, metadata fidelity, fail-closed corruption, reconnect-limit, forced-lag, dedupe, and bounded-replay proof | Active P1 |
+| 10 Observability | Interaction SSE, exact durable run-event metadata/replay, global reconnect, versioned command-socket reconnect/lag recovery, and core artifact/event injection are proved | Best-effort deltas, trace/context injection, audit/telemetry, retention, and operator recovery remain | Live HTTP/WebSocket checkpoint, metadata fidelity, fail-closed corruption/cursor validation, reconnect, forced-lag, dedupe, and bounded-replay proof | Active P1 |
 | 11 Deployment/cloud | Authenticated container boot/config/HTTP drain/same-volume interaction recovery and fresh-volume cold SQLite restore verified | Single-instance SQLite only | Exact auth matrix and failed lifecycle restore; successful backend output, online/encrypted/PostgreSQL recovery, and worker/run/effect recovery remain unproved | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | Durable terminal chat plus monitoring TUI with durable actionable Console | Partial | Contextual follow-up/restart, bounded simultaneous agent/conversation activities, exact cancel, persisted `/agent` and `/model`, session selection, safe tool status, and a truthful command subset are tested; harness context, approvals, broader commands, and group orchestration remain | Active P0/P1 + PRD-19 |
@@ -257,14 +257,18 @@ exact ignored rule pointers rather than broad suppression.
   frames add `global_sequence`; diagnostic/ephemeral frames remain explicitly
   best-effort. Missing storage rejects the upgrade, while backend recovery
   failure sends only a generic 1011 close reason. The distinct `/ws/v1alpha1`
-  command socket now tracks an internal delivered checkpoint and recovers
-  later durable lag from bounded store pages without changing its frames. It
-  routes run and agent subscriptions and caps the set at 256. Lag before the
-  first checkpoint, invalid projection, missing storage, and backend failure
-  fail explicitly and sanitize backend detail. Because the command protocol
-  has no cursor field or checkpoint output, reconnect remains live-only;
-  diagnostic/ephemeral frames and the producer-less `system` channel remain
-  best-effort/inert.
+  command socket now tracks a delivered checkpoint, recovers later durable lag
+  from bounded store pages, and exposes that position as an additive opaque
+  `v1:<global_sequence>` cursor on durable event envelopes. A reconnect passes
+  a valid query token and cursor, installs all initial subscriptions, and sends
+  an additive `ready` barrier before replay starts. Initial multi-subscription
+  replay, bounded reconnect, filtering, replay/live dedupe, and lag interaction
+  are real-TCP tested. Unauthenticated probes cannot parse or read the cursor;
+  malformed, stale, and future cursors fail closed before upgrade, and backend
+  validation failures are sanitized.
+  Omitting a cursor preserves legacy live-only behavior. Run and agent channels
+  are capped at 256 subscriptions; the producer-less `system` channel is no
+  longer accepted. Diagnostic/ephemeral frames remain best-effort.
   Separate event-ID reads no longer stop at 10,000 rows: the generic store
   fallback pages to completion with progress validation, SQLite performs an
   indexed point lookup, and API backend failures are sanitized.

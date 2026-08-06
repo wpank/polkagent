@@ -368,13 +368,17 @@ subscriptions.
 **Implementation status (2026-08-06).** `/ws/v1alpha1` implements the
 `msg_type` envelope, query/first-message token validation, one-channel
 subscribe/unsubscribe commands, WebSocket ping/pong, and live run/agent event
-routing with a 256-subscription cap. The `system` channel parses but has no
-producer; effects, artifacts, conversations, and interactive prompt/cancel
-messages are not implemented on this socket. After its first durable
-observation it recovers in-session bus lag from bounded durable store pages,
-but the frame contract has no public cursor/checkpoint, so reconnect is
-live-only. Appendix A.2 is the authoritative implemented frame contract; the
-broader channel/session requirements above remain target scope.
+routing with a 256-subscription cap. Durable event frames add an optional opaque
+`v1:<global_sequence>` cursor, and reconnect passes that token in the upgrade
+query with a valid query token. The client installs every initial subscription
+and sends an additive `ready` command before replay can advance. Initial
+multi-subscription replay, bounded reconnect, filters, dedupe, auth-before-store
+access, and lag interaction are tested; omitting a cursor preserves legacy
+live-only behavior and needs no barrier. The producer-less `system` channel is
+rejected. Effects, artifacts, conversations, and interactive prompt/cancel
+messages are not implemented on this socket. Appendix A.2 is the authoritative
+implemented frame contract; the broader channel/session requirements above
+remain target scope.
 
 ### 3.3 gRPC API (deferred)
 
@@ -3702,9 +3706,14 @@ WebSocket documented below.
 ```
 1. Client sends HTTP GET /ws/v1alpha1 with Upgrade: websocket header.
    Optional: ?token=pak_... for query-param auth.
+   Reconnect: ?token=pak_...&cursor=v1:<global_sequence>. A cursor requires a
+   valid query token; first-message auth is only available without a cursor.
 
-2. Server requires a configured EventStore (otherwise HTTP 501), attaches its
-   live EventBus receiver, and upgrades the connection.
+2. For reconnect, the server authenticates before cursor parsing or store
+   access. It then requires a configured EventStore (otherwise HTTP 501),
+   validates the cursor against an exact retained event, attaches its live
+   EventBus receiver, and upgrades. `v1:0` requests replay from the beginning
+   of retained history.
 
 3. Client authenticates (if not using query param):
    SEND  {"msg_type":"auth","token":"pak_..."}
@@ -3714,41 +3723,55 @@ WebSocket documented below.
    RECV  {"msg_type":"error","payload":{"reason":"invalid or missing token"},
           "timestamp":"..."}
 
-4. Client subscribes one channel per command (maximum 256 distinct channels):
+4. Client subscribes one channel per command (maximum 256 distinct channels).
+   A reconnect installs its complete initial subscription set here:
    SEND  {"msg_type":"subscribe","id":"req-1",
           "channel":"runs:{run_uuid}"}
    RECV  {"msg_type":"ack","id":"req-1",
           "channel":"runs:{run_uuid}","payload":null,"timestamp":"..."}
 
-5. Server streams events:
-   RECV  {"msg_type":"event","id":null,"channel":"runs:{run_uuid}",
-          "payload":{...RunEvent...},"timestamp":"..."}
+5. Reconnect only: client seals the subscription set and starts replay:
+   SEND  {"msg_type":"ready","id":"req-ready"}
+   RECV  {"msg_type":"ack","id":"req-ready","channel":null,
+          "payload":null,"timestamp":"..."}
 
-6. Keep-alive (server WebSocket Ping control frame every 30s):
+6. Server streams events:
+   RECV  {"msg_type":"event","id":null,"channel":"runs:{run_uuid}",
+          "cursor":"v1:42","payload":{...RunEvent...},"timestamp":"..."}
+
+7. Keep-alive (server WebSocket Ping control frame every 30s):
    RECV  Ping
    SEND  Pong
    Timeout: 30s without pong closes the connection.
 
-7. Client unsubscribes:
+8. Client unsubscribes:
    SEND  {"msg_type":"unsubscribe","id":"req-2",
           "channel":"runs:{run_uuid}"}
    RECV  {"msg_type":"ack","id":"req-2",
           "channel":"runs:{run_uuid}","payload":null,"timestamp":"..."}
 
-8. Connection close:
+9. Connection close:
    Either side sends a WebSocket Close control frame. There is no JSON close
    command.
 ```
 
 The actual client command discriminator is `msg_type`, not `type`. Commands are
-`auth`, `subscribe`, `unsubscribe`, and `ping`; there is no cursor,
-back-pressure declaration, multi-channel array, cancellation, or JSON close
-command. The implemented channels are `runs:{run_id}`, `agents:{agent_id}`, and
-syntactically `system`. Run and agent routing is active. `system` currently has
-no producer in the `RunEvent` source; effect and conversation channels are not
-implemented. Event envelopes always report the concrete run channel, including
-when an agent subscription selected the event. Per-message/frame size caps
-remain an open hardening item rather than an implemented guarantee.
+`auth`, `subscribe`, `unsubscribe`, `ready`, and `ping`; there is no back-pressure
+declaration, multi-channel array, cancellation, or JSON close command. The
+implemented channels are `runs:{run_id}` and `agents:{agent_id}`. The formerly
+accepted producer-less `system` channel is now rejected; effect and conversation
+channels are not implemented. Event envelopes always report the concrete run
+channel, including when an agent subscription selected the event. A durable
+event also carries an optional top-level versioned cursor; diagnostic and
+ephemeral events omit it. Per-message/frame size caps remain an open hardening
+item rather than an implemented guarantee.
+
+`ready` is a reconnect-only synchronization barrier. Before it, event replay
+is paused while the client installs every intended initial channel. After it,
+new channels are rejected so the connection-global cursor cannot silently pass
+their older matching events; unsubscribe remains available. No-cursor legacy
+connections begin live delivery after their first subscription and do not need
+`ready`.
 
 #### Agent output subscription
 
@@ -3776,29 +3799,47 @@ agents simultaneously:
 ```json
 {"msg_type":"subscribe","id":"a","channel":"agents:0198bd19-40c0-7000-8000-000000000010"}
 {"msg_type":"subscribe","id":"r","channel":"runs:0198bd19-40c0-7000-8000-000000000001"}
+{"msg_type":"ready","id":"subscriptions-complete"}
 ```
+
+The `ready` frame is required only when the upgrade included a cursor.
 
 #### Real-time notifications
 
-Subscribed run/agent events are forwarded live. The accepted `system` channel
-does not yet deliver anything because the source is a run-event bus with no
-implemented system-event producer.
+Subscribed run/agent events are forwarded. `system` is rejected because the
+source is a run-event bus with no implemented system-event producer.
 
-#### Lag recovery and reconnect limitation
+#### Lag recovery and versioned reconnect
 
-The receiver attaches before upgrade completion. Its first valid durable point
-lookup establishes an internal global checkpoint after successful delivery (or
-after a non-matching row is skipped). Later durable notifications and receiver
+The receiver attaches before upgrade completion. For a no-cursor session, its
+first valid durable point lookup establishes an internal global checkpoint
+after successful delivery (or after a non-matching row is skipped). A reconnect
+begins at its validated query cursor. Later durable notifications and receiver
 lag page from `EventStore` after that checkpoint, validate forward progress,
 and deduplicate replay/live overlap. Lag before the first checkpoint, malformed
 projection, or backend failure sends a generic `error` envelope and then closes
 with status 1011. No backend detail is serialized.
 
-The command envelope intentionally remains unchanged and exposes neither a
-cursor input nor a global checkpoint output. Reconnecting therefore starts a
-new live-only session and does not recover the disconnected interval.
-Diagnostic/ephemeral events may also be lost during lag. Consumers requiring a
-durable reconnect cursor use `/api/v1alpha1/events/stream` or interaction SSE.
+On every durable event, the server exposes the successfully delivered global
+checkpoint as an opaque `v1:<global_sequence>` top-level cursor. A reconnect
+passes that token with a valid query token as `?cursor=...`, installs every
+initial subscription, and sends `ready`. Replay is paused until that barrier,
+then delivers matching durable records strictly after the cursor before live
+delivery. It scans at most 256 records per store read, advances the
+connection-global checkpoint through filtered records, and deduplicates
+replay/live overlap. New subscriptions after `ready` are rejected; use a
+separate connection or finite event query to introduce a channel with history.
+
+`v1:0` requests full retained replay. A nonzero token must name an exact
+retained event, so malformed, unknown-version, stale, and future cursors reject
+the upgrade with the same generic 422 validation response. Missing or invalid
+query authentication returns 401 before parsing or any durable-store access.
+Cursor-validation backend failure returns a sanitized 503, and no configured
+store returns 501. Omitting the cursor preserves the legacy live-only
+connection behavior.
+Diagnostic/ephemeral events carry no cursor and may be lost during disconnect
+or lag. The flattened `/api/v1alpha1/events/stream` and interaction SSE remain
+separate wire protocols.
 
 ---
 
@@ -5902,9 +5943,12 @@ criteria. Phase annotations reference the implementation timeline.
 - [ ] **E-WS-03** Channel subscription with cursor-based replay
   - Phase: 0
   - Acceptance: Replay delivers events in sequence; gap event on buffer miss
-  - Current: Durable lag after the first in-session checkpoint replays in
-    order from `EventStore`; no public cursor or gap snapshot exists, and
-    reconnect is live-only.
+  - Current: An additive opaque `v1:<global_sequence>` durable event cursor and
+    upgrade query plus an explicit post-subscription `ready` barrier provide
+    ordered bounded multi-channel replay/reconnect with filtering and dedupe.
+    Cursor auth precedes store access and malformed/stale/future cursors fail
+    closed. A distinct gap-event snapshot is not implemented, so the stated
+    acceptance remains open.
 
 - [ ] **E-WS-04** Back-pressure mode declaration
   - Phase: 1
@@ -5915,15 +5959,15 @@ criteria. Phase annotations reference the implementation timeline.
 - [ ] **E-WS-05** Server ping/pong keep-alive (25s interval, 30s timeout)
   - Phase: 0
   - Acceptance: Connection closed after timeout; client reconnects
-  - Current: Server Ping and timeout are both 30 seconds; automatic reconnect
-    is a client/SDK gap and command-socket reconnect has no cursor.
+  - Current: Server Ping and timeout are both 30 seconds; the server exposes a
+    reconnect cursor, while automatic reconnect remains a client/SDK gap.
 
 - [ ] **E-WS-06** Multi-channel subscriptions (agents, runs, effects, system)
   - Phase: 0
   - Acceptance: Events routed to correct channel; unsubscribe stops delivery
   - Current: Real TCP tests prove concurrent run/agent routing and unsubscribe,
-    with a 256-channel cap. Effects are unsupported and `system` has no event
-    producer, so the full acceptance remains open.
+    with a 256-channel cap. Effects are unsupported, and producer-less `system`
+    is explicitly rejected, so the full aspirational acceptance remains open.
 
 ### SSE
 

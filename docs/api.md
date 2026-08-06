@@ -365,29 +365,40 @@ one channel per frame:
 {"msg_type":"subscribe","id":"request-1","channel":"runs:0198bd19-40c0-7000-8000-000000000001"}
 ```
 
-The implemented commands are `auth`, `subscribe`, `unsubscribe`, and `ping`.
-Replies and events use the `WsMessage` envelope (`msg_type`, optional `id` and
-`channel`, `payload`, and `timestamp`). Run and agent channels are actionable;
-agent subscriptions resolve each event's run through the configured run
-manager. The `system` channel parses and can be subscribed, but no implemented
-`RunEvent` producer emits system events. Effect and conversation channels and
-a command-socket cancel operation are not implemented. Each connection may
-hold at most 256 distinct subscriptions.
+The implemented commands are `auth`, `subscribe`, `unsubscribe`, `ready`, and
+`ping`. Replies and events use the `WsMessage` envelope (`msg_type`, optional
+`id` and `channel`, optional durable `cursor`, `payload`, and `timestamp`). The
+additive `ready` command is also available as a reconnect subscription barrier.
+Run and agent channels are actionable; agent subscriptions resolve each event's
+run through the configured run manager. The producer-less `system` channel is
+rejected. Effect and conversation channels and a command-socket cancel
+operation are not implemented. Each connection may hold at most 256 distinct
+subscriptions.
 
 The command receiver attaches before the upgrade completes. After it has
 successfully delivered or skipped its first durable event, it tracks an
 internal global checkpoint and recovers later bounded-bus lag from the
 `EventStore` in 256-record pages without duplicate durable delivery. The
-checkpoint is deliberately not added to the existing command event envelope.
-Consequently, reconnect is live-only: this protocol has no cursor input and
-cannot recover events emitted while disconnected. Diagnostic and ephemeral
-events are also live-only and may be lost on lag.
+checkpoint is emitted on durable event envelopes as an opaque versioned token,
+for example `"cursor":"v1:42"`.
 
-No configured durable store rejects the upgrade with `501`. Recovery failure,
-an invalid durable projection, or lag before the first durable checkpoint sends
-a generic `error` envelope and then closes with status `1011`; backend details
-are never exposed. Clients needing reconnect correctness must use
-`/api/v1alpha1/events/stream` or the interaction SSE API.
+Reconnect with `?token=<valid-token>&cursor=v1:42`, send every intended initial
+`subscribe` command, then send `{"msg_type":"ready"}`. Replay stays paused
+until that barrier, preventing the connection-global cursor from advancing past
+history for a later initial subscription. New channels are rejected after
+`ready`; unsubscribe remains available. A cursor request requires valid query
+authentication before cursor parsing or store access. `v1:0` starts from
+retained history; malformed, unknown-version, stale, and future cursors fail
+closed. Omitting the cursor preserves legacy live-only behavior and does not
+require `ready`. Diagnostic and ephemeral events carry no cursor and may be
+lost on disconnect or lag.
+
+No configured durable store rejects the upgrade with `501`. Authenticated
+cursor-validation backend failure returns a sanitized `503`; malformed,
+stale, or future tokens return a generic `422`. Recovery failure, an invalid
+durable projection, or lag before the first durable checkpoint sends a generic
+`error` envelope and then closes with status `1011`; backend details are never
+exposed.
 
 ```mermaid
 stateDiagram-v2
@@ -413,8 +424,11 @@ stateDiagram-v2
 
 ## Authentication
 
-When authentication is enabled, protected routes accept either `X-API-Key`
-or `Authorization: Bearer <key>`. Configure hashed keys in `polkagent.toml`:
+When authentication is enabled, ordinary protected routes accept either
+`X-API-Key` or `Authorization: Bearer <key>`. The command WebSocket is the
+exception: its handler supports a query token or first-message auth, while a
+cursor reconnect specifically requires the valid query-token form. Configure
+hashed keys in `polkagent.toml`:
 
 ```toml
 [auth]
@@ -429,10 +443,13 @@ The operational access boundary is exact-path based:
 |--------|-----------|------------|
 | Public | `/openapi.json`, `/health/live`, `/health/ready`, `/health/startup`, `/v1/compat/pca/health` | Bypassed |
 | Protected | `/metrics`, `/v1/compat/pca/inbound` and its write routes, `/api/v1alpha1/*` | Applied when enabled |
+| Protocol-authenticated | `/ws/v1alpha1` | Applied when enabled |
 
 Public paths are limited to this explicit list; a new route does not become
-public by sharing a prefix. Read-only mode is independent: it rejects
-mutating methods but does not affect these `GET` endpoints.
+public by sharing a prefix. The command WebSocket bypasses only the ordinary
+header-auth middleware so its own query/first-frame protocol can run; it is not
+public. Read-only mode is independent: it rejects mutating methods but does not
+affect these `GET` endpoints.
 
 Manage credentials with the `auth` subcommand:
 

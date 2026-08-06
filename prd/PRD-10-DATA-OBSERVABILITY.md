@@ -1009,15 +1009,18 @@ remain best-effort.
 The separate command endpoint `GET /ws/v1alpha1` preserves its existing
 bidirectional `msg_type` envelope and single-channel subscribe/unsubscribe
 commands. It now attaches live before upgrade completion, keeps a per-session
-internal global checkpoint after the first valid durable observation, and
-recovers later durable lag from the same store in 256-record pages without
-duplicates. Run and agent subscriptions work and each connection is capped at
-256 distinct channels. It fails closed with a sanitized error plus 1011 close
-when lag precedes a checkpoint or store recovery/projection is invalid. Because
-that envelope exposes neither cursor input nor global checkpoint output, a new
-connection remains live-only; `system` has no producer and diagnostic/ephemeral
-frames remain best-effort. This is not completion of reconnect, per-class
-buffer, metrics, coalescing, or the broader channel requirements below.
+global checkpoint and recovers later durable lag from the same store in
+256-record pages without duplicates. Durable event envelopes add an optional
+opaque `v1:<global_sequence>` cursor. Reconnect requires a valid query token,
+installs all initial subscriptions, and sends an additive `ready` barrier before
+replay can advance. `v1:0` starts at retained history, while a nonzero token
+must identify an exact retained event; unauthenticated probes perform no store
+read, and malformed, stale, and future tokens fail closed. Run and agent
+subscriptions work and each connection is capped at 256 distinct channels.
+Omitting the cursor preserves legacy live-only behavior. The producer-less
+`system` channel is rejected, and diagnostic/ephemeral frames remain
+best-effort. This is not completion of per-class buffers, metrics, coalescing,
+graceful stream-end, or the broader channel requirements below.
 
 ### 9.4 Backpressure handling
 
@@ -4017,9 +4020,10 @@ task lists its acceptance criterion from section 20 where applicable.
   projection and rowid checkpoint proof. The command WebSocket separately
   passes real-TCP run/agent multi-subscription, unsubscribe, subscription-cap,
   forced-lag recovery/dedupe, pre-checkpoint fail-closed, invalid-projection,
-  missing-store, sanitized-backend, and live-only reconnect fixtures. Its lack
-  of a public reconnect cursor plus the remaining section 9.3/9.4 requirements
-  above keep this item open._
+  missing-store, and sanitized-backend fixtures. It now also passes initial
+  replay, versioned reconnect, filtering across pages, dedupe, lag/reconnect
+  interaction, and malformed/stale/future cursor fixtures. The remaining
+  section 9.3/9.4 requirements above keep this item open._
 
 ### D.3 Artifacts
 

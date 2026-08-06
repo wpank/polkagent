@@ -17,7 +17,6 @@
 //!   "msg_type": "subscribe",
 //!   "id": "optional-request-id",
 //!   "channel": "runs:01234567-...",
-//!   "cursor": null,
 //!   "payload": {},
 //!   "timestamp": "2024-01-01T00:00:00Z"
 //! }

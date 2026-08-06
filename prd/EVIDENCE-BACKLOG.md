@@ -276,10 +276,17 @@ reports.
   duplicates. Lag before any checkpoint and a malformed zero-valued point
   lookup both fail closed with a generic error envelope and 1011 close without
   fabricating replay; missing store and backend failure are equally explicit
-  and sanitized. A reconnect test freezes the current limitation: no cursor is
-  exposed by this protocol, so the disconnected interval is not replayed and
-  only future live events arrive. Diagnostic/ephemeral events and the
-  producer-less `system` channel remain best-effort/inert by design.
+  and sanitized. Durable envelopes now add an opaque versioned
+  `v1:<global_sequence>` cursor. Reconnect requires a valid query token, all
+  initial subscribe commands, and an additive `ready` barrier before the
+  connection-global cursor can advance. Deterministic fixtures prove the
+  barrier prevents loss across multiple subscriptions, full initial replay,
+  reconnect across 256-row pages, run filtering, replay/live dedupe, forced-lag
+  interaction, exact bounded reads, and rejection of malformed, stale, and
+  future cursors. Unauthenticated probes perform no store reads and backend
+  cursor-validation detail is sanitized; omitting a cursor remains live-only.
+  The producer-less `system` channel is rejected instead of advertised.
+  Diagnostic/ephemeral events remain best-effort.
 
 - **EVD-08 / OPS-01 container lifecycle slices (2026-08-05):**
   `scripts/container-smoke.sh`, invoked by the `container-smoke` CI job,

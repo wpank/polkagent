@@ -490,12 +490,13 @@ command envelope. This is a separate wire protocol from section 5.1.
 
 - Authentication: `?token=<token>` or first text message
   `{"msg_type":"auth","token":"..."}`
-- Commands: `auth`, `subscribe`, `unsubscribe`, and `ping`; each subscription
-  command carries one `channel`
-- Channels: `runs:{run_id}`, `agents:{agent_id}`, and syntactically `system`;
-  the current run-event source has no system-event producer
+- Commands: `auth`, `subscribe`, `unsubscribe`, `ready`, and `ping`; each
+  subscription command carries one `channel`; reconnect adds a `ready` barrier
+  after all initial subscribe commands
+- Channels: `runs:{run_id}` and `agents:{agent_id}`; the producer-less `system`
+  channel is rejected
 - Replies: `WsMessage` JSON with `msg_type` (`ack`, `pong`, or `error`), optional
-  request `id`/`channel`, `payload`, and `timestamp`
+  request `id`/`channel`, optional durable `cursor`, `payload`, and `timestamp`
 - Events: `msg_type: "event"`, a canonical `RunEvent` in `payload`, and the
   concrete `runs:{run_id}` channel even when selected by an agent subscription
 - Bounds: at most 256 distinct channels per connection; server Ping every 30
@@ -509,18 +510,24 @@ Later live durable notifications and `Lagged` errors recover from the injected
 overlap. Agent routing performs a current run lookup and does not retain an
 unbounded per-connection run cache.
 
-The existing command envelope exposes no cursor, so reconnect does not replay
-events emitted while disconnected. Its event payload also does not expose the
-internal global checkpoint. Diagnostic and ephemeral delivery remains
-best-effort. `system` subscriptions currently receive no run events; effect,
-conversation, cancellation, cursor, and back-pressure-declaration commands are
+Durable event envelopes expose the internal checkpoint as an opaque
+`v1:<global_sequence>` cursor without changing the event payload. Reconnect
+requires `?token=<valid-token>&cursor=...`; authentication happens before
+cursor parsing or store access. The client sends every initial subscription and
+then `{"msg_type":"ready"}`. Replay is paused until that barrier, and new
+channels are rejected afterward so one connection-global cursor cannot skip a
+later initial channel. `v1:0` starts from retained history; malformed, stale,
+and future tokens fail closed. Omitting a cursor retains live-only behavior and
+needs no barrier. Diagnostic and ephemeral delivery remains best-effort.
+Effect, conversation, cancellation, and back-pressure-declaration commands are
 not implemented.
 
-No durable store rejects the HTTP upgrade with `501`. A backend error, invalid
-projection (including a zero/non-progressing durable sequence), or receiver lag
-before the first durable checkpoint sends a generic `error` envelope and then a
-`1011` close. Use section 5.1 or interaction SSE when reconnect recovery is a
-correctness requirement.
+No durable store rejects the HTTP upgrade with `501`. Authenticated cursor
+validation returns sanitized `422`/`503` failures; unauthorized cursor probes
+return `401` without reading storage. A backend error, invalid projection
+(including a zero/non-progressing durable sequence), or receiver lag before the
+first durable checkpoint sends a generic `error` envelope and then a `1011`
+close.
 
 ---
 
@@ -634,10 +641,12 @@ API diagnostics (system/info, audit, events) are under `/api/v1alpha1/` with sta
 
 ### Public vs. Authenticated
 - **Health probes** (live, ready, startup): No authentication required (load-balancer use)
-- **Metrics endpoint**: No authentication (standard Prometheus)
+- **Metrics endpoint**: Authenticated when API authentication is enabled
 - **System info**: Authenticated; no secrets exposed
 - **Audit endpoints**: Authenticated; exposes operational metadata
 - **Event stream**: Authenticated; exposes run execution events
+- **Command WebSocket**: Protocol-authenticated by query token or first text
+  frame; cursor reconnect requires the query-token form
 
 ### Data Exposure
 - No API keys, connection strings, or secrets in any response
