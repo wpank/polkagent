@@ -520,6 +520,14 @@ adapter hooks through small interfaces.
   no model turn. A delayed-provider real-runtime fixture proves durable exact-
   turn cancellation and truthful terminal retry alongside the existing `x`
   shortcut.
+- [x] Execute `/approve <approval-id>` and `/deny <approval-id> [reason]` in the
+  Console through the shared service executor only when the existing F6 queue
+  is ready for the selected explicitly authorized conversation and contains
+  the exact full ID. Refresh that single queue after success, retain only the
+  exact structured recent identity/decision for coordinator retry/conflict,
+  redact and Unicode-bound denial rationale, reject stale scope/principal, keep
+  unrelated activity/drafts intact, and create no model turn. Reducer,
+  controller, App-refresh, and production-runtime fixtures cover the path.
 - [x] Complete shared `/runs` and `/inspect <run-id>` across every interactive
   surface.
   - [x] Terminal chat and ACP/Zed use one runtime-owned, conversation-scoped

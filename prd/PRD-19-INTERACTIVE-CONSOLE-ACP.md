@@ -35,7 +35,7 @@ service. Explicit `polkagent chat` accepts an all-or-none local-process
 authority tuple; omission remains fail-closed. Explicit `polkagent tui` accepts
 the same tuple, while the no-subcommand TUI and omission remain unbound. The
 TUI now executes the truthful help/status/agents/agent/new/resume/runs/inspect/
-model plus selected-active-turn cancel subset
+model plus selected-active-turn cancel and exact scoped approval subsets
 through the same registry and service executor, renders structured results, and
 switches/reloads exact durable conversations without creating model turns. ACP
 now maps its session ID exactly to the durable conversation UUID and uses the
@@ -120,7 +120,8 @@ The actionable TUI slice now includes:
   selection, truthful conversation availability, and executable `/help`,
   `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, and
   `/model` results, plus `/cancel` and `/stop` only for the selected exact active
-  durable turn;
+  durable turn and `/approve`/`/deny` only for an exact pending ID in the
+  existing authorized F6 projection;
 - drop-backed best-effort terminal restoration, with real Unix PTY evidence for
   normal exit, ordinary error, and caught-panic unwind.
 
@@ -135,8 +136,8 @@ model executors receive the
 newest 32 completed pairs among the latest 1,000 prior turn records; harness-
 backed follow-up is explicitly unsupported because its string ingress cannot
 preserve roles. Direct legacy
-approval/database actions remain outside the Console; group plans/child-run
-orchestration, attachments, word navigation, and approval/configuration command
+approval database access remains outside the Console; group plans/child-run
+orchestration, attachments, word navigation, and broader configuration command
 parity are not implemented.
 The architecture below remains the target rather than retroactively treating
 this slice as TUI-01 completion.
@@ -193,9 +194,9 @@ It remains design input rather than the completion contract.
 | Prompt Polkagent interactively | Implemented for single-agent turns with per-conversation model selection | `polkagent chat` and the F9 Console call the durable interaction service; model executors receive bounded typed completed history, while harness follow-up fails explicitly |
 | Prompt from inside the TUI | Implemented for bounded simultaneous agent/conversation turns | `p` opens the selected Console conversation; distinct targets continue in the background, `[`/`]` switches retained activities, and same-conversation duplicates fail before draft loss |
 | Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns, and both `x` and selected-turn-only `/cancel`/`/stop` cancel only the selected exact activity. A coordinator-backed cancel/shutdown durably cancels a pending approval/run and performs zero tool I/O; cancellation during handler I/O remains open. |
-| Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/model`, and dynamically available selected-turn `/cancel`/`/stop` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns. Run-ID/all cancellation is refused; run reads share ACP/chat scope, bounds, and redaction while unavailable capabilities fail explicitly. |
+| Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/model`, dynamically available selected-turn `/cancel`/`/stop`, and exact authorized pending `/approve`/`/deny` use the shared command executor and never become model turns. Run-ID/all cancellation is refused; run reads share ACP/chat scope, bounds, and redaction while unavailable capabilities fail explicitly. |
 | Approve/deny in terminal chat | Bounded explicit local-process authority implemented; default unbound | `/status` lists exact scoped pending IDs and `/approve`/`/deny` use the shared executor and `InteractionService`. Explicit `polkagent chat` binds the all-or-none tuple with surface `terminal-chat`; omitted, partial, or nil authority fails closed. Real SQLite tests cover scope, restart retry, conflict, bounds, and coordinator cancellation. Shared/remote authentication remains open. |
-| Approve/deny in the TUI | Bounded explicit local-process authority implemented; default unbound | F6 uses the selected durable Console conversation plus exact approval ID for asynchronous list/approve/deny. Explicit `polkagent tui` binds the tuple with surface `tui`; the no-subcommand TUI and omission report unavailable. It renders bounded/redacted shared-service detail and full confirmation IDs, rejects stale switched-session completions, and no longer queries or writes approval tables directly. Shared/remote auth and pagination remain open. |
+| Approve/deny in the TUI | Bounded explicit local-process authority implemented in F6 and F9; default unbound | F6 remains the sole selected-conversation service projection and visual decision path. F9 derives dynamic `/approve <full-id>` and `/deny <full-id> [reason]` availability from that queue, routes decisions only through the shared executor/service, refreshes F6 after success, and retains one exact structured result for idempotent retry/opposite conflict. Denial rationale is 4,096-character bounded and omitted/redacted from retained lines, history, results, and errors. Explicit `polkagent tui` binds the tuple with surface `tui`; no-subcommand/omission remain unavailable. Shared/remote auth and pagination remain open. |
 | See live run output in the TUI | Implemented for correlated foreground/background activity | Controller projects bounded per-activity interaction events and resubscribes from a durable checkpoint after lag; a 32-entry redaction-safe strip exposes identity/status without prompt/output/error detail. F6 separately projects durable approvals; rich plan projection remains absent. |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
@@ -246,7 +247,11 @@ The event loop in `crates/polkagent-cli/src/tui/app.rs`:
 `RunController`. The Console reads the shared typed command registry for
 discovery/help and routes prompt plus `x`/`/cancel`/`/stop` through the runtime's
 exact durable `InteractionService`. Slash cancellation is visible only for the
-selected exact active durable turn; run-ID/all forms are refused. Sequential
+selected exact active durable turn; run-ID/all forms are refused. Approval
+commands reuse the existing correlated F6 queue rather than owning a
+second projection, require the exact selected-conversation pending ID, and
+refresh that queue after a shared-service decision. Default/no-subcommand TUI
+composition advertises neither approval command. Sequential
 prompts reuse one durable per-agent
 interaction. Distinct selected agent/conversation targets may also execute
 concurrently: activity UUIDs correlate every update, the selected viewport
@@ -285,8 +290,8 @@ gaps are:
 - Command mode handles only Escape;
 - registry-derived completion/help and the truthful help/status/agents/agent/
   new/resume/runs/inspect/model subset execute, with selected-active-turn-only
-  cancel/stop added dynamically; word navigation and approval/configuration
-  command parity remain open;
+  cancel/stop and exact authorized pending approve/deny added dynamically; word
+  navigation and broader configuration command parity remain open;
 - composer history and transcript reload durably, and `s` opens a bounded
   asynchronous same-agent session picker with stale-result guards;
 - target selection can begin from the highlighted/first active agent and then
@@ -1320,6 +1325,14 @@ session context contract; local ACP/chat/explicit-TUI bindings are composed.
   activities/transcripts/drafts across stale completions, and create no model
   turn. A two-provider-request real-runtime fixture proves the command and `x`
   share durable cancellation semantics.
+- [x] Execute dynamically available `/approve <approval-id>` and `/deny
+  <approval-id> [reason]` through the shared executor/service only for the exact
+  pending ID in the existing Ready, same-conversation F6 projection. Refresh F6
+  after success; allow only that structured recent ID to retry into the durable
+  idempotent/conflict CAS; redact and Unicode-bound denial rationale; reject
+  stale conversation/principal; preserve unrelated activity/drafts; and create
+  no model turn. Reducer, controller, App-refresh, and production-runtime tests
+  cover the path without approval-table access.
 - [x] Add an explicit durable conversation selector. `s` asynchronously lists
   a bounded set of same-agent summaries, loads the exact selected transcript,
   excludes foreign-agent sessions, remains usable while unrelated work runs,

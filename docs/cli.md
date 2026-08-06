@@ -441,6 +441,8 @@ The actionable Console is intentionally a bounded durable multi-turn surface:
 | `/runs` | List up to 20 newest runs linked to the selected conversation |
 | `/inspect <run-id>` | Inspect one selected-conversation run with bounded artifact IDs and safe terminal error |
 | `/cancel` (alias `/stop`) | Cancel only the selected exact active Console turn |
+| `/approve <approval-id>` | Approve one exact request in the selected authorized F6 queue |
+| `/deny <approval-id> [reason]` | Deny one exact request; the optional reason is Unicode-bounded and not rendered or retained in Console history |
 | `/model [model-id]` | Show or persist the selected conversation's effective model |
 
 The Console creates one durable interaction for the selected agent and keeps
@@ -454,11 +456,13 @@ conversation/turn/run IDs, reloads history after restart, and keeps one active
 turn per selected conversation, with at most eight across distinct targets, so
 cancellation has an exact target. The slash picker advertises only `/help`,
 `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, `/model`,
-and—only when the selected activity has an exact active
-durable turn—`/cancel` with its `/stop` alias. Unavailable interaction-scoped
-commands are hidden until their preconditions hold. Those commands use the shared
-registry and service executor, render structured success/error output, and are
-never sent to the model. `/runs` and `/inspect` use the runtime-owned
+and—only when the selected activity has an exact active durable turn—`/cancel`
+with its `/stop` alias. `/approve` and `/deny` appear only when the existing F6
+service projection is ready for the selected conversation and contains a real
+pending approval. Unavailable interaction-scoped commands are hidden until
+their preconditions hold. Those commands use the shared registry and service
+executor, render structured success/error output, and are never sent to the
+model. `/runs` and `/inspect` use the runtime-owned
 conversation-scoped read model and the same bounded redaction-safe formatter as
 terminal chat and ACP. A foreign run is indistinguishable from a missing run;
 prompt parameters, summaries, artifact bodies/metadata, provider errors, and
@@ -489,20 +493,28 @@ stale or terminal requests cannot fall through to another activity. `/cancel
 <run-id>` and `/cancel all` are refused, while `x` remains a shortcut for the
 same exact selected-turn cancellation. Both paths route through
 `InteractionService::cancel_turn`, create no model turn, and leave other
-activities, transcripts, and drafts intact. Provider,
-autonomy, harness, group orchestration, and approval slash commands are
-explicitly refused in the Console prompt path. F6 is the separate approval
-surface: it scopes `InteractionService::list_pending_approvals`, `approve`, and
-`deny` to the durable conversation selected in F9 and performs those calls on
-the bounded async controller while unrelated turns continue. The list exposes
+activities, transcripts, and drafts intact. Provider, autonomy, harness, and
+group orchestration slash commands remain explicitly refused. F6 remains the
+visual approval surface and the sole queue projection: it scopes
+`InteractionService::list_pending_approvals`, `approve`, and `deny` to the
+durable conversation selected in F9 and performs those calls on the bounded
+async controller while unrelated turns continue. F9 derives approval discovery
+from that same correlated queue and sends exact full IDs through the shared
+`ServiceCommandExecutor`; it performs no database reads or writes. A successful
+slash decision refreshes F6. Only that exact recently resolved ID may then reach
+the durable coordinator for an identical retry or opposite-decision conflict;
+an absent arbitrary ID remains refused. `/deny` accepts at most 4,096 Unicode
+characters of rationale, but the retained/rendered command line, history,
+result, and errors redact or omit it. The list exposes
 the first 100 pending requests, reports when more exist, and renders only exact
 approval/effect/run/tool identities plus bounded, redacted service title,
 description, policy reason, status, and expiry. Confirmation retains the full
 conversation and approval IDs; stale completions after a conversation switch
 cannot replace or clear the new queue. The TUI does not query or write approval
-tables directly. Default runtime composition is authority-unbound, so F6 shows
-unavailable guidance unless the explicit TUI tuple is supplied. With the tuple,
-the same SQLite pool backs the durable
+tables directly. Default/no-subcommand runtime composition is authority-unbound,
+so F6 shows unavailable guidance, approval slash commands are not advertised,
+and `/status` reports that approval visibility is unavailable. With the explicit
+TUI tuple, the same SQLite pool backs the durable
 coordinator and checkpoint/effect state, and F6 decisions use the fixed `tui`
 surface. `x` and normal controller shutdown always route the exact turn through
 `InteractionService::cancel_turn`; if a pending approval races a human
