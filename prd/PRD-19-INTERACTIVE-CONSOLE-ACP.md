@@ -1119,7 +1119,9 @@ a role-safe harness/session context contract.
 
 ### Phase 3 — actionable TUI (P0/P1)
 
-- [ ] Convert TUI event loop to async channel-driven architecture.
+- [x] Convert the TUI event loop to a bounded async channel-driven architecture
+  with lossless key/paste backpressure, coalesced resize/tick signals, awaited
+  runtime completions, and tracked shutdown.
 - [x] Pass one retained `PolkagentRuntime`, not only `SqlitePool`, into `App`.
 - [x] Add the first single-run Console workspace and composer.
 - [x] Preserve root explicit config selection through the TUI run bootstrap.
@@ -1158,7 +1160,10 @@ a role-safe harness/session context contract.
   bootstrap tests.
 - [x] Add real Unix PTY proof for terminal restoration after normal exit,
   ordinary error, and caught panic.
-- [ ] Add full event-loop, resize, and simultaneous-run tests.
+- [ ] Add simultaneous-run event-loop tests. Deterministic headless coverage now
+  proves bounded ordered input, resize/tick coalescing, background wakeups,
+  idle blocking, input failure, and joined shutdown; simultaneous orchestration
+  remains unavailable.
 - [x] Add focused real-runtime restart/history/follow-up/cancellation tests plus
   stale-history race and UTF-8 output-bound regressions.
 
