@@ -262,11 +262,26 @@ boundary. It preserves legacy dead-letter state and can recover an expired
 zero-attempt pre-I/O claim. Conformance, race, close/reopen, rollback,
 wrong-scope, lineage, event-replay, and migration tests cover that boundary.
 
-This is persistence infrastructure, not an end-to-end approval claim. Subject
-and checkpoint integrity digests are caller-supplied and cross-checked, not yet
-canonically constructed or recomputed. APR-03 still owns orchestrator wiring,
-grant revalidation, reducer/checkpoint integrity, startup recovery, and
-post-I/O retry reconciliation before any surface advertises approval support.
+**2026-08-06 APR-03 checkpoint:** the bounded executor/store continuation is
+implemented. Subject, checkpoint, tool-spec, and policy-snapshot digests are
+canonical domain-separated BLAKE3 values; default trait adapters remain
+capability-false. An injected capable runtime resolves deny/permit/escalate,
+atomically pauses, reads decisions from the store, leases the exact approved
+pair, records the attempt before I/O, revalidates immediately, executes once,
+persists the outcome, and atomically reduces `WaitingEffect` plus a stable
+`EffectsResolved` event. `RejectOnce` reduces to a typed tool error with zero
+attempts/outcomes. Decided checkpoints recover before the generic reaper, and
+possible I/O without an outcome is typed manual reconciliation and never
+automatically retried. A real SQLite service fixture proves AllowOnce executes
+one counting handler call with one exact grant and resumes the model.
+
+This is not yet a production surface claim. `RuntimeFactory` reports approval
+storage, executor, and user-surface readiness separately and deliberately does
+not compose the approval executor until APR-05 supplies authenticated pending
+lookup and approve/deny. Chat, TUI, HTTP, and ACP therefore continue to
+withhold grant-bearing tools. APR-03 still needs its reject/default-deny and
+restart counting-tool matrix; APR-05/APR-08 own pending wake after
+restart, operator reconciliation, and cross-surface crash evidence.
 
 **Checklist:**
 
@@ -277,18 +292,23 @@ post-I/O retry reconciliation before any surface advertises approval support.
   attempt identities.
 - [ ] Finish schema-wide canonical argument validation and redaction-safe
   arguments/output/locations/diffs.
-- [ ] Resolve grants/policy/budgets before dispatch.
+- [x] Resolve grants/policy before dispatch, with default/explicit deny
+  producing a typed no-effect/no-I/O error. Budget-wide integration remains a
+  separate EXE-01 item.
 - [x] Persist the parent turn, normalized step, `EffectIntent`, claim, and
   attempt before handler I/O while retaining SQLite foreign-key enforcement.
 - [x] Execute grantless calls through the exact runtime `ToolRegistry` and
   `EffectPipeline`, not fabricated JSON. This slice dispatches in-process after
   a durable claim; a separate effect worker/drain path remains.
-- [ ] Pause durably for approval and resume the exact call/effect.
+- [x] Pause durably for approval and resume the exact single call/effect in
+  the injectable APR-03 slice. Production surfaces remain fail-closed.
 - [x] Persist a success/failure/timeout outcome and feed the exact serialized
   tool result into the next typed model inference request. Artifact projection
   remains open.
-- [ ] Enforce max turns, cancellation, timeout, retries, and explicit unknown
-  outcomes without duplicate effects.
+- [ ] Complete cancellation integration, retry-class/operator reconciliation,
+  and explicit unknown-outcome UX without duplicate effects. Max turns,
+  durable approval expiry, pre-I/O reclaim, and no-retry manual reconciliation
+  are implemented.
 
 **Exit checks:** a real runtime test covers read-only tool use, denied tool,
 approval-required tool, cancellation, crash/restart between intent and I/O,
@@ -813,7 +833,7 @@ from an explicitly ready remaining row rather than replaying foundation work.
 |---|---|---|---|
 | Integration | **Complete:** APR-00/01 contracts, V18 SQLite coordinator, run CAS, checkpoint leases, and conformance | Contract package, store traits, SQLite coordinator, run CAS, checkpoint schema | Preserve atomic/idempotent/reopen/generic-path-isolation evidence; do not create a second coordinator. |
 | Policy | **Complete:** APR-02 strict opt-in policy approval effects, config, resolver injection, and readiness | Policy/config/runtime-composition modules | Preserve default deny, permit, escalation precedence, and strict config tests. |
-| Execution | **In progress:** APR-03/EXE-01 orchestrator pause/recovery and one approval-required tool | `polkagent-run` orchestrator and narrow service bridges | APR-01/APR-02 are satisfied; AllowOnce executes once and reject/cancel/timeout execute zero times, with unknown post-attempt recovery fail-closed. |
+| Execution | **Complete bounded slice:** APR-03/EXE-01 adds atomic pause/recovery, one approval-required tool per model group, AllowOnce one-I/O reduction, reject/expiry/cancel zero-I/O reduction, and fail-closed unknown post-attempt recovery | `polkagent-run` orchestrator and narrow service bridges | Preserve exact checkpoint/effect lineage and keep production activation disabled until APR-05 provides an authenticated surface. |
 | ACP harness | **Complete:** APR-04 fake permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Preserve once-only identity/redaction/cancel/error/disconnect coverage; production binding remains APR-07. |
 | Projection/API | APR-05 adds durable approval projection/query/approve-deny and HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | Starts after APR-01 plus APR-03's event contract; replay and wrong-scope tests pass. |
 | Terminal | APR-06 adds chat/TUI approval queue/detail/actions and removes direct DB writes | CLI chat/TUI modules | Starts after APR-05; exact approval identities survive cancel/restart with no accidental prompts. |
