@@ -1,7 +1,8 @@
 # Approval pause-and-resume design
 
-**Status:** active execution design; APR-02 policy/composition and the APR-04
-ACP protocol harness implemented, durable approval flow not implemented
+**Status:** active execution design; APR-00/APR-01 SQLite foundation, APR-02
+policy/composition, and the APR-04 ACP protocol harness implemented; runtime
+and surface integration incomplete
 
 **Prepared:** 2026-08-06
 
@@ -17,7 +18,7 @@ resumed without external I/O occurring before authorization. The decision and
 execution continuation survive client disconnect and process restart. Every
 surface uses the same approval identity and application operation.
 
-This document does not claim that capability exists today.
+This document does not claim that the end-to-end capability exists today.
 
 ## 1. Status quo and evidence
 
@@ -26,11 +27,11 @@ This document does not claim that capability exists today.
 | Interaction contract | `ApprovalView`, `ApprovalRequested`, `ApprovalResolved`, `approve`, `deny`, and typed `/approve` and `/deny` exist in `polkagent-interaction` | Production `runtime/src/interaction.rs` returns `Unavailable`; pending lookup is empty in chat and TUI adapters |
 | Tool execution | Grantless registered tools persist intent, claim, attempt, outcome, and correlated events before/after I/O | `run/src/orchestrator.rs` withholds every tool with `required_grant`; its `GrantResolver` is unused and `ToolContext.grants` is empty |
 | Policy | Default-deny evaluation, explicit deny/permit/`RequireApproval` effects, strict named-file loading, gate escalation, and exact resolver injection/readiness are implemented | The orchestrator does not yet consume the resolver for grant-bearing tool continuation; durable approval authority remains absent |
-| Effect persistence | `effect_intents`, attempts, immutable outcomes, retry classes, and an `ApprovalRecord` type exist | No approval table/store exists. SQLite ignores the real `effect_intents.state` column, overloads `claimed_by`, and does not enforce documented transitions |
+| Effect persistence | SQLite V18 adds durable approval/checkpoint records, makes `effect_intents.state` authoritative, clears legacy `claimed_by` sentinels, and enforces approval/lease invariants | The orchestrator and application services do not yet call the coordinator; non-SQLite adapters do not advertise this capability |
 | Application service | Approval methods and a broadcast channel exist | Methods only verify an effect and send a process-local boolean; no decision is persisted |
 | API | Approve/deny routes exist | They expect unreachable states, create an ephemeral record, and emit bus-only events |
-| Run lifecycle | `AwaitingApproval` and `WaitingEffect` states exist | Run state updates are unconditional, state and event writes are separate, denial cancels, and the orchestrator never pauses |
-| Recovery | Durable interaction replay and abandoned-run recovery exist | Startup deliberately fails `awaiting_approval` and `waiting_effect`; the model-loop continuation exists only in memory |
+| Run lifecycle | `AwaitingApproval` and `WaitingEffect` states exist; the store now exposes exact-state run CAS and the SQLite coordinator commits run/effect/approval/checkpoint/event transitions together | Existing orchestration/service paths are not wired to the coordinator, denial still follows legacy behavior there, and the orchestrator never pauses |
+| Recovery | Durable interaction replay, abandoned-run recovery, and a versioned SQLite checkpoint store with version/lease CAS exist | Startup does not yet rehydrate approval checkpoints or reconcile retry-class outcomes; the live model loop still keeps its continuation in memory |
 | ACP | Durable sessions, prompts, cancellation, tool updates, slash discovery, safe permission-request projection, and an official-SDK protocol harness exist | The production backend does not issue native permission requests or bind decisions to the durable coordinator/effect path |
 | Terminal/TUI | Approval rendering, commands, and approval views exist | They do not resolve the shared durable approval operation end to end |
 
@@ -302,6 +303,30 @@ APR-05 -> APR-06 chat/TUI
 | APR-07 | Production ACP backend update and coordinator binding | APR-03, APR-04, APR-05 | Official client allow/reject/cancel/reconnect tests pass |
 | APR-08 | Cross-surface fixture, crash matrix, security and observability closure | APR-03, APR-05, APR-06, APR-07 | User-path E2E and required workspace gates pass |
 
+APR-00 and the SQLite scope of APR-01 completed on 2026-08-06. The
+store-neutral serialized approval and checkpoint contracts include exact
+lineage, authorized-principal scope, `u64` effect sequencing, typed errors,
+one-shot decisions, and fail-closed run state-and-revision CAS. SQLite V18
+supplies deterministic legacy effect-state backfill, approval and checkpoint
+tables, state/lease/immutability guards, scoped queries, and one-transaction
+pause/resolve/claim/checkpoint operations. Stable-ID pause retries return the
+same request only when their immutable subject, checkpoint, and metadata are
+identical. Human and quorum principals may allow or reject only when they are
+the frozen authorized principal; service principals may expire or cancel
+within the exact tenant/workspace/conversation scope, but cannot allow or
+reject. Approval-linked effects are isolated from generic claim, release,
+expiry, and state-update paths. Exact claims pass through a durable `Claimed`
+to `Executing` attempt boundary before outcome recording, while an expired
+pre-I/O claim can be re-leased only with zero attempts and an eligible
+checkpoint. Canonical run events and the legacy dead-letter state remain
+supported, with conformance, race, close/reopen, wrong-scope, recovery, and
+migration coverage.
+
+The subject and checkpoint integrity digests are caller-supplied and currently
+only cross-checked against duplicated persisted columns. Canonical construction
+and recomputation at trust boundaries remain APR-03 work; the SQLite foundation
+alone does not establish cryptographic checkpoint integrity.
+
 APR-02 completed on 2026-08-06. Policy loading is explicitly enabled and
 otherwise composes an empty default-deny resolver. Enabled loading selects one
 safe named TOML file, rejects unknown fields, duplicates, malformed rules,
@@ -310,8 +335,8 @@ forms, and fails runtime startup on missing or invalid input. Matching deny
 beats approval and allow; approval beats allow. The exact resolver `Arc` is
 retained by `AppService` and injected into its orchestrator, with truthful
 ready/disabled startup state. This does not make the approval path operational:
-grant-bearing tools remain withheld until APR-01 and APR-03 compose durable
-coordination and continuation.
+grant-bearing tools remain withheld until APR-03 composes the durable
+coordinator with execution and continuation.
 
 APR-04 completed on 2026-08-06 at the protocol-only boundary. The ACP surface
 constructs `session/request_permission` from the safe tool projection with the
@@ -432,18 +457,23 @@ and why approval never overrides policy denial.
 
 ### Contract freeze
 
-- [ ] Accept APR-ADR-01 through APR-ADR-05.
+- [x] Accept APR-ADR-01 through APR-ADR-05 as the implementation decisions in
+  this design.
 - [ ] Freeze serialized approval, checkpoint, state, error, and outbox fixtures.
+  Approval/checkpoint envelopes and duration encoding are frozen; dedicated
+  state, error, and outbox fixture snapshots remain.
 - [ ] Assign one owner for each hot file and packet.
 
 ### Durable foundation
 
-- [ ] Add approval and checkpoint domain records without surface types.
-- [ ] Add coordinator/checkpoint ports and expected-state run CAS.
-- [ ] Add and test the forward migration and legacy effect-state backfill.
-- [ ] Implement SQLite transactions, indexes, pagination, leases, and
+- [x] Add approval and checkpoint domain records without surface types.
+- [x] Add coordinator/checkpoint ports and expected-state run CAS.
+- [x] Add and test the forward migration and legacy effect-state backfill.
+- [x] Implement SQLite transactions, indexes, pagination, leases, and
   idempotent conflict semantics.
 - [ ] Add shared store conformance; make unsupported adapters fail closed.
+  Shared SQLite conformance exists and the run-CAS default fails closed;
+  adapter capability/readiness declarations still need explicit coverage.
 
 ### Policy and execution
 
@@ -451,13 +481,18 @@ and why approval never overrides policy denial.
 - [x] Inject the configured resolver through `AppServiceBuilder` and runtime.
 - [ ] Advertise grant-bearing tools only when the complete approval path is
   ready and policy permits exposure. APR-02 preserves the existing fail-closed
-  withholding; durable-path readiness depends on APR-01 and APR-03.
+  withholding; durable-path readiness now depends on APR-03.
 - [ ] Persist checkpoint/effect/approval before publishing or waiting.
+  The coordinator transaction guarantees this ordering, but the orchestrator
+  does not invoke it yet.
 - [ ] Wake from store-backed state, claim approved effects, pass exact grants,
   and revalidate security before I/O.
 - [ ] Reduce denial as a typed tool result; implement cancel/timeout races.
 - [ ] Implement checkpoint leasing, startup rehydration, and retry-class
   reconciliation before changing the startup reaper.
+  Store-level leasing/version CAS and expired pre-I/O claim recovery are
+  complete; orchestrator startup rehydration, post-I/O reconciliation, and
+  canonical digest construction/verification remain APR-03 work.
 
 ### Shared interaction and surfaces
 

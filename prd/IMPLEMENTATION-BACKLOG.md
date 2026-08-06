@@ -250,6 +250,24 @@ pipeline required by PRD-03/04/07.
 **Scope/ownership:** `polkagent-run` orchestration and service bridges. This
 packet owns the orchestrator hot files; FND-01 only injects its dependencies.
 
+**2026-08-06 approval-foundation checkpoint:** APR-00 and the SQLite portion of
+APR-01 from
+[`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md) are
+implemented by the V18 migration and serialized coordinator/checkpoint stores.
+The foundation includes exact run state-and-revision CAS, authoritative effect
+state, stable identical pause retries, scoped one-shot resolution, paired
+effect/checkpoint leases, durable canonical run events, generic-path isolation
+for approval-linked effects, and the durable `Claimed` to `Executing` attempt
+boundary. It preserves legacy dead-letter state and can recover an expired
+zero-attempt pre-I/O claim. Conformance, race, close/reopen, rollback,
+wrong-scope, lineage, event-replay, and migration tests cover that boundary.
+
+This is persistence infrastructure, not an end-to-end approval claim. Subject
+and checkpoint integrity digests are caller-supplied and cross-checked, not yet
+canonically constructed or recomputed. APR-03 still owns orchestrator wiring,
+grant revalidation, reducer/checkpoint integrity, startup recovery, and
+post-I/O retry reconciliation before any surface advertises approval support.
+
 **Checklist:**
 
 - [x] Advertise only exact registered definitions in the agent's allowlist and
