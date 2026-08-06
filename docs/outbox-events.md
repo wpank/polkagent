@@ -461,6 +461,27 @@ bounded receiver lags, the server replays after the last consumed checkpoint
 and deduplicates live overlap. A backend or invalid-projection failure closes
 the accepted socket with status `1011` and a generic reason.
 
+### Bidirectional command socket
+
+`GET /ws/v1alpha1` consumes the same committed `RunEvent` bus but preserves its
+separate `msg_type` command/envelope contract. It attaches its receiver before
+the upgrade task, supports up to 256 run/agent/system subscriptions, and keeps a
+per-connection durable checkpoint internally. After the first valid durable
+observation, later durable notifications and receiver lag are reconciled from
+the `EventStore` in 256-record pages; the checkpoint advances after successful
+socket delivery and suppresses replay/live duplicates. Agent subscriptions
+resolve run ownership through the run manager without retaining an unbounded
+cache.
+
+This command protocol has no cursor field and does not add `global_sequence` to
+its event payload. A new connection is therefore live-only and cannot recover
+the disconnected interval. Lag before the first durable checkpoint, malformed
+durable projection, or backend failure produces a sanitized error envelope and
+1011 close rather than silently dropping durable state. Diagnostic/ephemeral
+events remain best-effort, and the accepted `system` channel currently has no
+producer. Correctness-sensitive reconnecting consumers use the global stream
+above or interaction SSE.
+
 ---
 
 ## API Endpoints
@@ -470,6 +491,7 @@ the accepted socket with status `1011` and a generic reason.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/v1alpha1/events/stream` | Checkpointed replay-then-follow WebSocket; optional `run_id`, `kinds`, and `after_sequence` |
+| `GET` | `/ws/v1alpha1` | Bidirectional live command socket with bounded in-session durable lag recovery; no reconnect cursor |
 | `GET` | `/api/v1alpha1/runs/{run_id}/events` | REST: paginated list of durable events for a run |
 | `GET` | `/api/v1alpha1/events` | REST: global event feed with cursor-based pagination |
 

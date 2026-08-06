@@ -331,6 +331,9 @@ The current SQLite run-event schema retains event/run IDs, kind payload,
 per-run/global sequences, and timestamp, but not every optional correlation or
 causation field; absent replay metadata uses the typed `RunEvent` defaults.
 Persisting that remaining correlation metadata is still an OBS-01 schema gap.
+Authentication and authorization gate the connection, but the current event
+rows are global to the configured runtime and are not tenant/principal scoped.
+Per-principal event-row isolation remains an open security/evidence gap.
 
 The WebSocket upgrade endpoints `/api/v1alpha1/events/stream` and
 `/ws/v1alpha1` are intentionally excluded from `openapi.yaml`. OpenAPI can
@@ -342,8 +345,41 @@ those transports.
 This WebSocket remains a run-event protocol and is not reused for durable
 interaction delivery. Interaction clients use the separate checkpointed SSE
 route documented above, or finite JSON replay when streaming is unsuitable.
-The distinct `/ws/v1alpha1` command socket is not an alias for this checkpoint
-protocol.
+
+### Command WebSocket
+
+`GET /ws/v1alpha1` is a distinct bidirectional channel-subscription protocol;
+it is not an alias for the global checkpoint protocol above. Authenticate with
+`?token=<token>` or send `{"msg_type":"auth","token":"..."}`. Commands use
+one channel per frame:
+
+```json
+{"msg_type":"subscribe","id":"request-1","channel":"runs:0198bd19-40c0-7000-8000-000000000001"}
+```
+
+The implemented commands are `auth`, `subscribe`, `unsubscribe`, and `ping`.
+Replies and events use the `WsMessage` envelope (`msg_type`, optional `id` and
+`channel`, `payload`, and `timestamp`). Run and agent channels are actionable;
+agent subscriptions resolve each event's run through the configured run
+manager. The `system` channel parses and can be subscribed, but no implemented
+`RunEvent` producer emits system events. Effect and conversation channels and
+a command-socket cancel operation are not implemented. Each connection may
+hold at most 256 distinct subscriptions.
+
+The command receiver attaches before the upgrade completes. After it has
+successfully delivered or skipped its first durable event, it tracks an
+internal global checkpoint and recovers later bounded-bus lag from the
+`EventStore` in 256-record pages without duplicate durable delivery. The
+checkpoint is deliberately not added to the existing command event envelope.
+Consequently, reconnect is live-only: this protocol has no cursor input and
+cannot recover events emitted while disconnected. Diagnostic and ephemeral
+events are also live-only and may be lost on lag.
+
+No configured durable store rejects the upgrade with `501`. Recovery failure,
+an invalid durable projection, or lag before the first durable checkpoint sends
+a generic `error` envelope and then closes with status `1011`; backend details
+are never exposed. Clients needing reconnect correctness must use
+`/api/v1alpha1/events/stream` or the interaction SSE API.
 
 ```mermaid
 stateDiagram-v2

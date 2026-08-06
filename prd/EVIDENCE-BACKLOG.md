@@ -223,9 +223,25 @@ reports.
   authentication, missing durable storage, and a lag-recovery backend failure:
   the last closes with status 1011 and a generic reason containing no private
   backend sentinel. Diagnostic and ephemeral frames remain explicitly
-  best-effort. The distinct `/ws/v1alpha1` command socket is unchanged. Replay
-  is truthful to the fields currently retained by `EventStore`; full optional
-  correlation/causation persistence remains a separate schema gap.
+  best-effort. A second fixture uses a real migrated SQLite `EventStore` and
+  the canonical `EventRecorder`, proving stored `data_json` projects back to
+  the typed `EventKind` and SQLite rowid is the durable global reconnect cursor.
+  Replay is truthful to the fields currently retained by `EventStore`; full
+  optional correlation/causation persistence remains a separate schema gap.
+
+- **OBS-01 / command WebSocket recovery slice (2026-08-06):** real TCP tests
+  prove `/ws/v1alpha1` attaches before upgrade completion, preserves its
+  existing single-channel command envelope, routes concurrent run and agent
+  subscriptions, stops delivery after unsubscribe, and caps each connection at
+  256 distinct subscriptions. A forced capacity-two lag after a delivered
+  durable event replays from that internal global checkpoint without gaps or
+  duplicates. Lag before any checkpoint and a malformed zero-valued point
+  lookup both fail closed with a generic error envelope and 1011 close without
+  fabricating replay; missing store and backend failure are equally explicit
+  and sanitized. A reconnect test freezes the current limitation: no cursor is
+  exposed by this protocol, so the disconnected interval is not replayed and
+  only future live events arrive. Diagnostic/ephemeral events and the
+  producer-less `system` channel remain best-effort/inert by design.
 
 - **EVD-08 / OPS-01 container lifecycle slices (2026-08-05):**
   `scripts/container-smoke.sh`, invoked by the `container-smoke` CI job,

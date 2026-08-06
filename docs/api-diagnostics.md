@@ -471,6 +471,47 @@ during disconnect or lag; clients must use durable events for correctness.
 
 **Use Case:** Real-time dashboards; event logging systems; real-time status updates; debugging run execution.
 
+### 5.2 `GET /ws/v1alpha1` (command WebSocket)
+
+**Purpose:** Manage live run/agent channel subscriptions over a bidirectional
+command envelope. This is a separate wire protocol from section 5.1.
+
+**Implemented protocol:**
+
+- Authentication: `?token=<token>` or first text message
+  `{"msg_type":"auth","token":"..."}`
+- Commands: `auth`, `subscribe`, `unsubscribe`, and `ping`; each subscription
+  command carries one `channel`
+- Channels: `runs:{run_id}`, `agents:{agent_id}`, and syntactically `system`;
+  the current run-event source has no system-event producer
+- Replies: `WsMessage` JSON with `msg_type` (`ack`, `pong`, or `error`), optional
+  request `id`/`channel`, `payload`, and `timestamp`
+- Events: `msg_type: "event"`, a canonical `RunEvent` in `payload`, and the
+  concrete `runs:{run_id}` channel even when selected by an agent subscription
+- Bounds: at most 256 distinct channels per connection; server Ping every 30
+  seconds and a 30-second Pong timeout
+
+The live receiver is attached before upgrade completion. Once the connection
+has observed a valid durable event, an internal global checkpoint advances only
+after successful delivery (or after a non-matching durable row is skipped).
+Later live durable notifications and `Lagged` errors recover from the injected
+`EventStore` in 256-record pages, validate forward progress, and deduplicate
+overlap. Agent routing performs a current run lookup and does not retain an
+unbounded per-connection run cache.
+
+The existing command envelope exposes no cursor, so reconnect does not replay
+events emitted while disconnected. Its event payload also does not expose the
+internal global checkpoint. Diagnostic and ephemeral delivery remains
+best-effort. `system` subscriptions currently receive no run events; effect,
+conversation, cancellation, cursor, and back-pressure-declaration commands are
+not implemented.
+
+No durable store rejects the HTTP upgrade with `501`. A backend error, invalid
+projection (including a zero/non-progressing durable sequence), or receiver lag
+before the first durable checkpoint sends a generic `error` envelope and then a
+`1011` close. Use section 5.1 or interaction SSE when reconnect recovery is a
+correctness requirement.
+
 ---
 
 ## 6. Event Log REST Endpoint

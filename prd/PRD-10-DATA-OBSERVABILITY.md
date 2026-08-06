@@ -990,6 +990,19 @@ subscription, three-missed-pong, graceful `StreamEnd`, SSE fallback, or
 per-class buffer/metrics requirements below. Diagnostic and ephemeral frames
 remain best-effort.
 
+The separate command endpoint `GET /ws/v1alpha1` preserves its existing
+bidirectional `msg_type` envelope and single-channel subscribe/unsubscribe
+commands. It now attaches live before upgrade completion, keeps a per-session
+internal global checkpoint after the first valid durable observation, and
+recovers later durable lag from the same store in 256-record pages without
+duplicates. Run and agent subscriptions work and each connection is capped at
+256 distinct channels. It fails closed with a sanitized error plus 1011 close
+when lag precedes a checkpoint or store recovery/projection is invalid. Because
+that envelope exposes neither cursor input nor global checkpoint output, a new
+connection remains live-only; `system` has no producer and diagnostic/ephemeral
+frames remain best-effort. This is not completion of reconnect, per-class
+buffer, metrics, coalescing, or the broader channel requirements below.
+
 ### 9.4 Backpressure handling
 
 **REQ-STREAM-030.** When a WebSocket or SSE client cannot consume events
@@ -3974,8 +3987,13 @@ task lists its acceptance criterion from section 20 where applicable.
   _Acceptance: AC-EVT-05, AC-EVT-07._
   _Partial evidence (2026-08-06): the global API WebSocket passes bounded
   replay, reconnect, filter, concurrent follow, forced-lag, dedupe, auth, and
-  sanitized failure fixtures. The remaining section 9.3/9.4 requirements above
-  keep this item open._
+  sanitized failure fixtures, including canonical recorder-to-SQLite payload
+  projection and rowid checkpoint proof. The command WebSocket separately
+  passes real-TCP run/agent multi-subscription, unsubscribe, subscription-cap,
+  forced-lag recovery/dedupe, pre-checkpoint fail-closed, invalid-projection,
+  missing-store, sanitized-backend, and live-only reconnect fixtures. Its lack
+  of a public reconnect cursor plus the remaining section 9.3/9.4 requirements
+  above keep this item open._
 
 ### D.3 Artifacts
 

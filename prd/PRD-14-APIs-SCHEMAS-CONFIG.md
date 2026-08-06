@@ -338,7 +338,7 @@ download.
 
 ```json
 {
-  "type": "event" | "subscribe" | "unsubscribe" | "ping" | "pong" | "error",
+  "msg_type": "event" | "subscribe" | "unsubscribe" | "ping" | "pong" | "error",
   "id": "msg_unique_id",
   "channel": "runs:run_abc123",
   "payload": { ... },
@@ -358,12 +358,23 @@ download.
 
 **Requirement API-WS-004.** Clients authenticate WebSocket connections using
 either a query parameter token (`?token=pak_...`) or the first message after
-connection (`{"type": "auth", "token": "pak_..."}`).
+connection (`{"msg_type": "auth", "token": "pak_..."}`).
 
 **Requirement API-WS-005.** The server sends periodic ping frames. If no pong
 is received within the configured timeout (default 30s), the connection is
 closed. Clients should reconnect with exponential backoff and resume
 subscriptions.
+
+**Implementation status (2026-08-06).** `/ws/v1alpha1` implements the
+`msg_type` envelope, query/first-message token validation, one-channel
+subscribe/unsubscribe commands, WebSocket ping/pong, and live run/agent event
+routing with a 256-subscription cap. The `system` channel parses but has no
+producer; effects, artifacts, conversations, and interactive prompt/cancel
+messages are not implemented on this socket. After its first durable
+observation it recovers in-session bus lag from bounded durable store pages,
+but the frame contract has no public cursor/checkpoint, so reconnect is
+live-only. Appendix A.2 is the authoritative implemented frame contract; the
+broader channel/session requirements above remain target scope.
 
 ### 3.3 gRPC API (deferred)
 
@@ -3683,7 +3694,8 @@ GET /api/v1alpha1/me
 ### A.2 WebSocket API
 
 The WebSocket endpoint is at `/ws/v1alpha1`. It uses the Axum WebSocket
-upgrade pattern (as seen in Roko's `routes/ws.rs`).
+upgrade pattern and a command envelope distinct from the global run-event
+WebSocket documented below.
 
 #### Connection lifecycle
 
@@ -3691,110 +3703,102 @@ upgrade pattern (as seen in Roko's `routes/ws.rs`).
 1. Client sends HTTP GET /ws/v1alpha1 with Upgrade: websocket header.
    Optional: ?token=pak_... for query-param auth.
 
-2. Server upgrades the connection.
-   Message/frame size caps:
-     max_message_size = 1 MiB
-     max_frame_size   = 256 KiB
+2. Server requires a configured EventStore (otherwise HTTP 501), attaches its
+   live EventBus receiver, and upgrades the connection.
 
 3. Client authenticates (if not using query param):
-   SEND  {"type":"auth","token":"pak_..."}
-   RECV  {"type":"auth_ok","principal_id":"usr_{ulid}","scopes":[...]}
+   SEND  {"msg_type":"auth","token":"pak_..."}
+   RECV  {"msg_type":"ack","id":null,"channel":null,"payload":null,
+          "timestamp":"..."}
    or
-   RECV  {"type":"error","code":"AUTHENTICATION_REQUIRED","message":"..."}
-         -- connection closed
+   RECV  {"msg_type":"error","payload":{"reason":"invalid or missing token"},
+          "timestamp":"..."}
 
-4. Client subscribes to channels:
-   SEND  {
-     "subscribe": ["runs:run_{ulid}", "effects:eff_{ulid}"],
-     "cursor": 42,            // optional: replay from sequence 42
-     "back_pressure": "at_most_once"
-   }
-
-   Server replays buffered events from cursor (up to ring-buffer limit),
-   then streams live events.
+4. Client subscribes one channel per command (maximum 256 distinct channels):
+   SEND  {"msg_type":"subscribe","id":"req-1",
+          "channel":"runs:{run_uuid}"}
+   RECV  {"msg_type":"ack","id":"req-1",
+          "channel":"runs:{run_uuid}","payload":null,"timestamp":"..."}
 
 5. Server streams events:
-   RECV  {"type":"event","id":"evt_{ulid}","channel":"runs:run_{ulid}",
-          "seq":43,"payload":{...},"timestamp":"..."}
+   RECV  {"msg_type":"event","id":null,"channel":"runs:{run_uuid}",
+          "payload":{...RunEvent...},"timestamp":"..."}
 
-6. Keep-alive (server-initiated ping every 25s):
-   RECV  {"type":"ping"}
-   SEND  {"type":"pong"}
+6. Keep-alive (server WebSocket Ping control frame every 30s):
+   RECV  Ping
+   SEND  Pong
    Timeout: 30s without pong closes the connection.
 
 7. Client unsubscribes:
-   SEND  {"type":"unsubscribe","channels":["runs:run_{ulid}"]}
-   RECV  {"type":"unsubscribed","channels":["runs:run_{ulid}"]}
+   SEND  {"msg_type":"unsubscribe","id":"req-2",
+          "channel":"runs:{run_uuid}"}
+   RECV  {"msg_type":"ack","id":"req-2",
+          "channel":"runs:{run_uuid}","payload":null,"timestamp":"..."}
 
 8. Connection close:
-   Either side sends {"type":"close"} then closes the WebSocket.
+   Either side sends a WebSocket Close control frame. There is no JSON close
+   command.
 ```
 
-#### Agent output streaming endpoint
+The actual client command discriminator is `msg_type`, not `type`. Commands are
+`auth`, `subscribe`, `unsubscribe`, and `ping`; there is no cursor,
+back-pressure declaration, multi-channel array, cancellation, or JSON close
+command. The implemented channels are `runs:{run_id}`, `agents:{agent_id}`, and
+syntactically `system`. Run and agent routing is active. `system` currently has
+no producer in the `RunEvent` source; effect and conversation channels are not
+implemented. Event envelopes always report the concrete run channel, including
+when an agent subscription selected the event. Per-message/frame size caps
+remain an open hardening item rather than an implemented guarantee.
+
+#### Agent output subscription
 
 For interactive runs where the client wants streaming token output, subscribe
 to the `runs:{run_id}` channel after creating the run:
 
 ```json
 // Subscribe after POST /runs returns run_id
-{"subscribe": ["runs:run_01HQ..."], "cursor": 0, "back_pressure": "at_most_once"}
+{"msg_type":"subscribe","id":"run-output","channel":"runs:0198bd19-40c0-7000-8000-000000000001"}
 
 // Receive streaming events
-{"type":"event","channel":"runs:run_01HQ...","seq":1,
- "payload":{"type":"turn.token_delta","turn_id":"turn_01HQ...",
-            "delta":"The staking pallet","token_index":0,"role":"assistant"}}
-
-{"type":"event","channel":"runs:run_01HQ...","seq":8,
- "payload":{"type":"effect.pending_approval","effect_id":"eff_01HQ...",
-            "summary":"Transfer 1.0 DOT to 5FHn...","risk_level":"medium"}}
-
-{"type":"event","channel":"runs:run_01HQ...","seq":15,
- "payload":{"type":"run.completed","run_id":"run_01HQ...",
-            "terminal_reason":"success"}}
+{"msg_type":"event","id":null,
+ "channel":"runs:0198bd19-40c0-7000-8000-000000000001",
+ "payload":{"id":"...","run_id":"...","sequence":1,
+            "kind":{"streaming_token":{"text":"The staking pallet"}},
+            "durability":"ephemeral","timestamp":"..."},
+ "timestamp":"..."}
 ```
 
 #### Event subscription endpoint
 
-Multi-resource subscriptions allow a single connection to track multiple runs,
-effects, and agents simultaneously:
+Multiple single-channel commands allow a connection to track multiple runs and
+agents simultaneously:
 
 ```json
-// Subscribe to multiple channels
-{
-  "subscribe": [
-    "agents:agt_01HQ...",
-    "runs:run_01HQ...",
-    "runs:run_01HR...",
-    "system"
-  ]
-}
+{"msg_type":"subscribe","id":"a","channel":"agents:0198bd19-40c0-7000-8000-000000000010"}
+{"msg_type":"subscribe","id":"r","channel":"runs:0198bd19-40c0-7000-8000-000000000001"}
 ```
 
 #### Real-time notifications
 
-The `system` channel delivers platform-wide notifications:
+Subscribed run/agent events are forwarded live. The accepted `system` channel
+does not yet deliver anything because the source is a run-event bus with no
+implemented system-event producer.
 
-```json
-{"type":"event","channel":"system","payload":
-  {"type":"system.maintenance","starts_at":"2026-08-01T02:00:00Z",
-   "message":"Scheduled maintenance window"}}
+#### Lag recovery and reconnect limitation
 
-{"type":"event","channel":"system","payload":
-  {"type":"system.version","new_version":"0.2.0",
-   "upgrade_by":"2026-09-01T00:00:00Z"}}
-```
+The receiver attaches before upgrade completion. Its first valid durable point
+lookup establishes an internal global checkpoint after successful delivery (or
+after a non-matching row is skipped). Later durable notifications and receiver
+lag page from `EventStore` after that checkpoint, validate forward progress,
+and deduplicate replay/live overlap. Lag before the first checkpoint, malformed
+projection, or backend failure sends a generic `error` envelope and then closes
+with status 1011. No backend detail is serialized.
 
-#### Reconnection with cursor resume
-
-On disconnect, clients reconnect and send the last `seq` received as `cursor`
-to replay missed events. The server's ring buffer retains up to 256 recent
-events (configurable). If the cursor falls outside the buffer, the server
-sends a `gap` event with a materialized snapshot:
-
-```json
-{"type":"gap","missed_events":312,"last_materialized_seq":512,
- "snapshot":{ ... current state ... }}
-```
+The command envelope intentionally remains unchanged and exposes neither a
+cursor input nor a global checkpoint output. Reconnecting therefore starts a
+new live-only session and does not recover the disconnected interval.
+Diagnostic/ephemeral events may also be lost during lag. Consumers requiring a
+durable reconnect cursor use `/api/v1alpha1/events/stream` or interaction SSE.
 
 ---
 
@@ -3867,7 +3871,7 @@ If the requested sequence is not in the buffer, the server responds with a
 #### Global run-event WebSocket endpoint
 
 The implemented global endpoint uses a WebSocket upgrade and streams events
-across all runs for the authenticated principal:
+across the globally configured runtime for an authorized connection:
 
 ```http
 GET /api/v1alpha1/events/stream?after_sequence=41&kinds=run_started,run_completed HTTP/1.1
@@ -3883,6 +3887,10 @@ and broadcast lag replays after the last consumed checkpoint without duplicate
 durable frames. Diagnostic/ephemeral frames are live-only. Missing storage
 rejects the upgrade with `501`; backend recovery failure closes with a generic
 1011 reason. This is distinct from interaction SSE and `/ws/v1alpha1`.
+Authentication/authorization gates the connection, but stored event rows are
+not currently scoped by tenant or principal. Tenant/principal row filtering is
+therefore still an open SEC-01/EVD-10 boundary and callers must not infer
+per-principal isolation from this endpoint.
 
 ---
 
@@ -5882,26 +5890,40 @@ criteria. Phase annotations reference the implementation timeline.
 - [ ] **E-WS-01** WebSocket upgrade at `/ws/v1alpha1`
   - Phase: 0
   - Acceptance: Handles 100 concurrent connections; max_message_size enforced
+  - Current: Upgrade and real TCP command flows work; explicit message/frame
+    size caps and the 100-connection acceptance fixture remain open.
 
 - [ ] **E-WS-02** Token-based auth on WebSocket (query param and first-message)
   - Phase: 0
   - Acceptance: Connection closed on invalid token
+  - Current: Both token entry paths are implemented. Invalid first-message auth
+    returns an error but does not close, so the stated acceptance is not met.
 
 - [ ] **E-WS-03** Channel subscription with cursor-based replay
   - Phase: 0
   - Acceptance: Replay delivers events in sequence; gap event on buffer miss
+  - Current: Durable lag after the first in-session checkpoint replays in
+    order from `EventStore`; no public cursor or gap snapshot exists, and
+    reconnect is live-only.
 
 - [ ] **E-WS-04** Back-pressure mode declaration
   - Phase: 1
   - Acceptance: `at_most_once` drops when lagged; coalesce not yet implemented (logs warning)
+  - Current: No declaration exists. Durable lag is recovered or fails closed;
+    diagnostic/ephemeral frames remain best-effort.
 
 - [ ] **E-WS-05** Server ping/pong keep-alive (25s interval, 30s timeout)
   - Phase: 0
   - Acceptance: Connection closed after timeout; client reconnects
+  - Current: Server Ping and timeout are both 30 seconds; automatic reconnect
+    is a client/SDK gap and command-socket reconnect has no cursor.
 
 - [ ] **E-WS-06** Multi-channel subscriptions (agents, runs, effects, system)
   - Phase: 0
   - Acceptance: Events routed to correct channel; unsubscribe stops delivery
+  - Current: Real TCP tests prove concurrent run/agent routing and unsubscribe,
+    with a 256-channel cap. Effects are unsupported and `system` has no event
+    producer, so the full acceptance remains open.
 
 ### SSE
 

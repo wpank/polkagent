@@ -377,8 +377,20 @@ state. OpenAPI conformance and authenticated/read-only tests pass.
   interaction SSE and `GET /api/v1alpha1/events/stream`. The run-event socket
   attaches live delivery before bounded replay, scans filters across pages,
   deduplicates by global sequence, and closes explicitly on recovery failure.
-  `/ws/v1alpha1` remains a distinct bidirectional command protocol rather than
-  an alias for this stream.
+- [x] Recover `/ws/v1alpha1` durable lag within an accepted connection without
+  changing its distinct command protocol: attach live before upgrade, establish
+  an internal checkpoint from the first valid durable record, page from the
+  store after later lag, deduplicate, route both run and agent subscriptions,
+  cap subscriptions at 256, and fail with a sanitized error plus 1011 close
+  when recovery cannot be proved. Deterministic TCP tests cover lag before and
+  after the first checkpoint, malformed zero sequence, unsubscribe/filtering,
+  multi-subscription routing, backend failure, missing store, and reconnect.
+- [ ] Add a public reconnect cursor/checkpoint to `/ws/v1alpha1` only through a
+  versioned protocol decision. The current command envelope carries neither a
+  cursor input nor a global checkpoint output, so reconnect remains truthfully
+  live-only. Also either implement a real `system` producer or remove that
+  advertised channel, and decide whether effect/conversation channels and a
+  cancel command belong here or in the interaction API.
 - [x] Remove the fixed first-10k event-ID scan: the object-safe store contract
   has an uncapped validated 1,000-row cursor fallback, SQLite uses its primary-
   key index, and API lookup sanitizes backend failures.
