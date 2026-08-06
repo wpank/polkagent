@@ -19,6 +19,8 @@
 //!   [`execution::PipelineExecutor`], [`execution::ConsensusExecutor`]),
 //!   [`execution::ExecutionPlan`], [`execution::GroupTask`],
 //!   [`execution::ExecutionResult`], and [`execution::ExecutionEvidence`].
+//! - **[`execution_plan_codec`]** — the validated canonical v1 durable plan
+//!   boundary and its domain-separated digest.
 //! - **[`store`]** — [`store::GroupStore`] async storage trait.
 //! - **[`service`]** — durable, surface-neutral validated group CRUD.
 //! - **[`memory_store`]** — [`memory_store::MemoryGroupStore`] in-memory
@@ -34,6 +36,7 @@
 //! | [`quorum`] | Quorum policy evaluation |
 //! | [`propagation`] | Cancellation propagation and evidence aggregation |
 //! | [`execution`] | Execution modes and task orchestration (PRD-09 §5-6) |
+//! | [`execution_plan_codec`] | Canonical durable execution-plan v1 codec |
 //! | [`store`] | Async persistence trait |
 //! | [`service`] | Validated durable application operations |
 //! | [`memory_store`] | In-memory store for tests |
@@ -56,6 +59,7 @@
 pub mod coordinator;
 pub mod error;
 pub mod execution;
+pub mod execution_plan_codec;
 pub mod memory_store;
 pub mod propagation;
 pub mod quorum;
@@ -73,6 +77,15 @@ pub use execution::{
     ConsensusExecutor, ExecutionEvidence, ExecutionMode, ExecutionPlan, ExecutionResult, Executor,
     GroupExecutor, GroupTask, ParallelExecutor, PipelineExecutor, SequentialExecutor, TaskId,
     TaskResult,
+};
+pub use execution_plan_codec::{
+    compute_execution_plan_digest_v1, decode_execution_plan_v1, encode_execution_plan_v1,
+    CanonicalExecutionPlanV1, DurableDependencyEdgeV1, DurableExecutionPlanV1, DurableGrantSpecV1,
+    DurableGroupTaskV1, ExecutionPlanCodecError, EXECUTION_PLAN_V1_CONTRACT,
+    EXECUTION_PLAN_V1_DIGEST_PREFIX, EXECUTION_PLAN_V1_MAX_CANONICAL_BYTES,
+    EXECUTION_PLAN_V1_MAX_DEPENDENCY_EDGES, EXECUTION_PLAN_V1_MAX_TASKS,
+    EXECUTION_PLAN_V1_MAX_TASK_INPUT_BYTES, EXECUTION_PLAN_V1_MAX_TASK_INPUT_DEPTH,
+    EXECUTION_PLAN_V1_SCHEMA_VERSION,
 };
 pub use memory_store::MemoryGroupStore;
 pub use propagation::{aggregate_evidence, propagate_cancellation, GroupEvidence};

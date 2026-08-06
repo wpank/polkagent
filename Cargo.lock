@@ -3250,9 +3250,11 @@ name = "polkagent-group"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "chrono",
  "parking_lot",
  "polkagent-core",
+ "ryu",
  "serde",
  "serde_json",
  "tempfile",
