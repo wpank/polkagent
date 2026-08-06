@@ -393,8 +393,11 @@ adapter hooks through small interfaces.
   handlers. Process tests cover non-TTY stdout, multiline input, restart target/
   model resume, zero-work target changes, refusal, lag resubscribe, and SIGINT
   cancellation.
-- [ ] Convert the TUI loop to async/channel-driven input, runtime events, and
-  background completion.
+- [x] Convert the TUI loop to async/channel-driven input, runtime events, and
+  background completion. The bounded pump applies backpressure to lossless
+  key/paste input, coalesces resize and tick bursts, awaits the bounded
+  interaction-controller channel, and cancels/drains/reaps producer tasks on
+  normal exit or error with abort-on-unwind fallback.
 - [x] Pass one long-lived `PolkagentRuntime`, not only a SQLite pool, into the
   TUI and reuse its exact service/event bus/pool across sequential prompts.
 - [x] Pass the full durable interaction-service handle into the TUI and route
@@ -450,6 +453,14 @@ Prior completed turns enter model-executor context; string-only harness follow-
 up is unsupported. Broader shared-command coverage, simultaneous orchestration,
 rich plan/redaction-safe structured-tool rendering, and service-routed
 approvals remain open.
+
+The TUI shell is now event-driven rather than a Crossterm poll/read frame loop.
+Headless tests cover bounded ordered input, latest-resize and tick coalescing,
+background completion wakeups, idle blocking, input failure, and joined
+shutdown. Existing controller tests continue to cover prompt, follow-up,
+cancellation, commands, and session selection through awaited events; the Unix
+PTY lifecycle test continues to prove terminal restoration. Monitoring tabs
+and their existing refresh projections are unchanged.
 
 **Exit checks:** user can launch, select/create an agent, prompt, see tokens and
 tools, approve/deny, cancel, prompt again, restart, and resume. Headless event
