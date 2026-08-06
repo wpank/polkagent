@@ -1,0 +1,35 @@
+{
+  "mode": "pipeline",
+  "tasks": [
+    {
+      "id": 10,
+      "agent_id": "018f1000-0000-7000-8000-000000000001",
+      "input": {
+        "query": "referendum 42",
+        "limit": 2
+      },
+      "grant_spec": {
+        "capabilities": [
+          "chain.read"
+        ],
+        "max_budget": 10.5,
+        "allowed_pallets": [
+          "System"
+        ]
+      }
+    },
+    {
+      "id": 20,
+      "agent_id": "018f1000-0000-7000-8000-000000000002",
+      "input": {
+        "format": "brief"
+      },
+      "grant_spec": null
+    }
+  ],
+  "dependencies": {
+    "10": [
+      20
+    ]
+  }
+}
