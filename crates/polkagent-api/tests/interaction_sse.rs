@@ -542,7 +542,7 @@ impl InteractionService for LagRecoveryService {
         &self,
         _conversation_id: ConversationId,
         _approval_id: polkagent_core::ApprovalId,
-    ) -> Result<(), InteractionError> {
+    ) -> Result<polkagent_interaction::ApprovalView, InteractionError> {
         Err(Self::unsupported())
     }
 
@@ -551,7 +551,7 @@ impl InteractionService for LagRecoveryService {
         _conversation_id: ConversationId,
         _approval_id: polkagent_core::ApprovalId,
         _reason: Option<String>,
-    ) -> Result<(), InteractionError> {
+    ) -> Result<polkagent_interaction::ApprovalView, InteractionError> {
         Err(Self::unsupported())
     }
 

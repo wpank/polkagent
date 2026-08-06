@@ -13,7 +13,7 @@ use axum::{
     Json,
 };
 use futures::Stream;
-use polkagent_core::ConversationId;
+use polkagent_core::{ApprovalId, ConversationId};
 use polkagent_interaction::{
     BoxInteractionEventStream, ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate,
     InteractionConfig, InteractionContent, InteractionEventEnvelope, InteractionOverrides,
@@ -25,8 +25,9 @@ use tracing::{debug, instrument, warn};
 use crate::{
     dto::{
         CancelHttpInteractionTurnResponse, CreateHttpInteractionRequest, CursorInfo,
-        HttpInteractionConfigResponse, HttpInteractionResponse, InteractionReplayCheckpoint,
-        ListHttpInteractionTurnsResponse, ListHttpInteractionsQuery, ListHttpInteractionsResponse,
+        DenyInteractionApprovalRequest, HttpInteractionConfigResponse, HttpInteractionResponse,
+        InteractionApprovalResponse, InteractionReplayCheckpoint, ListHttpInteractionTurnsResponse,
+        ListHttpInteractionsQuery, ListHttpInteractionsResponse, ListInteractionApprovalsResponse,
         PageMeta, PromptHttpInteractionRequest, PromptHttpInteractionResponse,
         ReplayInteractionEventsQuery, ReplayInteractionEventsResponse,
         StreamInteractionEventsQuery, UpdateHttpInteractionConfigRequest,
@@ -53,6 +54,21 @@ fn interaction_service(state: &AppState) -> Result<Arc<dyn InteractionService>, 
 fn interaction_store(state: &AppState) -> Result<Arc<dyn InteractionStore>, ApiError> {
     state.interaction_store.clone().ok_or_else(|| {
         ApiError::NotImplemented("interaction event store not configured".to_owned())
+    })
+}
+
+fn authenticated_approval_service(
+    state: &AppState,
+) -> Result<Arc<dyn InteractionService>, ApiError> {
+    if !state.config.auth.enabled {
+        return Err(ApiError::Unavailable(
+            "approval operations require enabled HTTP authentication".to_owned(),
+        ));
+    }
+    state.authenticated_approval_service.clone().ok_or_else(|| {
+        ApiError::Unavailable(
+            "authenticated durable interaction approval service is not configured".to_owned(),
+        )
     })
 }
 
@@ -169,6 +185,65 @@ pub async fn list_interaction_turns(
     Ok(Json(ListHttpInteractionTurnsResponse {
         version: API_VERSION.to_owned(),
         data: turns,
+    }))
+}
+
+/// List pending approvals visible to this exact authenticated interaction.
+pub async fn list_interaction_approvals(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<ConversationId>,
+) -> Result<impl IntoResponse, ApiError> {
+    let data = authenticated_approval_service(&state)?
+        .list_pending_approvals(conversation_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ListInteractionApprovalsResponse {
+        version: API_VERSION.to_owned(),
+        data,
+    }))
+}
+
+/// Approve one exact pending approval through the shared coordinator.
+#[instrument(skip(state), fields(%conversation_id, %approval_id))]
+pub async fn approve_interaction_approval(
+    State(state): State<AppState>,
+    Path((conversation_id, approval_id)): Path<(ConversationId, ApprovalId)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let approval = authenticated_approval_service(&state)?
+        .approve(conversation_id, approval_id)
+        .await
+        .map_err(ApiError::from)?;
+    state.metrics.effects_approved();
+    Ok(Json(InteractionApprovalResponse {
+        version: API_VERSION.to_owned(),
+        approval,
+    }))
+}
+
+/// Deny one exact pending approval through the shared coordinator.
+#[instrument(skip(state, body), fields(%conversation_id, %approval_id))]
+pub async fn deny_interaction_approval(
+    State(state): State<AppState>,
+    Path((conversation_id, approval_id)): Path<(ConversationId, ApprovalId)>,
+    body: Option<Json<DenyInteractionApprovalRequest>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let reason = body.and_then(|body| body.0.reason);
+    if reason
+        .as_ref()
+        .is_some_and(|reason| reason.chars().count() > 4_096)
+    {
+        return Err(ApiError::ValidationError(
+            "approval denial reason must be at most 4096 characters".to_owned(),
+        ));
+    }
+    let approval = authenticated_approval_service(&state)?
+        .deny(conversation_id, approval_id, reason)
+        .await
+        .map_err(ApiError::from)?;
+    state.metrics.effects_denied();
+    Ok(Json(InteractionApprovalResponse {
+        version: API_VERSION.to_owned(),
+        approval,
     }))
 }
 

@@ -129,7 +129,7 @@ fn operational_access_contract_and_lint_exceptions_are_exact() {
         }
     }
     assert_eq!(discovered_public_paths, public_paths);
-    assert_eq!(protected_operation_count, 75);
+    assert_eq!(protected_operation_count, 78);
 
     let ignore: Value =
         serde_yaml::from_str(REDOCLY_IGNORE_SOURCE).expect("parse Redocly ignore YAML");

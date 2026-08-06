@@ -19,12 +19,11 @@ use std::time::Duration;
 
 use axum_test::TestServer;
 use polkagent_core::{
-    ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, StepId, Timestamp, WorkerId,
+    ArtifactId, EffectAttemptId, EffectId, EffectOutcomeId, RunId, Timestamp, WorkerId,
 };
 use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
 use polkagent_store_trait::{
-    ArtifactStore, ArtifactSummary, EffectStore, StoreError, StoreRetryClass, StoredIntent,
-    StoredOutcome,
+    ArtifactStore, ArtifactSummary, EffectStore, StoreError, StoredIntent, StoredOutcome,
 };
 use serde_json::json;
 use tokio::sync::RwLock;
@@ -122,184 +121,12 @@ impl EffectStore for NoopEffectStore {
         intent_id: EffectId,
         _new_state: &str,
     ) -> Result<StoredIntent, StoreError> {
-        // NoopEffectStore always returns NotFound — tests requiring real state
-        // transitions must use `InMemoryEffectStore` (see below).
+        // Effect-only state transitions are intentionally unavailable.
         Err(StoreError::NotFound {
             resource_type: "EffectIntent",
             id: intent_id.to_string(),
         })
     }
-}
-
-// ---------------------------------------------------------------------------
-// InMemoryEffectStore — for approve/deny/state-transition tests
-// ---------------------------------------------------------------------------
-
-use tokio::sync::RwLock as TokioRwLock;
-
-/// A fully-functional in-memory `EffectStore` for approve/deny tests.
-struct InMemoryEffectStore {
-    intents: TokioRwLock<HashMap<EffectId, StoredIntent>>,
-}
-
-impl InMemoryEffectStore {
-    fn new() -> Self {
-        Self {
-            intents: TokioRwLock::new(HashMap::new()),
-        }
-    }
-
-    async fn seed_intent(&self, intent: StoredIntent) {
-        self.intents.write().await.insert(intent.id, intent);
-    }
-}
-
-#[async_trait::async_trait]
-impl EffectStore for InMemoryEffectStore {
-    async fn propose_intent(&self, intent: StoredIntent) -> Result<(), StoreError> {
-        self.intents.write().await.insert(intent.id, intent);
-        Ok(())
-    }
-
-    async fn claim_intent(
-        &self,
-        _worker_id: WorkerId,
-        _lease_duration: Duration,
-    ) -> Result<Option<StoredIntent>, StoreError> {
-        Ok(None)
-    }
-
-    async fn claim_intent_by_id(
-        &self,
-        intent_id: EffectId,
-        _worker_id: WorkerId,
-        _lease_duration: Duration,
-    ) -> Result<StoredIntent, StoreError> {
-        self.intents
-            .read()
-            .await
-            .get(&intent_id)
-            .cloned()
-            .ok_or(StoreError::NotFound {
-                resource_type: "EffectIntent",
-                id: intent_id.to_string(),
-            })
-    }
-
-    async fn release_claim(
-        &self,
-        _intent_id: EffectId,
-        _worker_id: WorkerId,
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-
-    async fn get_intent(&self, intent_id: EffectId) -> Result<StoredIntent, StoreError> {
-        self.intents
-            .read()
-            .await
-            .get(&intent_id)
-            .cloned()
-            .ok_or(StoreError::NotFound {
-                resource_type: "EffectIntent",
-                id: intent_id.to_string(),
-            })
-    }
-
-    async fn get_by_run(&self, run_id: RunId) -> Result<Vec<StoredIntent>, StoreError> {
-        let guard = self.intents.read().await;
-        Ok(guard
-            .values()
-            .filter(|i| i.run_id == run_id)
-            .cloned()
-            .collect())
-    }
-
-    async fn expired_leases(&self, _cutoff: Timestamp) -> Result<Vec<StoredIntent>, StoreError> {
-        Ok(vec![])
-    }
-
-    async fn record_attempt_start(
-        &self,
-        _attempt_id: EffectAttemptId,
-        _intent_id: EffectId,
-        _worker_id: WorkerId,
-        _payload: serde_json::Value,
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-
-    async fn record_outcome(&self, _outcome: StoredOutcome) -> Result<(), StoreError> {
-        Ok(())
-    }
-
-    async fn unconsumed_outcomes(&self, _run_id: RunId) -> Result<Vec<StoredOutcome>, StoreError> {
-        Ok(vec![])
-    }
-
-    async fn mark_outcomes_consumed(
-        &self,
-        _outcome_ids: &[EffectOutcomeId],
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-
-    async fn update_intent_state(
-        &self,
-        intent_id: EffectId,
-        new_state: &str,
-    ) -> Result<StoredIntent, StoreError> {
-        let mut guard = self.intents.write().await;
-        let intent = guard.get_mut(&intent_id).ok_or(StoreError::NotFound {
-            resource_type: "EffectIntent",
-            id: intent_id.to_string(),
-        })?;
-
-        // Only allow transitions from "awaiting_approval" (PRD-14 §4).
-        let valid_source = ["awaiting_approval"];
-        if !valid_source.contains(&intent.state.as_str()) {
-            return Err(StoreError::InvalidTransition {
-                message: format!("cannot transition from '{}' to '{new_state}'", intent.state),
-            });
-        }
-
-        new_state.clone_into(&mut intent.state);
-        Ok(intent.clone())
-    }
-}
-
-/// Build a `StoredIntent` with the given state for seeding in tests.
-fn make_stored_intent(run_id: RunId, state: &str) -> StoredIntent {
-    StoredIntent {
-        id: EffectId::new(),
-        run_id,
-        step_id: StepId::new(),
-        state: state.to_owned(),
-        lease_owner: None,
-        lease_expires: None,
-        retry_class: StoreRetryClass::Idempotent,
-        payload: serde_json::Value::Null,
-        idempotency_key: "test-key".to_owned(),
-        created_at: chrono::Utc::now(),
-    }
-}
-
-/// Build a `TestServer` backed by `InMemoryEffectStore` and return the store
-/// for seeding intents before requests.
-fn test_server_with_effect_store() -> (TestServer, Arc<InMemoryEffectStore>) {
-    let agents = Arc::new(InMemoryAgentStore::new());
-    let run_manager = Arc::new(InMemoryRunManager::new());
-    let store = Arc::new(InMemoryEffectStore::new());
-    let event_bus = EventBus::with_default_capacity();
-    let state = polkagent_api::AppState::new(
-        Config::default(),
-        agents,
-        run_manager,
-        store.clone() as Arc<dyn EffectStore>,
-        event_bus,
-    );
-    let server = ApiServer::from_state(state);
-    (TestServer::new(server.into_router()), store)
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,38 +1008,36 @@ async fn get_effect_detail_not_found() {
 }
 
 #[tokio::test]
-async fn approve_effect_nonexistent_returns_404_with_not_found_code() {
-    // Previously this was 501 (stub); now it returns 404 for unknown effects.
+async fn effect_only_approve_returns_501_with_migration_guidance() {
     let server = test_server();
     let fake_id = polkagent_core::EffectId::new().to_string();
     let resp = server
         .post(&format!("/api/v1alpha1/effects/{fake_id}/approve"))
         .await;
-    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "NOT_FOUND");
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
     let message = body["error"]["message"].as_str().unwrap_or("");
     assert!(
-        message.contains(&fake_id),
-        "404 message should reference the effect ID"
+        message.contains("scoped interaction approval endpoint"),
+        "response should direct callers to the scope-safe replacement"
     );
 }
 
 #[tokio::test]
-async fn deny_effect_nonexistent_returns_404_with_not_found_code() {
-    // Previously this was 501 (stub); now it returns 404 for unknown effects.
+async fn effect_only_deny_returns_501_with_migration_guidance() {
     let server = test_server();
     let fake_id = polkagent_core::EffectId::new().to_string();
     let resp = server
         .post(&format!("/api/v1alpha1/effects/{fake_id}/deny"))
         .await;
-    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+    resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "NOT_FOUND");
+    assert_eq!(body["error"]["code"], "NOT_IMPLEMENTED");
     let message = body["error"]["message"].as_str().unwrap_or("");
     assert!(
-        message.contains(&fake_id),
-        "404 message should reference the effect ID"
+        message.contains("scoped interaction approval endpoint"),
+        "response should direct callers to the scope-safe replacement"
     );
 }
 
@@ -2851,174 +2676,6 @@ async fn event_bus_no_events_before_subscribe_are_replayed() {
         delivered_event.id, new_event_id,
         "should only receive the post-subscribe event"
     );
-}
-
-// ===========================================================================
-// Effect approval / denial tests
-// ===========================================================================
-
-/// `POST /effects/:id/approve` on an existing `awaiting_approval` intent returns 200
-/// with the updated state set to "approved" and an approval record.
-#[tokio::test]
-async fn approve_effect_pending_returns_200_with_approved_state() {
-    let (server, store) = test_server_with_effect_store();
-    let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "awaiting_approval");
-    let effect_id = intent.id.to_string();
-    store.seed_intent(intent).await;
-
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{effect_id}/approve"))
-        .json(&json!({}))
-        .await;
-    resp.assert_status_ok();
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body["version"], "v1alpha1");
-    assert_eq!(body["effect_id"], effect_id.as_str());
-    assert_eq!(body["new_state"], "approved");
-    assert!(
-        body["approved_at"].is_string(),
-        "approved_at must be a timestamp string"
-    );
-    // PRD-14 §4: response must include an approval record.
-    assert!(body["approval"]["id"].is_string());
-    assert_eq!(body["approval"]["decision"], "approved");
-}
-
-/// POST /effects/:id/approve on a non-existent effect returns 404.
-#[tokio::test]
-async fn approve_effect_nonexistent_returns_404() {
-    let server = test_server();
-    let fake_id = polkagent_core::EffectId::new().to_string();
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{fake_id}/approve"))
-        .await;
-    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "NOT_FOUND");
-}
-
-/// POST /effects/:id/approve on an already-resolved (non-pending) intent
-/// returns 409 Conflict.
-#[tokio::test]
-async fn approve_effect_already_resolved_returns_409() {
-    let (server, store) = test_server_with_effect_store();
-    let run_id = RunId::new();
-    // Seed an intent in "resolved" state — cannot be approved.
-    let intent = make_stored_intent(run_id, "resolved");
-    let effect_id = intent.id.to_string();
-    store.seed_intent(intent).await;
-
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{effect_id}/approve"))
-        .await;
-    resp.assert_status(axum::http::StatusCode::CONFLICT);
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "INVALID_STATE");
-}
-
-/// `POST /effects/:id/approve` on an `awaiting_approval` intent with comment and conditions.
-#[tokio::test]
-async fn approve_effect_waiting_approval_returns_200() {
-    let (server, store) = test_server_with_effect_store();
-    let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "awaiting_approval");
-    let effect_id = intent.id.to_string();
-    store.seed_intent(intent).await;
-
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{effect_id}/approve"))
-        .json(&json!({ "comment": "Approved per policy", "conditions": ["max_value:500"] }))
-        .await;
-    resp.assert_status_ok();
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body["new_state"], "approved");
-    assert_eq!(body["approval"]["comment"], "Approved per policy");
-    assert_eq!(body["approval"]["conditions"][0], "max_value:500");
-}
-
-/// `POST /effects/:id/deny` on an existing `awaiting_approval` intent returns 200
-/// with the updated state set to "denied" and a denial record.
-#[tokio::test]
-async fn deny_effect_pending_returns_200_with_denied_state() {
-    let (server, store) = test_server_with_effect_store();
-    let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "awaiting_approval");
-    let effect_id = intent.id.to_string();
-    store.seed_intent(intent).await;
-
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{effect_id}/deny"))
-        .json(&json!({ "comment": "Over budget", "reason": "budget exceeded" }))
-        .await;
-    resp.assert_status_ok();
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body["version"], "v1alpha1");
-    assert_eq!(body["effect_id"], effect_id.as_str());
-    assert_eq!(body["new_state"], "denied");
-    assert!(
-        body["denied_at"].is_string(),
-        "denied_at must be a timestamp string"
-    );
-    // The denial reason is recorded.
-    assert_eq!(body["reason"], "budget exceeded");
-    // PRD-14 §4: response must include a denial record.
-    assert!(body["approval"]["id"].is_string());
-    assert_eq!(body["approval"]["decision"], "denied");
-    assert_eq!(body["approval"]["comment"], "Over budget");
-}
-
-/// POST /effects/:id/deny with no reason body records null/absent reason.
-#[tokio::test]
-async fn deny_effect_without_reason_omits_reason_field() {
-    let (server, store) = test_server_with_effect_store();
-    let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "awaiting_approval");
-    let effect_id = intent.id.to_string();
-    store.seed_intent(intent).await;
-
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{effect_id}/deny"))
-        .json(&json!({}))
-        .await;
-    resp.assert_status_ok();
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body["new_state"], "denied");
-    // reason is absent when not provided (skip_serializing_if = None).
-    assert!(
-        body["reason"].is_null() || body.get("reason").is_none(),
-        "reason should be absent when not supplied"
-    );
-}
-
-/// POST /effects/:id/deny on a non-existent effect returns 404.
-#[tokio::test]
-async fn deny_effect_nonexistent_returns_404() {
-    let server = test_server();
-    let fake_id = polkagent_core::EffectId::new().to_string();
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{fake_id}/deny"))
-        .await;
-    resp.assert_status(axum::http::StatusCode::NOT_FOUND);
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "NOT_FOUND");
-}
-
-/// POST /effects/:id/deny on an already-resolved intent returns 409.
-#[tokio::test]
-async fn deny_effect_already_resolved_returns_409() {
-    let (server, store) = test_server_with_effect_store();
-    let run_id = RunId::new();
-    let intent = make_stored_intent(run_id, "resolved");
-    let effect_id = intent.id.to_string();
-    store.seed_intent(intent).await;
-
-    let resp = server
-        .post(&format!("/api/v1alpha1/effects/{effect_id}/deny"))
-        .await;
-    resp.assert_status(axum::http::StatusCode::CONFLICT);
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body["error"]["code"], "INVALID_STATE");
 }
 
 // ===========================================================================

@@ -9,37 +9,19 @@
 
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use chrono::Utc;
-use polkagent_core::{
-    event::{EventKind, RunEvent},
-    EffectId, EventId, RunId,
-};
-use polkagent_store_trait::StoreError;
+use polkagent_core::{EffectId, RunId};
 use serde::Serialize;
-use tracing::{info, instrument};
-use uuid::Uuid;
+use tracing::instrument;
 
-use crate::{
-    dto::{
-        ApprovalRecordDto, ApproveEffectRequest, ApproveEffectResponse, DenyEffectRequest,
-        DenyEffectResponse, API_VERSION,
-    },
-    error::ApiError,
-    state::AppState,
-};
+use crate::{dto::API_VERSION, error::ApiError, state::AppState};
 
 // ---------------------------------------------------------------------------
 // Constants — approval state strings
 // ---------------------------------------------------------------------------
-
-/// The effect state that permits approval or denial (PRD-14 §4).
-const AWAITING_APPROVAL: &str = "awaiting_approval";
-
-/// States that indicate a final decision has already been recorded.
-const DECIDED_STATES: &[&str] = &["approved", "denied"];
 
 // ---------------------------------------------------------------------------
 // Response DTOs
@@ -127,205 +109,34 @@ pub async fn get_effect(
 // POST /effects/:id/approve
 // ---------------------------------------------------------------------------
 
-/// Approve a pending effect intent (PRD-14 §4).
+/// Legacy effect-only approval endpoint.
 ///
-/// - Looks up the effect intent in the store.
-/// - Verifies it is in `"awaiting_approval"` state — returns 409 for any
-///   other state, including already-decided (`"approved"` / `"denied"`).
-/// - Transitions the intent to `"approved"` via the store.
-/// - Creates an `ApprovalRecord` and
-///   emits an [`EventKind::ApprovalGranted`] event on the bus.
-/// - Returns 200 with the updated effect state and the approval record.
-///
-/// # Errors
-///
-/// - 404 if no intent with `id` exists.
-/// - 409 if the intent is not in `"awaiting_approval"` state.
-#[instrument(skip(state, body), fields(effect_id = %id))]
+/// Effect identity alone is insufficient authorization. Callers must use the
+/// conversation-scoped endpoint with a durable approval identity.
+#[instrument(skip(_state), fields(effect_id = %id))]
 pub async fn approve_effect(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Path(id): Path<EffectId>,
-    body: Option<Json<ApproveEffectRequest>>,
-) -> Result<impl IntoResponse, ApiError> {
-    let body = body.map(|b| b.0).unwrap_or_default();
-
-    // Look up the intent, returning 404 if it doesn't exist.
-    let intent = state
-        .effect_store
-        .get_intent(id)
-        .await
-        .map_err(|e| match e {
-            StoreError::NotFound { .. } => ApiError::NotFound(format!("effect intent {id}")),
-            other => ApiError::InternalError(other.to_string()),
-        })?;
-
-    // Return 409 Conflict if already decided.
-    if DECIDED_STATES.contains(&intent.state.as_str()) {
-        return Err(ApiError::InvalidState(format!(
-            "effect intent {id} has already been decided (state: '{}')",
-            intent.state
-        )));
-    }
-
-    // Validate that the intent is awaiting approval.
-    if intent.state.as_str() != AWAITING_APPROVAL {
-        return Err(ApiError::InvalidState(format!(
-            "effect intent {id} is in state '{}'; only '{}' intents may be approved",
-            intent.state, AWAITING_APPROVAL
-        )));
-    }
-
-    // Transition to "approved" via the store.
-    let updated = state
-        .effect_store
-        .update_intent_state(id, "approved")
-        .await
-        .map_err(|e| match e {
-            StoreError::NotFound { .. } => ApiError::NotFound(format!("effect intent {id}")),
-            StoreError::InvalidTransition { message } => ApiError::InvalidState(message),
-            other => ApiError::InternalError(other.to_string()),
-        })?;
-
-    let approval_id = Uuid::now_v7();
-    let approved_at = Utc::now();
-
-    // Build the approval record DTO.
-    let approval_dto = ApprovalRecordDto {
-        id: approval_id.to_string(),
-        effect_id: id.to_string(),
-        approval_type: "human".to_owned(),
-        principal_id: "api".to_owned(),
-        comment: body.comment.clone(),
-        conditions: body.conditions.clone(),
-        decision: "approved".to_owned(),
-        created_at: approved_at,
-    };
-
-    // Emit ApprovalGranted event on the bus (best-effort; ignore no-subscriber errors).
-    let event = RunEvent::new_ephemeral(
-        EventId::new(),
-        updated.run_id,
-        0, // sequence managed by recorder in production; 0 for bus-only events
-        EventKind::ApprovalGranted {
-            approval_id: approval_id.to_string(),
-        },
-    );
-    state.event_bus.publish(event);
-
-    state.metrics.effects_approved();
-    info!(effect_id = %id, approval_id = %approval_id, "effect intent approved");
-
-    Ok(Json(ApproveEffectResponse {
-        version: API_VERSION.to_owned(),
-        effect_id: updated.id.to_string(),
-        new_state: updated.state.clone(),
-        approval: approval_dto,
-        approved_at,
-    }))
+) -> Result<StatusCode, ApiError> {
+    Err(ApiError::NotImplemented(format!(
+        "effect-only approval for {id} is disabled; use the scoped interaction approval endpoint"
+    )))
 }
 
 // ---------------------------------------------------------------------------
 // POST /effects/:id/deny
 // ---------------------------------------------------------------------------
 
-/// Deny a pending effect intent (PRD-14 §4).
-///
-/// - Looks up the effect intent in the store.
-/// - Verifies it is in `"awaiting_approval"` state — returns 409 for any
-///   other state, including already-decided (`"approved"` / `"denied"`).
-/// - Transitions the intent to `"denied"` via the store.
-/// - Creates an `ApprovalRecord` and
-///   emits an [`EventKind::ApprovalDenied`] event on the bus.
-/// - Returns 200 with the updated effect state and the denial record.
-///
-/// # Errors
-///
-/// - 404 if no intent with `id` exists.
-/// - 409 if the intent is not in `"awaiting_approval"` state.
-#[instrument(skip(state, body), fields(effect_id = %id))]
+/// Legacy effect-only denial endpoint. It fails closed for the same lineage
+/// reason as [`approve_effect`].
+#[instrument(skip(_state), fields(effect_id = %id))]
 pub async fn deny_effect(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Path(id): Path<EffectId>,
-    body: Option<Json<DenyEffectRequest>>,
-) -> Result<impl IntoResponse, ApiError> {
-    let body = body.map(|b| b.0).unwrap_or_default();
-    let reason = body.reason.clone();
-
-    // Look up the intent, returning 404 if it doesn't exist.
-    let intent = state
-        .effect_store
-        .get_intent(id)
-        .await
-        .map_err(|e| match e {
-            StoreError::NotFound { .. } => ApiError::NotFound(format!("effect intent {id}")),
-            other => ApiError::InternalError(other.to_string()),
-        })?;
-
-    // Return 409 Conflict if already decided.
-    if DECIDED_STATES.contains(&intent.state.as_str()) {
-        return Err(ApiError::InvalidState(format!(
-            "effect intent {id} has already been decided (state: '{}')",
-            intent.state
-        )));
-    }
-
-    // Validate that the intent is awaiting approval.
-    if intent.state.as_str() != AWAITING_APPROVAL {
-        return Err(ApiError::InvalidState(format!(
-            "effect intent {id} is in state '{}'; only '{}' intents may be denied",
-            intent.state, AWAITING_APPROVAL
-        )));
-    }
-
-    // Transition to "denied" via the store.
-    let updated = state
-        .effect_store
-        .update_intent_state(id, "denied")
-        .await
-        .map_err(|e| match e {
-            StoreError::NotFound { .. } => ApiError::NotFound(format!("effect intent {id}")),
-            StoreError::InvalidTransition { message } => ApiError::InvalidState(message),
-            other => ApiError::InternalError(other.to_string()),
-        })?;
-
-    let approval_id = Uuid::now_v7();
-    let denied_at = Utc::now();
-    let denial_reason = reason.clone().unwrap_or_default();
-
-    // Build the denial record DTO.
-    let approval_dto = ApprovalRecordDto {
-        id: approval_id.to_string(),
-        effect_id: id.to_string(),
-        approval_type: "human".to_owned(),
-        principal_id: "api".to_owned(),
-        comment: body.comment.clone(),
-        conditions: vec![],
-        decision: "denied".to_owned(),
-        created_at: denied_at,
-    };
-
-    // Emit ApprovalDenied event on the bus (best-effort; ignore no-subscriber errors).
-    let event = RunEvent::new_ephemeral(
-        EventId::new(),
-        updated.run_id,
-        0, // sequence managed by recorder in production; 0 for bus-only events
-        EventKind::ApprovalDenied {
-            reason: denial_reason,
-        },
-    );
-    state.event_bus.publish(event);
-
-    state.metrics.effects_denied();
-    info!(effect_id = %id, approval_id = %approval_id, "effect intent denied");
-
-    Ok(Json(DenyEffectResponse {
-        version: API_VERSION.to_owned(),
-        effect_id: updated.id.to_string(),
-        new_state: updated.state.clone(),
-        approval: approval_dto,
-        reason,
-        denied_at,
-    }))
+) -> Result<StatusCode, ApiError> {
+    Err(ApiError::NotImplemented(format!(
+        "effect-only denial for {id} is disabled; use the scoped interaction approval endpoint"
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -557,11 +368,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // POST /effects/:id/approve
+    // Legacy effect-only decisions
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn approve_effect_returns_404_when_not_found() {
+    async fn effect_only_approve_returns_501() {
         let store = Arc::new(FakeEffectStore::new());
         let srv = make_app(store);
         let id = EffectId::new();
@@ -569,147 +380,11 @@ mod tests {
             .post(&format!("/api/v1alpha1/effects/{id}/approve"))
             .json(&json!({}))
             .await;
-        assert_eq!(resp.status_code(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status_code(), StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]
-    async fn approve_effect_in_awaiting_approval_returns_200() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/approve"))
-            .json(&json!({ "comment": "Looks good", "conditions": ["max_value:1000"] }))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::OK);
-        let body: serde_json::Value = resp.json();
-        assert_eq!(body["new_state"], "approved");
-        assert_eq!(body["approval"]["decision"], "approved");
-        assert_eq!(body["approval"]["comment"], "Looks good");
-        assert_eq!(body["approval"]["conditions"][0], "max_value:1000");
-    }
-
-    #[tokio::test]
-    async fn approve_effect_in_pending_returns_409() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "pending"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/approve"))
-            .json(&json!({}))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn approve_effect_already_approved_returns_409() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "approved"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/approve"))
-            .json(&json!({}))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn approve_effect_already_denied_returns_409() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "denied"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/approve"))
-            .json(&json!({}))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn approve_effect_no_body_uses_defaults() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
-            .await;
-        let srv = make_app(store);
-        // POST with no body should default to empty ApproveEffectRequest
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/approve"))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::OK);
-        let body: serde_json::Value = resp.json();
-        assert_eq!(body["new_state"], "approved");
-    }
-
-    #[tokio::test]
-    async fn approve_effect_response_contains_approval_record_id() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/approve"))
-            .json(&json!({}))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::OK);
-        let body: serde_json::Value = resp.json();
-        assert!(body["approval"]["id"].is_string());
-        assert!(!body["approval"]["id"].as_str().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn approve_effect_response_has_effect_id_in_approval() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/approve"))
-            .json(&json!({}))
-            .await;
-        let body: serde_json::Value = resp.json();
-        assert_eq!(body["approval"]["effect_id"], id.to_string());
-    }
-
-    #[tokio::test]
-    async fn approve_effect_response_approval_type_is_human() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/approve"))
-            .json(&json!({}))
-            .await;
-        let body: serde_json::Value = resp.json();
-        assert_eq!(body["approval"]["approval_type"], "human");
-    }
-
-    // -----------------------------------------------------------------------
-    // POST /effects/:id/deny
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn deny_effect_returns_404_when_not_found() {
+    async fn effect_only_deny_returns_501() {
         let store = Arc::new(FakeEffectStore::new());
         let srv = make_app(store);
         let id = EffectId::new();
@@ -717,104 +392,7 @@ mod tests {
             .post(&format!("/api/v1alpha1/effects/{id}/deny"))
             .json(&json!({}))
             .await;
-        assert_eq!(resp.status_code(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn deny_effect_in_awaiting_approval_returns_200() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/deny"))
-            .json(&json!({ "comment": "Risk too high", "reason": "policy_violation" }))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::OK);
-        let body: serde_json::Value = resp.json();
-        assert_eq!(body["new_state"], "denied");
-        assert_eq!(body["reason"], "policy_violation");
-        assert_eq!(body["approval"]["decision"], "denied");
-        assert_eq!(body["approval"]["comment"], "Risk too high");
-    }
-
-    #[tokio::test]
-    async fn deny_effect_in_pending_returns_409() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "pending"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/deny"))
-            .json(&json!({}))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn deny_effect_already_approved_returns_409() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "approved"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/deny"))
-            .json(&json!({}))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn deny_effect_already_denied_returns_409() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "denied"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/deny"))
-            .json(&json!({}))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn deny_effect_no_body_uses_defaults() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv.post(&format!("/api/v1alpha1/effects/{id}/deny")).await;
-        assert_eq!(resp.status_code(), StatusCode::OK);
-        let body: serde_json::Value = resp.json();
-        assert_eq!(body["new_state"], "denied");
-    }
-
-    #[tokio::test]
-    async fn deny_effect_response_contains_approval_record_id() {
-        let store = Arc::new(FakeEffectStore::new());
-        let id = EffectId::new();
-        store
-            .insert(FakeEffectStore::make_intent(id, "awaiting_approval"))
-            .await;
-        let srv = make_app(store);
-        let resp = srv
-            .post(&format!("/api/v1alpha1/effects/{id}/deny"))
-            .json(&json!({}))
-            .await;
-        assert_eq!(resp.status_code(), StatusCode::OK);
-        let body: serde_json::Value = resp.json();
-        assert!(body["approval"]["id"].is_string());
-        assert!(!body["approval"]["id"].as_str().unwrap().is_empty());
+        assert_eq!(resp.status_code(), StatusCode::NOT_IMPLEMENTED);
     }
 
     // -----------------------------------------------------------------------

@@ -1018,6 +1018,32 @@ pub struct ApprovalRecordDto {
     pub created_at: DateTime<Utc>,
 }
 
+/// Response body for a scoped interaction approval query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListInteractionApprovalsResponse {
+    /// API version.
+    pub version: String,
+    /// Exact pending approvals visible to the authenticated interaction scope.
+    pub data: Vec<polkagent_interaction::ApprovalView>,
+}
+
+/// Optional safe rationale for a denial decision.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DenyInteractionApprovalRequest {
+    /// Bounded operator rationale persisted with the durable decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Response body for a scoped durable approval decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractionApprovalResponse {
+    /// API version.
+    pub version: String,
+    /// Durable approval projection after the decision.
+    pub approval: polkagent_interaction::ApprovalView,
+}
+
 // ---------------------------------------------------------------------------
 // Agent lifecycle — requests
 // ---------------------------------------------------------------------------

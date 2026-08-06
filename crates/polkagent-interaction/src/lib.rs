@@ -72,5 +72,6 @@ pub use run_commands::{
     RUN_COMMAND_RESULT_LIMIT,
 };
 pub use service::{
-    BoxInteractionEventStream, InteractionEventStream, InteractionService, StartedTurn, StreamError,
+    BoxInteractionEventStream, InteractionApprovalAuthority, InteractionEventStream,
+    InteractionService, StartedTurn, StreamError,
 };

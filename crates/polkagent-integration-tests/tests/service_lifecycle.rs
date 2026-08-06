@@ -360,35 +360,29 @@ fn multiple_subscribers_can_be_created() {
     // The event bus supports multiple subscribers.
 }
 
-#[test]
-fn subscribe_approvals_returns_receiver() {
-    let svc = make_service();
-    let _receiver = svc.subscribe_approvals();
-}
-
 // ---------------------------------------------------------------------------
-// Effect approval (requires effect store)
+// Legacy effect-only approval fails closed
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn approve_effect_without_effect_store_returns_not_initialized() {
+async fn approve_effect_without_scope_returns_unsupported() {
     let svc = make_service(); // no effect store
 
     let result = svc.approve_effect(EffectId::new()).await;
     assert!(
-        matches!(result, Err(ServiceError::NotInitialized { .. })),
-        "approve_effect without effect store must return NotInitialized"
+        matches!(result, Err(ServiceError::Unsupported { .. })),
+        "effect-only approval must require the scoped coordinator operation"
     );
 }
 
 #[tokio::test]
-async fn deny_effect_without_effect_store_returns_not_initialized() {
+async fn deny_effect_without_scope_returns_unsupported() {
     let svc = make_service(); // no effect store
 
     let result = svc.deny_effect(EffectId::new(), "not needed").await;
     assert!(
-        matches!(result, Err(ServiceError::NotInitialized { .. })),
-        "deny_effect without effect store must return NotInitialized"
+        matches!(result, Err(ServiceError::Unsupported { .. })),
+        "effect-only denial must require the scoped coordinator operation"
     );
 }
 

@@ -6,6 +6,10 @@ use thiserror::Error;
 /// Unified error type for all service-layer operations.
 #[derive(Debug, Error)]
 pub enum ServiceError {
+    /// Durable approval coordinator rejected the scoped operation.
+    #[error(transparent)]
+    Approval(#[from] polkagent_store_trait::approval::ApprovalStoreError),
+
     /// Configuration is invalid or missing required fields.
     #[error("configuration error: {message}")]
     Config {

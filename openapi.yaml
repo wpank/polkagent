@@ -639,26 +639,18 @@ paths:
       - $ref: "#/components/parameters/EffectIdPath"
     post:
       operationId: approveEffect
-      summary: Approve an effect
+      summary: Disabled legacy effect-only approval endpoint
       tags: [effects]
+      deprecated: true
       description: |
-        Approves a pending effect intent, allowing the agent to execute it.
-        Returns `501 Not Implemented`; approval wiring is pending.
+        Always returns `501 Not Implemented`. An effect UUID alone cannot
+        establish tenant, workspace, conversation, and authenticated principal
+        authority. Use the scoped interaction approval endpoint instead.
       responses:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
-        "200":
-          description: Effect approved.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EffectResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "501":
           $ref: "#/components/responses/NotImplemented"
 
@@ -667,26 +659,18 @@ paths:
       - $ref: "#/components/parameters/EffectIdPath"
     post:
       operationId: denyEffect
-      summary: Deny an effect
+      summary: Disabled legacy effect-only denial endpoint
       tags: [effects]
+      deprecated: true
       description: |
-        Denies a pending effect intent, preventing the agent from executing it.
-        Returns `501 Not Implemented`; denial wiring is pending.
+        Always returns `501 Not Implemented`. An effect UUID alone cannot
+        establish tenant, workspace, conversation, and authenticated principal
+        authority. Use the scoped interaction approval endpoint instead.
       responses:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
-        "200":
-          description: Effect denied.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EffectResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "501":
           $ref: "#/components/responses/NotImplemented"
 
@@ -2130,6 +2114,114 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1alpha1/interactions/{id}/approvals:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+
+    get:
+      operationId: listInteractionApprovals
+      summary: List pending durable approvals for an interaction
+      tags: [interactions]
+      description: |
+        Requires enabled HTTP authentication and an explicitly composed,
+        principal-bound approval service. Tenant, workspace, conversation,
+        and principal scope are revalidated by the durable coordinator.
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "200":
+          description: Pending approvals in the exact authenticated scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListInteractionApprovalsResponse"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}/approvals/{approval_id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+      - $ref: "#/components/parameters/InteractionApprovalIdPath"
+
+    post:
+      operationId: approveInteractionApproval
+      summary: Approve one exact durable interaction approval
+      tags: [interactions]
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "200":
+          description: Durable approved projection; identical retries are idempotent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InteractionApprovalResponse"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1alpha1/interactions/{id}/approvals/{approval_id}/deny:
+    parameters:
+      - $ref: "#/components/parameters/InteractionIdPath"
+      - $ref: "#/components/parameters/InteractionApprovalIdPath"
+
+    post:
+      operationId: denyInteractionApproval
+      summary: Deny one exact durable interaction approval
+      tags: [interactions]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DenyInteractionApprovalRequest"
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "200":
+          description: Durable denied projection; identical retries are idempotent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InteractionApprovalResponse"
+        "403":
+          $ref: "#/components/responses/PermissionDenied"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1alpha1/interactions/{id}/prompt:
     parameters:
       - $ref: "#/components/parameters/InteractionIdPath"
@@ -2825,6 +2917,15 @@ components:
       in: path
       required: true
       description: Caller- or server-generated durable interaction turn UUID.
+      schema:
+        type: string
+        format: uuid
+
+    InteractionApprovalIdPath:
+      name: approval_id
+      in: path
+      required: true
+      description: Stable durable approval UUID.
       schema:
         type: string
         format: uuid
@@ -4833,6 +4934,38 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/InteractionTurnSummary"
+
+    ListInteractionApprovalsResponse:
+      type: object
+      required: [version, data]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        data:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/InteractionApprovalView"
+
+    DenyInteractionApprovalRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 4096
+          description: Optional denial reason, limited to 4096 Unicode characters.
+
+    InteractionApprovalResponse:
+      type: object
+      required: [version, approval]
+      properties:
+        version:
+          type: string
+          const: v1alpha1
+        approval:
+          $ref: "#/components/schemas/InteractionApprovalView"
 
     PromptHttpInteractionResponse:
       type: object

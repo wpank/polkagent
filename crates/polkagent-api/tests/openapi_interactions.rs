@@ -98,6 +98,21 @@ async fn embedded_openapi_matches_source_and_interaction_contract() {
             "listInteractionTurns",
         ),
         (
+            "/api/v1alpha1/interactions/{id}/approvals",
+            "get",
+            "listInteractionApprovals",
+        ),
+        (
+            "/api/v1alpha1/interactions/{id}/approvals/{approval_id}/approve",
+            "post",
+            "approveInteractionApproval",
+        ),
+        (
+            "/api/v1alpha1/interactions/{id}/approvals/{approval_id}/deny",
+            "post",
+            "denyInteractionApproval",
+        ),
+        (
             "/api/v1alpha1/interactions/{id}/prompt",
             "post",
             "promptInteraction",

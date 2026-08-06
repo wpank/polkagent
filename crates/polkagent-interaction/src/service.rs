@@ -1,12 +1,12 @@
 //! Surface-neutral interaction service and replay-aware event stream traits.
 
 use async_trait::async_trait;
-use polkagent_core::ids::{ApprovalId, ConversationId};
+use polkagent_core::ids::{ApprovalId, ConversationId, PrincipalId};
 use std::path::Path;
 use thiserror::Error;
 
 use crate::error::InteractionError;
-use crate::event::InteractionEventEnvelope;
+use crate::event::{ApprovalView, InteractionEventEnvelope};
 use crate::ids::InteractionTurnId;
 use crate::model::{
     ConfigUpdate, CreateInteractionRequest, InteractionConfig, InteractionSummary,
@@ -76,6 +76,41 @@ impl std::fmt::Debug for StartedTurn {
             .field("handle", &self.handle)
             .field("events", &"<interaction event stream>")
             .finish()
+    }
+}
+
+/// Authenticated, deployment-bound authority for approval operations.
+///
+/// Surface adapters must not construct this from request payload fields. The
+/// composition root binds it after authenticating the caller; the durable
+/// coordinator then revalidates every field against the stored approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractionApprovalAuthority {
+    /// Exact tenant authorization scope.
+    pub tenant_id: String,
+    /// Exact workspace authorization scope.
+    pub workspace_id: String,
+    /// Stable authenticated principal.
+    pub principal_id: PrincipalId,
+    /// Stable originating surface name used in decision audit records.
+    pub surface: String,
+}
+
+impl InteractionApprovalAuthority {
+    /// Validate the fail-closed fields required by an approval surface.
+    pub fn validate(&self) -> Result<(), InteractionError> {
+        for (field, value) in [
+            ("approval tenant", self.tenant_id.as_str()),
+            ("approval workspace", self.workspace_id.as_str()),
+            ("approval surface", self.surface.as_str()),
+        ] {
+            if value.trim().is_empty() || value.len() > 128 {
+                return Err(InteractionError::invalid_config(format!(
+                    "{field} must be non-empty and at most 128 bytes"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -158,12 +193,24 @@ pub trait InteractionService: Send + Sync {
         update: ConfigUpdate,
     ) -> Result<InteractionConfig, InteractionError>;
 
+    /// List real pending approvals in this interaction's exact authority
+    /// scope. Implementations without an authenticated authority fail closed.
+    async fn list_pending_approvals(
+        &self,
+        _conversation_id: ConversationId,
+    ) -> Result<Vec<ApprovalView>, InteractionError> {
+        Err(InteractionError::new(
+            crate::InteractionErrorCode::Unavailable,
+            "an authenticated durable approval surface is not configured",
+        ))
+    }
+
     /// Approve one real pending effect request.
     async fn approve(
         &self,
         conversation_id: ConversationId,
         approval_id: ApprovalId,
-    ) -> Result<(), InteractionError>;
+    ) -> Result<ApprovalView, InteractionError>;
 
     /// Deny one real pending effect request with an optional safe rationale.
     async fn deny(
@@ -171,7 +218,7 @@ pub trait InteractionService: Send + Sync {
         conversation_id: ConversationId,
         approval_id: ApprovalId,
         reason: Option<String>,
-    ) -> Result<(), InteractionError>;
+    ) -> Result<ApprovalView, InteractionError>;
 
     /// Replay durable events after the requested checkpoint, then follow a
     /// bounded live stream.

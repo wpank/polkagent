@@ -1176,7 +1176,7 @@ async fn disabled_runtime_memory_exposes_truthful_empty_read_view() {
 }
 
 #[tokio::test]
-async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary() {
+async fn runtime_server_composes_real_optional_stores_and_reports_unavailable_boundaries() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let runtime = runtime_at(temp.path()).await;
     let state = app_state_from_runtime(&runtime, runtime.config().as_ref().clone());
@@ -1202,6 +1202,7 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
         &runtime_interactions
     ));
     assert!(state.interaction_store.is_some());
+    assert!(state.authenticated_approval_service.is_none());
 
     let server = TestServer::new(ApiServer::from_state(state).into_router());
     server.get("/api/v1alpha1/events").await.assert_status_ok();
@@ -1227,11 +1228,12 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
         "NOT_FOUND",
     );
 
-    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 9);
+    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 12);
     for route in RUNTIME_UNAVAILABLE_ROUTES {
         let path = route
             .path
             .replace("{id}", "00000000-0000-0000-0000-000000000000")
+            .replace("{approval_id}", "00000000-0000-0000-0000-000000000001")
             .replace("{skill_id}", "missing-skill")
             .replace("{tool_id}", "missing-tool")
             .replace("{entry_id}", "missing-entry");
@@ -1261,10 +1263,15 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
             }
             method => panic!("unexpected unavailable route method {method}"),
         };
-        response.assert_status(StatusCode::NOT_IMPLEMENTED);
+        let (expected_status, expected_code) = if route.dependency == "authenticated_approvals" {
+            (StatusCode::SERVICE_UNAVAILABLE, "UNAVAILABLE")
+        } else {
+            (StatusCode::NOT_IMPLEMENTED, "NOT_IMPLEMENTED")
+        };
+        response.assert_status(expected_status);
         assert_eq!(
             response.json::<serde_json::Value>()["error"]["code"],
-            "NOT_IMPLEMENTED",
+            expected_code,
             "{} {}",
             route.method,
             route.path

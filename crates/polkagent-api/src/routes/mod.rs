@@ -81,6 +81,9 @@
 //!   GET    /interactions/:id
 //!   DELETE /interactions/:id
 //!   GET    /interactions/:id/turns
+//!   GET    /interactions/:id/approvals
+//!   POST   /interactions/:id/approvals/:approval_id/approve
+//!   POST   /interactions/:id/approvals/:approval_id/deny
 //!   POST   /interactions/:id/prompt
 //!   POST   /interactions/:id/turns/:turn_id/cancel
 //!   GET    /interactions/:id/config
@@ -161,6 +164,10 @@ const BODY_LIMIT_ARTIFACT: usize = 10_485_760;
 /// A default body limit of 1 MiB is applied to all routes via
 /// [`DefaultBodyLimit::max`].  The `/artifacts/{id}/content` route allows up
 /// to 10 MiB to accommodate larger artifact payloads.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the parity gate intentionally parses one declarative route inventory"
+)]
 pub fn register(state: AppState) -> Router {
     // -----------------------------------------------------------------------
     // Health routes (no version prefix — reachable by load balancer probes)
@@ -293,7 +300,7 @@ pub fn register(state: AppState) -> Router {
             "/conversations/{id}/messages",
             post(conversations::add_message),
         )
-        // Durable agent interactions (execution + replay)
+        // Durable agent interactions (execution + replay + approvals)
         .route(
             "/interactions",
             post(interactions::create_interaction).get(interactions::list_interactions),
@@ -305,6 +312,18 @@ pub fn register(state: AppState) -> Router {
         .route(
             "/interactions/{id}/turns",
             get(interactions::list_interaction_turns),
+        )
+        .route(
+            "/interactions/{id}/approvals",
+            get(interactions::list_interaction_approvals),
+        )
+        .route(
+            "/interactions/{id}/approvals/{approval_id}/approve",
+            post(interactions::approve_interaction_approval),
+        )
+        .route(
+            "/interactions/{id}/approvals/{approval_id}/deny",
+            post(interactions::deny_interaction_approval),
         )
         .route(
             "/interactions/{id}/prompt",

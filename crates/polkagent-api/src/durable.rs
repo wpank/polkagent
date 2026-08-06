@@ -55,6 +55,24 @@ pub struct UnavailableRuntimeRoute {
 /// installed for these routes.
 pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
     UnavailableRuntimeRoute {
+        dependency: "authenticated_approvals",
+        method: "GET",
+        path: "/api/v1alpha1/interactions/{id}/approvals",
+        reason: "RuntimeFactory has no stable authenticated approval principal binding",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "authenticated_approvals",
+        method: "POST",
+        path: "/api/v1alpha1/interactions/{id}/approvals/{approval_id}/approve",
+        reason: "RuntimeFactory has no stable authenticated approval principal binding",
+    },
+    UnavailableRuntimeRoute {
+        dependency: "authenticated_approvals",
+        method: "POST",
+        path: "/api/v1alpha1/interactions/{id}/approvals/{approval_id}/deny",
+        reason: "RuntimeFactory has no stable authenticated approval principal binding",
+    },
+    UnavailableRuntimeRoute {
         dependency: "skills",
         method: "POST",
         path: "/api/v1alpha1/skills/install",

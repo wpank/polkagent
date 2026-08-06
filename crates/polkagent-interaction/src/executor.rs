@@ -206,7 +206,8 @@ impl CommandExecutor for ServiceCommandExecutor {
             InteractionCommand::Cancel { target } => self.cancel(&request, target).await,
             InteractionCommand::Approve { approval_id } => {
                 let conversation_id = selected_interaction(&request)?;
-                self.interactions
+                let _approval = self
+                    .interactions
                     .approve(conversation_id, approval_id)
                     .await?;
                 Ok(CommandOutput::ApprovalResolved {
@@ -219,7 +220,8 @@ impl CommandExecutor for ServiceCommandExecutor {
                 reason,
             } => {
                 let conversation_id = selected_interaction(&request)?;
-                self.interactions
+                let _approval = self
+                    .interactions
                     .deny(conversation_id, approval_id, reason.clone())
                     .await?;
                 Ok(CommandOutput::ApprovalResolved {
@@ -385,6 +387,20 @@ mod tests {
         decisions: Mutex<Vec<(ApprovalId, ApprovalDecision)>>,
     }
 
+    fn approval_view(approval_id: ApprovalId) -> crate::ApprovalView {
+        crate::ApprovalView {
+            approval_id,
+            effect_id: polkagent_core::EffectId::new(),
+            run_id: RunId::new(),
+            tool_call_id: None,
+            title: "fixture approval".to_owned(),
+            description: "fixture approval description".to_owned(),
+            status: crate::ApprovalStatus::Approved,
+            policy_reason: None,
+            expires_at: None,
+        }
+    }
+
     #[async_trait]
     impl InteractionService for FakeInteractions {
         async fn new_interaction(
@@ -482,12 +498,12 @@ mod tests {
             &self,
             _conversation_id: ConversationId,
             approval_id: ApprovalId,
-        ) -> Result<(), InteractionError> {
+        ) -> Result<crate::ApprovalView, InteractionError> {
             self.decisions
                 .lock()
                 .await
                 .push((approval_id, ApprovalDecision::Approve));
-            Ok(())
+            Ok(approval_view(approval_id))
         }
 
         async fn deny(
@@ -495,12 +511,12 @@ mod tests {
             _conversation_id: ConversationId,
             approval_id: ApprovalId,
             reason: Option<String>,
-        ) -> Result<(), InteractionError> {
+        ) -> Result<crate::ApprovalView, InteractionError> {
             self.decisions
                 .lock()
                 .await
                 .push((approval_id, ApprovalDecision::Deny { reason }));
-            Ok(())
+            Ok(approval_view(approval_id))
         }
 
         async fn subscribe(

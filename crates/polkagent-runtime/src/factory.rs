@@ -329,7 +329,7 @@ impl RuntimeFactory {
                 "not composed until an authenticated approval surface is available",
             ),
             approval_surfaces: ComponentReadiness::unavailable(
-                "APR-05 has not exposed authenticated lookup and approve/deny operations",
+                "APR-05 operations exist, but RuntimeFactory has no stable authenticated principal binding",
             ),
             conversations: ComponentReadiness::ready("durable SQLite ConversationStore configured"),
             payments: ComponentReadiness::ready("durable SQLite PaymentStore configured"),

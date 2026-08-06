@@ -32,11 +32,13 @@ use polkagent_run::{
     ApprovalRuntimeConfig, RunManager, RunOrchestrator, TimeoutConfig, TimeoutEnforcer,
 };
 use polkagent_signer_trait::Signer;
-use polkagent_store_trait::approval::{ApprovalCoordinatorStore, ExecutionCheckpointStore};
+use polkagent_store_trait::approval::{
+    ApprovalCoordinatorStore, ApprovalPage, ApprovalScope, ExecutionCheckpointStore,
+    ResolveApproval, ResolveApprovalResult, StoredApproval,
+};
 use polkagent_store_trait::{
     EffectStore, RunStore, RunSummary, StoreError, StoredIntent, StoredOutcome,
 };
-use tokio::sync::broadcast;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::error::ServiceError;
@@ -576,9 +578,6 @@ impl AppServiceBuilder {
             None
         };
 
-        // Create the approval broadcast channel.
-        let (approval_tx, _) = broadcast::channel::<(EffectId, bool)>(256);
-
         Ok(AppService {
             atomic_config: Arc::new(AtomicConfig::new(config)),
             executor: self.executor,
@@ -600,7 +599,7 @@ impl AppServiceBuilder {
             payment_store: self.payment_store,
             signer: self.signer,
             chain_client: self.chain_client,
-            approval_tx,
+            approval_runtime: self.approval_runtime,
             watcher_shutdown: Mutex::new(None),
             webhook_dispatcher: Mutex::new(self.webhook_dispatcher),
             scheduler: self.scheduler,
@@ -701,9 +700,9 @@ pub struct AppService {
     signer: Option<Arc<dyn Signer>>,
     /// Chain client port for the Explain-Before-Sign pipeline (optional).
     chain_client: Option<Arc<dyn ChainClient>>,
-    /// Broadcast channel for notifying the orchestrator of approval decisions.
-    /// Sends `(effect_id, approved)` tuples.
-    approval_tx: broadcast::Sender<(EffectId, bool)>,
+    /// Complete durable approval coordinator/executor composition. This is
+    /// absent in production until an authenticated surface authority is bound.
+    approval_runtime: Option<ServiceApprovalRuntime>,
     /// Shutdown sender for the config watcher background task. Sending `true`
     /// signals the watcher loop to exit. `None` when no watcher is running.
     watcher_shutdown: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
@@ -770,6 +769,64 @@ impl AppService {
         self.orchestrator
             .as_ref()
             .is_some_and(|orchestrator| orchestrator.approval_ready())
+    }
+
+    /// List pending approvals in one exact authenticated scope.
+    pub async fn list_pending_approvals(
+        &self,
+        scope: ApprovalScope,
+        page: ApprovalPage,
+    ) -> Result<Vec<StoredApproval>, ServiceError> {
+        let runtime =
+            self.approval_runtime
+                .as_ref()
+                .ok_or_else(|| ServiceError::NotInitialized {
+                    component: "authenticated durable approval runtime".into(),
+                })?;
+        runtime
+            .coordinator
+            .list_pending(scope, page)
+            .await
+            .map_err(ServiceError::from)
+    }
+
+    /// Load one approval by exact identity and authenticated scope.
+    pub async fn get_approval(
+        &self,
+        approval_id: polkagent_core::ApprovalId,
+        scope: ApprovalScope,
+    ) -> Result<StoredApproval, ServiceError> {
+        let runtime =
+            self.approval_runtime
+                .as_ref()
+                .ok_or_else(|| ServiceError::NotInitialized {
+                    component: "authenticated durable approval runtime".into(),
+                })?;
+        runtime
+            .coordinator
+            .get_approval(approval_id, scope)
+            .await
+            .map_err(ServiceError::from)
+    }
+
+    /// Atomically resolve one exact durable approval through the shared
+    /// coordinator. Callers must supply lineage copied from a scoped lookup;
+    /// UUID possession alone is never authority.
+    pub async fn resolve_approval(
+        &self,
+        request: ResolveApproval,
+    ) -> Result<ResolveApprovalResult, ServiceError> {
+        let runtime =
+            self.approval_runtime
+                .as_ref()
+                .ok_or_else(|| ServiceError::NotInitialized {
+                    component: "authenticated durable approval runtime".into(),
+                })?;
+        runtime
+            .coordinator
+            .resolve_approval(request)
+            .await
+            .map_err(ServiceError::from)
     }
 
     /// Recover every decided approval checkpoint currently resumable by the
@@ -1012,18 +1069,6 @@ impl AppService {
     /// Return a mutable reference to the provider registry.
     pub fn provider_registry_mut(&mut self) -> &mut ProviderRegistry {
         &mut self.provider_registry
-    }
-
-    /// Subscribe to receive approval decision notifications.
-    ///
-    /// The channel delivers `(EffectId, approved)` tuples whenever
-    /// [`approve_effect`] or [`deny_effect`] is called.
-    ///
-    /// [`approve_effect`]: AppService::approve_effect
-    /// [`deny_effect`]: AppService::deny_effect
-    #[must_use]
-    pub fn subscribe_approvals(&self) -> broadcast::Receiver<(EffectId, bool)> {
-        self.approval_tx.subscribe()
     }
 
     // -----------------------------------------------------------------------
@@ -1583,14 +1628,11 @@ impl AppService {
         Ok(())
     }
 
-    /// Approve a pending effect, allowing it to proceed.
+    /// Legacy effect-only approval entry point.
     ///
-    /// Transitions the effect intent's approval state and broadcasts
-    /// `(effect_id, true)` to all approval subscribers.
-    ///
-    /// Returns the [`ActionCard`] attached to the intent if one was generated
-    /// during the turn loop.  The card is `None` for read-only effects or for
-    /// intents produced before card generation was introduced.
+    /// An effect UUID does not carry the approval identity, conversation, or
+    /// authenticated scope required by the durable coordinator. This method
+    /// therefore fails closed; callers must use [`Self::resolve_approval`].
     ///
     /// # Errors
     ///
@@ -1602,41 +1644,15 @@ impl AppService {
         &self,
         effect_id: EffectId,
     ) -> Result<Option<ActionCard>, ServiceError> {
-        let store = self
-            .effect_store
-            .as_ref()
-            .ok_or_else(|| ServiceError::NotInitialized {
-                component: "effect_store".into(),
-            })?;
-
-        // Fetch the intent; also extract the action card if present.
-        let intent = store.get_intent(effect_id).await.map_err(|e| match e {
-            polkagent_store_trait::StoreError::NotFound { .. } => {
-                ServiceError::EffectNotFound { effect_id }
-            }
-            other => ServiceError::Store {
-                message: other.to_string(),
-            },
-        })?;
-
-        // Extract the action card from the stored payload JSON, if present.
-        // The field is stored as `action_card` inside the payload blob.
-        let action_card: Option<ActionCard> = intent
-            .payload
-            .get("action_card")
-            .and_then(|v| serde_json::from_value(v.clone()).ok());
-
-        // Notify the orchestrator and any other subscribers.
-        let _ = self.approval_tx.send((effect_id, true));
-
-        info!(%effect_id, has_card = action_card.is_some(), "effect approved");
-        Ok(action_card)
+        Err(ServiceError::Unsupported {
+            message: format!(
+                "effect-only approval is unsafe for {effect_id}; use a scoped approval identity"
+            ),
+        })
     }
 
-    /// Deny a pending effect with the given reason.
-    ///
-    /// Transitions the effect intent's approval state and broadcasts
-    /// `(effect_id, false)` to all approval subscribers.
+    /// Legacy effect-only denial entry point. It fails closed for the same
+    /// lineage reason as [`Self::approve_effect`].
     ///
     /// # Errors
     ///
@@ -1645,28 +1661,11 @@ impl AppService {
     /// not exist.
     #[instrument(skip(self, reason), fields(%effect_id))]
     pub async fn deny_effect(&self, effect_id: EffectId, reason: &str) -> Result<(), ServiceError> {
-        let store = self
-            .effect_store
-            .as_ref()
-            .ok_or_else(|| ServiceError::NotInitialized {
-                component: "effect_store".into(),
-            })?;
-
-        // Verify the intent exists.
-        let _intent = store.get_intent(effect_id).await.map_err(|e| match e {
-            polkagent_store_trait::StoreError::NotFound { .. } => {
-                ServiceError::EffectNotFound { effect_id }
-            }
-            other => ServiceError::Store {
-                message: other.to_string(),
-            },
-        })?;
-
-        // Notify the orchestrator and any other subscribers.
-        let _ = self.approval_tx.send((effect_id, false));
-
-        warn!(%effect_id, %reason, "effect denied");
-        Ok(())
+        Err(ServiceError::Unsupported {
+            message: format!(
+                "effect-only denial is unsafe for {effect_id}; use a scoped approval identity ({reason})"
+            ),
+        })
     }
 
     /// Get the current state of a run.
@@ -2938,17 +2937,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approve_effect_without_store_fails() {
+    async fn legacy_effect_only_approval_fails_closed() {
         let service = build_service();
         let result = service.approve_effect(EffectId::new()).await;
-        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
+        assert!(matches!(result, Err(ServiceError::Unsupported { .. })));
     }
 
     #[tokio::test]
-    async fn deny_effect_without_store_fails() {
+    async fn legacy_effect_only_denial_fails_closed() {
         let service = build_service();
         let result = service.deny_effect(EffectId::new(), "test reason").await;
-        assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
+        assert!(matches!(result, Err(ServiceError::Unsupported { .. })));
     }
 
     #[test]
@@ -3068,15 +3067,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approve_effect_channel_is_functional() {
-        let service = build_service();
-        let mut rx = service.subscribe_approvals();
-
-        // Without an effect store the channel exists but is empty.
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
     async fn memory_store_absent_returns_not_initialized() {
         let service = build_service();
         let agent_id = AgentId::new();
@@ -3156,13 +3146,6 @@ mod tests {
         assert!(debug.contains("has_payment_store"));
         assert!(debug.contains("has_conversation_store"));
         assert!(debug.contains("has_orchestrator"));
-    }
-
-    #[test]
-    fn subscribe_approvals_returns_receiver() {
-        let service = build_service();
-        let _rx = service.subscribe_approvals();
-        // No panic = success.
     }
 
     #[tokio::test]

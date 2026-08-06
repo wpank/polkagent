@@ -420,6 +420,10 @@ pub struct AppState {
     pub service_registry_store: Option<Arc<dyn ServiceRegistryStore>>,
     /// Headless interaction service used for agent execution endpoints.
     pub interaction_service: Option<Arc<dyn InteractionService>>,
+    /// Interaction service explicitly bound to an authenticated approval
+    /// authority. Kept separate so ordinary prompt composition cannot
+    /// accidentally enable grant-bearing approval mutations.
+    pub authenticated_approval_service: Option<Arc<dyn InteractionService>>,
     /// Read-only durable interaction event projection used for finite HTTP
     /// replay until `InteractionService` owns a paged replay method.
     /// Mutation handlers must never use this store directly.
@@ -467,6 +471,7 @@ impl AppState {
             conversation_store: None,
             service_registry_store: None,
             interaction_service: None,
+            authenticated_approval_service: None,
             interaction_store: None,
         }
     }
@@ -561,6 +566,17 @@ impl AppState {
     #[must_use]
     pub fn with_interaction_service(mut self, service: Arc<dyn InteractionService>) -> Self {
         self.interaction_service = Some(service);
+        self
+    }
+
+    /// Set an interaction service that has already been bound to the stable
+    /// principal authenticated by the HTTP deployment.
+    #[must_use]
+    pub fn with_authenticated_approval_service(
+        mut self,
+        service: Arc<dyn InteractionService>,
+    ) -> Self {
+        self.authenticated_approval_service = Some(service);
         self
     }
 

@@ -16,7 +16,8 @@ use polkagent_executor_trait::{
     ContentBlock, InferenceMessage, MessageRole as InferenceMessageRole,
 };
 use polkagent_interaction::{
-    BoxInteractionEventStream, ConfigOptionValue, ConfigUpdate, CreateInteractionRequest,
+    ApprovalStatus as InteractionApprovalStatus, ApprovalView, BoxInteractionEventStream,
+    ConfigOptionValue, ConfigUpdate, CreateInteractionRequest, InteractionApprovalAuthority,
     InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
     InteractionEvent, InteractionEventHub, InteractionEventId, InteractionOverrides,
     InteractionRunLink, InteractionService, InteractionState, InteractionStore, InteractionSummary,
@@ -30,6 +31,10 @@ use polkagent_service::{AppService, ServiceError};
 use polkagent_store_sqlite::{
     DurableToolCall, DurableToolOutcome, SqliteInteractionStore, SqlitePool, SqliteRunStore,
     StoreError as SqliteStoreError,
+};
+use polkagent_store_trait::approval::{
+    ApprovalDecision as StoreApprovalDecision, ApprovalPage, ApprovalPrincipalType, ApprovalScope,
+    ApprovalStatus as StoreApprovalStatus, ApprovalStoreError, ResolveApproval, StoredApproval,
 };
 use polkagent_store_trait::event::{EventStore, StoredEvent};
 use polkagent_store_trait::RunStore;
@@ -47,6 +52,9 @@ const TERMINAL_EVENT_DISCRIMINATOR: u8 = 0x94;
 const RUN_DISCRIMINATOR: u8 = 0xb5;
 const TOOL_STARTED_EVENT_DISCRIMINATOR: u8 = 0xd6;
 const TOOL_UPDATED_EVENT_DISCRIMINATOR: u8 = 0xf7;
+const APPROVAL_REQUESTED_EVENT_DISCRIMINATOR: u8 = 0x2a;
+const APPROVAL_RESOLVED_EVENT_DISCRIMINATOR: u8 = 0x4c;
+const APPROVAL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const PREPARED_RUN_RECOVERY_REASON: &str =
     "interaction run was interrupted before activation and cannot be resumed safely";
 const UNRECOVERABLE_OUTPUT_REASON: &str =
@@ -71,6 +79,8 @@ pub struct DurableInteractionService {
     store: Arc<SqliteInteractionStore>,
     hub: InteractionEventHub,
     prompt_lock: Arc<tokio::sync::Mutex<()>>,
+    approval_authority: Option<InteractionApprovalAuthority>,
+    projected_approvals: Arc<tokio::sync::Mutex<HashSet<(polkagent_core::ApprovalId, u8)>>>,
 }
 
 impl std::fmt::Debug for DurableInteractionService {
@@ -94,7 +104,39 @@ impl DurableInteractionService {
             store,
             hub: InteractionEventHub::new(erased),
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
+            approval_authority: None,
+            projected_approvals: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
         }
+    }
+
+    /// Bind one already-authenticated approval authority to this interaction
+    /// service. Production composition must keep this absent until its surface
+    /// authentication maps to the same stable principal.
+    pub fn with_approval_authority(
+        mut self,
+        authority: InteractionApprovalAuthority,
+    ) -> Result<Self, InteractionError> {
+        authority.validate()?;
+        self.approval_authority = Some(authority);
+        Ok(self)
+    }
+
+    fn approval_scope(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<ApprovalScope, InteractionError> {
+        let authority = self.approval_authority.as_ref().ok_or_else(|| {
+            InteractionError::new(
+                InteractionErrorCode::Unavailable,
+                "an authenticated durable approval surface is not configured",
+            )
+        })?;
+        Ok(ApprovalScope {
+            tenant_id: authority.tenant_id.clone(),
+            workspace_id: authority.workspace_id.clone(),
+            conversation_id: Some(conversation_id),
+            principal_id: authority.principal_id,
+        })
     }
 
     /// Reconcile non-terminal interaction turns with durable terminal run
@@ -620,8 +662,17 @@ impl DurableInteractionService {
     ) {
         let mut output_complete = true;
         loop {
-            match events.recv().await {
-                Ok(event) if event.run_id == run_id => {
+            match tokio::time::timeout(APPROVAL_POLL_INTERVAL, events.recv()).await {
+                Err(_) => {
+                    if let Err(error) = self
+                        .project_pending_approvals(conversation_id, turn_id, run_id)
+                        .await
+                    {
+                        tracing::error!(%turn_id, %run_id, %error, "pending approval projection failed");
+                        return;
+                    }
+                }
+                Ok(Ok(event)) if event.run_id == run_id => {
                     let terminal = event.kind.is_terminal_for_interaction();
                     if let Err(error) = self
                         .project_run_event(conversation_id, turn_id, event, output_complete)
@@ -634,8 +685,8 @@ impl DurableInteractionService {
                         return;
                     }
                 }
-                Ok(_) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                Ok(Ok(_)) => {}
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
                     tracing::warn!(%turn_id, %run_id, skipped, "run event projection lagged");
                     output_complete = false;
                     // Attach the replacement before durable replay so a
@@ -653,7 +704,7 @@ impl DurableInteractionService {
                         }
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
                     if let Err(error) = self
                         .backfill_run(conversation_id, turn_id, run_id, false)
                         .await
@@ -664,6 +715,191 @@ impl DurableInteractionService {
                 }
             }
         }
+    }
+
+    async fn project_pending_approvals(
+        &self,
+        conversation_id: ConversationId,
+        turn_id: InteractionTurnId,
+        run_id: RunId,
+    ) -> Result<(), InteractionError> {
+        if self.approval_authority.is_none() {
+            return Ok(());
+        }
+        let approvals = self
+            .app
+            .list_pending_approvals(
+                self.approval_scope(conversation_id)?,
+                ApprovalPage {
+                    limit: 100,
+                    offset: 0,
+                },
+            )
+            .await
+            .map_err(approval_service_error)?;
+        for approval in approvals
+            .into_iter()
+            .filter(|approval| approval.subject.run_id == run_id)
+        {
+            self.project_approval(
+                conversation_id,
+                turn_id,
+                &approval,
+                APPROVAL_REQUESTED_EVENT_DISCRIMINATOR,
+                approval.requested_at,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn project_approval(
+        &self,
+        conversation_id: ConversationId,
+        turn_id: InteractionTurnId,
+        approval: &StoredApproval,
+        discriminator: u8,
+        timestamp: DateTime<Utc>,
+    ) -> Result<(), InteractionError> {
+        let key = (approval.id, discriminator);
+        {
+            let mut projected = self.projected_approvals.lock().await;
+            if !projected.insert(key) {
+                return Ok(());
+            }
+        }
+        let event = if discriminator == APPROVAL_REQUESTED_EVENT_DISCRIMINATOR {
+            InteractionEvent::ApprovalRequested {
+                request: approval_view(approval, Some(InteractionApprovalStatus::Pending)),
+            }
+        } else {
+            let decision = match approval.decision {
+                Some(StoreApprovalDecision::AllowOnce) => {
+                    polkagent_interaction::ApprovalDecision::Approve
+                }
+                Some(StoreApprovalDecision::RejectOnce) => {
+                    polkagent_interaction::ApprovalDecision::Deny {
+                        reason: approval.rationale.clone(),
+                    }
+                }
+                Some(StoreApprovalDecision::Expire | StoreApprovalDecision::Cancel) | None => {
+                    self.projected_approvals.lock().await.remove(&key);
+                    return Ok(());
+                }
+            };
+            InteractionEvent::ApprovalResolved {
+                approval_id: approval.id,
+                decision,
+            }
+        };
+        let result = self
+            .hub
+            .publish(NewInteractionEvent {
+                event_id: approval_event_id(approval.id, discriminator),
+                conversation_id,
+                turn_id,
+                timestamp,
+                event,
+            })
+            .await;
+        if result.is_err() {
+            self.projected_approvals.lock().await.remove(&key);
+        }
+        result.map(|_| ())
+    }
+
+    async fn interaction_turn_for_run(
+        &self,
+        conversation_id: ConversationId,
+        run_id: RunId,
+    ) -> Result<InteractionTurnId, InteractionError> {
+        self.store
+            .list_turns(conversation_id)
+            .await?
+            .into_iter()
+            .find(|turn| turn.runs.iter().any(|run| run.run_id == run_id))
+            .map(|turn| turn.summary.handle.turn_id)
+            .ok_or_else(|| {
+                InteractionError::new(
+                    InteractionErrorCode::PermissionDenied,
+                    "approval lineage does not belong to this interaction",
+                )
+            })
+    }
+
+    async fn resolve_interaction_approval(
+        &self,
+        conversation_id: ConversationId,
+        approval_id: polkagent_core::ApprovalId,
+        decision: StoreApprovalDecision,
+        rationale: Option<String>,
+    ) -> Result<ApprovalView, InteractionError> {
+        self.store.load_interaction(conversation_id).await?;
+        let scope = self.approval_scope(conversation_id)?;
+        let current = self
+            .app
+            .get_approval(approval_id, scope.clone())
+            .await
+            .map_err(approval_service_error)?;
+        let expected_run_state_version = match current.decision_run_state_version {
+            Some(version) => version,
+            None => RunStore::state_version(&self.pool, current.subject.run_id)
+                .await
+                .map_err(|error| store_error("load approval run revision", &error))?,
+        };
+        let authority = self.approval_authority.as_ref().ok_or_else(|| {
+            InteractionError::new(
+                InteractionErrorCode::Unavailable,
+                "an authenticated durable approval surface is not configured",
+            )
+        })?;
+        let resolved = self
+            .app
+            .resolve_approval(ResolveApproval {
+                approval_id,
+                expected_run_state_version,
+                effect_id: current.subject.effect_id,
+                run_id: current.subject.run_id,
+                turn_id: current.subject.turn_id,
+                conversation_id: current.subject.conversation_id,
+                subject_digest: current.subject.subject_digest.clone(),
+                scope,
+                principal_id: authority.principal_id,
+                principal_type: ApprovalPrincipalType::Human,
+                surface: authority.surface.clone(),
+                decision,
+                rationale,
+                conditions: Vec::new(),
+            })
+            .await
+            .map_err(approval_service_error)?;
+        let turn_id = self
+            .interaction_turn_for_run(conversation_id, resolved.approval.subject.run_id)
+            .await?;
+        let decided_at = resolved
+            .approval
+            .decided_at
+            .ok_or_else(|| internal_error("resolved approval has no durable decision timestamp"))?;
+        self.project_approval(
+            conversation_id,
+            turn_id,
+            &resolved.approval,
+            APPROVAL_RESOLVED_EVENT_DISCRIMINATOR,
+            decided_at,
+        )
+        .await?;
+
+        // A live executor observes the durable decision through its own poll.
+        // If the request survived process replacement, this recovery wake
+        // leases and resumes its exact checkpoint. CAS keeps the two paths
+        // mutually exclusive.
+        let app = Arc::clone(&self.app);
+        tokio::spawn(async move {
+            if let Err(error) = app.recover_approval_checkpoints().await {
+                tracing::error!(%error, "approval decision recovery wake failed");
+            }
+        });
+        Ok(approval_view(&resolved.approval, None))
     }
 
     async fn project_run_event(
@@ -958,8 +1194,41 @@ impl DurableInteractionService {
         let stored = EventStore::read_run_events(&self.pool, run_id)
             .await
             .map_err(|error| store_error("replay linked run events", &error))?;
-        for event in stored {
-            let event = decode_stored_run_event(event)?;
+        for stored_event in stored {
+            let approval_id = stored_event
+                .correlation_id
+                .parse::<polkagent_core::ApprovalId>()
+                .ok();
+            let event = decode_stored_run_event(stored_event)?;
+            let approval_discriminator = match &event.kind {
+                EventKind::ApprovalRequested { .. } => Some(APPROVAL_REQUESTED_EVENT_DISCRIMINATOR),
+                EventKind::ApprovalGranted { .. } | EventKind::ApprovalDenied { .. } => {
+                    Some(APPROVAL_RESOLVED_EVENT_DISCRIMINATOR)
+                }
+                _ => None,
+            };
+            if let Some(discriminator) = approval_discriminator {
+                if self.approval_authority.is_none() {
+                    continue;
+                }
+                let approval_id = approval_id.ok_or_else(|| {
+                    internal_error("durable approval event has no approval correlation")
+                })?;
+                let approval = self
+                    .app
+                    .get_approval(approval_id, self.approval_scope(conversation_id)?)
+                    .await
+                    .map_err(approval_service_error)?;
+                self.project_approval(
+                    conversation_id,
+                    turn_id,
+                    &approval,
+                    discriminator,
+                    event.timestamp,
+                )
+                .await?;
+                continue;
+            }
             let terminal = event.kind.is_terminal_for_interaction();
             self.project_run_event(conversation_id, turn_id, event, output_complete)
                 .await?;
@@ -1193,27 +1462,56 @@ impl InteractionService for DurableInteractionService {
             .config)
     }
 
+    async fn list_pending_approvals(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<Vec<ApprovalView>, InteractionError> {
+        self.store.load_interaction(conversation_id).await?;
+        self.app
+            .list_pending_approvals(
+                self.approval_scope(conversation_id)?,
+                ApprovalPage {
+                    limit: 100,
+                    offset: 0,
+                },
+            )
+            .await
+            .map(|approvals| {
+                approvals
+                    .iter()
+                    .map(|approval| approval_view(approval, None))
+                    .collect()
+            })
+            .map_err(approval_service_error)
+    }
+
     async fn approve(
         &self,
-        _conversation_id: ConversationId,
-        _approval_id: polkagent_core::ApprovalId,
-    ) -> Result<(), InteractionError> {
-        Err(InteractionError::new(
-            InteractionErrorCode::Unavailable,
-            "interaction approval identity is not yet wired to a durable effect request",
-        ))
+        conversation_id: ConversationId,
+        approval_id: polkagent_core::ApprovalId,
+    ) -> Result<ApprovalView, InteractionError> {
+        self.resolve_interaction_approval(
+            conversation_id,
+            approval_id,
+            StoreApprovalDecision::AllowOnce,
+            None,
+        )
+        .await
     }
 
     async fn deny(
         &self,
-        _conversation_id: ConversationId,
-        _approval_id: polkagent_core::ApprovalId,
-        _reason: Option<String>,
-    ) -> Result<(), InteractionError> {
-        Err(InteractionError::new(
-            InteractionErrorCode::Unavailable,
-            "interaction approval identity is not yet wired to a durable effect request",
-        ))
+        conversation_id: ConversationId,
+        approval_id: polkagent_core::ApprovalId,
+        reason: Option<String>,
+    ) -> Result<ApprovalView, InteractionError> {
+        self.resolve_interaction_approval(
+            conversation_id,
+            approval_id,
+            StoreApprovalDecision::RejectOnce,
+            reason,
+        )
+        .await
     }
 
     async fn subscribe(
@@ -1386,6 +1684,40 @@ fn tool_event_id(intent_id: EffectId, discriminator: u8) -> InteractionEventId {
     InteractionEventId::from_uuid(Uuid::from_bytes(bytes))
 }
 
+fn approval_event_id(
+    approval_id: polkagent_core::ApprovalId,
+    discriminator: u8,
+) -> InteractionEventId {
+    let mut bytes = *approval_id.as_uuid().as_bytes();
+    bytes[0] ^= discriminator;
+    bytes[15] ^= discriminator.rotate_left(1);
+    InteractionEventId::from_uuid(Uuid::from_bytes(bytes))
+}
+
+fn approval_view(
+    approval: &StoredApproval,
+    status_override: Option<InteractionApprovalStatus>,
+) -> ApprovalView {
+    let status = status_override.unwrap_or(match approval.status {
+        StoreApprovalStatus::Pending => InteractionApprovalStatus::Pending,
+        StoreApprovalStatus::Approved => InteractionApprovalStatus::Approved,
+        StoreApprovalStatus::Denied => InteractionApprovalStatus::Denied,
+        StoreApprovalStatus::Expired => InteractionApprovalStatus::Expired,
+        StoreApprovalStatus::Cancelled => InteractionApprovalStatus::Cancelled,
+    });
+    ApprovalView {
+        approval_id: approval.id,
+        effect_id: approval.subject.effect_id,
+        run_id: approval.subject.run_id,
+        tool_call_id: Some(ToolCallId::from_uuid(approval.subject.effect_id.as_uuid())),
+        title: approval.metadata.title.clone(),
+        description: approval.metadata.description.clone(),
+        status,
+        policy_reason: Some(approval.metadata.reason.clone()),
+        expires_at: Some(approval.deadline_at),
+    }
+}
+
 fn tool_view(call: &DurableToolCall, status: ToolCallStatus) -> ToolCallView {
     let (summary, error) = match (
         &status,
@@ -1538,6 +1870,43 @@ fn service_error(context: &str, error: &ServiceError) -> InteractionError {
     )
 }
 
+fn approval_service_error(error: ServiceError) -> InteractionError {
+    match error {
+        ServiceError::Approval(ApprovalStoreError::NotFound { .. }) => InteractionError::new(
+            InteractionErrorCode::NotFound,
+            "approval was not found in the authenticated interaction scope",
+        ),
+        ServiceError::Approval(
+            ApprovalStoreError::ScopeMismatch | ApprovalStoreError::DigestMismatch,
+        ) => InteractionError::new(
+            InteractionErrorCode::PermissionDenied,
+            "approval scope or lineage does not match the authenticated interaction",
+        ),
+        ServiceError::Approval(
+            ApprovalStoreError::Conflict { .. }
+            | ApprovalStoreError::InvalidTransition { .. }
+            | ApprovalStoreError::DeadlineElapsed,
+        ) => InteractionError::new(
+            InteractionErrorCode::Conflict,
+            "approval is no longer pending or an incompatible decision already won",
+        ),
+        ServiceError::Approval(ApprovalStoreError::Backend { .. }) => InteractionError::new(
+            InteractionErrorCode::Unavailable,
+            "durable approval coordinator is unavailable",
+        )
+        .retryable(),
+        ServiceError::Approval(
+            ApprovalStoreError::UnsupportedCheckpointVersion { .. }
+            | ApprovalStoreError::Integrity { .. },
+        ) => internal_error("durable approval record failed integrity validation"),
+        ServiceError::NotInitialized { .. } => InteractionError::new(
+            InteractionErrorCode::Unavailable,
+            "an authenticated durable approval runtime is not configured",
+        ),
+        other => service_error("operate on durable approval", &other),
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -1550,11 +1919,11 @@ mod tests {
     use std::time::Duration;
 
     use futures::Stream;
-    use polkagent_config::Config;
+    use polkagent_config::{Config, SecurityConfig};
     use polkagent_conversation::{types::Conversation, ConversationStore};
     use polkagent_core::{
-        AgentSpec, ApprovalId, EffectAttemptId, EffectId, EffectOutcomeId, EventId, StepId, TurnId,
-        WorkerId,
+        AgentSpec, ApprovalId, DataClassification, EffectAttemptId, EffectId, EffectOutcomeId,
+        EventId, PrincipalId, StepId, TurnId, WorkerId,
     };
     use polkagent_event::{EventBus, EventRecorder};
     use polkagent_executor_fake::FakeExecutor;
@@ -1570,8 +1939,14 @@ mod tests {
         ClientContext, ConfigOption, CreateInteractionRequest, InteractionOverrides,
         InteractionTurnId,
     };
+    use polkagent_service::ApprovalRuntimeConfig;
     use polkagent_store_sqlite::migrations;
     use polkagent_store_trait::{
+        approval::{
+            ApprovalCoordinatorStore, ApprovalRequestMetadata, ApprovalSubject, CheckpointEffect,
+            CheckpointEffectStatus, ExecutionCheckpoint, PauseForApproval,
+            APPROVAL_SUBJECT_SCHEMA_VERSION, EXECUTION_CHECKPOINT_SCHEMA_VERSION,
+        },
         EffectStore, RunStatus, StoreError, StoreRetryClass, StoredIntent, StoredOutcome,
     };
 
@@ -1977,6 +2352,222 @@ mod tests {
             .await
             .expect("seed interaction");
         store
+    }
+
+    struct ApprovalFixture {
+        authority: InteractionApprovalAuthority,
+        conversation_id: ConversationId,
+        other_conversation_id: ConversationId,
+        interaction_turn_id: InteractionTurnId,
+        run_id: RunId,
+        effect_id: EffectId,
+        approval_id: ApprovalId,
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exact approval lineage fixture remains visible in one place"
+    )]
+    async fn seed_pending_approval(pool: &SqlitePool, agent_id: AgentId) -> ApprovalFixture {
+        let conversation_id = ConversationId::new();
+        let other_conversation_id = ConversationId::new();
+        let store = seed_interaction(pool, agent_id, conversation_id).await;
+        seed_interaction(pool, agent_id, other_conversation_id).await;
+        let run_id = RunId::new();
+        let executor_turn_id = TurnId::new();
+        let step_id = StepId::new();
+        let effect_id = EffectId::new();
+        let approval_id = ApprovalId::new();
+        let principal_id = PrincipalId::new();
+        let now = Utc::now();
+        let deadline = now + chrono::Duration::minutes(10);
+        {
+            let writer = pool.writer();
+            writer
+                .execute(
+                    "INSERT INTO runs
+                        (id, agent_id, conversation_id, state, params_json,
+                         created_at, updated_at, started_at)
+                     VALUES (?1, ?2, ?3, 'running', '{}', ?4, ?4, ?4)",
+                    rusqlite::params![
+                        run_id.to_string(),
+                        agent_id.to_string(),
+                        conversation_id.to_string(),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .expect("seed approval run");
+            writer
+                .execute(
+                    "INSERT INTO turns (id, run_id, sequence, role, started_at)
+                     VALUES (?1, ?2, 1, 'assistant', ?3)",
+                    rusqlite::params![
+                        executor_turn_id.to_string(),
+                        run_id.to_string(),
+                        now.to_rfc3339()
+                    ],
+                )
+                .expect("seed approval executor turn");
+            writer
+                .execute(
+                    "INSERT INTO steps (id, turn_id, sequence, kind, started_at)
+                     VALUES (?1, ?2, 1, 'tool_call', ?3)",
+                    rusqlite::params![
+                        step_id.to_string(),
+                        executor_turn_id.to_string(),
+                        now.to_rfc3339()
+                    ],
+                )
+                .expect("seed approval step");
+        }
+        let interaction_turn_id = InteractionTurnId::new();
+        store
+            .create_turn(NewInteractionTurn {
+                turn_id: interaction_turn_id,
+                conversation_id,
+                ordinal: 1,
+                target: InteractionTarget::Agent(agent_id),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                user_message_id: Uuid::now_v7(),
+                user_message_text: "approval fixture".to_owned(),
+                runs: vec![InteractionRunLink {
+                    run_id,
+                    role: RunRole::Primary,
+                    ordinal: 1,
+                }],
+                initial_event_id: InteractionEventId::new(),
+                started_at: now,
+            })
+            .await
+            .expect("seed approval interaction turn");
+        let subject = ApprovalSubject {
+            schema_version: APPROVAL_SUBJECT_SCHEMA_VERSION,
+            conversation_id,
+            turn_id: executor_turn_id,
+            step_id,
+            run_id,
+            agent_id,
+            effect_id,
+            tool_call_id: "call-write-1".to_owned(),
+            tool_name: "filesystem.write".to_owned(),
+            validated_arguments: serde_json::json!({"path":"notes.txt"}),
+            required_action: "write".to_owned(),
+            required_resource: "workspace/notes.txt".to_owned(),
+            working_directory: Some("/workspace".to_owned()),
+            security_scope: serde_json::json!({
+                "tenant_id":"tenant-a",
+                "workspace_id":"workspace-a"
+            }),
+            tool_spec_digest: "fixture-tool-digest".to_owned(),
+            policy_snapshot_digest: "fixture-policy-digest".to_owned(),
+            subject_digest: "fixture-subject-digest".to_owned(),
+        };
+        let checkpoint = ExecutionCheckpoint {
+            schema_version: EXECUTION_CHECKPOINT_SCHEMA_VERSION,
+            run_id,
+            turn_id: executor_turn_id,
+            conversation_id,
+            agent_id,
+            model_id: "fake/model".to_owned(),
+            executor_id: "fake".to_owned(),
+            messages: serde_json::json!([]),
+            tool_calls: serde_json::json!([]),
+            next_model_turn: 2,
+            next_step_sequence: 2,
+            next_effect_sequence: 2,
+            accumulated_usage: serde_json::json!({}),
+            accumulated_cost: None,
+            deadline_at: Some(deadline),
+            retry_class: StoreRetryClass::NoAutoRetry,
+            effects: vec![CheckpointEffect {
+                effect_id,
+                status: CheckpointEffectStatus::AwaitingApproval,
+            }],
+            version: 1,
+            classification: DataClassification::Private,
+            retention_expires_at: None,
+            integrity_digest: "fixture-checkpoint-digest".to_owned(),
+        };
+        ApprovalCoordinatorStore::pause_for_approval(
+            pool,
+            PauseForApproval {
+                approval_id,
+                expected_run_state_version: 0,
+                subject,
+                effect_payload: serde_json::json!({
+                    "kind":"tool_call",
+                    "tool_name":"filesystem.write"
+                }),
+                effect_idempotency_key: format!("approval-{effect_id}"),
+                retry_class: StoreRetryClass::NoAutoRetry,
+                checkpoint,
+                metadata: ApprovalRequestMetadata {
+                    title: "Write notes.txt".to_owned(),
+                    description: "Write one file in the selected workspace".to_owned(),
+                    reason: "filesystem write grant requires approval".to_owned(),
+                    tenant_id: "tenant-a".to_owned(),
+                    workspace_id: "workspace-a".to_owned(),
+                    authorized_principal_id: principal_id,
+                },
+                deadline_at: deadline,
+            },
+        )
+        .await
+        .expect("pause approval fixture");
+        ApprovalFixture {
+            authority: InteractionApprovalAuthority {
+                tenant_id: "tenant-a".to_owned(),
+                workspace_id: "workspace-a".to_owned(),
+                principal_id,
+                surface: "runtime-test".to_owned(),
+            },
+            conversation_id,
+            other_conversation_id,
+            interaction_turn_id,
+            run_id,
+            effect_id,
+            approval_id,
+        }
+    }
+
+    fn approval_service(
+        pool: &SqlitePool,
+        authority: &InteractionApprovalAuthority,
+    ) -> (Arc<AppService>, DurableInteractionService) {
+        let bus = EventBus::new(32);
+        let shared = Arc::new(pool.clone());
+        let app = Arc::new(
+            AppService::builder()
+                .with_config(Config::default())
+                .with_executor(FakeExecutor::new())
+                .with_run_store(shared.clone())
+                .with_effect_store(shared.clone())
+                .with_conversation_store(shared.clone())
+                .with_event_bus(bus.clone())
+                .with_event_recorder(EventRecorder::new(shared.clone(), bus))
+                .with_tool_registry(Arc::new(polkagent_tool::ToolRegistry::new()))
+                .with_approval_runtime(
+                    shared.clone(),
+                    shared,
+                    ApprovalRuntimeConfig {
+                        tenant_id: authority.tenant_id.clone(),
+                        workspace_id: authority.workspace_id.clone(),
+                        authorized_principal_id: authority.principal_id,
+                        service_principal_id: PrincipalId::new(),
+                        working_directory: PathBuf::from("/workspace"),
+                        security_config: SecurityConfig::default(),
+                        approval_timeout: std::time::Duration::from_secs(60),
+                        recovery_lease: std::time::Duration::from_secs(1),
+                        poll_interval: std::time::Duration::from_millis(10),
+                    },
+                )
+                .build()
+                .expect("build approval service"),
+        );
+        let interactions = DurableInteractionService::new(Arc::clone(&app), pool.clone())
+            .with_approval_authority(authority.clone())
+            .expect("bind approval authority");
+        (app, interactions)
     }
 
     #[derive(Clone, Copy)]
@@ -3739,6 +4330,116 @@ mod tests {
             turn.error.expect("truthful recovery error").message,
             UNRECOVERABLE_OUTPUT_REASON
         );
+    }
+
+    #[tokio::test]
+    async fn approval_projection_scope_retry_conflict_and_restart_are_durable() {
+        let pool = test_pool();
+        let (agent_id, _spec) = seed_agent(&pool);
+        let fixture = seed_pending_approval(&pool, agent_id).await;
+        let (_app, service) = approval_service(&pool, &fixture.authority);
+
+        let pending = service
+            .list_pending_approvals(fixture.conversation_id)
+            .await
+            .expect("list exact pending approvals");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].approval_id, fixture.approval_id);
+        assert_eq!(pending[0].effect_id, fixture.effect_id);
+        assert_eq!(pending[0].run_id, fixture.run_id);
+        assert_eq!(pending[0].status, InteractionApprovalStatus::Pending);
+
+        service.recover().await.expect("project pending request");
+        let requested_id =
+            approval_event_id(fixture.approval_id, APPROVAL_REQUESTED_EVENT_DISCRIMINATOR);
+        let events = service
+            .store
+            .load_events(fixture.conversation_id, 0, 100)
+            .await
+            .expect("load requested projection");
+        assert!(events.iter().any(|event| {
+            event.event_id == requested_id
+                && matches!(event.event, InteractionEvent::ApprovalRequested { .. })
+        }));
+
+        let wrong_conversation = service
+            .approve(fixture.other_conversation_id, fixture.approval_id)
+            .await
+            .expect_err("conversation scope must fail closed");
+        assert_eq!(
+            wrong_conversation.code,
+            InteractionErrorCode::PermissionDenied
+        );
+        let mut wrong_authority = fixture.authority.clone();
+        wrong_authority.principal_id = PrincipalId::new();
+        let (_wrong_app, wrong_service) = approval_service(&pool, &wrong_authority);
+        let wrong_principal = wrong_service
+            .approve(fixture.conversation_id, fixture.approval_id)
+            .await
+            .expect_err("principal scope must fail closed");
+        assert_eq!(wrong_principal.code, InteractionErrorCode::PermissionDenied);
+
+        let approved = service
+            .approve(fixture.conversation_id, fixture.approval_id)
+            .await
+            .expect("approve exact request");
+        assert_eq!(approved.status, InteractionApprovalStatus::Approved);
+        assert_eq!(
+            service
+                .approve(fixture.conversation_id, fixture.approval_id)
+                .await
+                .expect("identical retry")
+                .approval_id,
+            fixture.approval_id
+        );
+        let conflict = service
+            .deny(
+                fixture.conversation_id,
+                fixture.approval_id,
+                Some("changed decision".to_owned()),
+            )
+            .await
+            .expect_err("different late decision must conflict");
+        assert_eq!(conflict.code, InteractionErrorCode::Conflict);
+
+        let resolved_id =
+            approval_event_id(fixture.approval_id, APPROVAL_RESOLVED_EVENT_DISCRIMINATOR);
+        let events = service
+            .store
+            .load_events(fixture.conversation_id, 0, 100)
+            .await
+            .expect("load decision projection");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_id == resolved_id)
+                .count(),
+            1
+        );
+
+        let (_restarted_app, restarted) = approval_service(&pool, &fixture.authority);
+        restarted
+            .recover()
+            .await
+            .expect("restart projection replay");
+        let restarted_events = restarted
+            .store
+            .load_events(fixture.conversation_id, 0, 100)
+            .await
+            .expect("load restarted projection");
+        assert_eq!(
+            restarted_events
+                .iter()
+                .filter(|event| { event.event_id == requested_id || event.event_id == resolved_id })
+                .count(),
+            2
+        );
+        let stored_turn = restarted
+            .store
+            .load_turn(fixture.interaction_turn_id)
+            .await
+            .expect("load approval interaction turn");
+        assert_eq!(stored_turn.summary.state, TurnState::Running);
     }
 
     #[tokio::test]
