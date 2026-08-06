@@ -8,8 +8,23 @@ use async_trait::async_trait;
 use polkagent_core::ids::AgentId;
 
 use crate::classification::Classification;
-use crate::error::MemoryResult;
+use crate::error::{MemoryError, MemoryResult};
 use crate::types::{Episode, EpisodeId, MemoryEntry, MemoryId, MemoryQuery};
+
+/// Exact aggregate statistics for one memory store.
+///
+/// `total_bytes` is the sum of the UTF-8 byte lengths of every stored memory
+/// entry's `content` field. It intentionally does not claim `SQLite` file size,
+/// allocated pages, index overhead, embeddings, or metadata bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemoryStoreStats {
+    /// Total number of stored memory entries.
+    pub total_memories: u64,
+    /// Sum of stored memory-content UTF-8 bytes.
+    pub total_bytes: u64,
+    /// Number of distinct stored memory types.
+    pub namespaces: u32,
+}
 
 /// Storage backend for agent memories and episodes.
 #[async_trait]
@@ -62,6 +77,28 @@ pub trait MemoryStore: Send + Sync {
 
     /// Delete a memory entry by its identifier.
     async fn delete_memory(&self, id: MemoryId) -> MemoryResult<()>;
+
+    /// Return exact aggregate statistics without changing access metadata.
+    ///
+    /// Backends must override this method only when they can provide all
+    /// fields truthfully from their authoritative store.
+    async fn stats(&self) -> MemoryResult<MemoryStoreStats> {
+        Err(MemoryError::InvalidOperation(
+            "memory statistics are not supported by this store".to_owned(),
+        ))
+    }
+
+    /// Atomically delete the requested identifiers from the authoritative
+    /// store and return the number of distinct existing entries removed.
+    ///
+    /// Unknown and duplicate identifiers are idempotent and do not increment
+    /// the returned count. Backends must override this method only when they
+    /// can guarantee that an error leaves every requested entry unchanged.
+    async fn delete_memories(&self, _ids: &[MemoryId]) -> MemoryResult<usize> {
+        Err(MemoryError::InvalidOperation(
+            "atomic memory batch deletion is not supported by this store".to_owned(),
+        ))
+    }
 
     /// Delete all memories whose provenance references the given artifact id.
     ///

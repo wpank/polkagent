@@ -18,7 +18,7 @@ use polkagent_core::ids::AgentId;
 
 use crate::classification::Classification;
 use crate::error::{MemoryError, MemoryResult};
-use crate::store::MemoryStore;
+use crate::store::{MemoryStore, MemoryStoreStats};
 use crate::types::{
     Episode, EpisodeId, MemoryEntry, MemoryId, MemoryProvenance, MemoryQuery, MemoryType,
 };
@@ -380,6 +380,64 @@ impl MemoryStore for SqliteMemoryStore {
             return Err(MemoryError::NotFound(format!("memory {id}")));
         }
         Ok(())
+    }
+
+    async fn stats(&self) -> MemoryResult<MemoryStoreStats> {
+        let conn = self.inner.conn.lock();
+        let (total_memories, total_bytes, namespaces, invalid_namespaces): (i64, i64, i64, i64) =
+            conn.query_row(
+                "SELECT COUNT(*),
+                    COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0),
+                    COUNT(DISTINCT memory_type),
+                    COALESCE(SUM(CASE
+                        WHEN memory_type IN ('episodic', 'semantic', 'procedural') THEN 0
+                        ELSE 1
+                    END), 0)
+             FROM memories",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+        if invalid_namespaces != 0 {
+            return Err(MemoryError::InvalidOperation(format!(
+                "memory store contains {invalid_namespaces} entries with unknown memory types"
+            )));
+        }
+
+        Ok(MemoryStoreStats {
+            total_memories: u64::try_from(total_memories).map_err(|_| {
+                MemoryError::InvalidOperation("memory count cannot be negative".to_owned())
+            })?,
+            total_bytes: u64::try_from(total_bytes).map_err(|_| {
+                MemoryError::InvalidOperation("memory byte count cannot be negative".to_owned())
+            })?,
+            namespaces: u32::try_from(namespaces).map_err(|_| {
+                MemoryError::InvalidOperation("memory namespace count is out of range".to_owned())
+            })?,
+        })
+    }
+
+    async fn delete_memories(&self, ids: &[MemoryId]) -> MemoryResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self.inner.conn.lock();
+        let transaction = conn.transaction()?;
+        let mut deleted = 0usize;
+        for id in ids {
+            deleted = deleted
+                .checked_add(transaction.execute(
+                    "DELETE FROM memories WHERE id = ?1",
+                    params![id.to_string()],
+                )?)
+                .ok_or_else(|| {
+                    MemoryError::InvalidOperation(
+                        "memory deletion count exceeded platform limits".to_owned(),
+                    )
+                })?;
+        }
+        transaction.commit()?;
+        Ok(deleted)
     }
 
     async fn forget(&self, artifact_id: &str) -> MemoryResult<usize> {
@@ -977,6 +1035,61 @@ mod tests {
         let store = SqliteMemoryStore::open_in_memory().unwrap();
         let result = store.delete_memory(MemoryId::new()).await;
         assert!(matches!(result, Err(MemoryError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn stats_are_exact_utf8_content_bytes_and_non_mutating() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+        let semantic = make_entry(agent, "plain", MemoryType::Semantic);
+        let episodic = make_entry(agent, "café", MemoryType::Episodic);
+        store.store_memory(&semantic).await.unwrap();
+        store.store_memory(&episodic).await.unwrap();
+
+        let before = store.peek_memory(semantic.id).await.unwrap();
+        let stats = store.stats().await.unwrap();
+        let after = store.peek_memory(semantic.id).await.unwrap();
+
+        assert_eq!(stats.total_memories, 2);
+        assert_eq!(
+            stats.total_bytes,
+            u64::try_from(semantic.content.len() + episodic.content.len()).unwrap()
+        );
+        assert_eq!(stats.namespaces, 2);
+        assert_eq!(after.access_count, before.access_count);
+        assert_eq!(after.accessed_at, before.accessed_at);
+    }
+
+    #[tokio::test]
+    async fn batch_delete_is_atomic_idempotent_and_counts_existing_entries_once() {
+        let store = SqliteMemoryStore::open_in_memory().unwrap();
+        let agent = make_agent_id();
+        let first = make_entry(agent, "first", MemoryType::Semantic);
+        let second = make_entry(agent, "second", MemoryType::Episodic);
+        let retained = make_entry(agent, "retained", MemoryType::Procedural);
+        store.store_memory(&first).await.unwrap();
+        store.store_memory(&second).await.unwrap();
+        store.store_memory(&retained).await.unwrap();
+
+        let deleted = store
+            .delete_memories(&[first.id, first.id, MemoryId::new(), second.id])
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 2);
+        assert!(matches!(
+            store.peek_memory(first.id).await,
+            Err(MemoryError::NotFound(_))
+        ));
+        assert!(matches!(
+            store.peek_memory(second.id).await,
+            Err(MemoryError::NotFound(_))
+        ));
+        assert_eq!(
+            store.peek_memory(retained.id).await.unwrap().id,
+            retained.id
+        );
+        assert_eq!(store.stats().await.unwrap().total_memories, 1);
     }
 
     #[tokio::test]

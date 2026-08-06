@@ -230,7 +230,7 @@ fn skill_reads_and_mutation_boundary_are_explicit() {
 }
 
 #[test]
-fn memory_reads_and_remaining_runtime_boundary_are_explicit() {
+fn memory_runtime_contract_and_custom_composition_boundary_are_explicit() {
     let source: Value = serde_yaml::from_str(OPENAPI_SOURCE).expect("parse OpenAPI YAML");
 
     let query = &source["paths"]["/api/v1alpha1/memory/query"]["post"];
@@ -256,16 +256,34 @@ fn memory_reads_and_remaining_runtime_boundary_are_explicit() {
         );
     }
 
-    for (path, method) in [
-        ("/api/v1alpha1/memory/stats", "get"),
-        ("/api/v1alpha1/memory/forget", "post"),
-    ] {
-        assert_eq!(
-            source["paths"][path][method]["responses"]["501"]["$ref"],
-            "#/components/responses/NotImplemented",
-            "{method} {path}"
+    let stats = &source["paths"]["/api/v1alpha1/memory/stats"]["get"];
+    assert!(stats["description"]
+        .as_str()
+        .expect("memory stats description")
+        .contains("durable memory store"));
+    for status in ["200", "401", "501", "500"] {
+        assert!(
+            stats["responses"].get(status).is_some(),
+            "memory stats must document {status}"
         );
     }
+
+    let forget = &source["paths"]["/api/v1alpha1/memory/forget"]["post"];
+    let description = forget["description"]
+        .as_str()
+        .expect("memory forget description");
+    assert!(description.contains("Atomically deletes"));
+    assert!(description.contains("duplicate IDs are idempotent"));
+    for status in ["200", "401", "405", "422", "501", "500"] {
+        assert!(
+            forget["responses"].get(status).is_some(),
+            "memory forget must document {status}"
+        );
+    }
+    let ids = &source["components"]["schemas"]["MemoryForgetRequest"]["properties"]["entry_ids"];
+    assert_eq!(ids["minItems"], 1);
+    assert_eq!(ids["maxItems"], 1000);
+    assert_eq!(ids["items"]["format"], "uuid");
 }
 
 #[test]

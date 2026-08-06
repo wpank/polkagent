@@ -47,10 +47,10 @@ pub struct UnavailableRuntimeRoute {
 /// Exact API boundary that remains unavailable in runtime-composed servers.
 ///
 /// Loaded skill definitions and tools have read-only adapters over the exact
-/// [`AppService`] instances owned by the runtime. Memory query and exact lookup
-/// project the exact runtime-owned durable memory store. Skill package
-/// mutations, aggregate memory statistics, and memory deletion remain
-/// unavailable. Audit and service-registry persistence are not composed by
+/// [`AppService`] instances owned by the runtime. Memory query, exact lookup,
+/// aggregate statistics, and atomic deletion project the exact runtime-owned
+/// durable memory store. Skill package mutations remain unavailable. Audit and
+/// service-registry persistence are not composed by
 /// [`polkagent_runtime::RuntimeFactory`] at all. No in-memory substitutes are
 /// installed for these routes.
 pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
@@ -71,18 +71,6 @@ pub const RUNTIME_UNAVAILABLE_ROUTES: &[UnavailableRuntimeRoute] = &[
         method: "PUT",
         path: "/api/v1alpha1/skills/{skill_id}/config",
         reason: "durable skill configuration and activation are not composed",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "memory",
-        method: "GET",
-        path: "/api/v1alpha1/memory/stats",
-        reason: "the canonical memory store has no global byte and namespace statistics port",
-    },
-    UnavailableRuntimeRoute {
-        dependency: "memory",
-        method: "POST",
-        path: "/api/v1alpha1/memory/forget",
-        reason: "durable batch deletion policy and mutation semantics are not composed",
     },
     UnavailableRuntimeRoute {
         dependency: "audit",
@@ -162,7 +150,7 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
     .with_event_store(pool.clone())
     .with_artifact_store(artifacts)
     .with_read_only_skill_registry(skills)
-    .with_read_only_memory_store(memory)
+    .with_memory_store(memory)
     .with_tool_registry(tools)
     .with_payment_store(pool.clone())
     .with_conversation_store(pool)
@@ -170,14 +158,13 @@ pub fn app_state_from_runtime(runtime: &PolkagentRuntime, config: Config) -> App
     .with_interaction_store(interaction_store)
 }
 
-/// Read-only API projection of the canonical memory store owned by
-/// [`AppService`].
+/// API projection of the canonical memory store owned by [`AppService`].
 ///
 /// The adapter retains the same store `Arc` selected by `RuntimeFactory` and
-/// uses the canonical non-mutating lookup port. When memory is disabled it
-/// exposes an empty query view and ordinary not-found lookups. Aggregate
-/// statistics and deletion deliberately fail closed because production does
-/// not yet compose those contracts.
+/// uses canonical query, non-mutating lookup, exact aggregate-statistics, and
+/// atomic batch-deletion ports. When memory is disabled it exposes an empty
+/// query/statistics view, ordinary not-found lookups, and idempotent zero-count
+/// deletion.
 #[derive(Clone)]
 pub struct RuntimeMemoryStore {
     store: Option<Arc<dyn polkagent_memory::MemoryStore + Send + Sync>>,
@@ -188,13 +175,12 @@ impl std::fmt::Debug for RuntimeMemoryStore {
         formatter
             .debug_struct("RuntimeMemoryStore")
             .field("enabled", &self.store.is_some())
-            .field("read_only", &true)
             .finish()
     }
 }
 
 impl RuntimeMemoryStore {
-    /// Build a read view over an explicitly supplied canonical memory store.
+    /// Build an API projection over an explicitly supplied canonical store.
     #[must_use]
     pub fn new(store: Option<Arc<dyn polkagent_memory::MemoryStore + Send + Sync>>) -> Self {
         Self { store }
@@ -253,11 +239,42 @@ impl crate::routes::memory::MemoryStore for RuntimeMemoryStore {
     }
 
     async fn stats(&self) -> Result<crate::routes::memory::MemoryStats, String> {
-        Err("aggregate runtime memory statistics are not composed".to_owned())
+        let Some(store) = &self.store else {
+            return Ok(crate::routes::memory::MemoryStats {
+                total_memories: 0,
+                total_bytes: 0,
+                namespaces: 0,
+            });
+        };
+        store
+            .stats()
+            .await
+            .map(|stats| crate::routes::memory::MemoryStats {
+                total_memories: stats.total_memories,
+                total_bytes: stats.total_bytes,
+                namespaces: stats.namespaces,
+            })
+            .map_err(|error| {
+                tracing::warn!(error = %error, "runtime memory statistics failed");
+                "runtime memory statistics failed".to_owned()
+            })
     }
 
-    async fn delete_entries(&self, _entry_ids: &[String]) -> Result<u32, String> {
-        Err("runtime memory store is read-only".to_owned())
+    async fn delete_entries(
+        &self,
+        entry_ids: &[polkagent_memory::MemoryId],
+    ) -> Result<u32, String> {
+        let Some(store) = &self.store else {
+            return Ok(0);
+        };
+        let deleted = store.delete_memories(entry_ids).await.map_err(|error| {
+            tracing::warn!(error = %error, "runtime memory deletion failed");
+            "runtime memory deletion failed".to_owned()
+        })?;
+        u32::try_from(deleted).map_err(|_| {
+            tracing::warn!(deleted, "runtime memory deletion count exceeded API range");
+            "runtime memory deletion count exceeded API range".to_owned()
+        })
     }
 
     async fn get_entry(&self, entry_id: &str) -> Result<Option<ApiMemoryResult>, String> {

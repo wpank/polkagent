@@ -8,9 +8,9 @@
 //! | `GET` | `/memory/entries/:entry_id` | [`get_memory_entry`] |
 //!
 //! All endpoints return 501 Not Implemented when no memory store is configured
-//! via [`AppState::memory_store`]. Runtime composition exposes query and exact
-//! lookup over its authoritative store while leaving aggregate statistics and
-//! destructive operations unavailable until their production contracts exist.
+//! via [`AppState::memory_store`]. Production runtime composition exposes all
+//! four operations over the exact authoritative durable store already owned by
+//! `AppService`; it does not create a parallel API store.
 
 use axum::{
     extract::{Path, State},
@@ -27,6 +27,8 @@ use crate::{
     error::ApiError,
     state::AppState,
 };
+
+const MAX_MEMORY_FORGET_IDS: usize = 1_000;
 
 // ---------------------------------------------------------------------------
 // POST /memory/query
@@ -69,7 +71,7 @@ pub async fn query_memory(
 // GET /memory/stats
 // ---------------------------------------------------------------------------
 
-/// Get memory usage statistics.
+/// Get exact, non-mutating memory usage statistics.
 ///
 /// Returns 501 Not Implemented when no memory store is configured.
 #[instrument(skip(state))]
@@ -109,6 +111,26 @@ pub async fn forget_memory(
     State(state): State<AppState>,
     Json(body): Json<MemoryForgetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    if body.entry_ids.is_empty() {
+        return Err(ApiError::ValidationError(
+            "entry_ids must contain at least one memory ID".to_owned(),
+        ));
+    }
+    if body.entry_ids.len() > MAX_MEMORY_FORGET_IDS {
+        return Err(ApiError::ValidationError(format!(
+            "entry_ids cannot contain more than {MAX_MEMORY_FORGET_IDS} memory IDs"
+        )));
+    }
+    let entry_ids = body
+        .entry_ids
+        .iter()
+        .map(|entry_id| {
+            entry_id.parse::<polkagent_memory::MemoryId>().map_err(|_| {
+                ApiError::ValidationError(format!("invalid memory entry ID: '{entry_id}'"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let store = state
         .memory_store
         .as_ref()
@@ -120,7 +142,7 @@ pub async fn forget_memory(
     }
 
     let deleted = store
-        .delete_entries(&body.entry_ids)
+        .delete_entries(&entry_ids)
         .await
         .map_err(|e| ApiError::InternalError(e.clone()))?;
 
@@ -170,9 +192,9 @@ pub async fn get_memory_entry(
 pub struct MemoryStats {
     /// Total number of stored memory entries.
     pub total_memories: u64,
-    /// Total bytes across all entries.
+    /// Sum of UTF-8 bytes in every stored memory content field.
     pub total_bytes: u64,
-    /// Number of distinct namespaces.
+    /// Number of distinct canonical memory types currently stored.
     pub namespaces: u32,
 }
 
@@ -202,7 +224,8 @@ pub trait MemoryStore: Send + Sync {
     /// Delete a set of memory entries by ID.
     ///
     /// Returns the number of entries actually deleted.
-    async fn delete_entries(&self, entry_ids: &[String]) -> Result<u32, String>;
+    async fn delete_entries(&self, entry_ids: &[polkagent_memory::MemoryId])
+        -> Result<u32, String>;
 
     /// Retrieve a single memory entry by ID.
     async fn get_entry(&self, entry_id: &str) -> Result<Option<MemoryResult>, String>;

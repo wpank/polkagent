@@ -100,7 +100,7 @@ pub use retrieval::{
 };
 pub use service::MemoryService;
 pub use sqlite::SqliteMemoryStore;
-pub use store::MemoryStore;
+pub use store::{MemoryStore, MemoryStoreStats};
 pub use types::{
     Episode, EpisodeId, MemoryEntry, MemoryId, MemoryProvenance, MemoryQuery, MemoryType,
 };

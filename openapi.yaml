@@ -1412,10 +1412,12 @@ paths:
       summary: Get memory statistics
       tags: [memory]
       description: |
-        Returns aggregate statistics when a custom API memory store implements
-        that contract. Production runtime composition returns `501 Not
-        Implemented` because the canonical memory store has no truthful global
-        byte-count and namespace-count port.
+        Returns exact aggregate statistics from the durable memory store
+        already owned by the production runtime. `total_bytes` is the sum of
+        UTF-8 content bytes; it does not claim SQLite file or index size.
+        Observation does not update access timestamps or counters. A runtime
+        with memory disabled returns zero values. Custom API composition
+        without a memory store returns `501 Not Implemented`.
       responses:
         "200":
           description: Memory statistics.
@@ -1438,10 +1440,13 @@ paths:
       summary: Delete memory entries
       tags: [memory]
       description: |
-        Deletes one or more memory entries by ID. Returns the count of
-        actually deleted entries. Production runtime composition returns `501
-        Not Implemented` until durable batch-deletion policy and mutation
-        semantics are composed.
+        Atomically deletes one or more entries by UUID from the exact durable
+        memory store already owned by the production runtime. Unknown and
+        duplicate IDs are idempotent and do not increment the returned count.
+        Every ID is validated before mutation. A runtime with memory disabled
+        returns `deleted: 0`; custom API composition without a memory store
+        returns `501 Not Implemented`. Server-wide read-only mode rejects this
+        mutation with `405` before routing.
       requestBody:
         required: true
         content:
@@ -1450,8 +1455,8 @@ paths:
               $ref: "#/components/schemas/MemoryForgetRequest"
             example:
               entry_ids:
-                - "mem_01j1abc"
-                - "mem_01j1def"
+                - "018f47a0-7b2c-7d91-8f0a-58ef65026f0f"
+                - "018f47a0-b46a-768f-98b7-780459cd934d"
       responses:
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -1463,7 +1468,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MemoryForgetResponse"
-        "400":
+        "405":
+          description: Server-wide read-only mode rejected the mutation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error:
+                    type: string
+                    example: server is in read-only mode
+        "422":
           $ref: "#/components/responses/ValidationError"
         "501":
           $ref: "#/components/responses/NotImplemented"
@@ -1478,6 +1494,7 @@ paths:
         description: Memory entry identifier.
         schema:
           type: string
+          format: uuid
     get:
       operationId: getMemoryEntry
       summary: Get a memory entry
@@ -4387,8 +4404,9 @@ components:
       properties:
         id:
           type: string
+          format: uuid
           description: Memory item identifier.
-          example: "mem_01j1abc"
+          example: "018f47a0-7b2c-7d91-8f0a-58ef65026f0f"
         content:
           type: string
           description: Content of the memory.
@@ -4438,13 +4456,16 @@ components:
         total_bytes:
           type: integer
           format: int64
-          description: Total storage size in bytes.
+          minimum: 0
+          description: Sum of UTF-8 bytes in stored memory content fields.
           example: 5242880
         namespaces:
           type: integer
           format: int32
-          description: Number of distinct namespaces.
-          example: 7
+          minimum: 0
+          maximum: 3
+          description: Number of distinct canonical memory types currently stored.
+          example: 3
 
     MemoryForgetRequest:
       type: object
@@ -4455,11 +4476,13 @@ components:
           type: array
           items:
             type: string
+            format: uuid
           minItems: 1
+          maxItems: 1000
           description: IDs of entries to delete.
           example:
-            - "mem_01j1abc"
-            - "mem_01j1def"
+            - "018f47a0-7b2c-7d91-8f0a-58ef65026f0f"
+            - "018f47a0-b46a-768f-98b7-780459cd934d"
 
     MemoryForgetResponse:
       type: object

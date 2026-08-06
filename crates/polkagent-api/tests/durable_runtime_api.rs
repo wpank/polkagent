@@ -871,7 +871,11 @@ auto_load = false
 }
 
 #[tokio::test]
-async fn runtime_memory_reads_use_exact_durable_store_and_remain_non_mutating() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one black-box scenario keeps exact-store stats, deletion, restart, auth, and read-only evidence contiguous"
+)]
+async fn runtime_memory_operations_use_exact_durable_store_and_survive_restart() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let runtime = memory_runtime_at(temp.path()).await;
     assert_eq!(runtime.readiness().memory.state, ComponentState::Ready);
@@ -887,7 +891,7 @@ async fn runtime_memory_reads_use_exact_durable_store_and_remain_non_mutating() 
     let procedural = memory_entry(
         agent_id,
         MemoryType::Procedural,
-        "durable release procedure",
+        "durable café release procedure",
         now + chrono::Duration::seconds(1),
         0.4,
     );
@@ -934,6 +938,26 @@ async fn runtime_memory_reads_use_exact_durable_store_and_remain_non_mutating() 
     assert_eq!(inspected.access_count, 0);
     assert_eq!(inspected.accessed_at, semantic.accessed_at);
 
+    let stats = server.get("/api/v1alpha1/memory/stats").await;
+    stats.assert_status_ok();
+    let stats = stats.json::<serde_json::Value>();
+    assert_eq!(stats["total_memories"], 2);
+    assert_eq!(
+        stats["total_bytes"],
+        u64::try_from(semantic.content.len() + procedural.content.len())
+            .expect("fixture byte count fits u64")
+    );
+    assert_eq!(stats["namespaces"], 2);
+    let inspected_after_stats = runtime
+        .app()
+        .memory_store()
+        .expect("runtime memory store")
+        .peek_memory(semantic.id)
+        .await
+        .expect("inspect access metadata after stats");
+    assert_eq!(inspected_after_stats.access_count, inspected.access_count);
+    assert_eq!(inspected_after_stats.accessed_at, inspected.accessed_at);
+
     assert_http_error(
         &server
             .post("/api/v1alpha1/memory/query")
@@ -960,18 +984,59 @@ async fn runtime_memory_reads_use_exact_durable_store_and_remain_non_mutating() 
         "NOT_FOUND",
     );
     assert_http_error(
-        &server.get("/api/v1alpha1/memory/stats").await,
-        StatusCode::NOT_IMPLEMENTED,
-        "NOT_IMPLEMENTED",
+        &server
+            .post("/api/v1alpha1/memory/forget")
+            .json(&serde_json::json!({"entry_ids": []}))
+            .await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "VALIDATION_ERROR",
     );
     assert_http_error(
         &server
             .post("/api/v1alpha1/memory/forget")
-            .json(&serde_json::json!({"entry_ids": [semantic.id.to_string()]}))
+            .json(&serde_json::json!({
+                "entry_ids": [semantic.id.to_string(), "not-a-memory-id"]
+            }))
             .await,
-        StatusCode::NOT_IMPLEMENTED,
-        "NOT_IMPLEMENTED",
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "VALIDATION_ERROR",
     );
+    server.get(&exact_path).await.assert_status_ok();
+
+    let unknown_id = MemoryId::new();
+    let unknown_delete = server
+        .post("/api/v1alpha1/memory/forget")
+        .json(&serde_json::json!({"entry_ids": [unknown_id.to_string()]}))
+        .await;
+    unknown_delete.assert_status_ok();
+    assert_eq!(unknown_delete.json::<serde_json::Value>()["deleted"], 0);
+
+    let deleted = server
+        .post("/api/v1alpha1/memory/forget")
+        .json(&serde_json::json!({
+            "entry_ids": [
+                semantic.id.to_string(),
+                semantic.id.to_string(),
+                unknown_id.to_string()
+            ]
+        }))
+        .await;
+    deleted.assert_status_ok();
+    assert_eq!(deleted.json::<serde_json::Value>()["deleted"], 1);
+    assert_http_error(
+        &server.get(&exact_path).await,
+        StatusCode::NOT_FOUND,
+        "NOT_FOUND",
+    );
+    let post_delete_stats = server.get("/api/v1alpha1/memory/stats").await;
+    post_delete_stats.assert_status_ok();
+    let post_delete_stats = post_delete_stats.json::<serde_json::Value>();
+    assert_eq!(post_delete_stats["total_memories"], 1);
+    assert_eq!(
+        post_delete_stats["total_bytes"],
+        u64::try_from(procedural.content.len()).expect("fixture byte count fits u64")
+    );
+    assert_eq!(post_delete_stats["namespaces"], 1);
 
     drop(server);
     drop(runtime);
@@ -982,38 +1047,87 @@ async fn runtime_memory_reads_use_exact_durable_store_and_remain_non_mutating() 
         .json(&serde_json::json!({
             "query": "durable",
             "limit": 10,
-            "namespace": "semantic"
+            "namespace": "procedural"
         }))
         .await;
     restarted_query.assert_status_ok();
-    assert_eq!(restarted_query.json::<serde_json::Value>(), queried);
-    let restarted_exact = restarted_server.get(&exact_path).await;
+    let restarted_query = restarted_query.json::<serde_json::Value>();
+    assert_eq!(
+        restarted_query["data"]
+            .as_array()
+            .expect("restarted query data")
+            .len(),
+        1
+    );
+    assert_eq!(restarted_query["data"][0]["id"], procedural.id.to_string());
+    assert_http_error(
+        &restarted_server.get(&exact_path).await,
+        StatusCode::NOT_FOUND,
+        "NOT_FOUND",
+    );
+    let procedural_path = format!("/api/v1alpha1/memory/entries/{}", procedural.id);
+    let restarted_exact = restarted_server.get(&procedural_path).await;
     restarted_exact.assert_status_ok();
-    assert_eq!(restarted_exact.json::<serde_json::Value>(), exact);
+    assert_eq!(
+        restarted_exact.json::<serde_json::Value>()["data"]["id"],
+        procedural.id.to_string()
+    );
+    assert_eq!(
+        restarted_server
+            .get("/api/v1alpha1/memory/stats")
+            .await
+            .json::<serde_json::Value>(),
+        post_delete_stats
+    );
 
     let token = "memory-reader-token";
     let mut protected_config = restarted.config().as_ref().clone();
     protected_config.auth.enabled = true;
     protected_config.auth.api_keys = vec![format!("{:x}", Sha256::digest(token.as_bytes()))];
-    protected_config.api.read_only = true;
     let protected = TestServer::new(
-        ApiServer::from_state(app_state_from_runtime(&restarted, protected_config)).into_router(),
+        ApiServer::from_state(app_state_from_runtime(&restarted, protected_config.clone()))
+            .into_router(),
     );
     protected
-        .get(&exact_path)
+        .get("/api/v1alpha1/memory/stats")
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
     protected
-        .get(&exact_path)
+        .get("/api/v1alpha1/memory/stats")
         .authorization_bearer(token)
         .await
         .assert_status_ok();
     protected
+        .post("/api/v1alpha1/memory/forget")
+        .json(&serde_json::json!({"entry_ids": [procedural.id.to_string()]}))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+
+    protected_config.api.read_only = true;
+    let read_only = TestServer::new(
+        ApiServer::from_state(app_state_from_runtime(&restarted, protected_config)).into_router(),
+    );
+    read_only
+        .get("/api/v1alpha1/memory/stats")
+        .authorization_bearer(token)
+        .await
+        .assert_status_ok();
+    read_only
+        .post("/api/v1alpha1/memory/forget")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({"entry_ids": [procedural.id.to_string()]}))
+        .await
+        .assert_status(StatusCode::METHOD_NOT_ALLOWED);
+    read_only
         .post("/api/v1alpha1/memory/query")
         .authorization_bearer(token)
         .json(&serde_json::json!({"query": "durable"}))
         .await
         .assert_status(StatusCode::METHOD_NOT_ALLOWED);
+    restarted_server
+        .get(&procedural_path)
+        .await
+        .assert_status_ok();
 }
 
 #[tokio::test]
@@ -1023,8 +1137,8 @@ async fn disabled_runtime_memory_exposes_truthful_empty_read_view() {
     assert_eq!(disabled.readiness().memory.state, ComponentState::Disabled);
     let disabled_state = app_state_from_runtime(&disabled, disabled.config().as_ref().clone());
     assert!(disabled_state.memory_store.is_some());
-    assert!(!disabled_state.memory_stats_available);
-    assert!(!disabled_state.memory_store_mutable);
+    assert!(disabled_state.memory_stats_available);
+    assert!(disabled_state.memory_store_mutable);
     let disabled_server = TestServer::new(ApiServer::from_state(disabled_state).into_router());
     let disabled_query = disabled_server
         .post("/api/v1alpha1/memory/query")
@@ -1042,6 +1156,23 @@ async fn disabled_runtime_memory_exposes_truthful_empty_read_view() {
         StatusCode::NOT_FOUND,
         "NOT_FOUND",
     );
+    let zero_stats = disabled_server.get("/api/v1alpha1/memory/stats").await;
+    zero_stats.assert_status_ok();
+    assert_eq!(
+        zero_stats.json::<serde_json::Value>(),
+        serde_json::json!({
+            "version": "v1alpha1",
+            "total_memories": 0,
+            "total_bytes": 0,
+            "namespaces": 0
+        })
+    );
+    let disabled_delete = disabled_server
+        .post("/api/v1alpha1/memory/forget")
+        .json(&serde_json::json!({"entry_ids": [MemoryId::new().to_string()]}))
+        .await;
+    disabled_delete.assert_status_ok();
+    assert_eq!(disabled_delete.json::<serde_json::Value>()["deleted"], 0);
 }
 
 #[tokio::test]
@@ -1059,8 +1190,8 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
     assert!(!state.skill_registry_mutable);
     assert!(state.tool_registry.is_some());
     assert!(state.memory_store.is_some());
-    assert!(!state.memory_stats_available);
-    assert!(!state.memory_store_mutable);
+    assert!(state.memory_stats_available);
+    assert!(state.memory_store_mutable);
     assert!(state.audit_store.is_none());
     assert!(state.service_registry_store.is_none());
     assert!(Arc::ptr_eq(
@@ -1096,7 +1227,7 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
         "NOT_FOUND",
     );
 
-    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 11);
+    assert_eq!(RUNTIME_UNAVAILABLE_ROUTES.len(), 9);
     for route in RUNTIME_UNAVAILABLE_ROUTES {
         let path = route
             .path
@@ -1110,9 +1241,6 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
                 let body = match route.path {
                     "/api/v1alpha1/skills/install" => {
                         serde_json::json!({"path": "/missing-skill"})
-                    }
-                    "/api/v1alpha1/memory/forget" => {
-                        serde_json::json!({"entry_ids": ["missing-entry"]})
                     }
                     "/api/v1alpha1/registry/listings" => serde_json::json!({
                         "name": "unavailable",
@@ -1148,6 +1276,9 @@ async fn runtime_server_composes_real_optional_stores_and_publishes_501_boundary
             && !route.method.is_empty()
             && !route.reason.is_empty()
     }));
+    assert!(RUNTIME_UNAVAILABLE_ROUTES
+        .iter()
+        .all(|route| route.dependency != "memory"));
 }
 
 #[tokio::test]

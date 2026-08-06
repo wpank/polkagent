@@ -1959,7 +1959,9 @@ async fn memory_forget_returns_501_without_store() {
     let server = test_server();
     let resp = server
         .post("/api/v1alpha1/memory/forget")
-        .json(&json!({ "entry_ids": ["id-1", "id-2"] }))
+        .json(&json!({
+            "entry_ids": [polkagent_memory::MemoryId::new().to_string()]
+        }))
         .await;
     resp.assert_status(axum::http::StatusCode::NOT_IMPLEMENTED);
     let body: serde_json::Value = resp.json();
