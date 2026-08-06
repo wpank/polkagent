@@ -3846,6 +3846,23 @@ from the acceptance criteria tables in section 13.
 
 ### D.5 Multi-Agent Groups
 
+> **Bounded implementation evidence (2026-08-06):**
+> [`GroupService`](../crates/polkagent-group/src/service.rs) now provides
+> validated async definition CRUD over a caller-supplied `GroupStore`, without
+> a second in-memory source of truth. The dedicated SQLite adapter persists
+> exact IDs, quorum policy, member grant overrides, limits, total spend, and
+> per-member spend; group/member replacement batches are transactional and
+> legacy budget JSON reconstructs total spend with checked arithmetic.
+> [`group_service_integration.rs`](../crates/polkagent-store-sqlite-group/tests/group_service_integration.rs)
+> proves real file reopen, concurrent identical create/add retries, policy-only
+> updates concurrent with membership changes, rollback, owner protection,
+> duplicate/not-found behavior, and grant narrowing after serialization. This
+> does **not** close `SCHEMA-07` or `GRP-IMPL-02`: group-run tables, main migration
+> registration, `RuntimeFactory` injection, tenant/workspace scope, effective
+> multi-member grant computation at the policy gate, live budget charging,
+> child-run attribution/cancellation, quorum/synthesis, and CLI/API/TUI/ACP
+> adapters remain integration-owner work.
+
 - [ ] **GRP-IMPL-01** Implement `ResolvedGrant::intersect`
       _Acceptance: G3-01, GRP-01, GRP-02 (property tests pass)_
 - [ ] **GRP-IMPL-02** Implement `create_group` with budget validation

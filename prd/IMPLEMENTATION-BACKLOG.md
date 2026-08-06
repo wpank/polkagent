@@ -804,12 +804,31 @@ integration interfaces; protocol work can begin in parallel.
 
 **Goal:** turn existing domain libraries into observable durable orchestration.
 
+**2026-08-06 bounded group-definition checkpoint:** `polkagent-group` now
+exports a surface-neutral async `GroupService` over one authoritative
+`GroupStore`. It validates exact caller-supplied IDs, unique membership,
+owner-as-leader, quorum thresholds, member grant overrides, and consistent hard
+budget accounting; provides create/get/list/add/remove/policy-update/delete; and
+makes identical create/member/policy retries idempotent while preserving typed
+conflicting-duplicate and missing-resource behavior. The dedicated SQLite
+adapter now commits group/member batches transactionally and persists total
+spend (with checked legacy reconstruction). Real file-backed tests cover reopen,
+concurrency, rollback, exact IDs, policy/quorum/budget/grant serialization, and
+owner protection through the public service. This is durable group-definition
+CRUD only: no child run, runtime orchestration, or surface support is claimed.
+
 **Checklist:**
 
 - [ ] Retrieve policy-filtered memory into context and admit outcomes with
   lineage/classification.
-- [ ] Add durable group CRUD and child-run creation with grant/budget
-  intersection, cancellation, quorum/synthesis, and evidence.
+- [x] Add validated durable group-definition CRUD over one authoritative store,
+  including atomic policy-only updates, restart/concurrency/idempotency evidence,
+  and durable total-spend accounting.
+- [ ] Register the group migration and inject the exact SQLite group store plus
+  service through `RuntimeFactory`; add tenant/workspace/principal scope before
+  exposing any shared or remote surface.
+- [ ] Add child-run creation with policy-gate grant/budget intersection,
+  cancellation, quorum/synthesis, and evidence through the shared runtime.
 - [ ] Make feed/scheduler triggers create idempotent shared-runtime runs.
 - [ ] Make eval target the same configured runtime/provider instead of always a
   fake executor.
