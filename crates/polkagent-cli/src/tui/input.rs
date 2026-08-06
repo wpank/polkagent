@@ -108,6 +108,10 @@ pub enum TuiAction {
     PromptSubmit,
     /// Cancel the run currently owned by the console.
     CancelActiveRun,
+    /// Select the previous retained Console activity.
+    SelectPreviousActivity,
+    /// Select the next retained Console activity.
+    SelectNextActivity,
 
     // -- Memory / audit ------------------------------------------------------
     /// Activate the memory search bar (switches to insert mode on the Memory tab).
@@ -283,6 +287,8 @@ fn normal_mode_key(key: KeyEvent) -> Option<TuiAction> {
         KeyCode::Char('p') => Some(TuiAction::OpenPrompt),
         KeyCode::Char('s') => Some(TuiAction::OpenSessionPicker),
         KeyCode::Char('x') => Some(TuiAction::CancelActiveRun),
+        KeyCode::Char('[') => Some(TuiAction::SelectPreviousActivity),
+        KeyCode::Char(']') => Some(TuiAction::SelectNextActivity),
 
         // ── Approval actions ─────────────────────────────────────────────
         // NOTE: These fire globally but the handler in App::apply_action

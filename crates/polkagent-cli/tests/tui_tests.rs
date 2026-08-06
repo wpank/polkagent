@@ -1228,6 +1228,14 @@ fn test_console_keys_map_to_actions() {
         Some(TuiAction::CancelActiveRun)
     ));
     assert!(matches!(
+        key_to_action(key(KeyCode::Char('[')), InputMode::Normal),
+        Some(TuiAction::SelectPreviousActivity)
+    ));
+    assert!(matches!(
+        key_to_action(key(KeyCode::Char(']')), InputMode::Normal),
+        Some(TuiAction::SelectNextActivity)
+    ));
+    assert!(matches!(
         key_to_action(key(KeyCode::Char('a')), InputMode::Prompt),
         Some(TuiAction::PromptInput('a'))
     ));
@@ -1364,7 +1372,7 @@ fn test_console_renders_multiline_unicode_composer_and_cursor() {
         .expect("draw multiline composer");
 
     let text = buffer_text(&terminal);
-    assert!(text.contains("second"), "{text}");
+    assert!(text.contains("fourth"), "{text}");
     assert!(text.contains("界"), "{text}");
     assert!(text.contains("👩"), "{text}");
     assert!(text.contains("💻"), "{text}");
@@ -1416,6 +1424,61 @@ fn test_console_renders_registry_slash_completions_and_truthful_scope() {
     assert!(text.contains("/model [id]"), "{text}");
     assert!(text.contains("Executable Console commands"), "{text}");
     assert!(text.contains("x cancels the active turn"), "{text}");
+}
+
+#[test]
+fn test_console_renders_compact_redacted_multi_activity_strip() {
+    use polkagent_cli::tui::interaction::{
+        ControllerEvent, ControllerUpdate, InteractionState, RunActivityUpdate,
+    };
+
+    let backend = TestBackend::new(120, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let theme = Theme::dark();
+    let mut interaction = InteractionState::default();
+
+    interaction.select_agent("agent-a", "Treasury Agent");
+    interaction.conversation_id = Some("conversation-a".to_owned());
+    for character in "private treasury prompt".chars() {
+        interaction.push_char(character);
+    }
+    interaction.submit().expect("submit first activity");
+    interaction
+        .bind_activity("activity-a".to_owned())
+        .expect("bind first activity");
+    interaction.apply_update(ControllerUpdate::Activity(RunActivityUpdate {
+        activity_id: "activity-a".to_owned(),
+        agent_id: "agent-a".to_owned(),
+        requested_conversation_id: Some("conversation-a".to_owned()),
+        event: ControllerEvent::Failed("private provider credential detail".to_owned()),
+    }));
+
+    interaction.select_agent("agent-b", "Governance Agent");
+    interaction.conversation_id = Some("conversation-b".to_owned());
+    for character in "second prompt".chars() {
+        interaction.push_char(character);
+    }
+    interaction.submit().expect("submit second activity");
+    interaction
+        .bind_activity("activity-b".to_owned())
+        .expect("bind second activity");
+    let state = TuiState {
+        interaction,
+        ..TuiState::default()
+    };
+
+    terminal
+        .draw(|frame| console::render(frame, frame.area(), &state, InputMode::Normal, &theme))
+        .expect("draw activity strip");
+    let text = buffer_text(&terminal);
+    assert!(text.contains("ACTIVITY · 1 active · 1 retained"), "{text}");
+    assert!(text.contains("Treasury Agent"), "{text}");
+    assert!(text.contains("Governance Agent"), "{text}");
+    assert!(!text.contains("private treasury prompt"), "{text}");
+    assert!(
+        !text.contains("private provider credential detail"),
+        "{text}"
+    );
 }
 
 #[test]

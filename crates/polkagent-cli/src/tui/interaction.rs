@@ -4,10 +4,13 @@
 //! owns the deterministic reducer and the bridge to the same process-wide
 //! production runtime used by `polkagent run`.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+#[cfg(test)]
+use futures::future::BoxFuture;
 use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
     AgentTargetView, ClientContext, CommandContext, CommandExecutor, CommandInvocation,
@@ -44,6 +47,12 @@ const MAX_SESSION_SELECTOR_SCAN: u32 = 1_000;
 const MAX_SESSION_TITLE_BYTES: usize = 256;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
 const CONTROLLER_EVENT_CAPACITY: usize = 256;
+/// Bound concurrently executing Console turns independently of durable history.
+pub const MAX_CONCURRENT_CONSOLE_RUNS: usize = 8;
+/// Retain a compact in-process activity window without growing the TUI forever.
+pub const MAX_RETAINED_CONSOLE_ACTIVITIES: usize = 32;
+const MAX_RETAINED_CONSOLE_VIEWPORTS: usize = 32;
+const MAX_CONSOLE_TRANSCRIPT_TURNS: usize = 100;
 const CONTROLLER_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
 const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 7] = [
@@ -252,6 +261,8 @@ impl ConsoleRunStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsoleRun {
+    /// In-process controller identity. Restored durable turns do not have one.
+    pub activity_id: Option<String>,
     pub conversation_id: Option<String>,
     pub turn_id: Option<String>,
     pub run_id: Option<String>,
@@ -263,7 +274,40 @@ pub struct ConsoleRun {
     pub output_tokens: u64,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Redaction-safe compact projection used by the activity renderer. Prompt,
+/// output, and error detail remain in private bounded reducer state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleActivitySummary {
+    pub activity_id: String,
+    pub agent_name: String,
+    pub conversation_id: Option<String>,
+    pub run_id: Option<String>,
+    pub status: ConsoleRunStatus,
+}
+
+#[derive(Clone)]
+struct ConsoleActivity {
+    activity_id: String,
+    agent_id: String,
+    agent_name: String,
+    model: Option<String>,
+    run: ConsoleRun,
+}
+
+#[derive(Clone)]
+struct ConsoleViewport {
+    agent_id: String,
+    conversation_id: Option<String>,
+    transcript: Vec<ConsoleRun>,
+    prompt_buffer: String,
+    prompt_cursor: usize,
+    prompt_history: Vec<String>,
+    prompt_history_index: Option<usize>,
+    prompt_history_draft: Option<String>,
+    last_selected: u64,
+}
+
+#[derive(Clone, Default)]
 pub struct InteractionState {
     pub agent_id: Option<String>,
     pub agent_name: Option<String>,
@@ -278,18 +322,43 @@ pub struct InteractionState {
     pub selected_model: Option<String>,
     pub transcript: Vec<ConsoleRun>,
     pub run: Option<ConsoleRun>,
+    activities: Vec<ConsoleActivity>,
+    selected_activity_id: Option<String>,
+    viewports: Vec<ConsoleViewport>,
+    viewport_clock: u64,
     pub command_result: Option<ConsoleCommandResult>,
     pub session_picker: Option<ConsoleSessionPicker>,
+}
+
+impl std::fmt::Debug for InteractionState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InteractionState")
+            .field("agent_id", &self.agent_id)
+            .field("agent_name", &self.agent_name)
+            .field("conversation_id", &self.conversation_id)
+            .field("selected_model", &self.selected_model)
+            .field("prompt_bytes", &self.prompt_buffer.len())
+            .field("transcript_turns", &self.transcript.len())
+            .field("has_selected_run", &self.run.is_some())
+            .field("activities", &self.activity_summaries())
+            .field("selected_activity_id", &self.selected_activity_id)
+            .field("has_command_result", &self.command_result.is_some())
+            .field("has_session_picker", &self.session_picker.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl InteractionState {
     pub fn select_agent(&mut self, agent_id: impl Into<String>, agent_name: impl Into<String>) {
         let agent_id = agent_id.into();
         if self.agent_id.as_deref() != Some(agent_id.as_str()) {
+            self.save_selected_viewport();
             self.conversation_id = None;
             self.selected_model = None;
             self.transcript.clear();
             self.run = None;
+            self.selected_activity_id = None;
             self.prompt_history.clear();
             self.command_result = None;
             self.session_picker = None;
@@ -441,13 +510,6 @@ impl InteractionState {
         let Some(agent_id) = self.agent_id.clone() else {
             return Err("select an active agent before browsing Console sessions");
         };
-        if self
-            .run
-            .as_ref()
-            .is_some_and(|run| !run.status.is_terminal())
-        {
-            return Err("finish or cancel the active Console turn before switching sessions");
-        }
         if self
             .command_result
             .as_ref()
@@ -656,6 +718,13 @@ impl InteractionState {
             return Err("select an active agent before prompting");
         };
         let agent_name = self.agent_name.clone().unwrap_or_else(|| agent_id.clone());
+        if self.activities.iter().any(|activity| {
+            activity.agent_id == agent_id
+                && activity.run.conversation_id == self.conversation_id
+                && !activity.run.status.is_terminal()
+        }) {
+            return Err("this conversation already has an active Console turn");
+        }
         self.record_history(&prompt);
         self.clear_prompt();
         self.command_result = None;
@@ -666,9 +735,17 @@ impl InteractionState {
         {
             if let Some(previous) = self.run.take() {
                 self.transcript.push(previous);
+                let overflow = self
+                    .transcript
+                    .len()
+                    .saturating_sub(MAX_CONSOLE_TRANSCRIPT_TURNS);
+                if overflow > 0 {
+                    self.transcript.drain(..overflow);
+                }
             }
         }
         self.run = Some(ConsoleRun {
+            activity_id: None,
             conversation_id: self.conversation_id.clone(),
             turn_id: None,
             run_id: None,
@@ -685,6 +762,181 @@ impl InteractionState {
             conversation_id: self.conversation_id.clone(),
             prompt,
         })
+    }
+
+    /// Bind the just-submitted selected run to the controller identity and
+    /// retain it in the bounded cross-session activity projection.
+    pub fn bind_activity(&mut self, activity_id: String) -> Result<(), &'static str> {
+        let Some(run) = &mut self.run else {
+            return Err("Console activity has no submitted run");
+        };
+        let Some(agent_id) = self.agent_id.clone() else {
+            return Err("Console activity has no selected agent");
+        };
+        let agent_name = self.agent_name.clone().unwrap_or_else(|| agent_id.clone());
+        run.activity_id = Some(activity_id.clone());
+
+        if self.activities.len() >= MAX_RETAINED_CONSOLE_ACTIVITIES {
+            let Some(eviction) = self
+                .activities
+                .iter()
+                .position(|activity| activity.run.status.is_terminal())
+            else {
+                return Err("Console activity capacity is full with active turns");
+            };
+            self.activities.remove(eviction);
+        }
+        self.activities.push(ConsoleActivity {
+            activity_id: activity_id.clone(),
+            agent_id,
+            agent_name,
+            model: self.selected_model.clone(),
+            run: run.clone(),
+        });
+        self.selected_activity_id = Some(activity_id);
+        self.save_selected_viewport();
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn selected_activity_id(&self) -> Option<&str> {
+        self.selected_activity_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn active_activity_count(&self) -> usize {
+        self.activities
+            .iter()
+            .filter(|activity| !activity.run.status.is_terminal())
+            .count()
+    }
+
+    #[must_use]
+    pub fn activity_summaries(&self) -> Vec<ConsoleActivitySummary> {
+        self.activities
+            .iter()
+            .map(|activity| ConsoleActivitySummary {
+                activity_id: activity.activity_id.clone(),
+                agent_name: activity.agent_name.clone(),
+                conversation_id: activity.run.conversation_id.clone(),
+                run_id: activity.run.run_id.clone(),
+                status: activity.run.status.clone(),
+            })
+            .collect()
+    }
+
+    /// Select an activity by stable insertion order, wrapping at both ends.
+    /// Only the selected run is copied into the transcript viewport; all other
+    /// activity output continues accumulating in its bounded activity record.
+    pub fn select_activity_relative(&mut self, delta: isize) -> bool {
+        if self.activities.is_empty() {
+            return false;
+        }
+        let current = self
+            .selected_activity_id
+            .as_deref()
+            .and_then(|selected| {
+                self.activities
+                    .iter()
+                    .position(|activity| activity.activity_id == selected)
+            })
+            .unwrap_or(0);
+        let len = self.activities.len();
+        let next = if delta < 0 {
+            current
+                .checked_sub(delta.unsigned_abs())
+                .unwrap_or_else(|| len - (delta.unsigned_abs().saturating_sub(current) % len))
+                % len
+        } else {
+            (current + delta.unsigned_abs()) % len
+        };
+        self.select_activity_at(next)
+    }
+
+    fn select_activity_at(&mut self, index: usize) -> bool {
+        let Some(activity) = self.activities.get(index).cloned() else {
+            return false;
+        };
+        self.save_selected_viewport();
+        let viewport =
+            self.restore_viewport(&activity.agent_id, activity.run.conversation_id.as_deref());
+        self.selected_activity_id = Some(activity.activity_id);
+        self.agent_id = Some(activity.agent_id);
+        self.agent_name = Some(activity.agent_name);
+        self.conversation_id = activity.run.conversation_id.clone();
+        self.selected_model = activity.model;
+        if let Some(viewport) = viewport {
+            self.transcript = viewport.transcript;
+            self.prompt_buffer = viewport.prompt_buffer;
+            self.prompt_cursor = viewport.prompt_cursor.min(self.prompt_buffer.len());
+            self.prompt_history = viewport.prompt_history;
+            self.prompt_history_index = viewport.prompt_history_index;
+            self.prompt_history_draft = viewport.prompt_history_draft;
+        } else {
+            self.transcript.clear();
+            self.clear_prompt();
+            self.prompt_history.clear();
+        }
+        self.run = Some(activity.run);
+        self.command_result = None;
+        self.session_picker = None;
+        true
+    }
+
+    fn save_selected_viewport(&mut self) {
+        let Some(agent_id) = self.agent_id.clone() else {
+            return;
+        };
+        self.viewport_clock = self.viewport_clock.wrapping_add(1);
+        let snapshot = ConsoleViewport {
+            agent_id: agent_id.clone(),
+            conversation_id: self.conversation_id.clone(),
+            transcript: self
+                .transcript
+                .iter()
+                .rev()
+                .take(MAX_CONSOLE_TRANSCRIPT_TURNS)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect(),
+            prompt_buffer: self.prompt_buffer.clone(),
+            prompt_cursor: self.prompt_cursor,
+            prompt_history: self.prompt_history.clone(),
+            prompt_history_index: self.prompt_history_index,
+            prompt_history_draft: self.prompt_history_draft.clone(),
+            last_selected: self.viewport_clock,
+        };
+        if let Some(existing) = self.viewports.iter_mut().find(|viewport| {
+            viewport.agent_id == agent_id && viewport.conversation_id == self.conversation_id
+        }) {
+            *existing = snapshot;
+            return;
+        }
+        if self.viewports.len() >= MAX_RETAINED_CONSOLE_VIEWPORTS {
+            let oldest = self
+                .viewports
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, viewport)| viewport.last_selected)
+                .map_or(0, |(index, _)| index);
+            self.viewports.remove(oldest);
+        }
+        self.viewports.push(snapshot);
+    }
+
+    fn restore_viewport(
+        &mut self,
+        agent_id: &str,
+        conversation_id: Option<&str>,
+    ) -> Option<ConsoleViewport> {
+        self.viewport_clock = self.viewport_clock.wrapping_add(1);
+        let viewport = self.viewports.iter_mut().find(|viewport| {
+            viewport.agent_id == agent_id && viewport.conversation_id.as_deref() == conversation_id
+        })?;
+        viewport.last_selected = self.viewport_clock;
+        Some(viewport.clone())
     }
 
     #[must_use]
@@ -847,6 +1099,18 @@ impl InteractionState {
     }
 
     pub fn mark_cancelling(&mut self) {
+        if let Some(activity_id) = self.selected_activity_id.clone() {
+            if let Some(activity) = self
+                .activities
+                .iter_mut()
+                .find(|activity| activity.activity_id == activity_id)
+            {
+                if !activity.run.status.is_terminal() {
+                    activity.run.status = ConsoleRunStatus::Cancelling;
+                    "cancellation requested".clone_into(&mut activity.run.detail);
+                }
+            }
+        }
         if let Some(run) = &mut self.run {
             if !run.status.is_terminal() {
                 run.status = ConsoleRunStatus::Cancelling;
@@ -985,7 +1249,61 @@ impl InteractionState {
                     selection.turns,
                 );
             }
-            event => self.apply_run_event(event),
+            event => self.apply_run_event(&event),
+        }
+    }
+
+    /// Apply a controller update while retaining output for background
+    /// activities that are not currently selected in the Console viewport.
+    pub fn apply_update(&mut self, update: ControllerUpdate) {
+        match update {
+            ControllerUpdate::Control(event) => self.apply(event),
+            ControllerUpdate::Activity(update) => {
+                let started_conversation = match &update.event {
+                    ControllerEvent::Started {
+                        conversation_id, ..
+                    } => Some(conversation_id.clone()),
+                    _ => None,
+                };
+                let selected =
+                    self.selected_activity_id.as_deref() == Some(update.activity_id.as_str());
+                let activity = {
+                    let Some(activity) = self
+                        .activities
+                        .iter_mut()
+                        .find(|activity| activity.activity_id == update.activity_id)
+                    else {
+                        return;
+                    };
+                    if let ControllerEvent::Started {
+                        conversation_id,
+                        model,
+                        agent_name,
+                        ..
+                    } = &update.event
+                    {
+                        activity.run.conversation_id = Some(conversation_id.clone());
+                        activity.model.clone_from(model);
+                        activity.agent_name.clone_from(agent_name);
+                    }
+                    apply_console_run_event(&mut activity.run, &update.event);
+                    selected.then(|| activity.clone())
+                };
+                if let Some(conversation_id) = started_conversation {
+                    self.rekey_viewport(
+                        &update.agent_id,
+                        update.requested_conversation_id.as_deref(),
+                        &conversation_id,
+                    );
+                }
+                if let Some(activity) = activity {
+                    self.agent_id = Some(activity.agent_id);
+                    self.agent_name = Some(activity.agent_name);
+                    self.conversation_id = activity.run.conversation_id.clone();
+                    self.selected_model = activity.model;
+                    self.run = Some(activity.run);
+                }
+            }
         }
     }
 
@@ -995,6 +1313,11 @@ impl InteractionState {
         model: Option<String>,
         mut turns: Vec<ConsoleRun>,
     ) {
+        self.save_selected_viewport();
+        let overflow = turns.len().saturating_sub(MAX_CONSOLE_TRANSCRIPT_TURNS + 1);
+        if overflow > 0 {
+            turns.drain(..overflow);
+        }
         self.conversation_id = conversation_id;
         self.selected_model = model;
         self.prompt_history = turns
@@ -1006,77 +1329,127 @@ impl InteractionState {
         self.prompt_history.reverse();
         self.run = turns.pop();
         self.transcript = turns;
+        self.selected_activity_id = None;
+
+        let agent_id = self.agent_id.clone();
+        let selected_conversation_id = self.conversation_id.clone();
+        if let Some(viewport) = agent_id.as_deref().and_then(|agent_id| {
+            self.restore_viewport(agent_id, selected_conversation_id.as_deref())
+        }) {
+            self.prompt_buffer = viewport.prompt_buffer;
+            self.prompt_cursor = viewport.prompt_cursor.min(self.prompt_buffer.len());
+            self.prompt_history = viewport.prompt_history;
+            self.prompt_history_index = viewport.prompt_history_index;
+            self.prompt_history_draft = viewport.prompt_history_draft;
+        }
+
+        let matching_activity = self.activities.iter().rev().find(|activity| {
+            Some(activity.agent_id.as_str()) == self.agent_id.as_deref()
+                && activity.run.conversation_id == self.conversation_id
+        });
+        if let Some(activity) = matching_activity {
+            self.selected_activity_id = Some(activity.activity_id.clone());
+            self.agent_name = Some(activity.agent_name.clone());
+            self.selected_model.clone_from(&activity.model);
+            self.run = Some(activity.run.clone());
+        }
     }
 
-    fn apply_run_event(&mut self, event: ControllerEvent) {
+    fn rekey_viewport(
+        &mut self,
+        agent_id: &str,
+        requested_conversation_id: Option<&str>,
+        conversation_id: &str,
+    ) {
+        if requested_conversation_id == Some(conversation_id) {
+            return;
+        }
+        if let Some(viewport) = self.viewports.iter_mut().find(|viewport| {
+            viewport.agent_id == agent_id
+                && viewport.conversation_id.as_deref() == requested_conversation_id
+        }) {
+            viewport.conversation_id = Some(conversation_id.to_owned());
+        }
+    }
+
+    fn apply_run_event(&mut self, event: &ControllerEvent) {
         let Some(run) = &mut self.run else {
             return;
         };
-        match event {
-            ControllerEvent::Started {
-                conversation_id,
-                model,
-                turn_id,
-                run_id,
-                agent_name,
-                notes,
-            } => {
-                run.conversation_id = Some(conversation_id.clone());
-                run.turn_id = Some(turn_id);
-                run.run_id = Some(run_id);
-                self.conversation_id = Some(conversation_id);
-                self.selected_model = model;
-                run.status = ConsoleRunStatus::Running;
-                self.agent_name = Some(agent_name);
-                run.detail = if notes.is_empty() {
-                    "run started".to_owned()
-                } else {
-                    notes.join(" ")
-                };
-            }
-            ControllerEvent::Output(text) => {
-                append_bounded_output(&mut run.output, &text);
-            }
-            ControllerEvent::Progress(detail) => run.detail = detail,
-            ControllerEvent::UsageUpdated {
-                input_tokens,
-                output_tokens,
-            } => {
-                run.input_tokens = input_tokens;
-                run.output_tokens = output_tokens;
-            }
-            ControllerEvent::Completed {
-                text,
-                input_tokens,
-                output_tokens,
-            } => {
-                run.status = ConsoleRunStatus::Completed;
-                "run completed".clone_into(&mut run.detail);
-                replace_bounded_output(&mut run.output, &text);
-                run.input_tokens = input_tokens;
-                run.output_tokens = output_tokens;
-            }
-            ControllerEvent::Failed(reason) => {
-                run.status = ConsoleRunStatus::Failed;
-                run.detail = reason;
-            }
-            ControllerEvent::Cancelled(reason) => {
-                run.status = ConsoleRunStatus::Cancelled;
-                run.detail = reason;
-            }
-            ControllerEvent::TimedOut => {
-                run.status = ConsoleRunStatus::TimedOut;
-                "run timed out".clone_into(&mut run.detail);
-            }
-            ControllerEvent::HistoryLoaded { .. }
-            | ControllerEvent::HistoryFailed { .. }
-            | ControllerEvent::CommandCompleted { .. }
-            | ControllerEvent::CommandFailed { .. }
-            | ControllerEvent::SessionListLoaded { .. }
-            | ControllerEvent::SessionListFailed { .. }
-            | ControllerEvent::SessionSelected { .. }
-            | ControllerEvent::SessionSelectionFailed { .. } => {}
+        if let ControllerEvent::Started {
+            conversation_id,
+            model,
+            agent_name,
+            ..
+        } = &event
+        {
+            self.conversation_id = Some(conversation_id.clone());
+            self.selected_model.clone_from(model);
+            self.agent_name = Some(agent_name.clone());
         }
+        apply_console_run_event(run, event);
+    }
+}
+
+fn apply_console_run_event(run: &mut ConsoleRun, event: &ControllerEvent) {
+    match event {
+        ControllerEvent::Started {
+            conversation_id,
+            turn_id,
+            run_id,
+            notes,
+            ..
+        } => {
+            run.conversation_id = Some(conversation_id.clone());
+            run.turn_id = Some(turn_id.clone());
+            run.run_id = Some(run_id.clone());
+            run.status = ConsoleRunStatus::Running;
+            run.detail = if notes.is_empty() {
+                "run started".to_owned()
+            } else {
+                notes.join(" ")
+            };
+        }
+        ControllerEvent::Output(text) => append_bounded_output(&mut run.output, text),
+        ControllerEvent::Progress(detail) => run.detail.clone_from(detail),
+        ControllerEvent::UsageUpdated {
+            input_tokens,
+            output_tokens,
+        } => {
+            run.input_tokens = *input_tokens;
+            run.output_tokens = *output_tokens;
+        }
+        ControllerEvent::Completed {
+            text,
+            input_tokens,
+            output_tokens,
+        } => {
+            run.status = ConsoleRunStatus::Completed;
+            "run completed".clone_into(&mut run.detail);
+            replace_bounded_output(&mut run.output, text);
+            run.input_tokens = *input_tokens;
+            run.output_tokens = *output_tokens;
+        }
+        ControllerEvent::Failed(reason) => {
+            run.status = ConsoleRunStatus::Failed;
+            run.detail.clone_from(reason);
+        }
+        ControllerEvent::Cancelled(reason) => {
+            run.status = ConsoleRunStatus::Cancelled;
+            run.detail.clone_from(reason);
+        }
+        ControllerEvent::TimedOut => {
+            run.status = ConsoleRunStatus::TimedOut;
+            "run timed out".clone_into(&mut run.detail);
+        }
+        ControllerEvent::HistoryLoaded { .. }
+        | ControllerEvent::HistoryFailed { .. }
+        | ControllerEvent::CommandCompleted { .. }
+        | ControllerEvent::CommandFailed { .. }
+        | ControllerEvent::SessionListLoaded { .. }
+        | ControllerEvent::SessionListFailed { .. }
+        | ControllerEvent::SessionSelected { .. }
+        | ControllerEvent::SessionSelectionFailed { .. } => {}
     }
 }
 
@@ -1346,6 +1719,47 @@ pub enum ControllerEvent {
     TimedOut,
 }
 
+/// Correlated run update retained even when another Console session is shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunActivityUpdate {
+    pub activity_id: String,
+    pub agent_id: String,
+    pub requested_conversation_id: Option<String>,
+    pub event: ControllerEvent,
+}
+
+/// One item from the bounded controller channels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControllerUpdate {
+    Control(ControllerEvent),
+    Activity(RunActivityUpdate),
+}
+
+impl ControllerUpdate {
+    #[must_use]
+    pub fn event(&self) -> &ControllerEvent {
+        match self {
+            Self::Control(event) => event,
+            Self::Activity(update) => &update.event,
+        }
+    }
+
+    #[must_use]
+    pub fn activity_id(&self) -> Option<&str> {
+        match self {
+            Self::Control(_) => None,
+            Self::Activity(update) => Some(&update.activity_id),
+        }
+    }
+
+    fn into_event(self) -> ControllerEvent {
+        match self {
+            Self::Control(event) => event,
+            Self::Activity(update) => update.event,
+        }
+    }
+}
+
 impl ControllerEvent {
     fn is_terminal(&self) -> bool {
         matches!(
@@ -1366,29 +1780,88 @@ impl ControllerEvent {
 
 /// Runtime bridge owned by `App`. It can be driven without blocking the
 /// Crossterm event loop and exposes plain events for deterministic reduction.
+#[derive(Clone)]
+struct RunActivityContext {
+    activity: String,
+    agent: String,
+    requested_conversation: Option<String>,
+}
+
+impl RunActivityContext {
+    fn update(&self, event: ControllerEvent) -> RunActivityUpdate {
+        RunActivityUpdate {
+            activity_id: self.activity.clone(),
+            agent_id: self.agent.clone(),
+            requested_conversation_id: self.requested_conversation.clone(),
+            event,
+        }
+    }
+}
+
+struct ActiveConsoleRun {
+    agent_id: String,
+    conversation_id: Option<String>,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(test)]
+type TestRunWorker = Arc<
+    dyn Fn(
+            PromptRequest,
+            RunActivityContext,
+            mpsc::Sender<RunActivityUpdate>,
+            tokio::sync::oneshot::Receiver<()>,
+        ) -> BoxFuture<'static, ()>
+        + Send
+        + Sync,
+>;
+
 pub struct RunController {
     task_runtime: Option<tokio::runtime::Handle>,
     polkagent_runtime: PolkagentRuntime,
     event_tx: mpsc::Sender<ControllerEvent>,
     event_rx: mpsc::Receiver<ControllerEvent>,
-    cancel: Option<tokio::sync::oneshot::Sender<()>>,
-    active: bool,
+    run_event_tx: mpsc::Sender<RunActivityUpdate>,
+    run_event_rx: mpsc::Receiver<RunActivityUpdate>,
+    active_runs: BTreeMap<String, ActiveConsoleRun>,
+    control_active: bool,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    shutdown_grace: std::time::Duration,
+    #[cfg(test)]
+    test_run_worker: Option<TestRunWorker>,
 }
 
 impl RunController {
     #[must_use]
     pub fn new(polkagent_runtime: PolkagentRuntime) -> Self {
         let (event_tx, event_rx) = mpsc::channel(CONTROLLER_EVENT_CAPACITY);
+        let (run_event_tx, run_event_rx) = mpsc::channel(CONTROLLER_EVENT_CAPACITY);
         Self {
             task_runtime: tokio::runtime::Handle::try_current().ok(),
             polkagent_runtime,
             event_tx,
             event_rx,
-            cancel: None,
-            active: false,
+            run_event_tx,
+            run_event_rx,
+            active_runs: BTreeMap::new(),
+            control_active: false,
             tasks: Vec::new(),
+            shutdown_grace: CONTROLLER_SHUTDOWN_GRACE,
+            #[cfg(test)]
+            test_run_worker: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_test_run_worker(
+        polkagent_runtime: PolkagentRuntime,
+        worker: TestRunWorker,
+        shutdown_grace: std::time::Duration,
+    ) -> Self {
+        let mut controller = Self::new(polkagent_runtime);
+        controller.test_run_worker = Some(worker);
+        controller.shutdown_grace = shutdown_grace;
+        controller
     }
 
     fn track_task(&mut self, task: tokio::task::JoinHandle<()>) {
@@ -1400,19 +1873,43 @@ impl RunController {
         clippy::too_many_lines,
         reason = "the prompt task keeps cancellation, durable subscription recovery, bounded event delivery, and terminal-state ordering together"
     )]
-    pub fn start(&mut self, request: PromptRequest) -> Result<(), &'static str> {
-        if self.active {
-            return Err("a run is already active; cancel it before starting another");
+    pub fn start(&mut self, request: PromptRequest) -> Result<String, &'static str> {
+        if self.active_runs.len() >= MAX_CONCURRENT_CONSOLE_RUNS {
+            return Err("Console concurrent-run capacity is full");
+        }
+        if self.active_runs.values().any(|run| {
+            run.agent_id == request.agent_id && run.conversation_id == request.conversation_id
+        }) {
+            return Err("this conversation already has an active Console turn");
         }
         let Some(task_runtime) = self.task_runtime.clone() else {
             return Err("interactive run runtime is unavailable");
         };
 
+        let activity_id = uuid::Uuid::now_v7().to_string();
+        let context = RunActivityContext {
+            activity: activity_id.clone(),
+            agent: request.agent_id.clone(),
+            requested_conversation: request.conversation_id.clone(),
+        };
         let polkagent_runtime = self.polkagent_runtime.clone();
-        let event_tx = self.event_tx.clone();
+        let event_tx = self.run_event_tx.clone();
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
-        self.cancel = Some(cancel_tx);
-        self.active = true;
+        self.active_runs.insert(
+            activity_id.clone(),
+            ActiveConsoleRun {
+                agent_id: request.agent_id.clone(),
+                conversation_id: request.conversation_id.clone(),
+                cancel: Some(cancel_tx),
+            },
+        );
+
+        #[cfg(test)]
+        if let Some(worker) = self.test_run_worker.clone() {
+            let task = task_runtime.spawn(worker(request, context, event_tx, cancel_rx));
+            self.track_task(task);
+            return Ok(activity_id);
+        }
 
         let task = task_runtime.spawn(async move {
             let PromptRequest {
@@ -1424,7 +1921,7 @@ impl RunController {
             let typed_agent_id = match parse_selected_agent_id(&agent_id) {
                 Ok(agent_id) => agent_id,
                 Err(reason) => {
-                    let _ = event_tx.send(ControllerEvent::Failed(reason)).await;
+                    let _ = event_tx.send(context.update(ControllerEvent::Failed(reason))).await;
                     return;
                 }
             };
@@ -1440,7 +1937,7 @@ impl RunController {
                 Ok(interaction) => interaction,
                 Err(error) => {
                     let _ = event_tx
-                        .send(ControllerEvent::Failed(error.to_string()))
+                        .send(context.update(ControllerEvent::Failed(error.to_string())))
                         .await;
                     return;
                 }
@@ -1449,7 +1946,7 @@ impl RunController {
                 Ok(context) => context,
                 Err(error) => {
                     let _ = event_tx
-                        .send(ControllerEvent::Failed(error.to_string()))
+                        .send(context.update(ControllerEvent::Failed(error.to_string())))
                         .await;
                     return;
                 }
@@ -1471,15 +1968,15 @@ impl RunController {
                     biased;
                     _ = &mut cancel_rx, if !cancellation_requested => {
                         cancellation_requested = true;
-                        let _ = event_tx.send(ControllerEvent::Progress(
+                        let _ = event_tx.send(context.update(ControllerEvent::Progress(
                             "cancellation queued until the durable turn is ready".to_owned(),
-                        )).await;
+                        ))).await;
                     }
                     result = &mut prompt => match result {
                         Ok(started) => break started,
                         Err(error) => {
                             let _ = event_tx
-                                .send(ControllerEvent::Failed(error.to_string()))
+                                .send(context.update(ControllerEvent::Failed(error.to_string())))
                                 .await;
                             return;
                         }
@@ -1488,41 +1985,41 @@ impl RunController {
             };
             let Some(run_id) = started.handle.run_ids.first().copied() else {
                 let _ = event_tx
-                    .send(ControllerEvent::Failed(
+                    .send(context.update(ControllerEvent::Failed(
                         "durable interaction turn has no linked run".to_owned(),
-                    ))
+                    )))
                     .await;
                 return;
             };
             let mut events = started.events;
             let notes = runtime_notes(polkagent_runtime.readiness());
             let _ = event_tx
-                .send(started_controller_event(
+                .send(context.update(started_controller_event(
                     &interaction,
                     turn_id,
                     run_id,
                     agent_name,
                     notes,
-                ))
+                )))
                 .await;
             if cancellation_requested {
-                request_turn_cancellation(service.as_ref(), turn_id, &event_tx).await;
+                request_turn_cancellation(service.as_ref(), turn_id, &event_tx, &context).await;
             }
             loop {
                 let envelope = tokio::select! {
                     biased;
                     _ = &mut cancel_rx, if !cancellation_requested => {
                         cancellation_requested = true;
-                        request_turn_cancellation(service.as_ref(), turn_id, &event_tx).await;
+                        request_turn_cancellation(service.as_ref(), turn_id, &event_tx, &context).await;
                         continue;
                     }
                     result = events.recv() => match result {
                         Ok(event) => event,
                         Err(StreamError::Lagged { last_seen_sequence, resume_after_sequence }) => {
                             let _ = event_tx
-                                .send(ControllerEvent::Progress(format!(
+                                .send(context.update(ControllerEvent::Progress(format!(
                                     "interaction stream lagged at sequence {resume_after_sequence}; replaying durable events"
-                                )))
+                                ))))
                                 .await;
                             match service
                                 .subscribe(SubscriptionRequest {
@@ -1536,9 +2033,9 @@ impl RunController {
                                 Ok(replacement) => events = replacement,
                                 Err(error) => {
                                     let _ = event_tx
-                                        .send(ControllerEvent::Failed(format!(
+                                        .send(context.update(ControllerEvent::Failed(format!(
                                             "resubscribe to durable interaction events: {error}"
-                                        )))
+                                        ))))
                                         .await;
                                     return;
                                 }
@@ -1547,18 +2044,18 @@ impl RunController {
                         }
                         Err(StreamError::Backend(error)) => {
                             let _ = event_tx
-                                .send(ControllerEvent::Failed(format!(
+                                .send(context.update(ControllerEvent::Failed(format!(
                                     "interaction event stream failed: {error}"
-                                )))
+                                ))))
                                 .await;
                             return;
                         }
                         Err(StreamError::Closed) => {
                             let _ = event_tx
-                                .send(ControllerEvent::Failed(
+                                .send(context.update(ControllerEvent::Failed(
                                     "interaction event stream closed before a terminal event"
                                         .to_owned(),
-                                ))
+                                )))
                                 .await;
                             return;
                         }
@@ -1567,14 +2064,14 @@ impl RunController {
 
                 let projected = project_interaction_event(envelope.event);
                 let terminal = projected.is_terminal();
-                if event_tx.send(projected).await.is_err() || terminal {
+                if event_tx.send(context.update(projected)).await.is_err() || terminal {
                     return;
                 }
             }
         });
         self.track_task(task);
 
-        Ok(())
+        Ok(activity_id)
     }
 
     #[allow(
@@ -1582,14 +2079,13 @@ impl RunController {
         reason = "the async command boundary keeps validation, execution, and correlated completion together"
     )]
     pub fn execute_command(&mut self, request: ConsoleCommandRequest) -> Result<(), &'static str> {
-        if self.active {
+        if self.control_active {
             return Err("a Console action is already active");
         }
         let Some(task_runtime) = self.task_runtime.clone() else {
             return Err("interactive command runtime is unavailable");
         };
-        self.active = true;
-        self.cancel = None;
+        self.control_active = true;
         let polkagent_runtime = self.polkagent_runtime.clone();
         let event_tx = self.event_tx.clone();
         let task = task_runtime.spawn(async move {
@@ -1783,14 +2279,13 @@ impl RunController {
     }
 
     pub fn list_sessions(&mut self, request: SessionListRequest) -> Result<(), &'static str> {
-        if self.active {
+        if self.control_active {
             return Err("a Console action is already active");
         }
         let Some(task_runtime) = self.task_runtime.clone() else {
             return Err("interactive session selector runtime is unavailable");
         };
-        self.active = true;
-        self.cancel = None;
+        self.control_active = true;
         let polkagent_runtime = self.polkagent_runtime.clone();
         let event_tx = self.event_tx.clone();
         let task = task_runtime.spawn(async move {
@@ -1846,14 +2341,13 @@ impl RunController {
     }
 
     pub fn load_session(&mut self, request: SessionLoadRequest) -> Result<(), &'static str> {
-        if self.active {
+        if self.control_active {
             return Err("a Console action is already active");
         }
         let Some(task_runtime) = self.task_runtime.clone() else {
             return Err("interactive session selector runtime is unavailable");
         };
-        self.active = true;
-        self.cancel = None;
+        self.control_active = true;
         let polkagent_runtime = self.polkagent_runtime.clone();
         let event_tx = self.event_tx.clone();
         let task = task_runtime.spawn(async move {
@@ -1956,15 +2450,71 @@ impl RunController {
         Ok(())
     }
 
-    pub fn cancel(&mut self) -> bool {
-        self.cancel
-            .take()
+    pub fn cancel_activity(&mut self, activity_id: &str) -> bool {
+        self.active_runs
+            .get_mut(activity_id)
+            .and_then(|run| run.cancel.take())
             .is_some_and(|cancel| cancel.send(()).is_ok())
     }
 
+    /// Compatibility helper for single-run callers. Multi-run surfaces must
+    /// use [`Self::cancel_activity`] with the selected stable identity.
+    #[allow(
+        dead_code,
+        reason = "single-run compatibility tests and external CLI fixtures use this helper"
+    )]
+    pub fn cancel(&mut self) -> bool {
+        if self.active_runs.len() != 1 {
+            return false;
+        }
+        let activity_id = self.active_runs.keys().next().cloned();
+        activity_id.is_some_and(|activity_id| self.cancel_activity(&activity_id))
+    }
+
     #[must_use]
-    pub const fn is_active(&self) -> bool {
-        self.active
+    #[allow(
+        dead_code,
+        reason = "single-run compatibility tests and external CLI fixtures use this helper"
+    )]
+    pub fn is_active(&self) -> bool {
+        self.control_active || !self.active_runs.is_empty()
+    }
+
+    #[must_use]
+    pub const fn is_control_active(&self) -> bool {
+        self.control_active
+    }
+
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "headless orchestration tests inspect the bounded active-run count"
+    )]
+    pub fn active_run_count(&self) -> usize {
+        self.active_runs.len()
+    }
+
+    fn apply_controller_update(&mut self, update: &ControllerUpdate) {
+        match update {
+            ControllerUpdate::Control(event) => {
+                if event.is_terminal() {
+                    self.control_active = false;
+                }
+            }
+            ControllerUpdate::Activity(update) => {
+                if let ControllerEvent::Started {
+                    conversation_id, ..
+                } = &update.event
+                {
+                    if let Some(run) = self.active_runs.get_mut(&update.activity_id) {
+                        run.conversation_id = Some(conversation_id.clone());
+                    }
+                }
+                if update.event.is_terminal() {
+                    self.active_runs.remove(&update.activity_id);
+                }
+            }
+        }
     }
 
     /// Non-blocking compatibility hook for headless cross-surface fixtures.
@@ -1974,33 +2524,58 @@ impl RunController {
         reason = "the binary compiles this shared module without the integration fixtures that exercise the compatibility hook"
     )]
     pub fn try_recv(&mut self) -> Option<ControllerEvent> {
-        match self.event_rx.try_recv() {
-            Ok(event) => {
-                if event.is_terminal() {
-                    self.cancel = None;
-                    self.active = false;
+        self.try_recv_update().map(ControllerUpdate::into_event)
+    }
+
+    pub fn try_recv_update(&mut self) -> Option<ControllerUpdate> {
+        let update = match self.run_event_rx.try_recv() {
+            Ok(update) => Some(ControllerUpdate::Activity(update)),
+            Err(mpsc::error::TryRecvError::Empty) => match self.event_rx.try_recv() {
+                Ok(event) => Some(ControllerUpdate::Control(event)),
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                    None
                 }
-                Some(event)
+            },
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.event_rx.try_recv().ok().map(ControllerUpdate::Control)
             }
-            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => None,
-        }
+        }?;
+        self.apply_controller_update(&update);
+        Some(update)
     }
 
     /// Wait for one controller completion without polling the runtime bridge.
+    #[allow(
+        dead_code,
+        reason = "single-run compatibility tests and cross-surface fixtures receive unwrapped events"
+    )]
     pub async fn recv(&mut self) -> Option<ControllerEvent> {
-        let event = self.event_rx.recv().await?;
-        if event.is_terminal() {
-            self.cancel = None;
-            self.active = false;
-        }
-        Some(event)
+        self.recv_update().await.map(ControllerUpdate::into_event)
+    }
+
+    /// Wait for one correlated control or run update without polling.
+    pub async fn recv_update(&mut self) -> Option<ControllerUpdate> {
+        let update = tokio::select! {
+            event = self.run_event_rx.recv() => {
+                event.map(ControllerUpdate::Activity)
+            }
+            event = self.event_rx.recv() => {
+                event.map(ControllerUpdate::Control)
+            }
+        }?;
+        self.apply_controller_update(&update);
+        Some(update)
     }
 
     /// Cancel, drain, and reap every task spawned by this controller.
     pub async fn shutdown(&mut self) {
-        let _ = self.cancel();
+        for run in self.active_runs.values_mut() {
+            if let Some(cancel) = run.cancel.take() {
+                let _ = cancel.send(());
+            }
+        }
         let mut tasks = std::mem::take(&mut self.tasks);
-        let completed = tokio::time::timeout(CONTROLLER_SHUTDOWN_GRACE, async {
+        let completed = tokio::time::timeout(self.shutdown_grace, async {
             for task in &mut tasks {
                 let _ = task.await;
             }
@@ -2019,13 +2594,18 @@ impl RunController {
                 }
             }
         }
-        self.active = false;
+        self.active_runs.clear();
+        self.control_active = false;
     }
 }
 
 impl Drop for RunController {
     fn drop(&mut self) {
-        let _ = self.cancel.take().map(|cancel| cancel.send(()));
+        for run in self.active_runs.values_mut() {
+            if let Some(cancel) = run.cancel.take() {
+                let _ = cancel.send(());
+            }
+        }
         for task in &self.tasks {
             task.abort();
         }
@@ -2594,6 +3174,7 @@ async fn load_interaction_history(
         truncate_output(&mut output);
         let status = console_status(summary.state);
         turns.push(ConsoleRun {
+            activity_id: None,
             conversation_id: Some(interaction.conversation_id.to_string()),
             turn_id: Some(summary.handle.turn_id.to_string()),
             run_id: summary.handle.run_ids.first().map(ToString::to_string),
@@ -2684,13 +3265,16 @@ fn console_status(state: TurnState) -> ConsoleRunStatus {
 async fn request_turn_cancellation(
     service: &impl InteractionService,
     turn_id: InteractionTurnId,
-    event_tx: &mpsc::Sender<ControllerEvent>,
+    event_tx: &mpsc::Sender<RunActivityUpdate>,
+    context: &RunActivityContext,
 ) {
     let progress = match service.cancel_turn(turn_id).await {
         Ok(()) => format!("cancellation requested for turn {turn_id}"),
         Err(error) => format!("cancelling interaction turn {turn_id}: {error}"),
     };
-    let _ = event_tx.send(ControllerEvent::Progress(progress)).await;
+    let _ = event_tx
+        .send(context.update(ControllerEvent::Progress(progress)))
+        .await;
 }
 
 fn project_interaction_event(event: InteractionEvent) -> ControllerEvent {
@@ -2789,12 +3373,94 @@ fn runtime_notes(readiness: &RuntimeReadiness) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use polkagent_core::RunId;
     use polkagent_runtime::{ConfigSource, RuntimeFactory};
     use polkagent_store_sqlite::{migrations, SqliteRunStore};
     use polkagent_store_trait::{RunStatus, RunStore};
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    struct ControlledFakeRun {
+        emit_output: Notify,
+        finish: Notify,
+        cancellations: AtomicUsize,
+    }
+
+    async fn controller_test_runtime() -> (tempfile::TempDir, PolkagentRuntime) {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("controller-test.db");
+        let pool = SqlitePool::open(&database_path).expect("open database");
+        migrations::migrate(&pool.writer()).expect("migrate database");
+        let mut options = tui_runtime_options(&pool, None).expect("TUI runtime options");
+        options.workdir = temp.path().to_path_buf();
+        options.disable_harness = true;
+        options.discover_environment_providers = false;
+        drop(pool);
+        let runtime = RuntimeFactory::build(options).await.expect("build runtime");
+        (temp, runtime)
+    }
+
+    fn controlled_worker(gates: Arc<BTreeMap<String, Arc<ControlledFakeRun>>>) -> TestRunWorker {
+        Arc::new(move |request, context, event_tx, mut cancel_rx| {
+            let gates = Arc::clone(&gates);
+            Box::pin(async move {
+                let gate = Arc::clone(
+                    gates
+                        .get(&request.agent_id)
+                        .expect("controlled gate for agent"),
+                );
+                let _ = event_tx
+                    .send(
+                        context.update(ControllerEvent::Started {
+                            conversation_id: request
+                                .conversation_id
+                                .clone()
+                                .unwrap_or_else(|| format!("conversation-{}", request.agent_id)),
+                            model: Some("fake/controlled".to_owned()),
+                            turn_id: format!("turn-{}", request.agent_id),
+                            run_id: format!("run-{}", request.agent_id),
+                            agent_name: request.agent_name,
+                            notes: vec!["controlled fake execution".to_owned()],
+                        }),
+                    )
+                    .await;
+                tokio::select! {
+                    _ = &mut cancel_rx => {
+                        gate.cancellations.fetch_add(1, Ordering::SeqCst);
+                        let _ = event_tx.send(context.update(ControllerEvent::Cancelled(
+                            "controlled cancellation".to_owned(),
+                        ))).await;
+                        return;
+                    }
+                    () = gate.emit_output.notified() => {}
+                }
+                let _ = event_tx
+                    .send(context.update(ControllerEvent::Output(format!(
+                        "output-{}",
+                        request.agent_id
+                    ))))
+                    .await;
+                tokio::select! {
+                    _ = &mut cancel_rx => {
+                        gate.cancellations.fetch_add(1, Ordering::SeqCst);
+                        let _ = event_tx.send(context.update(ControllerEvent::Cancelled(
+                            "controlled cancellation".to_owned(),
+                        ))).await;
+                    }
+                    () = gate.finish.notified() => {
+                        let _ = event_tx.send(context.update(ControllerEvent::Completed {
+                            text: format!("output-{}", request.agent_id),
+                            input_tokens: 1,
+                            output_tokens: 1,
+                        })).await;
+                    }
+                }
+            })
+        })
+    }
 
     fn type_prompt(state: &mut InteractionState, prompt: &str) {
         for c in prompt.chars() {
@@ -2902,6 +3568,7 @@ mod tests {
         let mut state = InteractionState::default();
         state.select_agent("agent-id", "Alice");
         let restored = |ordinal: u8| ConsoleRun {
+            activity_id: None,
             conversation_id: Some("conversation-id".to_owned()),
             turn_id: Some(format!("turn-{ordinal}")),
             run_id: Some(format!("run-{ordinal}")),
@@ -3372,6 +4039,7 @@ mod tests {
         state.conversation_id = Some("selected-conversation".to_owned());
         state.selected_model = Some("fake/selected".to_owned());
         state.transcript.push(ConsoleRun {
+            activity_id: None,
             conversation_id: Some("selected-conversation".to_owned()),
             turn_id: Some("old-turn".to_owned()),
             run_id: Some("old-run".to_owned()),
@@ -3525,17 +4193,264 @@ mod tests {
     }
 
     #[test]
-    fn session_picker_refuses_an_active_turn() {
+    fn session_picker_remains_available_during_an_active_turn() {
         let mut state = InteractionState::default();
         state.select_agent("agent-id", "Alice");
         type_prompt(&mut state, "active prompt");
         state.submit().expect("start reducer turn");
 
+        let request = state
+            .begin_session_picker()
+            .expect("active work does not block durable session navigation");
+        assert_eq!(request.agent_id, "agent-id");
         assert_eq!(
-            state.begin_session_picker(),
-            Err("finish or cancel the active Console turn before switching sessions")
+            state.run.as_ref().map(|run| &run.status),
+            Some(&ConsoleRunStatus::Starting)
         );
-        assert!(state.session_picker.is_none());
+        assert!(state.session_picker.is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn controller_runs_two_sessions_concurrently_and_cancels_exactly_one() {
+        let (_temp, runtime) = controller_test_runtime().await;
+        let gate_a = Arc::new(ControlledFakeRun::default());
+        let gate_b = Arc::new(ControlledFakeRun::default());
+        let gates = Arc::new(BTreeMap::from([
+            ("agent-a".to_owned(), Arc::clone(&gate_a)),
+            ("agent-b".to_owned(), Arc::clone(&gate_b)),
+        ]));
+        let mut controller = RunController::with_test_run_worker(
+            runtime,
+            controlled_worker(gates),
+            Duration::from_millis(100),
+        );
+        let mut state = InteractionState::default();
+
+        state.select_agent("agent-a", "Alice");
+        state.conversation_id = Some("conversation-a".to_owned());
+        state.transcript.push(ConsoleRun {
+            activity_id: None,
+            conversation_id: Some("conversation-a".to_owned()),
+            turn_id: Some("durable-turn-a".to_owned()),
+            run_id: Some("durable-run-a".to_owned()),
+            prompt: "durable prompt a".to_owned(),
+            output: "durable answer a".to_owned(),
+            status: ConsoleRunStatus::Completed,
+            detail: "restored".to_owned(),
+            input_tokens: 0,
+            output_tokens: 0,
+        });
+        type_prompt(&mut state, "prompt a");
+        let request_a = state.submit().expect("submit a");
+        let activity_a = controller.start(request_a).expect("start a");
+        state
+            .bind_activity(activity_a.clone())
+            .expect("bind activity a");
+        type_prompt(&mut state, "draft a");
+
+        state.select_agent("agent-b", "Bob");
+        state.conversation_id = Some("conversation-b".to_owned());
+        type_prompt(&mut state, "prompt b");
+        let request_b = state.submit().expect("submit b");
+        let activity_b = controller.start(request_b).expect("start b");
+        state
+            .bind_activity(activity_b.clone())
+            .expect("bind activity b");
+        type_prompt(&mut state, "draft b");
+
+        for _ in 0..2 {
+            let update = tokio::time::timeout(Duration::from_secs(1), controller.recv_update())
+                .await
+                .expect("started update timeout")
+                .expect("started update");
+            assert!(matches!(update.event(), ControllerEvent::Started { .. }));
+            state.apply_update(update);
+        }
+        assert_eq!(controller.active_run_count(), 2);
+        assert_eq!(state.active_activity_count(), 2);
+
+        gate_a.emit_output.notify_one();
+        gate_b.emit_output.notify_one();
+        for _ in 0..2 {
+            let update = tokio::time::timeout(Duration::from_secs(1), controller.recv_update())
+                .await
+                .expect("output update timeout")
+                .expect("output update");
+            assert!(matches!(update.event(), ControllerEvent::Output(_)));
+            state.apply_update(update);
+        }
+
+        assert!(state.select_activity_relative(-1));
+        assert_eq!(state.selected_activity_id(), Some(activity_a.as_str()));
+        assert_eq!(state.prompt_buffer, "draft a");
+        assert_eq!(state.transcript.len(), 1);
+        assert_eq!(
+            state.run.as_ref().map(|run| run.output.as_str()),
+            Some("output-agent-a")
+        );
+        assert_eq!(
+            state.submit(),
+            Err("this conversation already has an active Console turn")
+        );
+        assert_eq!(
+            state.prompt_buffer, "draft a",
+            "duplicate rejection preserves the draft"
+        );
+
+        assert!(controller.cancel_activity(&activity_a));
+        state.mark_cancelling();
+        let cancelled = tokio::time::timeout(Duration::from_secs(1), controller.recv_update())
+            .await
+            .expect("cancel update timeout")
+            .expect("cancel update");
+        assert_eq!(cancelled.activity_id(), Some(activity_a.as_str()));
+        assert!(matches!(cancelled.event(), ControllerEvent::Cancelled(_)));
+        state.apply_update(cancelled);
+        assert_eq!(gate_a.cancellations.load(Ordering::SeqCst), 1);
+        assert_eq!(gate_b.cancellations.load(Ordering::SeqCst), 0);
+        assert_eq!(controller.active_run_count(), 1);
+
+        gate_b.finish.notify_one();
+        let completed = tokio::time::timeout(Duration::from_secs(1), controller.recv_update())
+            .await
+            .expect("completion update timeout")
+            .expect("completion update");
+        assert_eq!(completed.activity_id(), Some(activity_b.as_str()));
+        assert!(matches!(
+            completed.event(),
+            ControllerEvent::Completed { .. }
+        ));
+        state.apply_update(completed);
+        assert_eq!(controller.active_run_count(), 0);
+
+        assert!(state.select_activity_relative(1));
+        assert_eq!(state.selected_activity_id(), Some(activity_b.as_str()));
+        assert_eq!(state.prompt_buffer, "draft b");
+        assert_eq!(
+            state.run.as_ref().map(|run| &run.status),
+            Some(&ConsoleRunStatus::Completed)
+        );
+        assert_eq!(
+            state.run.as_ref().map(|run| run.output.as_str()),
+            Some("output-agent-b")
+        );
+
+        controller.shutdown().await;
+        assert!(controller.tasks.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn controller_enforces_run_capacity_and_channel_backpressure() {
+        let (_temp, runtime) = controller_test_runtime().await;
+        let gates = Arc::new(
+            (0..MAX_CONCURRENT_CONSOLE_RUNS)
+                .map(|index| {
+                    (
+                        format!("agent-{index}"),
+                        Arc::new(ControlledFakeRun::default()),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>(),
+        );
+        let mut controller = RunController::with_test_run_worker(
+            runtime,
+            controlled_worker(Arc::clone(&gates)),
+            Duration::from_millis(100),
+        );
+        let first = PromptRequest {
+            agent_id: "agent-0".to_owned(),
+            agent_name: "Agent 0".to_owned(),
+            conversation_id: Some("conversation-0".to_owned()),
+            prompt: "first".to_owned(),
+        };
+        controller.start(first.clone()).expect("first start");
+        assert_eq!(
+            controller.start(first),
+            Err("this conversation already has an active Console turn")
+        );
+        for index in 1..MAX_CONCURRENT_CONSOLE_RUNS {
+            controller
+                .start(PromptRequest {
+                    agent_id: format!("agent-{index}"),
+                    agent_name: format!("Agent {index}"),
+                    conversation_id: Some(format!("conversation-{index}")),
+                    prompt: format!("prompt {index}"),
+                })
+                .expect("start within capacity");
+        }
+        assert_eq!(controller.active_run_count(), MAX_CONCURRENT_CONSOLE_RUNS);
+        assert_eq!(
+            controller.start(PromptRequest {
+                agent_id: "overflow-agent".to_owned(),
+                agent_name: "Overflow".to_owned(),
+                conversation_id: Some("overflow-conversation".to_owned()),
+                prompt: "overflow".to_owned(),
+            }),
+            Err("Console concurrent-run capacity is full")
+        );
+
+        controller.shutdown().await;
+        assert_eq!(controller.active_run_count(), 0);
+        assert!(controller.tasks.is_empty());
+        while controller.try_recv_update().is_some() {}
+
+        let sample_context = RunActivityContext {
+            activity: "backpressure".to_owned(),
+            agent: "agent".to_owned(),
+            requested_conversation: None,
+        };
+        for index in 0..CONTROLLER_EVENT_CAPACITY {
+            controller
+                .run_event_tx
+                .try_send(sample_context.update(ControllerEvent::Progress(index.to_string())))
+                .expect("bounded channel accepts through capacity");
+        }
+        assert!(matches!(
+            controller
+                .run_event_tx
+                .try_send(sample_context.update(ControllerEvent::Progress("overflow".to_owned()))),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+    }
+
+    #[test]
+    fn activity_retention_evicts_oldest_terminal_and_debug_is_redacted() {
+        let mut state = InteractionState::default();
+        for index in 0..=MAX_RETAINED_CONSOLE_ACTIVITIES {
+            let agent_id = format!("agent-{index}");
+            let conversation_id = format!("conversation-{index}");
+            let activity_id = format!("activity-{index}");
+            state.select_agent(agent_id.clone(), format!("Agent {index}"));
+            state.conversation_id = Some(conversation_id.clone());
+            type_prompt(&mut state, &format!("private-prompt-{index}"));
+            state.submit().expect("submit retained activity");
+            state
+                .bind_activity(activity_id.clone())
+                .expect("bind retained activity");
+            state.apply_update(ControllerUpdate::Activity(RunActivityUpdate {
+                activity_id,
+                agent_id,
+                requested_conversation_id: Some(conversation_id),
+                event: ControllerEvent::Failed(format!("private-error-{index}")),
+            }));
+        }
+
+        let summaries = state.activity_summaries();
+        assert_eq!(summaries.len(), MAX_RETAINED_CONSOLE_ACTIVITIES);
+        assert_eq!(
+            summaries
+                .first()
+                .map(|summary| summary.activity_id.as_str()),
+            Some("activity-1")
+        );
+        assert_eq!(
+            summaries.last().map(|summary| summary.activity_id.as_str()),
+            Some("activity-32")
+        );
+        let debug = format!("{state:?}");
+        assert!(!debug.contains("private-prompt"));
+        assert!(!debug.contains("private-error"));
+        assert!(debug.contains("activity-32"));
     }
 
     fn writer_pointer(pool: &SqlitePool) -> *const rusqlite::Connection {

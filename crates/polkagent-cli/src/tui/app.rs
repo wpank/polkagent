@@ -42,7 +42,7 @@ use polkagent_store_sqlite::SqlitePool;
 
 use crate::tui::{
     input::{key_to_action, InputMode, TuiAction},
-    interaction::{ConsoleCommandSubmission, ControllerEvent, RunController},
+    interaction::{ConsoleCommandSubmission, ControllerEvent, ControllerUpdate, RunController},
     state::TuiState,
     theme::Theme,
     views,
@@ -94,7 +94,7 @@ enum EventLoopEvent {
 
 #[derive(Debug)]
 enum BackgroundEvent {
-    Controller(ControllerEvent),
+    Controller(Box<ControllerUpdate>),
     Projection(BackgroundResult),
 }
 
@@ -796,8 +796,8 @@ impl App {
         while self.running {
             let background = async {
                 tokio::select! {
-                    event = self.run_controller.recv() => {
-                        event.map(BackgroundEvent::Controller)
+                    event = self.run_controller.recv_update() => {
+                        event.map(|event| BackgroundEvent::Controller(Box::new(event)))
                     }
                     result = self.background_jobs.recv() => {
                         result.map(BackgroundEvent::Projection)
@@ -814,7 +814,7 @@ impl App {
                     }
                 }
                 EventLoopEvent::Background(event) => match *event {
-                    BackgroundEvent::Controller(event) => self.apply_controller_event(event),
+                    BackgroundEvent::Controller(event) => self.apply_controller_event(*event),
                     BackgroundEvent::Projection(result) => self.apply_background_result(result),
                 },
                 EventLoopEvent::Tick => self.tick(terminal)?,
@@ -1316,6 +1316,10 @@ impl App {
             }
 
             TuiAction::OpenPrompt => {
+                if !self.ensure_console_agent() {
+                    self.tui_state.mark_dirty();
+                    return;
+                }
                 let run_active = self
                     .tui_state
                     .interaction
@@ -1324,11 +1328,11 @@ impl App {
                     .is_some_and(|run| !run.status.is_terminal());
                 if run_active {
                     self.tui_state.last_error =
-                        Some("a console run is already active; press x to cancel it".to_owned());
-                } else if self.run_controller.is_active() {
+                        Some("this conversation already has an active turn; switch activity/session or press x to cancel it".to_owned());
+                } else if self.run_controller.is_control_active() {
                     self.tui_state.last_error =
                         Some("a Console command is still running".to_owned());
-                } else if self.ensure_console_agent() {
+                } else {
                     self.active_tab = Tab::Console;
                     self.input_mode = InputMode::Prompt;
                     self.tui_state.last_error = None;
@@ -1340,18 +1344,7 @@ impl App {
                 if self.active_tab != Tab::Console {
                     return;
                 }
-                let run_active = self
-                    .tui_state
-                    .interaction
-                    .run
-                    .as_ref()
-                    .is_some_and(|run| !run.status.is_terminal());
-                if run_active {
-                    self.tui_state.last_error = Some(
-                        "finish or cancel the active Console turn before switching sessions"
-                            .to_owned(),
-                    );
-                } else if self.run_controller.is_active() {
+                if self.run_controller.is_control_active() {
                     self.tui_state.last_error = Some(
                         "wait for the active Console action before switching sessions".to_owned(),
                     );
@@ -1384,7 +1377,7 @@ impl App {
             }
 
             TuiAction::SessionPickerConfirm => {
-                if self.run_controller.is_active() {
+                if self.run_controller.is_control_active() {
                     if let Some(request_id) = self
                         .tui_state
                         .interaction
@@ -1512,13 +1505,28 @@ impl App {
                     match self.tui_state.interaction.submit() {
                         Ok(request) => {
                             self.input_mode = InputMode::Normal;
-                            if let Err(error) = self.run_controller.start(request) {
-                                self.tui_state
-                                    .interaction
-                                    .apply(ControllerEvent::Failed(error.to_owned()));
-                                self.tui_state.last_error = Some(error.to_owned());
-                            } else {
-                                self.tui_state.last_error = None;
+                            match self.run_controller.start(request) {
+                                Ok(activity_id) => {
+                                    if let Err(error) = self
+                                        .tui_state
+                                        .interaction
+                                        .bind_activity(activity_id.clone())
+                                    {
+                                        let _ = self.run_controller.cancel_activity(&activity_id);
+                                        self.tui_state
+                                            .interaction
+                                            .apply(ControllerEvent::Failed(error.to_owned()));
+                                        self.tui_state.last_error = Some(error.to_owned());
+                                    } else {
+                                        self.tui_state.last_error = None;
+                                    }
+                                }
+                                Err(error) => {
+                                    self.tui_state
+                                        .interaction
+                                        .apply(ControllerEvent::Failed(error.to_owned()));
+                                    self.tui_state.last_error = Some(error.to_owned());
+                                }
                             }
                         }
                         Err(error) => self.tui_state.last_error = Some(error.to_owned()),
@@ -1528,7 +1536,15 @@ impl App {
             }
 
             TuiAction::CancelActiveRun => {
-                if self.run_controller.cancel() {
+                let selected = self
+                    .tui_state
+                    .interaction
+                    .selected_activity_id()
+                    .map(str::to_owned);
+                if selected
+                    .as_deref()
+                    .is_some_and(|activity_id| self.run_controller.cancel_activity(activity_id))
+                {
                     self.tui_state.interaction.mark_cancelling();
                     self.tui_state.last_error = None;
                 } else {
@@ -1538,8 +1554,29 @@ impl App {
             }
 
             TuiAction::Quit => {
-                let _ = self.run_controller.cancel();
                 self.running = false;
+            }
+
+            TuiAction::SelectPreviousActivity => {
+                if self.tui_state.interaction.select_activity_relative(-1) {
+                    self.active_tab = Tab::Console;
+                    self.input_mode = InputMode::Normal;
+                    self.tui_state.last_error = None;
+                } else {
+                    self.tui_state.last_error = Some("no Console activity is retained".to_owned());
+                }
+                self.tui_state.mark_dirty();
+            }
+
+            TuiAction::SelectNextActivity => {
+                if self.tui_state.interaction.select_activity_relative(1) {
+                    self.active_tab = Tab::Console;
+                    self.input_mode = InputMode::Normal;
+                    self.tui_state.last_error = None;
+                } else {
+                    self.tui_state.last_error = Some("no Console activity is retained".to_owned());
+                }
+                self.tui_state.mark_dirty();
             }
 
             TuiAction::Refresh => {
@@ -1603,29 +1640,35 @@ impl App {
 
     /// Apply one background completion on the terminal thread and immediately
     /// refresh durable run projections when lifecycle state changes.
-    fn apply_controller_event(&mut self, event: ControllerEvent) {
-        if let ControllerEvent::HistoryFailed { reason, .. } = &event {
+    fn apply_controller_event(&mut self, update: ControllerUpdate) {
+        let event = update.event();
+        if let ControllerEvent::HistoryFailed { reason, .. } = event {
             self.tui_state.last_error = Some(reason.clone());
         }
         let refresh = matches!(
-            &event,
+            event,
             ControllerEvent::Started { .. }
                 | ControllerEvent::Completed { .. }
                 | ControllerEvent::Failed(_)
                 | ControllerEvent::Cancelled(_)
                 | ControllerEvent::TimedOut
         );
-        if let ControllerEvent::Started { run_id, .. } = &event {
-            self.tui_state.selected_run = Some(run_id.clone());
+        let selected_activity = update.activity_id().is_some_and(|activity_id| {
+            self.tui_state.interaction.selected_activity_id() == Some(activity_id)
+        });
+        if selected_activity {
+            if let ControllerEvent::Started { run_id, .. } = event {
+                self.tui_state.selected_run = Some(run_id.clone());
+            }
         }
         let selector_event = matches!(
-            &event,
+            event,
             ControllerEvent::SessionListLoaded { .. }
                 | ControllerEvent::SessionListFailed { .. }
                 | ControllerEvent::SessionSelected { .. }
                 | ControllerEvent::SessionSelectionFailed { .. }
         );
-        self.tui_state.interaction.apply(event);
+        self.tui_state.interaction.apply_update(update);
         if selector_event
             && self.input_mode == InputMode::SessionPicker
             && self.tui_state.interaction.session_picker.is_none()
@@ -2402,8 +2445,8 @@ mod terminal_tests {
 
         let event = pump
             .next_event(async {
-                Some(BackgroundEvent::Controller(ControllerEvent::Progress(
-                    "completed".to_owned(),
+                Some(BackgroundEvent::Controller(Box::new(
+                    ControllerUpdate::Control(ControllerEvent::Progress("completed".to_owned())),
                 )))
             })
             .await
@@ -2413,8 +2456,10 @@ mod terminal_tests {
             EventLoopEvent::Background(event)
                 if matches!(
                     *event,
-                    BackgroundEvent::Controller(ControllerEvent::Progress(ref detail))
-                        if detail == "completed"
+                    BackgroundEvent::Controller(ref update)
+                        if matches!(update.as_ref(), ControllerUpdate::Control(
+                            ControllerEvent::Progress(detail)
+                        ) if detail == "completed")
                 )
         ));
         pump.shutdown().await.expect("stop background pump");
@@ -2527,8 +2572,10 @@ mod terminal_tests {
         let controller = tokio::time::timeout(
             Duration::from_millis(100),
             pump.next_event(async {
-                Some(BackgroundEvent::Controller(ControllerEvent::Progress(
-                    "still responsive".to_owned(),
+                Some(BackgroundEvent::Controller(Box::new(
+                    ControllerUpdate::Control(ControllerEvent::Progress(
+                        "still responsive".to_owned(),
+                    )),
                 )))
             }),
         )
@@ -2540,8 +2587,10 @@ mod terminal_tests {
             EventLoopEvent::Background(event)
                 if matches!(
                     *event,
-                    BackgroundEvent::Controller(ControllerEvent::Progress(ref detail))
-                        if detail == "still responsive"
+                    BackgroundEvent::Controller(ref update)
+                        if matches!(update.as_ref(), ControllerUpdate::Control(
+                            ControllerEvent::Progress(detail)
+                        ) if detail == "still responsive")
                 )
         ));
 

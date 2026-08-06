@@ -36,17 +36,80 @@ pub fn render(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
+            Constraint::Length(3),
             Constraint::Min(5),
             Constraint::Length(composer_height),
         ])
         .split(area);
 
     render_session(frame, rows[0], state, theme);
-    render_transcript(frame, rows[1], state, theme);
-    render_composer(frame, rows[2], state, input_mode, theme);
+    render_activity(frame, rows[1], state, theme);
+    render_transcript(frame, rows[2], state, theme);
+    render_composer(frame, rows[3], state, input_mode, theme);
     if let Some(picker) = &state.interaction.session_picker {
         render_session_picker(frame, area, picker, theme);
     }
+}
+
+fn render_activity(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
+    let activities = state.interaction.activity_summaries();
+    let active = state.interaction.active_activity_count();
+    let completed = activities.len().saturating_sub(active);
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" ACTIVITY · {active} active · {completed} retained · [/] select "),
+            Style::default().fg(theme.text_dim),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .style(Style::default().bg(theme.bg_raised));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if activities.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " no retained Console activity",
+                Style::default().fg(theme.text_dim),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let selected = state.interaction.selected_activity_id();
+    let mut spans = Vec::new();
+    for activity in activities.iter().rev() {
+        let marker = match activity.status {
+            ConsoleRunStatus::Starting => "…",
+            ConsoleRunStatus::Running => "▶",
+            ConsoleRunStatus::Cancelling => "■",
+            ConsoleRunStatus::Completed => "✓",
+            ConsoleRunStatus::Failed | ConsoleRunStatus::TimedOut => "!",
+            ConsoleRunStatus::Cancelled => "×",
+        };
+        let color = match activity.status {
+            ConsoleRunStatus::Completed => theme.success,
+            ConsoleRunStatus::Failed | ConsoleRunStatus::TimedOut => theme.danger,
+            ConsoleRunStatus::Cancelled | ConsoleRunStatus::Cancelling => theme.warning,
+            _ => theme.rose_bright,
+        };
+        let selection = if selected == Some(activity.activity_id.as_str()) {
+            "›"
+        } else {
+            " "
+        };
+        spans.push(Span::styled(
+            format!(
+                " {selection}{marker} {}:{} ",
+                activity.agent_name,
+                short_id(activity.run_id.as_deref())
+            ),
+            Style::default().fg(color),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), inner);
 }
 
 fn render_session(frame: &mut Frame, area: Rect, state: &TuiState, theme: &Theme) {
@@ -299,7 +362,7 @@ fn render_composer(
     {
         " RUNNING · x cancel "
     } else {
-        " p compose · s sessions · F3 runs · F5 timeline "
+        " p compose · s sessions · [/] activity · F3 runs · F5 timeline "
     };
     let border = if composing {
         theme.rose_bright
