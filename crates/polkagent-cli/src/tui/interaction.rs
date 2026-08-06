@@ -5,7 +5,7 @@
 //! production runtime used by `polkagent run`.
 
 use std::path::Path;
-use std::sync::{mpsc, Arc, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
@@ -24,6 +24,7 @@ use polkagent_runtime::{
     AdapterPolicy, ComponentState, PolkagentRuntime, RuntimeOptions, RuntimeReadiness, WarningCode,
 };
 use polkagent_store_sqlite::SqlitePool;
+use tokio::sync::mpsc;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::commands::interaction_agents::{
@@ -42,6 +43,8 @@ const MAX_SESSION_SELECTOR_ITEMS: usize = 50;
 const MAX_SESSION_SELECTOR_SCAN: u32 = 1_000;
 const MAX_SESSION_TITLE_BYTES: usize = 256;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
+const CONTROLLER_EVENT_CAPACITY: usize = 256;
+const CONTROLLER_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
 const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 7] = [
     CommandName::Help,
@@ -1370,12 +1373,13 @@ pub struct RunController {
     event_rx: mpsc::Receiver<ControllerEvent>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     active: bool,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl RunController {
     #[must_use]
     pub fn new(polkagent_runtime: PolkagentRuntime) -> Self {
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel(CONTROLLER_EVENT_CAPACITY);
         Self {
             task_runtime: tokio::runtime::Handle::try_current().ok(),
             polkagent_runtime,
@@ -1383,9 +1387,19 @@ impl RunController {
             event_rx,
             cancel: None,
             active: false,
+            tasks: Vec::new(),
         }
     }
 
+    fn track_task(&mut self, task: tokio::task::JoinHandle<()>) {
+        self.tasks.retain(|task| !task.is_finished());
+        self.tasks.push(task);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the prompt task keeps cancellation, durable subscription recovery, bounded event delivery, and terminal-state ordering together"
+    )]
     pub fn start(&mut self, request: PromptRequest) -> Result<(), &'static str> {
         if self.active {
             return Err("a run is already active; cancel it before starting another");
@@ -1400,7 +1414,7 @@ impl RunController {
         self.cancel = Some(cancel_tx);
         self.active = true;
 
-        task_runtime.spawn(async move {
+        let task = task_runtime.spawn(async move {
             let PromptRequest {
                 agent_id,
                 agent_name,
@@ -1410,7 +1424,7 @@ impl RunController {
             let typed_agent_id = match parse_selected_agent_id(&agent_id) {
                 Ok(agent_id) => agent_id,
                 Err(reason) => {
-                    let _ = event_tx.send(ControllerEvent::Failed(reason));
+                    let _ = event_tx.send(ControllerEvent::Failed(reason)).await;
                     return;
                 }
             };
@@ -1425,14 +1439,18 @@ impl RunController {
             .await {
                 Ok(interaction) => interaction,
                 Err(error) => {
-                    let _ = event_tx.send(ControllerEvent::Failed(error.to_string()));
+                    let _ = event_tx
+                        .send(ControllerEvent::Failed(error.to_string()))
+                        .await;
                     return;
                 }
             };
             let client_context = match tui_client_context(&polkagent_runtime) {
                 Ok(context) => context,
                 Err(error) => {
-                    let _ = event_tx.send(ControllerEvent::Failed(error.to_string()));
+                    let _ = event_tx
+                        .send(ControllerEvent::Failed(error.to_string()))
+                        .await;
                     return;
                 }
             };
@@ -1455,32 +1473,38 @@ impl RunController {
                         cancellation_requested = true;
                         let _ = event_tx.send(ControllerEvent::Progress(
                             "cancellation queued until the durable turn is ready".to_owned(),
-                        ));
+                        )).await;
                     }
                     result = &mut prompt => match result {
                         Ok(started) => break started,
                         Err(error) => {
-                            let _ = event_tx.send(ControllerEvent::Failed(error.to_string()));
+                            let _ = event_tx
+                                .send(ControllerEvent::Failed(error.to_string()))
+                                .await;
                             return;
                         }
                     }
                 }
             };
             let Some(run_id) = started.handle.run_ids.first().copied() else {
-                let _ = event_tx.send(ControllerEvent::Failed(
-                    "durable interaction turn has no linked run".to_owned(),
-                ));
+                let _ = event_tx
+                    .send(ControllerEvent::Failed(
+                        "durable interaction turn has no linked run".to_owned(),
+                    ))
+                    .await;
                 return;
             };
             let mut events = started.events;
             let notes = runtime_notes(polkagent_runtime.readiness());
-            let _ = event_tx.send(started_controller_event(
-                &interaction,
-                turn_id,
-                run_id,
-                agent_name,
-                notes,
-            ));
+            let _ = event_tx
+                .send(started_controller_event(
+                    &interaction,
+                    turn_id,
+                    run_id,
+                    agent_name,
+                    notes,
+                ))
+                .await;
             if cancellation_requested {
                 request_turn_cancellation(service.as_ref(), turn_id, &event_tx).await;
             }
@@ -1495,9 +1519,11 @@ impl RunController {
                     result = events.recv() => match result {
                         Ok(event) => event,
                         Err(StreamError::Lagged { last_seen_sequence, resume_after_sequence }) => {
-                            let _ = event_tx.send(ControllerEvent::Progress(format!(
-                                "interaction stream lagged at sequence {resume_after_sequence}; replaying durable events"
-                            )));
+                            let _ = event_tx
+                                .send(ControllerEvent::Progress(format!(
+                                    "interaction stream lagged at sequence {resume_after_sequence}; replaying durable events"
+                                )))
+                                .await;
                             match service
                                 .subscribe(SubscriptionRequest {
                                     conversation_id: interaction.conversation_id,
@@ -1509,24 +1535,31 @@ impl RunController {
                             {
                                 Ok(replacement) => events = replacement,
                                 Err(error) => {
-                                    let _ = event_tx.send(ControllerEvent::Failed(format!(
-                                        "resubscribe to durable interaction events: {error}"
-                                    )));
+                                    let _ = event_tx
+                                        .send(ControllerEvent::Failed(format!(
+                                            "resubscribe to durable interaction events: {error}"
+                                        )))
+                                        .await;
                                     return;
                                 }
                             }
                             continue;
                         }
                         Err(StreamError::Backend(error)) => {
-                            let _ = event_tx.send(ControllerEvent::Failed(format!(
-                                "interaction event stream failed: {error}"
-                            )));
+                            let _ = event_tx
+                                .send(ControllerEvent::Failed(format!(
+                                    "interaction event stream failed: {error}"
+                                )))
+                                .await;
                             return;
                         }
                         Err(StreamError::Closed) => {
-                            let _ = event_tx.send(ControllerEvent::Failed(
-                                "interaction event stream closed before a terminal event".to_owned(),
-                            ));
+                            let _ = event_tx
+                                .send(ControllerEvent::Failed(
+                                    "interaction event stream closed before a terminal event"
+                                        .to_owned(),
+                                ))
+                                .await;
                             return;
                         }
                     }
@@ -1534,11 +1567,12 @@ impl RunController {
 
                 let projected = project_interaction_event(envelope.event);
                 let terminal = projected.is_terminal();
-                if event_tx.send(projected).is_err() || terminal {
+                if event_tx.send(projected).await.is_err() || terminal {
                     return;
                 }
             }
         });
+        self.track_task(task);
 
         Ok(())
     }
@@ -1558,7 +1592,7 @@ impl RunController {
         self.cancel = None;
         let polkagent_runtime = self.polkagent_runtime.clone();
         let event_tx = self.event_tx.clone();
-        task_runtime.spawn(async move {
+        let task = task_runtime.spawn(async move {
             let ConsoleCommandRequest {
                 request_id,
                 agent_id,
@@ -1578,7 +1612,8 @@ impl RunController {
                         request_id,
                         line,
                         format!("invalid selected agent ID: {error}"),
-                    );
+                    )
+                    .await;
                     return;
                 }
             };
@@ -1600,7 +1635,8 @@ impl RunController {
                         request_id,
                         line,
                         error,
-                    );
+                    )
+                    .await;
                     return;
                 }
             };
@@ -1614,7 +1650,8 @@ impl RunController {
                         request_id,
                         line,
                         "/agent requires a selected durable Console conversation".to_owned(),
-                    );
+                    )
+                    .await;
                     return;
                 };
                 match service.list_turns(selected).await {
@@ -1626,7 +1663,8 @@ impl RunController {
                             request_id,
                             line,
                             "cannot change agents while this durable conversation has active work; cancel or wait for it to finish".to_owned(),
-                        );
+                        )
+                        .await;
                         return;
                     }
                     Ok(_) => {}
@@ -1638,7 +1676,8 @@ impl RunController {
                             request_id,
                             line,
                             format!("checking durable active work before changing agents: {error}"),
-                        );
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -1662,7 +1701,8 @@ impl RunController {
                         request_id,
                         line,
                         error.to_string(),
-                    );
+                    )
+                    .await;
                     return;
                 }
             };
@@ -1676,7 +1716,8 @@ impl RunController {
                         request_id,
                         line,
                         error.to_string(),
-                    );
+                    )
+                    .await;
                     return;
                 }
             };
@@ -1712,15 +1753,17 @@ impl RunController {
                         title: outcome.title,
                         lines: outcome.lines,
                     };
-                    let _ = event_tx.send(ControllerEvent::CommandCompleted {
-                        agent_id,
-                        conversation_id: selected_conversation_id,
-                        request_id,
-                        result,
-                        selection: outcome.selection,
-                        model_update: outcome.model_update,
-                        agent_update: outcome.agent_update,
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::CommandCompleted {
+                            agent_id,
+                            conversation_id: selected_conversation_id,
+                            request_id,
+                            result,
+                            selection: outcome.selection,
+                            model_update: outcome.model_update,
+                            agent_update: outcome.agent_update,
+                        })
+                        .await;
                 }
                 Err(error) => {
                     send_command_failure(
@@ -1730,10 +1773,12 @@ impl RunController {
                         request_id,
                         line,
                         error,
-                    );
+                    )
+                    .await;
                 }
             }
         });
+        self.track_task(task);
         Ok(())
     }
 
@@ -1748,7 +1793,7 @@ impl RunController {
         self.cancel = None;
         let polkagent_runtime = self.polkagent_runtime.clone();
         let event_tx = self.event_tx.clone();
-        task_runtime.spawn(async move {
+        let task = task_runtime.spawn(async move {
             let SessionListRequest {
                 request_id,
                 agent_id,
@@ -1756,11 +1801,13 @@ impl RunController {
             let typed_agent_id = match agent_id.parse::<AgentId>() {
                 Ok(agent_id) => agent_id,
                 Err(error) => {
-                    let _ = event_tx.send(ControllerEvent::SessionListFailed {
-                        agent_id,
-                        request_id,
-                        reason: format!("invalid selected agent ID: {error}"),
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::SessionListFailed {
+                            agent_id,
+                            request_id,
+                            reason: format!("invalid selected agent ID: {error}"),
+                        })
+                        .await;
                     return;
                 }
             };
@@ -1775,21 +1822,26 @@ impl RunController {
                 .map(|interactions| project_session_items(interactions, typed_agent_id));
             match result {
                 Ok(sessions) => {
-                    let _ = event_tx.send(ControllerEvent::SessionListLoaded {
-                        agent_id,
-                        request_id,
-                        sessions,
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::SessionListLoaded {
+                            agent_id,
+                            request_id,
+                            sessions,
+                        })
+                        .await;
                 }
                 Err(error) => {
-                    let _ = event_tx.send(ControllerEvent::SessionListFailed {
-                        agent_id,
-                        request_id,
-                        reason: format!("list durable Console sessions: {error}"),
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::SessionListFailed {
+                            agent_id,
+                            request_id,
+                            reason: format!("list durable Console sessions: {error}"),
+                        })
+                        .await;
                 }
             }
         });
+        self.track_task(task);
         Ok(())
     }
 
@@ -1804,7 +1856,7 @@ impl RunController {
         self.cancel = None;
         let polkagent_runtime = self.polkagent_runtime.clone();
         let event_tx = self.event_tx.clone();
-        task_runtime.spawn(async move {
+        let task = task_runtime.spawn(async move {
             let SessionLoadRequest {
                 request_id,
                 agent_id,
@@ -1835,60 +1887,72 @@ impl RunController {
             .await;
             match result {
                 Ok(selection) => {
-                    let _ = event_tx.send(ControllerEvent::SessionSelected {
-                        agent_id,
-                        request_id,
-                        selection,
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::SessionSelected {
+                            agent_id,
+                            request_id,
+                            selection,
+                        })
+                        .await;
                 }
                 Err(reason) => {
-                    let _ = event_tx.send(ControllerEvent::SessionSelectionFailed {
-                        agent_id,
-                        request_id,
-                        reason,
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::SessionSelectionFailed {
+                            agent_id,
+                            request_id,
+                            reason,
+                        })
+                        .await;
                 }
             }
         });
+        self.track_task(task);
         Ok(())
     }
 
     /// Load the durable TUI interaction for a selected agent without blocking
     /// input or rendering. A stale result is ignored by the reducer.
-    pub fn load_history(&self, agent_id: String) -> Result<(), &'static str> {
+    pub fn load_history(&mut self, agent_id: String) -> Result<(), &'static str> {
         let Some(task_runtime) = self.task_runtime.clone() else {
             return Err("interactive run runtime is unavailable");
         };
         let polkagent_runtime = self.polkagent_runtime.clone();
         let event_tx = self.event_tx.clone();
-        task_runtime.spawn(async move {
+        let task = task_runtime.spawn(async move {
             let typed_agent_id = match agent_id.parse::<AgentId>() {
                 Ok(agent_id) => agent_id,
                 Err(error) => {
-                    let _ = event_tx.send(ControllerEvent::HistoryFailed {
-                        agent_id,
-                        reason: format!("invalid selected agent ID: {error}"),
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::HistoryFailed {
+                            agent_id,
+                            reason: format!("invalid selected agent ID: {error}"),
+                        })
+                        .await;
                     return;
                 }
             };
             match load_console_history(&polkagent_runtime, typed_agent_id).await {
                 Ok((conversation_id, model, turns)) => {
-                    let _ = event_tx.send(ControllerEvent::HistoryLoaded {
-                        agent_id,
-                        conversation_id: conversation_id.map(|id| id.to_string()),
-                        model,
-                        turns,
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::HistoryLoaded {
+                            agent_id,
+                            conversation_id: conversation_id.map(|id| id.to_string()),
+                            model,
+                            turns,
+                        })
+                        .await;
                 }
                 Err(error) => {
-                    let _ = event_tx.send(ControllerEvent::HistoryFailed {
-                        agent_id,
-                        reason: error,
-                    });
+                    let _ = event_tx
+                        .send(ControllerEvent::HistoryFailed {
+                            agent_id,
+                            reason: error,
+                        })
+                        .await;
                 }
             }
         });
+        self.track_task(task);
         Ok(())
     }
 
@@ -1903,6 +1967,12 @@ impl RunController {
         self.active
     }
 
+    /// Non-blocking compatibility hook for headless cross-surface fixtures.
+    /// The production TUI awaits [`Self::recv`] instead of polling this method.
+    #[allow(
+        dead_code,
+        reason = "the binary compiles this shared module without the integration fixtures that exercise the compatibility hook"
+    )]
     pub fn try_recv(&mut self) -> Option<ControllerEvent> {
         match self.event_rx.try_recv() {
             Ok(event) => {
@@ -1912,7 +1982,52 @@ impl RunController {
                 }
                 Some(event)
             }
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => None,
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => None,
+        }
+    }
+
+    /// Wait for one controller completion without polling the runtime bridge.
+    pub async fn recv(&mut self) -> Option<ControllerEvent> {
+        let event = self.event_rx.recv().await?;
+        if event.is_terminal() {
+            self.cancel = None;
+            self.active = false;
+        }
+        Some(event)
+    }
+
+    /// Cancel, drain, and reap every task spawned by this controller.
+    pub async fn shutdown(&mut self) {
+        let _ = self.cancel();
+        let mut tasks = std::mem::take(&mut self.tasks);
+        let completed = tokio::time::timeout(CONTROLLER_SHUTDOWN_GRACE, async {
+            for task in &mut tasks {
+                let _ = task.await;
+            }
+        })
+        .await
+        .is_ok();
+        if !completed {
+            for task in &tasks {
+                if !task.is_finished() {
+                    task.abort();
+                }
+            }
+            for task in tasks {
+                if !task.is_finished() {
+                    let _ = task.await;
+                }
+            }
+        }
+        self.active = false;
+    }
+}
+
+impl Drop for RunController {
+    fn drop(&mut self) {
+        let _ = self.cancel.take().map(|cancel| cancel.send(()));
+        for task in &self.tasks {
+            task.abort();
         }
     }
 }
@@ -1952,7 +2067,7 @@ fn tui_client_context(
     Ok(context)
 }
 
-fn send_command_failure(
+async fn send_command_failure(
     event_tx: &mpsc::Sender<ControllerEvent>,
     agent_id: String,
     conversation_id: Option<String>,
@@ -1967,12 +2082,14 @@ fn send_command_failure(
         title: "Command failed".to_owned(),
         lines: vec![error],
     };
-    let _ = event_tx.send(ControllerEvent::CommandFailed {
-        agent_id,
-        conversation_id,
-        request_id,
-        result,
-    });
+    let _ = event_tx
+        .send(ControllerEvent::CommandFailed {
+            agent_id,
+            conversation_id,
+            request_id,
+            result,
+        })
+        .await;
 }
 
 fn project_session_items(
@@ -2573,7 +2690,7 @@ async fn request_turn_cancellation(
         Ok(()) => format!("cancellation requested for turn {turn_id}"),
         Err(error) => format!("cancelling interaction turn {turn_id}: {error}"),
     };
-    let _ = event_tx.send(ControllerEvent::Progress(progress));
+    let _ = event_tx.send(ControllerEvent::Progress(progress)).await;
 }
 
 fn project_interaction_event(event: InteractionEvent) -> ControllerEvent {
@@ -3433,20 +3550,21 @@ mod tests {
             let mut run_id = None;
             let mut observed = Vec::new();
             loop {
-                if let Some(event) = controller.try_recv() {
-                    if let ControllerEvent::Started {
-                        run_id: started_id, ..
-                    } = &event
-                    {
-                        run_id = Some(started_id.clone());
-                    }
-                    let terminal = event.is_terminal();
-                    observed.push(event);
-                    if terminal {
-                        return (run_id, observed);
-                    }
+                let event = controller
+                    .recv()
+                    .await
+                    .expect("controller event channel remains open");
+                if let ControllerEvent::Started {
+                    run_id: started_id, ..
+                } = &event
+                {
+                    run_id = Some(started_id.clone());
                 }
-                tokio::task::yield_now().await;
+                let terminal = event.is_terminal();
+                observed.push(event);
+                if terminal {
+                    return (run_id, observed);
+                }
             }
         })
         .await
@@ -3456,16 +3574,16 @@ mod tests {
     async fn wait_for_history(controller: &mut RunController) -> ControllerEvent {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Some(event) = controller.try_recv() {
-                    if matches!(
-                        event,
-                        ControllerEvent::HistoryLoaded { .. }
-                            | ControllerEvent::HistoryFailed { .. }
-                    ) {
-                        return event;
-                    }
+                let event = controller
+                    .recv()
+                    .await
+                    .expect("controller event channel remains open");
+                if matches!(
+                    event,
+                    ControllerEvent::HistoryLoaded { .. } | ControllerEvent::HistoryFailed { .. }
+                ) {
+                    return event;
                 }
-                tokio::task::yield_now().await;
             }
         })
         .await

@@ -21,11 +21,13 @@ use anyhow::{anyhow, Result};
 use crossterm::{
     cursor::Show,
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream,
     },
     execute,
     terminal::{enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use futures::{Stream, StreamExt as _};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -60,6 +62,198 @@ pub const FLUSH_DIVISOR: u64 = 6;
 pub const FLUSH_DIVISOR_IDLE: u64 = 12;
 /// Refresh database data every N seconds.
 pub const REFRESH_INTERVAL_SECS: u64 = 5;
+/// Bounded terminal/tick queue. Key and paste events apply backpressure while
+/// ticks and resize notifications coalesce independently.
+const EVENT_CHANNEL_CAPACITY: usize = 64;
+
+// ---------------------------------------------------------------------------
+// Event pump
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+enum PumpSignal {
+    Terminal(Event),
+    Tick,
+    InputClosed(Option<String>),
+}
+
+#[derive(Debug)]
+enum EventLoopEvent {
+    Terminal(Event),
+    Tick,
+    Background(Box<ControllerEvent>),
+}
+
+/// Owns the terminal-input and clock producers for the main event loop.
+///
+/// Key/paste/mouse events use a bounded queue and await capacity. Resize uses
+/// a watch channel so a resize storm retains only the newest dimensions. Tick
+/// delivery is best-effort because one queued tick is enough to drive refresh
+/// and rendering after a delayed frame.
+struct EventPump {
+    signal_rx: tokio::sync::mpsc::Receiver<PumpSignal>,
+    resize_rx: tokio::sync::watch::Receiver<Option<(u16, u16)>>,
+    _resize_tx: tokio::sync::watch::Sender<Option<(u16, u16)>>,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl EventPump {
+    fn start() -> Self {
+        Self::start_with_input(EventStream::new(), FRAME_DURATION, EVENT_CHANNEL_CAPACITY)
+    }
+
+    fn start_with_input<S>(input: S, tick_period: Duration, capacity: usize) -> Self
+    where
+        S: Stream<Item = std::io::Result<Event>> + Send + Unpin + 'static,
+    {
+        let (signal_tx, signal_rx) = tokio::sync::mpsc::channel(capacity);
+        let (resize_tx, resize_rx) = tokio::sync::watch::channel(None);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let input_task = tokio::spawn(run_input_source(
+            input,
+            signal_tx.clone(),
+            resize_tx.clone(),
+            shutdown_rx.clone(),
+        ));
+        let tick_task = tokio::spawn(run_tick_source(signal_tx, shutdown_rx, tick_period));
+
+        Self {
+            signal_rx,
+            resize_rx,
+            _resize_tx: resize_tx,
+            shutdown_tx,
+            tasks: vec![input_task, tick_task],
+        }
+    }
+
+    async fn next_event<F>(&mut self, background: F) -> Result<EventLoopEvent>
+    where
+        F: std::future::Future<Output = Option<ControllerEvent>>,
+    {
+        tokio::pin!(background);
+        tokio::select! {
+            resize = self.resize_rx.changed() => {
+                resize.map_err(|_| anyhow!("terminal resize source closed"))?;
+                let Some((width, height)) = *self.resize_rx.borrow_and_update() else {
+                    return Err(anyhow!("terminal resize source changed without dimensions"));
+                };
+                Ok(EventLoopEvent::Terminal(Event::Resize(width, height)))
+            }
+            signal = self.signal_rx.recv() => match signal {
+                Some(PumpSignal::Terminal(event)) => Ok(EventLoopEvent::Terminal(event)),
+                Some(PumpSignal::Tick) => Ok(EventLoopEvent::Tick),
+                Some(PumpSignal::InputClosed(Some(error))) => {
+                    Err(anyhow!("terminal input failed: {error}"))
+                }
+                Some(PumpSignal::InputClosed(None)) => Err(anyhow!("terminal input closed")),
+                None => Err(anyhow!("terminal event pump stopped unexpectedly")),
+            },
+            event = &mut background => event
+                .map(Box::new)
+                .map(EventLoopEvent::Background)
+                .ok_or_else(|| anyhow!("TUI background event channel closed")),
+        }
+    }
+
+    async fn shutdown(&mut self) -> Result<()> {
+        let _ = self.shutdown_tx.send(true);
+        let mut errors = Vec::new();
+        for task in self.tasks.drain(..) {
+            if let Err(error) = task.await {
+                errors.push(error.to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "TUI event-pump shutdown failed: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+}
+
+impl Drop for EventPump {
+    fn drop(&mut self) {
+        let _ = self.shutdown_tx.send(true);
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+async fn run_input_source<S>(
+    mut input: S,
+    signal_tx: tokio::sync::mpsc::Sender<PumpSignal>,
+    resize_tx: tokio::sync::watch::Sender<Option<(u16, u16)>>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) where
+    S: Stream<Item = std::io::Result<Event>> + Send + Unpin,
+{
+    loop {
+        let next = tokio::select! {
+            biased;
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    return;
+                }
+                continue;
+            }
+            next = input.next() => next,
+        };
+
+        let signal = match next {
+            Some(Ok(Event::Resize(width, height))) => {
+                resize_tx.send_replace(Some((width, height)));
+                continue;
+            }
+            Some(Ok(event)) => PumpSignal::Terminal(event),
+            Some(Err(error)) => PumpSignal::InputClosed(Some(error.to_string())),
+            None => PumpSignal::InputClosed(None),
+        };
+        let terminal = matches!(signal, PumpSignal::InputClosed(_));
+        tokio::select! {
+            biased;
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    return;
+                }
+            }
+            result = signal_tx.send(signal) => {
+                if result.is_err() || terminal {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+async fn run_tick_source(
+    signal_tx: tokio::sync::mpsc::Sender<PumpSignal>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    tick_period: Duration,
+) {
+    let start = tokio::time::Instant::now() + tick_period;
+    let mut ticks = tokio::time::interval_at(start, tick_period);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    return;
+                }
+            }
+            _ = ticks.tick() => match signal_tx.try_send(PumpSignal::Tick) {
+                Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tab
@@ -254,62 +448,65 @@ impl App {
     // ── Event loop ──────────────────────────────────────────────────────────
 
     /// Run the main event loop until `self.running` becomes `false`.
-    pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
-        let mut last_frame = Instant::now();
-
+    pub async fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
         // Initial data load.
         self.refresh_data();
         if self.active_tab == Tab::Console {
             self.ensure_console_agent();
         }
+        terminal.draw(|frame| self.render(frame))?;
+        self.tui_state.dirty = false;
 
-        loop {
-            let frame_start = Instant::now();
+        let mut pump = EventPump::start();
+        let run_result = self.run_with_pump(terminal, &mut pump).await;
+        let shutdown_result = pump.shutdown().await;
+        self.run_controller.shutdown().await;
+        run_result.and(shutdown_result)
+    }
 
-            // 1. Poll input (non-blocking).
-            let timeout = FRAME_DURATION.saturating_sub(last_frame.elapsed());
-            if crossterm::event::poll(timeout)? {
-                let event = crossterm::event::read()?;
-                if matches!(event, Event::Key(_) | Event::Paste(_)) {
-                    self.last_input = Instant::now();
+    async fn run_with_pump(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        pump: &mut EventPump,
+    ) -> Result<()> {
+        while self.running {
+            match pump.next_event(self.run_controller.recv()).await? {
+                EventLoopEvent::Terminal(event) => {
+                    if matches!(event, Event::Key(_) | Event::Paste(_)) {
+                        self.last_input = Instant::now();
+                    }
+                    if let Some(action) = terminal_event_to_action(event, self.input_mode) {
+                        self.apply_action(action);
+                    }
                 }
-                if let Some(action) = terminal_event_to_action(event, self.input_mode) {
-                    self.apply_action(action);
-                }
+                EventLoopEvent::Background(event) => self.apply_controller_event(*event),
+                EventLoopEvent::Tick => self.tick(terminal)?,
             }
+        }
 
-            // 2. Background data refresh (every REFRESH_INTERVAL_SECS).
-            self.drain_run_events();
+        Ok(())
+    }
 
-            if self.last_refresh.elapsed().as_secs() >= REFRESH_INTERVAL_SECS {
-                self.refresh_data();
-                self.last_refresh = Instant::now();
-            }
+    fn tick(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+        if self.last_refresh.elapsed().as_secs() >= REFRESH_INTERVAL_SECS {
+            self.refresh_data();
+            self.last_refresh = Instant::now();
+        }
 
-            // 2b. Chain poller (every 6 seconds, independent of DB refresh).
-            if self.chain_poller.should_poll() {
-                self.chain_poller.poll(&mut self.tui_state);
-            }
+        if self.chain_poller.should_poll() {
+            self.chain_poller.poll(&mut self.tui_state);
+        }
 
-            // 3. Render (throttled to effective ~10 fps, or ~5 fps when idle).
-            self.frame_counter = self.frame_counter.wrapping_add(1);
-            let idle = self.last_input.elapsed().as_secs() > 5;
-            let divisor = if idle {
-                FLUSH_DIVISOR_IDLE
-            } else {
-                FLUSH_DIVISOR
-            };
-            if self.frame_counter.is_multiple_of(divisor) || self.tui_state.dirty {
-                terminal.draw(|frame| self.render(frame))?;
-                self.tui_state.dirty = false;
-            }
-
-            // 4. Exit check.
-            if !self.running {
-                break;
-            }
-
-            last_frame = frame_start;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+        let idle = self.last_input.elapsed().as_secs() > 5;
+        let divisor = if idle {
+            FLUSH_DIVISOR_IDLE
+        } else {
+            FLUSH_DIVISOR
+        };
+        if self.frame_counter.is_multiple_of(divisor) || self.tui_state.dirty {
+            terminal.draw(|frame| self.render(frame))?;
+            self.tui_state.dirty = false;
         }
 
         Ok(())
@@ -1071,43 +1268,38 @@ impl App {
         }
     }
 
-    /// Drain controller events on the terminal thread and immediately refresh
-    /// durable run projections when lifecycle state changes.
-    fn drain_run_events(&mut self) {
-        let mut refresh = false;
-        while let Some(event) = self.run_controller.try_recv() {
-            if let ControllerEvent::HistoryFailed { reason, .. } = &event {
-                self.tui_state.last_error = Some(reason.clone());
-            }
-            if let ControllerEvent::Started { run_id, .. } = &event {
-                self.tui_state.selected_run = Some(run_id.clone());
-                refresh = true;
-            }
-            if matches!(
-                event,
-                ControllerEvent::Completed { .. }
-                    | ControllerEvent::Failed(_)
-                    | ControllerEvent::Cancelled(_)
-                    | ControllerEvent::TimedOut
-            ) {
-                refresh = true;
-            }
-            let selector_event = matches!(
-                &event,
-                ControllerEvent::SessionListLoaded { .. }
-                    | ControllerEvent::SessionListFailed { .. }
-                    | ControllerEvent::SessionSelected { .. }
-                    | ControllerEvent::SessionSelectionFailed { .. }
-            );
-            self.tui_state.interaction.apply(event);
-            if selector_event
-                && self.input_mode == InputMode::SessionPicker
-                && self.tui_state.interaction.session_picker.is_none()
-            {
-                self.input_mode = InputMode::Normal;
-            }
-            self.tui_state.mark_dirty();
+    /// Apply one background completion on the terminal thread and immediately
+    /// refresh durable run projections when lifecycle state changes.
+    fn apply_controller_event(&mut self, event: ControllerEvent) {
+        if let ControllerEvent::HistoryFailed { reason, .. } = &event {
+            self.tui_state.last_error = Some(reason.clone());
         }
+        let refresh = matches!(
+            &event,
+            ControllerEvent::Started { .. }
+                | ControllerEvent::Completed { .. }
+                | ControllerEvent::Failed(_)
+                | ControllerEvent::Cancelled(_)
+                | ControllerEvent::TimedOut
+        );
+        if let ControllerEvent::Started { run_id, .. } = &event {
+            self.tui_state.selected_run = Some(run_id.clone());
+        }
+        let selector_event = matches!(
+            &event,
+            ControllerEvent::SessionListLoaded { .. }
+                | ControllerEvent::SessionListFailed { .. }
+                | ControllerEvent::SessionSelected { .. }
+                | ControllerEvent::SessionSelectionFailed { .. }
+        );
+        self.tui_state.interaction.apply(event);
+        if selector_event
+            && self.input_mode == InputMode::SessionPicker
+            && self.tui_state.interaction.session_picker.is_none()
+        {
+            self.input_mode = InputMode::Normal;
+        }
+        self.tui_state.mark_dirty();
         if refresh {
             self.refresh_data();
             self.last_refresh = Instant::now();
@@ -1692,6 +1884,9 @@ mod terminal_tests {
 
     use std::sync::{Arc, Mutex};
 
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use futures::stream;
+
     use super::*;
 
     struct RecordingRestoreActions {
@@ -1762,6 +1957,137 @@ mod terminal_tests {
 
         assert!(error.to_string().contains("disable raw mode"));
         assert_eq!(*calls.lock().unwrap(), RestoreStep::ALL);
+    }
+
+    #[tokio::test]
+    async fn headless_event_pump_bounds_input_without_dropping_actions() {
+        let source = stream::iter([
+            Ok(Event::Key(KeyEvent::new(
+                KeyCode::Char('i'),
+                KeyModifiers::NONE,
+            ))),
+            Ok(Event::Key(KeyEvent::new(
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+            ))),
+        ])
+        .chain(stream::pending());
+        let mut pump = EventPump::start_with_input(source, Duration::from_secs(60), 1);
+
+        tokio::task::yield_now().await;
+        assert_eq!(pump.signal_rx.len(), 1, "input queue must stay bounded");
+        let first = pump
+            .next_event(std::future::pending())
+            .await
+            .expect("first input event");
+        let second = pump
+            .next_event(std::future::pending())
+            .await
+            .expect("second input event");
+
+        assert!(matches!(
+            first,
+            EventLoopEvent::Terminal(Event::Key(KeyEvent {
+                code: KeyCode::Char('i'),
+                ..
+            }))
+        ));
+        assert!(matches!(
+            second,
+            EventLoopEvent::Terminal(Event::Key(KeyEvent {
+                code: KeyCode::Char('x'),
+                ..
+            }))
+        ));
+        pump.shutdown().await.expect("stop bounded input pump");
+        assert!(pump.tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn headless_event_pump_coalesces_resize_and_tick_bursts() {
+        let source = stream::iter([
+            Ok(Event::Resize(80, 24)),
+            Ok(Event::Resize(100, 30)),
+            Ok(Event::Resize(140, 50)),
+        ])
+        .chain(stream::pending());
+        let mut pump = EventPump::start_with_input(source, Duration::from_millis(5), 1);
+
+        tokio::task::yield_now().await;
+        let resized = pump
+            .next_event(std::future::pending())
+            .await
+            .expect("latest resize event");
+        assert!(matches!(
+            resized,
+            EventLoopEvent::Terminal(Event::Resize(140, 50))
+        ));
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(pump.signal_rx.len(), 1, "ticks must coalesce at capacity");
+        assert!(matches!(
+            pump.next_event(std::future::pending())
+                .await
+                .expect("coalesced tick"),
+            EventLoopEvent::Tick
+        ));
+        pump.shutdown().await.expect("stop coalescing pump");
+    }
+
+    #[tokio::test]
+    async fn headless_event_pump_wakes_for_background_completion_without_polling() {
+        let mut pump = EventPump::start_with_input(
+            stream::pending(),
+            Duration::from_secs(60),
+            EVENT_CHANNEL_CAPACITY,
+        );
+
+        let event = pump
+            .next_event(async { Some(ControllerEvent::Progress("completed".to_owned())) })
+            .await
+            .expect("background completion event");
+        assert!(matches!(
+            event,
+            EventLoopEvent::Background(event)
+                if matches!(*event, ControllerEvent::Progress(ref detail) if detail == "completed")
+        ));
+        pump.shutdown().await.expect("stop background pump");
+    }
+
+    #[tokio::test]
+    async fn headless_event_pump_has_no_busy_tick_or_orphan_producers() {
+        let mut pump = EventPump::start_with_input(
+            stream::pending(),
+            Duration::from_secs(60),
+            EVENT_CHANNEL_CAPACITY,
+        );
+
+        let pending = tokio::time::timeout(
+            Duration::from_millis(20),
+            pump.next_event(std::future::pending()),
+        )
+        .await;
+        assert!(pending.is_err(), "event pump woke without an event");
+        assert!(pump.tasks.iter().all(|task| !task.is_finished()));
+
+        pump.shutdown().await.expect("stop idle event pump");
+        assert!(pump.tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn headless_event_pump_surfaces_input_failure_and_stops_cleanly() {
+        let source = stream::iter([Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "synthetic input failure",
+        ))]);
+        let mut pump = EventPump::start_with_input(source, Duration::from_secs(60), 1);
+
+        let error = pump
+            .next_event(std::future::pending())
+            .await
+            .expect_err("input failure must stop the loop");
+        assert!(error.to_string().contains("synthetic input failure"));
+        pump.shutdown().await.expect("stop failed input pump");
     }
 
     #[test]

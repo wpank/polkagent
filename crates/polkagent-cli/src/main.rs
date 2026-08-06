@@ -455,6 +455,8 @@ async fn launch_tui(
     config_path: Option<&std::path::Path>,
     tab: &str,
 ) -> Result<()> {
+    use futures::FutureExt as _;
+
     use crate::tui::app::{enter_tui, exit_tui, App, Tab};
     use crate::tui::interaction::tui_runtime_options;
     use crate::tui::theme::Theme;
@@ -472,7 +474,9 @@ async fn launch_tui(
     let mut terminal = enter_tui()?;
 
     // Ensure the terminal is restored even on panic.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.run(&mut terminal)));
+    let result = std::panic::AssertUnwindSafe(app.run(&mut terminal))
+        .catch_unwind()
+        .await;
 
     exit_tui(&mut terminal)?;
 
