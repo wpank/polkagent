@@ -367,12 +367,18 @@ state. OpenAPI conformance and authenticated/read-only tests pass.
 
 **Checklist:**
 
+- [x] Preserve the complete durable `RunEvent` correlation and causation
+  projection. SQLite V19 adds every component ID plus the surrounding
+  `StoredEvent` envelope without changing legacy rowids/global cursors;
+  canonical recorder/store/API replay covers null and populated values, and
+  corrupt JSON/timestamps/typed IDs/event-type pairs fail closed. PostgreSQL
+  has schema/adapter parity, but its live upgrade/conformance run is still
+  environment-gated.
 - [ ] Persist remaining user-visible diagnostic/ephemeral deltas when they are
-  required for correctness. Interaction checkpoints and durable run-event
-  global checkpoints are complete; best-effort run frames remain explicitly
-  non-replayable. Extend the SQLite run-event schema to retain the full optional
-  correlation/causation metadata instead of reconstructing absent replay fields
-  with typed defaults.
+  required for correctness. Durable run-event checkpoints are complete;
+  ephemeral frames remain non-replayable, diagnostic expiry/retention remains
+  incomplete, and trace/scope/conversation context is not yet injected by the
+  canonical recorder.
 - [x] Replace silent broadcast-lag drops with durable checkpoint recovery for
   interaction SSE and `GET /api/v1alpha1/events/stream`. The run-event socket
   attaches live delivery before bounded replay, scans filters across pages,
@@ -395,10 +401,13 @@ state. OpenAPI conformance and authenticated/read-only tests pass.
   has an uncapped validated 1,000-row cursor fallback, SQLite uses its primary-
   key index, and API lookup sanitizes backend failures.
 - [ ] Wire telemetry, audit, retention, backup, and recovery into lifecycle.
-- [ ] Add restart, retention, corrupted-projection, and broader operator
-  diagnostics. The API run-event socket now has deterministic slow-consumer,
-  duplicate, reconnect, filter/page-bound, authentication, unavailable-store,
-  and sanitized backend-recovery coverage.
+- [ ] Add retention and broader operator diagnostics. The API run-event socket
+  now has deterministic slow-consumer, duplicate, reconnect, filter/page-bound,
+  authentication, unavailable-store, sanitized backend-recovery, real-SQLite
+  metadata replay, and corrupted-projection coverage.
+
+`conversation_id` and `scope_id` persistence/filtering are metadata plumbing,
+not tenant/principal authorization. OBS-01 does not close SEC-01 isolation.
 
 **Ownership:** event/artifact/telemetry/projection modules; coordinate API/TUI
 adapter hooks through small interfaces.

@@ -914,6 +914,20 @@ original, including event IDs, sequence numbers, timestamps, and payloads.
 been expired by retention enforcement. Consumers must tolerate gaps in
 diagnostic events.
 
+**Implementation evidence (2026-08-06).** SQLite migration V19 preserves the
+complete `StoredEvent` envelope and the canonical `RunEvent` turn, step,
+effect-intent, effect-attempt, and causation IDs. It leaves legacy rowids (the
+implemented global cursor) unchanged and truthfully defaults fields that did
+not exist. Diagnostic storage prefixes are backfilled to diagnostic durability
+and normalized away on reads. Canonical recorder/store/API replay tests cover
+null and populated metadata; malformed JSON, timestamps, typed IDs,
+durability, and event-type/payload pairs fail closed. PostgreSQL has matching
+schema/adapter fields, but live migration/conformance evidence remains pending.
+This is metadata fidelity, not authorization: conversation/scope filters do
+not enforce a tenant or principal boundary. OBS-01 remains open for trace and
+request-context injection, retention, operator recovery, and best-effort event
+decisions.
+
 ---
 
 ## 9. Event stream architecture
@@ -2051,6 +2065,10 @@ CREATE TABLE run_events (
     sequence         INTEGER NOT NULL,      -- per-run monotonic
     global_sequence  INTEGER NOT NULL,      -- auto-increment across all runs
     run_id           TEXT NOT NULL,
+    turn_id          TEXT,
+    step_id          TEXT,
+    effect_intent_id TEXT,
+    effect_attempt_id TEXT,
     conversation_id  TEXT,
     correlation_id   TEXT NOT NULL,
     causation_id     TEXT,                  -- FK to run_events
@@ -3962,6 +3980,12 @@ task lists its acceptance criterion from section 20 where applicable.
   `read_from_cursor`, `read_run_events`. Enforce single-terminal-event
   trigger and unique `(run_id, sequence)` constraint.
   _Acceptance: AC-EVT-01, AC-EVT-02, AC-EVT-03, AC-EVT-04._
+  _Partial evidence (2026-08-06): SQLite V19 and the PostgreSQL event adapter
+  retain the full stored envelope and component correlation IDs. SQLite has
+  exact legacy-migration, null/populated round-trip, diagnostic normalization,
+  canonical API replay, and fail-closed corruption tests. Live PostgreSQL
+  migration/conformance, diagnostic retention, and the broader acceptance
+  matrix remain open._
 
 - [ ] **EVT-02** Implement `global_sequence` assignment in the
   single-writer task using SQLite `ROWID` auto-increment or an explicit

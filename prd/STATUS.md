@@ -126,7 +126,7 @@ exact ignored rule pointers rather than broad suppression.
 | 07 Security | Strong primitives/tests | Partial/unsafe defaults | No production security proof | Active P1 |
 | 08 Payments | Domain/store components | Missing from runtime | No | Active P2 after safe action path |
 | 09 Memory/groups/evals | Typed memory API query/lookup/stats/deletion composed; broader components exist | Prompt context and groups/feeds/evals remain | Restart-safe exact-store API operations; no orchestration proof | Active P1 |
-| 10 Observability | Interaction SSE, global run-event replay/reconnect, command-socket in-session lag recovery, and core artifact/event injection are proved | Command-socket reconnect, best-effort deltas, audit/telemetry, retention, and operator recovery remain | Live HTTP/WebSocket checkpoint, reconnect-limit, forced-lag, dedupe, and bounded-replay proof | Active P1 |
+| 10 Observability | Interaction SSE, exact durable run-event metadata/replay, global reconnect, command-socket in-session lag recovery, and core artifact/event injection are proved | Command-socket reconnect, best-effort deltas, trace/context injection, audit/telemetry, retention, and operator recovery remain | Live HTTP/WebSocket checkpoint, metadata fidelity, fail-closed corruption, reconnect-limit, forced-lag, dedupe, and bounded-replay proof | Active P1 |
 | 11 Deployment/cloud | Authenticated container boot/config/HTTP drain/same-volume interaction recovery and fresh-volume cold SQLite restore verified | Single-instance SQLite only | Exact auth matrix and failed lifecycle restore; successful backend output, online/encrypted/PostgreSQL recovery, and worker/run/effect recovery remain unproved | Active P2 |
 | 12 Marketplace/extensions | Durable local lifecycle and CLI | Operator management works; execution missing | No install-to-run proof | Active P2 |
 | 13 UX | Durable terminal chat plus monitoring TUI with durable actionable Console | Partial | Contextual follow-up/restart/cancel, persisted `/agent` and `/model`, session selection, safe tool status, and a truthful command subset are tested; harness context, approvals, broader commands, and orchestration remain | Active P0/P1 + PRD-19 |
@@ -261,6 +261,14 @@ exact ignored rule pointers rather than broad suppression.
   Separate event-ID reads no longer stop at 10,000 rows: the generic store
   fallback pages to completion with progress validation, SQLite performs an
   indexed point lookup, and API backend failures are sanitized.
+  SQLite V19 now preserves the complete persisted `StoredEvent` envelope and
+  all optional canonical `RunEvent` correlation/causation IDs while retaining
+  exact legacy rowids/global cursors. Legacy diagnostic prefixes are backfilled
+  and normalized on read. Shared replay rejects malformed JSON, timestamps,
+  typed IDs, durability, and event-type/payload mismatches instead of creating
+  defaults. PostgreSQL schema/adapter mapping has the same fields, but live
+  upgrade/conformance remains environment-gated. Conversation/scope metadata
+  and filters do not provide tenant/principal authorization.
   Black-box tests prove prompt transcript, caller-turn retry and conflict,
   idempotent cancel, target/model config updates, finite/live reconnect, restart,
   authentication/read-only policy, and an explicit uncomposed 501 response.

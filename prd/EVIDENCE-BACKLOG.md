@@ -226,8 +226,22 @@ reports.
   best-effort. A second fixture uses a real migrated SQLite `EventStore` and
   the canonical `EventRecorder`, proving stored `data_json` projects back to
   the typed `EventKind` and SQLite rowid is the durable global reconnect cursor.
-  Replay is truthful to the fields currently retained by `EventStore`; full
-  optional correlation/causation persistence remains a separate schema gap.
+  Replay is truthful to the fields retained by `EventStore`.
+
+- **OBS-01 / durable event-metadata fidelity slice (2026-08-06):** SQLite V19
+  adds conversation, causation, scope, durability, trace/span, and all four
+  optional component-correlation columns without rebuilding `run_events`.
+  A V18 file migration fixture proves exact legacy rowid/global-cursor
+  preservation, truthful null/empty defaults, diagnostic-prefix durability
+  backfill, canonical diagnostic event-type normalization, and exclusion of
+  diagnostic rows from durable cursor reads. Canonical recorder/store/API tests
+  cover null and fully populated turn/step/effect-intent/effect-attempt/
+  causation metadata. Corrupt JSON, timestamps, typed IDs, and mismatched
+  event-type/payload pairs fail closed, including a real-SQLite WebSocket 1011
+  assertion. PostgreSQL schema/adapter mapping is present, but its live test
+  returned early because `TEST_DATABASE_URL` was unset; production upgrade
+  evidence remains open. Conversation/scope filters do not prove tenant or
+  principal isolation.
 
 - **OBS-01 / command WebSocket recovery slice (2026-08-06):** real TCP tests
   prove `/ws/v1alpha1` attaches before upgrade completion, preserves its

@@ -383,6 +383,17 @@ pub struct EventCorrelation {
 
 Events also carry an optional `causation_id: Option<EventId>` that points to the parent event that directly caused this one (e.g. `EffectIntentCreated` caused by `TurnStarted`).
 
+SQLite migration V19 and the PostgreSQL event schema retain these component
+IDs and `causation_id` in the persisted `StoredEvent` envelope. SQLite keeps
+legacy rowids unchanged, backfills legacy `diagnostic:*` rows as diagnostic,
+and removes that internal prefix when reading the canonical event type. Replay
+rejects malformed typed IDs, timestamps, payloads, durability, and mismatched
+event-type/payload pairs; it does not fabricate missing canonical values.
+Legacy fields that were never stored remain truthfully null or empty.
+
+`conversation_id` and `scope_id` remain metadata. Filtering on either value is
+not a tenant/principal authorization boundary.
+
 ### Content-addressed storage
 
 Artifact identity is derived from content: the `ArtifactId` is a BLAKE3 hash of the artifact bytes. Identical content produced by separate runs shares a single blob in storage. The metadata record (mime type, size, timestamps, provenance) is stored separately alongside the hash.

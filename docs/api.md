@@ -326,14 +326,22 @@ checkpoint. Missing durable storage rejects the upgrade with `501`. A replay
 or recovery backend failure closes an accepted socket with WebSocket status
 `1011` and a generic reason; backend details are not sent to clients.
 
-Replay can only reproduce fields retained by the configured `EventStore`.
-The current SQLite run-event schema retains event/run IDs, kind payload,
-per-run/global sequences, and timestamp, but not every optional correlation or
-causation field; absent replay metadata uses the typed `RunEvent` defaults.
-Persisting that remaining correlation metadata is still an OBS-01 schema gap.
-Authentication and authorization gate the connection, but the current event
-rows are global to the configured runtime and are not tenant/principal scoped.
-Per-principal event-row isolation remains an open security/evidence gap.
+Replay fails closed unless a stored row can be projected exactly. SQLite
+migration V19 retains every optional `EventCorrelation` component
+(`turn_id`, `step_id`, `effect_intent_id`, and `effect_attempt_id`),
+`causation_id`, and the surrounding `StoredEvent` envelope. Legacy rows keep
+their exact SQLite `rowid`/global checkpoint and receive only truthful null or
+empty defaults for metadata that never existed. Malformed JSON, timestamps,
+typed IDs, durability, or event-type/payload pairs are rejected rather than
+replaced with synthesized values. The PostgreSQL event schema and adapter map
+the same fields, although live PostgreSQL upgrade/conformance evidence still
+requires `TEST_DATABASE_URL`.
+
+Authentication gates the connection, but `conversation_id` and `scope_id`
+are event metadata selectors, not authorization claims. Their persistence and
+query filters do not establish tenant/principal isolation. The current SQLite
+runtime remains instance-scoped, and principal-bound event-row authorization
+is an open SEC-01/evidence gap.
 
 The WebSocket upgrade endpoints `/api/v1alpha1/events/stream` and
 `/ws/v1alpha1` are intentionally excluded from `openapi.yaml`. OpenAPI can

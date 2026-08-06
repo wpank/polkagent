@@ -418,10 +418,20 @@ Connection: Upgrade
   "timestamp": "2026-08-03T10:30:00Z",
   "correlation": {
     "run_id": "0198bd19-40c0-7000-8000-000000000001",
-    "turn_id": null
-  }
+    "turn_id": null,
+    "step_id": null,
+    "effect_intent_id": null,
+    "effect_attempt_id": null
+  },
+  "causation_id": null
 }
 ```
+
+Durable replay preserves all four optional correlation components and
+`causation_id` exactly. Invalid persisted JSON, timestamps, typed IDs,
+durability, or event-type/payload pairs close the socket with the sanitized
+invalid-recovery reason; the server does not synthesize defaults. Scope and
+conversation metadata are filter values, not tenant/principal authorization.
 
 **Supported Event Kinds:**
 - `run_created` — run initialized
