@@ -10,11 +10,12 @@ use async_trait::async_trait;
 use polkagent_config::model_registry::{BuiltInModelCatalog, ModelCatalog as _};
 use polkagent_core::{AgentId, ConversationId, RunId};
 use polkagent_interaction::{
-    ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate, CreateInteractionRequest,
-    InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
-    InteractionEvent, InteractionOverrides, InteractionService as _, InteractionSummary,
-    InteractionTarget, InteractionTurnId, PromptRequest as InteractionPromptRequest, RunDetailView,
-    RunSummaryView, StreamError, SubscriptionRequest, TranscriptRequest,
+    ApprovalView, ClientContext, ConfigOption, ConfigOptionValue, ConfigUpdate,
+    CreateInteractionRequest, InteractionApprovalAuthority, InteractionConfig, InteractionContent,
+    InteractionError, InteractionErrorCode, InteractionEvent, InteractionOverrides,
+    InteractionService as _, InteractionSummary, InteractionTarget, InteractionTurnId,
+    PromptRequest as InteractionPromptRequest, RunDetailView, RunSummaryView, StreamError,
+    SubscriptionRequest, ToolCallKind, ToolCallStatus, ToolCallView, TranscriptRequest,
 };
 use polkagent_runtime::{
     AdapterPolicy, PolkagentRuntime, RunCommandReadModel, RuntimeError, RuntimeFactory,
@@ -22,8 +23,9 @@ use polkagent_runtime::{
 };
 use polkagent_store_sqlite::SqliteRunStore;
 use polkagent_surface_acp::{
-    AcpBackend, AgentSummary, BackendError, BackendPromptUpdate, BackendSession,
-    BackendTranscriptTurn, BackendTurn, ModelSummary, ServerConfig,
+    AcpBackend, AgentSummary, BackendApprovalRequest, BackendError, BackendPromptUpdate,
+    BackendSession, BackendTranscriptTurn, BackendTurn, ModelSummary, PermissionDecision,
+    ServerConfig,
 };
 use tokio::sync::Mutex;
 
@@ -96,6 +98,7 @@ struct PolkagentAcpBackend {
     prompt_timeout: Option<Duration>,
     active_turns: Mutex<HashMap<String, InteractionTurnId>>,
     diagnostics: AcpDiagnostics,
+    approval_enabled: bool,
 }
 
 impl PolkagentAcpBackend {
@@ -115,6 +118,8 @@ impl PolkagentAcpBackend {
         // Preserve the established local-first ACP behavior while keeping an
         // explicitly selected provider fail-closed in RuntimeFactory.
         options.adapter_policy = AdapterPolicy::AllowSimulated;
+        options.approval_authority = approval_authority(cmd)?;
+        let approval_enabled = options.approval_authority.is_some();
 
         let runtime = RuntimeFactory::build(options)
             .await
@@ -133,6 +138,7 @@ impl PolkagentAcpBackend {
             prompt_timeout: (cmd.timeout > 0).then(|| Duration::from_secs(cmd.timeout)),
             active_turns: Mutex::new(HashMap::new()),
             diagnostics,
+            approval_enabled,
         })
     }
 
@@ -149,6 +155,33 @@ impl PolkagentAcpBackend {
             );
         }
         Ok(agent)
+    }
+
+    fn verify_approval_workdir(&self, cwd: &Path) -> Result<()> {
+        if self.approval_enabled && cwd != self.runtime.workdir() {
+            anyhow::bail!(
+                "approval-enabled ACP sessions require cwd '{}' to match the runtime workspace exactly",
+                self.runtime.workdir().display()
+            );
+        }
+        Ok(())
+    }
+
+    async fn pending_approvals(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<Vec<BackendApprovalRequest>> {
+        if !self.approval_enabled {
+            return Ok(Vec::new());
+        }
+        self.runtime
+            .interactions()
+            .list_pending_approvals(conversation_id)
+            .await
+            .map_err(interaction_error)?
+            .into_iter()
+            .map(|approval| backend_approval_request(&approval))
+            .collect()
     }
 
     fn configured_models(&self) -> Result<Vec<ModelSummary>> {
@@ -403,6 +436,14 @@ impl PolkagentAcpBackend {
                             .await
                             .context("forwarding runtime tool update to ACP surface")?;
                     }
+                    InteractionEvent::ApprovalRequested { request } => {
+                        updates
+                            .send(BackendPromptUpdate::ApprovalRequested(
+                                backend_approval_request(&request)?,
+                            ))
+                            .await
+                            .context("forwarding durable approval request to ACP surface")?;
+                    }
                     InteractionEvent::TurnCompleted { result } => {
                         if let Some(size) = context_window {
                             let used = result.usage.total_tokens();
@@ -469,6 +510,33 @@ impl PolkagentAcpBackend {
     }
 }
 
+fn approval_authority(cmd: &AcpCmd) -> Result<Option<InteractionApprovalAuthority>> {
+    let fields = (
+        cmd.approval_tenant.as_deref(),
+        cmd.approval_workspace.as_deref(),
+        cmd.approval_principal,
+    );
+    let authority = match fields {
+        (None, None, None) => return Ok(None),
+        (Some(tenant_id), Some(workspace_id), Some(principal_id)) => {
+            InteractionApprovalAuthority {
+                tenant_id: tenant_id.to_owned(),
+                workspace_id: workspace_id.to_owned(),
+                principal_id,
+                surface: "acp-stdio".to_owned(),
+            }
+        }
+        _ => anyhow::bail!(
+            "--approval-tenant, --approval-workspace, and --approval-principal must be supplied together"
+        ),
+    };
+    authority
+        .validate()
+        .map_err(anyhow::Error::new)
+        .context("invalid ACP approval authority")?;
+    Ok(Some(authority))
+}
+
 fn stored_agent_model(spec_json: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(spec_json)
         .ok()?
@@ -487,6 +555,7 @@ fn parse_conversation_id(value: &str) -> Result<ConversationId> {
 fn backend_session(
     summary: InteractionSummary,
     transcript: Vec<BackendTranscriptTurn>,
+    pending_approvals: Vec<BackendApprovalRequest>,
 ) -> Result<BackendSession> {
     let InteractionTarget::Agent(agent_id) = summary.config.target else {
         anyhow::bail!("ACP interaction does not resolve to one active agent");
@@ -496,7 +565,54 @@ fn backend_session(
         selected_agent: agent_id.to_string(),
         selected_model: summary.config.model,
         transcript,
+        pending_approvals,
     })
+}
+
+fn backend_approval_request(approval: &ApprovalView) -> Result<BackendApprovalRequest> {
+    let call_id = approval.tool_call_id.context(
+        "durable approval has no exact tool-call identity and cannot be shown through ACP",
+    )?;
+    let title = bounded_redacted_approval_text(&approval.title, 200);
+    let description = bounded_redacted_approval_text(&approval.description, 1_500);
+    let summary = approval
+        .policy_reason
+        .as_deref()
+        .map_or(description.clone(), |reason| {
+            format!(
+                "{description} Policy: {}",
+                bounded_redacted_approval_text(reason, 400)
+            )
+        });
+    Ok(BackendApprovalRequest {
+        approval_id: approval.approval_id,
+        call: ToolCallView {
+            call_id,
+            run_id: approval.run_id,
+            name: title.clone(),
+            title,
+            kind: ToolCallKind::Other,
+            status: ToolCallStatus::AwaitingApproval,
+            arguments: None,
+            summary: Some(summary),
+            output: None,
+            locations: Vec::new(),
+            diff: None,
+            error: None,
+        },
+    })
+}
+
+fn bounded_redacted_approval_text(value: &str, max_bytes: usize) -> String {
+    let mut redacted = polkagent_telemetry::redact_string(value);
+    if redacted.len() > max_bytes {
+        let mut boundary = max_bytes;
+        while !redacted.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        redacted.truncate(boundary);
+    }
+    redacted
 }
 
 fn interaction_error(error: InteractionError) -> anyhow::Error {
@@ -588,6 +704,8 @@ impl AcpBackend for PolkagentAcpBackend {
         agent: Option<&str>,
         model: Option<&str>,
     ) -> Result<BackendSession, BackendError> {
+        self.verify_approval_workdir(cwd)
+            .map_err(invalid_backend_error)?;
         let target = match agent {
             Some(selector) => {
                 let agent = self.active_agent(selector).map_err(invalid_backend_error)?;
@@ -615,7 +733,7 @@ impl AcpBackend for PolkagentAcpBackend {
             })
             .await
             .map_err(interaction_backend_error)?;
-        backend_session(summary, Vec::new()).map_err(backend_error)
+        backend_session(summary, Vec::new(), Vec::new()).map_err(backend_error)
     }
 
     async fn load_session(
@@ -624,6 +742,8 @@ impl AcpBackend for PolkagentAcpBackend {
         cwd: &Path,
         include_transcript: bool,
     ) -> Result<BackendSession, BackendError> {
+        self.verify_approval_workdir(cwd)
+            .map_err(invalid_backend_error)?;
         let conversation_id = parse_conversation_id(session_id).map_err(invalid_backend_error)?;
         self.runtime
             .interactions()
@@ -643,7 +763,11 @@ impl AcpBackend for PolkagentAcpBackend {
         } else {
             Vec::new()
         };
-        backend_session(summary, transcript).map_err(backend_error)
+        let pending_approvals = self
+            .pending_approvals(conversation_id)
+            .await
+            .map_err(backend_error)?;
+        backend_session(summary, transcript, pending_approvals).map_err(backend_error)
     }
 
     async fn set_agent(
@@ -673,7 +797,7 @@ impl AcpBackend for PolkagentAcpBackend {
             .load_interaction(conversation_id)
             .await
             .map_err(interaction_backend_error)?;
-        backend_session(summary, Vec::new()).map_err(backend_error)
+        backend_session(summary, Vec::new(), Vec::new()).map_err(backend_error)
     }
 
     async fn set_model(
@@ -699,7 +823,7 @@ impl AcpBackend for PolkagentAcpBackend {
             .load_interaction(conversation_id)
             .await
             .map_err(interaction_backend_error)?;
-        backend_session(summary, Vec::new()).map_err(backend_error)
+        backend_session(summary, Vec::new(), Vec::new()).map_err(backend_error)
     }
 
     async fn list_runs(&self, session_id: &str) -> Result<Vec<RunSummaryView>, BackendError> {
@@ -766,6 +890,76 @@ impl AcpBackend for PolkagentAcpBackend {
                 "acp.cancel_requested",
                 "Cancellation was requested for the active editor prompt",
             );
+        }
+        Ok(())
+    }
+
+    async fn resolve_permission(
+        &self,
+        session_id: &str,
+        request: &BackendApprovalRequest,
+        decision: PermissionDecision,
+    ) -> Result<(), BackendError> {
+        if !self.approval_enabled {
+            return Err(BackendError::unsupported(
+                "an explicit ACP approval authority is not configured",
+            ));
+        }
+        let conversation_id = parse_conversation_id(session_id).map_err(invalid_backend_error)?;
+        let pending = self
+            .runtime
+            .interactions()
+            .list_pending_approvals(conversation_id)
+            .await
+            .map_err(interaction_backend_error)?;
+        let exact = pending
+            .into_iter()
+            .find(|approval| {
+                approval.approval_id == request.approval_id
+                    && approval.run_id == request.call.run_id
+                    && approval.tool_call_id == Some(request.call.call_id)
+            })
+            .ok_or_else(|| {
+                BackendError::conflict(
+                    "the durable approval is no longer pending for this exact tool call",
+                )
+            })?;
+
+        match decision {
+            PermissionDecision::AllowOnce => {
+                self.runtime
+                    .interactions()
+                    .approve(conversation_id, exact.approval_id)
+                    .await
+                    .map_err(interaction_backend_error)?;
+            }
+            PermissionDecision::RejectOnce => {
+                self.runtime
+                    .interactions()
+                    .deny(conversation_id, exact.approval_id, None)
+                    .await
+                    .map_err(interaction_backend_error)?;
+            }
+            PermissionDecision::Cancelled => {
+                let turn = self
+                    .runtime
+                    .interactions()
+                    .list_turns(conversation_id)
+                    .await
+                    .map_err(interaction_backend_error)?
+                    .into_iter()
+                    .find(|turn| turn.handle.run_ids.contains(&exact.run_id))
+                    .ok_or_else(|| {
+                        BackendError::conflict(
+                            "the durable approval has no interaction turn in this session",
+                        )
+                    })?;
+                self.runtime
+                    .interactions()
+                    .cancel_turn(turn.handle.turn_id)
+                    .await
+                    .map_err(interaction_backend_error)?;
+            }
         }
         Ok(())
     }

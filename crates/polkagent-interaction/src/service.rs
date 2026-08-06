@@ -110,8 +110,36 @@ impl InteractionApprovalAuthority {
                 )));
             }
         }
+        if self.principal_id.as_uuid().is_nil() {
+            return Err(InteractionError::invalid_config(
+                "approval principal must be a non-nil UUID",
+            ));
+        }
         Ok(())
     }
+}
+
+/// Derive the stable service principal used only for approval expiry and
+/// cancellation from an explicitly configured human principal.
+///
+/// This versioned, domain-separated derivation is process-independent and is
+/// never influenced by interaction or protocol request payloads.
+#[must_use]
+pub fn derive_approval_service_principal(principal_id: PrincipalId) -> PrincipalId {
+    const DOMAIN: &[u8] = b"polkagent.approval-service-principal.v1\0";
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN);
+    hasher.update(principal_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    // Preserve deterministic separation even for the cryptographically
+    // negligible nil/equal truncations. These branches also make the
+    // composition invariant explicit and testable.
+    if bytes == [0; 16] || bytes == *principal_id.as_bytes() {
+        bytes[15] ^= 1;
+    }
+    PrincipalId::from_uuid(uuid::Uuid::from_bytes(bytes))
 }
 
 /// Headless application boundary shared by terminal, TUI, API, and ACP.
@@ -230,9 +258,9 @@ pub trait InteractionService: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{HashSet, VecDeque};
 
-    use polkagent_core::ids::ConversationId;
+    use polkagent_core::ids::{ConversationId, PrincipalId};
 
     use super::*;
     use crate::event::InteractionEvent;
@@ -307,5 +335,36 @@ mod tests {
         let debug = format!("{started:?}");
         assert!(debug.contains(&handle.turn_id.to_string()));
         assert!(debug.contains("<interaction event stream>"));
+    }
+
+    #[test]
+    fn approval_authority_rejects_nil_principal() {
+        let authority = InteractionApprovalAuthority {
+            tenant_id: "tenant".to_owned(),
+            workspace_id: "workspace".to_owned(),
+            principal_id: PrincipalId::from_uuid(uuid::Uuid::nil()),
+            surface: "test".to_owned(),
+        };
+        let error = authority.validate().expect_err("nil must fail closed");
+        assert_eq!(error.code, crate::InteractionErrorCode::InvalidConfig);
+    }
+
+    #[test]
+    fn approval_service_principal_is_stable_separate_and_collision_free_for_sample() {
+        let human = PrincipalId::new();
+        let derived = derive_approval_service_principal(human);
+        assert_eq!(derived, derive_approval_service_principal(human));
+        assert_ne!(derived, human);
+        assert!(!derived.as_uuid().is_nil());
+
+        let outputs = (1..=4_096_u128)
+            .map(|value| {
+                derive_approval_service_principal(PrincipalId::from_uuid(uuid::Uuid::from_u128(
+                    value,
+                )))
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(outputs.len(), 4_096);
+        assert!(outputs.iter().all(|value| !value.as_uuid().is_nil()));
     }
 }

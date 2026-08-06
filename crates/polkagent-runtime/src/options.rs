@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use polkagent_interaction::InteractionApprovalAuthority;
+
 /// Controls whether missing concrete adapters are fatal or may be simulated.
 ///
 /// Production and editor surfaces should normally use [`Self::Strict`].
@@ -49,6 +51,9 @@ pub struct RuntimeOptions {
     /// Whether standard provider environment variables may synthesize
     /// providers. Disable this for deterministic embedded/test construction.
     pub discover_environment_providers: bool,
+    /// Explicit stable authority that enables durable human approval
+    /// resolution. Surfaces must never derive this from request payloads.
+    pub approval_authority: Option<InteractionApprovalAuthority>,
 }
 
 impl RuntimeOptions {
@@ -74,6 +79,7 @@ impl Default for RuntimeOptions {
             read_only: false,
             adapter_policy: AdapterPolicy::Strict,
             discover_environment_providers: true,
+            approval_authority: None,
         }
     }
 }
@@ -88,6 +94,7 @@ mod tests {
         assert_eq!(options.adapter_policy, AdapterPolicy::Strict);
         assert!(options.discover_environment_providers);
         assert!(!options.read_only);
+        assert!(options.approval_authority.is_none());
     }
 
     #[test]

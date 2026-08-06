@@ -15,6 +15,7 @@ polkagent-core = { path = "../polkagent-core" }
 polkagent-group = { path = "../polkagent-group" }
 
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

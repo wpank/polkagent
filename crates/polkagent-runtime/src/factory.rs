@@ -7,7 +7,8 @@ use std::time::Duration;
 use polkagent_config::{Config, DatabaseBackend};
 use polkagent_event::{EventBus, EventReceiver, EventRecorder};
 use polkagent_grant::{GrantResolver, PolicySet, ResolverConfig};
-use polkagent_service::{AppService, TimeoutConfig};
+use polkagent_interaction::derive_approval_service_principal;
+use polkagent_service::{AppService, ApprovalRuntimeConfig, TimeoutConfig};
 use polkagent_store_sqlite::{migrations, SqlitePool, SqliteRunStore};
 
 use crate::adapters::{agent, chain, harness, provider};
@@ -100,6 +101,13 @@ impl RuntimeFactory {
     )]
     pub async fn build(options: RuntimeOptions) -> Result<PolkagentRuntime, RuntimeError> {
         let workdir = resolve_workdir(&options.workdir)?;
+        if let Some(authority) = &options.approval_authority {
+            authority
+                .validate()
+                .map_err(|error| RuntimeError::ConfigValidation {
+                    message: error.to_string(),
+                })?;
+        }
         let (mut config, config_source) = load_config(&options, &workdir)?;
         if let Some(path) = &options.database_path {
             config.database.sqlite.path = path.to_string_lossy().into_owned();
@@ -156,7 +164,7 @@ impl RuntimeFactory {
             .with_event_recorder(recorder)
             .with_provider_registry(provider.registry)
             .with_conversation_store(shared_pool.clone())
-            .with_payment_store(shared_pool);
+            .with_payment_store(shared_pool.clone());
 
         if !skill_paths.is_empty() {
             builder = builder.with_discovered_skills(skill_paths.clone());
@@ -196,6 +204,26 @@ impl RuntimeFactory {
                 ComponentReadiness::disabled("chain-backed tools not registered"),
             )
         };
+
+        if let Some(authority) = &options.approval_authority {
+            builder = builder.with_approval_runtime(
+                shared_pool.clone(),
+                shared_pool.clone(),
+                ApprovalRuntimeConfig {
+                    tenant_id: authority.tenant_id.clone(),
+                    workspace_id: authority.workspace_id.clone(),
+                    authorized_principal_id: authority.principal_id,
+                    service_principal_id: derive_approval_service_principal(authority.principal_id),
+                    working_directory: workdir.clone(),
+                    security_config: config.security.clone(),
+                    approval_timeout: Duration::from_secs(
+                        config.execution.default_timeout_secs.max(1),
+                    ),
+                    recovery_lease: Duration::from_secs(30),
+                    poll_interval: Duration::from_millis(100),
+                },
+            );
+        }
 
         let (memory_readiness, memory_warning) =
             if config.memory.enabled {
@@ -249,10 +277,15 @@ impl RuntimeFactory {
                 message: error.to_string(),
             })?;
 
-        let interactions = Arc::new(DurableInteractionService::new(
-            Arc::clone(&service),
-            pool.clone(),
-        ));
+        let mut interactions = DurableInteractionService::new(Arc::clone(&service), pool.clone());
+        if let Some(authority) = options.approval_authority.clone() {
+            interactions = interactions
+                .with_approval_authority(authority)
+                .map_err(|error| RuntimeError::Service {
+                    message: error.to_string(),
+                })?;
+        }
+        let interactions = Arc::new(interactions);
         let recovered_interaction_turns =
             interactions
                 .recover()
@@ -325,12 +358,26 @@ impl RuntimeFactory {
             approval_storage: ComponentReadiness::ready(
                 "SQLite approval coordinator and execution checkpoints are migrated",
             ),
-            approval_executor: ComponentReadiness::disabled(
-                "not composed until an authenticated approval surface is available",
-            ),
-            approval_surfaces: ComponentReadiness::unavailable(
-                "APR-05 operations exist, but RuntimeFactory has no stable authenticated principal binding",
-            ),
+            approval_executor: if service.approval_executor_ready() {
+                ComponentReadiness::ready(
+                    "durable approval executor uses the shared SQLite coordinator and checkpoint store",
+                )
+            } else {
+                ComponentReadiness::disabled(
+                    "not composed without an explicit stable approval authority",
+                )
+            },
+            approval_surfaces: if service.approval_executor_ready()
+                && interactions.approval_authority_bound()
+            {
+                ComponentReadiness::ready(
+                    "one explicit stable approval authority is bound to the interaction service",
+                )
+            } else {
+                ComponentReadiness::unavailable(
+                    "no explicit stable authenticated principal binding was configured",
+                )
+            },
             conversations: ComponentReadiness::ready("durable SQLite ConversationStore configured"),
             payments: ComponentReadiness::ready("durable SQLite PaymentStore configured"),
             memory: memory_readiness,

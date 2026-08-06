@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
-    PromptResponse, ResumeSessionRequest, SessionConfigKind, SessionConfigOption,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
     SessionConfigSelectOptions, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     StopReason, TextContent,
 };
@@ -50,6 +51,19 @@ struct DelayedSuccessProvider {
     base_url: String,
     model: tokio::sync::oneshot::Receiver<String>,
     task: tokio::task::JoinHandle<()>,
+}
+
+struct ApprovalProvider {
+    base_url: String,
+    requests: tokio::sync::mpsc::Receiver<serde_json::Value>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ApprovalCase {
+    Allow,
+    Reject,
+    Cancel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +158,580 @@ fn write_progressive_provider_config(path: &std::path::Path, base_url: &str) {
         ),
     )
     .expect("write progressive provider config");
+}
+
+#[test]
+fn acp_approval_authority_flags_are_documented_and_fail_before_protocol_stdout() {
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    let help = Command::new(binary)
+        .args(["acp", "--help"])
+        .output()
+        .expect("run ACP help");
+    assert!(help.status.success());
+    let help = String::from_utf8_lossy(&help.stdout);
+    for flag in [
+        "--approval-tenant",
+        "--approval-workspace",
+        "--approval-principal",
+    ] {
+        assert!(help.contains(flag), "missing {flag} in ACP help: {help}");
+    }
+
+    let cases = [
+        vec!["acp", "--approval-tenant", "tenant-a"],
+        vec![
+            "acp",
+            "--approval-tenant",
+            "tenant-a",
+            "--approval-workspace",
+            "workspace-a",
+            "--approval-principal",
+            "not-a-uuid",
+        ],
+        vec![
+            "acp",
+            "--approval-tenant",
+            "tenant-a",
+            "--approval-workspace",
+            "workspace-a",
+            "--approval-principal",
+            "00000000-0000-0000-0000-000000000000",
+        ],
+    ];
+    for args in cases {
+        let output = Command::new(binary)
+            .args(args)
+            .output()
+            .expect("run invalid approval authority case");
+        assert!(!output.status.success());
+        assert!(
+            output.stdout.is_empty(),
+            "invalid authority contaminated protocol stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+#[tokio::test]
+async fn official_client_persists_once_only_allow_reject_and_cancel_without_orphans() {
+    for case in [
+        ApprovalCase::Allow,
+        ApprovalCase::Reject,
+        ApprovalCase::Cancel,
+    ] {
+        run_approval_case(case).await;
+    }
+}
+
+async fn run_approval_case(case: ApprovalCase) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const PRINCIPAL: &str = "018f4d71-46c7-7a31-8c63-b9020f278b01";
+    const TOOL: &str = "polkagent.governance.referendum_lookup";
+    let temp = tempfile::tempdir().expect("temporary approval directory");
+    let db_path = temp.path().join("polkagent.db");
+    let config_path = temp.path().join("polkagent.toml");
+    let policy_dir = temp.path().join("policies");
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    create_active_agent(binary, &db_path, "approval-acp", "fixture-model");
+    enable_agent_tool(&db_path, "approval-acp", TOOL);
+    write_approval_policy(&policy_dir);
+    let expected_provider_requests = if matches!(case, ApprovalCase::Cancel) {
+        1
+    } else {
+        2
+    };
+    let mut provider = approval_provider(expected_provider_requests).await;
+    write_approval_provider_config(&config_path, &provider.base_url, &policy_dir);
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_by_client = Arc::clone(&request_count);
+    let observed_call_id = Arc::new(Mutex::new(None::<String>));
+    let observed_call_id_by_client = Arc::clone(&observed_call_id);
+    let conversation_id = Arc::new(Mutex::new(None::<String>));
+    let conversation_id_by_client = Arc::clone(&conversation_id);
+    let config_arg = config_path.to_string_lossy().into_owned();
+    let observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args([
+                "--config",
+                config_arg.as_str(),
+                "acp",
+                "--agent",
+                "approval-acp",
+                "--provider",
+                "approval-provider",
+                "--approval-tenant",
+                "tenant-a",
+                "--approval-workspace",
+                "workspace-a",
+                "--approval-principal",
+                PRINCIPAL,
+            ])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            )
+            .env("POLKAGENT_ACP_FIXTURE_KEY", "fixture-key"),
+        Arc::clone(&observed),
+    );
+    let project_path = std::env::current_dir().expect("test workdir");
+    agent_client_protocol::Client
+        .builder()
+        .on_receive_request(
+            async move |request: RequestPermissionRequest, responder, _connection| {
+                request_count_by_client.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(request.options.len(), 2);
+                assert_eq!(
+                    request.options[0].option_id.0.as_ref(),
+                    "polkagent.allow_once"
+                );
+                assert_eq!(
+                    request.options[1].option_id.0.as_ref(),
+                    "polkagent.reject_once"
+                );
+                *observed_call_id_by_client
+                    .lock()
+                    .expect("approval call ID lock") =
+                    Some(request.tool_call.tool_call_id.0.to_string());
+                let outcome = match case {
+                    ApprovalCase::Allow => RequestPermissionOutcome::Selected(
+                        SelectedPermissionOutcome::new(request.options[0].option_id.clone()),
+                    ),
+                    ApprovalCase::Reject => RequestPermissionOutcome::Selected(
+                        SelectedPermissionOutcome::new(request.options[1].option_id.clone()),
+                    ),
+                    ApprovalCase::Cancel => RequestPermissionOutcome::Cancelled,
+                };
+                responder.respond(RequestPermissionResponse::new(outcome))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(
+            agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(project_path))
+                    .block_task()
+                    .await?;
+                *conversation_id_by_client
+                    .lock()
+                    .expect("approval conversation lock") =
+                    Some(session.session_id.0.as_ref().to_owned());
+                let response = connection
+                    .send_request(PromptRequest::new(
+                        session.session_id,
+                        vec![ContentBlock::Text(TextContent::new(
+                            "Look up referendum one.",
+                        ))],
+                    ))
+                    .block_task()
+                    .await?;
+                assert_eq!(
+                    response.stop_reason,
+                    if matches!(case, ApprovalCase::Cancel) {
+                        StopReason::Cancelled
+                    } else {
+                        StopReason::EndTurn
+                    }
+                );
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("official approval client {case:?} failed: {error}"));
+
+    for _ in 0..expected_provider_requests {
+        provider
+            .requests
+            .recv()
+            .await
+            .expect("approval provider request");
+    }
+    provider.task.await.expect("approval provider completed");
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    let conversation_id = conversation_id
+        .lock()
+        .expect("approval conversation lock")
+        .clone()
+        .expect("approval conversation ID");
+    let connection = rusqlite::Connection::open(&db_path).expect("open approval database");
+    let (status, effect_id, run_id, principal_type, surface): (
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = connection
+        .query_row(
+            "SELECT status, effect_id, run_id, principal_type, decision_surface
+             FROM approval_requests WHERE conversation_id = ?1",
+            [&conversation_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("load durable approval decision");
+    let (expected_status, expected_principal, expected_surface, expected_attempts) = match case {
+        ApprovalCase::Allow => ("approved", "human", "acp-stdio", 1_i64),
+        ApprovalCase::Reject => ("denied", "human", "acp-stdio", 0_i64),
+        ApprovalCase::Cancel => ("cancelled", "service", "acp-stdio-cancel", 0_i64),
+    };
+    assert_eq!(status, expected_status);
+    assert_eq!(principal_type, expected_principal);
+    assert_eq!(surface, expected_surface);
+    assert_eq!(
+        observed_call_id
+            .lock()
+            .expect("approval call ID lock")
+            .as_deref(),
+        Some(effect_id.as_str())
+    );
+    let attempts: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM effect_attempts WHERE intent_id = ?1",
+            [&effect_id],
+            |row| row.get(0),
+        )
+        .expect("count approval effect attempts");
+    assert_eq!(attempts, expected_attempts);
+    let pending: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM approval_requests
+             WHERE conversation_id = ?1 AND status = 'pending'",
+            [&conversation_id],
+            |row| row.get(0),
+        )
+        .expect("count orphan approvals");
+    assert_eq!(pending, 0);
+    let run_state: String = connection
+        .query_row("SELECT state FROM runs WHERE id = ?1", [&run_id], |row| {
+            row.get(0)
+        })
+        .expect("load approval run state");
+    if matches!(case, ApprovalCase::Cancel) {
+        assert_eq!(run_state, "cancelled:approval_cancelled");
+    } else {
+        assert_eq!(run_state, "completed");
+    }
+    assert_protocol_stdout(
+        &observed
+            .lock()
+            .expect("approval observed output lock")
+            .stdout_lines,
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn official_client_restart_reissues_one_pending_permission_and_recovers_exact_effect() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const PRINCIPAL: &str = "018f4d71-46c7-7a31-8c63-b9020f278b01";
+    const TOOL: &str = "polkagent.governance.referendum_lookup";
+    let temp = tempfile::tempdir().expect("temporary approval restart directory");
+    let db_path = temp.path().join("polkagent.db");
+    let config_path = temp.path().join("polkagent.toml");
+    let policy_dir = temp.path().join("policies");
+    let pid_path = temp.path().join("acp.pid");
+    let wrapper_path = temp.path().join("polkagent-wrapper.sh");
+    let binary = env!("CARGO_BIN_EXE_polkagent");
+    create_active_agent(binary, &db_path, "restart-approval-acp", "fixture-model");
+    enable_agent_tool(&db_path, "restart-approval-acp", TOOL);
+    write_approval_policy(&policy_dir);
+    std::fs::write(
+        &wrapper_path,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec '{}' \"$@\"\n",
+            pid_path.display(),
+            binary
+        ),
+    )
+    .expect("write ACP crash wrapper");
+    let mut permissions = std::fs::metadata(&wrapper_path)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&wrapper_path, permissions).expect("make wrapper executable");
+
+    let mut first_provider = approval_provider(1).await;
+    write_approval_provider_config(&config_path, &first_provider.base_url, &policy_dir);
+    let config_arg = config_path.to_string_lossy().into_owned();
+    let first_count = Arc::new(AtomicUsize::new(0));
+    let first_count_by_client = Arc::clone(&first_count);
+    let conversation_id = Arc::new(Mutex::new(None::<String>));
+    let conversation_id_by_client = Arc::clone(&conversation_id);
+    let pid_path_by_client = pid_path.clone();
+    let first_agent = observed_agent(
+        AcpAgentConfig::new(&wrapper_path)
+            .args([
+                "--config",
+                config_arg.as_str(),
+                "acp",
+                "--agent",
+                "restart-approval-acp",
+                "--provider",
+                "approval-provider",
+                "--approval-tenant",
+                "tenant-a",
+                "--approval-workspace",
+                "workspace-a",
+                "--approval-principal",
+                PRINCIPAL,
+            ])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            )
+            .env("POLKAGENT_ACP_FIXTURE_KEY", "fixture-key"),
+        Arc::new(Mutex::new(ObservedUpdates::default())),
+    );
+    let first_project_path = std::env::current_dir().expect("test workdir");
+    let first_result = agent_client_protocol::Client
+        .builder()
+        .on_receive_request(
+            async move |_request: RequestPermissionRequest, _responder, _connection| {
+                first_count_by_client.fetch_add(1, Ordering::SeqCst);
+                let pid = std::fs::read_to_string(&pid_path_by_client)
+                    .expect("read ACP child PID")
+                    .trim()
+                    .to_owned();
+                let killed = Command::new("kill")
+                    .args(["-9", pid.as_str()])
+                    .status()
+                    .expect("kill approval ACP process");
+                assert!(killed.success());
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(
+            first_agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(first_project_path))
+                    .block_task()
+                    .await?;
+                *conversation_id_by_client
+                    .lock()
+                    .expect("restart conversation lock") =
+                    Some(session.session_id.0.as_ref().to_owned());
+                connection
+                    .send_request(PromptRequest::new(
+                        session.session_id,
+                        vec![ContentBlock::Text(TextContent::new(
+                            "Pause this exact effect for restart.",
+                        ))],
+                    ))
+                    .block_task()
+                    .await?;
+                Ok(())
+            },
+        )
+        .await;
+    assert!(
+        first_result.is_err(),
+        "SIGKILL must close the first ACP client"
+    );
+    assert_eq!(first_count.load(Ordering::SeqCst), 1);
+    first_provider
+        .requests
+        .recv()
+        .await
+        .expect("first approval provider request");
+    first_provider
+        .task
+        .await
+        .expect("first approval provider completed");
+    let conversation_id = conversation_id
+        .lock()
+        .expect("restart conversation lock")
+        .clone()
+        .expect("restart conversation ID");
+    let (approval_id, effect_id, run_id, initial_status): (String, String, String, String) =
+        rusqlite::Connection::open(&db_path)
+            .expect("open restart approval database")
+            .query_row(
+                "SELECT id, effect_id, run_id, status FROM approval_requests
+                 WHERE conversation_id = ?1",
+                [&conversation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("load pending approval after crash");
+    assert_eq!(initial_status, "pending");
+
+    let mut recovery_provider = approval_provider_from(1, 1).await;
+    write_approval_provider_config(&config_path, &recovery_provider.base_url, &policy_dir);
+    let second_count = Arc::new(AtomicUsize::new(0));
+    let second_count_by_client = Arc::clone(&second_count);
+    let permission_responded = Arc::new(tokio::sync::Notify::new());
+    let permission_responded_by_client = Arc::clone(&permission_responded);
+    let expected_effect_id = effect_id.clone();
+    let second_observed = Arc::new(Mutex::new(ObservedUpdates::default()));
+    let second_agent = observed_agent(
+        AcpAgentConfig::new(binary)
+            .args([
+                "--config",
+                config_arg.as_str(),
+                "acp",
+                "--agent",
+                "restart-approval-acp",
+                "--provider",
+                "approval-provider",
+                "--approval-tenant",
+                "tenant-a",
+                "--approval-workspace",
+                "workspace-a",
+                "--approval-principal",
+                PRINCIPAL,
+            ])
+            .env(
+                "POLKAGENT_DATABASE_SQLITE_PATH",
+                db_path.to_string_lossy().into_owned(),
+            )
+            .env("POLKAGENT_ACP_FIXTURE_KEY", "fixture-key"),
+        Arc::clone(&second_observed),
+    );
+    let loaded_session = agent_client_protocol::schema::v1::SessionId::new(conversation_id.clone());
+    let second_project_path = std::env::current_dir().expect("test workdir");
+    let poll_db_path = db_path.clone();
+    let poll_run_id = run_id.clone();
+    let second_result = agent_client_protocol::Client
+        .builder()
+        .on_receive_request(
+            async move |request: RequestPermissionRequest, responder, _connection| {
+                second_count_by_client.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    request.tool_call.tool_call_id.0.as_ref(),
+                    expected_effect_id
+                );
+                responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                        request.options[0].option_id.clone(),
+                    )),
+                ))?;
+                permission_responded_by_client.notify_one();
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(
+            second_agent,
+            |connection: agent_client_protocol::ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                connection
+                    .send_request(LoadSessionRequest::new(loaded_session, second_project_path))
+                    .block_task()
+                    .await?;
+                tokio::time::timeout(Duration::from_secs(2), permission_responded.notified())
+                    .await
+                    .map_err(|_| {
+                        agent_client_protocol::Error::internal_error()
+                            .data("recovered permission request was not issued")
+                    })?;
+                let mut last_state = String::new();
+                for _ in 0..100 {
+                    let state = rusqlite::Connection::open(&poll_db_path)
+                        .expect("open recovery poll database")
+                        .query_row(
+                            "SELECT state FROM runs WHERE id = ?1",
+                            [&poll_run_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .expect("poll recovered run");
+                    if state == "completed" {
+                        return Ok(());
+                    }
+                    last_state = state;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(agent_client_protocol::Error::internal_error().data(format!(
+                    "recovered approval run did not complete; last state={last_state}"
+                )))
+            },
+        )
+        .await;
+    if let Err(error) = second_result {
+        let connection = rusqlite::Connection::open(&db_path).expect("open failed recovery DB");
+        let durable: (String, String) = connection
+            .query_row(
+                "SELECT a.status, r.state FROM approval_requests a
+                 JOIN runs r ON r.id = a.run_id WHERE a.id = ?1",
+                [&approval_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load failed recovery status");
+        panic!(
+            "official recovery client failed: {error}; durable={durable:?}; permission_count={}; stderr={:?}",
+            second_count.load(Ordering::SeqCst),
+            second_observed
+                .lock()
+                .expect("failed recovery observed lock")
+                .stderr_lines
+        );
+    }
+    assert_eq!(second_count.load(Ordering::SeqCst), 1);
+    recovery_provider
+        .requests
+        .recv()
+        .await
+        .expect("recovery provider request");
+    recovery_provider
+        .task
+        .await
+        .expect("recovery provider completed");
+
+    let connection = rusqlite::Connection::open(&db_path).expect("open recovered approval DB");
+    let status: String = connection
+        .query_row(
+            "SELECT status FROM approval_requests WHERE id = ?1",
+            [&approval_id],
+            |row| row.get(0),
+        )
+        .expect("load recovered approval status");
+    assert_eq!(status, "approved");
+    let attempts: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM effect_attempts WHERE intent_id = ?1",
+            [&effect_id],
+            |row| row.get(0),
+        )
+        .expect("count recovered attempts");
+    let outcomes: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM effect_outcomes o
+             JOIN effect_attempts a ON a.id = o.attempt_id
+             WHERE a.intent_id = ?1",
+            [&effect_id],
+            |row| row.get(0),
+        )
+        .expect("count recovered outcomes");
+    assert_eq!((attempts, outcomes), (1, 1));
+    assert_protocol_stdout(
+        &second_observed
+            .lock()
+            .expect("restart observed output lock")
+            .stdout_lines,
+    );
 }
 
 #[cfg(debug_assertions)]
@@ -2206,6 +2794,142 @@ fn assert_protocol_stdout(lines: &[String]) {
             Some("2.0"),
             "ACP stdout was JSON but not a JSON-RPC 2.0 frame: {line}"
         );
+    }
+}
+
+fn enable_agent_tool(db_path: &std::path::Path, name: &str, tool: &str) {
+    let connection = rusqlite::Connection::open(db_path).expect("open agent tool database");
+    let raw: String = connection
+        .query_row(
+            "SELECT spec_json FROM agents WHERE name = ?1",
+            [name],
+            |row| row.get(0),
+        )
+        .expect("load agent spec for tool opt-in");
+    let mut spec: serde_json::Value = serde_json::from_str(&raw).expect("parse agent spec");
+    spec["tools"] = serde_json::json!([tool]);
+    connection
+        .execute(
+            "UPDATE agents SET spec_json = ?1 WHERE name = ?2",
+            rusqlite::params![spec.to_string(), name],
+        )
+        .expect("persist agent tool opt-in");
+}
+
+fn write_approval_provider_config(
+    path: &std::path::Path,
+    base_url: &str,
+    policy_dir: &std::path::Path,
+) {
+    std::fs::write(
+        path,
+        format!(
+            "[[providers]]\n\
+             id = \"approval-provider\"\n\
+             provider_type = \"local\"\n\
+             base_url = \"{base_url}\"\n\
+             api_key_env = \"POLKAGENT_ACP_FIXTURE_KEY\"\n\
+             default_model = \"fixture-model\"\n\
+             \n\
+             [policy]\n\
+             enabled = true\n\
+             policy_dir = \"{}\"\n\
+             default_policy = \"approval\"\n",
+            policy_dir.display()
+        ),
+    )
+    .expect("write approval provider config");
+}
+
+fn write_approval_policy(policy_dir: &std::path::Path) {
+    std::fs::create_dir_all(policy_dir).expect("create approval policy directory");
+    std::fs::write(
+        policy_dir.join("approval.toml"),
+        "[[rules]]\n\
+         id = \"review-chain-query\"\n\
+         effect = \"require_approval\"\n\
+         action_patterns = [\"chain.query\"]\n\
+         resource_patterns = [\"tool/polkagent.governance.referendum_lookup\"]\n",
+    )
+    .expect("write approval policy");
+}
+
+async fn approval_provider(request_count: usize) -> ApprovalProvider {
+    approval_provider_from(0, request_count).await
+}
+
+async fn approval_provider_from(start_index: usize, request_count: usize) -> ApprovalProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind approval provider");
+    let address = listener.local_addr().expect("approval provider address");
+    let (requests_tx, requests_rx) = tokio::sync::mpsc::channel(request_count);
+    let task = tokio::spawn(async move {
+        for offset in 0..request_count {
+            let index = start_index + offset;
+            let (stream, _) = listener.accept().await.expect("accept approval request");
+            let mut reader = BufReader::new(stream);
+            let request = read_http_json_request(&mut reader).await;
+            let model = request
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .expect("approval provider model")
+                .to_owned();
+            requests_tx
+                .send(request)
+                .await
+                .expect("record approval provider request");
+            let message = if index == 0 {
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_acp_approval_1",
+                        "type": "function",
+                        "function": {
+                            "name": "polkagent.governance.referendum_lookup",
+                            "arguments": "{\"index\":1}"
+                        }
+                    }]
+                })
+            } else {
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": "approval flow completed"
+                })
+            };
+            let body = serde_json::json!({
+                "id": format!("chatcmpl-approval-{index}"),
+                "object": "chat.completion",
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": if index == 0 { "tool_calls" } else { "stop" }
+                }],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            reader
+                .get_mut()
+                .write_all(response.as_bytes())
+                .await
+                .expect("write approval provider response");
+            reader
+                .get_mut()
+                .shutdown()
+                .await
+                .expect("close approval provider response");
+        }
+    });
+    ApprovalProvider {
+        base_url: format!("http://{address}/v1"),
+        requests: requests_rx,
+        task,
     }
 }
 

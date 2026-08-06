@@ -16,16 +16,17 @@ use polkagent_executor_trait::{
     ContentBlock, InferenceMessage, MessageRole as InferenceMessageRole,
 };
 use polkagent_interaction::{
-    ApprovalStatus as InteractionApprovalStatus, ApprovalView, BoxInteractionEventStream,
-    ConfigOptionValue, ConfigUpdate, CreateInteractionRequest, InteractionApprovalAuthority,
-    InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
-    InteractionEvent, InteractionEventHub, InteractionEventId, InteractionOverrides,
-    InteractionRunLink, InteractionService, InteractionState, InteractionStore, InteractionSummary,
-    InteractionTarget, InteractionTranscriptTurn, InteractionTurnId, ListInteractionsRequest,
-    NewAssistantMessage, NewInteraction, NewInteractionEvent, NewInteractionTurn, OverrideValue,
-    PromptRequest, RunRole, StartedTurn, StoredTranscriptMessage, StoredTranscriptRole,
-    StoredTranscriptTurn, SubscriptionRequest, ToolCallId, ToolCallKind, ToolCallStatus,
-    ToolCallView, TranscriptRequest, TurnResult, TurnState, TurnSummary, UsageView,
+    derive_approval_service_principal, ApprovalStatus as InteractionApprovalStatus, ApprovalView,
+    BoxInteractionEventStream, ConfigOptionValue, ConfigUpdate, CreateInteractionRequest,
+    InteractionApprovalAuthority, InteractionConfig, InteractionContent, InteractionError,
+    InteractionErrorCode, InteractionEvent, InteractionEventHub, InteractionEventId,
+    InteractionOverrides, InteractionRunLink, InteractionService, InteractionState,
+    InteractionStore, InteractionSummary, InteractionTarget, InteractionTranscriptTurn,
+    InteractionTurnId, ListInteractionsRequest, NewAssistantMessage, NewInteraction,
+    NewInteractionEvent, NewInteractionTurn, OverrideValue, PromptRequest, RunRole, StartedTurn,
+    StoredTranscriptMessage, StoredTranscriptRole, StoredTranscriptTurn, SubscriptionRequest,
+    ToolCallId, ToolCallKind, ToolCallStatus, ToolCallView, TranscriptRequest, TurnResult,
+    TurnState, TurnSummary, UsageView,
 };
 use polkagent_service::{AppService, ServiceError};
 use polkagent_store_sqlite::{
@@ -55,6 +56,7 @@ const TOOL_UPDATED_EVENT_DISCRIMINATOR: u8 = 0xf7;
 const APPROVAL_REQUESTED_EVENT_DISCRIMINATOR: u8 = 0x2a;
 const APPROVAL_RESOLVED_EVENT_DISCRIMINATOR: u8 = 0x4c;
 const APPROVAL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const MAX_INTERACTION_PENDING_APPROVALS: u32 = 100;
 const PREPARED_RUN_RECOVERY_REASON: &str =
     "interaction run was interrupted before activation and cannot be resumed safely";
 const UNRECOVERABLE_OUTPUT_REASON: &str =
@@ -121,6 +123,13 @@ impl DurableInteractionService {
         Ok(self)
     }
 
+    /// Whether this interaction service has an explicit validated approval
+    /// authority bound at the composition root.
+    #[must_use]
+    pub const fn approval_authority_bound(&self) -> bool {
+        self.approval_authority.is_some()
+    }
+
     fn approval_scope(
         &self,
         conversation_id: ConversationId,
@@ -137,6 +146,41 @@ impl DurableInteractionService {
             conversation_id: Some(conversation_id),
             principal_id: authority.principal_id,
         })
+    }
+
+    async fn all_pending_approvals(
+        &self,
+        scope: ApprovalScope,
+    ) -> Result<Vec<StoredApproval>, InteractionError> {
+        let approvals = self
+            .app
+            .list_pending_approvals(
+                scope.clone(),
+                ApprovalPage {
+                    limit: MAX_INTERACTION_PENDING_APPROVALS,
+                    offset: 0,
+                },
+            )
+            .await
+            .map_err(approval_service_error)?;
+        if approvals.len()
+            == usize::try_from(MAX_INTERACTION_PENDING_APPROVALS)
+                .map_err(|_| internal_error("approval bound does not fit usize"))?
+        {
+            let overflow = self
+                .app
+                .list_pending_approvals(
+                    scope,
+                    ApprovalPage {
+                        limit: 1,
+                        offset: MAX_INTERACTION_PENDING_APPROVALS,
+                    },
+                )
+                .await
+                .map_err(approval_service_error)?;
+            ensure_pending_approval_bound(!overflow.is_empty())?;
+        }
+        Ok(approvals)
     }
 
     /// Reconcile non-terminal interaction turns with durable terminal run
@@ -727,16 +771,8 @@ impl DurableInteractionService {
             return Ok(());
         }
         let approvals = self
-            .app
-            .list_pending_approvals(
-                self.approval_scope(conversation_id)?,
-                ApprovalPage {
-                    limit: 100,
-                    offset: 0,
-                },
-            )
-            .await
-            .map_err(approval_service_error)?;
+            .all_pending_approvals(self.approval_scope(conversation_id)?)
+            .await?;
         for approval in approvals
             .into_iter()
             .filter(|approval| approval.subject.run_id == run_id)
@@ -1240,6 +1276,17 @@ impl DurableInteractionService {
     }
 }
 
+fn ensure_pending_approval_bound(has_overflow: bool) -> Result<(), InteractionError> {
+    if has_overflow {
+        Err(InteractionError::new(
+            InteractionErrorCode::Unavailable,
+            "more than 100 pending approvals exist in one interaction; refusing partial presentation or cancellation",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl InteractionService for DurableInteractionService {
     async fn new_interaction(
@@ -1414,10 +1461,110 @@ impl InteractionService for DurableInteractionService {
         if turn.summary.state.is_terminal() {
             return Ok(());
         }
+        let mut approval_cancelled_runs = HashSet::new();
+        if let Some(authority) = &self.approval_authority {
+            let human_scope = self.approval_scope(turn.summary.handle.conversation_id)?;
+            let service_principal = derive_approval_service_principal(authority.principal_id);
+            let service_scope = ApprovalScope {
+                principal_id: service_principal,
+                ..human_scope.clone()
+            };
+            let run_ids = turn
+                .runs
+                .iter()
+                .map(|run| run.run_id)
+                .collect::<HashSet<_>>();
+            let pending = self.all_pending_approvals(human_scope.clone()).await?;
+            for approval in pending
+                .into_iter()
+                .filter(|approval| run_ids.contains(&approval.subject.run_id))
+            {
+                let expected_run_state_version =
+                    RunStore::state_version(&self.pool, approval.subject.run_id)
+                        .await
+                        .map_err(|error| {
+                            store_error("load approval cancellation revision", &error)
+                        })?;
+                let cancellation = ResolveApproval {
+                    approval_id: approval.id,
+                    expected_run_state_version,
+                    effect_id: approval.subject.effect_id,
+                    run_id: approval.subject.run_id,
+                    turn_id: approval.subject.turn_id,
+                    conversation_id: approval.subject.conversation_id,
+                    subject_digest: approval.subject.subject_digest.clone(),
+                    scope: service_scope.clone(),
+                    principal_id: service_principal,
+                    principal_type: ApprovalPrincipalType::Service,
+                    surface: format!("{}-cancel", authority.surface),
+                    decision: StoreApprovalDecision::Cancel,
+                    rationale: Some("parent interaction turn cancelled".to_owned()),
+                    conditions: Vec::new(),
+                };
+                if let Err(error) = self.app.resolve_approval(cancellation).await {
+                    // A concurrent human decision may win the coordinator CAS.
+                    // Re-read through the human scope and proceed only when it
+                    // is observably terminal; a still-pending request remains
+                    // a real cancellation failure.
+                    let current = self
+                        .app
+                        .get_approval(approval.id, human_scope.clone())
+                        .await
+                        .map_err(approval_service_error)?;
+                    match current.status {
+                        StoreApprovalStatus::Cancelled => {
+                            approval_cancelled_runs.insert(approval.subject.run_id);
+                        }
+                        StoreApprovalStatus::Pending => {
+                            return Err(approval_service_error(error));
+                        }
+                        StoreApprovalStatus::Approved
+                        | StoreApprovalStatus::Denied
+                        | StoreApprovalStatus::Expired => {
+                            return Err(InteractionError::new(
+                                InteractionErrorCode::Conflict,
+                                "a concurrent approval decision won before cancellation",
+                            ));
+                        }
+                    }
+                } else {
+                    approval_cancelled_runs.insert(approval.subject.run_id);
+                }
+            }
+        }
         for run in turn.runs {
             let summary = RunStore::get(&self.pool, run.run_id)
                 .await
                 .map_err(|error| store_error("load run for interaction cancellation", &error))?;
+            if self.approval_authority.is_some() && !approval_cancelled_runs.contains(&run.run_id) {
+                let durable_events = EventStore::read_run_events(&self.pool, run.run_id)
+                    .await
+                    .map_err(|error| {
+                        store_error("inspect approval state before cancellation", &error)
+                    })?;
+                for stored in durable_events {
+                    let event = decode_stored_run_event(stored)?;
+                    if matches!(
+                        event.kind,
+                        EventKind::ApprovalGranted { .. }
+                            | EventKind::ApprovalDenied { .. }
+                            | EventKind::RunTimedOut
+                    ) {
+                        return Err(InteractionError::new(
+                            InteractionErrorCode::Conflict,
+                            "an approval decision won before cancellation",
+                        ));
+                    }
+                }
+            }
+            if summary.status.as_str() == "waiting_effect"
+                && !approval_cancelled_runs.contains(&run.run_id)
+            {
+                return Err(InteractionError::new(
+                    InteractionErrorCode::Conflict,
+                    "an approval decision won before cancellation",
+                ));
+            }
             if !run_status_is_terminal(summary.status.as_str()) {
                 self.app
                     .cancel_run(run.run_id)
@@ -1467,14 +1614,7 @@ impl InteractionService for DurableInteractionService {
         conversation_id: ConversationId,
     ) -> Result<Vec<ApprovalView>, InteractionError> {
         self.store.load_interaction(conversation_id).await?;
-        self.app
-            .list_pending_approvals(
-                self.approval_scope(conversation_id)?,
-                ApprovalPage {
-                    limit: 100,
-                    offset: 0,
-                },
-            )
+        self.all_pending_approvals(self.approval_scope(conversation_id)?)
             .await
             .map(|approvals| {
                 approvals
@@ -1482,7 +1622,6 @@ impl InteractionService for DurableInteractionService {
                     .map(|approval| approval_view(approval, None))
                     .collect()
             })
-            .map_err(approval_service_error)
     }
 
     async fn approve(
@@ -1951,6 +2090,14 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn pending_approval_surface_bound_fails_closed_on_overflow() {
+        assert!(ensure_pending_approval_bound(false).is_ok());
+        let error = ensure_pending_approval_bound(true).expect_err("overflow must fail closed");
+        assert_eq!(error.code, InteractionErrorCode::Unavailable);
+        assert!(error.message.contains("more than 100"));
+    }
 
     #[derive(Default)]
     struct CapturingExecutor {
@@ -4440,6 +4587,117 @@ mod tests {
             .await
             .expect("load approval interaction turn");
         assert_eq!(stored_turn.summary.state, TurnState::Running);
+    }
+
+    #[tokio::test]
+    async fn interaction_cancel_resolves_pending_approval_through_service_authority() {
+        let pool = test_pool();
+        let (agent_id, _spec) = seed_agent(&pool);
+        let fixture = seed_pending_approval(&pool, agent_id).await;
+        let (app, service) = approval_service(&pool, &fixture.authority);
+
+        service
+            .cancel_turn(fixture.interaction_turn_id)
+            .await
+            .expect("cancel exact approval turn");
+        let approval = app
+            .get_approval(
+                fixture.approval_id,
+                ApprovalScope {
+                    tenant_id: fixture.authority.tenant_id.clone(),
+                    workspace_id: fixture.authority.workspace_id.clone(),
+                    conversation_id: Some(fixture.conversation_id),
+                    principal_id: fixture.authority.principal_id,
+                },
+            )
+            .await
+            .expect("load cancelled approval");
+        assert_eq!(approval.status, StoreApprovalStatus::Cancelled);
+        assert_eq!(
+            approval.decided_by,
+            Some(derive_approval_service_principal(
+                fixture.authority.principal_id
+            ))
+        );
+        assert_eq!(
+            RunStore::get(&pool, fixture.run_id)
+                .await
+                .expect("load cancelled run")
+                .status,
+            RunStatus::new("cancelled:approval_cancelled")
+        );
+        assert_eq!(
+            service
+                .store
+                .load_turn(fixture.interaction_turn_id)
+                .await
+                .expect("load cancelled interaction turn")
+                .summary
+                .state,
+            TurnState::Cancelled
+        );
+        let writer = pool.writer();
+        let attempts: i64 = writer
+            .query_row(
+                "SELECT COUNT(*) FROM effect_attempts WHERE intent_id = ?1",
+                [fixture.effect_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count cancelled attempts");
+        assert_eq!(attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn allow_and_cancel_race_has_one_durable_winner_without_false_cancellation() {
+        for _ in 0..16 {
+            let pool = test_pool();
+            let (agent_id, _spec) = seed_agent(&pool);
+            let fixture = seed_pending_approval(&pool, agent_id).await;
+            let (app, service) = approval_service(&pool, &fixture.authority);
+            let approve_service = service.clone();
+            let cancel_service = service.clone();
+            let (approved, cancelled) = tokio::join!(
+                approve_service.approve(fixture.conversation_id, fixture.approval_id),
+                cancel_service.cancel_turn(fixture.interaction_turn_id),
+            );
+            assert!(approved.is_ok() ^ cancelled.is_ok());
+
+            let approval = app
+                .get_approval(
+                    fixture.approval_id,
+                    ApprovalScope {
+                        tenant_id: fixture.authority.tenant_id.clone(),
+                        workspace_id: fixture.authority.workspace_id.clone(),
+                        conversation_id: Some(fixture.conversation_id),
+                        principal_id: fixture.authority.principal_id,
+                    },
+                )
+                .await
+                .expect("load race winner");
+            match approval.status {
+                StoreApprovalStatus::Approved => {
+                    assert!(approved.is_ok());
+                    assert_eq!(
+                        cancelled
+                            .expect_err("allow winner rejects cancellation")
+                            .code,
+                        InteractionErrorCode::Conflict
+                    );
+                    assert_ne!(
+                        RunStore::get(&pool, fixture.run_id)
+                            .await
+                            .expect("load approved race run")
+                            .status,
+                        RunStatus::new("cancelled:approval_cancelled")
+                    );
+                }
+                StoreApprovalStatus::Cancelled => {
+                    assert!(cancelled.is_ok());
+                    assert!(approved.is_err());
+                }
+                status => panic!("unexpected race decision: {status:?}"),
+            }
+        }
     }
 
     #[tokio::test]

@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use polkagent_core::event::EventKind;
-use polkagent_core::{AgentId, RunId};
+use polkagent_core::{AgentId, PrincipalId, RunId};
 use polkagent_grant::{EvaluationContext, GrantDecision};
+use polkagent_interaction::InteractionApprovalAuthority;
 use polkagent_runtime::{
     AdapterPolicy, ComponentState, ConfigSource, RuntimeError, RuntimeFactory, RuntimeOptions,
     WarningCode,
@@ -68,6 +69,53 @@ fn create_legacy_agent(store: &SqliteRunStore) -> polkagent_store_sqlite::AgentR
     store
         .create_agent("runtime-agent", Some("runtime fixture"), &spec.to_string())
         .expect("create legacy agent")
+}
+
+#[tokio::test]
+async fn approval_composition_is_explicit_stable_and_readiness_is_exact() {
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = write_config(temp.path(), "");
+    let database_path = temp.path().join("approval-runtime.db");
+
+    let disabled = RuntimeFactory::build(simulated_options(
+        temp.path(),
+        config_path.clone(),
+        database_path.clone(),
+    ))
+    .await
+    .expect("build default runtime");
+    assert!(!disabled.app().approval_executor_ready());
+    assert_eq!(
+        disabled.readiness().approval_executor.state,
+        ComponentState::Disabled
+    );
+    assert_eq!(
+        disabled.readiness().approval_surfaces.state,
+        ComponentState::Unavailable
+    );
+    drop(disabled);
+
+    let mut enabled = simulated_options(temp.path(), config_path, database_path);
+    enabled.approval_authority = Some(InteractionApprovalAuthority {
+        tenant_id: "tenant-a".to_owned(),
+        workspace_id: "workspace-a".to_owned(),
+        principal_id: PrincipalId::from_uuid(
+            uuid::Uuid::parse_str("018f4d71-46c7-7a31-8c63-b9020f278b01").expect("stable UUID"),
+        ),
+        surface: "runtime-test".to_owned(),
+    });
+    let enabled = RuntimeFactory::build(enabled)
+        .await
+        .expect("build approval-enabled runtime");
+    assert!(enabled.app().approval_executor_ready());
+    assert_eq!(
+        enabled.readiness().approval_executor.state,
+        ComponentState::Ready
+    );
+    assert_eq!(
+        enabled.readiness().approval_surfaces.state,
+        ComponentState::Ready
+    );
 }
 
 #[tokio::test]

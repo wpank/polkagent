@@ -28,7 +28,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Stdio};
 use async_trait::async_trait;
 use futures::FutureExt as _;
-use polkagent_core::ConversationId;
+use polkagent_core::{ApprovalId, ConversationId};
 use polkagent_interaction::{
     format_run_inspection, format_run_list, validate_working_directory, CancelTarget,
     CommandContext, CommandName, CommandRegistry, CommandSpec, InteractionCommand, ParsedLine,
@@ -142,7 +142,7 @@ pub struct ModelSummary {
 
 /// Durable configuration and transcript returned when an ACP session is
 /// created or attached.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BackendSession {
     /// Exact durable conversation identity, also used as the ACP session ID.
     pub session_id: String,
@@ -152,6 +152,17 @@ pub struct BackendSession {
     pub selected_model: Option<String>,
     /// Durable transcript returned only by full `session/load`.
     pub transcript: Vec<BackendTranscriptTurn>,
+    /// Real pending approvals recovered for this exact durable interaction.
+    pub pending_approvals: Vec<BackendApprovalRequest>,
+}
+
+/// One exact durable approval presented through ACP native permissions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendApprovalRequest {
+    /// Stable coordinator approval identity.
+    pub approval_id: ApprovalId,
+    /// Safe tool projection carrying exact run/tool-call identity.
+    pub call: ToolCallView,
 }
 
 /// One exact durable user/assistant pair replayed during `session/load`.
@@ -179,6 +190,8 @@ pub enum BackendPromptUpdate {
     ToolCallStarted(ToolCallView),
     /// Replacement state for the same durable tool call identity.
     ToolCallUpdated(ToolCallView),
+    /// A real durable effect is awaiting a once-only decision.
+    ApprovalRequested(BackendApprovalRequest),
 }
 
 /// A once-only decision returned by an ACP permission surface.
@@ -205,6 +218,7 @@ pub fn permission_request(
     session_id: impl Into<SessionId>,
     call: ToolCallView,
 ) -> RequestPermissionRequest {
+    let call = sanitized_permission_call(call);
     RequestPermissionRequest::new(
         session_id,
         acp_tool_update(call),
@@ -221,6 +235,36 @@ pub fn permission_request(
             ),
         ],
     )
+}
+
+fn sanitized_permission_call(mut call: ToolCallView) -> ToolCallView {
+    call.name = bounded_redacted_text(&call.name, 256);
+    call.title = bounded_redacted_text(&call.title, 200);
+    call.summary = call
+        .summary
+        .as_deref()
+        .map(|value| bounded_redacted_text(value, 2_000));
+    call.error = call
+        .error
+        .as_deref()
+        .map(|value| bounded_redacted_text(value, 2_000));
+    call.arguments = None;
+    call.output = None;
+    call.locations.clear();
+    call.diff = None;
+    call
+}
+
+fn bounded_redacted_text(value: &str, max_bytes: usize) -> String {
+    let mut redacted = polkagent_telemetry::redact_string(value);
+    if redacted.len() > max_bytes {
+        let mut boundary = max_bytes;
+        while !redacted.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        redacted.truncate(boundary);
+    }
+    redacted
 }
 
 /// Decode an ACP permission response without accepting unadvertised choices.
@@ -381,6 +425,20 @@ pub trait AcpBackend: Send + Sync + 'static {
 
     /// Cancel the active run, if any, for an ACP session.
     async fn cancel(&self, session_id: &str) -> Result<(), BackendError>;
+
+    /// Resolve one exact durable permission request through the backend's
+    /// authenticated approval service. Implementations without an authority
+    /// remain unavailable and must fail closed.
+    async fn resolve_permission(
+        &self,
+        _session_id: &str,
+        _request: &BackendApprovalRequest,
+        _decision: PermissionDecision,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::unsupported(
+            "an authenticated durable approval authority is not configured",
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -474,33 +532,51 @@ pub async fn serve_stdio(
         )
         .on_receive_request(
             async move |request: LoadSessionRequest, responder, connection| {
-                let (session_id, session, transcript) = match attach_editor_session(
-                    request.session_id,
-                    request.cwd,
-                    request.mcp_servers.is_empty(),
-                    request.additional_directories.is_empty(),
-                    &load_sessions,
-                    load_backend.as_ref(),
-                    true,
-                )
-                .await
-                {
-                    Ok(loaded) => loaded,
-                    Err(error) => return responder.respond_with_error(error),
-                };
+                let (session_id, session, transcript, pending_approvals) =
+                    match attach_editor_session(
+                        request.session_id,
+                        request.cwd,
+                        request.mcp_servers.is_empty(),
+                        request.additional_directories.is_empty(),
+                        &load_sessions,
+                        load_backend.as_ref(),
+                        true,
+                    )
+                    .await
+                    {
+                        Ok(loaded) => loaded,
+                        Err(error) => return responder.respond_with_error(error),
+                    };
                 replay_transcript(&connection, &session_id, &transcript)?;
                 let (agents, models) = discover_options(load_backend.as_ref()).await?;
                 responder.respond(
                     LoadSessionResponse::new()
                         .config_options(session_config_options(&session, &agents, &models)),
                 )?;
-                send_available_commands(&connection, session_id, false)
+                send_available_commands(&connection, session_id.clone(), false)?;
+                if !pending_approvals.is_empty() {
+                    let backend = Arc::clone(&load_backend);
+                    tokio::spawn(async move {
+                        if let Err(error) = resolve_pending_permissions(
+                            &connection,
+                            backend.as_ref(),
+                            &session_id,
+                            pending_approvals,
+                        )
+                        .await
+                        {
+                            let detail = polkagent_telemetry::redact_string(&error.to_string());
+                            tracing::warn!(error = %detail, "recovered ACP permission resolution failed");
+                        }
+                    });
+                }
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
             async move |request: ResumeSessionRequest, responder, connection| {
-                let (session_id, session, _) = match attach_editor_session(
+                let (session_id, session, _, pending_approvals) = match attach_editor_session(
                     request.session_id,
                     request.cwd,
                     request.mcp_servers.is_empty(),
@@ -519,7 +595,24 @@ pub async fn serve_stdio(
                     ResumeSessionResponse::new()
                         .config_options(session_config_options(&session, &agents, &models)),
                 )?;
-                send_available_commands(&connection, session_id, false)
+                send_available_commands(&connection, session_id.clone(), false)?;
+                if !pending_approvals.is_empty() {
+                    let backend = Arc::clone(&resume_backend);
+                    tokio::spawn(async move {
+                        if let Err(error) = resolve_pending_permissions(
+                            &connection,
+                            backend.as_ref(),
+                            &session_id,
+                            pending_approvals,
+                        )
+                        .await
+                        {
+                            let detail = polkagent_telemetry::redact_string(&error.to_string());
+                            tracing::warn!(error = %detail, "resumed ACP permission resolution failed");
+                        }
+                    });
+                }
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -673,7 +766,15 @@ async fn attach_editor_session(
     sessions: &Sessions,
     backend: &dyn AcpBackend,
     include_transcript: bool,
-) -> Result<(SessionId, EditorSession, Vec<BackendTranscriptTurn>), agent_client_protocol::Error> {
+) -> Result<
+    (
+        SessionId,
+        EditorSession,
+        Vec<BackendTranscriptTurn>,
+        Vec<BackendApprovalRequest>,
+    ),
+    agent_client_protocol::Error,
+> {
     validate_session_roots(&cwd, no_mcp_servers, no_additional_directories)?;
     let durable =
         call_backend(backend.load_session(session_id.0.as_ref(), &cwd, include_transcript))
@@ -693,7 +794,27 @@ async fn attach_editor_session(
         .lock()
         .await
         .insert(session_id.clone(), session.clone());
-    Ok((session_id, session, durable.transcript))
+    Ok((
+        session_id,
+        session,
+        durable.transcript,
+        durable.pending_approvals,
+    ))
+}
+
+async fn resolve_pending_permissions(
+    connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
+    backend: &dyn AcpBackend,
+    session_id: &SessionId,
+    pending: Vec<BackendApprovalRequest>,
+) -> Result<(), agent_client_protocol::Error> {
+    for request in pending {
+        let decision = resolve_permission_request(connection, backend, session_id, request).await?;
+        if decision == PermissionDecision::Cancelled {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn validate_session_roots(
@@ -1072,10 +1193,12 @@ async fn handle_regular_prompt(
                     record_and_forward_update(
                         connection,
                         session_id,
+                        backend,
                         update,
                         &mut streamed_text,
                         &mut forwarding_error,
-                    );
+                    )
+                    .await;
                 }
                 break result;
             }
@@ -1086,10 +1209,12 @@ async fn handle_regular_prompt(
                 record_and_forward_update(
                     connection,
                     session_id,
+                    backend,
                     update,
                     &mut streamed_text,
                     &mut forwarding_error,
-                );
+                )
+                .await;
             }
         }
     };
@@ -1112,16 +1237,28 @@ async fn handle_regular_prompt(
     Ok(turn)
 }
 
-fn record_and_forward_update(
+async fn record_and_forward_update(
     connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
     session_id: &SessionId,
+    backend: &dyn AcpBackend,
     update: BackendPromptUpdate,
     streamed_text: &mut String,
     forwarding_error: &mut Option<agent_client_protocol::Error>,
 ) {
     if forwarding_error.is_some() {
-        if let BackendPromptUpdate::TextDelta(text) = update {
-            streamed_text.push_str(&text);
+        match update {
+            BackendPromptUpdate::TextDelta(text) => streamed_text.push_str(&text),
+            BackendPromptUpdate::ApprovalRequested(request) => {
+                let _ = call_backend(backend.resolve_permission(
+                    session_id.0.as_ref(),
+                    &request,
+                    PermissionDecision::Cancelled,
+                ))
+                .await;
+            }
+            BackendPromptUpdate::Usage { .. }
+            | BackendPromptUpdate::ToolCallStarted(_)
+            | BackendPromptUpdate::ToolCallUpdated(_) => {}
         }
         return;
     }
@@ -1142,10 +1279,56 @@ fn record_and_forward_update(
         BackendPromptUpdate::ToolCallUpdated(call) => connection.send_notification(
             SessionNotification::new(session_id.clone(), acp_tool_updated(call)),
         ),
+        BackendPromptUpdate::ApprovalRequested(request) => {
+            resolve_permission_request(connection, backend, session_id, request)
+                .await
+                .map(|_| ())
+        }
     };
     if let Err(error) = result {
         *forwarding_error = Some(error);
+        let _ = call_backend(backend.cancel(session_id.0.as_ref())).await;
     }
+}
+
+async fn resolve_permission_request(
+    connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>,
+    backend: &dyn AcpBackend,
+    session_id: &SessionId,
+    request: BackendApprovalRequest,
+) -> Result<PermissionDecision, agent_client_protocol::Error> {
+    let response = connection
+        .send_request(permission_request(session_id.clone(), request.call.clone()))
+        .block_task()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = call_backend(backend.resolve_permission(
+                session_id.0.as_ref(),
+                &request,
+                PermissionDecision::Cancelled,
+            ))
+            .await;
+            return Err(error);
+        }
+    };
+    let decision = match permission_decision(&response) {
+        Ok(decision) => decision,
+        Err(error) => {
+            let _ = call_backend(backend.resolve_permission(
+                session_id.0.as_ref(),
+                &request,
+                PermissionDecision::Cancelled,
+            ))
+            .await;
+            return Err(error);
+        }
+    };
+    call_backend(backend.resolve_permission(session_id.0.as_ref(), &request, decision))
+        .await
+        .map_err(|error| backend_protocol_error(&error))?;
+    Ok(decision)
 }
 
 fn acp_tool_started(call: ToolCallView) -> SessionUpdate {
@@ -1799,6 +1982,29 @@ mod tests {
         assert!(wire["toolCall"].get("rawInput").is_none());
         assert!(wire["toolCall"].get("rawOutput").is_none());
         assert_eq!(wire["options"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn permission_contract_bounds_and_redacts_untrusted_metadata() {
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz012345";
+        let mut call = tool_view(ToolCallStatus::AwaitingApproval);
+        call.title = format!("Approve {secret} {}", "é".repeat(200));
+        call.summary = Some(format!("Target {secret} {}", "x".repeat(3_000)));
+        call.arguments = Some(serde_json::json!({"secret": secret}));
+        call.output = Some(serde_json::Value::String(secret.to_owned()));
+        let request = permission_request(SessionId::new("safe-permission"), call);
+        let wire = serde_json::to_value(request).expect("encode safe request");
+        let encoded = wire.to_string();
+
+        assert!(!encoded.contains(secret));
+        assert!(encoded.contains("REDACTED"));
+        assert!(wire["toolCall"]["title"].as_str().expect("title").len() <= 200);
+        let content = wire["toolCall"]["content"][0]["content"]["text"]
+            .as_str()
+            .expect("summary text");
+        assert!(content.len() <= 2_000);
+        assert!(wire["toolCall"].get("rawInput").is_none());
+        assert!(wire["toolCall"].get("rawOutput").is_none());
     }
 
     #[test]

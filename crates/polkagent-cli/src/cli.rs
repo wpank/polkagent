@@ -272,6 +272,32 @@ pub struct AcpCmd {
     /// Maximum duration of one editor prompt (0 disables the surface timeout).
     #[arg(long, value_name = "SECS", default_value_t = 300)]
     pub timeout: u64,
+
+    /// Stable tenant identity for durable editor approval decisions.
+    ///
+    /// This local stdio opt-in requires the workspace and principal fields.
+    #[arg(
+        long,
+        value_name = "ID",
+        requires_all = ["approval_workspace", "approval_principal"]
+    )]
+    pub approval_tenant: Option<String>,
+
+    /// Stable workspace identity for durable editor approval decisions.
+    #[arg(
+        long,
+        value_name = "ID",
+        requires_all = ["approval_tenant", "approval_principal"]
+    )]
+    pub approval_workspace: Option<String>,
+
+    /// Stable non-nil human principal UUID for durable editor decisions.
+    #[arg(
+        long,
+        value_name = "UUID",
+        requires_all = ["approval_tenant", "approval_workspace"]
+    )]
+    pub approval_principal: Option<polkagent_core::PrincipalId>,
 }
 
 // ---------------------------------------------------------------------------

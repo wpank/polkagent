@@ -3508,6 +3508,7 @@ name = "polkagent-interaction"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "chrono",
  "polkagent-core",
  "polkagent-group",
@@ -4092,6 +4093,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
