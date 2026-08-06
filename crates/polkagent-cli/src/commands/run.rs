@@ -286,7 +286,7 @@ async fn start_one_shot_run(
     let agent_model = agent_spec.model;
 
     let runtime_options = one_shot_runtime_options(cmd, pool, config_path)?;
-    let runtime = RuntimeFactory::build(runtime_options)
+    let runtime = Box::pin(RuntimeFactory::build(runtime_options))
         .await
         .context("building shared Polkagent runtime")?;
     let notes = one_shot_runtime_notes(runtime.readiness(), cmd.no_harness);

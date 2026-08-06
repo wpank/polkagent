@@ -36,7 +36,7 @@ pub async fn run(cmd: &ServeCmd, config_path: Option<&Path>) -> Result<()> {
     // RuntimeFactory is the sole composition root for stores, execution
     // adapters, startup recovery, and persisted-agent rehydration.
     let options = runtime_options(cmd, config_path)?;
-    let runtime = RuntimeFactory::build(options)
+    let runtime = Box::pin(RuntimeFactory::build(options))
         .await
         .context("building shared Polkagent server runtime")?;
 
