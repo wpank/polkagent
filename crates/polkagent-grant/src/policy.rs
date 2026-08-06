@@ -226,14 +226,22 @@ pub fn evaluate_condition(condition: &Condition, ctx: &EvaluationContext) -> boo
 // Effect
 // ---------------------------------------------------------------------------
 
-/// The effect of a policy rule: either permit or deny the action.
+/// The effect of a policy rule.
+///
+/// Approval is an explicit policy outcome. It is not encoded as an allow rule
+/// plus a string condition because that representation can be accidentally
+/// interpreted as immediate authority by consumers that do not understand the
+/// condition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Effect {
     /// The rule explicitly permits the matched action.
     Allow,
     /// The rule explicitly denies the matched action.
     Deny,
+    /// The rule requires a one-shot approval before the matched action may be
+    /// authorized.
+    RequireApproval,
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +426,7 @@ impl Policy {
 }
 
 /// A policy set that has been resolved through an inheritance chain. All
-/// ancestor rules have been inlined (deny rules first, then allow rules).
+/// ancestor rules have been inlined (deny, approval, then allow rules).
 #[derive(Debug, Clone)]
 pub struct ResolvedPolicy {
     /// The final merged [`PolicySet`] with deny-overrides ordering.
@@ -432,8 +440,8 @@ pub struct ResolvedPolicy {
 /// The `policies` slice is treated as an inheritance chain: the first element
 /// is the ultimate ancestor and the last element is the most-derived child.
 /// Rules from each level are appended in order. Within the merged rule set
-/// deny-overrides semantics still apply (deny rules are sorted before allow
-/// rules).
+/// deny-overrides semantics still apply (deny rules are sorted before
+/// approval and allow rules).
 ///
 /// This function does **not** follow `extends` references automatically. The
 /// caller is responsible for ordering the slice correctly (e.g. by walking the
@@ -445,6 +453,7 @@ pub struct ResolvedPolicy {
 #[must_use]
 pub fn resolve_policy_chain(policies: &[Policy]) -> ResolvedPolicy {
     let mut all_deny = Vec::new();
+    let mut all_approval = Vec::new();
     let mut all_allow = Vec::new();
     let mut resolution_order = Vec::with_capacity(policies.len());
 
@@ -453,11 +462,13 @@ pub fn resolve_policy_chain(policies: &[Policy]) -> ResolvedPolicy {
         for rule in &policy.rules {
             match rule.effect {
                 Effect::Deny => all_deny.push(rule.clone()),
+                Effect::RequireApproval => all_approval.push(rule.clone()),
                 Effect::Allow => all_allow.push(rule.clone()),
             }
         }
     }
 
+    all_deny.append(&mut all_approval);
     all_deny.append(&mut all_allow);
     ResolvedPolicy {
         policy_set: PolicySet::new(all_deny),
@@ -834,10 +845,13 @@ pub enum PolicyDecision {
 /// 1. Iterate every rule in the set.
 /// 2. If the rule matches and has `effect: Deny` → return
 ///    [`PolicyDecision::Deny`] immediately (short-circuit).
-/// 3. Track whether any Allow rule matched.
-/// 4. After all rules, if an Allow matched → return
+/// 3. Track whether any approval or allow rule matched.
+/// 4. After all rules, if an approval rule matched → return
+///    [`PolicyDecision::RequireApproval`]. Approval therefore beats allow but
+///    can never override an explicit deny.
+/// 5. If an Allow matched → return
 ///    [`PolicyDecision::Allow`].
-/// 5. Otherwise → return [`PolicyDecision::Deny`] (default deny).
+/// 6. Otherwise → return [`PolicyDecision::Deny`] (default deny).
 #[must_use]
 pub fn evaluate(
     policy_set: &PolicySet,
@@ -846,6 +860,7 @@ pub fn evaluate(
     ctx: &EvaluationContext,
 ) -> PolicyDecision {
     let mut any_allow = false;
+    let mut approval_reason = None;
 
     for rule in &policy_set.rules {
         if !rule.matches(action, resource, ctx) {
@@ -867,10 +882,21 @@ pub fn evaluate(
                 any_allow = true;
                 // Do not break: a later Deny rule must still be able to win.
             }
+            Effect::RequireApproval => {
+                approval_reason.get_or_insert_with(|| {
+                    format!(
+                        "approval required by rule '{}': action '{}' on resource '{}'",
+                        rule.id, action, resource
+                    )
+                });
+                // Do not break: a later Deny rule must still be able to win.
+            }
         }
     }
 
-    if any_allow {
+    if let Some(reason) = approval_reason {
+        PolicyDecision::RequireApproval { reason }
+    } else if any_allow {
         PolicyDecision::Allow
     } else {
         PolicyDecision::Deny {

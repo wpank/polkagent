@@ -418,6 +418,11 @@ pub struct ModelOverrideConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PolicyConfig {
+    /// Whether the runtime must load and compose the selected policy.
+    ///
+    /// Disabled mode still installs an empty default-deny resolver; it never
+    /// implies permit-all behavior.
+    pub enabled: bool,
     /// Directory containing policy definition files. Tilde expansion is applied.
     pub policy_dir: String,
     /// Name of the policy applied when an agent spec does not specify one.
@@ -427,6 +432,7 @@ pub struct PolicyConfig {
 impl Default for PolicyConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             policy_dir: "~/.config/polkagent/policies".to_owned(),
             default_policy: "default".to_owned(),
         }
@@ -1072,6 +1078,7 @@ max_retries = 3
 # ─── Policy ──────────────────────────────────────────────────────────────────
 
 [policy]
+enabled = false
 policy_dir = "~/.config/polkagent/policies"
 default_policy = "default"
 

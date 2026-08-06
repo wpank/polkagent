@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use polkagent_config::{Config, DatabaseBackend};
 use polkagent_event::{EventBus, EventReceiver, EventRecorder};
+use polkagent_grant::{GrantResolver, PolicySet, ResolverConfig};
 use polkagent_service::{AppService, TimeoutConfig};
 use polkagent_store_sqlite::{migrations, SqlitePool, SqliteRunStore};
 
@@ -118,6 +119,7 @@ impl RuntimeFactory {
             .map(|path| resolve_skill_directory(path, &workdir))
             .collect::<Result<Vec<_>, _>>()?;
         validate_config(&config)?;
+        let (grant_resolver, policy_readiness) = build_grant_resolver(&config, &workdir)?;
 
         let skill_paths = if config.skills.auto_load {
             config.skills.directories.clone()
@@ -155,6 +157,7 @@ impl RuntimeFactory {
             .with_config(config.clone())
             .with_run_store(shared_pool.clone())
             .with_effect_store(shared_pool.clone())
+            .with_grant_resolver(grant_resolver)
             .with_event_bus(event_bus.clone())
             .with_event_recorder(recorder)
             .with_provider_registry(provider.registry)
@@ -280,10 +283,6 @@ impl RuntimeFactory {
             ));
         }
         warnings.push(ReadinessWarning::new(
-            WarningCode::PolicyCompositionIncomplete,
-            "AppService currently constructs its internal default policy/grant resolver; configured policy files are not loaded by the public builder",
-        ));
-        warnings.push(ReadinessWarning::new(
             WarningCode::ShutdownIncomplete,
             "AppService does not yet expose graceful shutdown for its timeout-enforcer task",
         ));
@@ -324,9 +323,7 @@ impl RuntimeFactory {
                 "no production signer selection API is available to the runtime factory",
             ),
             skills: skills_readiness,
-            policy_and_grants: ComponentReadiness::degraded(
-                "default in-memory policy/grant resolver only",
-            ),
+            policy_and_grants: policy_readiness,
             read_only_requested: options.read_only,
             recovered_runs,
             rehydrated_agents,
@@ -459,6 +456,100 @@ fn resolve_database_path(configured: &str, workdir: &Path) -> Result<PathBuf, Ru
         PathBuf::from(configured)
     };
     Ok(resolve_under_workdir(&expanded, workdir))
+}
+
+fn build_grant_resolver(
+    config: &Config,
+    workdir: &Path,
+) -> Result<(Arc<GrantResolver>, ComponentReadiness), RuntimeError> {
+    if !config.policy.enabled {
+        return Ok((
+            GrantResolver::new(PolicySet::default(), ResolverConfig::default()),
+            ComponentReadiness::disabled(
+                "policy loading disabled; empty default-deny resolver active",
+            ),
+        ));
+    }
+
+    let configured_dir = Path::new(&config.policy.policy_dir);
+    let expanded = expand_policy_directory(configured_dir)?;
+    let relative_to_workdir = !expanded.is_absolute();
+    let canonical_workdir = workdir
+        .canonicalize()
+        .map_err(|error| RuntimeError::Policy {
+            path: workdir.to_path_buf(),
+            message: format!("runtime workdir is unavailable during policy resolution: {error}"),
+        })?;
+    let unresolved_dir = resolve_under_workdir(&expanded, workdir);
+    let policy_dir = unresolved_dir
+        .canonicalize()
+        .map_err(|error| RuntimeError::Policy {
+            path: unresolved_dir.clone(),
+            message: format!("configured policy directory is unavailable: {error}"),
+        })?;
+    if !policy_dir.is_dir() {
+        return Err(RuntimeError::Policy {
+            path: policy_dir,
+            message: "configured policy path is not a directory".to_owned(),
+        });
+    }
+    if relative_to_workdir && !policy_dir.starts_with(&canonical_workdir) {
+        return Err(RuntimeError::Policy {
+            path: policy_dir,
+            message: "relative policy directory escapes the runtime workdir".to_owned(),
+        });
+    }
+
+    let selected = policy_dir.join(format!("{}.toml", config.policy.default_policy));
+    let policy_file = selected
+        .canonicalize()
+        .map_err(|error| RuntimeError::Policy {
+            path: selected.clone(),
+            message: format!("selected policy file is unavailable: {error}"),
+        })?;
+    if !policy_file.starts_with(&policy_dir) || !policy_file.is_file() {
+        return Err(RuntimeError::Policy {
+            path: policy_file,
+            message: "selected policy must be a regular file inside policy.policy_dir".to_owned(),
+        });
+    }
+
+    let policy_set =
+        polkagent_grant::load_policy_file(&policy_file).map_err(|error| RuntimeError::Policy {
+            path: policy_file.clone(),
+            message: error.to_string(),
+        })?;
+    let rule_count = policy_set.rules.len();
+    Ok((
+        GrantResolver::new(policy_set, ResolverConfig::default()),
+        ComponentReadiness::ready(format!(
+            "loaded {rule_count} strict rule(s) from policy '{}'",
+            config.policy.default_policy
+        )),
+    ))
+}
+
+fn expand_policy_directory(path: &Path) -> Result<PathBuf, RuntimeError> {
+    if path == Path::new("~") {
+        dirs::home_dir().ok_or_else(|| RuntimeError::Policy {
+            path: path.to_path_buf(),
+            message: "home directory is unavailable for tilde expansion".to_owned(),
+        })
+    } else if let Ok(rest) = path.strip_prefix("~") {
+        dirs::home_dir()
+            .ok_or_else(|| RuntimeError::Policy {
+                path: path.to_path_buf(),
+                message: "home directory is unavailable for tilde expansion".to_owned(),
+            })
+            .map(|home| home.join(rest))
+    } else if path.to_string_lossy().starts_with('~') {
+        Err(RuntimeError::Policy {
+            path: path.to_path_buf(),
+            message: "unsupported tilde form; use literal '~' or '~/...' only".to_owned(),
+        })
+    } else {
+        Ok(path.to_path_buf())
+    }
 }
 
 fn resolve_skill_directory(path: &Path, workdir: &Path) -> Result<PathBuf, RuntimeError> {

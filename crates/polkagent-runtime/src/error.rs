@@ -40,6 +40,15 @@ pub enum RuntimeError {
         message: String,
     },
 
+    /// The explicitly enabled policy could not be resolved or loaded.
+    #[error("policy initialization failed at {path}: {message}")]
+    Policy {
+        /// Resolved policy file or directory involved in the failure.
+        path: PathBuf,
+        /// Safe loader or path-containment diagnostic.
+        message: String,
+    },
+
     /// The selected database backend is not supported by this factory yet.
     #[error("runtime database backend is not supported yet: {backend}")]
     UnsupportedDatabase {

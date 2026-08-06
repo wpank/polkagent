@@ -230,7 +230,7 @@ pub struct GrantResolver {
     policy_set: RwLock<PolicySet>,
     active_grants: RwLock<Vec<ActiveGrant>>,
     budget_tracker: Option<Arc<BudgetTracker>>,
-    extra_gates: Vec<Box<dyn Gate>>,
+    extra_gates: Vec<Arc<dyn Gate>>,
     config: ResolverConfig,
 }
 
@@ -259,7 +259,26 @@ impl GrantResolver {
             policy_set: RwLock::new(self.policy_set.read().await.clone()),
             active_grants: RwLock::new(self.active_grants.read().await.clone()),
             budget_tracker: Some(tracker),
-            extra_gates: Vec::new(),
+            extra_gates: self.extra_gates.clone(),
+            config: self.config.clone(),
+        })
+    }
+
+    /// Attach an independent deterministic gate to the resolution pipeline.
+    ///
+    /// Gates execute only after policy has explicitly permitted the request.
+    /// Consequently a gate escalation can refine permit into
+    /// [`GrantDecision::RequireApproval`], but can never override a policy
+    /// denial. Call this while constructing the resolver, before sharing it
+    /// with application services.
+    pub async fn with_gate(self: Arc<Self>, gate: Arc<dyn Gate>) -> Arc<Self> {
+        let mut extra_gates = self.extra_gates.clone();
+        extra_gates.push(gate);
+        Arc::new(Self {
+            policy_set: RwLock::new(self.policy_set.read().await.clone()),
+            active_grants: RwLock::new(self.active_grants.read().await.clone()),
+            budget_tracker: self.budget_tracker.clone(),
+            extra_gates,
             config: self.config.clone(),
         })
     }

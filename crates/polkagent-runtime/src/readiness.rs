@@ -102,7 +102,9 @@ pub enum WarningCode {
     SqliteOptionIgnored,
     /// A configured memory backend cannot be composed by this runtime.
     MemoryUnavailable,
-    /// Policy and grant files are not yet loaded into the service resolver.
+    /// Policy and grant composition is incomplete in a legacy runtime path.
+    /// The shared runtime factory now fails startup instead of emitting this
+    /// warning when explicitly enabled policy loading cannot be composed.
     PolicyCompositionIncomplete,
     /// Graceful shutdown of service background tasks is incomplete upstream.
     ShutdownIncomplete,

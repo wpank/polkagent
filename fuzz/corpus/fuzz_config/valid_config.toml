@@ -38,6 +38,7 @@ timeout_secs = 120
 max_retries = 3
 
 [policy]
+enabled = false
 policy_dir = "~/.config/polkagent/policies"
 default_policy = "default"
 

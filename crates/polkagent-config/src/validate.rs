@@ -70,6 +70,7 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
     validate_execution(config, &mut errors);
     validate_providers(config, &mut errors);
     validate_models(config, &mut errors);
+    validate_policy(config, &mut errors);
     validate_api(config, &mut errors);
     validate_no_secrets_in_config(config, &mut errors);
     validate_server(config, &mut errors);
@@ -340,6 +341,35 @@ fn validate_models(config: &Config, errors: &mut Vec<ValidationError>) {
                 ));
             }
         }
+    }
+}
+
+fn validate_policy(config: &Config, errors: &mut Vec<ValidationError>) {
+    if !config.policy.enabled {
+        return;
+    }
+
+    if config.policy.policy_dir.trim().is_empty() {
+        errors.push(ValidationError::new(
+            "policy.policy_dir",
+            "must not be empty when policy loading is enabled",
+        ));
+    }
+
+    let name = config.policy.default_policy.trim();
+    if name.is_empty() {
+        errors.push(ValidationError::new(
+            "policy.default_policy",
+            "must not be empty when policy loading is enabled",
+        ));
+    } else if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        errors.push(ValidationError::new(
+            "policy.default_policy",
+            "must be a safe policy name containing only ASCII letters, digits, '-' or '_'",
+        ));
     }
 }
 
@@ -1792,5 +1822,41 @@ mod tests {
         cfg.watchers.push(w);
         let errs = validate(&cfg).unwrap_err();
         assert!(errs.iter().any(|e| e.field.contains("timeout_secs")));
+    }
+
+    #[test]
+    fn disabled_policy_keeps_default_deny_without_path_validation() {
+        let mut cfg = Config::default();
+        cfg.policy.enabled = false;
+        cfg.policy.policy_dir = String::new();
+        cfg.policy.default_policy = "../unsafe".to_owned();
+
+        validate(&cfg).expect("disabled policy paths are never loaded");
+    }
+
+    #[test]
+    fn enabled_policy_requires_safe_nonempty_selection() {
+        let mut cfg = Config::default();
+        cfg.policy.enabled = true;
+        cfg.policy.policy_dir = String::new();
+        cfg.policy.default_policy = "../unsafe".to_owned();
+
+        let errors = validate(&cfg).expect_err("unsafe enabled policy must fail validation");
+        assert!(errors
+            .iter()
+            .any(|error| error.field == "policy.policy_dir"));
+        assert!(errors
+            .iter()
+            .any(|error| error.field == "policy.default_policy"));
+    }
+
+    #[test]
+    fn enabled_policy_accepts_safe_selection() {
+        let mut cfg = Config::default();
+        cfg.policy.enabled = true;
+        cfg.policy.policy_dir = "policies".to_owned();
+        cfg.policy.default_policy = "operator_review-v1".to_owned();
+
+        validate(&cfg).expect("safe enabled policy selection should validate");
     }
 }

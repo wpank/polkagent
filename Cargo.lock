@@ -3740,6 +3740,7 @@ dependencies = [
  "polkagent-executor-openai",
  "polkagent-executor-openrouter",
  "polkagent-executor-trait",
+ "polkagent-grant",
  "polkagent-harness-acp",
  "polkagent-harness-claude",
  "polkagent-harness-codex",

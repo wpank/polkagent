@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use polkagent_core::event::EventKind;
 use polkagent_core::{AgentId, RunId};
+use polkagent_grant::{EvaluationContext, GrantDecision};
 use polkagent_runtime::{
     AdapterPolicy, ComponentState, ConfigSource, RuntimeError, RuntimeFactory, RuntimeOptions,
     WarningCode,
@@ -20,6 +21,14 @@ use tempfile::TempDir;
 fn write_config(root: &Path, contents: &str) -> PathBuf {
     let path = root.join("polkagent.toml");
     std::fs::write(&path, contents).expect("write config fixture");
+    path
+}
+
+fn write_policy(root: &Path, name: &str, contents: &str) -> PathBuf {
+    let directory = root.join("policies");
+    std::fs::create_dir_all(&directory).expect("create policy directory");
+    let path = directory.join(format!("{name}.toml"));
+    std::fs::write(&path, contents).expect("write policy fixture");
     path
 }
 
@@ -230,4 +239,203 @@ async fn corrupt_active_agent_fails_runtime_construction() {
 #[test]
 fn simulated_readiness_is_structured() {
     assert!(ComponentState::Degraded.is_operational());
+}
+
+#[tokio::test]
+async fn disabled_policy_composes_an_explicit_default_deny_resolver() {
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = write_config(temp.path(), "");
+    let runtime = RuntimeFactory::build(simulated_options(
+        temp.path(),
+        config_path,
+        temp.path().join("disabled-policy.db"),
+    ))
+    .await
+    .expect("build runtime with disabled policy loading");
+
+    assert_eq!(
+        runtime.readiness().policy_and_grants.state,
+        ComponentState::Disabled
+    );
+    let decision = runtime
+        .app()
+        .grant_resolver()
+        .resolve(
+            "agent-1",
+            "tool.write",
+            "workspace/src/lib.rs",
+            &EvaluationContext::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("default-deny resolution");
+    assert!(matches!(decision, GrantDecision::Deny(_)));
+}
+
+#[tokio::test]
+async fn enabled_policy_is_strictly_loaded_and_injected() {
+    let temp = TempDir::new().expect("tempdir");
+    write_policy(
+        temp.path(),
+        "runtime",
+        r#"
+[[rules]]
+id = "permit-read"
+effect = "allow"
+action_patterns = ["tool.read"]
+resource_patterns = ["workspace/**"]
+
+[[rules]]
+id = "review-write"
+effect = "require_approval"
+action_patterns = ["tool.write"]
+resource_patterns = ["workspace/**"]
+
+[[rules]]
+id = "deny-delete"
+effect = "deny"
+action_patterns = ["tool.delete"]
+resource_patterns = ["workspace/**"]
+"#,
+    );
+    let config_path = write_config(
+        temp.path(),
+        r#"
+[policy]
+enabled = true
+policy_dir = "policies"
+default_policy = "runtime"
+"#,
+    );
+    let runtime = RuntimeFactory::build(simulated_options(
+        temp.path(),
+        config_path,
+        temp.path().join("enabled-policy.db"),
+    ))
+    .await
+    .expect("build runtime with selected policy");
+
+    assert_eq!(
+        runtime.readiness().policy_and_grants.state,
+        ComponentState::Ready
+    );
+    let resolver = runtime.app().grant_resolver();
+    for (action, expected) in [
+        ("tool.read", "permit"),
+        ("tool.write", "approval"),
+        ("tool.delete", "deny"),
+        ("tool.unknown", "deny"),
+    ] {
+        let decision = resolver
+            .resolve(
+                "agent-1",
+                action,
+                "workspace/src/lib.rs",
+                &EvaluationContext::default(),
+                None,
+                None,
+            )
+            .await
+            .expect("configured resolver decision");
+        assert!(
+            matches!(
+                (&decision, expected),
+                (GrantDecision::Permit(_), "permit")
+                    | (GrantDecision::RequireApproval(_), "approval")
+                    | (GrantDecision::Deny(_), "deny")
+            ),
+            "unexpected decision for {action}: {decision:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn enabled_policy_missing_or_malformed_file_fails_startup() {
+    let temp = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(temp.path().join("policies")).expect("create policy directory");
+    let missing_config = write_config(
+        temp.path(),
+        "[policy]\nenabled = true\npolicy_dir = \"policies\"\ndefault_policy = \"missing\"\n",
+    );
+    let error = RuntimeFactory::build(simulated_options(
+        temp.path(),
+        missing_config,
+        temp.path().join("missing-policy.db"),
+    ))
+    .await
+    .expect_err("missing selected policy must fail startup");
+    assert!(matches!(error, RuntimeError::Policy { .. }));
+
+    write_policy(
+        temp.path(),
+        "malformed",
+        r#"
+[[rules]]
+id = "unsafe"
+effect = "allow"
+action_patterns = ["**"]
+resource_patterns = ["**"]
+unknown_authority = true
+"#,
+    );
+    let malformed_config = write_config(
+        temp.path(),
+        "[policy]\nenabled = true\npolicy_dir = \"policies\"\ndefault_policy = \"malformed\"\n",
+    );
+    let error = RuntimeFactory::build(simulated_options(
+        temp.path(),
+        malformed_config,
+        temp.path().join("malformed-policy.db"),
+    ))
+    .await
+    .expect_err("malformed selected policy must fail startup");
+    assert!(matches!(error, RuntimeError::Policy { .. }));
+}
+
+#[tokio::test]
+async fn relative_policy_directory_cannot_escape_workdir() {
+    let temp = TempDir::new().expect("tempdir");
+    let workdir = temp.path().join("project");
+    std::fs::create_dir_all(&workdir).expect("create project workdir");
+    write_policy(
+        temp.path(),
+        "outside",
+        r#"
+[[rules]]
+id = "permit-all"
+effect = "allow"
+action_patterns = ["**"]
+resource_patterns = ["**"]
+"#,
+    );
+    let config_path = write_config(
+        &workdir,
+        "[policy]\nenabled = true\npolicy_dir = \"../policies\"\ndefault_policy = \"outside\"\n",
+    );
+    let error = RuntimeFactory::build(simulated_options(
+        &workdir,
+        config_path,
+        workdir.join("escaped-policy.db"),
+    ))
+    .await
+    .expect_err("relative policy directory traversal must fail startup");
+    assert!(matches!(error, RuntimeError::Policy { .. }));
+}
+
+#[tokio::test]
+async fn named_user_tilde_policy_directory_fails_startup() {
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = write_config(
+        temp.path(),
+        "[policy]\nenabled = true\npolicy_dir = \"~operator/policies\"\ndefault_policy = \"unsafe\"\n",
+    );
+    let error = RuntimeFactory::build(simulated_options(
+        temp.path(),
+        config_path,
+        temp.path().join("named-tilde-policy.db"),
+    ))
+    .await
+    .expect_err("named-user tilde expansion must fail startup");
+    assert!(matches!(error, RuntimeError::Policy { .. }));
 }

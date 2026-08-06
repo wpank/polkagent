@@ -55,6 +55,8 @@
 //!   rules returns [`PolicyDecision::Deny`].
 //! - **Deny overrides allow.** Any matching `Deny` rule beats all `Allow`
 //!   rules regardless of rule order.
+//! - **Approval is explicit.** A matching `RequireApproval` rule beats allow
+//!   but can never override a matching deny.
 //! - **Expired grants denied immediately.** [`grant::ResolvedGrant::is_valid`]
 //!   checks the expiry; the resolver never returns a stale grant as valid.
 //! - **Budget checked before permit.** When a [`budget::BudgetTracker`] is

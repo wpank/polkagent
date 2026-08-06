@@ -308,6 +308,15 @@ fn apply_memory_overrides(config: &mut Config) {
 // ---------------------------------------------------------------------------
 
 fn apply_policy_overrides(config: &mut Config) {
+    if let Some(enabled) = env_parse::<bool>("POLKAGENT_POLICY_ENABLED") {
+        debug!(
+            variable = "POLKAGENT_POLICY_ENABLED",
+            value = enabled,
+            "applying env override"
+        );
+        config.policy.enabled = enabled;
+    }
+
     if let Some(dir) = env_str("POLKAGENT_POLICY_DIR") {
         debug!(variable = "POLKAGENT_POLICY_DIR", value = %dir, "applying env override");
         config.policy.policy_dir = dir;
@@ -738,6 +747,16 @@ mod tests {
             apply_env_overrides(&mut cfg);
         });
         assert!(cfg.memory.enabled);
+    }
+
+    #[test]
+    fn policy_enabled_override() {
+        let mut cfg = Config::default();
+        assert!(!cfg.policy.enabled);
+        with_env("POLKAGENT_POLICY_ENABLED", "true", || {
+            apply_env_overrides(&mut cfg);
+        });
+        assert!(cfg.policy.enabled);
     }
 
     #[test]

@@ -229,6 +229,7 @@ pub struct AppServiceBuilder {
     harness: Option<Arc<dyn Harness>>,
     run_store: Option<Arc<dyn RunStore>>,
     effect_store: Option<Arc<dyn EffectStore>>,
+    grant_resolver: Option<Arc<GrantResolver>>,
     event_bus: Option<EventBus>,
     event_recorder: Option<EventRecorder>,
     provider_registry: Option<ProviderRegistry>,
@@ -288,6 +289,18 @@ impl AppServiceBuilder {
     #[must_use]
     pub fn with_effect_store(mut self, store: Arc<dyn EffectStore>) -> Self {
         self.effect_store = Some(store);
+        self
+    }
+
+    /// Set the exact policy/grant resolver used by the application service
+    /// and run orchestrator.
+    ///
+    /// Runtime composition should always provide this explicitly. Builders
+    /// that omit it retain compatibility through an empty default-deny
+    /// resolver; omission never enables grant-bearing work.
+    #[must_use]
+    pub fn with_grant_resolver(mut self, resolver: Arc<GrantResolver>) -> Self {
+        self.grant_resolver = Some(resolver);
         self
     }
 
@@ -468,6 +481,10 @@ impl AppServiceBuilder {
             });
         }
 
+        let grant_resolver = self
+            .grant_resolver
+            .unwrap_or_else(|| GrantResolver::new(PolicySet::default(), ResolverConfig::default()));
+
         // Build orchestrator when executor OR harness is present.
         let orchestrator = if self.executor.is_some() || self.harness.is_some() {
             let exec: Arc<dyn ModelExecutor> = self.executor.clone().unwrap_or_else(|| {
@@ -488,15 +505,12 @@ impl AppServiceBuilder {
 
             let pipeline = polkagent_effect::EffectPipeline::new(effect_store, WorkerId::new());
 
-            let grant_resolver =
-                GrantResolver::new(PolicySet::default(), ResolverConfig::default());
-
             let mut orch = RunOrchestrator::new(
                 Arc::new(run_manager.clone()),
                 exec,
                 pipeline,
                 event_recorder.clone(),
-                grant_resolver,
+                Arc::clone(&grant_resolver),
             );
             if let Some(ref harness) = self.harness {
                 orch = orch.with_harness(Arc::clone(harness));
@@ -518,6 +532,7 @@ impl AppServiceBuilder {
             harness: self.harness,
             run_store,
             effect_store: self.effect_store,
+            grant_resolver,
             event_bus,
             event_recorder,
             run_manager,
@@ -604,6 +619,7 @@ pub struct AppService {
     run_store: Arc<dyn RunStore>,
     /// Effect persistence store (optional — effects are disabled if absent).
     effect_store: Option<Arc<dyn EffectStore>>,
+    grant_resolver: Arc<GrantResolver>,
     /// In-process event bus for pub/sub.
     event_bus: EventBus,
     /// Event recorder (store + bus).
@@ -691,6 +707,15 @@ impl AppService {
     #[must_use]
     pub fn builder() -> AppServiceBuilder {
         AppServiceBuilder::new()
+    }
+
+    /// Return the exact policy/grant resolver retained by this service.
+    ///
+    /// The same `Arc` is injected into the run orchestrator when an execution
+    /// backend is present, preventing policy drift between composition and
+    /// execution.
+    pub fn grant_resolver(&self) -> &Arc<GrantResolver> {
+        &self.grant_resolver
     }
 
     /// Return a snapshot of the current configuration.
@@ -2558,6 +2583,26 @@ mod tests {
             .with_run_store(Arc::new(FakeRunStore::default()))
             .build();
         assert!(matches!(result, Err(ServiceError::NotInitialized { .. })));
+    }
+
+    #[test]
+    fn builder_retains_the_exact_injected_grant_resolver() {
+        let run_store: Arc<dyn RunStore> = Arc::new(FakeRunStore::default());
+        let event_store: Arc<dyn EventStore> = Arc::new(FakeEventStore::default());
+        let bus = EventBus::new(64);
+        let recorder = EventRecorder::new(event_store, bus.clone());
+        let resolver = GrantResolver::new(PolicySet::default(), ResolverConfig::default());
+
+        let service = AppService::builder()
+            .with_config(Config::default())
+            .with_run_store(run_store)
+            .with_event_bus(bus)
+            .with_event_recorder(recorder)
+            .with_grant_resolver(Arc::clone(&resolver))
+            .build()
+            .expect("build service with injected resolver");
+
+        assert!(Arc::ptr_eq(&resolver, service.grant_resolver()));
     }
 
     #[test]

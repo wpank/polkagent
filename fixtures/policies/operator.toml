@@ -6,11 +6,11 @@ action_patterns = ["chain.*"]
 resource_patterns = ["**"]
 
 [[rules]]
-id = "allow-signing"
-effect = "allow"
+id = "require-approval-signing"
+effect = "require_approval"
 action_patterns = ["signer.sign"]
 resource_patterns = ["**"]
-conditions = { require_approval = "true", max_amount = "1000000000000" }
+conditions = { max_amount = "1000000000000" }
 
 [[rules]]
 id = "allow-memory"

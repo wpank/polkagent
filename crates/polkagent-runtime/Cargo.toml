@@ -29,6 +29,7 @@ polkagent-harness-claude   = { path = "../polkagent-harness-claude" }
 polkagent-harness-codex    = { path = "../polkagent-harness-codex" }
 polkagent-harness-cursor   = { path = "../polkagent-harness-cursor" }
 polkagent-harness-trait    = { path = "../polkagent-harness-trait" }
+polkagent-grant            = { path = "../polkagent-grant" }
 polkagent-memory           = { path = "../polkagent-memory" }
 polkagent-service          = { path = "../polkagent-service" }
 polkagent-store-sqlite     = { path = "../polkagent-store-sqlite" }

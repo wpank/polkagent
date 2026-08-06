@@ -29,7 +29,7 @@
 //! - [`load_policy_dir`] loads every `.toml` file in a directory and merges
 //!   them into one [`PolicySet`].
 //! - [`merge_policy_sets`] combines multiple sets with deny-takes-precedence
-//!   ordering (deny rules first, then allow rules).
+//!   ordering (deny rules, approval rules, then allow rules).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -66,6 +66,10 @@ pub enum LoadError {
         path: String,
         source: std::io::Error,
     },
+
+    /// The file parsed as TOML but does not satisfy the strict policy schema.
+    #[error("invalid policy file {path}: {message}")]
+    Invalid { path: String, message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +81,7 @@ pub enum LoadError {
 /// The file is expected to contain a `[[rules]]` array of
 /// [`PolicyFileRule`] entries.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PolicyFile {
     /// The rules declared in this file.
     rules: Vec<PolicyFileRule>,
@@ -87,6 +92,7 @@ struct PolicyFile {
 /// This struct is the serde counterpart of [`PolicyRule`]; it uses the same
 /// field names so that serialization round-trips cleanly.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyFileRule {
     /// Stable, operator-assigned identifier for this rule.
     pub id: String,
@@ -144,6 +150,8 @@ pub fn load_policy_file(path: &Path) -> Result<PolicySet, LoadError> {
         source: e,
     })?;
 
+    validate_policy_file(path, &policy_file)?;
+
     let rules: Vec<PolicyRule> = policy_file.rules.into_iter().map(Into::into).collect();
 
     debug!(
@@ -161,28 +169,37 @@ pub fn load_policy_file(path: &Path) -> Result<PolicySet, LoadError> {
 /// Files are sorted by name to ensure deterministic ordering. The merge
 /// strategy places deny rules before allow rules (see [`merge_policy_sets`]).
 pub fn load_policy_dir(dir: &Path) -> Result<PolicySet, LoadError> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .map_err(|e| LoadError::ReadDir {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| LoadError::ReadDir {
+        path: dir.display().to_string(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|source| LoadError::ReadDir {
             path: dir.display().to_string(),
-            source: e,
-        })?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
+            source,
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("toml") {
+            entries.push(path);
+        }
+    }
 
     // Sort for deterministic ordering.
     entries.sort();
 
     let mut sets = Vec::with_capacity(entries.len());
+    let mut ids = std::collections::HashSet::new();
     for path in &entries {
-        sets.push(load_policy_file(path)?);
+        let set = load_policy_file(path)?;
+        for rule in &set.rules {
+            if !ids.insert(rule.id.clone()) {
+                return Err(invalid_policy(
+                    dir,
+                    format!("duplicate rule id '{}' across policy files", rule.id),
+                ));
+            }
+        }
+        sets.push(set);
     }
 
     debug!(
@@ -196,10 +213,9 @@ pub fn load_policy_dir(dir: &Path) -> Result<PolicySet, LoadError> {
 
 /// Merge multiple [`PolicySet`]s into one.
 ///
-/// The merge strategy applies **deny-takes-precedence** ordering: all deny
-/// rules are placed before all allow rules. Within each group the original
-/// order is preserved (deny rules from the first set come before deny rules
-/// from the second set, and likewise for allow rules).
+/// The merge strategy applies **deny-takes-precedence** ordering: deny rules
+/// are placed first, approval rules second, and allow rules last. Within each
+/// group the original order is preserved.
 ///
 /// This ensures that even when merging policies from different files, any
 /// deny rule will short-circuit evaluation before an allow rule from a
@@ -207,19 +223,78 @@ pub fn load_policy_dir(dir: &Path) -> Result<PolicySet, LoadError> {
 pub fn merge_policy_sets(sets: Vec<PolicySet>) -> PolicySet {
     let total_rules: usize = sets.iter().map(|s| s.rules.len()).sum();
     let mut deny_rules = Vec::with_capacity(total_rules);
+    let mut approval_rules = Vec::with_capacity(total_rules);
     let mut allow_rules = Vec::with_capacity(total_rules);
 
     for set in sets {
         for rule in set.rules {
             match rule.effect {
                 Effect::Deny => deny_rules.push(rule),
+                Effect::RequireApproval => approval_rules.push(rule),
                 Effect::Allow => allow_rules.push(rule),
             }
         }
     }
 
+    deny_rules.append(&mut approval_rules);
     deny_rules.append(&mut allow_rules);
     PolicySet::new(deny_rules)
+}
+
+fn validate_policy_file(path: &Path, policy: &PolicyFile) -> Result<(), LoadError> {
+    let mut ids = std::collections::HashSet::new();
+    for (index, rule) in policy.rules.iter().enumerate() {
+        let field = format!("rules[{index}]");
+        if rule.id.trim().is_empty() {
+            return Err(invalid_policy(
+                path,
+                format!("{field}.id must not be empty"),
+            ));
+        }
+        if !ids.insert(rule.id.as_str()) {
+            return Err(invalid_policy(
+                path,
+                format!("duplicate rule id '{}'", rule.id),
+            ));
+        }
+        validate_patterns(path, &field, "action_patterns", &rule.action_patterns)?;
+        validate_patterns(path, &field, "resource_patterns", &rule.resource_patterns)?;
+        if rule.conditions.keys().any(|key| key.trim().is_empty()) {
+            return Err(invalid_policy(
+                path,
+                format!("{field}.conditions contains an empty key"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_patterns(
+    path: &Path,
+    rule_field: &str,
+    pattern_field: &str,
+    patterns: &[String],
+) -> Result<(), LoadError> {
+    if patterns.is_empty() {
+        return Err(invalid_policy(
+            path,
+            format!("{rule_field}.{pattern_field} must contain at least one pattern"),
+        ));
+    }
+    if patterns.iter().any(|pattern| pattern.trim().is_empty()) {
+        return Err(invalid_policy(
+            path,
+            format!("{rule_field}.{pattern_field} must not contain empty patterns"),
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_policy(path: &Path, message: String) -> LoadError {
+    LoadError::Invalid {
+        path: path.display().to_string(),
+        message,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -302,12 +377,9 @@ mod tests {
         let signing_rule = set
             .rules
             .iter()
-            .find(|r| r.id == "allow-signing")
-            .expect("should have allow-signing rule");
-        assert_eq!(
-            signing_rule.conditions.get("require_approval"),
-            Some(&"true".to_string())
-        );
+            .find(|r| r.id == "require-approval-signing")
+            .expect("should have explicit signing approval rule");
+        assert_eq!(signing_rule.effect, Effect::RequireApproval);
         assert_eq!(
             signing_rule.conditions.get("max_amount"),
             Some(&"1000000000000".to_string())
@@ -541,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn operator_signing_requires_conditions() {
+    fn operator_signing_explicitly_requires_approval() {
         let path = fixtures_dir().join("operator.toml");
         let set = load_policy_file(&path).expect("load");
 
@@ -552,15 +624,13 @@ mod tests {
             PolicyDecision::Deny { .. }
         ));
 
-        // With matching conditions, signing should be allowed.
-        let ctx_match = ctx_with(&[
-            ("require_approval", "true"),
-            ("max_amount", "1000000000000"),
-        ]);
-        assert_eq!(
+        // Matching the configured amount escalates instead of granting
+        // immediate authority.
+        let ctx_match = ctx_with(&[("max_amount", "1000000000000")]);
+        assert!(matches!(
             evaluate(&set, "signer.sign", "key/alice", &ctx_match),
-            PolicyDecision::Allow
-        );
+            PolicyDecision::RequireApproval { .. }
+        ));
     }
 
     #[test]
