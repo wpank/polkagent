@@ -1066,7 +1066,12 @@ impl App {
 
             TuiAction::Back => {
                 if self.input_mode == InputMode::Prompt {
-                    if self.tui_state.interaction.dismiss_slash_completion() {
+                    let approval_context = self.tui_state.console_approval_context();
+                    if self
+                        .tui_state
+                        .interaction
+                        .dismiss_slash_completion_with_approval_context(approval_context.as_ref())
+                    {
                         self.tui_state.mark_dirty();
                         return;
                     }
@@ -1340,6 +1345,11 @@ impl App {
                     self.active_tab = Tab::Console;
                     self.input_mode = InputMode::Prompt;
                     self.tui_state.last_error = None;
+                    if self.run_controller.approval_authority_bound()
+                        && self.tui_state.interaction.conversation_id.is_some()
+                    {
+                        self.refresh_approvals();
+                    }
                 }
                 self.tui_state.mark_dirty();
             }
@@ -1463,12 +1473,18 @@ impl App {
             }
 
             TuiAction::PromptMoveUp => {
-                self.tui_state.interaction.move_up();
+                let approval_context = self.tui_state.console_approval_context();
+                self.tui_state
+                    .interaction
+                    .move_up_with_approval_context(approval_context.as_ref());
                 self.tui_state.mark_dirty();
             }
 
             TuiAction::PromptMoveDown => {
-                self.tui_state.interaction.move_down();
+                let approval_context = self.tui_state.console_approval_context();
+                self.tui_state
+                    .interaction
+                    .move_down_with_approval_context(approval_context.as_ref());
                 self.tui_state.mark_dirty();
             }
 
@@ -1483,13 +1499,21 @@ impl App {
             }
 
             TuiAction::PromptAcceptCompletion => {
-                self.tui_state.interaction.accept_slash_completion();
+                let approval_context = self.tui_state.console_approval_context();
+                self.tui_state
+                    .interaction
+                    .accept_slash_completion_with_approval_context(approval_context.as_ref());
                 self.tui_state.mark_dirty();
             }
 
             TuiAction::PromptSubmit => {
                 if self.tui_state.interaction.is_command_input() {
-                    match self.tui_state.interaction.submit_command() {
+                    let approval_context = self.tui_state.console_approval_context();
+                    match self
+                        .tui_state
+                        .interaction
+                        .submit_command_with_approval_context(approval_context.as_ref())
+                    {
                         Ok(ConsoleCommandSubmission::Execute(request)) => {
                             self.input_mode = InputMode::Normal;
                             if let Err(error) = self.run_controller.execute_command(request) {
@@ -1664,6 +1688,22 @@ impl App {
         let selected_activity = update.activity_id().is_some_and(|activity_id| {
             self.tui_state.interaction.selected_activity_id() == Some(activity_id)
         });
+        let refresh_scoped_approvals = selected_activity
+            && matches!(
+                event,
+                ControllerEvent::TurnApprovalRequested { .. }
+                    | ControllerEvent::TurnApprovalResolved { .. }
+            );
+        let refresh_resolved_command_approval = matches!(
+            event,
+            ControllerEvent::CommandCompleted {
+                conversation_id: Some(conversation_id),
+                result,
+                ..
+            } if result.approval_resolution.is_some()
+                && self.tui_state.interaction.conversation_id.as_deref()
+                    == Some(conversation_id.as_str())
+        );
         if selected_activity {
             if let ControllerEvent::Started { run_id, .. } = event {
                 self.tui_state.selected_run = Some(run_id.clone());
@@ -1677,6 +1717,12 @@ impl App {
                 | ControllerEvent::SessionSelectionFailed { .. }
         );
         self.tui_state.interaction.apply_update(update);
+        if (refresh_scoped_approvals || refresh_resolved_command_approval)
+            && self.run_controller.approval_authority_bound()
+            && !self.run_controller.is_control_active()
+        {
+            self.refresh_approvals();
+        }
         if selector_event
             && self.input_mode == InputMode::SessionPicker
             && self.tui_state.interaction.session_picker.is_none()
@@ -2415,6 +2461,13 @@ mod terminal_tests {
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use futures::stream;
+    use polkagent_core::{AgentId, ApprovalId, PrincipalId};
+    use polkagent_interaction::{
+        ClientContext, CreateInteractionRequest, InteractionApprovalAuthority, InteractionConfig,
+        InteractionService as _, InteractionTarget,
+    };
+    use polkagent_runtime::RuntimeFactory;
+    use polkagent_store_sqlite::{migrations, SqliteRunStore};
 
     use super::*;
 
@@ -2442,6 +2495,132 @@ mod terminal_tests {
                 })
             })
         })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn successful_console_approval_refreshes_the_single_f6_queue() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("app-approval-refresh.db");
+        let pool = SqlitePool::open(&database_path).expect("open database");
+        migrations::migrate(&pool.writer()).expect("migrate database");
+        let store = SqliteRunStore::new(pool.clone());
+        let agent = store
+            .create_agent(
+                "approval-agent",
+                None,
+                &serde_json::json!({
+                    "name": "approval-agent",
+                    "description": null,
+                    "model": "fake/default",
+                    "tools": [],
+                    "system_prompt": null,
+                    "autonomy_level": "supervised",
+                })
+                .to_string(),
+            )
+            .expect("create approval agent");
+        let authority = InteractionApprovalAuthority {
+            tenant_id: "tenant-a".to_owned(),
+            workspace_id: "workspace-a".to_owned(),
+            principal_id: PrincipalId::new(),
+            surface: "tui".to_owned(),
+        };
+        let mut options = crate::tui::interaction::tui_runtime_options_with_approval(
+            &pool,
+            None,
+            Some(authority),
+        )
+        .expect("TUI runtime options");
+        options.workdir = temp.path().to_path_buf();
+        options.disable_harness = true;
+        options.discover_environment_providers = false;
+        drop(store);
+        drop(pool);
+        let runtime = Box::pin(RuntimeFactory::build(options))
+            .await
+            .expect("build runtime");
+        let interaction = runtime
+            .interactions()
+            .new_interaction(CreateInteractionRequest {
+                title: Some("approval refresh".to_owned()),
+                config: InteractionConfig::new(InteractionTarget::Agent(
+                    agent.id.parse::<AgentId>().expect("agent UUID"),
+                )),
+                client_context: ClientContext::new(temp.path().to_path_buf())
+                    .expect("client context"),
+            })
+            .await
+            .expect("create interaction");
+        let conversation_id = interaction.conversation_id;
+        let approval_id = ApprovalId::new();
+        let request_id = uuid::Uuid::now_v7().to_string();
+        let mut app = App::new(Theme::dark(), runtime, Tab::Console);
+        app.tui_state.interaction.select_agent(agent.id, agent.name);
+        app.tui_state.interaction.conversation_id = Some(conversation_id.to_string());
+        app.tui_state.interaction.command_result =
+            Some(crate::tui::interaction::ConsoleCommandResult {
+                request_id: request_id.clone(),
+                line: format!("/approve {approval_id}"),
+                status: crate::tui::interaction::ConsoleCommandStatus::Running,
+                title: "Executing shared command".to_owned(),
+                lines: Vec::new(),
+                approval_resolution: None,
+            });
+
+        app.apply_controller_event(ControllerUpdate::Control(
+            ControllerEvent::CommandCompleted {
+                agent_id: app
+                    .tui_state
+                    .interaction
+                    .agent_id
+                    .clone()
+                    .expect("selected agent"),
+                conversation_id: Some(conversation_id.to_string()),
+                request_id: request_id.clone(),
+                result: crate::tui::interaction::ConsoleCommandResult {
+                    request_id,
+                    line: format!("/approve {approval_id}"),
+                    status: crate::tui::interaction::ConsoleCommandStatus::Completed,
+                    title: "Durable approval resolved".to_owned(),
+                    lines: vec![format!("approval: {approval_id}")],
+                    approval_resolution: Some(crate::tui::interaction::ConsoleApprovalResolution {
+                        conversation_id,
+                        approval_id,
+                        decision: crate::tui::interaction::ConsoleApprovalDecision::Approve,
+                    }),
+                },
+                selection: None,
+                model_update: crate::tui::interaction::ConsoleModelUpdate::Unchanged,
+                agent_update: None,
+            },
+        ));
+
+        assert_eq!(
+            app.tui_state.approval_queue.status,
+            ApprovalQueueStatus::Loading
+        );
+        assert!(app.run_controller.is_control_active());
+        let update = app
+            .run_controller
+            .recv_update()
+            .await
+            .expect("approval refresh completion");
+        app.apply_controller_event(update);
+        assert_eq!(
+            app.tui_state.approval_queue.status,
+            ApprovalQueueStatus::Ready
+        );
+        assert!(app.tui_state.pending_approvals.is_empty());
+        assert_eq!(
+            app.tui_state
+                .interaction
+                .command_result
+                .as_ref()
+                .and_then(|result| result.approval_resolution.as_ref())
+                .map(|resolution| resolution.approval_id),
+            Some(approval_id)
+        );
+        app.shutdown_workers().await.expect("shutdown app workers");
     }
 
     struct RecordingRestoreActions {

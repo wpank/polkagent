@@ -7,7 +7,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::tui::interaction::InteractionState;
+use crate::tui::interaction::{ConsoleApprovalContext, InteractionState};
 use crate::tui::views::audit::AuditFilter;
 
 // ---------------------------------------------------------------------------
@@ -624,6 +624,33 @@ impl TuiState {
     /// Mark the state as requiring a re-render.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Derive Console approval availability from the existing correlated F6
+    /// queue without copying that queue into the interaction reducer.
+    #[must_use]
+    pub fn console_approval_context(&self) -> Option<ConsoleApprovalContext> {
+        if self.approval_queue.status != ApprovalQueueStatus::Ready {
+            return None;
+        }
+        let conversation = self.tui_state_conversation_for_approvals()?;
+        let conversation_id = conversation.parse().ok()?;
+        let mut pending_approval_ids = Vec::with_capacity(self.pending_approvals.len());
+        for approval in self.pending_approvals.iter().filter(|approval| {
+            approval.conversation_id == conversation && approval.status == "pending"
+        }) {
+            pending_approval_ids.push(approval.approval_id.parse().ok()?);
+        }
+        Some(ConsoleApprovalContext::new(
+            conversation_id,
+            pending_approval_ids,
+        ))
+    }
+
+    fn tui_state_conversation_for_approvals(&self) -> Option<&str> {
+        let conversation = self.interaction.conversation_id.as_deref()?;
+        (self.approval_queue.conversation_id.as_deref() == Some(conversation))
+            .then_some(conversation)
     }
 
     /// Replace a scoped service result while preserving selection by durable

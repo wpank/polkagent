@@ -23,8 +23,13 @@ pub fn render(
     input_mode: InputMode,
     theme: &Theme,
 ) {
+    let approval_context = state.console_approval_context();
     let composer_height = if input_mode == InputMode::Prompt {
-        if state.interaction.slash_command_menu().is_some() {
+        if state
+            .interaction
+            .slash_command_menu_with_approval_context(approval_context.as_ref())
+            .is_some()
+        {
             11
         } else {
             7
@@ -345,8 +350,11 @@ fn render_composer(
     theme: &Theme,
 ) {
     let composing = input_mode == InputMode::Prompt;
+    let approval_context = state.console_approval_context();
     let slash_menu = if composing {
-        state.interaction.slash_command_menu()
+        state
+            .interaction
+            .slash_command_menu_with_approval_context(approval_context.as_ref())
     } else {
         None
     };

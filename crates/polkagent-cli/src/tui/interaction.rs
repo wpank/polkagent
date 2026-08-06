@@ -49,6 +49,7 @@ const MAX_SESSION_SELECTOR_SCAN: u32 = 1_000;
 const MAX_SESSION_TITLE_BYTES: usize = 256;
 const MAX_PENDING_APPROVALS: usize = 100;
 const MAX_APPROVAL_ERROR_BYTES: usize = 512;
+const MAX_DENIAL_REASON_CHARS: usize = 4_096;
 const INTERACTION_STREAM_CAPACITY: usize = 256;
 const CONTROLLER_EVENT_CAPACITY: usize = 256;
 /// Bound concurrently executing Console turns independently of durable history.
@@ -59,7 +60,7 @@ const MAX_RETAINED_CONSOLE_VIEWPORTS: usize = 32;
 const MAX_CONSOLE_TRANSCRIPT_TURNS: usize = 100;
 const CONTROLLER_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const TUI_INTERACTION_TITLE_PREFIX: &str = "TUI Console";
-const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 10] = [
+const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 12] = [
     CommandName::Help,
     CommandName::Status,
     CommandName::Agents,
@@ -67,10 +68,44 @@ const SUPPORTED_CONSOLE_COMMANDS: [CommandName; 10] = [
     CommandName::Runs,
     CommandName::Inspect,
     CommandName::Cancel,
+    CommandName::Approve,
+    CommandName::Deny,
     CommandName::New,
     CommandName::Resume,
     CommandName::Model,
 ];
+
+/// Ephemeral view of the existing F6 service-projected approval queue.
+///
+/// This is derived on demand from [`crate::tui::state::TuiState`]; the Console
+/// never owns or persists a second approval queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleApprovalContext {
+    conversation_id: ConversationId,
+    pending_approval_ids: Vec<ApprovalId>,
+}
+
+impl ConsoleApprovalContext {
+    #[must_use]
+    pub fn new(conversation_id: ConversationId, pending_approval_ids: Vec<ApprovalId>) -> Self {
+        Self {
+            conversation_id,
+            pending_approval_ids,
+        }
+    }
+
+    fn matches_conversation(&self, conversation_id: Option<ConversationId>) -> bool {
+        conversation_id == Some(self.conversation_id)
+    }
+
+    fn contains(&self, approval_id: ApprovalId) -> bool {
+        self.pending_approval_ids.contains(&approval_id)
+    }
+
+    fn pending_count(&self) -> usize {
+        self.pending_approval_ids.len()
+    }
+}
 
 /// One canonical entry in the Console's shared slash-command picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +164,8 @@ pub struct ConsoleCommandRequest {
     pub conversation_id: Option<String>,
     /// Exact selected durable turn for dynamic help and bounded `/cancel`.
     pub selected_turn_id: Option<InteractionTurnId>,
+    /// Count from the existing, correlated F6 service projection at submit.
+    pub pending_approval_count: usize,
     pub line: String,
     pub invocation: CommandInvocation,
 }
@@ -152,12 +189,29 @@ impl ConsoleCommandStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConsoleApprovalDecision {
+    Approve,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsoleApprovalResolution {
+    pub conversation_id: ConversationId,
+    pub approval_id: ApprovalId,
+    /// Decision polarity only; denial rationale is deliberately not retained.
+    pub decision: ConsoleApprovalDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsoleCommandResult {
     pub request_id: String,
     pub line: String,
     pub status: ConsoleCommandStatus,
     pub title: String,
     pub lines: Vec<String>,
+    /// Structured successful approval output retained for exact retries after
+    /// the shared F6 queue refreshes and removes the resolved request.
+    pub approval_resolution: Option<ConsoleApprovalResolution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -465,8 +519,17 @@ impl InteractionState {
 
     /// Move vertically within multiline input, falling back to older history
     /// only when the cursor is already on the first line.
+    #[cfg(test)]
     pub fn move_up(&mut self) {
-        if self.move_slash_completion_up() {
+        self.move_up_with_approval_context(None);
+    }
+
+    /// Move up with approval commands derived from the existing scoped queue.
+    pub fn move_up_with_approval_context(
+        &mut self,
+        approval_context: Option<&ConsoleApprovalContext>,
+    ) {
+        if self.move_slash_completion_up(approval_context) {
             return;
         }
         let cursor = self.cursor();
@@ -491,8 +554,17 @@ impl InteractionState {
 
     /// Move vertically within multiline input, falling back to newer history
     /// only when the cursor is already on the last line.
+    #[cfg(test)]
     pub fn move_down(&mut self) {
-        if self.move_slash_completion_down() {
+        self.move_down_with_approval_context(None);
+    }
+
+    /// Move down with approval commands derived from the existing scoped queue.
+    pub fn move_down_with_approval_context(
+        &mut self,
+        approval_context: Option<&ConsoleApprovalContext>,
+    ) {
+        if self.move_slash_completion_down(approval_context) {
             return;
         }
         let cursor = self.cursor();
@@ -631,7 +703,18 @@ impl InteractionState {
 
     /// Return shared slash-command candidates for the current composer text.
     #[must_use]
+    #[cfg(test)]
     pub fn slash_command_menu(&self) -> Option<SlashCommandMenu> {
+        self.slash_command_menu_with_approval_context(None)
+    }
+
+    /// Return shared slash-command candidates using the current scoped
+    /// service-projected approval queue.
+    #[must_use]
+    pub fn slash_command_menu_with_approval_context(
+        &self,
+        approval_context: Option<&ConsoleApprovalContext>,
+    ) -> Option<SlashCommandMenu> {
         if self.slash_completion_dismissed {
             return None;
         }
@@ -646,7 +729,7 @@ impl InteractionState {
             });
         let typed_name = typed_name.to_ascii_lowercase();
         let registry = command_registry();
-        let context = self.command_context();
+        let context = self.command_context(approval_context);
 
         let candidates = if has_arguments || registry.resolve(&typed_name).is_some() {
             registry
@@ -684,14 +767,18 @@ impl InteractionState {
         })
     }
 
-    fn command_context(&self) -> CommandContext {
+    fn command_context(&self, approval_context: Option<&ConsoleApprovalContext>) -> CommandContext {
+        let conversation_id = self
+            .conversation_id
+            .as_deref()
+            .and_then(|id| id.parse::<ConversationId>().ok());
+        let pending_approval_count = approval_context
+            .filter(|context| context.matches_conversation(conversation_id))
+            .map_or(0, ConsoleApprovalContext::pending_count);
         CommandContext {
-            conversation_id: self
-                .conversation_id
-                .as_deref()
-                .and_then(|id| id.parse::<ConversationId>().ok()),
+            conversation_id,
             has_active_turn: self.selected_cancel_turn_id().is_some(),
-            pending_approval_count: 0,
+            pending_approval_count,
             can_mutate: true,
         }
     }
@@ -711,9 +798,18 @@ impl InteractionState {
     /// Replace the typed slash name with the highlighted canonical command.
     ///
     /// Returns whether a completion was available and accepted.
+    #[cfg(test)]
     pub fn accept_slash_completion(&mut self) -> bool {
+        self.accept_slash_completion_with_approval_context(None)
+    }
+
+    /// Accept a completion using the current scoped approval queue.
+    pub fn accept_slash_completion_with_approval_context(
+        &mut self,
+        approval_context: Option<&ConsoleApprovalContext>,
+    ) -> bool {
         let Some(candidate) = self
-            .slash_command_menu()
+            .slash_command_menu_with_approval_context(approval_context)
             .and_then(|menu| menu.selected_candidate().cloned())
         else {
             return false;
@@ -748,8 +844,20 @@ impl InteractionState {
     ///
     /// Returns `false` when no picker was visible, allowing Escape to fall
     /// through to the composer's existing cancel behavior.
+    #[cfg(test)]
     pub fn dismiss_slash_completion(&mut self) -> bool {
-        if self.slash_command_menu().is_none() {
+        self.dismiss_slash_completion_with_approval_context(None)
+    }
+
+    /// Dismiss a completion using the current scoped approval queue.
+    pub fn dismiss_slash_completion_with_approval_context(
+        &mut self,
+        approval_context: Option<&ConsoleApprovalContext>,
+    ) -> bool {
+        if self
+            .slash_command_menu_with_approval_context(approval_context)
+            .is_none()
+        {
             return false;
         }
         self.slash_completion_dismissed = true;
@@ -994,40 +1102,62 @@ impl InteractionState {
         !self.prompt_buffer.contains('\n') && self.prompt_buffer.trim_start().starts_with('/')
     }
 
+    #[cfg(test)]
     pub fn submit_command(&mut self) -> Result<ConsoleCommandSubmission, &'static str> {
-        let line = self.prompt_buffer.trim().to_owned();
-        if line.is_empty() {
+        self.submit_command_with_approval_context(None)
+    }
+
+    /// Submit a slash command using the existing scoped approval projection.
+    pub fn submit_command_with_approval_context(
+        &mut self,
+        approval_context: Option<&ConsoleApprovalContext>,
+    ) -> Result<ConsoleCommandSubmission, &'static str> {
+        let raw_line = self.prompt_buffer.trim().to_owned();
+        if raw_line.is_empty() {
             return Err("command cannot be empty");
         }
-        if !line.starts_with('/') {
+        if !raw_line.starts_with('/') {
             return Err("Console command input must begin with '/'");
         }
-        if line.contains('\n') {
+        if raw_line.contains('\n') {
             return Err("Console slash commands must fit on one line");
         }
         let Some(agent_id) = self.agent_id.clone() else {
             return Err("select an active agent before using Console commands");
         };
         let agent_name = self.agent_name.clone().unwrap_or_else(|| agent_id.clone());
+        let line = redacted_console_command_line(&raw_line);
         self.record_history(&line);
         self.clear_prompt();
 
-        let invocation = match command_registry().parse(&line) {
+        let invocation = match command_registry().parse(&raw_line) {
             Ok(ParsedLine::Command(invocation)) => invocation,
             Ok(ParsedLine::Prompt(_)) => unreachable!("slash input parsed as a prompt"),
             Err(error) => {
-                self.reject_command(&line, console_parse_error(&line, &error.to_string()));
+                self.reject_command(&line, console_parse_error(&raw_line, &error.to_string()));
                 return Ok(ConsoleCommandSubmission::Rejected);
             }
         };
-        if let Err(reason) = validate_console_command(&invocation.command) {
+        let context = self.command_context(approval_context);
+        let recent_approval = self
+            .command_result
+            .as_ref()
+            .and_then(|result| result.approval_resolution.as_ref());
+        let exact_approval_retry =
+            is_exact_recent_approval(&invocation.command, &context, recent_approval);
+        if let Err(reason) = validate_console_command(
+            &invocation.command,
+            &context,
+            approval_context,
+            recent_approval,
+        ) {
             self.reject_command(&line, reason);
             return Ok(ConsoleCommandSubmission::Rejected);
         }
-        let context = self.command_context();
         if command_registry()
             .resolve(invocation.command.name().as_str())
             .is_some_and(|spec| !spec.is_available(&context))
+            && !exact_approval_retry
         {
             let reason = if matches!(
                 invocation.command,
@@ -1048,12 +1178,17 @@ impl InteractionState {
 
         let request_id = uuid::Uuid::now_v7().to_string();
         let selected_turn_id = self.selected_cancel_turn_id();
+        let approval_resolution = self
+            .command_result
+            .as_ref()
+            .and_then(|result| result.approval_resolution.clone());
         self.command_result = Some(ConsoleCommandResult {
             request_id: request_id.clone(),
             line: line.clone(),
             status: ConsoleCommandStatus::Running,
             title: "Executing shared command".to_owned(),
             lines: vec!["Waiting for the durable interaction service.".to_owned()],
+            approval_resolution,
         });
         Ok(ConsoleCommandSubmission::Execute(Box::new(
             ConsoleCommandRequest {
@@ -1062,6 +1197,7 @@ impl InteractionState {
                 agent_name,
                 conversation_id: self.conversation_id.clone(),
                 selected_turn_id,
+                pending_approval_count: context.pending_approval_count,
                 line,
                 invocation,
             },
@@ -1069,12 +1205,17 @@ impl InteractionState {
     }
 
     fn reject_command(&mut self, line: &str, reason: String) {
+        let approval_resolution = self
+            .command_result
+            .as_ref()
+            .and_then(|result| result.approval_resolution.clone());
         self.command_result = Some(ConsoleCommandResult {
             request_id: uuid::Uuid::now_v7().to_string(),
             line: line.to_owned(),
             status: ConsoleCommandStatus::Failed,
             title: "Command unavailable".to_owned(),
             lines: vec![reason],
+            approval_resolution,
         });
     }
 
@@ -1095,8 +1236,11 @@ impl InteractionState {
         self.slash_completion_dismissed = false;
     }
 
-    fn move_slash_completion_up(&mut self) -> bool {
-        let Some(menu) = self.slash_command_menu() else {
+    fn move_slash_completion_up(
+        &mut self,
+        approval_context: Option<&ConsoleApprovalContext>,
+    ) -> bool {
+        let Some(menu) = self.slash_command_menu_with_approval_context(approval_context) else {
             return false;
         };
         if menu.candidates.len() <= 1 {
@@ -1110,8 +1254,11 @@ impl InteractionState {
         true
     }
 
-    fn move_slash_completion_down(&mut self) -> bool {
-        let Some(menu) = self.slash_command_menu() else {
+    fn move_slash_completion_down(
+        &mut self,
+        approval_context: Option<&ConsoleApprovalContext>,
+    ) -> bool {
+        let Some(menu) = self.slash_command_menu_with_approval_context(approval_context) else {
             return false;
         };
         if menu.candidates.len() <= 1 {
@@ -1254,7 +1401,7 @@ impl InteractionState {
                 agent_id,
                 conversation_id,
                 request_id,
-                result,
+                mut result,
             } => {
                 if self.agent_id.as_deref() == Some(agent_id.as_str())
                     && self.conversation_id == conversation_id
@@ -1264,6 +1411,12 @@ impl InteractionState {
                         .map(|result| result.request_id.as_str())
                         == Some(request_id.as_str())
                 {
+                    if result.approval_resolution.is_none() {
+                        result.approval_resolution = self
+                            .command_result
+                            .as_ref()
+                            .and_then(|current| current.approval_resolution.clone());
+                    }
                     self.command_result = Some(result);
                 }
             }
@@ -1574,7 +1727,12 @@ fn command_registry() -> &'static CommandRegistry {
     REGISTRY.get_or_init(CommandRegistry::mvp)
 }
 
-fn validate_console_command(command: &InteractionCommand) -> Result<(), String> {
+fn validate_console_command(
+    command: &InteractionCommand,
+    context: &CommandContext,
+    approval_context: Option<&ConsoleApprovalContext>,
+    recent_approval: Option<&ConsoleApprovalResolution>,
+) -> Result<(), String> {
     match command {
         InteractionCommand::Help {
             command: Some(command),
@@ -1589,12 +1747,59 @@ fn validate_console_command(command: &InteractionCommand) -> Result<(), String> 
             "the Console supports only /cancel (or /stop) for the selected exact active turn; run-ID and all-activity cancellation are unavailable"
                 .to_owned(),
         ),
-        InteractionCommand::Approve { .. } | InteractionCommand::Deny { .. } => Err(
-            "approval commands are unavailable in the Console prompt path; use an authorized approval surface"
+        InteractionCommand::Help {
+            command: Some(CommandName::Approve | CommandName::Deny),
+        } if context.pending_approval_count == 0 => Err(
+            "approval commands are available only when the selected Console conversation has an exact pending request projected by the authorized F6 queue"
                 .to_owned(),
         ),
+        InteractionCommand::Deny {
+            reason: Some(reason),
+            ..
+        } if reason.chars().count() > MAX_DENIAL_REASON_CHARS => Err(format!(
+            "approval denial reason must be at most {MAX_DENIAL_REASON_CHARS} characters"
+        )),
+        InteractionCommand::Approve { approval_id }
+        | InteractionCommand::Deny { approval_id, .. } => {
+            let Some(approval_context) = approval_context else {
+                return Err(
+                    "approval commands are unavailable until the authorized F6 queue has projected the selected Console conversation"
+                        .to_owned(),
+                );
+            };
+            if !approval_context.matches_conversation(context.conversation_id) {
+                return Err(
+                    "the projected approval queue is stale for the selected Console conversation; refresh F6 before deciding"
+                        .to_owned(),
+                );
+            }
+            let exact_recent_retry =
+                is_exact_recent_approval(command, context, recent_approval);
+            if !approval_context.contains(*approval_id) && !exact_recent_retry {
+                return Err(
+                    "the exact full approval ID is neither pending in the selected conversation's authorized service projection nor the most recently resolved Console approval"
+                        .to_owned(),
+                );
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
+}
+
+fn is_exact_recent_approval(
+    command: &InteractionCommand,
+    context: &CommandContext,
+    recent_approval: Option<&ConsoleApprovalResolution>,
+) -> bool {
+    let approval_id = match command {
+        InteractionCommand::Approve { approval_id }
+        | InteractionCommand::Deny { approval_id, .. } => *approval_id,
+        _ => return false,
+    };
+    recent_approval.is_some_and(|recent| {
+        Some(recent.conversation_id) == context.conversation_id && recent.approval_id == approval_id
+    })
 }
 
 fn console_parse_error(line: &str, shared_error: &str) -> String {
@@ -1622,6 +1827,24 @@ fn console_parse_error(line: &str, shared_error: &str) -> String {
                 .to_owned()
         }
         _ => shared_error.to_owned(),
+    }
+}
+
+fn redacted_console_command_line(line: &str) -> String {
+    let mut arguments = line.split_whitespace();
+    let Some(command) = arguments.next() else {
+        return String::new();
+    };
+    if !command.eq_ignore_ascii_case("/deny") {
+        return line.to_owned();
+    }
+    let Some(approval_id) = arguments.next() else {
+        return "/deny".to_owned();
+    };
+    if arguments.next().is_some() {
+        format!("/deny {approval_id} [reason redacted]")
+    } else {
+        format!("/deny {approval_id}")
     }
 }
 
@@ -2237,6 +2460,7 @@ impl RunController {
         };
         self.control_active = true;
         let polkagent_runtime = self.polkagent_runtime.clone();
+        let interaction_service = Arc::clone(&self.approval_service);
         let event_tx = self.event_tx.clone();
         let task = task_runtime.spawn(async move {
             let ConsoleCommandRequest {
@@ -2245,6 +2469,7 @@ impl RunController {
                 agent_name: _,
                 conversation_id,
                 selected_turn_id,
+                pending_approval_count,
                 line,
                 invocation,
             } = *request;
@@ -2293,6 +2518,10 @@ impl RunController {
                     target: polkagent_interaction::CancelTarget::CurrentTurn
                 }
             );
+            let approval_command = matches!(
+                invocation.command,
+                InteractionCommand::Approve { .. } | InteractionCommand::Deny { .. }
+            );
             let selected_has_active_turn = selected_turn_id.is_some();
             let selected_turn_id = selected_turn_id.filter(|_| current_turn_cancel);
             if current_turn_cancel && selected_turn_id.is_none() {
@@ -2308,7 +2537,7 @@ impl RunController {
                 .await;
                 return;
             }
-            let service: Arc<dyn InteractionService> = polkagent_runtime.interactions().clone();
+            let service = interaction_service;
             if matches!(&invocation.command, InteractionCommand::Agent { .. }) {
                 let Some(selected) = conversation_id else {
                     send_command_failure(
@@ -2356,6 +2585,9 @@ impl RunController {
                 run_commands: RunCommandReadModel::new(polkagent_runtime.pool().clone()),
                 agent_id: typed_agent_id,
                 exact_turn_filter: selected_turn_id,
+                approval_authority_bound: polkagent_runtime
+                    .interactions()
+                    .approval_authority_bound(),
             });
             let executor = match ServiceCommandExecutor::new(
                 command_registry().clone(),
@@ -2397,7 +2629,7 @@ impl RunController {
                     context: CommandContext {
                         conversation_id,
                         has_active_turn: selected_has_active_turn,
-                        pending_approval_count: 0,
+                        pending_approval_count,
                         can_mutate: true,
                     },
                     client_context,
@@ -2405,23 +2637,46 @@ impl RunController {
                 .await;
             let outcome = match output {
                 Ok(output) => {
+                    let approval_resolution = match (&output, conversation_id) {
+                        (
+                            CommandOutput::ApprovalResolved {
+                                approval_id,
+                                decision,
+                            },
+                            Some(conversation_id),
+                        ) => Some(ConsoleApprovalResolution {
+                            conversation_id,
+                            approval_id: *approval_id,
+                            decision: match decision {
+                                ApprovalDecision::Approve => ConsoleApprovalDecision::Approve,
+                                ApprovalDecision::Deny { .. } => ConsoleApprovalDecision::Deny,
+                            },
+                        }),
+                        _ => None,
+                    };
                     project_console_command_output(
                         &polkagent_runtime,
                         typed_agent_id,
                         output,
                     )
                     .await
+                    .map(|outcome| (outcome, approval_resolution))
+                }
+                Err(error) if approval_command => {
+                    let (code, reason) = safe_approval_error(&error);
+                    Err(format!("{code}: {reason}"))
                 }
                 Err(error) => Err(error.to_string()),
             };
             match outcome {
-                Ok(outcome) => {
+                Ok((outcome, approval_resolution)) => {
                     let result = ConsoleCommandResult {
                         request_id: request_id.clone(),
                         line,
                         status: ConsoleCommandStatus::Completed,
                         title: outcome.title,
                         lines: outcome.lines,
+                        approval_resolution,
                     };
                     let _ = event_tx
                         .send(ControllerEvent::CommandCompleted {
@@ -2764,6 +3019,15 @@ impl RunController {
         self.control_active
     }
 
+    /// Whether this process has an explicit stable approval authority bound to
+    /// the same durable interaction service used by F6 and slash commands.
+    #[must_use]
+    pub fn approval_authority_bound(&self) -> bool {
+        self.polkagent_runtime
+            .interactions()
+            .approval_authority_bound()
+    }
+
     #[must_use]
     #[allow(
         dead_code,
@@ -2954,6 +3218,7 @@ async fn send_command_failure(
         status: ConsoleCommandStatus::Failed,
         title: "Command failed".to_owned(),
         lines: vec![error],
+        approval_resolution: None,
     };
     let _ = event_tx
         .send(ControllerEvent::CommandFailed {
@@ -3054,7 +3319,11 @@ async fn project_console_command_output(
                 .collect::<Vec<_>>();
             lines.push("x — shortcut for the same selected exact active turn".to_owned());
             lines.push(
-                "Provider/harness/autonomy, approval, and group commands are unavailable in Console."
+                "Approval commands appear only for the authorized selected conversation's exact pending queue; F6 remains the visual path."
+                    .to_owned(),
+            );
+            lines.push(
+                "Provider/harness/autonomy and group commands are unavailable in Console."
                     .to_owned(),
             );
             Ok(ProjectedConsoleCommand {
@@ -3068,7 +3337,7 @@ async fn project_console_command_output(
         CommandOutput::Status {
             interaction,
             active_turns,
-            pending_approvals: _,
+            pending_approvals,
         } => {
             let target = match interaction.config.target {
                 InteractionTarget::Agent(target_id) => {
@@ -3079,32 +3348,43 @@ async fn project_console_command_output(
                 }
                 _ => display_interaction_target(&interaction.config.target),
             };
+            let approval_status = if runtime.interactions().approval_authority_bound() {
+                format!("pending approvals: {}", pending_approvals.len())
+            } else {
+                "pending approvals: unavailable (no explicit TUI authority)".to_owned()
+            };
+            let mut lines = vec![
+                format!("conversation: {}", interaction.conversation_id),
+                format!("target: {target}"),
+                format!("state: {:?}", interaction.state),
+                format!("turns: {}", interaction.turn_count),
+                format!("active turns: {}", active_turns.len()),
+                approval_status,
+                format!(
+                    "model: {} (durable conversation selection)",
+                    interaction
+                        .config
+                        .model
+                        .as_deref()
+                        .unwrap_or("runtime/agent default")
+                ),
+                format!(
+                    "provider: {} (selection unavailable in Console)",
+                    interaction
+                        .config
+                        .provider
+                        .as_deref()
+                        .unwrap_or("runtime default")
+                ),
+            ];
+            lines.extend(
+                pending_approvals
+                    .into_iter()
+                    .map(|approval_id| format!("pending approval: {approval_id}")),
+            );
             Ok(ProjectedConsoleCommand {
                 title: "Durable Console status".to_owned(),
-                lines: vec![
-                    format!("conversation: {}", interaction.conversation_id),
-                    format!("target: {target}"),
-                    format!("state: {:?}", interaction.state),
-                    format!("turns: {}", interaction.turn_count),
-                    format!("active turns: {}", active_turns.len()),
-                    "pending approvals: visibility unavailable in Console".to_owned(),
-                    format!(
-                        "model: {} (durable conversation selection)",
-                        interaction
-                            .config
-                            .model
-                            .as_deref()
-                            .unwrap_or("runtime/agent default")
-                    ),
-                    format!(
-                        "provider: {} (selection unavailable in Console)",
-                        interaction
-                            .config
-                            .provider
-                            .as_deref()
-                            .unwrap_or("runtime default")
-                    ),
-                ],
+                lines,
                 selection: None,
                 model_update: ConsoleModelUpdate::Selected(interaction.config.model),
                 agent_update: None,
@@ -3250,10 +3530,26 @@ async fn project_console_command_output(
                 agent_update: None,
             })
         }
-        CommandOutput::CancellationRequested { turn_id: None, .. }
-        | CommandOutput::ApprovalResolved { .. } => {
+        CommandOutput::CancellationRequested { turn_id: None, .. } => {
             Err("shared command returned an output unsupported by Console".to_owned())
         }
+        CommandOutput::ApprovalResolved {
+            approval_id,
+            decision,
+        } => Ok(ProjectedConsoleCommand {
+            title: "Durable approval resolved".to_owned(),
+            lines: vec![
+                format!("approval: {approval_id}"),
+                match decision {
+                    ApprovalDecision::Approve => "decision: approved".to_owned(),
+                    ApprovalDecision::Deny { .. } => "decision: denied".to_owned(),
+                },
+                "scope: selected authorized Console conversation".to_owned(),
+            ],
+            selection: None,
+            model_update: ConsoleModelUpdate::Unchanged,
+            agent_update: None,
+        }),
     }
 }
 
@@ -3271,6 +3567,7 @@ struct TuiCommandRuntime {
     run_commands: RunCommandReadModel,
     agent_id: AgentId,
     exact_turn_filter: Option<InteractionTurnId>,
+    approval_authority_bound: bool,
 }
 
 #[async_trait]
@@ -3332,9 +3629,19 @@ impl InteractionCommandRuntime for TuiCommandRuntime {
 
     async fn pending_approvals(
         &self,
-        _conversation_id: ConversationId,
+        conversation_id: ConversationId,
     ) -> Result<Vec<ApprovalId>, InteractionError> {
-        Ok(Vec::new())
+        if !self.approval_authority_bound {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .service
+            .list_pending_approvals(conversation_id)
+            .await?
+            .into_iter()
+            .filter(|approval| approval.status == polkagent_interaction::ApprovalStatus::Pending)
+            .map(|approval| approval.approval_id)
+            .collect())
     }
 }
 
@@ -3819,9 +4126,19 @@ mod tests {
             }
             if let Some(existing) = &state.decision {
                 if existing != &decision {
+                    let unsafe_detail = match &decision {
+                        ApprovalDecision::Deny {
+                            reason: Some(reason),
+                        } => {
+                            format!("; untrusted denial detail: {reason}")
+                        }
+                        ApprovalDecision::Approve | ApprovalDecision::Deny { reason: None } => {
+                            String::new()
+                        }
+                    };
                     return Err(InteractionError::new(
                         InteractionErrorCode::Conflict,
-                        "approval already has a different durable decision",
+                        format!("approval already has a different durable decision{unsafe_detail}"),
                     ));
                 }
                 return Ok(state.approval.clone());
@@ -4532,6 +4849,105 @@ mod tests {
     }
 
     #[test]
+    fn approval_commands_require_the_exact_scoped_projection_and_retain_only_exact_retry() {
+        let mut state = InteractionState::default();
+        let agent_id = AgentId::new().to_string();
+        let conversation_id = ConversationId::new();
+        let approval_id = ApprovalId::new();
+        state.select_agent(agent_id.clone(), "Alice");
+        state.conversation_id = Some(conversation_id.to_string());
+
+        type_prompt(&mut state, "/");
+        let unavailable = state
+            .slash_command_menu()
+            .expect("default command menu")
+            .candidates;
+        assert!(!unavailable
+            .iter()
+            .any(|item| { matches!(item.name.as_str(), "approve" | "deny") }));
+        state.clear_prompt();
+        type_prompt(&mut state, "/help approve");
+        assert_eq!(
+            state.submit_command(),
+            Ok(ConsoleCommandSubmission::Rejected)
+        );
+
+        let approvals = ConsoleApprovalContext::new(conversation_id, vec![approval_id]);
+        state.clear_prompt();
+        type_prompt(&mut state, "/");
+        let available = state
+            .slash_command_menu_with_approval_context(Some(&approvals))
+            .expect("authorized command menu")
+            .candidates;
+        assert!(available.iter().any(|item| item.name == "approve"));
+        assert!(available.iter().any(|item| item.name == "deny"));
+
+        state.clear_prompt();
+        type_prompt(&mut state, &format!("/approve {approval_id}"));
+        let ConsoleCommandSubmission::Execute(request) = state
+            .submit_command_with_approval_context(Some(&approvals))
+            .expect("submit exact approval")
+        else {
+            panic!("exact projected approval was rejected")
+        };
+        assert_eq!(request.pending_approval_count, 1);
+        assert!(state.run.is_none(), "approval command created model work");
+
+        state.apply(ControllerEvent::CommandCompleted {
+            agent_id,
+            conversation_id: Some(conversation_id.to_string()),
+            request_id: request.request_id.clone(),
+            result: ConsoleCommandResult {
+                request_id: request.request_id,
+                line: request.line,
+                status: ConsoleCommandStatus::Completed,
+                title: "Durable approval resolved".to_owned(),
+                lines: vec![format!("approval: {approval_id}")],
+                approval_resolution: Some(ConsoleApprovalResolution {
+                    conversation_id,
+                    approval_id,
+                    decision: ConsoleApprovalDecision::Approve,
+                }),
+            },
+            selection: None,
+            model_update: ConsoleModelUpdate::Unchanged,
+            agent_update: None,
+        });
+
+        let refreshed = ConsoleApprovalContext::new(conversation_id, Vec::new());
+        type_prompt(&mut state, &format!("/deny {approval_id} changed decision"));
+        assert!(matches!(
+            state.submit_command_with_approval_context(Some(&refreshed)),
+            Ok(ConsoleCommandSubmission::Execute(_))
+        ));
+
+        let unrelated = ApprovalId::new();
+        type_prompt(&mut state, &format!("/approve {unrelated}"));
+        assert_eq!(
+            state.submit_command_with_approval_context(Some(&refreshed)),
+            Ok(ConsoleCommandSubmission::Rejected)
+        );
+
+        type_prompt(
+            &mut state,
+            &format!("/deny {approval_id} {}", "é".repeat(4_097)),
+        );
+        assert_eq!(
+            state.submit_command_with_approval_context(Some(&approvals)),
+            Ok(ConsoleCommandSubmission::Rejected)
+        );
+        let reason = state.command_result.as_ref().expect("bounded refusal");
+        assert!(reason.lines.join("\n").contains("4096"));
+
+        let approval_prefix = &approval_id.to_string()[..8];
+        type_prompt(&mut state, &format!("/approve {approval_prefix}"));
+        assert_eq!(
+            state.submit_command_with_approval_context(Some(&approvals)),
+            Ok(ConsoleCommandSubmission::Rejected)
+        );
+    }
+
+    #[test]
     fn slash_submission_is_not_misrouted_as_an_agent_prompt() {
         let mut state = InteractionState::default();
         state.select_agent("agent-id", "Alice");
@@ -4681,6 +5097,7 @@ mod tests {
                 status: ConsoleCommandStatus::Completed,
                 title: "Updated durable Console model".to_owned(),
                 lines: vec!["model: fake/model-a".to_owned()],
+                approval_resolution: None,
             },
             selection: None,
             model_update: ConsoleModelUpdate::Selected(Some("fake/model-a".to_owned())),
@@ -4728,6 +5145,7 @@ mod tests {
                 status: ConsoleCommandStatus::Completed,
                 title: "Durable conversation runs".to_owned(),
                 lines: vec!["stale run projection".to_owned()],
+                approval_resolution: None,
             },
             selection: None,
             model_update: ConsoleModelUpdate::Unchanged,
@@ -4771,6 +5189,7 @@ mod tests {
                 status: ConsoleCommandStatus::Completed,
                 title: "stale".to_owned(),
                 lines: Vec::new(),
+                approval_resolution: None,
             },
             selection: Some(ConsoleConversationSelection {
                 conversation_id: "stale-conversation".to_owned(),
@@ -4792,6 +5211,7 @@ mod tests {
                 status: ConsoleCommandStatus::Completed,
                 title: "Created durable interaction".to_owned(),
                 lines: vec![format!("conversation: {selected_id}")],
+                approval_resolution: None,
             },
             selection: Some(ConsoleConversationSelection {
                 conversation_id: selected_id.clone(),
@@ -4845,6 +5265,7 @@ mod tests {
                 status: ConsoleCommandStatus::Completed,
                 title: "Updated durable Console target".to_owned(),
                 lines: vec!["agent: New Agent (new-agent)".to_owned()],
+                approval_resolution: None,
             },
             selection: None,
             model_update: ConsoleModelUpdate::Unchanged,
@@ -5838,6 +6259,170 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::too_many_lines)]
+    async fn console_approval_commands_preserve_scope_retry_redaction_and_unrelated_activity() {
+        let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
+        let conversation_id = ConversationId::new();
+        let wrong_conversation_id = ConversationId::new();
+        let inner: Arc<dyn InteractionService> = runtime.interactions().clone();
+        let fixture = Arc::new(ApprovalFixtureService::new(inner, conversation_id));
+        let approval_id = fixture.approval_id();
+        let service: Arc<dyn InteractionService> = fixture;
+        let gate = Arc::new(ControlledFakeRun::default());
+        let agent_id = AgentId::new().to_string();
+        let mut controller = RunController::with_test_run_worker(
+            runtime.clone(),
+            controlled_worker(Arc::new(BTreeMap::from([(
+                agent_id.clone(),
+                Arc::clone(&gate),
+            )]))),
+            Duration::from_millis(100),
+        )
+        .with_test_approval_service(service);
+
+        let mut state = InteractionState::default();
+        state.select_agent(agent_id.clone(), "Approval agent");
+        state.conversation_id = Some(conversation_id.to_string());
+        type_prompt(&mut state, "keep unrelated work waiting");
+        let prompt = state.submit().expect("submit controlled activity");
+        let activity_id = controller.start(prompt).expect("start controlled activity");
+        state
+            .bind_activity(activity_id)
+            .expect("bind controlled activity");
+        state.apply_update(
+            controller
+                .recv_update()
+                .await
+                .expect("controlled activity started"),
+        );
+        assert_eq!(controller.active_run_count(), 1);
+        let activity_before = state.activity_summaries();
+        let initial_turn_count: i64 = runtime
+            .pool()
+            .writer()
+            .query_row("SELECT COUNT(*) FROM interaction_turns", [], |row| {
+                row.get(0)
+            })
+            .expect("count initial interaction turns");
+
+        let projected = ConsoleApprovalContext::new(conversation_id, vec![approval_id]);
+        type_prompt(&mut state, &format!("/approve {approval_id}"));
+        let ConsoleCommandSubmission::Execute(request) = state
+            .submit_command_with_approval_context(Some(&projected))
+            .expect("submit projected approval")
+        else {
+            panic!("projected approval was rejected")
+        };
+        let mut switched = state.clone();
+        switched.replace_conversation(Some(wrong_conversation_id.to_string()), None, Vec::new());
+        type_prompt(&mut switched, "preserved switched draft");
+
+        controller
+            .execute_command(request)
+            .expect("execute shared approval command");
+        let completed = wait_for_control_terminal(&mut controller).await;
+        assert!(matches!(
+            completed,
+            ControllerEvent::CommandCompleted { .. }
+        ));
+        state.apply(completed.clone());
+        switched.apply(completed);
+        assert_eq!(switched.prompt_buffer, "preserved switched draft");
+        assert_ne!(
+            switched
+                .command_result
+                .as_ref()
+                .and_then(|result| result.approval_resolution.as_ref())
+                .map(|resolution| resolution.approval_id),
+            Some(approval_id),
+            "stale completion crossed the selected conversation"
+        );
+        assert_eq!(controller.active_run_count(), 1);
+        assert_eq!(state.activity_summaries(), activity_before);
+
+        let refresh_id = uuid::Uuid::now_v7();
+        controller
+            .list_approvals(ApprovalListRequest {
+                request_id: refresh_id,
+                conversation_id,
+            })
+            .expect("refresh shared approval queue");
+        let refreshed = controller.recv_update().await.expect("refreshed queue");
+        assert!(matches!(
+            refreshed.event(),
+            ControllerEvent::ApprovalListLoaded { approvals, .. } if approvals.is_empty()
+        ));
+        let empty_projection = ConsoleApprovalContext::new(conversation_id, Vec::new());
+
+        type_prompt(&mut state, &format!("/approve {approval_id}"));
+        let ConsoleCommandSubmission::Execute(retry) = state
+            .submit_command_with_approval_context(Some(&empty_projection))
+            .expect("submit exact retry after refresh")
+        else {
+            panic!("exact retry was rejected after refresh")
+        };
+        controller
+            .execute_command(retry)
+            .expect("execute idempotent retry");
+        let retry = wait_for_control_terminal(&mut controller).await;
+        assert!(matches!(retry, ControllerEvent::CommandCompleted { .. }));
+        state.apply(retry);
+
+        let secret = "sk-approval-secret-123456789";
+        type_prompt(
+            &mut state,
+            &format!("/deny {approval_id} changed decision {secret}"),
+        );
+        let ConsoleCommandSubmission::Execute(conflict) = state
+            .submit_command_with_approval_context(Some(&empty_projection))
+            .expect("submit exact opposite retry")
+        else {
+            panic!("exact opposite retry was rejected before durable CAS")
+        };
+        controller
+            .execute_command(conflict)
+            .expect("execute conflicting retry");
+        state.apply(wait_for_control_terminal(&mut controller).await);
+        let refusal = state.command_result.as_ref().expect("conflict result");
+        assert_eq!(refusal.status, ConsoleCommandStatus::Failed);
+        assert!(refusal.lines.join("\n").contains("conflict"));
+        assert!(!refusal.lines.join("\n").contains(secret));
+        assert!(refusal.lines.join("\n").contains("REDACTED"));
+        assert!(!refusal.line.contains(secret));
+        assert!(refusal.line.contains("[reason redacted]"));
+        assert!(!state
+            .prompt_history
+            .iter()
+            .any(|line| line.contains(secret)));
+        assert_eq!(
+            refusal
+                .approval_resolution
+                .as_ref()
+                .map(|resolution| resolution.approval_id),
+            Some(approval_id),
+            "opposite conflict erased the exact retry marker"
+        );
+
+        type_prompt(&mut state, &format!("/approve {approval_id}"));
+        assert!(matches!(
+            state.submit_command_with_approval_context(Some(&empty_projection)),
+            Ok(ConsoleCommandSubmission::Execute(_))
+        ));
+
+        let final_turn_count: i64 = runtime
+            .pool()
+            .writer()
+            .query_row("SELECT COUNT(*) FROM interaction_turns", [], |row| {
+                row.get(0)
+            })
+            .expect("count final interaction turns");
+        assert_eq!(final_turn_count, initial_turn_count);
+        assert_eq!(controller.active_run_count(), 1);
+        controller.shutdown().await;
+        assert_eq!(gate.cancellations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn pending_approval_no_longer_blocks_tui_turn_cancellation_dispatch() {
         let (_temp, runtime) = Box::pin(controller_test_runtime()).await;
         let gate = Arc::new(ControlledFakeRun::default());
@@ -6258,6 +6843,119 @@ mod tests {
             runtime.readiness().approval_surfaces.state,
             ComponentState::Ready
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::too_many_lines)]
+    async fn console_approval_command_uses_production_authority_and_creates_no_model_turn() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let database_path = temp.path().join("tui-command-approval.db");
+        let pool = SqlitePool::open(&database_path).expect("open TUI approval database");
+        migrations::migrate(&pool.writer()).expect("migrate TUI approval database");
+        let store = SqliteRunStore::new(pool.clone());
+        let agent = store
+            .create_agent(
+                "approval-command-agent",
+                None,
+                &serde_json::json!({
+                    "name": "approval-command-agent",
+                    "description": null,
+                    "model": "fake/default",
+                    "tools": [],
+                    "system_prompt": null,
+                    "autonomy_level": "supervised",
+                })
+                .to_string(),
+            )
+            .expect("create approval command agent");
+        let fixture = crate::commands::chat::tests::seed_chat_approval(
+            &pool,
+            agent.id.parse().expect("agent UUID"),
+        )
+        .await;
+
+        let mut wrong_authority = fixture.authority.clone();
+        wrong_authority.principal_id = PrincipalId::new();
+        let mut wrong_options =
+            tui_runtime_options_with_approval(&pool, None, Some(wrong_authority))
+                .expect("wrong-principal runtime options");
+        wrong_options.workdir = temp.path().to_path_buf();
+        wrong_options.disable_harness = true;
+        wrong_options.discover_environment_providers = false;
+        let wrong_error = Box::pin(RuntimeFactory::build(wrong_options))
+            .await
+            .expect_err("wrong-principal runtime must fail closed during recovery");
+        assert!(format!("{wrong_error:#}").contains("permission_denied"));
+
+        let mut options =
+            tui_runtime_options_with_approval(&pool, None, Some(fixture.authority.clone()))
+                .expect("authorized runtime options");
+        options.workdir = temp.path().to_path_buf();
+        options.disable_harness = true;
+        options.discover_environment_providers = false;
+        drop(store);
+        drop(pool);
+        let runtime = Box::pin(RuntimeFactory::build(options))
+            .await
+            .expect("build authorized production runtime");
+        let approval = runtime
+            .interactions()
+            .list_pending_approvals(fixture.conversation_id)
+            .await
+            .expect("list production pending approval")
+            .into_iter()
+            .next()
+            .expect("seeded pending approval");
+        let approval_id = approval.approval_id;
+        let projection = ConsoleApprovalContext::new(fixture.conversation_id, vec![approval_id]);
+
+        let initial_turn_count: i64 = runtime
+            .pool()
+            .writer()
+            .query_row("SELECT COUNT(*) FROM interaction_turns", [], |row| {
+                row.get(0)
+            })
+            .expect("count seeded interaction turns");
+        let mut state = InteractionState::default();
+        state.select_agent(agent.id.clone(), agent.name);
+        state.conversation_id = Some(fixture.conversation_id.to_string());
+        type_prompt(&mut state, &format!("/approve {approval_id}"));
+        let ConsoleCommandSubmission::Execute(request) = state
+            .submit_command_with_approval_context(Some(&projection))
+            .expect("submit authorized production command")
+        else {
+            panic!("authorized production command was rejected")
+        };
+        let mut controller = RunController::new(runtime.clone());
+        assert!(controller.approval_authority_bound());
+        controller
+            .execute_command(request)
+            .expect("execute authorized production command");
+        state.apply(wait_for_control_terminal(&mut controller).await);
+        let result = state.command_result.as_ref().expect("approval result");
+        assert_eq!(result.status, ConsoleCommandStatus::Completed);
+        assert_eq!(
+            result
+                .approval_resolution
+                .as_ref()
+                .map(|resolution| resolution.approval_id),
+            Some(approval_id)
+        );
+        assert!(runtime
+            .interactions()
+            .list_pending_approvals(fixture.conversation_id)
+            .await
+            .expect("refresh production approval queue")
+            .is_empty());
+        let final_turn_count: i64 = runtime
+            .pool()
+            .writer()
+            .query_row("SELECT COUNT(*) FROM interaction_turns", [], |row| {
+                row.get(0)
+            })
+            .expect("count final interaction turns");
+        assert_eq!(final_turn_count, initial_turn_count);
+        controller.shutdown().await;
     }
 
     #[tokio::test(flavor = "current_thread")]

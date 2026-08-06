@@ -1672,6 +1672,7 @@ fn test_console_renders_structured_command_failure_over_completed_turn_status() 
         status: ConsoleCommandStatus::Failed,
         title: "Command failed".to_owned(),
         lines: vec!["invalid_request: unknown model `missing-model`".to_owned()],
+        approval_resolution: None,
     });
     let state = TuiState {
         interaction,
@@ -1724,6 +1725,7 @@ fn test_console_renders_shared_redaction_safe_run_inspection() {
         status: ConsoleCommandStatus::Completed,
         title: "Durable run inspection".to_owned(),
         lines,
+        approval_resolution: None,
     });
     let state = TuiState {
         interaction,
