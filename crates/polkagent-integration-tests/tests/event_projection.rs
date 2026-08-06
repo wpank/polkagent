@@ -31,6 +31,10 @@ fn make_stored_event(run_id: RunId, event_type: &str, sequence: u64) -> StoredEv
         sequence,
         global_sequence: 0, // assigned by store
         run_id: run_id.to_string(),
+        turn_id: None,
+        step_id: None,
+        effect_intent_id: None,
+        effect_attempt_id: None,
         conversation_id: None,
         correlation_id: "corr-1".to_string(),
         causation_id: None,

@@ -13,12 +13,80 @@
 use polkagent_core::{
     event::{Durability, EventCorrelation, EventKind, RunEvent},
     run::RunState,
-    RunId,
+    EffectAttemptId, EffectId, EventId, RunId, StepId, TurnId,
 };
 use polkagent_store_trait::event::{EventStore, StoredEvent};
 
 use crate::error::EventError;
 use crate::projection::{Projection, RunStatusProjection};
+use crate::types::event_type_of;
+
+fn parse_stored_id<T: std::str::FromStr>(
+    value: &str,
+    field: &'static str,
+) -> Result<T, EventError> {
+    value
+        .parse()
+        .map_err(|_| EventError::InvalidStoredEvent(field))
+}
+
+fn parse_optional_stored_id<T: std::str::FromStr>(
+    value: Option<&str>,
+    field: &'static str,
+) -> Result<Option<T>, EventError> {
+    value.map(|value| parse_stored_id(value, field)).transpose()
+}
+
+/// Decode the complete canonical [`RunEvent`] projection from one persisted
+/// envelope.
+///
+/// This is the shared fail-closed boundary for durable replay adapters. It
+/// preserves every `EventCorrelation` component and `causation_id`; malformed
+/// typed IDs, timestamps, durability, payloads, or event-type pairs are
+/// rejected rather than replaced with defaults.
+pub fn decode_run_event(stored: StoredEvent) -> Result<RunEvent, EventError> {
+    if stored.durability != "durable" {
+        return Err(EventError::InvalidStoredEvent("durability"));
+    }
+    let id = parse_stored_id::<EventId>(&stored.id, "id")?;
+    let run_id = parse_stored_id::<RunId>(&stored.run_id, "run_id")?;
+    let turn_id = parse_optional_stored_id::<TurnId>(stored.turn_id.as_deref(), "turn_id")?;
+    let step_id = parse_optional_stored_id::<StepId>(stored.step_id.as_deref(), "step_id")?;
+    let effect_intent_id = parse_optional_stored_id::<EffectId>(
+        stored.effect_intent_id.as_deref(),
+        "effect_intent_id",
+    )?;
+    let effect_attempt_id = parse_optional_stored_id::<EffectAttemptId>(
+        stored.effect_attempt_id.as_deref(),
+        "effect_attempt_id",
+    )?;
+    let causation_id =
+        parse_optional_stored_id::<EventId>(stored.causation_id.as_deref(), "causation_id")?;
+    let timestamp = chrono::DateTime::parse_from_rfc3339(&stored.timestamp)
+        .map_err(|_| EventError::InvalidStoredEvent("timestamp"))?
+        .with_timezone(&chrono::Utc);
+    let kind = serde_json::from_value::<EventKind>(stored.payload)?;
+    if event_type_of(&kind) != stored.event_type {
+        return Err(EventError::InvalidStoredEvent("event_type"));
+    }
+
+    Ok(RunEvent {
+        id,
+        run_id,
+        sequence: stored.sequence,
+        kind,
+        durability: Durability::Durable,
+        correlation: EventCorrelation {
+            run_id,
+            turn_id,
+            step_id,
+            effect_intent_id,
+            effect_attempt_id,
+        },
+        causation_id,
+        timestamp,
+    })
+}
 
 // ---------------------------------------------------------------------------
 // events_for_run
@@ -97,37 +165,8 @@ pub async fn latest_state(
     // Replay events into a RunStatusProjection.
     let mut proj = RunStatusProjection::new();
 
-    for stored in &stored_events {
-        // Deserialise the EventKind from the stored payload.
-        let kind: EventKind =
-            serde_json::from_value(stored.payload.clone()).map_err(EventError::Serialisation)?;
-
-        let event_id: polkagent_core::EventId = stored.id.parse().map_err(|_| {
-            EventError::Store(polkagent_store_trait::event::EventStoreError::NotFound(
-                format!("invalid event_id: {}", stored.id),
-            ))
-        })?;
-
-        let stored_run_id: RunId = stored.run_id.parse().map_err(|_| {
-            EventError::Store(polkagent_store_trait::event::EventStoreError::NotFound(
-                format!("invalid run_id: {}", stored.run_id),
-            ))
-        })?;
-
-        let event = RunEvent {
-            id: event_id,
-            run_id: stored_run_id,
-            sequence: stored.sequence,
-            kind,
-            durability: Durability::Durable,
-            correlation: EventCorrelation {
-                run_id: stored_run_id,
-                ..Default::default()
-            },
-            causation_id: None,
-            timestamp: chrono::DateTime::parse_from_rfc3339(&stored.timestamp)
-                .map_or_else(|_| chrono::Utc::now(), |dt| dt.with_timezone(&chrono::Utc)),
-        };
+    for stored in stored_events {
+        let event = decode_run_event(stored)?;
 
         proj.apply(&event)
             .map_err(|source| EventError::ProjectionApply {
@@ -277,6 +316,10 @@ mod tests {
             sequence: seq,
             global_sequence: 0,
             run_id: run_id.to_string(),
+            turn_id: None,
+            step_id: None,
+            effect_intent_id: None,
+            effect_attempt_id: None,
             conversation_id: None,
             correlation_id: EventId::new().to_string(),
             causation_id: None,
@@ -298,6 +341,102 @@ mod tests {
     }
 
     // ── events_for_run tests ──────────────────────────────────────────────
+
+    #[test]
+    fn decode_run_event_preserves_null_and_populated_correlation() {
+        let run_id = RunId::new();
+        let event_id = EventId::new();
+        let mut stored = StoredEvent {
+            id: event_id.to_string(),
+            event_type: "run_created".to_owned(),
+            sequence: 1,
+            global_sequence: 9,
+            run_id: run_id.to_string(),
+            turn_id: None,
+            step_id: None,
+            effect_intent_id: None,
+            effect_attempt_id: None,
+            conversation_id: None,
+            correlation_id: event_id.to_string(),
+            causation_id: None,
+            scope_id: String::new(),
+            timestamp: "2024-01-01T00:00:00Z".to_owned(),
+            durability: "durable".to_owned(),
+            payload: serde_json::to_value(EventKind::RunCreated).expect("payload"),
+            trace_id: None,
+            span_id: None,
+            schema_version: 1,
+        };
+
+        let decoded = decode_run_event(stored.clone()).expect("decode null metadata");
+        assert_eq!(decoded.correlation.run_id, run_id);
+        assert_eq!(decoded.correlation.turn_id, None);
+        assert_eq!(decoded.correlation.step_id, None);
+        assert_eq!(decoded.correlation.effect_intent_id, None);
+        assert_eq!(decoded.correlation.effect_attempt_id, None);
+        assert_eq!(decoded.causation_id, None);
+
+        let turn_id = TurnId::new();
+        let step_id = StepId::new();
+        let effect_intent_id = EffectId::new();
+        let effect_attempt_id = EffectAttemptId::new();
+        let causation_id = EventId::new();
+        stored.turn_id = Some(turn_id.to_string());
+        stored.step_id = Some(step_id.to_string());
+        stored.effect_intent_id = Some(effect_intent_id.to_string());
+        stored.effect_attempt_id = Some(effect_attempt_id.to_string());
+        stored.causation_id = Some(causation_id.to_string());
+        let decoded = decode_run_event(stored).expect("decode populated metadata");
+        assert_eq!(decoded.correlation.turn_id, Some(turn_id));
+        assert_eq!(decoded.correlation.step_id, Some(step_id));
+        assert_eq!(decoded.correlation.effect_intent_id, Some(effect_intent_id));
+        assert_eq!(
+            decoded.correlation.effect_attempt_id,
+            Some(effect_attempt_id)
+        );
+        assert_eq!(decoded.causation_id, Some(causation_id));
+    }
+
+    #[test]
+    fn decode_run_event_rejects_event_type_mismatch_and_invalid_typed_id() {
+        let run_id = RunId::new();
+        let event_id = EventId::new();
+        let stored = StoredEvent {
+            id: event_id.to_string(),
+            event_type: "run_started".to_owned(),
+            sequence: 1,
+            global_sequence: 1,
+            run_id: run_id.to_string(),
+            turn_id: None,
+            step_id: None,
+            effect_intent_id: None,
+            effect_attempt_id: None,
+            conversation_id: None,
+            correlation_id: event_id.to_string(),
+            causation_id: None,
+            scope_id: String::new(),
+            timestamp: "2024-01-01T00:00:00Z".to_owned(),
+            durability: "durable".to_owned(),
+            payload: serde_json::to_value(EventKind::RunCreated).expect("payload"),
+            trace_id: None,
+            span_id: None,
+            schema_version: 1,
+        };
+        assert!(matches!(
+            decode_run_event(stored.clone()),
+            Err(EventError::InvalidStoredEvent("event_type"))
+        ));
+
+        let invalid = StoredEvent {
+            event_type: "run_created".to_owned(),
+            turn_id: Some("not-a-turn-id".to_owned()),
+            ..stored
+        };
+        assert!(matches!(
+            decode_run_event(invalid),
+            Err(EventError::InvalidStoredEvent("turn_id"))
+        ));
+    }
 
     #[tokio::test]
     async fn events_for_run_returns_empty_for_unknown_run() {
@@ -380,6 +519,10 @@ mod tests {
                 sequence: 1,
                 global_sequence: 0,
                 run_id: run_id.to_string(),
+                turn_id: None,
+                step_id: None,
+                effect_intent_id: None,
+                effect_attempt_id: None,
                 conversation_id: None,
                 correlation_id: event_id_1.to_string(),
                 causation_id: None,
@@ -405,6 +548,10 @@ mod tests {
                 sequence: 2,
                 global_sequence: 0,
                 run_id: run_id.to_string(),
+                turn_id: None,
+                step_id: None,
+                effect_intent_id: None,
+                effect_attempt_id: None,
                 conversation_id: None,
                 correlation_id: event_id_2.to_string(),
                 causation_id: None,

@@ -79,17 +79,23 @@ fn row_to_event(row: &sqlx::postgres::PgRow) -> Result<StoredEvent, EventStoreEr
         correlation_id: correlation_id.unwrap_or_default(),
         schema_version: db_i32_to_u32(schema_version, "schema_version")?,
         global_sequence: db_i64_to_u64(global_sequence, "global_sequence")?,
-        conversation_id: None,
-        causation_id: None,
-        scope_id: String::new(),
-        durability: String::new(),
-        trace_id: None,
-        span_id: None,
+        turn_id: row.get("turn_id"),
+        step_id: row.get("step_id"),
+        effect_intent_id: row.get("effect_intent_id"),
+        effect_attempt_id: row.get("effect_attempt_id"),
+        conversation_id: row.get("conversation_id"),
+        causation_id: row.get("causation_id"),
+        scope_id: row.get("scope_id"),
+        durability: row.get("durability"),
+        trace_id: row.get("trace_id"),
+        span_id: row.get("span_id"),
     })
 }
 
-const EVENT_COLS: &str =
-    "global_sequence, id, run_id, sequence, kind, data_json, timestamp, correlation_id, schema_version";
+const EVENT_COLS: &str = "global_sequence, id, run_id, sequence, kind, data_json, \
+    timestamp, correlation_id, schema_version, conversation_id, causation_id, \
+    scope_id, durability, trace_id, span_id, turn_id, step_id, effect_intent_id, \
+    effect_attempt_id";
 
 #[async_trait]
 impl EventStore for PgPool {
@@ -146,8 +152,12 @@ impl EventStore for PgPool {
         // 4. INSERT and get assigned global_sequence.
         let row = sqlx::query(&format!(
             "INSERT INTO durable_events
-             (id, tenant_id, run_id, sequence, kind, data_json, timestamp, correlation_id, schema_version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             (id, tenant_id, run_id, sequence, kind, data_json, timestamp,
+              correlation_id, schema_version, conversation_id, causation_id,
+              scope_id, durability, trace_id, span_id, turn_id, step_id,
+              effect_intent_id, effect_attempt_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                     $13, $14, $15, $16, $17, $18, $19)
              RETURNING {EVENT_COLS}"
         ))
         .bind(&event.id)
@@ -159,6 +169,16 @@ impl EventStore for PgPool {
         .bind(ts)
         .bind(&event.correlation_id)
         .bind(schema_version)
+        .bind(&event.conversation_id)
+        .bind(&event.causation_id)
+        .bind(&event.scope_id)
+        .bind(&event.durability)
+        .bind(&event.trace_id)
+        .bind(&event.span_id)
+        .bind(&event.turn_id)
+        .bind(&event.step_id)
+        .bind(&event.effect_intent_id)
+        .bind(&event.effect_attempt_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
@@ -197,8 +217,12 @@ impl EventStore for PgPool {
 
         sqlx::query(
             "INSERT INTO diagnostic_events
-             (id, tenant_id, run_id, sequence, kind, data_json, timestamp, correlation_id, schema_version, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             (id, tenant_id, run_id, sequence, kind, data_json, timestamp,
+              correlation_id, schema_version, conversation_id, causation_id,
+              scope_id, durability, trace_id, span_id, turn_id, step_id,
+              effect_intent_id, effect_attempt_id, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                     $13, $14, $15, $16, $17, $18, $19, $20)",
         )
         .bind(&event.id)
         .bind(&tenant)
@@ -209,6 +233,16 @@ impl EventStore for PgPool {
         .bind(ts)
         .bind(&event.correlation_id)
         .bind(schema_version)
+        .bind(&event.conversation_id)
+        .bind(&event.causation_id)
+        .bind(&event.scope_id)
+        .bind(&event.durability)
+        .bind(&event.trace_id)
+        .bind(&event.span_id)
+        .bind(&event.turn_id)
+        .bind(&event.step_id)
+        .bind(&event.effect_intent_id)
+        .bind(&event.effect_attempt_id)
         .bind(expires)
         .execute(&mut *tx)
         .await
@@ -271,6 +305,8 @@ impl EventStore for PgPool {
         self.set_tenant(&mut tx).await.map_err(map_pg_err)?;
 
         let mut binds_run_id = None;
+        let mut binds_conversation_id = None;
+        let mut binds_scope_id = None;
         let mut binds_event_types = Vec::new();
         let mut binds_since: Option<i64> = None;
         let mut binds_limit: Option<i64> = None;
@@ -278,6 +314,18 @@ impl EventStore for PgPool {
         if let Some(ref run_id) = filter.run_id {
             conditions.push(format!("run_id = ${param_idx}"));
             binds_run_id = Some(run_id.to_string());
+            param_idx += 1;
+        }
+
+        if let Some(ref conversation_id) = filter.conversation_id {
+            conditions.push(format!("conversation_id = ${param_idx}"));
+            binds_conversation_id = Some(conversation_id.clone());
+            param_idx += 1;
+        }
+
+        if let Some(ref scope_id) = filter.scope_id {
+            conditions.push(format!("scope_id = ${param_idx}"));
+            binds_scope_id = Some(scope_id.clone());
             param_idx += 1;
         }
 
@@ -315,6 +363,12 @@ impl EventStore for PgPool {
 
         if let Some(ref run_id) = binds_run_id {
             query = query.bind(run_id);
+        }
+        if let Some(ref conversation_id) = binds_conversation_id {
+            query = query.bind(conversation_id);
+        }
+        if let Some(ref scope_id) = binds_scope_id {
+            query = query.bind(scope_id);
         }
         if !binds_event_types.is_empty() {
             query = query.bind(&binds_event_types);

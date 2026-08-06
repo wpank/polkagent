@@ -39,10 +39,10 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use polkagent_core::{
-    event::{Durability, EventCorrelation, EventKind, RunEvent},
-    EventId, RunId,
+    event::{Durability, RunEvent},
+    RunId,
 };
-use polkagent_event::types::EventType;
+use polkagent_event::{decode_run_event, types::EventType};
 use polkagent_store_trait::event::{EventStore, StoredEvent};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -283,45 +283,7 @@ impl DurableEventFollower {
 }
 
 pub(super) fn stored_event_to_run_event(stored: StoredEvent) -> Result<RunEvent, StreamFailure> {
-    let id = stored
-        .id
-        .parse::<EventId>()
-        .map_err(|_| StreamFailure::InvalidProjection)?;
-    let run_id = stored
-        .run_id
-        .parse::<RunId>()
-        .map_err(|_| StreamFailure::InvalidProjection)?;
-    let causation_id = stored
-        .causation_id
-        .as_deref()
-        .map(str::parse::<EventId>)
-        .transpose()
-        .map_err(|_| StreamFailure::InvalidProjection)?;
-    let timestamp = stored
-        .timestamp
-        .parse()
-        .map_err(|_| StreamFailure::InvalidProjection)?;
-    let kind = serde_json::from_value::<EventKind>(stored.payload)
-        .map_err(|_| StreamFailure::InvalidProjection)?;
-    if EventType::from_kind(&kind)
-        .is_some_and(|event_type| event_type.as_str() != stored.event_type)
-    {
-        return Err(StreamFailure::InvalidProjection);
-    }
-
-    Ok(RunEvent {
-        id,
-        run_id,
-        sequence: stored.sequence,
-        kind,
-        durability: Durability::Durable,
-        correlation: EventCorrelation {
-            run_id,
-            ..Default::default()
-        },
-        causation_id,
-        timestamp,
-    })
+    decode_run_event(stored).map_err(|_| StreamFailure::InvalidProjection)
 }
 
 // ---------------------------------------------------------------------------

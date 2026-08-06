@@ -27,7 +27,7 @@ use polkagent_store_trait::event::{EventStore, EventStoreError, StoredEvent};
 use serde_json;
 use tracing::{debug, error, instrument};
 
-use crate::{bus::EventBus, error::EventError, types::EventType};
+use crate::{bus::EventBus, error::EventError, types::event_type_of};
 
 // ---------------------------------------------------------------------------
 // EventRecorder
@@ -88,6 +88,11 @@ impl EventRecorder {
         )
     )]
     pub async fn record(&self, mut event: RunEvent) -> Result<RunEvent, EventError> {
+        if event.correlation.run_id != event.run_id {
+            return Err(EventError::Store(EventStoreError::Serialisation(
+                "event correlation.run_id does not match event.run_id".to_owned(),
+            )));
+        }
         let durability = durability_of(&event.kind);
 
         match durability {
@@ -139,6 +144,26 @@ impl EventRecorder {
             sequence: next_seq,
             global_sequence: 0, // assigned by store
             run_id: event.run_id.to_string(),
+            turn_id: event
+                .correlation
+                .turn_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            step_id: event
+                .correlation
+                .step_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            effect_intent_id: event
+                .correlation
+                .effect_intent_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            effect_attempt_id: event
+                .correlation
+                .effect_attempt_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
             conversation_id: None,
             correlation_id: event.id.to_string(), // use event id as default
             causation_id: event
@@ -197,6 +222,26 @@ impl EventRecorder {
             sequence: event.sequence,
             global_sequence: 0,
             run_id: event.run_id.to_string(),
+            turn_id: event
+                .correlation
+                .turn_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            step_id: event
+                .correlation
+                .step_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            effect_intent_id: event
+                .correlation
+                .effect_intent_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            effect_attempt_id: event
+                .correlation
+                .effect_attempt_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
             conversation_id: None,
             correlation_id: event.id.to_string(),
             causation_id: event
@@ -245,23 +290,6 @@ fn durability_of(kind: &EventKind) -> DurabilityClass {
     }
 }
 
-/// Map an `EventKind` to its canonical event-type string.
-fn event_type_of(kind: &EventKind) -> String {
-    // Use the flat EventType enum where possible, fall back to Debug name.
-    if let Some(et) = EventType::from_kind(kind) {
-        et.as_str().to_owned()
-    } else {
-        // Fallback: use the Rust debug name without the struct fields.
-        let debug = format!("{kind:?}");
-        debug
-            .split_whitespace()
-            .next()
-            .unwrap_or("unknown")
-            .trim_end_matches('{')
-            .to_owned()
-    }
-}
-
 /// Returns `true` if the `EventKind` is a terminal run lifecycle event.
 fn is_terminal_kind(kind: &EventKind) -> bool {
     matches!(
@@ -292,7 +320,7 @@ mod tests {
     use crate::types::TERMINAL_EVENT_TYPES;
     use polkagent_core::{
         event::{EventCorrelation, EventKind, RunEvent},
-        ids::{EventId, RunId},
+        ids::{EffectAttemptId, EffectId, EventId, RunId, StepId, TurnId},
     };
     use polkagent_store_trait::event::{EventFilter, EventStore, EventStoreError, StoredEvent};
     use std::collections::HashMap;
@@ -454,6 +482,86 @@ mod tests {
             .expect("read run events");
         assert_eq!(events.len(), 2);
         assert!(events[0].sequence < events[1].sequence);
+    }
+
+    #[tokio::test]
+    async fn recorder_persists_complete_correlation_and_causation_metadata() {
+        let (recorder, store) = make_durable_recorder();
+        let run_id = RunId::new();
+        let turn_id = TurnId::new();
+        let step_id = StepId::new();
+        let effect_intent_id = EffectId::new();
+        let effect_attempt_id = EffectAttemptId::new();
+        let causation_id = EventId::new();
+        let mut event = RunEvent::new_durable(
+            EventId::new(),
+            run_id,
+            0,
+            EventKind::RunStarted,
+            EventCorrelation {
+                run_id,
+                turn_id: Some(turn_id),
+                step_id: Some(step_id),
+                effect_intent_id: Some(effect_intent_id),
+                effect_attempt_id: Some(effect_attempt_id),
+            },
+        );
+        event.causation_id = Some(causation_id);
+
+        recorder
+            .record(event)
+            .await
+            .expect("record correlated event");
+        let stored = store
+            .read_run_events(run_id)
+            .await
+            .expect("read correlated event");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].turn_id.as_deref(),
+            Some(turn_id.to_string().as_str())
+        );
+        assert_eq!(
+            stored[0].step_id.as_deref(),
+            Some(step_id.to_string().as_str())
+        );
+        assert_eq!(
+            stored[0].effect_intent_id.as_deref(),
+            Some(effect_intent_id.to_string().as_str())
+        );
+        assert_eq!(
+            stored[0].effect_attempt_id.as_deref(),
+            Some(effect_attempt_id.to_string().as_str())
+        );
+        assert_eq!(
+            stored[0].causation_id.as_deref(),
+            Some(causation_id.to_string().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn recorder_rejects_mismatched_correlation_run() {
+        let (recorder, store) = make_durable_recorder();
+        let run_id = RunId::new();
+        let event = RunEvent::new_durable(
+            EventId::new(),
+            run_id,
+            0,
+            EventKind::RunCreated,
+            EventCorrelation {
+                run_id: RunId::new(),
+                ..Default::default()
+            },
+        );
+        let error = recorder
+            .record(event)
+            .await
+            .expect_err("mismatched correlation run must fail");
+        assert!(matches!(
+            error,
+            EventError::Store(EventStoreError::Serialisation(_))
+        ));
+        assert!(store.durable.lock().expect("durable store").is_empty());
     }
 
     #[tokio::test]

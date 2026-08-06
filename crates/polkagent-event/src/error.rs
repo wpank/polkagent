@@ -42,4 +42,8 @@ pub enum EventError {
     /// Serialisation or deserialisation of an event payload failed.
     #[error("serialisation error: {0}")]
     Serialisation(#[from] serde_json::Error),
+
+    /// A persisted event envelope cannot be projected into its canonical type.
+    #[error("invalid stored event field: {0}")]
+    InvalidStoredEvent(&'static str),
 }

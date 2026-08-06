@@ -42,7 +42,7 @@ pub mod types;
 pub use bus::{EventBus, EventReceiver};
 pub use error::EventError;
 pub use projection::{Projection, ProjectionEngine, RunStatusProjection};
-pub use query::{events_for_run, latest_state};
+pub use query::{decode_run_event, events_for_run, latest_state};
 pub use recorder::EventRecorder;
 pub use types::{EventPayload, EventType, RunEvent, TERMINAL_EVENT_TYPES};
 

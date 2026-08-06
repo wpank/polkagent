@@ -193,9 +193,29 @@ CREATE TABLE IF NOT EXISTS durable_events (
     data_json       JSONB       NOT NULL DEFAULT '{}',
     timestamp       TIMESTAMPTZ NOT NULL DEFAULT now(),
     correlation_id  TEXT,
+    conversation_id TEXT,
+    causation_id    TEXT,
+    scope_id        TEXT        NOT NULL DEFAULT '',
+    durability      TEXT        NOT NULL DEFAULT 'durable',
+    trace_id        TEXT,
+    span_id         TEXT,
+    turn_id         TEXT,
+    step_id         TEXT,
+    effect_intent_id TEXT,
+    effect_attempt_id TEXT,
     schema_version  INTEGER     NOT NULL DEFAULT 1,
     UNIQUE (run_id, sequence)
 );
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS conversation_id TEXT;
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS causation_id TEXT;
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS scope_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS durability TEXT NOT NULL DEFAULT 'durable';
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS trace_id TEXT;
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS span_id TEXT;
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS turn_id TEXT;
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS step_id TEXT;
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS effect_intent_id TEXT;
+ALTER TABLE durable_events ADD COLUMN IF NOT EXISTS effect_attempt_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_durable_events_tenant ON durable_events (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_durable_events_run    ON durable_events (run_id);
 
@@ -217,9 +237,29 @@ CREATE TABLE IF NOT EXISTS diagnostic_events (
     data_json       JSONB       NOT NULL DEFAULT '{}',
     timestamp       TIMESTAMPTZ NOT NULL DEFAULT now(),
     correlation_id  TEXT,
+    conversation_id TEXT,
+    causation_id    TEXT,
+    scope_id        TEXT        NOT NULL DEFAULT '',
+    durability      TEXT        NOT NULL DEFAULT 'diagnostic',
+    trace_id        TEXT,
+    span_id         TEXT,
+    turn_id         TEXT,
+    step_id         TEXT,
+    effect_intent_id TEXT,
+    effect_attempt_id TEXT,
     schema_version  INTEGER     NOT NULL DEFAULT 1,
     expires_at      TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS conversation_id TEXT;
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS causation_id TEXT;
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS scope_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS durability TEXT NOT NULL DEFAULT 'diagnostic';
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS trace_id TEXT;
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS span_id TEXT;
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS turn_id TEXT;
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS step_id TEXT;
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS effect_intent_id TEXT;
+ALTER TABLE diagnostic_events ADD COLUMN IF NOT EXISTS effect_attempt_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_diag_events_tenant ON diagnostic_events (tenant_id);
 
 ALTER TABLE diagnostic_events ENABLE ROW LEVEL SECURITY;

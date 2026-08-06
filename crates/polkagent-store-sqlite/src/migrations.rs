@@ -76,6 +76,9 @@ const SCHEMA_V17: &str = include_str!("v17_interaction_origin.sql");
 /// V18: Durable approval/checkpoint coordinator and authoritative effect state.
 const SCHEMA_V18: &str = include_str!("v18_approval_foundation.sql");
 
+/// V19: Preserve the complete durable run-event metadata envelope.
+const SCHEMA_V19: &str = include_str!("v19_run_event_metadata.sql");
+
 /// Each entry is `(version, description, sql)`.
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "initial schema", SCHEMA_V1),
@@ -96,6 +99,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (16, "immutable effect outcome lineage", SCHEMA_V16),
     (17, "immutable interaction origin cwd", SCHEMA_V17),
     (18, "durable approval and checkpoint foundation", SCHEMA_V18),
+    (19, "complete run event metadata", SCHEMA_V19),
 ];
 
 // ---------------------------------------------------------------------------
@@ -221,10 +225,32 @@ fn u64(b: u8) -> u64 {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::pool::SqlitePool;
+    use polkagent_store_trait::event::{EventFilter, EventStore};
     use rusqlite::Connection;
 
     fn open_mem() -> Connection {
         Connection::open_in_memory().expect("in-memory db")
+    }
+
+    fn migrate_through(conn: &Connection, final_version: u32) {
+        for &(version, description, sql) in MIGRATIONS {
+            if version > final_version {
+                break;
+            }
+            conn.execute_batch(sql).expect("apply historical migration");
+            conn.execute(
+                "INSERT INTO schema_migrations (version, description, applied_at, checksum)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    version,
+                    description,
+                    Utc::now().to_rfc3339(),
+                    compute_checksum(sql)
+                ],
+            )
+            .expect("record historical migration");
+        }
     }
 
     #[test]
@@ -232,7 +258,7 @@ mod tests {
         let conn = open_mem();
         migrate(&conn).expect("migrate");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -241,7 +267,7 @@ mod tests {
         migrate(&conn).expect("first migrate");
         migrate(&conn).expect("second migrate (idempotent)");
         let version = current_version(&conn).expect("version");
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -261,6 +287,127 @@ mod tests {
         assert_eq!(
             count,
             i64::try_from(MIGRATIONS.len()).expect("migration count fits in i64")
+        );
+    }
+
+    #[tokio::test]
+    async fn v19_preserves_legacy_rowids_and_backfills_diagnostic_durability() {
+        let directory = tempfile::tempdir().expect("legacy database directory");
+        let path = directory.path().join("events-v18.sqlite");
+        let durable_id = uuid::Uuid::now_v7().to_string();
+        let diagnostic_id = uuid::Uuid::now_v7().to_string();
+        let run_id = uuid::Uuid::now_v7().to_string();
+        let agent_id = uuid::Uuid::now_v7().to_string();
+        let (durable_rowid, diagnostic_rowid) = {
+            let conn = Connection::open(&path).expect("open V18 database");
+            migrate_through(&conn, 18);
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO agents (id, name, created_at, updated_at)
+                 VALUES (?1, 'legacy-event-agent', ?2, ?2)",
+                rusqlite::params![agent_id, now],
+            )
+            .expect("seed legacy agent");
+            conn.execute(
+                "INSERT INTO runs (id, agent_id, state, created_at, updated_at)
+                 VALUES (?1, ?2, 'created', ?3, ?3)",
+                rusqlite::params![run_id, agent_id, now],
+            )
+            .expect("seed legacy run");
+            conn.execute(
+                "INSERT INTO run_events
+                    (id, run_id, sequence, kind, data_json, timestamp,
+                     correlation_id, schema_version)
+                 VALUES (?1, ?2, 1, 'run_created', '\"run_created\"', ?3,
+                         NULL, 1)",
+                rusqlite::params![durable_id, run_id, now],
+            )
+            .expect("seed legacy durable event");
+            let durable_rowid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO run_events
+                    (id, run_id, sequence, kind, data_json, timestamp,
+                     correlation_id, schema_version)
+                 VALUES (?1, ?2, 2, 'diagnostic:diagnostic_log', '{}', ?3,
+                         NULL, 1)",
+                rusqlite::params![diagnostic_id, run_id, now],
+            )
+            .expect("seed legacy diagnostic event");
+            (durable_rowid, conn.last_insert_rowid())
+        };
+
+        let pool = SqlitePool::open(&path).expect("open legacy database through pool");
+        migrate(&pool.writer()).expect("migrate V18 database to V19");
+        assert_eq!(current_version(&pool.writer()).expect("version"), 19);
+
+        let rows: Vec<(String, i64, String, Option<String>, String)> = {
+            let writer = pool.writer();
+            let mut statement = writer
+                .prepare(
+                    "SELECT id, rowid, durability, causation_id, scope_id
+                     FROM run_events ORDER BY rowid",
+                )
+                .expect("prepare migrated event query");
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .expect("query migrated events")
+                .collect::<Result<_, _>>()
+                .expect("collect migrated events")
+        };
+        assert_eq!(
+            rows[0],
+            (
+                durable_id.clone(),
+                durable_rowid,
+                "durable".to_owned(),
+                None,
+                String::new()
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                diagnostic_id.clone(),
+                diagnostic_rowid,
+                "diagnostic".to_owned(),
+                None,
+                String::new()
+            )
+        );
+
+        let durable = pool
+            .read_from_cursor(0, 16)
+            .await
+            .expect("read migrated durable rows");
+        assert_eq!(durable.len(), 1);
+        assert_eq!(durable[0].id, durable_id);
+        assert_eq!(
+            durable[0].global_sequence,
+            u64::try_from(durable_rowid).expect("positive durable rowid")
+        );
+
+        let all = pool
+            .query(EventFilter {
+                include_diagnostic: true,
+                ..Default::default()
+            })
+            .await
+            .expect("read migrated diagnostic row");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[1].id, diagnostic_id);
+        assert_eq!(all[1].event_type, "diagnostic_log");
+        assert_eq!(all[1].durability, "diagnostic");
+        assert_eq!(
+            all[1].global_sequence,
+            u64::try_from(diagnostic_rowid).expect("positive diagnostic rowid")
         );
     }
 

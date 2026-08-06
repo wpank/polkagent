@@ -176,6 +176,10 @@ fn make_event(run_id: &str, sequence: u64, event_type: &str) -> StoredEvent {
         sequence,
         global_sequence: 0, // assigned by the store
         run_id: run_id.to_string(),
+        turn_id: None,
+        step_id: None,
+        effect_intent_id: None,
+        effect_attempt_id: None,
         conversation_id: None,
         correlation_id: "corr-contract-test".to_string(),
         causation_id: None,

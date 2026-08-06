@@ -18,7 +18,7 @@ use polkagent_api::{ApiServer, AppState, InMemoryAgentStore, InMemoryRunManager,
 use polkagent_config::Config;
 use polkagent_core::{
     event::{EventCorrelation, EventKind, RunEvent},
-    AgentId, EventId, RunId,
+    AgentId, EffectAttemptId, EffectId, EventId, RunId, StepId, TurnId,
 };
 use polkagent_event::{types::EventType, EventBus, EventRecorder};
 use polkagent_store_sqlite::{migrations, SqlitePool};
@@ -362,6 +362,10 @@ fn stored_event(global_sequence: u64, run_id: RunId, kind: EventKind) -> (Stored
         sequence: global_sequence,
         global_sequence,
         run_id: run_id.to_string(),
+        turn_id: None,
+        step_id: None,
+        effect_intent_id: None,
+        effect_attempt_id: None,
         conversation_id: None,
         correlation_id: id.to_string(),
         causation_id: None,
@@ -404,9 +408,10 @@ async fn canonical_recorder_replays_real_sqlite_payload_and_rowid_checkpoint() {
     let bus = EventBus::new(8);
     let event_store: Arc<dyn EventStore> = Arc::new(pool.clone());
     let recorder = EventRecorder::new(event_store.clone(), bus.clone());
+    let cause_id = EventId::new();
     recorder
         .record(RunEvent::new_durable(
-            EventId::new(),
+            cause_id,
             run_id,
             0,
             EventKind::RunCreated,
@@ -424,6 +429,11 @@ async fn canonical_recorder_replays_real_sqlite_payload_and_rowid_checkpoint() {
     assert_eq!(first["run_id"], run_id.to_string());
     assert_eq!(first["sequence"], 1);
     assert_eq!(first["kind"], "run_created");
+    assert!(first["correlation"]["turn_id"].is_null());
+    assert!(first["correlation"]["step_id"].is_null());
+    assert!(first["correlation"]["effect_intent_id"].is_null());
+    assert!(first["correlation"]["effect_attempt_id"].is_null());
+    assert!(first["causation_id"].is_null());
     let first_global = first["global_sequence"]
         .as_u64()
         .expect("SQLite rowid checkpoint");
@@ -433,24 +443,78 @@ async fn canonical_recorder_replays_real_sqlite_payload_and_rowid_checkpoint() {
         .await
         .expect("close first SQLite stream");
 
-    recorder
-        .record(RunEvent::new_durable(
-            EventId::new(),
+    let turn_id = TurnId::new();
+    let step_id = StepId::new();
+    let effect_intent_id = EffectId::new();
+    let effect_attempt_id = EffectAttemptId::new();
+    let mut correlated = RunEvent::new_durable(
+        EventId::new(),
+        run_id,
+        0,
+        EventKind::RunStarted,
+        EventCorrelation {
             run_id,
-            0,
-            EventKind::RunStarted,
-            EventCorrelation {
-                run_id,
-                ..Default::default()
-            },
-        ))
+            turn_id: Some(turn_id),
+            step_id: Some(step_id),
+            effect_intent_id: Some(effect_intent_id),
+            effect_attempt_id: Some(effect_attempt_id),
+        },
+    );
+    correlated.causation_id = Some(cause_id);
+    recorder
+        .record(correlated)
         .await
         .expect("record canonical RunStarted");
     let mut resumed = connect(&server, &format!("?after_sequence={first_global}"), None).await;
     let second = next_json(&mut resumed).await;
     assert_eq!(second["sequence"], 2);
     assert_eq!(second["kind"], "run_started");
+    assert_eq!(second["correlation"]["run_id"], run_id.to_string());
+    assert_eq!(second["correlation"]["turn_id"], turn_id.to_string());
+    assert_eq!(second["correlation"]["step_id"], step_id.to_string());
+    assert_eq!(
+        second["correlation"]["effect_intent_id"],
+        effect_intent_id.to_string()
+    );
+    assert_eq!(
+        second["correlation"]["effect_attempt_id"],
+        effect_attempt_id.to_string()
+    );
+    assert_eq!(second["causation_id"], cause_id.to_string());
     assert!(second["global_sequence"].as_u64() > Some(first_global));
+}
+
+#[tokio::test]
+async fn real_sqlite_event_type_mismatch_fails_closed_at_api_replay_boundary() {
+    let pool = SqlitePool::open_in_memory().expect("open SQLite event fixture");
+    migrations::migrate(&pool.writer()).expect("migrate SQLite event fixture");
+    let run_id = RunId::new();
+    seed_sqlite_run(&pool, run_id, AgentId::new());
+    let event_id = EventId::new();
+    pool.writer()
+        .execute(
+            "INSERT INTO run_events
+                (id, run_id, sequence, kind, data_json, timestamp,
+                 correlation_id, schema_version)
+             VALUES (?1, ?2, 1, 'run_started', '\"run_created\"',
+                     '2024-01-01T00:00:00Z', ?1, 1)",
+            rusqlite::params![event_id.to_string(), run_id.to_string()],
+        )
+        .expect("seed mismatched persisted event type");
+
+    let event_store: Arc<dyn EventStore> = Arc::new(pool);
+    let server = spawn_server(Config::default(), EventBus::new(4), Some(event_store)).await;
+    let mut socket = connect(&server, "?after_sequence=0", None).await;
+    let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("explicit close delivery")
+        .expect("close frame")
+        .expect("valid close frame");
+    let Message::Close(Some(frame)) = message else {
+        panic!("expected explicit close frame, got {message:?}");
+    };
+    assert_eq!(frame.code, CloseCode::Error);
+    assert_eq!(frame.reason, "durable event recovery invalid");
 }
 
 #[tokio::test]

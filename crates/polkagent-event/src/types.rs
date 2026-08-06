@@ -224,6 +224,25 @@ impl EventType {
     }
 }
 
+/// Return the persisted event-type name for every core [`EventKind`].
+///
+/// The catalog covers most variants. The remaining legacy variants retain the
+/// recorder's stable Rust-variant-name representation until the catalog is
+/// completed.
+pub(crate) fn event_type_of(kind: &EventKind) -> String {
+    if let Some(event_type) = EventType::from_kind(kind) {
+        event_type.as_str().to_owned()
+    } else {
+        let debug = format!("{kind:?}");
+        debug
+            .split_whitespace()
+            .next()
+            .unwrap_or("unknown")
+            .trim_end_matches('{')
+            .to_owned()
+    }
+}
+
 impl std::fmt::Display for EventType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())

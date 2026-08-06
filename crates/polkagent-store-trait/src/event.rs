@@ -89,11 +89,25 @@ pub struct StoredEvent {
     pub global_sequence: u64,
     /// The run this event belongs to.
     pub run_id: String,
+    /// The turn correlated with this event, if any.
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    /// The step correlated with this event, if any.
+    #[serde(default)]
+    pub step_id: Option<String>,
+    /// The effect intent correlated with this event, if any.
+    #[serde(default)]
+    pub effect_intent_id: Option<String>,
+    /// The effect attempt correlated with this event, if any.
+    #[serde(default)]
+    pub effect_attempt_id: Option<String>,
     /// The conversation this event belongs to, if any.
+    #[serde(default)]
     pub conversation_id: Option<String>,
     /// Correlation ID linking related events across run boundaries.
     pub correlation_id: String,
     /// The event that directly caused this event, if any.
+    #[serde(default)]
     pub causation_id: Option<String>,
     /// Workspace/tenant scope identifier.
     pub scope_id: String,
@@ -104,8 +118,10 @@ pub struct StoredEvent {
     /// JSON-encoded event payload.
     pub payload: serde_json::Value,
     /// W3C trace ID (32 hex chars), if tracing is active.
+    #[serde(default)]
     pub trace_id: Option<String>,
     /// W3C span ID (16 hex chars), if tracing is active.
+    #[serde(default)]
     pub span_id: Option<String>,
     /// Schema version of this event's payload.
     pub schema_version: u32,
@@ -311,6 +327,10 @@ mod tests {
             sequence: global_sequence,
             global_sequence,
             run_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+            turn_id: None,
+            step_id: None,
+            effect_intent_id: None,
+            effect_attempt_id: None,
             conversation_id: None,
             correlation_id: "lookup-contract".to_owned(),
             causation_id: None,
@@ -322,6 +342,32 @@ mod tests {
             span_id: None,
             schema_version: 1,
         }
+    }
+
+    #[test]
+    fn stored_event_legacy_json_defaults_component_correlation_to_none() {
+        let json = serde_json::json!({
+            "id": "00000000-0000-7000-8000-000000000001",
+            "event_type": "run_created",
+            "sequence": 1,
+            "global_sequence": 1,
+            "run_id": "00000000-0000-7000-8000-000000000002",
+            "conversation_id": null,
+            "correlation_id": "legacy-correlation",
+            "causation_id": null,
+            "scope_id": "",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "durability": "durable",
+            "payload": "run_created",
+            "trace_id": null,
+            "span_id": null,
+            "schema_version": 1
+        });
+        let event: StoredEvent = serde_json::from_value(json).expect("legacy StoredEvent JSON");
+        assert_eq!(event.turn_id, None);
+        assert_eq!(event.step_id, None);
+        assert_eq!(event.effect_intent_id, None);
+        assert_eq!(event.effect_attempt_id, None);
     }
 
     fn unsupported() -> EventStoreError {

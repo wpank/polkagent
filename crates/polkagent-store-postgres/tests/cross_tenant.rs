@@ -236,6 +236,11 @@ async fn events_tenant_isolated() {
 
     let run_id = RunId::new();
     let run_str = run_id.to_string();
+    let turn_id = uuid::Uuid::now_v7().to_string();
+    let step_id = uuid::Uuid::now_v7().to_string();
+    let effect_intent_id = uuid::Uuid::now_v7().to_string();
+    let effect_attempt_id = uuid::Uuid::now_v7().to_string();
+    let causation_id = uuid::Uuid::now_v7().to_string();
 
     // Create a run in tenant A.
     RunStore::create(&pool_a, run_id, AGENT_ID, RunStatus::new("created"))
@@ -249,15 +254,19 @@ async fn events_tenant_isolated() {
         sequence: 1,
         global_sequence: 0,
         run_id: run_str.clone(),
-        conversation_id: None,
-        correlation_id: "corr".to_string(),
-        causation_id: None,
+        turn_id: Some(turn_id.clone()),
+        step_id: Some(step_id.clone()),
+        effect_intent_id: Some(effect_intent_id.clone()),
+        effect_attempt_id: Some(effect_attempt_id.clone()),
+        conversation_id: Some("conversation-a".to_owned()),
+        correlation_id: "correlation-a".to_owned(),
+        causation_id: Some(causation_id.clone()),
         scope_id: "scope".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         durability: "durable".to_string(),
         payload: serde_json::json!({"test": true}),
-        trace_id: None,
-        span_id: None,
+        trace_id: Some("0123456789abcdef0123456789abcdef".to_owned()),
+        span_id: Some("0123456789abcdef".to_owned()),
         schema_version: 1,
     };
 
@@ -272,6 +281,27 @@ async fn events_tenant_isolated() {
         .await
         .expect("tenant A read events");
     assert_eq!(events_a.len(), 1);
+    let stored = &events_a[0];
+    assert_eq!(stored.turn_id.as_deref(), Some(turn_id.as_str()));
+    assert_eq!(stored.step_id.as_deref(), Some(step_id.as_str()));
+    assert_eq!(
+        stored.effect_intent_id.as_deref(),
+        Some(effect_intent_id.as_str())
+    );
+    assert_eq!(
+        stored.effect_attempt_id.as_deref(),
+        Some(effect_attempt_id.as_str())
+    );
+    assert_eq!(stored.conversation_id.as_deref(), Some("conversation-a"));
+    assert_eq!(stored.correlation_id, "correlation-a");
+    assert_eq!(stored.causation_id.as_deref(), Some(causation_id.as_str()));
+    assert_eq!(stored.scope_id, "scope");
+    assert_eq!(stored.durability, "durable");
+    assert_eq!(
+        stored.trace_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    assert_eq!(stored.span_id.as_deref(), Some("0123456789abcdef"));
 
     // Tenant B sees nothing.
     let events_b = pool_b
