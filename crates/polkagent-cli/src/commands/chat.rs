@@ -8,13 +8,14 @@ use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use polkagent_core::{AgentId, ApprovalId, ConversationId, RunId};
 use polkagent_interaction::{
-    format_run_command_output, AgentTargetView, CancelTarget, ClientContext, CommandContext,
-    CommandExecutor, CommandName, CommandOutput, CommandRegistry, CommandRequest,
-    CreateInteractionRequest, InteractionCommand, InteractionCommandRuntime, InteractionConfig,
-    InteractionContent, InteractionError, InteractionErrorCode, InteractionEvent,
-    InteractionOverrides, InteractionService, InteractionSummary, InteractionTarget, ParsedLine,
-    PromptRequest, RunDetailView, RunSummaryView, ServiceCommandExecutor, StartedTurn, StreamError,
-    SubscriptionRequest, ToolCallView, TranscriptRequest, TurnHandle, UsageView,
+    format_run_command_output, AgentTargetView, ApprovalDecision, ApprovalView, CancelTarget,
+    ClientContext, CommandContext, CommandExecutor, CommandName, CommandOutput, CommandRegistry,
+    CommandRequest, CreateInteractionRequest, InteractionCommand, InteractionCommandRuntime,
+    InteractionConfig, InteractionContent, InteractionError, InteractionErrorCode,
+    InteractionEvent, InteractionOverrides, InteractionService, InteractionSummary,
+    InteractionTarget, ParsedLine, PromptRequest, RunDetailView, RunSummaryView,
+    ServiceCommandExecutor, StartedTurn, StreamError, SubscriptionRequest, ToolCallView,
+    TranscriptRequest, TurnHandle, UsageView,
 };
 use polkagent_runtime::{
     AdapterPolicy, PolkagentRuntime, RunCommandReadModel, RuntimeFactory, RuntimeOptions,
@@ -29,7 +30,10 @@ use crate::commands::interaction_agents::{
     resolve_active_agent_target,
 };
 
-const SUPPORTED_COMMANDS: [CommandName; 10] = [
+const MAX_PENDING_APPROVALS: usize = 100;
+const MAX_DENIAL_REASON_CHARS: usize = 4_096;
+
+const SUPPORTED_COMMANDS: [CommandName; 12] = [
     CommandName::Help,
     CommandName::Status,
     CommandName::Agents,
@@ -37,6 +41,8 @@ const SUPPORTED_COMMANDS: [CommandName; 10] = [
     CommandName::Runs,
     CommandName::Inspect,
     CommandName::Cancel,
+    CommandName::Approve,
+    CommandName::Deny,
     CommandName::New,
     CommandName::Resume,
     CommandName::Model,
@@ -176,6 +182,20 @@ struct ChatSession {
     conversation_id: ConversationId,
 }
 
+enum ApprovalAvailability {
+    Available(Vec<ApprovalView>),
+    Unavailable,
+}
+
+impl ApprovalAvailability {
+    fn pending_count(&self) -> usize {
+        match self {
+            Self::Available(approvals) => approvals.len(),
+            Self::Unavailable => 0,
+        }
+    }
+}
+
 impl ChatSession {
     fn announce_session(&self) {
         eprintln!("chat agent: {} ({})", self.agent_name, self.agent_id);
@@ -277,9 +297,11 @@ impl ChatSession {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("waiting for Ctrl-C")?;
-                    self.service.cancel_turn(started.handle.turn_id).await
-                        .context("cancelling active chat turn")?;
-                    eprintln!("cancellation requested for turn {}", started.handle.turn_id);
+                    if let Err(error) = self.cancel_turn_safely(started.handle.turn_id).await {
+                        eprintln!("cancellation unavailable: {error:#}");
+                    } else {
+                        eprintln!("cancellation requested for turn {}", started.handle.turn_id);
+                    }
                 }
                 event = started.events.recv() => {
                     match event {
@@ -313,19 +335,23 @@ impl ChatSession {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("waiting for Ctrl-C")?;
-                    self.service.cancel_turn(started.handle.turn_id).await
-                        .context("cancelling active chat turn")?;
-                    eprintln!("cancellation requested for turn {}", started.handle.turn_id);
+                    if let Err(error) = self.cancel_turn_safely(started.handle.turn_id).await {
+                        eprintln!("cancellation unavailable: {error:#}");
+                    } else {
+                        eprintln!("cancellation requested for turn {}", started.handle.turn_id);
+                    }
                 }
                 line = lines.next_line(), if stdin_open => {
                     match line.context("reading terminal input during active turn")? {
-                        Some(line) if is_cancel_line(&line) => {
+                        Some(line) if is_active_turn_command(&line) => {
                             if let Err(error) = self.execute_command_line(&line, true).await {
                                 eprintln!("command error: {error:#}");
                             }
                         }
                         Some(line) if line.trim().is_empty() => {}
-                        Some(_) => eprintln!("the turn is active; only /cancel is accepted until it finishes"),
+                        Some(_) => eprintln!(
+                            "the turn is active; only /status, /approve, /deny, or /cancel is accepted until it finishes"
+                        ),
                         None => stdin_open = false,
                     }
                 }
@@ -367,14 +393,68 @@ impl ChatSession {
         Ok(())
     }
 
+    async fn cancel_turn_safely(
+        &self,
+        turn_id: polkagent_interaction::InteractionTurnId,
+    ) -> Result<()> {
+        match self
+            .service
+            .list_pending_approvals(self.conversation_id)
+            .await
+        {
+            Ok(approvals) if !approvals.is_empty() => anyhow::bail!(
+                "coordinator-backed turn cancellation is not yet available while this conversation has a pending approval; use /deny for the pending request"
+            ),
+            Ok(_) => self
+                .service
+                .cancel_turn(turn_id)
+                .await
+                .context("cancelling active chat turn"),
+            Err(error) if approval_surface_unavailable(&error) => self
+                .service
+                .cancel_turn(turn_id)
+                .await
+                .context("cancelling active grantless chat turn"),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     async fn execute_command_line(&mut self, line: &str, has_active_turn: bool) -> Result<()> {
         refuse_unregistered_configuration_command(line)?;
         let ParsedLine::Command(invocation) = self.registry.parse(line)? else {
             anyhow::bail!("expected a slash command");
         };
         refuse_unsupported_command(&invocation.command)?;
+        validate_approval_command(&invocation.command)?;
         if matches!(invocation.command, InteractionCommand::Agent { .. }) {
             self.ensure_agent_switch_is_idle(has_active_turn).await?;
+        }
+        let approvals_available = match self
+            .service
+            .list_pending_approvals(self.conversation_id)
+            .await
+        {
+            Ok(approvals) => ApprovalAvailability::Available(
+                approvals.into_iter().take(MAX_PENDING_APPROVALS).collect(),
+            ),
+            Err(error) if approval_surface_unavailable(&error) => ApprovalAvailability::Unavailable,
+            Err(error) => return Err(error.into()),
+        };
+        if matches!(
+            invocation.command,
+            InteractionCommand::Approve { .. } | InteractionCommand::Deny { .. }
+        ) && matches!(approvals_available, ApprovalAvailability::Unavailable)
+        {
+            anyhow::bail!(
+                "terminal approval resolution is unavailable because this runtime has no authenticated approval authority"
+            );
+        }
+        if matches!(invocation.command, InteractionCommand::Cancel { .. })
+            && approvals_available.pending_count() > 0
+        {
+            anyhow::bail!(
+                "coordinator-backed turn cancellation is not yet available while this conversation has a pending approval; use /deny for the pending request"
+            );
         }
         let output = self
             .executor
@@ -383,13 +463,13 @@ impl ChatSession {
                 context: CommandContext {
                     conversation_id: Some(self.conversation_id),
                     has_active_turn,
-                    pending_approval_count: 0,
+                    pending_approval_count: approvals_available.pending_count(),
                     can_mutate: true,
                 },
                 client_context: self.client_context.clone(),
             })
             .await?;
-        self.apply_command_output(output).await
+        self.apply_command_output(output, approvals_available).await
     }
 
     async fn ensure_agent_switch_is_idle(&self, has_active_turn: bool) -> Result<()> {
@@ -435,7 +515,11 @@ impl ChatSession {
         clippy::too_many_lines,
         reason = "one exhaustive surface projection keeps every typed shared-command result auditable"
     )]
-    async fn apply_command_output(&mut self, output: CommandOutput) -> Result<()> {
+    async fn apply_command_output(
+        &mut self,
+        output: CommandOutput,
+        approvals_available: ApprovalAvailability,
+    ) -> Result<()> {
         if let Some(rendered) = format_run_command_output(&output) {
             println!("{rendered}");
             std::io::stdout().flush().context("flushing chat output")?;
@@ -476,6 +560,13 @@ impl ChatSession {
                             Some("[all]"),
                             "Cancel the current durable turn (or all active turns)",
                         ),
+                        CommandName::Approve => {
+                            (Some("<approval-id>"), "Approve one exact pending approval")
+                        }
+                        CommandName::Deny => (
+                            Some("<approval-id> [reason]"),
+                            "Deny one exact pending approval",
+                        ),
                         CommandName::Model => (
                             Some("[model-id]"),
                             "Show or persist the model for this durable conversation",
@@ -486,13 +577,16 @@ impl ChatSession {
                     println!("  /{}{hint} — {description}", command.name);
                 }
                 println!(
-                    "Provider/harness/autonomy, approval, and group commands are not available in terminal chat."
+                    "Provider/harness/autonomy and group commands are not available in terminal chat."
+                );
+                println!(
+                    "Approval commands appear only when scoped pending approvals are available."
                 );
             }
             CommandOutput::Status {
                 interaction,
                 active_turns,
-                pending_approvals: _,
+                pending_approvals,
             } => {
                 println!("session: {}", interaction.conversation_id);
                 let target = match interaction.config.target {
@@ -505,7 +599,17 @@ impl ChatSession {
                 println!("state: {:?}", interaction.state);
                 println!("turns: {}", interaction.turn_count);
                 println!("active turns: {}", active_turns.len());
-                println!("pending approvals: visibility unavailable in terminal chat");
+                match approvals_available {
+                    ApprovalAvailability::Available(_) => {
+                        println!("pending approvals: {}", pending_approvals.len());
+                        for approval_id in pending_approvals {
+                            println!("  {approval_id}");
+                        }
+                    }
+                    ApprovalAvailability::Unavailable => {
+                        println!("pending approvals: unavailable (no authenticated authority)");
+                    }
+                }
                 println!(
                     "model: {} (durable conversation selection)",
                     interaction
@@ -590,6 +694,13 @@ impl ChatSession {
                     }
                 );
             }
+            CommandOutput::ApprovalResolved {
+                approval_id,
+                decision,
+            } => match decision {
+                ApprovalDecision::Approve => println!("approval {approval_id}: approved"),
+                ApprovalDecision::Deny { .. } => println!("approval {approval_id}: denied"),
+            },
             _ => anyhow::bail!("terminal chat received an unsupported command result"),
         }
         std::io::stdout().flush().context("flushing chat output")?;
@@ -641,12 +752,47 @@ fn display_target(target: &InteractionTarget) -> String {
     }
 }
 
-fn is_cancel_line(line: &str) -> bool {
-    matches!(line.split_whitespace().next(), Some("/cancel" | "/stop"))
+fn is_active_turn_command(line: &str) -> bool {
+    matches!(
+        line.split_whitespace().next(),
+        Some("/status" | "/st" | "/approve" | "/deny" | "/cancel" | "/stop")
+    )
 }
 
 fn terminal_tool_progress(call: &ToolCallView) -> String {
     format!("[tool {}] {}: {:?}", call.call_id, call.title, call.status)
+}
+
+fn terminal_approval_request(request: &ApprovalView) -> String {
+    format!(
+        "[approval required {}] run={} effect={}; use `/approve {}` or `/deny {} [reason]`",
+        request.approval_id,
+        request.run_id,
+        request.effect_id,
+        request.approval_id,
+        request.approval_id
+    )
+}
+
+fn approval_surface_unavailable(error: &InteractionError) -> bool {
+    matches!(
+        error.code,
+        InteractionErrorCode::Unsupported | InteractionErrorCode::Unavailable
+    )
+}
+
+fn validate_approval_command(command: &InteractionCommand) -> Result<()> {
+    if let InteractionCommand::Deny {
+        reason: Some(reason),
+        ..
+    } = command
+    {
+        anyhow::ensure!(
+            reason.chars().count() <= MAX_DENIAL_REASON_CHARS,
+            "approval denial reason must be at most {MAX_DENIAL_REASON_CHARS} characters"
+        );
+    }
+    Ok(())
 }
 
 fn refuse_unregistered_configuration_command(line: &str) -> Result<()> {
@@ -681,9 +827,6 @@ fn refuse_unsupported_command(command: &InteractionCommand) -> Result<()> {
         } => anyhow::bail!(
             "terminal chat cancels the current turn only; run-scoped cancellation is unsupported"
         ),
-        InteractionCommand::Approve { .. } | InteractionCommand::Deny { .. } => {
-            anyhow::bail!("terminal chat cannot resolve approvals; use the durable inbox commands")
-        }
         _ => Ok(()),
     }
 }
@@ -750,17 +893,15 @@ impl TurnRenderer {
                 eprintln!("[plan] {} item(s) updated", entries.len());
             }
             InteractionEvent::ApprovalRequested { request } => {
-                eprintln!(
-                    "[approval required] {} — use `polkagent inbox` outside terminal chat",
-                    request.title
-                );
+                eprintln!("{}", terminal_approval_request(&request));
             }
             InteractionEvent::ApprovalResolved {
                 approval_id,
                 decision,
-            } => {
-                eprintln!("[approval] {approval_id}: {decision:?}");
-            }
+            } => match decision {
+                ApprovalDecision::Approve => eprintln!("[approval {approval_id}] approved"),
+                ApprovalDecision::Deny { .. } => eprintln!("[approval {approval_id}] denied"),
+            },
             InteractionEvent::UsageUpdated { usage } => {
                 Self::report_usage(&usage);
                 self.usage = Some(usage);
@@ -889,9 +1030,17 @@ impl InteractionCommandRuntime for ChatCommandRuntime {
 
     async fn pending_approvals(
         &self,
-        _conversation_id: ConversationId,
+        conversation_id: ConversationId,
     ) -> Result<Vec<ApprovalId>, InteractionError> {
-        Ok(Vec::new())
+        match self.service.list_pending_approvals(conversation_id).await {
+            Ok(approvals) => Ok(approvals
+                .into_iter()
+                .take(MAX_PENDING_APPROVALS)
+                .map(|approval| approval.approval_id)
+                .collect()),
+            Err(error) if approval_surface_unavailable(&error) => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -906,12 +1055,14 @@ fn chat_unsupported(capability: &str) -> InteractionError {
 mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
+    use std::time::Duration;
 
     use clap::Parser as _;
     use futures::Stream;
-    use polkagent_config::{Config, ModelOverrideConfig};
-    use polkagent_core::AgentSpec;
+    use polkagent_config::{Config, ModelOverrideConfig, SecurityConfig};
+    use polkagent_core::{AgentSpec, DataClassification, EffectId, PrincipalId, StepId, TurnId};
     use polkagent_event::{EventBus, EventRecorder};
+    use polkagent_executor_fake::FakeExecutor;
     use polkagent_executor_trait::{
         ExecutorError, InferenceRequest, InferenceResponse, ModelExecutor, StreamEvent, TokenUsage,
     };
@@ -919,9 +1070,22 @@ mod tests {
         CancelMode, Harness, HarnessCapabilities, HarnessError, HarnessEvent, HarnessId,
         HarnessStatus, McpMode, SessionConfig, SessionId, SessionResumeMode, ToolInjection,
     };
+    use polkagent_interaction::{
+        InteractionApprovalAuthority, InteractionEventId, InteractionRunLink, InteractionStore,
+        NewInteraction, NewInteractionTurn, RunRole,
+    };
     use polkagent_runtime::DurableInteractionService;
-    use polkagent_service::AppService;
-    use polkagent_store_sqlite::{migrations, SqliteRunStore};
+    use polkagent_service::{AppService, ApprovalRuntimeConfig};
+    use polkagent_store_sqlite::{migrations, SqliteInteractionStore, SqliteRunStore};
+    use polkagent_store_trait::{
+        approval::{
+            ApprovalCoordinatorStore, ApprovalRequestMetadata, ApprovalSubject, CheckpointEffect,
+            CheckpointEffectStatus, ExecutionCheckpoint, PauseForApproval,
+            APPROVAL_SUBJECT_SCHEMA_VERSION, EXECUTION_CHECKPOINT_SCHEMA_VERSION,
+        },
+        StoreRetryClass,
+    };
+    use uuid::Uuid;
 
     use super::*;
     use crate::cli::{Cli, Commands};
@@ -1174,6 +1338,259 @@ mod tests {
         }
     }
 
+    struct ChatApprovalFixture {
+        authority: InteractionApprovalAuthority,
+        conversation_id: ConversationId,
+        other_conversation_id: ConversationId,
+        interaction_turn_id: polkagent_interaction::InteractionTurnId,
+        approval_id: ApprovalId,
+        run_id: RunId,
+        effect_id: EffectId,
+    }
+
+    fn seed_conversation_row(
+        pool: &SqlitePool,
+        conversation_id: ConversationId,
+        agent_id: AgentId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        pool.writer()
+            .execute(
+                "INSERT INTO conversations
+                    (id, agent_id, title, message_count, metadata_json, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, 0, '{}', ?3, ?3)",
+                rusqlite::params![
+                    conversation_id.to_string(),
+                    agent_id.to_string(),
+                    now.to_rfc3339(),
+                ],
+            )
+            .expect("seed approval conversation");
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exact persisted approval lineage remains auditable in one test fixture"
+    )]
+    async fn seed_chat_approval(pool: &SqlitePool, agent_id: AgentId) -> ChatApprovalFixture {
+        let conversation_id = ConversationId::new();
+        let other_conversation_id = ConversationId::new();
+        let interaction_turn_id = polkagent_interaction::InteractionTurnId::new();
+        let run_id = RunId::new();
+        let executor_turn_id = TurnId::new();
+        let step_id = StepId::new();
+        let effect_id = EffectId::new();
+        let approval_id = ApprovalId::new();
+        let principal_id = PrincipalId::new();
+        let now = chrono::Utc::now();
+        let deadline = now + chrono::Duration::minutes(10);
+
+        for id in [conversation_id, other_conversation_id] {
+            seed_conversation_row(pool, id, agent_id, now);
+        }
+        let interaction_store = SqliteInteractionStore::new(pool.clone());
+        for id in [conversation_id, other_conversation_id] {
+            interaction_store
+                .create_interaction(NewInteraction {
+                    conversation_id: id,
+                    config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                    origin_working_directory: PathBuf::from("/tmp/chat-approval-test"),
+                    created_at: now,
+                })
+                .await
+                .expect("seed approval interaction");
+        }
+        {
+            let writer = pool.writer();
+            writer
+                .execute(
+                    "INSERT INTO runs
+                        (id, agent_id, conversation_id, state, params_json,
+                         created_at, updated_at, started_at)
+                     VALUES (?1, ?2, ?3, 'running', '{}', ?4, ?4, ?4)",
+                    rusqlite::params![
+                        run_id.to_string(),
+                        agent_id.to_string(),
+                        conversation_id.to_string(),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .expect("seed approval run");
+            writer
+                .execute(
+                    "INSERT INTO turns (id, run_id, sequence, role, started_at)
+                     VALUES (?1, ?2, 1, 'assistant', ?3)",
+                    rusqlite::params![
+                        executor_turn_id.to_string(),
+                        run_id.to_string(),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .expect("seed approval executor turn");
+            writer
+                .execute(
+                    "INSERT INTO steps (id, turn_id, sequence, kind, started_at)
+                     VALUES (?1, ?2, 1, 'tool_call', ?3)",
+                    rusqlite::params![
+                        step_id.to_string(),
+                        executor_turn_id.to_string(),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .expect("seed approval step");
+        }
+        interaction_store
+            .create_turn(NewInteractionTurn {
+                turn_id: interaction_turn_id,
+                conversation_id,
+                ordinal: 1,
+                target: InteractionTarget::Agent(agent_id),
+                config: InteractionConfig::new(InteractionTarget::Agent(agent_id)),
+                user_message_id: Uuid::now_v7(),
+                user_message_text: "approval fixture".to_owned(),
+                runs: vec![InteractionRunLink {
+                    run_id,
+                    role: RunRole::Primary,
+                    ordinal: 1,
+                }],
+                initial_event_id: InteractionEventId::new(),
+                started_at: now,
+            })
+            .await
+            .expect("seed approval interaction turn");
+
+        let subject = ApprovalSubject {
+            schema_version: APPROVAL_SUBJECT_SCHEMA_VERSION,
+            conversation_id,
+            turn_id: executor_turn_id,
+            step_id,
+            run_id,
+            agent_id,
+            effect_id,
+            tool_call_id: "call-write-1".to_owned(),
+            tool_name: "filesystem.write".to_owned(),
+            validated_arguments: serde_json::json!({"path":"notes.txt"}),
+            required_action: "write".to_owned(),
+            required_resource: "workspace/notes.txt".to_owned(),
+            working_directory: Some("/workspace".to_owned()),
+            security_scope: serde_json::json!({
+                "tenant_id":"tenant-a",
+                "workspace_id":"workspace-a"
+            }),
+            tool_spec_digest: "fixture-tool-digest".to_owned(),
+            policy_snapshot_digest: "fixture-policy-digest".to_owned(),
+            subject_digest: "fixture-subject-digest".to_owned(),
+        };
+        let checkpoint = ExecutionCheckpoint {
+            schema_version: EXECUTION_CHECKPOINT_SCHEMA_VERSION,
+            run_id,
+            turn_id: executor_turn_id,
+            conversation_id,
+            agent_id,
+            model_id: "fake/model".to_owned(),
+            executor_id: "fake".to_owned(),
+            messages: serde_json::json!([]),
+            tool_calls: serde_json::json!([]),
+            next_model_turn: 2,
+            next_step_sequence: 2,
+            next_effect_sequence: 2,
+            accumulated_usage: serde_json::json!({}),
+            accumulated_cost: None,
+            deadline_at: Some(deadline),
+            retry_class: StoreRetryClass::NoAutoRetry,
+            effects: vec![CheckpointEffect {
+                effect_id,
+                status: CheckpointEffectStatus::AwaitingApproval,
+            }],
+            version: 1,
+            classification: DataClassification::Private,
+            retention_expires_at: None,
+            integrity_digest: "fixture-checkpoint-digest".to_owned(),
+        };
+        ApprovalCoordinatorStore::pause_for_approval(
+            pool,
+            PauseForApproval {
+                approval_id,
+                expected_run_state_version: 0,
+                subject,
+                effect_payload: serde_json::json!({
+                    "kind":"tool_call",
+                    "tool_name":"filesystem.write"
+                }),
+                effect_idempotency_key: format!("approval-{effect_id}"),
+                retry_class: StoreRetryClass::NoAutoRetry,
+                checkpoint,
+                metadata: ApprovalRequestMetadata {
+                    title: "Write notes.txt".to_owned(),
+                    description: "Write one file in the selected workspace".to_owned(),
+                    reason: "filesystem write grant requires approval".to_owned(),
+                    tenant_id: "tenant-a".to_owned(),
+                    workspace_id: "workspace-a".to_owned(),
+                    authorized_principal_id: principal_id,
+                },
+                deadline_at: deadline,
+            },
+        )
+        .await
+        .expect("pause approval fixture");
+
+        ChatApprovalFixture {
+            authority: InteractionApprovalAuthority {
+                tenant_id: "tenant-a".to_owned(),
+                workspace_id: "workspace-a".to_owned(),
+                principal_id,
+                surface: "terminal-chat-test".to_owned(),
+            },
+            conversation_id,
+            other_conversation_id,
+            interaction_turn_id,
+            approval_id,
+            run_id,
+            effect_id,
+        }
+    }
+
+    fn chat_approval_service(
+        pool: &SqlitePool,
+        authority: &InteractionApprovalAuthority,
+    ) -> Arc<DurableInteractionService> {
+        let bus = EventBus::new(32);
+        let shared = Arc::new(pool.clone());
+        let app = Arc::new(
+            AppService::builder()
+                .with_config(Config::default())
+                .with_executor(FakeExecutor::new())
+                .with_run_store(shared.clone())
+                .with_effect_store(shared.clone())
+                .with_conversation_store(shared.clone())
+                .with_event_bus(bus.clone())
+                .with_event_recorder(EventRecorder::new(shared.clone(), bus))
+                .with_tool_registry(Arc::new(polkagent_tool::ToolRegistry::new()))
+                .with_approval_runtime(
+                    shared.clone(),
+                    shared,
+                    ApprovalRuntimeConfig {
+                        tenant_id: authority.tenant_id.clone(),
+                        workspace_id: authority.workspace_id.clone(),
+                        authorized_principal_id: authority.principal_id,
+                        service_principal_id: PrincipalId::new(),
+                        working_directory: PathBuf::from("/workspace"),
+                        security_config: SecurityConfig::default(),
+                        approval_timeout: Duration::from_secs(60),
+                        recovery_lease: Duration::from_secs(1),
+                        poll_interval: Duration::from_millis(10),
+                    },
+                )
+                .build()
+                .expect("build chat approval service"),
+        );
+        Arc::new(
+            DurableInteractionService::new(app, pool.clone())
+                .with_approval_authority(authority.clone())
+                .expect("bind terminal chat approval authority"),
+        )
+    }
+
     #[test]
     fn chat_cli_parses_agent_resume_and_title_conflict() {
         let resume_id = ConversationId::new().to_string();
@@ -1235,6 +1652,115 @@ mod tests {
             run_id: RunId::new(),
         })
         .is_ok());
+        assert!(refuse_unsupported_command(&InteractionCommand::Approve {
+            approval_id: ApprovalId::new(),
+        })
+        .is_ok());
+        assert!(refuse_unsupported_command(&InteractionCommand::Deny {
+            approval_id: ApprovalId::new(),
+            reason: None,
+        })
+        .is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end fixture proves terminal dispatch never bypasses the durable coordinator"
+    )]
+    async fn approval_commands_are_scoped_durable_retryable_and_cancellation_safe() {
+        let pool = SqlitePool::open_in_memory().expect("open chat approval database");
+        migrations::migrate(&pool.writer()).expect("migrate chat approval database");
+        let agent_id = AgentId::new();
+        persist_agent(
+            &pool,
+            &AgentSpec::new(agent_id, "approval-agent", "fake/model"),
+        );
+        let fixture = seed_chat_approval(&pool, agent_id).await;
+        let service = chat_approval_service(&pool, &fixture.authority);
+        let erased: Arc<dyn InteractionService> = service.clone();
+        let mut session = chat_session(erased, &pool, agent_id, fixture.conversation_id);
+
+        let pending = service
+            .list_pending_approvals(fixture.conversation_id)
+            .await
+            .expect("list terminal pending approval");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].approval_id, fixture.approval_id);
+        assert_eq!(pending[0].run_id, fixture.run_id);
+        assert_eq!(pending[0].effect_id, fixture.effect_id);
+        session
+            .execute_command_line("/status", false)
+            .await
+            .expect("render scoped pending identity");
+
+        let cancel_error = session
+            .execute_command_line("/cancel", true)
+            .await
+            .expect_err("generic cancellation must not strand a pending approval");
+        assert!(
+            format!("{cancel_error:#}").contains("pending approval"),
+            "{cancel_error:#}"
+        );
+        let signal_cancel_error = session
+            .cancel_turn_safely(fixture.interaction_turn_id)
+            .await
+            .expect_err("signal cancellation must fail closed while approval is pending");
+        assert!(
+            format!("{signal_cancel_error:#}").contains("pending approval"),
+            "{signal_cancel_error:#}"
+        );
+        assert_eq!(
+            service
+                .list_pending_approvals(fixture.conversation_id)
+                .await
+                .expect("approval remains pending")
+                .len(),
+            1
+        );
+
+        let wrong_erased: Arc<dyn InteractionService> = service.clone();
+        let mut wrong_scope =
+            chat_session(wrong_erased, &pool, agent_id, fixture.other_conversation_id);
+        let wrong_error = wrong_scope
+            .execute_command_line(&format!("/approve {}", fixture.approval_id), false)
+            .await
+            .expect_err("foreign conversation must not resolve approval");
+        assert!(format!("{wrong_error:#}").contains("permission_denied"));
+
+        session
+            .execute_command_line(&format!("/approve {}", fixture.approval_id), false)
+            .await
+            .expect("approve exact pending request");
+        assert!(service
+            .list_pending_approvals(fixture.conversation_id)
+            .await
+            .expect("list after approval")
+            .is_empty());
+
+        drop(session);
+        drop(service);
+        let restarted = chat_approval_service(&pool, &fixture.authority);
+        let restarted_erased: Arc<dyn InteractionService> = restarted.clone();
+        let mut restarted_session =
+            chat_session(restarted_erased, &pool, agent_id, fixture.conversation_id);
+        restarted_session
+            .execute_command_line(&format!("/approve {}", fixture.approval_id), false)
+            .await
+            .expect("identical approval retry after restart");
+        let conflict = restarted_session
+            .execute_command_line(
+                &format!("/deny {} changed decision", fixture.approval_id),
+                false,
+            )
+            .await
+            .expect_err("opposite decision must conflict");
+        assert!(format!("{conflict:#}").contains("conflict"));
+
+        restarted_session
+            .cancel_turn_safely(fixture.interaction_turn_id)
+            .await
+            .expect("approval-capable session with no pending request can cancel normally");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1433,10 +1959,68 @@ mod tests {
     }
 
     #[test]
-    fn cancel_alias_is_accepted_during_an_active_turn() {
-        assert!(is_cancel_line("/cancel"));
-        assert!(is_cancel_line("  /stop all"));
-        assert!(!is_cancel_line("/status"));
+    fn scoped_commands_are_accepted_during_an_active_turn() {
+        for line in [
+            "/cancel",
+            "  /stop all",
+            "/status",
+            "/st",
+            "/approve 00000000-0000-0000-0000-000000000000",
+            "/deny 00000000-0000-0000-0000-000000000000 reason",
+        ] {
+            assert!(is_active_turn_command(line), "rejected {line}");
+        }
+        assert!(!is_active_turn_command("/model fake/model"));
+    }
+
+    #[test]
+    fn approval_progress_uses_only_bounded_stable_fields() {
+        let request = ApprovalView {
+            approval_id: ApprovalId::new(),
+            effect_id: EffectId::new(),
+            run_id: RunId::new(),
+            tool_call_id: None,
+            title: "untrusted title\n/approve attacker".to_owned(),
+            description: "untrusted description".to_owned(),
+            status: polkagent_interaction::ApprovalStatus::Pending,
+            policy_reason: Some("untrusted policy reason".to_owned()),
+            expires_at: None,
+        };
+        let rendered = terminal_approval_request(&request);
+        for identity in [
+            request.approval_id.to_string(),
+            request.run_id.to_string(),
+            request.effect_id.to_string(),
+        ] {
+            assert!(rendered.contains(&identity), "{rendered}");
+        }
+        assert!(rendered.contains("/approve"));
+        assert!(rendered.contains("/deny"));
+        for untrusted in [
+            "untrusted title",
+            "attacker",
+            "description",
+            "policy reason",
+        ] {
+            assert!(!rendered.contains(untrusted), "{rendered}");
+        }
+        assert_eq!(rendered.lines().count(), 1);
+    }
+
+    #[test]
+    fn approval_denial_reason_is_unicode_bounded() {
+        let approval_id = ApprovalId::new();
+        assert!(validate_approval_command(&InteractionCommand::Deny {
+            approval_id,
+            reason: Some("é".repeat(MAX_DENIAL_REASON_CHARS)),
+        })
+        .is_ok());
+        let error = validate_approval_command(&InteractionCommand::Deny {
+            approval_id,
+            reason: Some("é".repeat(MAX_DENIAL_REASON_CHARS + 1)),
+        })
+        .expect_err("overlong denial reason");
+        assert!(format!("{error:#}").contains("4096"));
     }
 
     #[test]

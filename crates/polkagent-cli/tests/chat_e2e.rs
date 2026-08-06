@@ -307,6 +307,46 @@ fn chat_help_does_not_claim_unsupported_commands() {
         !stdout.contains("  /approve"),
         "advertised /approve: {stdout}"
     );
+    assert!(!stdout.contains("  /deny"), "advertised /deny: {stdout}");
+}
+
+#[test]
+fn production_chat_approval_mutation_fails_closed_without_authenticated_authority() {
+    let temp = tempfile::tempdir().expect("chat tempdir");
+    let database_path = temp.path().join("chat.db");
+    let log_path = temp.path().join("chat.jsonl");
+    let config_path = temp.path().join("polkagent.toml");
+    std::fs::write(&config_path, "").expect("write isolated config");
+    seed_agent(&database_path, "chat-fixture", "fake/test");
+
+    let approval_id = uuid::Uuid::now_v7();
+    let mut command = chat_command(&database_path, &log_path, &config_path);
+    command.args(["chat", "--agent", "chat-fixture"]);
+    let output = run_with_stdin(command, &format!("/approve {approval_id}\n"));
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "terminal approval resolution is unavailable because this runtime has no authenticated approval authority"
+        ),
+        "{stderr}"
+    );
+
+    let connection = rusqlite::Connection::open(&database_path).expect("open durable chat DB");
+    for (table, expected) in [
+        ("interaction_sessions", 1_i64),
+        ("interaction_turns", 0),
+        ("runs", 0),
+        ("approval_requests", 0),
+    ] {
+        let count: i64 = connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count production approval work");
+        assert_eq!(count, expected, "unexpected mutation in {table}");
+    }
 }
 
 #[test]

@@ -270,7 +270,16 @@ impl ServiceCommandExecutor {
                     "parsed command is absent from the command registry",
                 )
             })?;
-        if !spec.is_available(&request.context) {
+        // Pending state controls discovery, but an explicit approval retry must
+        // still reach the durable coordinator after the item leaves the queue.
+        // That is how identical retries return the persisted decision while an
+        // opposite retry reports the coordinator's conflict.
+        let scoped_approval_retry = matches!(
+            request.invocation.command,
+            InteractionCommand::Approve { .. } | InteractionCommand::Deny { .. }
+        ) && request.context.conversation_id.is_some()
+            && request.context.can_mutate;
+        if !spec.is_available(&request.context) && !scoped_approval_retry {
             let code =
                 if spec.mutability == CommandMutability::Mutating && !request.context.can_mutate {
                     InteractionErrorCode::PermissionDenied
@@ -849,6 +858,44 @@ mod tests {
             .await
             .expect("deny");
         assert_eq!(fixture.interactions.decisions.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn explicit_approval_retry_reaches_service_after_pending_discovery_clears() {
+        let fixture = fixture();
+        let approval_id = fixture.runtime.approval_id;
+        let mut retry = request(
+            &format!("/approve {approval_id}"),
+            Some(fixture.conversation_id),
+        );
+        retry.context.pending_approval_count = 0;
+        fixture
+            .executor
+            .execute(retry)
+            .await
+            .expect("scoped explicit retry reaches durable service");
+
+        let mut read_only = request(
+            &format!("/approve {approval_id}"),
+            Some(fixture.conversation_id),
+        );
+        read_only.context.pending_approval_count = 0;
+        read_only.context.can_mutate = false;
+        let error = fixture
+            .executor
+            .execute(read_only)
+            .await
+            .expect_err("read-only retry must fail closed");
+        assert_eq!(error.code, InteractionErrorCode::PermissionDenied);
+
+        let mut unscoped = request(&format!("/approve {approval_id}"), None);
+        unscoped.context.pending_approval_count = 0;
+        let error = fixture
+            .executor
+            .execute(unscoped)
+            .await
+            .expect_err("unscoped retry must fail closed");
+        assert_eq!(error.code, InteractionErrorCode::Conflict);
     }
 
     #[tokio::test]
