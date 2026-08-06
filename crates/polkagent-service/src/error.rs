@@ -124,6 +124,20 @@ pub enum ServiceError {
         limit: u32,
     },
 
+    /// External I/O may have started without a durable outcome.
+    ///
+    /// Automatic recovery is forbidden until an operator reconciles the
+    /// exact effect identified by `run_id` and `effect_id`.
+    #[error("manual reconciliation required for run {run_id}, effect {effect_id}: {reason}")]
+    ManualReconciliation {
+        /// Run containing the indeterminate effect.
+        run_id: RunId,
+        /// Effect whose external result is not durably known.
+        effect_id: EffectId,
+        /// Safe internal reason that explains why automatic retry stopped.
+        reason: String,
+    },
+
     /// An unexpected internal error.
     #[error("internal service error: {message}")]
     Internal {
@@ -161,10 +175,10 @@ impl From<polkagent_run::RunError> for ServiceError {
                 run_id,
                 effect_id,
                 reason,
-            } => Self::Internal {
-                message: format!(
-                    "manual reconciliation required for run {run_id}, effect {effect_id}: {reason}"
-                ),
+            } => Self::ManualReconciliation {
+                run_id,
+                effect_id,
+                reason,
             },
         }
     }
@@ -236,5 +250,28 @@ mod tests {
         };
         let service_err: ServiceError = store_err.into();
         assert!(matches!(service_err, ServiceError::Store { .. }));
+    }
+
+    #[test]
+    fn manual_reconciliation_preserves_typed_run_error_identity() {
+        let run_id = RunId::new();
+        let effect_id = EffectId::new();
+        let reason = "possible I/O has no durable outcome".to_owned();
+        let service_error = ServiceError::from(polkagent_run::RunError::ManualReconciliation {
+            run_id,
+            effect_id,
+            reason: reason.clone(),
+        });
+
+        assert!(matches!(
+            service_error,
+            ServiceError::ManualReconciliation {
+                run_id: actual_run,
+                effect_id: actual_effect,
+                reason: actual_reason,
+            } if actual_run == run_id
+                && actual_effect == effect_id
+                && actual_reason == reason
+        ));
     }
 }
