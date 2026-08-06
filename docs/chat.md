@@ -35,6 +35,38 @@ conversation history is not scanned into each transcript page.
 Group and automatic targets are deliberately refused; terminal chat does not
 pretend that group orchestration is wired when it is not.
 
+## Durable approval opt-in
+
+Terminal approval commands are enabled only when one complete process-scoped
+authority tuple is supplied:
+
+```bash
+polkagent chat --agent research-agent \
+  --approval-tenant local-tenant \
+  --approval-workspace research-workspace \
+  --approval-principal 018f4d71-46c7-7a31-8c63-b9020f278b01
+```
+
+The three flags are all-or-none. The principal must be a non-nil UUID; tenant
+and workspace must be non-empty identifiers of at most 128 bytes. The surface
+is fixed internally to `terminal-chat`. Polkagent never infers any authority
+field from the agent, cwd, configuration, database, request, conversation, or
+a default. Omitting all three leaves approval-required work fail-closed and
+keeps `/approve` and `/deny` unavailable.
+
+These are stable authorization identifiers, not credentials. Do not place API
+keys, tokens, passwords, private keys, seeds, mnemonics, or other secrets on the
+command line. The local OS user/process launch and configuration ownership are
+the trust boundary; this option is not multi-user or multi-principal
+authentication.
+
+The same SQLite pool backs approval coordination and checkpoint/effect state.
+To recover a pending request after restart, use the same database, exact tuple,
+and process working directory. Approval and cancellation target exact durable
+conversation/turn/run/effect identities. If `/cancel`, Ctrl-C, or process
+shutdown races a human decision, the shared coordinator CAS records one winner;
+a cancellation winner performs no tool I/O.
+
 Interactive prompts may span multiple lines. Enter a blank line to submit the
 buffer. EOF submits a non-empty pending buffer and then exits. At an idle
 prompt, Ctrl-C exits while retaining the durable session. During a turn,
@@ -77,11 +109,12 @@ The following capabilities are explicitly unavailable rather than simulated:
 
 - Provider, harness, or autonomy changes: configure the runtime or agent and
   restart. `/provider`, `/harness`, and `/autonomy` return an error.
-- Approvals (`/approve`, `/deny`) require an explicitly authenticated approval
-  authority and are hidden by ordinary production composition. In the
-  full-screen TUI, F6 uses the durable conversation selected in F9 and the same
-  service boundary; it truthfully shows unavailable guidance when that
-  authority is not composed.
+- Approvals (`/approve`, `/deny`) require an explicit local-process approval
+  authority and are hidden when the tuple above is omitted. With the tuple,
+  `/status` reports scoped pending IDs and `/approve <approval-id>` or
+  `/deny <approval-id> [reason]` resolves one exact request through the shared
+  service. In the full-screen TUI, F6 uses the same boundary for the durable
+  conversation selected in F9.
 - Run-ID cancellation: use the top-level run commands. Terminal `/cancel` is
   turn-scoped.
 - Group orchestration and rich resource input.
@@ -92,8 +125,8 @@ includes prompts, run parameters, provider error text, artifact bodies or
 artifact metadata; both the read and render boundaries enforce the 20-item
 limits.
 
-Approval visibility is also reported as unavailable in `/status`; a synthetic
-zero is not presented as authoritative.
+Without an approval authority, `/status` reports approval visibility as
+unavailable; a synthetic zero is not presented as authoritative.
 
 Model selection goes through the interaction service's typed configuration
 path. Unknown models, models belonging to another provider, and dynamic model

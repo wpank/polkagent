@@ -166,7 +166,11 @@ Start or resume a durable, line-oriented terminal session for one active agent.
 
 ```text
 polkagent chat --agent <AGENT> [--title <TITLE>]
+               [--approval-tenant <ID> --approval-workspace <ID>
+                --approval-principal <UUID>]
 polkagent chat --agent <AGENT> --resume <CONVERSATION_ID>
+               [--approval-tenant <ID> --approval-workspace <ID>
+                --approval-principal <UUID>]
 ```
 
 The session supports a truthful subset of shared slash commands and streams
@@ -175,6 +179,16 @@ stderr. See the [durable terminal chat guide](chat.md) for input, resume,
 cancellation, model selection, and output contracts. Executor-backed follow-up
 context retains the newest 32 completed user/assistant pairs from the latest
 1,000 prior turn records. Contextual harness history remains unsupported.
+
+The approval flags are an all-or-none local-process opt-in. They bind one
+stable non-nil human principal to the fixed `terminal-chat` surface and the
+same SQLite coordinator/checkpoint store. Polkagent performs no default,
+request, session, cwd, agent, config, or database inference. Omit all three to
+remain authority-unbound and fail-closed. With the tuple, scoped `/approve` and
+`/deny` commands are available when applicable; `/cancel`, Ctrl-C, and shutdown
+route pending approvals through the shared durable cancellation CAS. Do not put
+secrets on the command line. See the [durable terminal chat guide](chat.md) for
+the trust and restart contract.
 
 ---
 
@@ -194,8 +208,8 @@ Stdout is reserved for ACP JSON-RPC traffic. When `--agent` is omitted, use
 [ACP and Zed integration](acp-zed.md) for setup, verified behavior, and current
 gaps.
 
-The approval flags are the APR-07 implementation-gated local-stdio opt-in and
-must be supplied together. The principal must be a non-nil UUID; tenant and
+The approval flags are the bounded APR-07 local-stdio opt-in and must be
+supplied together. The principal must be a non-nil UUID; tenant and
 workspace are non-empty identifiers of at most 128 bytes. Partial or invalid
 input fails before protocol stdout. With all three omitted, no authority is
 inferred from defaults, requests, sessions, cwd, agent/config state, or the
@@ -208,8 +222,7 @@ pool backs durable approval coordination and checkpoint/effect state. The tuple
 asserts one principal for the entire locally owned stdio process; it is not
 multi-principal authentication. Do not place secrets in Zed JSON arguments or
 environment entries. Native ACP permission requests expose allow-once and
-reject-once only; `/approve` and `/deny` are not advertised. Until the APR-07
-code gate merges, a built binary may not expose these flags, and manual Zed
+reject-once only; `/approve` and `/deny` are not advertised. Manual Zed
 approval/restart validation remains open.
 
 ---
@@ -393,11 +406,19 @@ Launch the interactive ROSEDUST terminal UI.
 ```bash
 polkagent tui
 polkagent tui --tab console
+polkagent tui --tab console \
+  --approval-tenant <ID> --approval-workspace <ID> \
+  --approval-principal <UUID>
 ```
 
 Running `polkagent` with no subcommand also opens the TUI when stdout is an
-interactive terminal. The actionable Console is intentionally a bounded
-durable multi-turn surface:
+interactive terminal. That default launch is intentionally authority-unbound;
+only the explicit `polkagent tui` subcommand accepts the complete approval
+tuple. Tenant/workspace must be non-empty and at most 128 bytes, and principal
+must be a non-nil UUID. Its surface is fixed internally to `tui`, no field is
+inferred, and the local process owner is the trust boundary rather than a
+multi-principal authentication system. Do not put secrets on the command line.
+The actionable Console is intentionally a bounded durable multi-turn surface:
 
 | Key | Action |
 |-----|--------|
@@ -471,10 +492,14 @@ approval/effect/run/tool identities plus bounded, redacted service title,
 description, policy reason, status, and expiry. Confirmation retains the full
 conversation and approval IDs; stale completions after a conversation switch
 cannot replace or clear the new queue. The TUI does not query or write approval
-tables directly. Normal runtime composition still lacks authenticated approval
-authority, so F6 shows explicit unavailable guidance. A turn known to await an
-approval refuses generic `x` cancellation until it is resolved in F6 because
-atomic coordinator approval cancellation is not yet composed. Transcript
+tables directly. Default runtime composition is authority-unbound, so F6 shows
+unavailable guidance unless the explicit TUI tuple is supplied. With the tuple,
+the same SQLite pool backs the durable
+coordinator and checkpoint/effect state, and F6 decisions use the fixed `tui`
+surface. `x` and normal controller shutdown always route the exact turn through
+`InteractionService::cancel_turn`; if a pending approval races a human
+decision, the coordinator CAS records one winner and a cancellation winner
+performs no tool I/O. Transcript
 reloads use the interaction service's turn-correlated, bounded projection, and
 all Console prompt-path mutations also go through that service.
 

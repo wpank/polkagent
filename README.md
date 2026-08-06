@@ -70,9 +70,10 @@ polkagent acp --agent my-agent
 ```
 
 See [durable terminal chat](docs/chat.md) for resume, slash-command, stream,
-model-selection, and cancellation behavior. Executor-backed follow-ups include
-the newest 32 completed user/assistant pairs from the latest 1,000 prior turn
-records; contextual harness history remains unsupported.
+model-selection, cancellation, and explicit local approval-authority setup.
+Executor-backed follow-ups include the newest 32 completed user/assistant pairs
+from the latest 1,000 prior turn records; contextual harness history remains
+unsupported.
 
 ### Docker
 
@@ -193,12 +194,14 @@ F6 uses the durable Console conversation selected in F9. It asynchronously
 shows the first 100 pending approvals returned by `InteractionService`, with
 exact approval/effect/run/tool identities and bounded, redacted service detail.
 Press `a` or `d` twice to confirm an exact full conversation/approval identity;
-the TUI never writes approval rows directly. Normal `RuntimeFactory`
-composition has no authenticated approval authority yet, so F6 truthfully
-shows unavailable guidance instead of claiming a decision succeeded. If the
-selected turn is known to await an approval, `x` is intentionally guarded:
-resolve it in F6 before cancelling until atomic approval cancellation is
-composed.
+the TUI never writes approval rows directly. Default `RuntimeFactory`
+composition remains authority-unbound, so F6 truthfully shows unavailable
+guidance. An explicit `polkagent tui` command may opt in with the all-or-none
+`--approval-tenant`/`--approval-workspace`/`--approval-principal` tuple; bare
+`polkagent` remains unbound. `x` and normal TUI shutdown route exact pending
+turns through the coordinator-backed cancellation CAS, so a human decision or
+cancellation has one durable winner and a cancellation winner performs no tool
+I/O. See the [CLI guide](docs/cli.md#tui) for the local-process trust boundary.
 
 ### Coding Harness Integrations
 
@@ -225,8 +228,8 @@ cancellation, agent/model selection, and `/help`, `/status`, `/agents`,
 `/agent`, `/model`, and `/cancel`.
 The official SDK subprocess test proves handshake, command discovery, and one
 real `AppService` run. Durable session load/resume and native structured
-effect-backed tool updates are implemented. APR-07 has a pending code gate for
-native allow-once/reject-once permissions under an explicit all-or-none
+effect-backed tool updates are implemented. APR-07 provides native
+allow-once/reject-once permissions under an explicit all-or-none
 `--approval-tenant`/`--approval-workspace`/`--approval-principal` tuple; the
 default remains authority-unbound and fail-closed. This is a single-principal
 local stdio process trust boundary, not remote or multi-principal
