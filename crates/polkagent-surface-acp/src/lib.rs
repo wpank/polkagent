@@ -1366,9 +1366,8 @@ async fn handle_slash_command(
         InteractionCommand::Cancel { .. } => Ok(BackendTurn::completed(
             "ACP supports only /cancel without arguments (or /stop) for the current durable turn; run-ID and all-session cancellation are not exposed by this adapter.",
         )),
-        unsupported => Ok(BackendTurn::completed(format!(
-            "/{} is part of the shared Polkagent command registry but is not supported by ACP yet. Approval commands are not exposed by this adapter.",
-            unsupported.name().as_str()
+        unsupported => Ok(BackendTurn::completed(unsupported_command_help(
+            unsupported.name(),
         ))),
     }
 }
@@ -1483,7 +1482,7 @@ fn unsupported_command_help(command: CommandName) -> String {
         )
         .to_owned(),
         CommandName::Approve | CommandName::Deny => format!(
-            "/{} is not exposed by ACP until durable permission coordination is bound.",
+            "/{} is not exposed by ACP until APR-07 binds durable permission coordination.",
             command.as_str()
         ),
         _ => format!(
@@ -2333,9 +2332,12 @@ mod tests {
         let registry = CommandRegistry::mvp();
         let new = help_text(&registry, Some(CommandName::New), false);
         let resume = help_text(&registry, Some(CommandName::Resume), false);
+        let approve = help_text(&registry, Some(CommandName::Approve), false);
         assert!(new.contains("ACP session/new"));
         assert!(new.contains("cannot replace the current ACP session ID"));
         assert!(resume.contains("ACP session/load and session/resume"));
+        assert!(approve.contains("APR-07"));
+        assert!(approve.contains("durable permission coordination"));
         assert!(!new.contains("Approval commands"));
         assert!(!resume.contains("Approval commands"));
     }
