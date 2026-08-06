@@ -1,6 +1,8 @@
 //! Durable runtime factory and handle.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,11 +97,20 @@ impl RuntimeFactory {
     /// Diagnostics are returned in [`RuntimeReadiness`] or emitted through
     /// `tracing`; this method never writes to stdout, preserving ACP stdio
     /// protocol safety.
+    ///
+    /// The startup future is boxed at this boundary to bound the future size
+    /// retained by executable and test callers.
+    pub fn build(
+        options: RuntimeOptions,
+    ) -> Pin<Box<dyn Future<Output = Result<PolkagentRuntime, RuntimeError>> + Send>> {
+        Box::pin(Self::build_inner(options))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "startup ordering is kept contiguous so recovery and readiness cannot drift from composition"
     )]
-    pub async fn build(options: RuntimeOptions) -> Result<PolkagentRuntime, RuntimeError> {
+    async fn build_inner(options: RuntimeOptions) -> Result<PolkagentRuntime, RuntimeError> {
         let workdir = resolve_workdir(&options.workdir)?;
         if let Some(authority) = &options.approval_authority {
             authority

@@ -9,6 +9,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use agent_client_protocol::schema::v1::{
     ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
     PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
@@ -65,6 +68,9 @@ enum ApprovalCase {
     Reject,
     Cancel,
 }
+
+const APPROVAL_PRINCIPAL: &str = "018f4d71-46c7-7a31-8c63-b9020f278b01";
+const APPROVAL_TOOL: &str = "polkagent.governance.referendum_lookup";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DurablePromptIdentity {
@@ -226,15 +232,13 @@ async fn official_client_persists_once_only_allow_reject_and_cancel_without_orph
 async fn run_approval_case(case: ApprovalCase) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    const PRINCIPAL: &str = "018f4d71-46c7-7a31-8c63-b9020f278b01";
-    const TOOL: &str = "polkagent.governance.referendum_lookup";
     let temp = tempfile::tempdir().expect("temporary approval directory");
     let db_path = temp.path().join("polkagent.db");
     let config_path = temp.path().join("polkagent.toml");
     let policy_dir = temp.path().join("policies");
     let binary = env!("CARGO_BIN_EXE_polkagent");
     create_active_agent(binary, &db_path, "approval-acp", "fixture-model");
-    enable_agent_tool(&db_path, "approval-acp", TOOL);
+    enable_agent_tool(&db_path, "approval-acp", APPROVAL_TOOL);
     write_approval_policy(&policy_dir);
     let expected_provider_requests = if matches!(case, ApprovalCase::Cancel) {
         1
@@ -267,7 +271,7 @@ async fn run_approval_case(case: ApprovalCase) {
                 "--approval-workspace",
                 "workspace-a",
                 "--approval-principal",
-                PRINCIPAL,
+                APPROVAL_PRINCIPAL,
             ])
             .env(
                 "POLKAGENT_DATABASE_SQLITE_PATH",
@@ -360,7 +364,23 @@ async fn run_approval_case(case: ApprovalCase) {
         .expect("approval conversation lock")
         .clone()
         .expect("approval conversation ID");
-    let connection = rusqlite::Connection::open(&db_path).expect("open approval database");
+    assert_durable_approval_case(
+        case,
+        &db_path,
+        &conversation_id,
+        &observed_call_id,
+        &observed,
+    );
+}
+
+fn assert_durable_approval_case(
+    case: ApprovalCase,
+    db_path: &std::path::Path,
+    conversation_id: &str,
+    observed_call_id: &Mutex<Option<String>>,
+    observed: &Mutex<ObservedUpdates>,
+) {
+    let connection = rusqlite::Connection::open(db_path).expect("open approval database");
     let (status, effect_id, run_id, principal_type, surface): (
         String,
         String,
@@ -435,12 +455,13 @@ async fn run_approval_case(case: ApprovalCase) {
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the SIGKILL/restart proof keeps both process lifecycles and exact durable assertions together for failure diagnostics"
+)]
 async fn official_client_restart_reissues_one_pending_permission_and_recovers_exact_effect() {
     use std::os::unix::fs::PermissionsExt as _;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    const PRINCIPAL: &str = "018f4d71-46c7-7a31-8c63-b9020f278b01";
-    const TOOL: &str = "polkagent.governance.referendum_lookup";
     let temp = tempfile::tempdir().expect("temporary approval restart directory");
     let db_path = temp.path().join("polkagent.db");
     let config_path = temp.path().join("polkagent.toml");
@@ -449,7 +470,7 @@ async fn official_client_restart_reissues_one_pending_permission_and_recovers_ex
     let wrapper_path = temp.path().join("polkagent-wrapper.sh");
     let binary = env!("CARGO_BIN_EXE_polkagent");
     create_active_agent(binary, &db_path, "restart-approval-acp", "fixture-model");
-    enable_agent_tool(&db_path, "restart-approval-acp", TOOL);
+    enable_agent_tool(&db_path, "restart-approval-acp", APPROVAL_TOOL);
     write_approval_policy(&policy_dir);
     std::fs::write(
         &wrapper_path,
@@ -489,7 +510,7 @@ async fn official_client_restart_reissues_one_pending_permission_and_recovers_ex
                 "--approval-workspace",
                 "workspace-a",
                 "--approval-principal",
-                PRINCIPAL,
+                APPROVAL_PRINCIPAL,
             ])
             .env(
                 "POLKAGENT_DATABASE_SQLITE_PATH",
@@ -599,7 +620,7 @@ async fn official_client_restart_reissues_one_pending_permission_and_recovers_ex
                 "--approval-workspace",
                 "workspace-a",
                 "--approval-principal",
-                PRINCIPAL,
+                APPROVAL_PRINCIPAL,
             ])
             .env(
                 "POLKAGENT_DATABASE_SQLITE_PATH",

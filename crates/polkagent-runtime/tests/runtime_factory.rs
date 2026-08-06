@@ -72,6 +72,24 @@ fn create_legacy_agent(store: &SqliteRunStore) -> polkagent_store_sqlite::AgentR
 }
 
 #[tokio::test]
+async fn build_future_is_bounded_send_and_awaitable() {
+    fn assert_send<T: Send>(_: &T) {}
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = write_config(temp.path(), "");
+    let database_path = temp.path().join("boxed-future.db");
+    let future = RuntimeFactory::build(simulated_options(temp.path(), config_path, database_path));
+
+    assert_send(&future);
+    assert!(
+        std::mem::size_of_val(&future) <= 2 * std::mem::size_of::<usize>(),
+        "factory boundary must retain only a boxed future handle"
+    );
+    let runtime = future.await.expect("await boxed runtime build");
+    assert!(runtime.readiness().operational);
+}
+
+#[tokio::test]
 async fn approval_composition_is_explicit_stable_and_readiness_is_exact() {
     let temp = TempDir::new().expect("tempdir");
     let config_path = write_config(temp.path(), "");
