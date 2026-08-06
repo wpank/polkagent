@@ -277,14 +277,18 @@ possible I/O without an outcome is typed manual reconciliation and never
 automatically retried. A real SQLite service fixture proves AllowOnce executes
 one counting handler call with one exact grant and resumes the model.
 
-This is not yet a production surface claim. APR-05 now supplies authenticated-
-surface-ready pending lookup and approve/deny contracts, stable projection,
-and a narrow HTTP adapter. `RuntimeFactory` still cannot bind a stable
-tenant/workspace/principal to HTTP authentication, so it deliberately leaves
-the approval executor and production approval service uncomposed. Chat, TUI,
-HTTP, and ACP therefore continue to withhold grant-bearing tools. APR-03 still
-needs its reject/default-deny and restart counting-tool matrix; APR-08 owns
-operator reconciliation and cross-surface crash evidence.
+APR-05 supplies authenticated-surface-ready pending lookup and approve/deny
+contracts, stable projection, and a narrow HTTP adapter. Integrated commit
+`399db83` lets `RuntimeFactory` bind an explicit all-or-none local-process
+tenant/workspace/principal tuple to `polkagent chat`, `polkagent tui`, and
+`polkagent acp`; omitted tuples, the no-subcommand TUI, and the production API
+remain fail-closed. This process-owner assertion is not shared/remote
+authentication. APR-08 commit `20dbcb1` proves one strict-policy, real-tool
+TUI/chat happy-path and restart seam with stable identities, one handler
+attempt/outcome, and no pending or orphan approval rows. APR-03 still needs its
+reject/default-deny and full crash-boundary counting-tool matrix; APR-08 owns
+operator reconciliation, manual Zed, authenticated shared/remote composition,
+and broader security/observability closure.
 
 **Checklist:**
 
@@ -533,13 +537,14 @@ adapter hooks through small interfaces.
   context with exact roles and whole-turn truncation. Harness-backed follow-up
   fails explicitly because its string ingress cannot preserve roles.
 - [x] Route terminal-chat pending status and approve/deny through the shared
-  registry, command executor, and `InteractionService` under explicit
-  principal-bound test composition. Production `RuntimeFactory` remains
+  registry, command executor, and `InteractionService`. Explicit
+  `polkagent chat` can bind local-process authority; omission remains
   authority-unbound, hides the commands, and fails explicit mutations closed.
 - [x] Add a selected-conversation-scoped asynchronous TUI queue/detail/
   approve/deny path through `InteractionService`. Exact conversation and
   approval IDs are revalidated at confirmation; stale results cannot replace a
-  switched scope, and normal authority-unbound composition reports unavailable.
+  switched scope. Explicit `polkagent tui` can bind local-process authority;
+  the no-subcommand TUI and explicit TUI without the tuple report unavailable.
 - [x] Remove the TUI's direct approval DB query and synthetic effect-outcome
   writes. Memory deletion remains a separate legacy UI mutation.
 - [x] Preserve all existing monitoring tabs while adding the Console.
@@ -558,11 +563,12 @@ same-agent durable session selector, and terminal chat can resume one.
 Prior completed turns enter model-executor context; string-only harness follow-
 up is unsupported. Group plans, durable child-run orchestration, richer
 redaction-safe plan/tool rendering, broader shared-command coverage, and
-production approval authority remains open. Terminal chat and TUI have tested
-service-routed adapter seams, but normal production composition has no
-authenticated approval authority or grant-bearing executor. This activity
-slice must not be described as group orchestration or production approval-
-capable execution.
+shared/remote production approval authentication remains open. Explicit local
+chat and TUI commands can bind the same process-owner authority tuple as ACP;
+default/no-subcommand and API composition remain unbound. Pending-turn
+cancellation uses the coordinator and performs zero tool I/O; cancellation
+during handler I/O is still open. This activity slice must not be described as
+group orchestration or shared-service production approval-capable execution.
 
 The TUI shell is now event-driven rather than a Crossterm poll/read frame loop.
 Headless tests cover bounded ordered input, latest-resize and tick coalescing,
@@ -868,16 +874,16 @@ from an explicitly ready remaining row rather than replaying foundation work.
 |---|---|---|---|
 | Integration | **Complete:** APR-00/01 contracts, V18 SQLite coordinator, run CAS, checkpoint leases, and conformance | Contract package, store traits, SQLite coordinator, run CAS, checkpoint schema | Preserve atomic/idempotent/reopen/generic-path-isolation evidence; do not create a second coordinator. |
 | Policy | **Complete:** APR-02 strict opt-in policy approval effects, config, resolver injection, and readiness | Policy/config/runtime-composition modules | Preserve default deny, permit, escalation precedence, and strict config tests. |
-| Execution | **Complete bounded slice:** APR-03/EXE-01 adds atomic pause/recovery, one approval-required tool per model group, AllowOnce one-I/O reduction, reject/expiry/cancel zero-I/O reduction, and fail-closed unknown post-attempt recovery | `polkagent-run` orchestrator and narrow service bridges | Preserve exact checkpoint/effect lineage and keep production activation disabled until stable authenticated authority is composed. |
+| Execution | **Complete bounded slice:** APR-03/EXE-01 adds atomic pause/recovery, one approval-required tool per model group, AllowOnce one-I/O reduction, reject/expiry/cancel zero-I/O reduction, and fail-closed unknown post-attempt recovery | `polkagent-run` orchestrator and narrow service bridges | Preserve exact checkpoint/effect lineage. Explicit local authority is available; keep shared/remote and API activation disabled until stable authenticated authority is composed. |
 | ACP harness | **Complete:** APR-04 fake permission backend and official-SDK protocol harness | Focused ACP fake backend and protocol fixtures only | Preserve once-only identity/redaction/cancel/error/disconnect coverage; APR-07 owns the bounded production binding. |
 | Projection/API | **Complete bounded slice:** APR-05 adds durable approval projection/query/approve-deny and a test-composable HTTP adapter | Interaction/runtime projection, coordinator binding, narrow HTTP routes | Replay, restart, idempotent retry/conflict, auth/read-only, denial bound, OpenAPI parity, and wrong-scope tests pass. The query is capped at 100 without pagination; production authority is intentionally unbound. |
-| Terminal chat | **Complete test-composed slice:** APR-06 lists scoped pending IDs and routes approve/deny only through the shared durable service; ordinary production composition stays fail-closed | CLI chat module | Exact scope, idempotent restart retry, opposite-decision conflict, bounded/redaction-safe output, pending-cancel refusal, no-pending cancel, and authority-unavailable subprocess gates pass. |
-| TUI approvals | **Complete bounded slice:** APR-06 F6 lists and resolves exact selected-conversation approvals only through the shared service; direct approval SQL is gone | CLI TUI modules | Async/concurrent control, exact IDs, redaction/bounds, stale-switch rejection, wrong scope, retry/conflict/restart, unavailable authority, full-ID confirmation, and pending-cancel preservation gates pass. Production authority and pagination remain open. |
+| Terminal chat | **Complete bounded local-process slice:** APR-06 lists scoped pending IDs and routes approve/deny only through the shared durable service; `399db83` adds the explicit authority tuple, while omission stays fail-closed | CLI chat module | Exact scope, idempotent restart retry, opposite-decision conflict, bounded/redaction-safe output, coordinator-backed pending cancellation, no-pending cancel, and authority-unavailable subprocess gates pass. Shared/remote auth remains open. |
+| TUI approvals | **Complete bounded local-process slice:** APR-06 F6 lists and resolves exact selected-conversation approvals only through the shared service; direct approval SQL is gone and `399db83` adds the explicit authority tuple | CLI TUI modules | Async/concurrent control, exact IDs, redaction/bounds, stale-switch rejection, wrong scope, retry/conflict/restart, default-unavailable authority, full-ID confirmation, and coordinator-backed pending cancellation gates pass. Shared/remote auth, pagination, and handler-I/O cancellation remain open. |
 | Editor | **Complete bounded slice:** APR-07 binds local-stdio ACP permission requests to the durable coordinator under one explicit process authority | `polkagent-surface-acp`, CLI ACP backend, and `RuntimeFactory` authority seam | Official client allow/reject/cancel and SIGKILL/restart/load tests pass with exact identity and one-I/O/zero-I/O evidence; manual Zed remains open. |
-| Closure | APR-08 proves the cross-surface crash/security/observability matrix | Cross-surface fixtures and evidence docs | Starts after APR-03/APR-05/APR-06/APR-07; user-path E2E and workspace gates pass. |
+| Closure | **Bounded APR-08 fixture complete; packet active:** `20dbcb1` proves one real SQLite strict-policy TUI/chat happy path and restart with stable IDs, one attempt/outcome, zero pending/orphans, and bounded redaction | Cross-surface fixtures and evidence docs | Complete the full pause/decision/claim/pre-I/O/post-I/O crash matrix, possible-I/O reconciliation, manual Zed, shared/remote auth, security/observability/operations, handler-I/O cancellation, and workspace gates. |
 | TUI orchestration | **Complete bounded slice:** TUI-03 supports eight simultaneous agent/conversation activities, a 32-entry redaction-safe retained strip, per-conversation viewports, exact cancellation, duplicate refusal, and deterministic backpressure/eviction | CLI TUI controller/state/render/tests only | Preserve independent progress and shutdown reaping; durable group plans/child-run orchestration and rich structured plans remain separate work. |
 | Observability | **Complete bounded replay/reconnect slice:** SQLite V19 preserves canonical run-event metadata; the global run-event socket and `/ws/v1alpha1` recover from durable cursors, while the command socket exposes a versioned public cursor and `ready` barrier | Event/API projection and protocol tests | Preserve bounded paging, cursor order, filtering, replay/live dedupe, forced-lag recovery, auth-before-store validation, and sanitized failures. Tenant/principal isolation, best-effort delta policy, metrics, retention, audit/telemetry, automatic client reconnect, and broader command channels remain open. |
-| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green; APR-07 adds native ACP approvals while other production authority composition remains open. |
+| Shared IDE commands | **Complete bounded slice:** terminal chat, ACP/Zed, and the TUI execute `/runs` and `/inspect` through one runtime-owned scoped read model and one formatter | Preserve interaction/runtime ownership; no adapter-local queries or formatter forks | Scope, bounds, redaction, restart, stale-selection, active-concurrency, and foreign/missing-equivalence gates are green. Local chat/TUI/ACP approval authority is explicit; shared/remote/API authority remains open. |
 | Control plane | API-01: compose one currently unavailable store family at a time | API state/adapters/routes/OpenAPI | Auth/read-only/restart test passes and router-derived ordinary HTTP drift remains zero. |
 | Network | PCA-01: adapt durable TCP delivery into shared interaction/runtime | PCA transport/surface modules | Duplicate/reconnect/cancel frames map idempotently to one durable run and reply. |
 | Chain/security | CHAIN-01 signed local action and SEC-01 principal/policy/custody can proceed in separate crates | chain fixture/adapter versus auth/secret/policy adapters | Exact signed bytes/finality evidence and default-deny principal-bound approval evidence. |

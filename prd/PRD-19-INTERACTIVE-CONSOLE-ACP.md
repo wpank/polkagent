@@ -31,10 +31,10 @@ interactive/non-TTY adapter with explicit resume, multiline input, shared
 help/status/agents/agent/runs/inspect/cancel/new/resume/model handlers,
 authority-gated pending approval status/approve/deny handlers, checkpoint
 resubscribe, and SIGINT cancellation. The approval commands use only the shared
-service and are hidden/refused by default; an explicit all-or-none local
-process authority tuple composes them through `RuntimeFactory`. The TUI now
-accepts the same tuple only on its explicit subcommand, while the no-subcommand
-launch stays authority-unbound, and executes the truthful
+service. Explicit `polkagent chat` accepts an all-or-none local-process
+authority tuple; omission remains fail-closed. Explicit `polkagent tui` accepts
+the same tuple, while the no-subcommand TUI and omission remain unbound. The
+TUI now executes the truthful
 help/status/agents/agent/new/resume/runs/inspect/model subset
 through the same registry and service executor, renders structured results, and
 switches/reloads exact durable conversations without creating model turns. ACP
@@ -57,6 +57,20 @@ and rich plan/redaction-safe structured-tool projection remain open.
 APR-07 has automated official-client coverage for its bounded ACP binding, but
 that does not close the manual-editor gate.
 
+APR-08 commit `20dbcb1`, built on the local authority composition in `399db83`
+and integrated with the `RuntimeFactory` future boundary fix in `4b4f11b`, adds
+one bounded cross-surface approval fixture. A real file-backed SQLite runtime
+creates a pending approval through strict policy and a registered governance
+tool without seeding approval rows. TUI lists and approves it; terminal chat's
+shared command executor proves wrong-conversation refusal, restart-idempotent
+retry, and opposite-decision conflict. Restart preserves exact conversation,
+approval, effect, run, and tool-call IDs; a wrong principal is refused. The
+fixture verifies one handler attempt, one immutable outcome, a completed run,
+zero pending approvals, zero lineage orphans, bounded projection, and sentinel
+redaction. The full crash-boundary matrix, possible-I/O reconciliation, manual
+Zed, shared/remote authentication, security/observability closure, and
+cancellation during handler I/O remain open.
+
 FND-02 now includes shared IDs/config/requests/handles, structured events and
 projections, the service/store traits, a bounded durable/live replay hub, typed
 MVP slash-command parsing plus handlers, and a runtime-composed durable
@@ -72,11 +86,11 @@ chat, HTTP, and ACP bind the service. Model-executor prompts include
 bounded typed prior completed turns; string-only harness history fails role-
 safely. Effect-backed tool lifecycle and durable approval projection/service
 operations are implemented with stable IDs and safe status. Production
-approval authority remains unbound by default; ACP, terminal chat, and the
-explicit TUI subcommand supply distinct fixed-surface local-process opt-ins.
-The API remains unbound, and these tuples are not multi-principal
-authentication. Provider/harness/autonomy/max-turn/budget overrides remain
-open, so the full headless exit criterion is not closed.
+approval authority remains unbound by default; APR-07 supplies an explicit
+local authority opt-in, and `399db83` makes the same tuple available to
+explicit chat and TUI commands. This is process-owner assertion, not
+shared/remote authentication. Provider/harness/autonomy/max-turn/budget
+overrides remain open, so the full headless exit criterion is not closed.
 
 **Supersedes:** the implementation role of archived PRD-18; unresolved work is
 tracked in `IMPLEMENTATION-BACKLOG.md`
@@ -149,13 +163,13 @@ The delivered slices establish two distinct product surfaces that still need
 to be completed:
 
 1. The delivered terminal chat/TUI session must gain role-safe harness
-   follow-up, rich redaction-safe tool detail, broader command coverage, and
-   multi-agent orchestration. Terminal chat and the TUI F6 approval adapter
-   have explicit local-process authority bindings at their shared service
-   seams; remote/multi-principal authentication is outside that contract.
+   follow-up, rich redaction-safe tool detail, authenticated shared/remote
+   approval authority, broader command coverage, and multi-agent orchestration.
+   Terminal chat and the TUI F6 approval adapter are complete at their shared
+   service seams, with explicit local-process authority available.
 2. The ACP **agent server** (`polkagent acp`) must grow from its protocol MVP
-   into full Zed and other ACP-client support. APR-07 implements a bounded
-   local-stdio permission opt-in, but its manual-Zed gate remains open.
+   into full Zed and other ACP-client support. APR-07's bounded local-stdio
+   permission opt-in and automated gate are complete; manual Zed remains open.
 
 The important architectural decision is to build both as adapters over one
 shared `InteractionService`, command registry, production runtime, and event
@@ -177,10 +191,10 @@ It remains design input rather than the completion contract.
 | Run `polkagent` with no arguments | Launches the monitoring TUI when stdout is a TTY | `polkagent-cli/src/main.rs` dispatches `None` to `launch_tui` |
 | Prompt Polkagent interactively | Implemented for single-agent turns with per-conversation model selection | `polkagent chat` and the F9 Console call the durable interaction service; model executors receive bounded typed completed history, while harness follow-up fails explicitly |
 | Prompt from inside the TUI | Implemented for bounded simultaneous agent/conversation turns | `p` opens the selected Console conversation; distinct targets continue in the background, `[`/`]` switches retained activities, and same-conversation duplicates fail before draft loss |
-| Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns and `x` cancels only the selected exact activity. Pending approval cancellation and normal controller shutdown route through the service-owned coordinator CAS; a human decision or cancellation has one durable winner. |
+| Start or cancel a run from the TUI | Implemented for the bounded activity slice | `InteractionService::prompt` creates correlated conversation/turn/run state; the controller admits eight turns and `x` cancels only the selected exact activity. A coordinator-backed cancel/shutdown durably cancels a pending approval/run and performs zero tool I/O; cancellation during handler I/O remains open. |
 | Execute commands in the TUI | Truthful durable subset implemented | `/help`, `/status`, `/agents`, `/agent`, `/new`, `/resume`, `/runs`, `/inspect`, and `/model` use the shared command executor, render structured results, persist target/model per conversation, and never become model turns; run reads share ACP/chat scope, bounds, and redaction while unavailable capabilities fail explicitly |
-| Approve/deny in terminal chat | Explicit local-process opt-in implemented | `/status`, `/approve`, and `/deny` use the shared executor and exact scoped IDs when all three authority flags are present. The fixed surface is `terminal-chat`; omitted/partial/nil authority fails closed, and pending cancellation uses the coordinator CAS without tool I/O. |
-| Approve/deny in the TUI | Explicit-subcommand local opt-in implemented | F6 uses the selected durable Console conversation plus exact approval ID for asynchronous list/approve/deny. `polkagent tui` accepts the complete authority tuple with fixed `tui` surface; bare `polkagent` stays unbound. Bounded/redacted detail, stale completion guards, and coordinator-backed cancellation/shutdown have focused tests. |
+| Approve/deny in terminal chat | Bounded explicit local-process authority implemented; default unbound | `/status` lists exact scoped pending IDs and `/approve`/`/deny` use the shared executor and `InteractionService`. Explicit `polkagent chat` binds the all-or-none tuple with surface `terminal-chat`; omitted, partial, or nil authority fails closed. Real SQLite tests cover scope, restart retry, conflict, bounds, and coordinator cancellation. Shared/remote authentication remains open. |
+| Approve/deny in the TUI | Bounded explicit local-process authority implemented; default unbound | F6 uses the selected durable Console conversation plus exact approval ID for asynchronous list/approve/deny. Explicit `polkagent tui` binds the tuple with surface `tui`; the no-subcommand TUI and omission report unavailable. It renders bounded/redacted shared-service detail and full confirmation IDs, rejects stale switched-session completions, and no longer queries or writes approval tables directly. Shared/remote auth and pagination remain open. |
 | See live run output in the TUI | Implemented for correlated foreground/background activity | Controller projects bounded per-activity interaction events and resubscribes from a durable checkpoint after lag; a 32-entry redaction-safe strip exposes identity/status without prompt/output/error detail. F6 separately projects durable approvals; rich plan projection remains absent. |
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
@@ -246,9 +260,9 @@ The TUI is not completely read-only: legacy memory deletion still writes
 directly through its database helper. Approval listing and decisions no longer
 do so: APR-06 removes the raw effect query and synthetic outcome inserts, then
 routes F6 through coordinator-backed `InteractionService` operations. Stable
-local-process authority is composed only by the explicit `polkagent tui`
-tuple; bare `polkagent` and the API remain unbound. This is not remote or
-multi-principal authentication.
+authenticated shared/remote authority remains a composition task; explicit
+`polkagent tui` can bind the local process-owner tuple, while default launch
+and the API remain unbound.
 Starting runs by inserting database rows would be even more dangerous and must
 not be done.
 
@@ -309,9 +323,9 @@ Gaps that matter to an IDE-quality session:
 - A conversation is not the same thing as an executing turn. The new
   `InteractionService` now appends user/assistant transcript, creates and
   associates one target run, projects output, and exposes cancellation; group
-  runs, role-safe harness context, API/remote multi-principal authority, and
-  rich tool transcript remain absent. Local ACP/chat/explicit-TUI approval
-  actions are composed.
+  runs, role-safe harness context, authenticated shared/remote/API approval
+  authority, and rich tool transcript remain absent. Explicit local
+  chat/TUI/ACP approval actions are composed.
 - `start_run` accepts only `(agent_id, prompt)` and does not accept a
   conversation/interaction ID or per-session execution overrides.
 - The legacy `RunProgressEvent::ToolUse` adapter still contains only tool name
@@ -320,9 +334,10 @@ Gaps that matter to an IDE-quality session:
   Raw input, output, locations, and diff content remain withheld pending a
   redaction contract.
 - APR-05 carries the real coordinator approval/effect/run identity into stable
-  interaction requested/resolved events and replays it after restart. ACP,
-  terminal chat, and explicit TUI commands can bind stable local-process
-  authority; default TUI and API composition remain unbound.
+  interaction requested/resolved events and replays it after restart. Normal
+  default/API/shared surfaces still lack stable authenticated authority
+  binding; explicit local chat/TUI/ACP commands can bind the process-owner
+  tuple.
 - The runtime interaction service now maps run lifecycle/text into durable
   envelopes, accumulates assistant text, and commits transcript plus terminal
   state atomically. Completed-run restart recovery uses a durable output
@@ -662,9 +677,10 @@ The factory owns this composition boundary and must consistently:
 - expose readiness warnings without panicking.
 
 Those surface migrations are complete. Remaining composition gaps are signer/
-remote/API approval authority, shutdown/background-worker ownership, optional
-API stores, execution-scoped interaction settings, and groups; parity claims
-for those capabilities remain intentionally withheld.
+authenticated shared/remote/API approval authority,
+shutdown/background-worker ownership, optional API stores, execution-scoped
+interaction settings, and groups; parity claims for those capabilities remain
+intentionally withheld.
 
 ### 5.3 Interaction service
 
@@ -999,6 +1015,37 @@ SIGKILL/restart/load pending-approval fixture pass. They do not replace the
 manual Zed permission/restart smoke. `/approve` and `/deny` stay unadvertised
 because the native ACP request owns the interaction.
 
+#### APR-08 bounded cross-surface evidence (partial)
+
+Integrated commit `20dbcb1` adds
+[`approval_cross_surface_e2e.rs`](../crates/polkagent-cli/tests/approval_cross_surface_e2e.rs)
+on top of the chat/TUI/ACP local authority composition in `399db83`; `4b4f11b`
+fixes the integrated factory future-size boundary. The exact commands passed:
+
+```text
+cargo test -p polkagent-cli --test approval_cross_surface_e2e -- --nocapture
+cargo clippy -p polkagent-cli --test approval_cross_surface_e2e -- -D warnings
+```
+
+The fixture uses one real file-backed SQLite `RuntimeFactory`, an explicit
+authority, strict approval policy, a registered governance tool, and a
+deterministic local provider. It creates the durable pending approval through
+the runtime rather than seeding approval rows. TUI `RunController` lists and
+approves the exact request, while the `ServiceCommandExecutor` shared with
+terminal chat proves exact slash-command scope, retry, and conflict behavior.
+Restart preserves all conversation/approval/effect/run/tool-call identities;
+a wrong principal is refused. Read-only SQLite assertions prove one handler
+attempt, one immutable outcome, a completed run, zero pending approvals, and
+zero effect/run/turn/agent lineage orphans. The public projection is bounded to
+100 rows, 200-byte titles, and 2,000-byte detail; a raw sentinel present in the
+durable subject and next provider request is absent from the projection.
+
+This is one happy-path/restart seam, not full APR-08 closure. The full
+pause/decision/claim/pre-I/O/post-I/O crash matrix, possible-I/O operator
+reconciliation, manual Zed smoke, shared/remote multi-principal authentication,
+observability/security/retention/backup closure, and cancellation during
+handler I/O remain required.
+
 ### 7.2 CLI boot safety
 
 Dispatch `polkagent acp` before installing any console tracing subscriber or
@@ -1216,11 +1263,13 @@ session context contract; local ACP/chat/explicit-TUI bindings are composed.
   shared slash-command handlers.
 - [x] Prove chat approval scope, identical retry after service restart,
   opposite-decision conflict, bounded/redaction-safe output, coordinator-backed
-  pending cancellation with no effect attempt, and authority-unavailable
-  behavior without direct database mutation.
+  pending cancellation with zero tool I/O, approval-capable no-pending
+  cancellation, and authority-unavailable subprocess behavior without direct
+  database mutation.
 - [x] Add the reusable all-or-none authority flags, bind the fixed
-  `terminal-chat` surface through production `RuntimeOptions`, reject partial/
-  nil identifiers, and retain authority-unbound defaults with no inference.
+  `terminal-chat` surface through production `RuntimeOptions`, reject omitted,
+  partial, or nil identifiers, and retain authority-unbound defaults with no
+  inference. Shared/remote authentication remains open.
 - [x] Persist `/agent` per conversation with restart/next-run proof, active/
   ambiguous/unknown refusal, and no AgentSpec/turn/run/event mutation.
 - [x] Add persisted execution-scoped `/model` selection with same-provider
@@ -1276,6 +1325,10 @@ session context contract; local ACP/chat/explicit-TUI bindings are composed.
 - [x] Render bounded/redacted durable approval queue/detail/status/expiry with
   exact conversation/approval/effect/run/tool identities and fail-closed
   authority guidance.
+- [x] Compose the all-or-none local-process authority tuple for explicit
+  `polkagent tui`, with surface fixed to `tui`; the no-subcommand TUI and
+  omitted tuple stay fail-closed. Cancel/shutdown coordinator-cancels pending
+  approval work with zero tool I/O.
 - [ ] Render rich plans once the runtime produces them.
 - [x] Replace direct approval/denial database queries and writes with the
   shared asynchronous service boundary.
@@ -1442,9 +1495,10 @@ Zed, not merely a single-agent chat wrapper.
 - **Runtime duplication:** one-shot run, TUI, chat, ACP, and `serve` share the
   production factory; TUI/chat/HTTP/ACP consume the headless interaction
   service. A bounded grantless registered-tool/effect loop is composed;
-  approval authority remains unbound by default. ACP/chat/explicit-TUI local
-  opt-ins and crash-safe coordinator cancellation are implemented; the API is
-  unbound and manual Zed validation remains.
+  approval authority remains unbound by default. Explicit local chat/TUI/ACP
+  opt-ins and bounded restart recovery are implemented; their process-owner
+  tuple is not shared/remote authentication. The API stays unbound, and manual
+  Zed validation remains.
 - **Event loss:** TUI/chat/HTTP/ACP use durable interaction replay and stable
   effect-backed tool and approval projection; rich plan projection and ACP
   manual-editor evidence remain incomplete.
@@ -1481,11 +1535,11 @@ Zed, not merely a single-agent chat wrapper.
 | `polkagent-conversation` | Treat as durable transcript store under interaction service |
 | `polkagent-store-sqlite` | Session/turn/run-link/event persistence and the V18 approval/checkpoint coordinator are composed; keep surface code behind the serialized store operations |
 | `polkagent-cli/src/main.rs` | Early ACP dispatch, one-shot/TUI/chat/ACP/serve runtime convergence, and ACP-safe bounded diagnostics exist |
-| `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat has persisted agent/model selection plus explicit local authority, scoped approval decisions, and coordinator-safe cancellation; add richer editing/config without treating the tuple as remote authentication |
-| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection, explicit-subcommand local authority, service-backed F6 decisions, coordinator-safe shutdown, bounded simultaneous activities, async input, and monitoring workers exist; add rich plans and group/child-run orchestration |
+| `polkagent-cli/src/commands/chat.rs` | Single-agent durable line-mode chat with persisted per-conversation agent/model selection and an explicit local-authority service-routed approval adapter exists; add shared/remote authority and richer editing/config only after execution semantics are truthful |
+| `polkagent-cli/src/tui/` | Durable prompt/cancel/history/session/agent/model selection, shared commands, safe tool status, bounded simultaneous activity switching, explicit-subcommand local approvals, coordinator-safe shutdown, async input, and background monitoring workers exist; add pagination/rich plans and group/child-run orchestration |
 | `polkagent-cli/src/commands/serve.rs` | Shared durable core runtime plus skill reads and all four memory routes exist; compose the remaining published 9-route optional boundary one truthful family at a time |
 | `polkagent-harness-acp` | Keep as downstream ACP client; do not turn it into the server crate |
-| Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; APR-07's bounded implementation and operator contract are recorded, while manual Zed permission/cancel/restart evidence remains open |
+| Docs | ACP/Zed, durable terminal chat, TUI, and HTTP interaction guidance plus successful restarted cross-surface evidence exist; APR-07 and the bounded APR-08 fixture are recorded, while manual Zed permission/cancel/restart and broader crash/operations evidence remain open |
 
 ## 13. Source trail
 
@@ -1494,6 +1548,7 @@ Primary local Polkagent evidence:
 - `crates/polkagent-cli/src/main.rs`
 - `crates/polkagent-cli/src/cli.rs`
 - `crates/polkagent-cli/src/commands/run.rs`
+- `crates/polkagent-cli/tests/approval_cross_surface_e2e.rs`
 - `crates/polkagent-cli/src/commands/serve.rs`
 - `crates/polkagent-cli/src/tui/app.rs`
 - `crates/polkagent-cli/src/tui/input.rs`
@@ -1546,10 +1601,11 @@ agent/conversation activities, but it does not yet build or execute group plans.
 The coordinator/checkpoint foundation and test-composable HTTP/chat/TUI
 adapters are tracked in
 [`APPROVAL-PAUSE-RESUME-DESIGN.md`](APPROVAL-PAUSE-RESUME-DESIGN.md). APR-07
-adds bounded local-stdio ACP authority with crash-safe resume; terminal chat
-and explicit TUI now reuse the same no-inference authority contract and
-coordinator cancellation, while defaults and the API remain unbound. Next
-complete manual Zed evidence, design real API/remote multi-principal
-authentication, define role-safe harness history, expand truthful command
-coverage, and compose durable group/
+adds bounded local-stdio ACP authority with crash-safe resume, and `399db83`
+extends that explicit process-owner tuple to chat and TUI. APR-08 `20dbcb1`
+proves one real strict-policy TUI/chat approval path across restart; it does not
+close the full crash matrix. Next complete manual Zed evidence, add
+authenticated shared/remote/API authority, close the remaining crash,
+security, observability, and handler-I/O cancellation gaps, define role-safe
+harness history, expand truthful command coverage, and compose durable group/
 child-run orchestration on top of the proven activity surface.

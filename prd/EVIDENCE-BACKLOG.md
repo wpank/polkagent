@@ -106,15 +106,21 @@ reports.
   scoped pending set, projects at most 100 stable approval IDs in `/status`,
   and routes `/approve` and `/deny` only through `InteractionService`. A real
   SQLite coordinator fixture proves wrong-conversation refusal, identical
-  retry after service restart, opposite-decision conflict, preservation of a
-  pending approval when generic cancellation is refused, and ordinary
-  cancellation when an approval-capable service returns no pending requests.
+  retry after service restart, opposite-decision conflict, and scoped
+  cancellation behavior.
   Denial reasons are capped at 4,096 Unicode characters; request/resolution
   progress emits only stable IDs and fixed status text, never untrusted titles,
   descriptions, policy reasons, or denial text. A subprocess proves the normal
   authority-unbound `RuntimeFactory` hides both commands and rejects explicit
-  mutation without creating a turn, run, or approval row. Production authority,
-  grant-bearing execution, and APR-08 crash closure stay open.
+  mutation without creating a turn, run, or approval row. Integrated commit
+  `399db83` subsequently added the same all-or-none
+  `--approval-tenant`/`--approval-workspace`/`--approval-principal` tuple used
+  by ACP to explicit `polkagent chat`, with the decision surface fixed to
+  `terminal-chat`. Omitting the tuple remains fail-closed. This is a local
+  process-owner assertion, not shared/remote multi-principal authentication.
+  Pending-turn cancellation now routes through `InteractionService::cancel_turn`,
+  durably cancels the approval and run, and performs zero tool I/O;
+  cancellation during handler I/O remains open.
 
 - **APR-06 / TUI F6 approval adapter (2026-08-06):** F6 now scopes the shared
   `InteractionService` pending/approve/deny operations to the selected durable
@@ -129,10 +135,13 @@ reports.
   opposite-decision conflict, controller restart, active-run concurrency,
   unavailable/unsupported authority, truncation visibility, selection by
   stable ID, oversized metadata redaction, and no fabricated risk/pallet data.
-  Until coordinator-aware approval cancellation is composed, a turn known to
-  await approval refuses generic cancel/shutdown cancellation and preserves the
-  durable pending request. Normal `RuntimeFactory` composition therefore shows
-  truthful unavailable guidance rather than claiming production usability.
+  Integrated commit `399db83` added the explicit authority tuple to
+  `polkagent tui`, with the surface fixed to `tui`; the no-subcommand TUI and
+  an explicit TUI without the tuple remain authority-unbound. Coordinator-
+  backed turn cancellation and TUI shutdown now durably cancel a pending
+  approval/run with zero tool I/O instead of preserving an orphan. This local
+  process opt-in does not supply shared/remote authentication, pagination, or
+  cancellation during handler I/O.
 
 - **EVD-07 / ACP client-protocol slices (2026-08-05):** the official ACP Rust
   client launches `polkagent acp` as a subprocess and proves initialization,
@@ -204,6 +213,33 @@ reports.
   suite owns live command-catalog and protocol-stdout evidence. Manual GUI
   permission/cancel/restart smoke, remote projects, and settings-specific MCP
   forwarding remain open; the current setup requires no forwarded MCP servers.
+
+- **APR-08 / bounded cross-surface approval fixture (2026-08-06):** integrated
+  commit `20dbcb1` adds
+  [`approval_cross_surface_e2e.rs`](../crates/polkagent-cli/tests/approval_cross_surface_e2e.rs)
+  on top of the local authority composition in `399db83` (with the factory-
+  future boundary fixed by `4b4f11b`). One real file-backed SQLite
+  `RuntimeFactory` uses an explicit authority, strict approval policy, a
+  registered governance tool, and a deterministic local provider to create a
+  durable pending approval without seeding approval rows. TUI `RunController`
+  lists and approves the exact request; the same `ServiceCommandExecutor` used
+  by terminal chat rejects a foreign conversation, accepts an identical retry
+  after restart, and conflicts on the opposite decision. A restarted TUI
+  returns identical conversation/approval/effect/run/tool-call identities,
+  and a differently bound principal is refused. The public projection is at
+  most 100 rows and enforces the 200-byte title/2,000-byte detail bounds; a raw
+  sentinel argument present in the durable subject and next provider request
+  is absent from the TUI/service projection. Read-only SQLite evidence proves
+  one handler attempt, one immutable outcome, a completed run, zero pending
+  approvals, and zero approval rows orphaned from effect/run/turn/agent
+  lineage. The exact target passed repeatedly, and strict test-target Clippy
+  passed with warnings denied.
+
+  This closes one happy-path/restart cross-surface seam, not all APR-08. EVD-05
+  still needs the full pause/decision/claim/pre-I/O/post-I/O crash matrix and
+  unknown-outcome/operator reconciliation. Manual Zed, shared/remote
+  multi-principal authentication, observability/security/retention/backup
+  closure, and cancellation during handler I/O also remain open.
 
 - **EVD-11 / terminal interaction slices (2026-08-05):** the TUI lifecycle test
   runs the real integration binary inside a Unix PTY and proves ordered
