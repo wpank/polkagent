@@ -1,7 +1,7 @@
 # Approval pause-and-resume design
 
-**Status:** active execution design; APR-02 policy/composition implemented,
-durable approval flow not implemented
+**Status:** active execution design; APR-02 policy/composition and the APR-04
+ACP protocol harness implemented, durable approval flow not implemented
 
 **Prepared:** 2026-08-06
 
@@ -31,7 +31,7 @@ This document does not claim that capability exists today.
 | API | Approve/deny routes exist | They expect unreachable states, create an ephemeral record, and emit bus-only events |
 | Run lifecycle | `AwaitingApproval` and `WaitingEffect` states exist | Run state updates are unconditional, state and event writes are separate, denial cancels, and the orchestrator never pauses |
 | Recovery | Durable interaction replay and abandoned-run recovery exist | Startup deliberately fails `awaiting_approval` and `waiting_effect`; the model-loop continuation exists only in memory |
-| ACP | Durable sessions, prompts, cancellation, tool updates, and slash discovery exist | No native permission request is sent. The official SDK already provides `session/request_permission` and `Cancelled` handling |
+| ACP | Durable sessions, prompts, cancellation, tool updates, slash discovery, safe permission-request projection, and an official-SDK protocol harness exist | The production backend does not issue native permission requests or bind decisions to the durable coordinator/effect path |
 | Terminal/TUI | Approval rendering, commands, and approval views exist | They do not resolve the shared durable approval operation end to end |
 
 The missing center is not another widget. It is a durable transaction boundary
@@ -313,6 +313,16 @@ ready/disabled startup state. This does not make the approval path operational:
 grant-bearing tools remain withheld until APR-01 and APR-03 compose durable
 coordination and continuation.
 
+APR-04 completed on 2026-08-06 at the protocol-only boundary. The ACP surface
+constructs `session/request_permission` from the safe tool projection with the
+exact tool-call identity, exactly `AllowOnce` and `RejectOnce`, and no raw input
+or output. Its response decoder maps those two selections and `Cancelled`, and
+fails closed for unadvertised options. The official-SDK duplex harness covers
+allow, reject, a pending request resolved after a matching `session/cancel`, an
+unknown option, a client protocol error, and disconnect while pending. This
+does not connect ACP to a production backend, persist a decision, or authorize
+an effect; those remain APR-07 integration and APR-08 end-to-end work.
+
 Hot files have one integration owner at a time: SQLite migration registration,
 `store-trait/src/lib.rs`, `service/src/app.rs`, `run/src/orchestrator.rs`,
 `runtime/src/factory.rs`, `runtime/src/interaction.rs`, CLI TUI application
@@ -457,8 +467,12 @@ and why approval never overrides policy denial.
 - [ ] Route HTTP approve/deny through the same coordinator.
 - [ ] Enable chat `/approve` and `/deny` plus pending status/detail.
 - [ ] Enable TUI queue/detail/key actions and remove direct approval SQL.
-- [ ] Add ACP native permission updates with once-only options, cancellation,
-  disconnect, and unknown-outcome handling.
+- [x] Freeze and test the ACP permission protocol projection with once-only
+  options, exact tool identity, withheld payloads, cancellation, disconnect,
+  and unknown-option/error handling in the official-SDK harness.
+- [ ] Bind ACP permission requests and responses to the production durable
+  coordinator and effect continuation; do not infer approval on disconnect or
+  protocol failure.
 
 ### Closure
 
