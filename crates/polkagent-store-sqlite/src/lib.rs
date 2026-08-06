@@ -71,12 +71,10 @@ pub mod effect_projection;
 pub mod error;
 pub mod event_store;
 pub mod interaction_store_impl;
-// NOTE: group_store_impl and feed_store_impl are temporarily disabled.
-// Their serde type graphs exceed rustc's trait-solver recursion limit
-// when compiled alongside the other store modules. They will be moved
-// to dedicated crates (polkagent-store-sqlite-group, -feed) to isolate
-// the trait resolution. The in-memory stores in polkagent-group and
-// polkagent-feed remain fully functional.
+// Group and feed adapters live only in the dedicated
+// polkagent-store-sqlite-group and polkagent-store-sqlite-feed crates. Their
+// serde type graphs exceed rustc's trait-solver recursion limit when compiled
+// alongside these modules. In-memory adapters remain in their domain crates.
 pub mod migrations;
 pub mod payment_store_impl;
 pub mod pool;

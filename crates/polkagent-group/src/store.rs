@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use polkagent_core::ids::AgentId;
 
 use crate::error::GroupResult;
-use crate::types::{Group, GroupId, GroupMember};
+use crate::types::{Group, GroupBudget, GroupId, GroupMember, QuorumPolicy};
 
 // ---------------------------------------------------------------------------
 // GroupStore trait
@@ -51,6 +51,23 @@ pub trait GroupStore: Send + Sync {
     /// exist.
     async fn update_group(&self, group: Group) -> GroupResult<()>;
 
+    /// Atomically replace only the group's quorum and budget policy.
+    ///
+    /// This narrow mutation must not replace membership or other group fields,
+    /// so a concurrent member change cannot be lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::GroupError::NotFound`] if the group does not
+    /// exist.
+    async fn update_policy(
+        &self,
+        group_id: &GroupId,
+        quorum_policy: QuorumPolicy,
+        budget: GroupBudget,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> GroupResult<()>;
+
     /// Delete a group and all its associated membership records.
     ///
     /// # Errors
@@ -71,7 +88,7 @@ pub trait GroupStore: Send + Sync {
     /// # Errors
     ///
     /// - [`crate::error::GroupError::NotFound`] if the group does not exist.
-    /// - [`crate::error::GroupError::Internal`] if the agent is already a
+    /// - [`crate::error::GroupError::AlreadyMember`] if the agent is already a
     ///   member.
     async fn add_member(&self, group_id: &GroupId, member: GroupMember) -> GroupResult<()>;
 

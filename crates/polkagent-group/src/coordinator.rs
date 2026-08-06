@@ -139,15 +139,11 @@ impl GroupCoordinator {
     /// # Errors
     ///
     /// - [`GroupError::NotFound`] if the group does not exist.
-    /// - [`GroupError::AlreadyExists`] if the agent is already a member
-    ///   (wrapped as `Internal` to reuse the error type cleanly).
+    /// - [`GroupError::AlreadyMember`] if the agent is already a member.
     pub fn add_member(&mut self, group_id: &GroupId, member: GroupMember) -> GroupResult<()> {
         let group = self.get_group_mut(group_id)?;
         if group.is_member(&member.agent_id) {
-            return Err(GroupError::Internal(format!(
-                "agent {} is already a member of group {}",
-                member.agent_id, group_id
-            )));
+            return Err(GroupError::AlreadyMember(member.agent_id, *group_id));
         }
         group.members.push(member);
         group.updated_at = Utc::now();
@@ -524,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn add_member_duplicate_returns_internal_error() {
+    fn add_member_duplicate_returns_typed_error() {
         let (mut coord, group_id, owner) = make_coordinator_with_group();
         let result = coord.add_member(&group_id, GroupMember::new(owner, MemberRole::Worker));
         assert!(result.is_err(), "adding duplicate member should fail");

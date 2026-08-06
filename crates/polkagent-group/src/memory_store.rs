@@ -15,7 +15,7 @@ use polkagent_core::ids::AgentId;
 
 use crate::error::{GroupError, GroupResult};
 use crate::store::GroupStore;
-use crate::types::{Group, GroupId, GroupMember};
+use crate::types::{Group, GroupBudget, GroupId, GroupMember, QuorumPolicy};
 
 // ---------------------------------------------------------------------------
 // MemoryGroupStore
@@ -64,6 +64,23 @@ impl GroupStore for MemoryGroupStore {
         Ok(())
     }
 
+    async fn update_policy(
+        &self,
+        group_id: &GroupId,
+        quorum_policy: QuorumPolicy,
+        budget: GroupBudget,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> GroupResult<()> {
+        let mut map = self.inner.write().await;
+        let group = map
+            .get_mut(group_id)
+            .ok_or(GroupError::NotFound(*group_id))?;
+        group.quorum_policy = quorum_policy;
+        group.budget = budget;
+        group.updated_at = updated_at;
+        Ok(())
+    }
+
     async fn delete_group(&self, group_id: &GroupId) -> GroupResult<()> {
         let mut map = self.inner.write().await;
         map.remove(group_id)
@@ -83,10 +100,7 @@ impl GroupStore for MemoryGroupStore {
             .ok_or(GroupError::NotFound(*group_id))?;
 
         if group.is_member(&member.agent_id) {
-            return Err(GroupError::Internal(format!(
-                "agent {} is already a member of group {}",
-                member.agent_id, group_id
-            )));
+            return Err(GroupError::AlreadyMember(member.agent_id, *group_id));
         }
 
         group.members.push(member);
@@ -207,6 +221,37 @@ mod tests {
             store.update_group(group).await,
             Err(GroupError::NotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn update_policy_preserves_members_and_other_fields() {
+        let store = MemoryGroupStore::new();
+        let owner = AgentId::new();
+        let id = GroupId::new();
+        let group = make_group(id, owner);
+        let original_name = group.name.clone();
+        let original_created_at = group.created_at;
+        store.create_group(group).await.expect("create ok");
+
+        let updated_at = chrono::Utc::now();
+        store
+            .update_policy(
+                &id,
+                QuorumPolicy::Unanimous,
+                GroupBudget::new(500, Some(200), Some(100)),
+                updated_at,
+            )
+            .await
+            .expect("update policy");
+
+        let updated = store.get_group(&id).await.expect("get updated");
+        assert_eq!(updated.name, original_name);
+        assert_eq!(updated.created_at, original_created_at);
+        assert_eq!(updated.members.len(), 1);
+        assert_eq!(updated.members[0].agent_id, owner);
+        assert_eq!(updated.quorum_policy, QuorumPolicy::Unanimous);
+        assert_eq!(updated.budget.max_total, 500);
+        assert_eq!(updated.updated_at, updated_at);
     }
 
     #[tokio::test]

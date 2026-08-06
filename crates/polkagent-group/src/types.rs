@@ -126,7 +126,7 @@ impl MemberRole {
 /// When resolving effective grants, the member-level `GrantSpec` is
 /// intersected with the group-level `GrantSpec`: a member can never gain
 /// capabilities beyond what the group permits.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GrantSpec {
     /// The capability names this spec permits (e.g. `"chain.transfer"`,
     /// `"model.inference"`). An empty list means no capabilities.
@@ -207,7 +207,7 @@ impl GrantSpec {
 ///
 /// Each member carries a role and an optional [`GrantSpec`] that, when
 /// present, narrows (intersects with) the group-level grant specification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupMember {
     /// The agent that holds this membership.
     pub agent_id: AgentId,

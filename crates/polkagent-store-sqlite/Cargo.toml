@@ -14,9 +14,9 @@ polkagent-interaction = { path = "../polkagent-interaction" }
 polkagent-artifact = { path = "../polkagent-artifact" }
 polkagent-conversation = { path = "../polkagent-conversation" }
 polkagent-payment = { path = "../polkagent-payment" }
-# polkagent-feed and polkagent-group removed: their serde type graphs
-# exceed rustc's trait-solver recursion limit. SQLite impls for these
-# will live in dedicated crates.
+# Group/feed SQLite implementations live only in the dedicated
+# polkagent-store-sqlite-group and polkagent-store-sqlite-feed crates because
+# their serde type graphs exceed rustc's trait-solver recursion limit here.
 polkagent-store-trait = { path = "../polkagent-store-trait" }
 
 # Crypto

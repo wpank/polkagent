@@ -227,7 +227,7 @@ async fn add_member_to_nonexistent_group() {
 }
 
 #[tokio::test]
-async fn add_duplicate_member_returns_internal_error() {
+async fn add_duplicate_member_returns_typed_error() {
     let store = test_store();
     let group = make_group("theta");
     let gid = group.id;
@@ -245,7 +245,10 @@ async fn add_duplicate_member_returns_internal_error() {
         .add_member(&gid, member2)
         .await
         .expect_err("duplicate member");
-    assert!(matches!(err, GroupError::Internal(_)));
+    assert!(matches!(
+        err,
+        GroupError::AlreadyMember(agent, id) if agent == agent_id && id == gid
+    ));
 }
 
 #[tokio::test]
@@ -407,6 +410,7 @@ async fn budget_round_trip_full() {
         .budget
         .member_spent
         .insert("some-agent".to_string(), 200);
+    *group.budget.spent.lock() = 200;
     let gid = group.id;
 
     store.create_group(group).await.expect("create");
@@ -419,6 +423,7 @@ async fn budget_round_trip_full() {
         fetched.budget.member_spent.get("some-agent").copied(),
         Some(200)
     );
+    assert_eq!(fetched.budget.total_spent(), 200);
 }
 
 #[tokio::test]

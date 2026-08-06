@@ -17,6 +17,10 @@ pub enum GroupError {
     #[error("group already exists: {0}")]
     AlreadyExists(GroupId),
 
+    /// The agent is already a member of the group.
+    #[error("agent {0} is already a member of group {1}")]
+    AlreadyMember(AgentId, GroupId),
+
     /// The agent is not a member of the group.
     #[error("agent {0} is not a member of group {1}")]
     NotMember(AgentId, GroupId),
@@ -32,6 +36,10 @@ pub enum GroupError {
     /// The agent does not have permission to perform this operation.
     #[error("permission denied for agent {0} in group {1}: {2}")]
     PermissionDenied(AgentId, GroupId, String),
+
+    /// A group definition or policy update violates a domain invariant.
+    #[error("invalid group {0}: {1}")]
+    InvalidGroup(GroupId, String),
 
     /// A general internal error.
     #[error("internal error: {0}")]

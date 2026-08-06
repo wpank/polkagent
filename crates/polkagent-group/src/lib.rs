@@ -20,6 +20,7 @@
 //!   [`execution::ExecutionPlan`], [`execution::GroupTask`],
 //!   [`execution::ExecutionResult`], and [`execution::ExecutionEvidence`].
 //! - **[`store`]** — [`store::GroupStore`] async storage trait.
+//! - **[`service`]** — durable, surface-neutral validated group CRUD.
 //! - **[`memory_store`]** — [`memory_store::MemoryGroupStore`] in-memory
 //!   implementation for tests.
 //! - **[`error`]** — [`error::GroupError`] error enum.
@@ -34,6 +35,7 @@
 //! | [`propagation`] | Cancellation propagation and evidence aggregation |
 //! | [`execution`] | Execution modes and task orchestration (PRD-09 §5-6) |
 //! | [`store`] | Async persistence trait |
+//! | [`service`] | Validated durable application operations |
 //! | [`memory_store`] | In-memory store for tests |
 //! | [`error`] | Error types |
 
@@ -57,6 +59,7 @@ pub mod execution;
 pub mod memory_store;
 pub mod propagation;
 pub mod quorum;
+pub mod service;
 pub mod store;
 pub mod types;
 
@@ -76,6 +79,7 @@ pub use propagation::{aggregate_evidence, propagate_cancellation, GroupEvidence}
 pub use quorum::{
     check_quorum, count_approvals, count_denials, Decision, QuorumResult, Vote, VoteDecision,
 };
+pub use service::{GroupPolicyUpdate, GroupService};
 pub use store::GroupStore;
 pub use types::{
     EffectiveGrant, GrantSpec, Group, GroupBudget, GroupId, GroupMember, MemberRole, QuorumPolicy,

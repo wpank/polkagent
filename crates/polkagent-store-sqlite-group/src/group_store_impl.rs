@@ -18,11 +18,9 @@
 //!
 //! - [`QuorumPolicy`] is stored as JSON (tagged enum with `kind` discriminant).
 //! - [`GroupBudget`] is stored as a JSON object containing the persisted
-//!   fields (`max_total`, `max_per_member`, `max_per_run`, `member_spent`).
-//!   The runtime `spent` mutex is reconstructed from the stored `member_spent`
-//!   aggregation — on load the in-memory `spent` counter starts at zero
-//!   (consistent with the policy that the live spend counter is ephemeral and
-//!   managed by the coordinator, not the store).
+//!   fields (`max_total`, `max_per_member`, `max_per_run`, `total_spent`,
+//!   `member_spent`). Legacy rows without `total_spent` reconstruct it from the
+//!   checked `member_spent` sum.
 //! - [`GrantSpec`] overrides on members are stored as JSON (`NULL` when
 //!   absent).
 //! - [`MemberRole`] is stored as its lowercase string (`leader`, `worker`,
@@ -120,6 +118,10 @@ fn encode_budget(budget: &GroupBudget) -> GroupResult<String> {
             .max_per_run
             .map_or(serde_json::Value::Null, serde_json::Value::from),
     );
+    obj.insert(
+        "total_spent".to_string(),
+        serde_json::Value::from(budget.total_spent()),
+    );
     let spent_map: serde_json::Map<String, serde_json::Value> = budget
         .member_spent
         .iter()
@@ -159,13 +161,36 @@ fn decode_budget(s: &str) -> GroupResult<GroupBudget> {
 
     let mut budget = GroupBudget::new(max_total, max_per_member, max_per_run);
 
-    if let Some(serde_json::Value::Object(spent_map)) = val.get("member_spent") {
-        for (agent_id, amount) in spent_map {
-            if let Some(n) = amount.as_u64() {
+    let mut inferred_total = 0_u64;
+    match val.get("member_spent") {
+        None => {}
+        Some(serde_json::Value::Object(spent_map)) => {
+            for (agent_id, amount) in spent_map {
+                let n = amount.as_u64().ok_or_else(|| {
+                    GroupError::Internal(format!(
+                        "budget has invalid member spend for '{agent_id}'"
+                    ))
+                })?;
+                inferred_total = inferred_total.checked_add(n).ok_or_else(|| {
+                    GroupError::Internal("budget member spend total overflow".to_string())
+                })?;
                 budget.member_spent.insert(agent_id.clone(), n);
             }
         }
+        Some(_) => {
+            return Err(GroupError::Internal(
+                "budget invalid field 'member_spent'".to_string(),
+            ));
+        }
     }
+
+    let total_spent = match val.get("total_spent") {
+        None => inferred_total,
+        Some(value) => value.as_u64().ok_or_else(|| {
+            GroupError::Internal("budget invalid field 'total_spent'".to_string())
+        })?,
+    };
+    *budget.spent.lock() = total_spent;
 
     Ok(budget)
 }
@@ -259,14 +284,14 @@ impl GroupStore for SqliteGroupStore {
         let updated_str = group.updated_at.to_rfc3339();
         let name = group.name.clone();
         let description = group.description.clone();
-
         // Serialize members for batch insert.
-        let members: Vec<(String, String, Option<String>, String)> = group
+        let members: Vec<(AgentId, String, String, Option<String>, String)> = group
             .members
             .iter()
             .map(|m| {
                 let grant_json = encode_grant_override(m.grant_override.as_ref())?;
                 Ok((
+                    m.agent_id,
                     m.agent_id.to_string(),
                     encode_role(m.role).to_string(),
                     grant_json,
@@ -278,10 +303,11 @@ impl GroupStore for SqliteGroupStore {
         let group_id_for_err = group.id;
 
         tokio::task::spawn_blocking(move || {
-            let writer = pool.writer();
+            let mut writer = pool.writer();
+            let transaction = writer.transaction().map_err(map_err)?;
 
             // Insert the group row.
-            writer
+            transaction
                 .execute(
                     "INSERT INTO groups
                          (id, name, description, owner_agent_id,
@@ -307,17 +333,24 @@ impl GroupStore for SqliteGroupStore {
                 })?;
 
             // Insert members.
-            for (agent_id_s, role_s, grant_json, joined_at_s) in members {
-                writer
+            for (agent_id, agent_id_s, role_s, grant_json, joined_at_s) in members {
+                transaction
                     .execute(
                         "INSERT INTO group_members
                              (group_id, agent_id, role, grant_override_json, joined_at)
                          VALUES (?1, ?2, ?3, ?4, ?5)",
                         rusqlite::params![id_str, agent_id_s, role_s, grant_json, joined_at_s,],
                     )
-                    .map_err(map_err)?;
+                    .map_err(|error| {
+                        if is_constraint_violation(&error) {
+                            GroupError::AlreadyMember(agent_id, group_id_for_err)
+                        } else {
+                            map_err(error)
+                        }
+                    })?;
             }
 
+            transaction.commit().map_err(map_err)?;
             Ok(())
         })
         .await
@@ -429,14 +462,16 @@ impl GroupStore for SqliteGroupStore {
         let updated_str = chrono::Utc::now().to_rfc3339();
         let name = group.name.clone();
         let description = group.description.clone();
+        let group_id_for_err = group.id;
 
         // Prepare new member rows.
-        let members: Vec<(String, String, Option<String>, String)> = group
+        let members: Vec<(AgentId, String, String, Option<String>, String)> = group
             .members
             .iter()
             .map(|m| {
                 let grant_json = encode_grant_override(m.grant_override.as_ref())?;
                 Ok((
+                    m.agent_id,
                     m.agent_id.to_string(),
                     encode_role(m.role).to_string(),
                     grant_json,
@@ -446,9 +481,10 @@ impl GroupStore for SqliteGroupStore {
             .collect::<GroupResult<_>>()?;
 
         tokio::task::spawn_blocking(move || {
-            let writer = pool.writer();
+            let mut writer = pool.writer();
+            let transaction = writer.transaction().map_err(map_err)?;
 
-            let n = writer
+            let n = transaction
                 .execute(
                     "UPDATE groups
                      SET name = ?1, description = ?2, owner_agent_id = ?3,
@@ -472,25 +508,65 @@ impl GroupStore for SqliteGroupStore {
 
             // Replace members: delete all then re-insert.  This is simpler
             // and correct given that update_group owns the full new state.
-            writer
+            transaction
                 .execute("DELETE FROM group_members WHERE group_id = ?1", [&id_str])
                 .map_err(map_err)?;
 
-            for (agent_id_s, role_s, grant_json, joined_at_s) in members {
-                writer
+            for (agent_id, agent_id_s, role_s, grant_json, joined_at_s) in members {
+                transaction
                     .execute(
                         "INSERT INTO group_members
                              (group_id, agent_id, role, grant_override_json, joined_at)
                          VALUES (?1, ?2, ?3, ?4, ?5)",
                         rusqlite::params![id_str, agent_id_s, role_s, grant_json, joined_at_s,],
                     )
-                    .map_err(map_err)?;
+                    .map_err(|error| {
+                        if is_constraint_violation(&error) {
+                            GroupError::AlreadyMember(agent_id, group_id_for_err)
+                        } else {
+                            map_err(error)
+                        }
+                    })?;
             }
 
+            transaction.commit().map_err(map_err)?;
             Ok(())
         })
         .await
         .map_err(|e| GroupError::Internal(format!("blocking task panicked: {e}")))?
+    }
+
+    async fn update_policy(
+        &self,
+        group_id: &GroupId,
+        quorum_policy: QuorumPolicy,
+        budget: GroupBudget,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> GroupResult<()> {
+        let pool = self.0.clone();
+        let id_str = group_id.to_string();
+        let group_id_for_err = *group_id;
+        let quorum_json = encode_quorum_policy(&quorum_policy)?;
+        let budget_json = encode_budget(&budget)?;
+        let updated_str = updated_at.to_rfc3339();
+
+        tokio::task::spawn_blocking(move || {
+            let writer = pool.writer();
+            let changed = writer
+                .execute(
+                    "UPDATE groups
+                     SET quorum_policy = ?1, budget_json = ?2, updated_at = ?3
+                     WHERE id = ?4",
+                    rusqlite::params![quorum_json, budget_json, updated_str, id_str],
+                )
+                .map_err(map_err)?;
+            if changed == 0 {
+                return Err(GroupError::NotFound(group_id_for_err));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| GroupError::Internal(format!("blocking task panicked: {error}")))?
     }
 
     // -----------------------------------------------------------------------
@@ -633,6 +709,8 @@ impl GroupStore for SqliteGroupStore {
         let role_str = encode_role(member.role).to_string();
         let grant_json = encode_grant_override(member.grant_override.as_ref())?;
         let joined_at_str = member.joined_at.to_rfc3339();
+        let group_id_for_err = *group_id;
+        let agent_id_for_err = member.agent_id;
 
         tokio::task::spawn_blocking(move || {
             let writer = pool.writer();
@@ -660,9 +738,7 @@ impl GroupStore for SqliteGroupStore {
                 )
                 .map_err(|e| {
                     if is_constraint_violation(&e) {
-                        GroupError::Internal(format!(
-                            "agent '{agent_id_str}' is already a member of group '{id_str}'"
-                        ))
+                        GroupError::AlreadyMember(agent_id_for_err, group_id_for_err)
                     } else {
                         map_err(e)
                     }
@@ -1145,7 +1221,8 @@ mod tests {
             .await
             .expect_err("should fail for duplicate member");
         assert!(
-            matches!(&err, GroupError::Internal(msg) if msg.contains("already a member")),
+            matches!(&err, GroupError::AlreadyMember(agent_id, group_id)
+                if *agent_id == owner && *group_id == gid),
             "expected already-a-member error, got: {err:?}"
         );
     }
@@ -1368,6 +1445,7 @@ mod tests {
             ],
         );
         group.budget.member_spent.insert(worker.to_string(), 1_500);
+        *group.budget.spent.lock() = 1_500;
         let gid = group.id;
 
         GroupStore::create_group(&store, group)
@@ -1379,6 +1457,7 @@ mod tests {
             fetched.budget.member_spent.get(&worker.to_string()),
             Some(&1_500)
         );
+        assert_eq!(fetched.budget.total_spent(), 1_500);
     }
 
     #[tokio::test]
@@ -1398,6 +1477,15 @@ mod tests {
         assert_eq!(fetched.budget.max_per_member, None);
         assert_eq!(fetched.budget.max_per_run, None);
         assert!(fetched.budget.member_spent.is_empty());
+    }
+
+    #[test]
+    fn legacy_budget_without_total_reconstructs_checked_member_sum() {
+        let budget = decode_budget(
+            r#"{"max_total":1000,"max_per_member":null,"max_per_run":null,"member_spent":{"a":125,"b":75}}"#,
+        )
+        .expect("decode legacy budget");
+        assert_eq!(budget.total_spent(), 200);
     }
 
     // -----------------------------------------------------------------------
