@@ -69,6 +69,7 @@ polkagent-conversation = { path = "../polkagent-conversation" }
 polkagent-executor-fake = { path = "../polkagent-executor-fake" }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-tungstenite = "0.29"
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 syn = { version = "2", features = ["extra-traits", "full"] }
