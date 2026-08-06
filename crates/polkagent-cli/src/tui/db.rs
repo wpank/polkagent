@@ -1,8 +1,9 @@
 //! Lightweight `SQLite` query helpers and chain polling for the TUI.
 //!
 //! The TUI reads from the same database as the daemon. All queries are
-//! read-only and use rusqlite directly (no async) since they run on the
-//! main thread between frames.
+//! read-only and use rusqlite directly. The application runs aggregate
+//! projection snapshots on a tracked blocking worker, never on the terminal
+//! event loop.
 //!
 //! The data returned is already in the TUI's `state::*` summary types to
 //! avoid leaking raw row structs into the view layer.
@@ -35,12 +36,119 @@ pub struct TuiDb {
     conn: Connection,
 }
 
+/// One independently loaded monitoring projection for the main TUI shell.
+///
+/// Optional fields preserve the last good value when one query fails. `error`
+/// is redacted before the snapshot crosses back to the terminal thread.
+#[derive(Debug)]
+pub struct TuiProjectionSnapshot {
+    pub selected_run: Option<String>,
+    pub agents: Option<Vec<AgentSummary>>,
+    pub runs: Option<Vec<RunSummary>>,
+    pub health: Option<SystemHealth>,
+    pub pending_approvals: Option<Vec<ApprovalItem>>,
+    pub run_detail: ProjectionValue<Option<RunDetail>>,
+    pub run_events: Option<Vec<EventSummary>>,
+    pub error_count: Option<usize>,
+    pub budget_remaining: Option<f64>,
+    pub sampled_at: DateTime<Utc>,
+    pub error: Option<String>,
+}
+
+/// A projection field that distinguishes a successfully loaded empty value
+/// from a failed or intentionally skipped query.
+#[derive(Debug)]
+pub enum ProjectionValue<T> {
+    Unchanged,
+    Value(T),
+}
+
+impl TuiProjectionSnapshot {
+    fn failed(db_path: &str, error: &anyhow::Error) -> Self {
+        let health = SystemHealth {
+            db_path: db_path.to_owned(),
+            ..SystemHealth::default()
+        };
+        let error = polkagent_telemetry::redact_string(&error.to_string());
+        Self {
+            selected_run: None,
+            agents: None,
+            runs: None,
+            health: Some(health),
+            pending_approvals: None,
+            run_detail: ProjectionValue::Unchanged,
+            run_events: None,
+            error_count: None,
+            budget_remaining: None,
+            sampled_at: Utc::now(),
+            error: Some(format!("db: {error}")),
+        }
+    }
+}
+
+/// Load one monitoring snapshot without mutating live terminal state.
+#[must_use]
+pub fn load_projection_snapshot(
+    pool: &SqlitePool,
+    selected_run: Option<&str>,
+) -> TuiProjectionSnapshot {
+    let db_path = pool.path().display().to_string();
+    let db = match TuiDb::from_pool(pool) {
+        Ok(db) => db,
+        Err(error) => return TuiProjectionSnapshot::failed(&db_path, &error),
+    };
+    let mut errors = Vec::new();
+    let agents = collect_projection(&mut errors, "agents", db.agents());
+    let runs = collect_projection(&mut errors, "runs", db.recent_runs(100));
+    let pending_approvals = collect_projection(&mut errors, "approvals", db.pending_effects(100));
+    let run_detail = selected_run.map_or(ProjectionValue::Unchanged, |run_id| {
+        collect_projection(&mut errors, "run_detail", db.run_detail(run_id))
+            .map_or(ProjectionValue::Unchanged, ProjectionValue::Value)
+    });
+    let run_events = selected_run.and_then(|run_id| {
+        collect_projection(&mut errors, "run_events", db.run_events(run_id, 500))
+    });
+    let (spent, ceiling) = db.budget_status();
+    let budget_remaining = if ceiling > 0.0 {
+        (ceiling - spent) / ceiling * 100.0
+    } else {
+        100.0
+    };
+
+    TuiProjectionSnapshot {
+        selected_run: selected_run.map(str::to_owned),
+        agents,
+        runs,
+        health: Some(db.system_health(&db_path)),
+        pending_approvals,
+        run_detail,
+        run_events,
+        error_count: Some(db.recent_error_count() as usize),
+        budget_remaining: Some(budget_remaining),
+        sampled_at: Utc::now(),
+        error: (!errors.is_empty()).then(|| errors.join("; ")),
+    }
+}
+
+fn collect_projection<T>(errors: &mut Vec<String>, label: &str, result: Result<T>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            let error = polkagent_telemetry::redact_string(&error.to_string());
+            errors.push(format!("{label}: {error}"));
+            None
+        }
+    }
+}
+
 impl TuiDb {
     /// Open a read-only connection from the pool.
     pub fn from_pool(pool: &SqlitePool) -> Result<Self> {
         let conn = pool
             .reader()
             .with_context(|| "opening read-only connection from pool")?;
+        conn.busy_timeout(std::time::Duration::from_secs(1))
+            .with_context(|| "bounding TUI read-only SQLite busy timeout")?;
         Ok(Self { conn })
     }
 
@@ -722,6 +830,7 @@ pub struct ChainStatus {
 /// empty, all poll calls are no-ops and the chain status
 /// fields on [`crate::tui::state::TuiState`] remain at their defaults
 /// ("Not connected", block 0).
+#[derive(Debug)]
 pub struct ChainPoller {
     /// The RPC URL to query, or `None` if not configured.
     rpc_url: Option<String>,
@@ -734,6 +843,8 @@ pub struct ChainPoller {
 impl ChainPoller {
     /// Polling interval — one poll per finality period (6 seconds).
     const DEFAULT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6);
+    /// Bound each blocking HTTP exchange so shutdown has a finite ceiling.
+    const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
     /// Create a new poller, reading the RPC URL from the environment.
     ///
@@ -783,27 +894,35 @@ impl ChainPoller {
     ///
     /// If no RPC URL is configured, this is a no-op. If the RPC call fails
     /// the state is marked as disconnected but no error is propagated.
+    #[cfg(test)]
     pub fn poll(&mut self, state: &mut crate::tui::state::TuiState) {
-        let Some(url) = &self.rpc_url else {
+        let Some(result) = self.poll_status() else {
             state.chain_connected = false;
             state.chain_name = String::from("Not connected");
             state.node_version = String::new();
             return;
         };
 
-        if let Ok(status) = Self::fetch_chain_status(url) {
-            state.chain_connected = true;
-            state.chain_name = status.chain_name;
-            state.node_version = status.node_version;
-            state.best_block = status.best_block;
-            state.finalized_block = status.finalized_block;
-            state.mark_dirty();
-        } else {
-            state.chain_connected = false;
-            state.mark_dirty();
+        match result {
+            Ok(status) => {
+                state.chain_connected = true;
+                state.chain_name = status.chain_name;
+                state.node_version = status.node_version;
+                state.best_block = status.best_block;
+                state.finalized_block = status.finalized_block;
+            }
+            Err(_) => state.chain_connected = false,
         }
+        state.mark_dirty();
+    }
 
+    /// Poll and return a safe result for application on the terminal thread.
+    pub fn poll_status(&mut self) -> Option<std::result::Result<ChainStatus, String>> {
+        let url = self.rpc_url.as_deref()?;
+        let result = Self::fetch_chain_status(url)
+            .map_err(|error| polkagent_telemetry::redact_string(&error.to_string()));
         self.last_poll = Some(std::time::Instant::now());
+        Some(result)
     }
 
     /// Execute the JSON-RPC calls to fetch chain status.
@@ -839,6 +958,7 @@ impl ChainPoller {
     fn rpc_call_string(url: &str, method: &str, params: &str) -> Result<String> {
         let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
         let resp_body = ureq::post(url)
+            .timeout(Self::RPC_TIMEOUT)
             .set("Content-Type", "application/json")
             .send_string(&body)
             .map_err(|e| anyhow::anyhow!("RPC request to {method} failed: {e}"))?
@@ -854,6 +974,7 @@ impl ChainPoller {
     fn rpc_call_raw(url: &str, method: &str, params: &str) -> Result<String> {
         let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
         let resp_body = ureq::post(url)
+            .timeout(Self::RPC_TIMEOUT)
             .set("Content-Type", "application/json")
             .send_string(&body)
             .map_err(|e| anyhow::anyhow!("RPC request to {method} failed: {e}"))?

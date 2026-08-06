@@ -15,6 +15,7 @@
 
 use std::io::Stdout;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -27,7 +28,7 @@ use crossterm::{
     execute,
     terminal::{enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use futures::{Stream, StreamExt as _};
+use futures::{future::BoxFuture, FutureExt as _, Stream, StreamExt as _};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -65,6 +66,13 @@ pub const REFRESH_INTERVAL_SECS: u64 = 5;
 /// Bounded terminal/tick queue. Key and paste events apply backpressure while
 /// ticks and resize notifications coalesce independently.
 const EVENT_CHANNEL_CAPACITY: usize = 64;
+const BACKGROUND_RESULT_CAPACITY: usize = 4;
+/// Covers the five sequential one-second chain RPC exchanges plus teardown
+/// overhead. `SQLite` readers use a shorter busy timeout.
+const BACKGROUND_SHUTDOWN_GRACE: Duration = Duration::from_secs(6);
+const BACKGROUND_ABORT_REAP_GRACE: Duration = Duration::from_millis(25);
+#[cfg(test)]
+const TEST_BACKGROUND_SHUTDOWN_GRACE: Duration = Duration::from_millis(25);
 
 // ---------------------------------------------------------------------------
 // Event pump
@@ -81,7 +89,311 @@ enum PumpSignal {
 enum EventLoopEvent {
     Terminal(Event),
     Tick,
-    Background(Box<ControllerEvent>),
+    Background(Box<BackgroundEvent>),
+}
+
+#[derive(Debug)]
+enum BackgroundEvent {
+    Controller(ControllerEvent),
+    Projection(BackgroundResult),
+}
+
+#[derive(Debug)]
+struct RefreshRequest {
+    generation: u64,
+    pool: SqlitePool,
+    selected_run: Option<String>,
+}
+
+#[derive(Debug)]
+struct ChainRequest {
+    poller: crate::tui::db::ChainPoller,
+}
+
+#[derive(Debug)]
+struct ChainJobOutput {
+    poller: crate::tui::db::ChainPoller,
+    result: Option<std::result::Result<crate::tui::db::ChainStatus, String>>,
+}
+
+#[derive(Debug)]
+enum BackgroundResult {
+    Refresh {
+        generation: u64,
+        result: Box<std::result::Result<crate::tui::db::TuiProjectionSnapshot, String>>,
+    },
+    Chain {
+        generation: u64,
+        result: std::result::Result<ChainJobOutput, String>,
+    },
+}
+
+enum ProjectionUpdate {
+    Refresh(Box<crate::tui::db::TuiProjectionSnapshot>),
+    Chain(std::result::Result<crate::tui::db::ChainStatus, String>),
+    Failure(String),
+}
+
+type RefreshWorker = Arc<
+    dyn Fn(
+            RefreshRequest,
+        )
+            -> BoxFuture<'static, std::result::Result<crate::tui::db::TuiProjectionSnapshot, String>>
+        + Send
+        + Sync,
+>;
+type ChainWorker = Arc<
+    dyn Fn(ChainRequest) -> BoxFuture<'static, std::result::Result<ChainJobOutput, String>>
+        + Send
+        + Sync,
+>;
+
+/// Schedules bounded monitoring refreshes without touching terminal state.
+struct BackgroundJobs {
+    pool: SqlitePool,
+    result_tx: tokio::sync::mpsc::Sender<BackgroundResult>,
+    result_rx: tokio::sync::mpsc::Receiver<BackgroundResult>,
+    /// Injected async workers are used by deterministic headless tests.
+    /// Production uses directly tracked `spawn_blocking` handles instead of
+    /// nesting them below an abortable async task.
+    refresh_worker: Option<RefreshWorker>,
+    chain_worker: Option<ChainWorker>,
+    refresh_generation: u64,
+    refresh_in_flight: Option<u64>,
+    pending_refresh: Option<RefreshRequest>,
+    chain_generation: u64,
+    chain_in_flight: Option<u64>,
+    chain_poller: Option<crate::tui::db::ChainPoller>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    shutdown_grace: Duration,
+}
+
+impl BackgroundJobs {
+    fn new(pool: SqlitePool, chain_poller: crate::tui::db::ChainPoller) -> Self {
+        Self::build(pool, chain_poller, None, None, BACKGROUND_SHUTDOWN_GRACE)
+    }
+
+    #[cfg(test)]
+    fn with_workers(
+        pool: SqlitePool,
+        chain_poller: crate::tui::db::ChainPoller,
+        refresh_worker: RefreshWorker,
+        chain_worker: ChainWorker,
+    ) -> Self {
+        Self::build(
+            pool,
+            chain_poller,
+            Some(refresh_worker),
+            Some(chain_worker),
+            TEST_BACKGROUND_SHUTDOWN_GRACE,
+        )
+    }
+
+    fn build(
+        pool: SqlitePool,
+        chain_poller: crate::tui::db::ChainPoller,
+        refresh_worker: Option<RefreshWorker>,
+        chain_worker: Option<ChainWorker>,
+        shutdown_grace: Duration,
+    ) -> Self {
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel(BACKGROUND_RESULT_CAPACITY);
+        Self {
+            pool,
+            result_tx,
+            result_rx,
+            refresh_worker,
+            chain_worker,
+            refresh_generation: 0,
+            refresh_in_flight: None,
+            pending_refresh: None,
+            chain_generation: 0,
+            chain_in_flight: None,
+            chain_poller: Some(chain_poller),
+            tasks: Vec::new(),
+            shutdown_grace,
+        }
+    }
+
+    fn request_refresh(&mut self, selected_run: Option<String>) {
+        self.refresh_generation = self.refresh_generation.wrapping_add(1);
+        let request = RefreshRequest {
+            generation: self.refresh_generation,
+            pool: self.pool.clone(),
+            selected_run,
+        };
+        if self.refresh_in_flight.is_some() {
+            self.pending_refresh = Some(request);
+        } else {
+            self.spawn_refresh(request);
+        }
+    }
+
+    fn spawn_refresh(&mut self, request: RefreshRequest) {
+        let generation = request.generation;
+        self.refresh_in_flight = Some(generation);
+        let result_tx = self.result_tx.clone();
+        let task = if let Some(worker) = self.refresh_worker.clone() {
+            tokio::spawn(async move {
+                let result = std::panic::AssertUnwindSafe(worker(request))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err("monitoring refresh worker panicked".to_owned()));
+                let _ = result_tx
+                    .send(BackgroundResult::Refresh {
+                        generation,
+                        result: Box::new(result),
+                    })
+                    .await;
+            })
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::tui::db::load_projection_snapshot(
+                        &request.pool,
+                        request.selected_run.as_deref(),
+                    )
+                }))
+                .map_err(|_| "monitoring refresh worker panicked".to_owned());
+                let _ = result_tx.blocking_send(BackgroundResult::Refresh {
+                    generation,
+                    result: Box::new(result),
+                });
+            })
+        };
+        self.track_task(task);
+    }
+
+    fn request_chain_poll(&mut self) {
+        if self.chain_in_flight.is_some() {
+            // The in-flight result satisfies every request made while it was
+            // running. The normal interval will schedule the next poll.
+            return;
+        }
+        let Some(poller) = self.chain_poller.take() else {
+            return;
+        };
+        if !poller.should_poll() {
+            self.chain_poller = Some(poller);
+            return;
+        }
+        self.chain_generation = self.chain_generation.wrapping_add(1);
+        let generation = self.chain_generation;
+        self.chain_in_flight = Some(generation);
+        let request = ChainRequest { poller };
+        let result_tx = self.result_tx.clone();
+        let task = if let Some(worker) = self.chain_worker.clone() {
+            tokio::spawn(async move {
+                let result = std::panic::AssertUnwindSafe(worker(request))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err("chain polling worker panicked".to_owned()));
+                let _ = result_tx
+                    .send(BackgroundResult::Chain { generation, result })
+                    .await;
+            })
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let mut poller = request.poller;
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poller.poll_status()))
+                        .unwrap_or_else(|_| Some(Err("chain polling worker panicked".to_owned())));
+                let result = Ok(ChainJobOutput { poller, result });
+                let _ = result_tx.blocking_send(BackgroundResult::Chain { generation, result });
+            })
+        };
+        self.track_task(task);
+    }
+
+    fn track_task(&mut self, task: tokio::task::JoinHandle<()>) {
+        self.tasks.retain(|task| !task.is_finished());
+        self.tasks.push(task);
+    }
+
+    async fn recv(&mut self) -> Option<BackgroundResult> {
+        self.result_rx.recv().await
+    }
+
+    fn complete(&mut self, result: BackgroundResult) -> Option<ProjectionUpdate> {
+        match result {
+            BackgroundResult::Refresh { generation, result } => {
+                if self.refresh_in_flight != Some(generation) {
+                    return None;
+                }
+                self.refresh_in_flight = None;
+                if let Some(pending) = self.pending_refresh.take() {
+                    self.spawn_refresh(pending);
+                    return None;
+                }
+                if generation != self.refresh_generation {
+                    return None;
+                }
+                Some(match *result {
+                    Ok(snapshot) => ProjectionUpdate::Refresh(Box::new(snapshot)),
+                    Err(error) => ProjectionUpdate::Failure(error),
+                })
+            }
+            BackgroundResult::Chain { generation, result } => {
+                if self.chain_in_flight != Some(generation) {
+                    return None;
+                }
+                self.chain_in_flight = None;
+                match result {
+                    Ok(output) => {
+                        self.chain_poller = Some(output.poller);
+                        if generation != self.chain_generation {
+                            return None;
+                        }
+                        output.result.map(ProjectionUpdate::Chain)
+                    }
+                    Err(error) => Some(ProjectionUpdate::Failure(error)),
+                }
+            }
+        }
+    }
+
+    /// Wait for the actual tracked jobs, including production blocking jobs.
+    /// A job that exceeds the finite I/O ceiling is aborted when possible and
+    /// reported as detached if the blocking OS thread cannot be reaped.
+    async fn shutdown(&mut self) -> usize {
+        self.refresh_in_flight = None;
+        self.pending_refresh = None;
+        self.chain_in_flight = None;
+
+        let mut tasks = std::mem::take(&mut self.tasks);
+        let completed = tokio::time::timeout(self.shutdown_grace, async {
+            for task in &mut tasks {
+                let _ = task.await;
+            }
+        })
+        .await
+        .is_ok();
+        if completed {
+            return 0;
+        }
+
+        let mut unfinished = tasks
+            .into_iter()
+            .filter(|task| !task.is_finished())
+            .collect::<Vec<_>>();
+        for task in &unfinished {
+            task.abort();
+        }
+        let _ = tokio::time::timeout(BACKGROUND_ABORT_REAP_GRACE, async {
+            for task in &mut unfinished {
+                let _ = task.await;
+            }
+        })
+        .await;
+        unfinished.iter().filter(|task| !task.is_finished()).count()
+    }
+}
+
+impl Drop for BackgroundJobs {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
 }
 
 /// Owns the terminal-input and clock producers for the main event loop.
@@ -130,7 +442,7 @@ impl EventPump {
 
     async fn next_event<F>(&mut self, background: F) -> Result<EventLoopEvent>
     where
-        F: std::future::Future<Output = Option<ControllerEvent>>,
+        F: std::future::Future<Output = Option<BackgroundEvent>>,
     {
         tokio::pin!(background);
         tokio::select! {
@@ -416,8 +728,8 @@ pub struct App {
     // -- Data source ---------------------------------------------------------
     pub pool: SqlitePool,
 
-    // -- Chain polling -------------------------------------------------------
-    pub chain_poller: crate::tui::db::ChainPoller,
+    // -- Background monitoring projections ---------------------------------
+    background_jobs: BackgroundJobs,
 
     // -- Interactive execution ---------------------------------------------
     pub run_controller: RunController,
@@ -428,6 +740,7 @@ impl App {
     pub fn new(theme: Theme, runtime: PolkagentRuntime, initial_tab: Tab) -> Self {
         let pool = runtime.pool().clone();
         let run_controller = RunController::new(runtime);
+        let background_jobs = BackgroundJobs::new(pool.clone(), crate::tui::db::ChainPoller::new());
         Self {
             active_tab: initial_tab,
             tui_state: TuiState::default(),
@@ -440,7 +753,7 @@ impl App {
                 .checked_sub(Duration::from_secs(REFRESH_INTERVAL_SECS + 1))
                 .unwrap_or_else(Instant::now),
             pool,
-            chain_poller: crate::tui::db::ChainPoller::new(),
+            background_jobs,
             run_controller,
         }
     }
@@ -449,19 +762,30 @@ impl App {
 
     /// Run the main event loop until `self.running` becomes `false`.
     pub async fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
-        // Initial data load.
-        self.refresh_data();
-        if self.active_tab == Tab::Console {
-            self.ensure_console_agent();
-        }
+        self.request_data_refresh();
         terminal.draw(|frame| self.render(frame))?;
         self.tui_state.dirty = false;
 
         let mut pump = EventPump::start();
         let run_result = self.run_with_pump(terminal, &mut pump).await;
         let shutdown_result = pump.shutdown().await;
+        let worker_shutdown_result = self.shutdown_workers().await;
+        run_result.and(shutdown_result).and(worker_shutdown_result)
+    }
+
+    /// Stop all work owned by the application. This is idempotent so the
+    /// launcher can call it after catching an event-loop panic as well as the
+    /// normal event-loop path.
+    pub async fn shutdown_workers(&mut self) -> Result<()> {
+        let detached = self.background_jobs.shutdown().await;
         self.run_controller.shutdown().await;
-        run_result.and(shutdown_result)
+        if detached == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "TUI shutdown deadline expired with {detached} blocking monitoring job(s) still running"
+            ))
+        }
     }
 
     async fn run_with_pump(
@@ -470,7 +794,17 @@ impl App {
         pump: &mut EventPump,
     ) -> Result<()> {
         while self.running {
-            match pump.next_event(self.run_controller.recv()).await? {
+            let background = async {
+                tokio::select! {
+                    event = self.run_controller.recv() => {
+                        event.map(BackgroundEvent::Controller)
+                    }
+                    result = self.background_jobs.recv() => {
+                        result.map(BackgroundEvent::Projection)
+                    }
+                }
+            };
+            match pump.next_event(background).await? {
                 EventLoopEvent::Terminal(event) => {
                     if matches!(event, Event::Key(_) | Event::Paste(_)) {
                         self.last_input = Instant::now();
@@ -479,7 +813,10 @@ impl App {
                         self.apply_action(action);
                     }
                 }
-                EventLoopEvent::Background(event) => self.apply_controller_event(*event),
+                EventLoopEvent::Background(event) => match *event {
+                    BackgroundEvent::Controller(event) => self.apply_controller_event(event),
+                    BackgroundEvent::Projection(result) => self.apply_background_result(result),
+                },
                 EventLoopEvent::Tick => self.tick(terminal)?,
             }
         }
@@ -489,13 +826,10 @@ impl App {
 
     fn tick(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
         if self.last_refresh.elapsed().as_secs() >= REFRESH_INTERVAL_SECS {
-            self.refresh_data();
-            self.last_refresh = Instant::now();
+            self.request_data_refresh();
         }
 
-        if self.chain_poller.should_poll() {
-            self.chain_poller.poll(&mut self.tui_state);
-        }
+        self.background_jobs.request_chain_poll();
 
         self.frame_counter = self.frame_counter.wrapping_add(1);
         let idle = self.last_input.elapsed().as_secs() > 5;
@@ -1209,8 +1543,7 @@ impl App {
             }
 
             TuiAction::Refresh => {
-                self.refresh_data();
-                self.last_refresh = Instant::now();
+                self.request_data_refresh();
                 self.tui_state.mark_dirty();
             }
 
@@ -1301,90 +1634,87 @@ impl App {
         }
         self.tui_state.mark_dirty();
         if refresh {
-            self.refresh_data();
-            self.last_refresh = Instant::now();
+            self.request_data_refresh();
         }
     }
 
     // ── Data refresh ────────────────────────────────────────────────────────
 
-    /// Load fresh data from the database into `tui_state`.
-    ///
-    /// Errors are stored in `tui_state.last_error` rather than propagated so
-    /// that the TUI keeps running even if the database is temporarily unavailable.
-    fn refresh_data(&mut self) {
-        use crate::tui::db::TuiDb;
+    /// Queue the newest monitoring projection. Repeated requests while one is
+    /// running collapse to one latest-generation follow-up.
+    fn request_data_refresh(&mut self) {
+        self.background_jobs
+            .request_refresh(self.tui_state.selected_run.clone());
+        self.last_refresh = Instant::now();
+    }
 
-        let db_path_display = self.pool.path().display().to_string();
-
-        match TuiDb::from_pool(&self.pool) {
-            Ok(db) => {
-                // Agents.
-                match db.agents() {
-                    Ok(agents) => self.tui_state.agents = agents,
-                    Err(e) => {
-                        self.tui_state.last_error = Some(format!("agents: {e}"));
+    fn apply_background_result(&mut self, result: BackgroundResult) {
+        let Some(update) = self.background_jobs.complete(result) else {
+            return;
+        };
+        match update {
+            ProjectionUpdate::Refresh(snapshot) => self.apply_projection_snapshot(*snapshot),
+            ProjectionUpdate::Chain(result) => match result {
+                Ok(status) => {
+                    self.tui_state.chain_connected = true;
+                    self.tui_state.chain_name = status.chain_name;
+                    self.tui_state.node_version = status.node_version;
+                    self.tui_state.best_block = status.best_block;
+                    self.tui_state.finalized_block = status.finalized_block;
+                    if self
+                        .tui_state
+                        .last_error
+                        .as_deref()
+                        .is_some_and(|error| error.starts_with("chain: "))
+                    {
+                        self.tui_state.last_error = None;
                     }
                 }
-
-                // Recent runs (up to 100).
-                match db.recent_runs(100) {
-                    Ok(runs) => self.tui_state.runs = runs,
-                    Err(e) => {
-                        self.tui_state.last_error = Some(format!("runs: {e}"));
-                    }
+                Err(error) => {
+                    self.tui_state.chain_connected = false;
+                    self.tui_state.last_error = Some(format!("chain: {error}"));
                 }
-
-                // System health.
-                self.tui_state.health = db.system_health(&db_path_display);
-
-                // Pending approvals (always refresh — visible on dashboard too).
-                match db.pending_effects(100) {
-                    Ok(approvals) => self.tui_state.pending_approvals = approvals,
-                    Err(e) => {
-                        self.tui_state.last_error = Some(format!("approvals: {e}"));
-                    }
-                }
-
-                // If a run is selected, refresh its detail and events.
-                if let Some(run_id) = &self.tui_state.selected_run.clone() {
-                    match db.run_detail(run_id) {
-                        Ok(detail) => self.tui_state.run_detail = detail,
-                        Err(e) => {
-                            self.tui_state.last_error = Some(format!("run_detail: {e}"));
-                        }
-                    }
-                    match db.run_events(run_id, 500) {
-                        Ok(events) => self.tui_state.run_events = events,
-                        Err(e) => {
-                            self.tui_state.last_error = Some(format!("run_events: {e}"));
-                        }
-                    }
-                }
-
-                // Error count for dashboard digest.
-                self.tui_state.error_count = db.recent_error_count() as usize;
-
-                // Budget remaining for the budget gauge.
-                let (spent, ceiling) = db.budget_status();
-                self.tui_state.budget_remaining = if ceiling > 0.0 {
-                    (ceiling - spent) / ceiling * 100.0
-                } else {
-                    100.0
-                };
-
-                // Clear any previous error now that all queries succeeded.
-                self.tui_state.last_error = None;
-                self.tui_state.last_refresh = Some(chrono::Utc::now());
-                self.tui_state.recompute_widget_data();
-                self.tui_state.mark_dirty();
+            },
+            ProjectionUpdate::Failure(error) => {
+                let error = polkagent_telemetry::redact_string(&error);
+                self.tui_state.last_error = Some(error);
             }
-            Err(e) => {
-                // Can't open reader — update health to reflect the failure.
-                self.tui_state.health.db_ok = false;
-                self.tui_state.last_error = Some(format!("db: {e}"));
-                self.tui_state.mark_dirty();
+        }
+        self.tui_state.mark_dirty();
+    }
+
+    fn apply_projection_snapshot(&mut self, snapshot: crate::tui::db::TuiProjectionSnapshot) {
+        if let Some(agents) = snapshot.agents {
+            self.tui_state.agents = agents;
+        }
+        if let Some(runs) = snapshot.runs {
+            self.tui_state.runs = runs;
+        }
+        if let Some(health) = snapshot.health {
+            self.tui_state.health = health;
+        }
+        if let Some(approvals) = snapshot.pending_approvals {
+            self.tui_state.pending_approvals = approvals;
+        }
+        if snapshot.selected_run == self.tui_state.selected_run {
+            if let crate::tui::db::ProjectionValue::Value(detail) = snapshot.run_detail {
+                self.tui_state.run_detail = detail;
             }
+            if let Some(events) = snapshot.run_events {
+                self.tui_state.run_events = events;
+            }
+        }
+        if let Some(error_count) = snapshot.error_count {
+            self.tui_state.error_count = error_count;
+        }
+        if let Some(budget_remaining) = snapshot.budget_remaining {
+            self.tui_state.budget_remaining = budget_remaining;
+        }
+        self.tui_state.last_error = snapshot.error;
+        self.tui_state.last_refresh = Some(snapshot.sampled_at);
+        self.tui_state.recompute_widget_data();
+        if self.active_tab == Tab::Console && self.tui_state.interaction.agent_id.is_none() {
+            self.ensure_console_agent();
         }
     }
 
@@ -1882,12 +2212,40 @@ pub fn exit_tui(terminal: &mut TuiTerminal) -> Result<()> {
 mod terminal_tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use futures::stream;
 
     use super::*;
+
+    fn empty_projection(generation: u64) -> crate::tui::db::TuiProjectionSnapshot {
+        crate::tui::db::TuiProjectionSnapshot {
+            selected_run: Some(format!("run-{generation}")),
+            agents: None,
+            runs: None,
+            health: None,
+            pending_approvals: None,
+            run_detail: crate::tui::db::ProjectionValue::Unchanged,
+            run_events: None,
+            error_count: None,
+            budget_remaining: None,
+            sampled_at: chrono::Utc::now(),
+            error: Some(format!("generation-{generation}")),
+        }
+    }
+
+    fn immediate_chain_worker() -> ChainWorker {
+        Arc::new(|request| {
+            Box::pin(async move {
+                Ok(ChainJobOutput {
+                    poller: request.poller,
+                    result: None,
+                })
+            })
+        })
+    }
 
     struct RecordingRestoreActions {
         calls: Arc<Mutex<Vec<RestoreStep>>>,
@@ -2043,13 +2401,21 @@ mod terminal_tests {
         );
 
         let event = pump
-            .next_event(async { Some(ControllerEvent::Progress("completed".to_owned())) })
+            .next_event(async {
+                Some(BackgroundEvent::Controller(ControllerEvent::Progress(
+                    "completed".to_owned(),
+                )))
+            })
             .await
             .expect("background completion event");
         assert!(matches!(
             event,
             EventLoopEvent::Background(event)
-                if matches!(*event, ControllerEvent::Progress(ref detail) if detail == "completed")
+                if matches!(
+                    *event,
+                    BackgroundEvent::Controller(ControllerEvent::Progress(ref detail))
+                        if detail == "completed"
+                )
         ));
         pump.shutdown().await.expect("stop background pump");
     }
@@ -2088,6 +2454,210 @@ mod terminal_tests {
             .expect_err("input failure must stop the loop");
         assert!(error.to_string().contains("synthetic input failure"));
         pump.shutdown().await.expect("stop failed input pump");
+    }
+
+    #[tokio::test]
+    async fn blocked_projection_refresh_keeps_input_resize_and_controller_events_responsive() {
+        let pool = SqlitePool::open_in_memory().expect("in-memory pool");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let started_by_worker = Arc::clone(&started);
+        let refresh_worker: RefreshWorker = Arc::new(move |_request| {
+            let started = Arc::clone(&started_by_worker);
+            Box::pin(async move {
+                started.notify_one();
+                std::future::pending().await
+            })
+        });
+        let mut jobs = BackgroundJobs::with_workers(
+            pool,
+            crate::tui::db::ChainPoller::with_url(None),
+            refresh_worker,
+            immediate_chain_worker(),
+        );
+        jobs.request_refresh(None);
+        started.notified().await;
+
+        let source = stream::iter([
+            Ok(Event::Key(KeyEvent::new(
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+            ))),
+            Ok(Event::Resize(123, 45)),
+            Ok(Event::Key(KeyEvent::new(
+                KeyCode::Char('i'),
+                KeyModifiers::NONE,
+            ))),
+        ])
+        .chain(stream::pending());
+        let mut pump = EventPump::start_with_input(source, Duration::from_secs(60), 1);
+        let (saw_cancel, saw_resize, saw_prompt) =
+            tokio::time::timeout(Duration::from_millis(100), async {
+                let mut saw_cancel = false;
+                let mut saw_resize = false;
+                let mut saw_prompt = false;
+                while !(saw_cancel && saw_resize && saw_prompt) {
+                    let event = pump
+                        .next_event(async { jobs.recv().await.map(BackgroundEvent::Projection) })
+                        .await
+                        .expect("terminal event");
+                    match event {
+                        EventLoopEvent::Terminal(Event::Resize(123, 45)) => saw_resize = true,
+                        EventLoopEvent::Terminal(Event::Key(key))
+                            if key.code == KeyCode::Char('x') =>
+                        {
+                            saw_cancel = matches!(
+                                terminal_event_to_action(Event::Key(key), InputMode::Normal),
+                                Some(TuiAction::CancelActiveRun)
+                            );
+                        }
+                        EventLoopEvent::Terminal(Event::Key(key))
+                            if key.code == KeyCode::Char('i') =>
+                        {
+                            saw_prompt = true;
+                        }
+                        _ => {}
+                    }
+                }
+                (saw_cancel, saw_resize, saw_prompt)
+            })
+            .await
+            .expect("terminal input stalled behind blocked refresh");
+        assert!(saw_cancel && saw_resize && saw_prompt);
+
+        let controller = tokio::time::timeout(
+            Duration::from_millis(100),
+            pump.next_event(async {
+                Some(BackgroundEvent::Controller(ControllerEvent::Progress(
+                    "still responsive".to_owned(),
+                )))
+            }),
+        )
+        .await
+        .expect("controller event stalled behind blocked refresh")
+        .expect("controller event");
+        assert!(matches!(
+            controller,
+            EventLoopEvent::Background(event)
+                if matches!(
+                    *event,
+                    BackgroundEvent::Controller(ControllerEvent::Progress(ref detail))
+                        if detail == "still responsive"
+                )
+        ));
+
+        let detached = tokio::time::timeout(Duration::from_millis(100), jobs.shutdown())
+            .await
+            .expect("blocked refresh worker was not reaped");
+        assert_eq!(detached, 0, "async refresh task should abort cleanly");
+        pump.shutdown().await.expect("stop responsive input pump");
+        assert!(jobs.tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_jobs_coalesce_and_discard_stale_generation_results() {
+        let pool = SqlitePool::open_in_memory().expect("in-memory pool");
+        let first_started = Arc::new(tokio::sync::Notify::new());
+        let first_started_by_worker = Arc::clone(&first_started);
+        let first_release = Arc::new(tokio::sync::Notify::new());
+        let first_release_by_worker = Arc::clone(&first_release);
+        let active = Arc::new(AtomicUsize::new(0));
+        let active_by_worker = Arc::clone(&active);
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let max_active_by_worker = Arc::clone(&max_active);
+        let refresh_worker: RefreshWorker = Arc::new(move |request| {
+            let first_started = Arc::clone(&first_started_by_worker);
+            let first_release = Arc::clone(&first_release_by_worker);
+            let active = Arc::clone(&active_by_worker);
+            let max_active = Arc::clone(&max_active_by_worker);
+            Box::pin(async move {
+                let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(now_active, Ordering::SeqCst);
+                if request.generation == 1 {
+                    first_started.notify_one();
+                    first_release.notified().await;
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(empty_projection(request.generation))
+            })
+        });
+        let mut jobs = BackgroundJobs::with_workers(
+            pool,
+            crate::tui::db::ChainPoller::with_url(None),
+            refresh_worker,
+            immediate_chain_worker(),
+        );
+
+        jobs.request_refresh(Some("run-1".to_owned()));
+        first_started.notified().await;
+        for generation in 2..=10 {
+            jobs.request_refresh(Some(format!("run-{generation}")));
+        }
+        assert_eq!(
+            jobs.pending_refresh.as_ref().map(|job| job.generation),
+            Some(10)
+        );
+        first_release.notify_one();
+
+        let stale = jobs.recv().await.expect("stale refresh completion");
+        assert!(
+            jobs.complete(stale).is_none(),
+            "stale result must not apply"
+        );
+        let latest = jobs.recv().await.expect("latest refresh completion");
+        let Some(ProjectionUpdate::Refresh(snapshot)) = jobs.complete(latest) else {
+            panic!("latest refresh snapshot was not applied");
+        };
+        assert_eq!(snapshot.selected_run.as_deref(), Some("run-10"));
+        assert_eq!(snapshot.error.as_deref(), Some("generation-10"));
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(jobs.shutdown().await, 0);
+    }
+
+    #[tokio::test]
+    async fn blocked_chain_poll_coalesces_requests_and_returns_visible_failure() {
+        let pool = SqlitePool::open_in_memory().expect("in-memory pool");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let started_by_worker = Arc::clone(&started);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let release_by_worker = Arc::clone(&release);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_by_worker = Arc::clone(&calls);
+        let chain_worker: ChainWorker = Arc::new(move |request| {
+            let started = Arc::clone(&started_by_worker);
+            let release = Arc::clone(&release_by_worker);
+            let calls = Arc::clone(&calls_by_worker);
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                started.notify_one();
+                release.notified().await;
+                Ok(ChainJobOutput {
+                    poller: request.poller,
+                    result: Some(Err("synthetic chain timeout".to_owned())),
+                })
+            })
+        });
+        let refresh_worker: RefreshWorker =
+            Arc::new(|request| Box::pin(async move { Ok(empty_projection(request.generation)) }));
+        let mut jobs = BackgroundJobs::with_workers(
+            pool,
+            crate::tui::db::ChainPoller::with_url(Some("http://test.invalid".to_owned())),
+            refresh_worker,
+            chain_worker,
+        );
+
+        jobs.request_chain_poll();
+        started.notified().await;
+        for _ in 0..20 {
+            jobs.request_chain_poll();
+        }
+        release.notify_one();
+        let result = jobs.recv().await.expect("chain completion");
+        let Some(ProjectionUpdate::Chain(Err(error))) = jobs.complete(result) else {
+            panic!("chain failure was not projected");
+        };
+        assert_eq!(error, "synthetic chain timeout");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(jobs.shutdown().await, 0);
     }
 
     #[test]

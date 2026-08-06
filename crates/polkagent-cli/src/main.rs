@@ -479,10 +479,14 @@ async fn launch_tui(
         .await;
 
     exit_tui(&mut terminal)?;
+    let worker_shutdown = app.shutdown_workers().await;
 
     match result {
-        Ok(run_result) => run_result,
+        Ok(run_result) => run_result.and(worker_shutdown),
         Err(panic_val) => {
+            if let Err(error) = worker_shutdown {
+                eprintln!("TUI worker shutdown failed after panic: {error:#}");
+            }
             eprintln!("TUI panicked: {panic_val:?}");
             std::process::exit(1);
         }
