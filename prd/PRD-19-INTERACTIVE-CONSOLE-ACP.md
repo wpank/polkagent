@@ -11,11 +11,12 @@ server slices implemented
 
 **Implementation status:** `polkagent-surface-acp` and protocol-safe
 `polkagent acp` dispatch implement an ACP v1 initialize/new/load/resume/prompt/
-cancel slice over the durable `InteractionService`, slash-command discovery,
-and persisted session agent/model selection. An
+cancel slice over the durable `InteractionService`, state-aware registry-backed
+slash-command discovery, and persisted session agent/model selection. An
 official-SDK subprocess suite proves prompt/run, shared-registry command
-discovery, truthful refusal, active-request cancellation, durable terminal
-state, exact conversation/turn/run identity, same-turn retry without
+discovery, inactive/active/inactive catalog refresh across success, cancellation,
+and backend error, truthful refusal, active-request cancellation, durable
+terminal state, exact conversation/turn/run identity, same-turn retry without
 duplication, restart/load/follow-up/resume, secret/panic containment, and
 protocol-stdout safety on that wire path.
 The F9 Console supports selecting an active agent, Unicode-safe multiline
@@ -165,8 +166,8 @@ It remains design input rather than the completion contract.
 | Persist/resume human conversations | Implemented in TUI, chat, HTTP, and ACP | TUI reloads/switches sessions, chat resumes a conversation ID, HTTP exposes session/turn/event reads, ACP maps session IDs to conversation UUIDs and supports restart load/resume, and completed pairs feed the next model-executor call |
 | Orchestrate agent groups from a user surface | Domain building blocks only | `polkagent-group` exists, but there is no CLI/TUI/service surface for it |
 | Use Cursor/Goose/Kiro/OpenCode *from* Polkagent | ACP client exists and is tested | `polkagent-harness-acp` plus harness adapter crates |
-| Use Polkagent *from* Zed | Protocol/tool slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK, durable cwd isolation, native tool updates, and executable client fixtures; editor permission acceptance is still open |
-| ACP slash commands/config selectors | Durable shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/runs`, `/inspect`, `/model`, and current-prompt `/cancel` plus aliases are registry-derived; run reads are bounded, redaction-safe, and conversation-scoped, while native selectors write the same durable interaction config and provider/autonomy settings remain unavailable |
+| Use Polkagent *from* Zed | Protocol/tool slice implemented; manual Zed proof pending | `polkagent acp` uses the official SDK, durable cwd isolation, native tool updates, state-aware command discovery, and executable client fixtures; editor permission acceptance remains APR-07 |
+| ACP slash commands/config selectors | Durable state-aware shared-registry subset plus persisted agent/model selection implemented | `/help`, `/status`, `/agents`, `/agent`, `/runs`, `/inspect`, and `/model` are advertised while idle; current-prompt `/cancel` plus `/stop` is added only while busy and withdrawn after success/cancel/error. `/new` and `/resume` map truthfully to native ACP lifecycle operations; run reads are bounded, redaction-safe, and conversation-scoped, while native selectors write the same durable interaction config and provider/autonomy settings remain unavailable |
 | REST API as a production control plane | Durable interaction/core slice implemented | Versioned lifecycle, strict persisted target/model config, finite replay, checkpointed SSE, immutable skill reads, and durable memory query/lookup/stats/deletion use exact runtime-owned components; 9 optional skill-mutation/audit/registry routes remain unavailable |
 
 ## 1. What Polkagent actually has today
@@ -920,10 +921,14 @@ polling.
 
 Durable `InteractionService` mapping, exact session IDs, prompt/cancel,
 load/resume, typed text/lifecycle/usage/checkpoint/tool events, immutable origin
-cwd comparison, and persisted native active-agent/model options are implemented.
+cwd comparison, persisted native active-agent/model options, and live
+registry-backed command availability are implemented. ACP publishes the idle
+catalog on new/load/resume, adds current-turn cancel while a prompt is active,
+and restores the idle catalog after success, cancellation, or backend failure.
 Remaining work is session list/import, permission/rich-plan events, raw tool-data
 redaction, MCP/client capabilities, provider/autonomy configuration, and manual
-Zed evidence. Opt-in protocol-safe file diagnostics are implemented. It
+Zed evidence. Production permission binding is explicitly APR-07. Opt-in
+protocol-safe file diagnostics are implemented. It
 may depend on `polkagent-service`, the interaction/command crate, and ACP SDK.
 Core/service crates must not depend on ACP types.
 
@@ -959,6 +964,12 @@ This is one of the best patterns to take directly from Roko.
 
 Do not return from `session/prompt` until the turn reaches a terminal stop
 reason, but stream updates throughout.
+
+The shared `/new` and `/resume` command names are lifecycle documentation in
+ACP, not advertised mutations: editor clients use `session/new`,
+`session/load`, and `session/resume` so a prompt cannot silently replace its
+current session ID. Approval commands remain unadvertised until APR-07 binds
+the durable coordinator to production permission requests.
 
 ### 7.4 Event mapping
 
@@ -1100,7 +1111,8 @@ available for inspection.
 - [ ] Wire the applicable handler set through terminal/TUI/ACP; HTTP exposes
   typed resource operations over the same ports rather than slash-command
   text. ACP currently executes a truthful durable help/status/agents/agent/
-  model/cancel subset.
+  runs/inspect/model/current-turn-cancel subset; native ACP operations own
+  new/load/resume lifecycle.
 - [x] Add cancellation, caller-ID retry, transcript causality, lag/replay,
   multi-page, and restart/pre-activation crash service tests.
 - [x] Carry real effect identity through structured tool start/update replay and
@@ -1217,6 +1229,11 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [x] Advertise the initial MVP slash commands.
 - [x] Move discovery/parsing/help/aliases onto the shared registry and execute
   the truthful durable subset, including current-prompt cancellation.
+- [x] Derive ACP availability from the live registry context: publish the idle
+  catalog on new/load/resume, add `/cancel` only while a normal prompt is
+  active, and restore idle discovery after success, cancellation, and backend
+  error. Document `/new`/`/resume` as native ACP lifecycle operations and keep
+  `/approve`/`/deny` withheld pending APR-07.
 - [x] Expose `/runs` and `/inspect <run-id>` in ACP through the runtime-owned
   conversation-scoped read model and shared bounded formatter; prove durable
   IDs before and after subprocess restart with the official ACP client.
@@ -1228,7 +1245,8 @@ work, approve/deny, cancel, and prompt again without leaving.
 - [ ] Expose group/auto targets plus autonomy/provider/harness options only
   after execution-scoped semantics can be guaranteed. Active-agent target
   selection is already persisted and advertised.
-- [ ] Implement tool permission round-trip.
+- [ ] Implement the APR-07 production tool-permission round-trip; the existing
+  protocol-only harness is not a coordinator binding.
 - [x] Write the Zed custom-agent setup guide.
 - [x] Add an official-SDK subprocess protocol fixture.
 - [x] Add official-client active-run cancellation/stop-reason coverage and

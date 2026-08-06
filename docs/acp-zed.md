@@ -96,7 +96,26 @@ The server publishes these through ACP `available_commands_update`:
 | `/runs` | List up to 20 newest runs linked to this durable editor session. |
 | `/inspect <run-id>` | Inspect a session-owned run through a bounded, redaction-safe projection. |
 | `/model [id]` | Show or select the session model; use `default` or `inherit` to return to the selected agent's model. |
-| `/cancel` | Cancel the active editor prompt (`/stop`). |
+| `/cancel` | Cancel the active editor prompt (`/stop`); advertised only while a prompt is active. |
+
+The catalog is state-aware. New, loaded, and resumed sessions first publish the
+inactive subset without `/cancel`. Immediately before normal prompt execution,
+the server publishes the active subset with `/cancel`; after success,
+cancellation, or a backend error it republishes the inactive subset. `/help`
+uses the same registry availability context, while `/help cancel` remains
+available as detailed documentation and explains when the command is inactive.
+The official-client subprocess suite freezes all three terminal paths so an
+editor cannot retain a stale active-only command.
+
+`/new` and `/resume` are shared Polkagent command names, but they are not
+advertised as ACP slash commands because ACP owns session identity and
+lifecycle. Create a new editor thread through native `session/new`; reopen an
+existing durable thread through native `session/load` or `session/resume` with
+its conversation ID and exact original workspace. `/help new`, `/help resume`,
+and direct invocation explain those native mappings instead of pretending a
+slash command can replace the current ACP session ID. `/approve` and `/deny`
+remain withheld until APR-07 binds production ACP permission requests to the
+durable coordinator.
 
 `/runs` and `/inspect` use the same registry metadata, runtime read model, and
 formatter as terminal chat. Inspection exposes stable run/agent/artifact IDs,
@@ -232,7 +251,8 @@ Implemented and covered by executable protocol evidence:
 - text and resource-link prompts;
 - shared-registry slash-command discovery, aliases, detailed help, agent
   selection, status, bounded conversation-scoped run listing/inspection, and
-  active-prompt cancellation;
+  active-prompt cancellation, with inactive/active/inactive catalog refreshes
+  around every normal prompt;
 - CLI early dispatch before telemetry so stdout belongs to ACP;
 - one shared `RuntimeFactory` composition for ACP, including file-backed SQLite
   migration, abandoned-run recovery, active-agent rehydration, provider/model
@@ -261,11 +281,15 @@ Implemented and covered by executable protocol evidence:
   verifies exact non-duplicated final text, and rejects non-JSON stdout;
 - an official-client subprocess test that holds a real provider request open,
   cancels it, receives `Cancelled`, and verifies the durable run state and
-  terminal timestamp in SQLite.
+  terminal timestamp in SQLite plus restoration of the inactive command catalog.
+- an official-client provider-failure test that proves the backend error is
+  redacted and the active-only command catalog is withdrawn before the
+  protocol error returns.
 - an official-client new/prompt/retry/restart/load/follow-up/resume test that
   proves one conversation identity, exact durable turn/run correlations, no
   duplicate retry run, transcript replay on load, no replay on resume, and
-  persisted model configuration.
+  persisted model configuration, including truthful inactive discovery on
+  load/resume and active/inactive refresh around the restarted follow-up.
 - an official-client multi-process cwd-provenance test that rejects
   cross-workspace load/resume and relative/traversal roots before work, accepts
   the exact restart origin, and rejects an unproven legacy row without adding
@@ -275,7 +299,7 @@ Not implemented yet:
 
 - `session/list` and thread import (the pinned stable ACP v1 SDK has no import request);
 - dynamic provider, target, or autonomy configuration options;
-- structured plans and permission request/response;
+- structured plans and production permission request/response (APR-07);
 - provider HTTP/SSE token-level streaming where the runtime currently emits a
   complete response as one `StreamingToken` event;
 - client filesystem/terminal support and MCP-server passthrough;
@@ -313,6 +337,7 @@ For a manual smoke, verify in order: agent appears, session opens, the native
 agent/model selectors and slash-command completion are visible, changing each
 selector affects the next prompt, `/model` affects a later prompt, `/status`
 responds, response chunks appear before the terminal turn response, known-model
-usage appears without duplicating text, cancellation stops active work, and
-Zed's ACP log contains only JSON-RPC frames on the server's stdout channel.
+usage appears without duplicating text, `/cancel` appears only during active
+work and disappears after completion/failure/cancellation, cancellation stops
+active work, and Zed's ACP log contains only JSON-RPC frames on the server's stdout channel.
 This manual matrix remains unverified in the repository status.

@@ -595,6 +595,11 @@ the stable execution event path; can run fully parallel to ACP-01.
 - [x] Move ACP discovery/parsing/help/aliases onto the shared command registry,
   including real current-prompt `/cancel`/`/stop`; registered commands outside
   the adapter's durable subset are refused explicitly.
+- [x] Publish command discovery from the live registry context: idle
+  new/load/resume sessions omit `/cancel`, active normal prompts add it, and
+  success/cancellation/backend-error paths restore the idle catalog. Treat
+  `/new` and `/resume` as native ACP session lifecycle guidance, and keep
+  `/approve`/`/deny` withheld until APR-07 binds the durable coordinator.
 - [x] Add native ACP configuration for active-agent and standard model
   selection, backed by the same durable interaction config as `/agent` and
   `/model`; prove restart persistence and that concurrent sessions retain their
