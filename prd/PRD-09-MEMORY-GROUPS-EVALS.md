@@ -3863,6 +3863,20 @@ from the acceptance criteria tables in section 13.
 > child-run attribution/cancellation, quorum/synthesis, and CLI/API/TUI/ACP
 > adapters remain integration-owner work.
 
+> **Execution-ledger freeze evidence (2026-08-06):**
+> [`execution_plan_serialization_audit.rs`](../crates/polkagent-group/tests/execution_plan_serialization_audit.rs)
+> and its fixtures prove the current `ExecutionPlan` serde shape is unversioned,
+> represents dependencies as an unordered JSON object, and serializes duplicate
+> dangling edges without graph validation. Per
+> [ADR-003](../docs/adr/ADR-003-Durable-Group-Execution-Plan-Contract.md), no
+> execution-ledger schema was added. The proposed v1 boundary requires
+> canonical JSON key/number rules, canonical decimal task/budget encodings,
+> duplicate/dangling/self/cycle rejection, domain-separated BLAKE3 bytes,
+> explicit compatibility/upcasting, a group-definition revision, normalized
+> ledger states/CAS, and exact pre-attributed launcher/canceller identities.
+> `GroupExecutionStore`, migration registration, child execution, and runtime
+> cancellation remain open.
+
 - [ ] **GRP-IMPL-01** Implement `ResolvedGrant::intersect`
       _Acceptance: G3-01, GRP-01, GRP-02 (property tests pass)_
 - [ ] **GRP-IMPL-02** Implement `create_group` with budget validation

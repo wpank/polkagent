@@ -821,6 +821,19 @@ concurrency, rollback, exact IDs, policy/quorum/budget/grant serialization, and
 owner protection through the public service. This is durable group-definition
 CRUD only: no child run, runtime orchestration, or surface support is claimed.
 
+**2026-08-06 execution-ledger serialization gate:** the existing derived serde
+shape for `ExecutionPlan` is not safe to freeze as a durable contract. Its
+dependency graph is an unversioned `HashMap`, task IDs are full-range `u64`
+values encoded as JSON numbers, raw input/grant budgets lack a canonical number
+policy, and serialization accepts duplicate/dangling edges without validating a
+DAG. [ADR-003](../docs/adr/ADR-003-Durable-Group-Execution-Plan-Contract.md)
+therefore stops schema work and proposes a versioned canonical DTO, normalized
+edge list, exact digest bytes, compatibility/upcast rules, group-definition
+revision prerequisite, ledger states/CAS operations, and pre-attributed
+launcher/canceller handoffs. Diagnostic and proposed fixtures are executable
+evidence only; no `GroupExecutionStore`, child launch, or cancellation is
+implemented or claimed.
+
 **Checklist:**
 
 - [ ] Retrieve policy-filtered memory into context and admit outcomes with
@@ -831,6 +844,12 @@ CRUD only: no child run, runtime orchestration, or surface support is claimed.
 - [ ] Register the group migration and inject the exact SQLite group store plus
   service through `RuntimeFactory`; add tenant/workspace/principal scope before
   exposing any shared or remote surface.
+- [x] Audit the existing execution-plan serialization and record diagnostic plus
+  proposed-v1 fixtures and the pre-schema durability decision in ADR-003.
+- [ ] Accept and implement the canonical v1 plan codec/digest plus a monotonic
+  group-definition revision, then add the dedicated SQLite
+  `GroupExecutionStore` with atomic prepare/attribution/terminal/cancellation
+  CAS and restart/concurrency evidence.
 - [ ] Add child-run creation with policy-gate grant/budget intersection,
   cancellation, quorum/synthesis, and evidence through the shared runtime.
 - [ ] Make feed/scheduler triggers create idempotent shared-runtime runs.
