@@ -182,12 +182,23 @@ multi-turn Console:
 | `F3` | **Runs** | Run list with state, duration, token usage, and detail panel |
 | `F4` | **System** | Health checks, stats, config, chain status, balance display |
 | `F5` | **Timeline** | Chronological events for a selected run |
-| `F6` | **Approvals** | Effect queue with approve/deny actions and action cards |
+| `F6` | **Approvals** | Selected-conversation durable approval queue with exact detail and approve/deny confirmation |
 | `F7` | **Memory** | Full-text memory browser with search and delete |
 | `F8` | **Audit** | System audit log with severity filtering |
 | `F9` | **Console** | Select an active agent, keep durable session/transcript history, stream typed updates, and cancel the active turn |
 
-Navigation: `j`/`k` to scroll, `Enter` to drill down, `Esc` to go back, `/` to search in memory, `a`/`d` to approve/deny effects, and `q` to quit. In the Console, `p` opens the composer, `s` opens the bounded same-agent durable session selector, `Enter` submits a durable prompt or supported command, and `x` cancels the exact active turn and its linked run. Follow-up prompts share the selected durable session, and transcript/composer history reloads after restart. Executor-backed follow-ups use the newest 32 completed user/assistant pairs found in the latest 1,000 prior turn records; contextual harness history remains unsupported. `/help`, `/status`, `/agents`, `/agent <name-or-id>`, `/new [title]`, `/resume <conversation-id>`, and `/model [model-id]` execute through the shared command service and render structured results. `/agent` persists an exact active target for the conversation without mutating the agent specification or creating a turn, and `/resume` restores that target after restart. `/model` shows the current conversation model; an argument validates and persists a same-provider model for that conversation without changing the agent or creating a turn. `/cancel` remains unavailable because the composer closes during an active turn; use `x`. Provider/harness/autonomy, approval, group, and run-inspection commands remain unavailable in this Console path. The separate legacy Approvals tab retains its existing approve/deny actions.
+Navigation: `j`/`k` scrolls, `Enter` drills down, `Esc` goes back, `/` searches memory, and `q` quits. In F9, `p` opens the composer, `s` opens the bounded same-agent durable session selector, `Enter` submits a durable prompt or supported command, and `x` cancels the exact active turn and linked run. Follow-up prompts share the selected durable session, and transcript/composer history reloads after restart. Executor-backed follow-ups use the newest 32 completed user/assistant pairs found in the latest 1,000 prior turn records; contextual harness history remains unsupported. `/help`, `/status`, `/agents`, `/agent <name-or-id>`, `/new [title]`, `/resume <conversation-id>`, `/runs`, `/inspect <run-id>`, and `/model [model-id]` execute through the shared command service and render structured results. Provider/harness/autonomy, approval slash commands, and group commands remain unavailable in the Console prompt path.
+
+F6 uses the durable Console conversation selected in F9. It asynchronously
+shows the first 100 pending approvals returned by `InteractionService`, with
+exact approval/effect/run/tool identities and bounded, redacted service detail.
+Press `a` or `d` twice to confirm an exact full conversation/approval identity;
+the TUI never writes approval rows directly. Normal `RuntimeFactory`
+composition has no authenticated approval authority yet, so F6 truthfully
+shows unavailable guidance instead of claiming a decision succeeded. If the
+selected turn is known to await an approval, `x` is intentionally guarded:
+resolve it in F6 before cancelling until atomic approval cancellation is
+composed.
 
 ### Coding Harness Integrations
 

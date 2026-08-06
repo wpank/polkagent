@@ -402,10 +402,13 @@ durable multi-turn surface:
 | Key | Action |
 |-----|--------|
 | `F9` or `9` | Open Console |
+| `F6` or `6` | Open approvals for the selected durable Console conversation |
 | `p` | Select the highlighted/first active agent and compose a prompt |
 | `s` | Open the bounded durable session selector for the selected agent |
 | `Enter` | Submit a prompt or one of the supported slash commands |
 | `x` | Request cancellation of the active durable turn and its linked run |
+| `a` / `d` in F6 | Open, then confirm, approve/deny for the exact scoped approval |
+| `r` in F6 | Refresh the asynchronous approval projection |
 | `F3` | Inspect the selected durable run |
 | `F5` | Inspect its timeline |
 | `/help [command]` | Show the executable Console command subset |
@@ -458,13 +461,22 @@ dynamic selections fail with typed errors. Async model results are correlated
 to the initiating request, agent, and conversation before updating the session
 header. `/cancel` is not accepted because the composer is closed while a turn
 is active; `x` remains the exact current-turn cancellation path. Provider,
-autonomy, harness, group orchestration, and approval commands are explicitly
-refused in the Console. Approval events are displayed
-as unavailable rather than mutating
-effect rows directly. The separate legacy Approvals tab retains its existing
-direct approve/deny behavior. Transcript reloads use the interaction service's
-turn-correlated, bounded projection, and all Console prompt-path mutations also
-go through that service.
+autonomy, harness, group orchestration, and approval slash commands are
+explicitly refused in the Console prompt path. F6 is the separate approval
+surface: it scopes `InteractionService::list_pending_approvals`, `approve`, and
+`deny` to the durable conversation selected in F9 and performs those calls on
+the bounded async controller while unrelated turns continue. The list exposes
+the first 100 pending requests, reports when more exist, and renders only exact
+approval/effect/run/tool identities plus bounded, redacted service title,
+description, policy reason, status, and expiry. Confirmation retains the full
+conversation and approval IDs; stale completions after a conversation switch
+cannot replace or clear the new queue. The TUI does not query or write approval
+tables directly. Normal runtime composition still lacks authenticated approval
+authority, so F6 shows explicit unavailable guidance. A turn known to await an
+approval refuses generic `x` cancellation until it is resolved in F6 because
+atomic coordinator approval cancellation is not yet composed. Transcript
+reloads use the interaction service's turn-correlated, bounded projection, and
+all Console prompt-path mutations also go through that service.
 
 From an idle Console, `s` opens a durable session selector backed only by the
 interaction service. It scans at most 1,000 newest interaction summaries and

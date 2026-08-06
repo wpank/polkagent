@@ -18,9 +18,11 @@ bounded grantless registered-tool loop now persists intent before real handler
 I/O and projects one stable effect-backed tool identity through terminal/TUI/
 ACP. The TUI additionally has a bounded simultaneous agent/conversation
 activity slice with exact switching and cancellation. The dominant gaps are
-durable approval execution/resume and surface binding, durable group/child-run
-orchestration, provider/harness parity, raw tool-data redaction, and manual-
-editor evidence.
+production approval authority/activation and cross-surface closure, durable
+group/child-run orchestration, provider/harness parity, raw tool-data
+redaction, and manual-editor evidence. Terminal chat and the TUI F6 surface
+already consume the bounded durable approval service seam; this does not make
+normal production decisions available.
 
 The next milestone is therefore not “add more crates.” It is extending the
 grantless tool slice through the implemented policy and SQLite approval/
@@ -63,7 +65,7 @@ percentage.
 | [PRD-10](PRD-10-DATA-OBSERVABILITY.md) | Events, artifacts, telemetry, recovery | Active; interaction SSE, exact durable run-event metadata, global replay/reconnect, and versioned command-socket cursor/lag recovery have bounded real-TCP evidence, while trace/context injection, best-effort deltas, audit/telemetry, retention, and operator recovery remain. |
 | [PRD-11](PRD-11-DEPLOYMENT-CLOUD.md) | Deployment and cloud | Active; authenticated single-instance container/config/shutdown/replacement/cold-restore persistence is proven, while successful backend output and production operations remain. |
 | [PRD-12](PRD-12-MARKETPLACE-EXTENSIONS.md) | Extensions and marketplace | Active; durable local package lifecycle and operator CLI work, while activation, sandbox execution, cryptographic trust, and registry paths remain. |
-| [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; durable terminal chat and the TUI Console provide contextual follow-up, persisted agent/model selection, safe tool status, restart, and bounded simultaneous activities with exact cancel, while harness context, approvals, group orchestration, and studio/mobile surfaces remain. |
+| [PRD-13](PRD-13-UX-SURFACES.md) | CLI, TUI, web/mobile surfaces | Active; durable terminal chat and the TUI Console provide contextual follow-up, persisted selection, safe tool status, restart, bounded simultaneous activities, and selected-conversation F6 approval queue/detail/actions through the shared service. Production approval authority, harness context, group orchestration, and studio/mobile surfaces remain. |
 | [PRD-14](PRD-14-APIS-SCHEMAS-CONFIG.md) | APIs, schemas, configuration | Active; shared-runtime interaction/core/skill/memory operations, checkpointed SSE, both bounded WebSocket reconnect protocols, zero-drift ordinary HTTP parity, and an OpenAPI 3.1 contract exist, while 9 optional routes and broader command-socket channels remain. |
 | [PRD-15](PRD-15-TESTING-ROADMAP.md) | Testing and release gates | Active; broad component coverage, stable/Rust-1.89 checks, strict rustdoc, and mandatory/extended Clippy gates pass locally; production/live/client conformance remains incomplete. |
 
@@ -92,7 +94,9 @@ shared production runtime (implemented; run/TUI/chat/ACP/serve migrated)
                     |
                     +--> terminal chat + durable/actionable TUI
                          (responsive session/model/restart/cancel plus bounded
-                          simultaneous activities exist; group execution open)
+                          simultaneous activities and service-routed F6
+                          approvals exist; production approval authority and
+                          group execution remain open)
                     +--> complete rich ACP + Zed support
                          (durable stdio new/load/resume/cwd/tool slice and
                           permission protocol harness exist; production

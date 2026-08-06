@@ -6,12 +6,17 @@
 > [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) for verified state and
 > the dependency-ordered execution queue.
 >
-> **Delivered slice:** the existing monitoring TUI now has an F9 Console that
-> can select an active agent, submit one prompt through the shared one-shot run
-> bootstrap, project live output/lifecycle/usage, cancel through `AppService`,
-> and select the durable run in Runs/Timeline. This is not the durable
-> multi-turn interaction, orchestration, or cross-surface parity specified by
-> this PRD.
+> **Delivered slice:** the monitoring TUI has an F9 durable multi-turn Console
+> with persisted agent/model/session selection, bounded concurrent activities,
+> shared run commands, live output, restart recovery, and exact cancellation.
+> F6 scopes asynchronous durable approval list/approve/deny calls to the
+> selected Console conversation, shows at most 100 exact pending identities
+> with bounded/redacted service detail, and confirms the full conversation plus
+> approval IDs. It performs no direct approval SQL. Normal production startup
+> still has no authenticated approval authority, and known pending-approval
+> turns intentionally guard generic cancellation until the approval is
+> resolved. Rich action cards, production authority, group orchestration, and
+> full cross-surface parity remain open.
 
 **Status:** definitive PRD
 **Owner:** unassigned
@@ -21,8 +26,8 @@ PRD-03 (execution model), PRD-06 (PCA compatibility), PRD-07 (identity/signers),
 PRD-08 (payments), PRD-10 (data/artifacts/events), PRD-11 (cloud/tenancy),
 PRD-12 (marketplace)
 **Implementation status:** broad CLI and monitoring TUI plus a bounded
-actionable Console; most complete product surfaces and shared interaction UX
-remain unimplemented
+actionable Console and service-routed F6 approval adapter; most complete
+product surfaces and production approval composition remain unimplemented
 
 ---
 
@@ -2986,6 +2991,14 @@ Roko's `widgets/action_card.rs` (to be created).
 
 ##### Screen 3.4: Approval Queue
 
+> **Current bounded implementation:** this future rich-card design is not a
+> claim about fields available today. Delivered F6 uses the selected durable
+> Console conversation and exact approval identity, renders only the shared
+> service's bounded/redacted title, description, policy reason, status, expiry,
+> and approval/effect/run/tool IDs, and confirms approve/deny with `a`/`d`.
+> It shows the first 100 pending requests and reports when more exist. It does
+> not infer pallet, call, risk, fee, account, or AI narrative data.
+
 **Layout:**
 ```
 ┌─ APPROVAL QUEUE ──────────────────────── 1 pending ─ 4m 32s remaining ─┐
@@ -4663,6 +4676,12 @@ The TUI polls the `watch::Receiver` in `drain_chain_subscription()` and updates
 block number in the HeaderBar.
 
 ### E.5 Approval IPC
+
+> **Future architecture, not the delivered F6 path:** the current TUI uses the
+> runtime-owned `InteractionService` on its bounded asynchronous controller.
+> It does not construct an adapter-local IPC permission authority or a oneshot
+> response channel. Production authority must be composed above the surface;
+> request payloads must never supply it.
 
 Approval requests arrive from the kernel (running in-process or via Unix socket)
 through a `mpsc::Receiver<ApprovalRequest>`. The TUI drains this channel and

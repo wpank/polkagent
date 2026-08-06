@@ -139,6 +139,14 @@ theme = "dark"              # dark | no_color | high_contrast
 atmospheric_effects = true
 ```
 
+Use F9 to select an active agent, create or resume a durable conversation, and
+prompt it without leaving the TUI. F6 is scoped to that selected conversation:
+it asynchronously lists up to 100 pending durable approvals and uses `a`/`d`
+confirmation with the full conversation and approval identities. Approval
+decisions go through the shared interaction service, not direct database
+writes. Production startup does not yet bind an authenticated approval
+authority, so an ordinary install may show explicit unavailable guidance in F6.
+
 ## Running Health Checks
 
 ```bash

@@ -77,7 +77,11 @@ The following capabilities are explicitly unavailable rather than simulated:
 
 - Provider, harness, or autonomy changes: configure the runtime or agent and
   restart. `/provider`, `/harness`, and `/autonomy` return an error.
-- Approvals (`/approve`, `/deny`): use the durable `polkagent inbox` commands.
+- Approvals (`/approve`, `/deny`) require an explicitly authenticated approval
+  authority and are hidden by ordinary production composition. In the
+  full-screen TUI, F6 uses the durable conversation selected in F9 and the same
+  service boundary; it truthfully shows unavailable guidance when that
+  authority is not composed.
 - Run-ID cancellation: use the top-level run commands. Terminal `/cancel` is
   turn-scoped.
 - Group orchestration and rich resource input.
