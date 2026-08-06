@@ -10,20 +10,21 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use polkagent_core::{
-    AgentId, ApprovalId, ConversationId, DataClassification, EffectId, PrincipalId, RunId, StepId,
-    TurnId, WorkerId,
+    AgentId, ApprovalId, ConversationId, DataClassification, EffectAttemptId, EffectId,
+    EffectOutcomeId, EventKind, PrincipalId, RunId, StepId, TurnId, WorkerId,
 };
+use polkagent_event::EventType;
 use polkagent_store_sqlite::{migrations, SqlitePool};
 use polkagent_store_trait::approval::{
-    ApprovalCoordinatorStore, ApprovalDecision, ApprovalPrincipalType, ApprovalRequestMetadata,
-    ApprovalScope, ApprovalStatus, ApprovalStoreError, ApprovalSubject, CheckpointEffect,
-    CheckpointEffectStatus, CheckpointStatus, ClaimApprovedEffect, ExecutionCheckpoint,
-    ExecutionCheckpointStore, PauseForApproval, ResolveApproval, ResolveDisposition,
-    APPROVAL_SUBJECT_SCHEMA_VERSION, EXECUTION_CHECKPOINT_SCHEMA_VERSION,
+    ApprovalCoordinatorStore, ApprovalDecision, ApprovalPage, ApprovalPrincipalType,
+    ApprovalRequestMetadata, ApprovalScope, ApprovalStatus, ApprovalStoreError, ApprovalSubject,
+    CheckpointEffect, CheckpointEffectStatus, CheckpointStatus, ClaimApprovedEffect,
+    ExecutionCheckpoint, ExecutionCheckpointStore, PauseForApproval, ResolveApproval,
+    ResolveDisposition, APPROVAL_SUBJECT_SCHEMA_VERSION, EXECUTION_CHECKPOINT_SCHEMA_VERSION,
 };
 use polkagent_store_trait::conformance::{self, ApprovalConformanceFixture};
 use polkagent_store_trait::event::EventStore as _;
-use polkagent_store_trait::{EffectStore, StoreRetryClass};
+use polkagent_store_trait::{EffectStore, RunStore, StoreRetryClass, StoredOutcome};
 use rusqlite::Connection;
 
 #[derive(Clone)]
@@ -57,6 +58,14 @@ fn open_pool(path: Option<&Path>) -> SqlitePool {
     reason = "the complete correlated persistence fixture is intentionally visible in one place"
 )]
 fn seed_fixture(pool: &SqlitePool) -> Fixture {
+    seed_fixture_with_deadline(pool, ChronoDuration::minutes(10))
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete correlated persistence fixture is intentionally visible in one place"
+)]
+fn seed_fixture_with_deadline(pool: &SqlitePool, deadline_after: ChronoDuration) -> Fixture {
     let agent_id = AgentId::new();
     let conversation_id = ConversationId::new();
     let turn_id = TurnId::new();
@@ -67,7 +76,7 @@ fn seed_fixture(pool: &SqlitePool) -> Fixture {
     let principal_id = PrincipalId::new();
     let worker_id = WorkerId::new();
     let now = Utc::now();
-    let deadline = now + ChronoDuration::minutes(10);
+    let deadline = now + deadline_after;
 
     {
         let writer = pool.writer();
@@ -188,6 +197,7 @@ fn seed_fixture(pool: &SqlitePool) -> Fixture {
     };
     let pause = PauseForApproval {
         approval_id,
+        expected_run_state_version: 0,
         subject: subject.clone(),
         effect_payload: serde_json::json!({
             "kind":"tool_call",
@@ -208,6 +218,7 @@ fn seed_fixture(pool: &SqlitePool) -> Fixture {
     };
     let allow = ResolveApproval {
         approval_id,
+        expected_run_state_version: 1,
         effect_id,
         run_id,
         turn_id,
@@ -279,6 +290,247 @@ async fn approval_foundation_shared_conformance_and_run_cas() {
     conformance::test_run_store_compare_and_swap(&pool, cas_run).await;
 }
 
+#[tokio::test]
+async fn identical_pause_retry_is_idempotent_and_changed_retry_conflicts() {
+    let pool = open_pool(None);
+    let fixture = seed_fixture(&pool);
+    let mut stale = fixture.pause.clone();
+    stale.expected_run_state_version = 1;
+    assert!(matches!(
+        pool.pause_for_approval(stale).await,
+        Err(ApprovalStoreError::InvalidTransition { .. })
+    ));
+    assert!(pool
+        .read_run_events(fixture.run_id)
+        .await
+        .expect("events after stale pause")
+        .is_empty());
+    let first = pool
+        .pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("first pause");
+    let retry = pool
+        .pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("identical stable-ID pause retry");
+    assert_eq!(retry, first);
+    assert_eq!(
+        pool.state_version(fixture.run_id)
+            .await
+            .expect("run revision after retry"),
+        1
+    );
+    assert_eq!(
+        pool.read_run_events(fixture.run_id)
+            .await
+            .expect("events after retry")
+            .len(),
+        1
+    );
+
+    let mut changed_subject = fixture.pause.clone();
+    changed_subject.subject.subject_digest = "blake3:changed-subject".to_owned();
+    assert!(matches!(
+        pool.pause_for_approval(changed_subject).await,
+        Err(ApprovalStoreError::Conflict { .. })
+    ));
+    let mut changed_checkpoint = fixture.pause.clone();
+    changed_checkpoint.checkpoint.integrity_digest = "blake3:changed-checkpoint".to_owned();
+    assert!(matches!(
+        pool.pause_for_approval(changed_checkpoint).await,
+        Err(ApprovalStoreError::Conflict { .. })
+    ));
+    let mut changed_metadata = fixture.pause.clone();
+    changed_metadata.metadata.title = "Changed title".to_owned();
+    assert!(matches!(
+        pool.pause_for_approval(changed_metadata).await,
+        Err(ApprovalStoreError::Conflict { .. })
+    ));
+}
+
+#[tokio::test]
+async fn reject_once_is_human_authorized_resumable_and_never_claimable() {
+    let pool = open_pool(None);
+    let fixture = seed_fixture(&pool);
+    pool.pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("pause");
+    let mut reject = fixture.allow.clone();
+    reject.decision = ApprovalDecision::RejectOnce;
+    reject.rationale = Some("operator rejected exact write".to_owned());
+    let resolved = pool
+        .resolve_approval(reject.clone())
+        .await
+        .expect("human reject");
+    assert_eq!(resolved.approval.status, ApprovalStatus::Denied);
+    assert_eq!(
+        pool.resolve_approval(reject.clone())
+            .await
+            .expect("identical reject retry")
+            .disposition,
+        ResolveDisposition::AlreadyApplied
+    );
+    let mut wrong_version = reject.clone();
+    wrong_version.expected_run_state_version = 2;
+    assert!(matches!(
+        pool.resolve_approval(wrong_version).await,
+        Err(ApprovalStoreError::Conflict { .. })
+    ));
+    let mut wrong_lineage = reject;
+    wrong_lineage.conversation_id = ConversationId::new();
+    assert!(matches!(
+        pool.resolve_approval(wrong_lineage).await,
+        Err(ApprovalStoreError::ScopeMismatch)
+    ));
+    assert_decision_state(
+        &pool,
+        &fixture,
+        "denied",
+        CheckpointStatus::Resumable,
+        CheckpointEffectStatus::Denied,
+        &format!("waiting_effect:{}", fixture.effect_id),
+        "approval_denied",
+    )
+    .await;
+    assert!(pool.claim_approved_effect(fixture.claim).await.is_err());
+}
+
+#[tokio::test]
+async fn expire_is_service_authorized_only_after_deadline_and_terminal() {
+    let pool = open_pool(None);
+    let fixture = seed_fixture_with_deadline(&pool, ChronoDuration::milliseconds(500));
+    pool.pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("pause");
+    let service_id = PrincipalId::new();
+    let mut expire = fixture.allow.clone();
+    expire.decision = ApprovalDecision::Expire;
+    expire.principal_type = ApprovalPrincipalType::Service;
+    expire.principal_id = service_id;
+    expire.scope.principal_id = service_id;
+    expire.rationale = Some("durable deadline elapsed".to_owned());
+    assert!(matches!(
+        pool.resolve_approval(expire.clone()).await,
+        Err(ApprovalStoreError::InvalidTransition { .. })
+    ));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let resolved = pool
+        .resolve_approval(expire.clone())
+        .await
+        .expect("service expiry after deadline");
+    assert_eq!(resolved.approval.status, ApprovalStatus::Expired);
+    assert_eq!(
+        pool.resolve_approval(expire.clone())
+            .await
+            .expect("identical expiry retry after deadline")
+            .disposition,
+        ResolveDisposition::AlreadyApplied
+    );
+    let mut wrong_digest = expire;
+    wrong_digest.subject_digest = "blake3:wrong-terminal-retry".to_owned();
+    assert!(matches!(
+        pool.resolve_approval(wrong_digest).await,
+        Err(ApprovalStoreError::DigestMismatch)
+    ));
+    assert_decision_state(
+        &pool,
+        &fixture,
+        "expired",
+        CheckpointStatus::Terminal,
+        CheckpointEffectStatus::Expired,
+        "timed_out",
+        "run_timed_out",
+    )
+    .await;
+    assert!(pool.claim_approved_effect(fixture.claim).await.is_err());
+}
+
+#[tokio::test]
+async fn cancel_is_service_authorized_terminal_and_human_cancel_fails_closed() {
+    let pool = open_pool(None);
+    let fixture = seed_fixture(&pool);
+    pool.pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("pause");
+    let mut human_cancel = fixture.allow.clone();
+    human_cancel.decision = ApprovalDecision::Cancel;
+    assert!(matches!(
+        pool.resolve_approval(human_cancel).await,
+        Err(ApprovalStoreError::ScopeMismatch)
+    ));
+    let service_id = PrincipalId::new();
+    let mut cancel = fixture.allow.clone();
+    cancel.decision = ApprovalDecision::Cancel;
+    cancel.principal_type = ApprovalPrincipalType::Service;
+    cancel.principal_id = service_id;
+    cancel.scope.principal_id = service_id;
+    cancel.rationale = Some("parent session cancelled".to_owned());
+    let resolved = pool.resolve_approval(cancel).await.expect("service cancel");
+    assert_eq!(resolved.approval.status, ApprovalStatus::Cancelled);
+    assert_decision_state(
+        &pool,
+        &fixture,
+        "cancelled",
+        CheckpointStatus::Terminal,
+        CheckpointEffectStatus::Cancelled,
+        "cancelled:approval_cancelled",
+        "run_cancelled",
+    )
+    .await;
+    assert!(pool.claim_approved_effect(fixture.claim).await.is_err());
+}
+
+async fn assert_decision_state(
+    pool: &SqlitePool,
+    fixture: &Fixture,
+    expected_effect_state: &str,
+    expected_checkpoint_status: CheckpointStatus,
+    expected_checkpoint_effect: CheckpointEffectStatus,
+    expected_run_state: &str,
+    expected_event_type: &str,
+) {
+    let intent = pool
+        .get_intent(fixture.effect_id)
+        .await
+        .expect("load decision effect");
+    assert_eq!(intent.state, expected_effect_state);
+    let checkpoint = pool
+        .get_checkpoint(fixture.run_id)
+        .await
+        .expect("load decision checkpoint");
+    assert_eq!(checkpoint.status, expected_checkpoint_status);
+    assert_eq!(checkpoint.checkpoint.version, 2);
+    assert_eq!(
+        checkpoint.checkpoint.effects[0].status,
+        expected_checkpoint_effect
+    );
+    let run = pool.get(fixture.run_id).await.expect("load decision run");
+    assert_eq!(run.status.as_str(), expected_run_state);
+    assert_eq!(
+        pool.state_version(fixture.run_id)
+            .await
+            .expect("load decision run revision"),
+        2
+    );
+    assert!(pool
+        .claim_intent(WorkerId::new(), Duration::from_secs(60))
+        .await
+        .expect("generic claim query")
+        .is_none());
+    let events = pool
+        .read_from_cursor(0, 10)
+        .await
+        .expect("cursor replay of coordinator events");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].event_type, expected_event_type);
+    for event in events {
+        let kind: EventKind =
+            serde_json::from_value(event.payload).expect("canonical EventKind payload");
+        let event_type = EventType::from_kind(&kind).expect("catalogued coordinator event kind");
+        assert_eq!(event_type.as_str(), event.event_type);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_allow_and_reject_have_one_winner() {
     let pool = open_pool(None);
@@ -319,7 +571,10 @@ async fn concurrent_allow_and_reject_have_one_winner() {
         .expect("load approval events");
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].event_type, "approval_requested");
-    assert_eq!(events[1].event_type, "approval_resolved");
+    assert!(matches!(
+        events[1].event_type.as_str(),
+        "approval_granted" | "approval_denied"
+    ));
 
     let writer = pool.writer();
     let immutable = writer
@@ -344,10 +599,10 @@ async fn exact_prior_state_failure_rolls_back_the_whole_resolution() {
         let writer = pool.writer();
         writer
             .execute(
-                "UPDATE runs SET state = 'cancelled:external' WHERE id = ?1",
+                "UPDATE runs SET state_version = state_version + 1 WHERE id = ?1",
                 [fixture.run_id.to_string()],
             )
-            .expect("simulate an external winning run transition");
+            .expect("simulate an external winning run revision");
     }
 
     assert!(matches!(
@@ -414,6 +669,16 @@ async fn wrong_digest_conversation_and_principal_fail_closed() {
         Err(ApprovalStoreError::ScopeMismatch)
     ));
 
+    let service_id = PrincipalId::new();
+    let mut service_allow = fixture.allow.clone();
+    service_allow.principal_type = ApprovalPrincipalType::Service;
+    service_allow.principal_id = service_id;
+    service_allow.scope.principal_id = service_id;
+    assert!(matches!(
+        pool.resolve_approval(service_allow).await,
+        Err(ApprovalStoreError::ScopeMismatch)
+    ));
+
     let resolved = pool
         .resolve_approval(fixture.allow)
         .await
@@ -468,6 +733,173 @@ async fn reopen_preserves_approval_checkpoint_event_and_exact_claim() {
         .await
         .expect("events survive reopen");
     assert_eq!(events.len(), 2);
+}
+
+#[tokio::test]
+async fn reopen_reclaims_expired_approved_claim_only_before_attempt_start() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let path = directory.path().join("approval-claim-recovery.sqlite");
+    let pool = open_pool(Some(&path));
+    let fixture = seed_fixture(&pool);
+    pool.pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("pause");
+    pool.resolve_approval(fixture.allow.clone())
+        .await
+        .expect("approve");
+    let mut initial_claim = fixture.claim.clone();
+    initial_claim.lease_duration = Duration::from_millis(50);
+    pool.claim_approved_effect(initial_claim)
+        .await
+        .expect("claim before simulated crash");
+    drop(pool);
+    tokio::time::sleep(Duration::from_millis(75)).await;
+
+    let reopened = open_pool(Some(&path));
+    let recovery_worker = WorkerId::new();
+    let leased = reopened
+        .lease_resumable(
+            recovery_worker,
+            Duration::from_secs(60),
+            ApprovalPage {
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await
+        .expect("re-lease expired checkpoint");
+    assert_eq!(leased.len(), 1);
+    let mut recovery_claim = fixture.claim;
+    recovery_claim.worker_id = recovery_worker;
+    let recovered = reopened
+        .claim_approved_effect(recovery_claim)
+        .await
+        .expect("reclaim exact expired pre-I/O effect");
+    assert_eq!(recovered.worker_id, recovery_worker);
+    let intent = reopened
+        .get_intent(fixture.effect_id)
+        .await
+        .expect("reclaimed effect");
+    assert_eq!(intent.state, "claimed");
+    assert_eq!(intent.lease_owner, Some(recovery_worker));
+}
+
+#[tokio::test]
+async fn generic_effect_paths_cannot_rewrite_or_steal_approved_lineage() {
+    let pool = open_pool(None);
+    let fixture = seed_fixture(&pool);
+    pool.pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("pause");
+    pool.resolve_approval(fixture.allow.clone())
+        .await
+        .expect("approve");
+
+    assert!(pool
+        .claim_intent_by_id(fixture.effect_id, WorkerId::new(), Duration::from_secs(60))
+        .await
+        .is_err());
+    assert!(matches!(
+        pool.update_intent_state(fixture.effect_id, "failed").await,
+        Err(polkagent_store_trait::StoreError::InvalidTransition { .. })
+    ));
+
+    let claimed = pool
+        .claim_approved_effect(fixture.claim.clone())
+        .await
+        .expect("exact continuation claim");
+    pool.release_claim(fixture.effect_id, fixture.claim.worker_id)
+        .await
+        .expect("generic release remains a safe no-op");
+    assert_eq!(
+        pool.get_intent(fixture.effect_id)
+            .await
+            .expect("effect after generic release")
+            .state,
+        "claimed"
+    );
+    assert!(matches!(
+        pool.update_intent_state(fixture.effect_id, "pending").await,
+        Err(polkagent_store_trait::StoreError::InvalidTransition { .. })
+    ));
+
+    {
+        let writer = pool.writer();
+        writer
+            .execute(
+                "UPDATE effect_intents SET claimed_until = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    (Utc::now() - ChronoDuration::seconds(1)).to_rfc3339(),
+                    fixture.effect_id.to_string(),
+                ],
+            )
+            .expect("expire exact continuation lease for retry isolation test");
+    }
+    assert!(pool
+        .expired_leases(Utc::now())
+        .await
+        .expect("generic expired lease query")
+        .is_empty());
+    assert!(pool
+        .claim_intent_by_id(fixture.effect_id, WorkerId::new(), Duration::from_secs(60))
+        .await
+        .is_err());
+    assert!(pool
+        .claim_intent(WorkerId::new(), Duration::from_secs(60))
+        .await
+        .expect("generic claim scan")
+        .is_none());
+    assert_eq!(claimed.worker_id, fixture.claim.worker_id);
+}
+
+#[tokio::test]
+async fn approved_claim_uses_the_same_durable_executing_boundary() {
+    let pool = open_pool(None);
+    let fixture = seed_fixture(&pool);
+    pool.pause_for_approval(fixture.pause.clone())
+        .await
+        .expect("pause");
+    pool.resolve_approval(fixture.allow).await.expect("approve");
+    pool.claim_approved_effect(fixture.claim.clone())
+        .await
+        .expect("exact approval claim");
+    let attempt_id = EffectAttemptId::new();
+    pool.record_attempt_start(
+        attempt_id,
+        fixture.effect_id,
+        fixture.claim.worker_id,
+        serde_json::json!({"strategy":"approved-once"}),
+    )
+    .await
+    .expect("durable approved attempt start");
+    assert_eq!(
+        pool.get_intent(fixture.effect_id)
+            .await
+            .expect("executing approval effect")
+            .state,
+        "executing"
+    );
+    let mut forbidden_reclaim = fixture.claim.clone();
+    forbidden_reclaim.worker_id = WorkerId::new();
+    assert!(pool.claim_approved_effect(forbidden_reclaim).await.is_err());
+    pool.record_outcome(StoredOutcome {
+        id: EffectOutcomeId::new(),
+        intent_id: fixture.effect_id,
+        attempt_id,
+        run_id: fixture.run_id,
+        consumed: false,
+        payload: serde_json::json!({"variant":"success"}),
+        observed_at: Utc::now(),
+    })
+    .await
+    .expect("approved outcome");
+    assert_eq!(
+        pool.get_intent(fixture.effect_id)
+            .await
+            .expect("resolved approval effect")
+            .state,
+        "resolved"
+    );
 }
 
 #[tokio::test]

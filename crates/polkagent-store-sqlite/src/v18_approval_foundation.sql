@@ -39,17 +39,20 @@ CREATE TABLE approval_requests (
     decision                 TEXT CHECK (
         decision IS NULL OR decision IN ('allow_once', 'reject_once', 'expire', 'cancel')
     ),
+    decision_run_state_version INTEGER CHECK (
+        decision_run_state_version IS NULL OR decision_run_state_version >= 0
+    ),
     decided_at               TEXT,
     requested_event_id       TEXT NOT NULL UNIQUE,
     decision_event_id        TEXT UNIQUE,
     CHECK (
         (status = 'pending' AND decided_by IS NULL AND principal_type IS NULL
             AND decision_surface IS NULL AND decision IS NULL AND decided_at IS NULL
-            AND decision_event_id IS NULL)
+            AND decision_event_id IS NULL AND decision_run_state_version IS NULL)
         OR
         (status != 'pending' AND decided_by IS NOT NULL AND principal_type IS NOT NULL
             AND decision_surface IS NOT NULL AND decision IS NOT NULL AND decided_at IS NOT NULL
-            AND decision_event_id IS NOT NULL)
+            AND decision_event_id IS NOT NULL AND decision_run_state_version IS NOT NULL)
     ),
     CHECK (
         (status = 'pending' AND decision IS NULL)
@@ -136,7 +139,7 @@ DROP INDEX IF EXISTS idx_effects_priority;
 
 CREATE INDEX idx_effects_pending
     ON effect_intents(priority DESC, created_at ASC, id)
-    WHERE state = 'pending' AND claimed_by IS NULL;
+    WHERE approval_id IS NULL AND state = 'pending' AND claimed_by IS NULL;
 
 CREATE TRIGGER effect_intents_validate_state_insert
 BEFORE INSERT ON effect_intents
@@ -237,6 +240,7 @@ WHEN NOT (
         AND NEW.rationale IS OLD.rationale
         AND NEW.conditions_json IS OLD.conditions_json
         AND NEW.decision IS OLD.decision
+        AND NEW.decision_run_state_version IS OLD.decision_run_state_version
         AND NEW.decided_at IS OLD.decided_at
         AND NEW.decision_event_id IS OLD.decision_event_id
     )

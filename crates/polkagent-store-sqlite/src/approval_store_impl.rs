@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use polkagent_core::{ApprovalId, RunId, Timestamp, WorkerId};
+use polkagent_core::{ApprovalId, EventKind, RunId, Timestamp, WorkerId};
 use polkagent_store_trait::approval::{
     ApprovalCoordinatorStore, ApprovalDecision, ApprovalPage, ApprovalPrincipalType,
     ApprovalRequestMetadata, ApprovalScope, ApprovalStatus, ApprovalStoreError, ApprovalSubject,
@@ -212,16 +212,21 @@ fn pause_tx(
     connection: &Connection,
     request: &PauseForApproval,
 ) -> Result<StoredApproval, ApprovalStoreError> {
+    if pause_has_identity_collision(connection, request)? {
+        return load_matching_pause_retry(connection, request);
+    }
     let subject = &request.subject;
     let run = connection
         .query_row(
-            "SELECT agent_id, conversation_id, state FROM runs WHERE id = ?1",
+            "SELECT agent_id, conversation_id, state, state_version
+             FROM runs WHERE id = ?1",
             [subject.run_id.to_string()],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, u64>(3)?,
                 ))
             },
         )
@@ -230,6 +235,14 @@ fn pause_tx(
         .ok_or_else(|| not_found("Run", subject.run_id))?;
     if run.2 != "running" {
         return Err(invalid("Run", subject.run_id, "running", run.2));
+    }
+    if run.3 != request.expected_run_state_version {
+        return Err(invalid(
+            "Run",
+            subject.run_id,
+            request.expected_run_state_version,
+            run.3,
+        ));
     }
     if run.0 != subject.agent_id.to_string()
         || run.1.as_deref() != Some(subject.conversation_id.to_string().as_str())
@@ -377,8 +390,13 @@ fn pause_tx(
         .execute(
             "UPDATE runs
              SET state = ?1, state_version = state_version + 1, updated_at = ?2
-             WHERE id = ?3 AND state = 'running'",
-            rusqlite::params![next_run_state, now.to_rfc3339(), subject.run_id.to_string()],
+             WHERE id = ?3 AND state = 'running' AND state_version = ?4",
+            rusqlite::params![
+                next_run_state,
+                now.to_rfc3339(),
+                subject.run_id.to_string(),
+                request.expected_run_state_version,
+            ],
         )
         .map_err(map_sqlite)?;
     require_changed(run_changed, "Run", subject.run_id, "running", "changed")?;
@@ -387,21 +405,146 @@ fn pause_tx(
         connection,
         &requested_event_id,
         subject.run_id,
-        "approval_requested",
         request.approval_id,
-        &serde_json::json!({
-            "approval_id": request.approval_id,
-            "effect_id": subject.effect_id,
-            "status": ApprovalStatus::Pending,
-            "title": request.metadata.title,
-            "description": request.metadata.description,
-            "reason": request.metadata.reason,
-            "subject_digest": subject.subject_digest,
-        }),
+        &EventKind::ApprovalRequested {
+            request_id: request.approval_id.to_string(),
+        },
         now,
     )?;
 
     load_approval(connection, request.approval_id)
+}
+
+fn pause_has_identity_collision(
+    connection: &Connection,
+    request: &PauseForApproval,
+) -> Result<bool, ApprovalStoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM approval_requests
+                WHERE id = ?1 OR effect_id = ?2
+                UNION ALL
+                SELECT 1 FROM effect_intents
+                WHERE id = ?2 OR (run_id = ?3 AND idempotency_key = ?4)
+             )",
+            rusqlite::params![
+                request.approval_id.to_string(),
+                request.subject.effect_id.to_string(),
+                request.subject.run_id.to_string(),
+                request.effect_idempotency_key,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite)
+}
+
+fn load_matching_pause_retry(
+    connection: &Connection,
+    request: &PauseForApproval,
+) -> Result<StoredApproval, ApprovalStoreError> {
+    let mismatch = || {
+        conflict(
+            "Approval",
+            request.approval_id,
+            "stable pause identity was reused with different fields",
+        )
+    };
+    let approval = load_approval(connection, request.approval_id).map_err(|_| mismatch())?;
+    if approval.subject != request.subject
+        || approval.metadata != request.metadata
+        || approval.deadline_at != request.deadline_at
+        || approval.status != ApprovalStatus::Pending
+        || approval.requested_event_id != approval_event_id(request.approval_id, "requested")
+    {
+        return Err(mismatch());
+    }
+
+    let effect = connection
+        .query_row(
+            "SELECT run_id, step_id, kind, params_json, idempotency_key,
+                    state, retry_class, approval_id, claimed_by, claimed_until
+             FROM effect_intents WHERE id = ?1",
+            [request.subject.effect_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite)?
+        .ok_or_else(mismatch)?;
+    let expected_kind = request
+        .effect_payload
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("tool_call");
+    if effect.0 != request.subject.run_id.to_string()
+        || effect.1 != request.subject.step_id.to_string()
+        || effect.2 != expected_kind
+        || deserialize::<serde_json::Value>(&effect.3, "effect payload")? != request.effect_payload
+        || effect.4 != request.effect_idempotency_key
+        || effect.5 != "awaiting_approval"
+        || effect.6 != retry_class_str(request.retry_class)
+        || effect.7.as_deref() != Some(request.approval_id.to_string().as_str())
+        || effect.8.is_some()
+        || effect.9.is_some()
+    {
+        return Err(mismatch());
+    }
+
+    let checkpoint = load_checkpoint(connection, request.subject.run_id).map_err(|_| mismatch())?;
+    if checkpoint.checkpoint != request.checkpoint
+        || checkpoint.status != CheckpointStatus::PausedForApproval
+        || checkpoint.lease_owner.is_some()
+        || checkpoint.lease_expires_at.is_some()
+    {
+        return Err(mismatch());
+    }
+    let expected_run_version = request
+        .expected_run_state_version
+        .checked_add(1)
+        .ok_or_else(mismatch)?;
+    let expected_run_state = format!("awaiting_approval:{}", request.approval_id);
+    let run_matches = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs
+             WHERE id = ?1 AND state = ?2 AND state_version = ?3)",
+            rusqlite::params![
+                request.subject.run_id.to_string(),
+                expected_run_state,
+                expected_run_version,
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_sqlite)?;
+    let event_matches = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM run_events
+             WHERE id = ?1 AND run_id = ?2 AND kind = 'approval_requested'
+               AND correlation_id = ?3)",
+            rusqlite::params![
+                approval.requested_event_id,
+                request.subject.run_id.to_string(),
+                request.approval_id.to_string(),
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_sqlite)?;
+    if !run_matches || !event_matches {
+        return Err(mismatch());
+    }
+    Ok(approval)
 }
 
 #[allow(
@@ -457,8 +600,9 @@ fn resolve_tx(
             "UPDATE approval_requests
              SET status = ?1, decided_by = ?2, principal_type = ?3,
                  decision_surface = ?4, rationale = ?5, conditions_json = ?6,
-                 decision = ?7, decided_at = ?8, decision_event_id = ?9
-             WHERE id = ?10 AND status = 'pending'",
+                 decision = ?7, decision_run_state_version = ?8,
+                 decided_at = ?9, decision_event_id = ?10
+             WHERE id = ?11 AND status = 'pending'",
             rusqlite::params![
                 approval_status_str(approval_status),
                 request.principal_id.to_string(),
@@ -467,6 +611,7 @@ fn resolve_tx(
                 request.rationale,
                 conditions_json,
                 decision,
+                request.expected_run_state_version,
                 now.to_rfc3339(),
                 decision_event_id,
                 request.approval_id.to_string(),
@@ -583,13 +728,14 @@ fn resolve_tx(
             "UPDATE runs
              SET state = ?1, state_version = state_version + 1, updated_at = ?2,
                  completed_at = CASE WHEN ?3 THEN ?2 ELSE completed_at END
-             WHERE id = ?4 AND state = ?5",
+             WHERE id = ?4 AND state = ?5 AND state_version = ?6",
             rusqlite::params![
                 next_run_state,
                 now.to_rfc3339(),
                 terminal,
                 request.run_id.to_string(),
                 expected_run_state,
+                request.expected_run_state_version,
             ],
         )
         .map_err(map_sqlite)?;
@@ -601,20 +747,27 @@ fn resolve_tx(
         "changed",
     )?;
 
+    let event_kind = match request.decision {
+        ApprovalDecision::AllowOnce => EventKind::ApprovalGranted {
+            approval_id: request.approval_id.to_string(),
+        },
+        ApprovalDecision::RejectOnce => EventKind::ApprovalDenied {
+            reason: request
+                .rationale
+                .clone()
+                .unwrap_or_else(|| "approval rejected".to_owned()),
+        },
+        ApprovalDecision::Expire => EventKind::RunTimedOut,
+        ApprovalDecision::Cancel => EventKind::RunCancelled {
+            reason: "approval cancelled".to_owned(),
+        },
+    };
     insert_approval_event(
         connection,
         &decision_event_id,
         request.run_id,
-        "approval_resolved",
         request.approval_id,
-        &serde_json::json!({
-            "approval_id": request.approval_id,
-            "effect_id": request.effect_id,
-            "status": approval_status,
-            "decision": request.decision,
-            "principal_id": request.principal_id,
-            "surface": request.surface,
-        }),
+        &event_kind,
         now,
     )?;
 
@@ -656,7 +809,9 @@ fn claim_approved_tx(
     let lease_expires_at = now + chrono_duration(request.lease_duration)?;
     let effect_row = connection
         .query_row(
-            "SELECT state, claimed_by, claimed_until, params_json, retry_class
+            "SELECT state, claimed_by, claimed_until, params_json, retry_class,
+                    (SELECT COUNT(*) FROM effect_attempts attempt
+                     WHERE attempt.intent_id = effect_intents.id)
              FROM effect_intents
              WHERE id = ?1 AND approval_id = ?2 AND run_id = ?3",
             rusqlite::params![
@@ -671,6 +826,7 @@ fn claim_approved_tx(
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, u64>(5)?,
                 ))
             },
         )
@@ -679,21 +835,15 @@ fn claim_approved_tx(
         .ok_or_else(|| not_found("Effect", request.effect_id))?;
 
     let worker_id = request.worker_id.to_string();
+    let existing_expiry = effect_row.2.as_deref().map(parse_ts).transpose()?;
     if effect_row.0 == "claimed"
         && effect_row.1.as_deref() == Some(worker_id.as_str())
-        && effect_row.2.is_some()
+        && existing_expiry.is_some_and(|expiry| expiry > now)
     {
-        let existing_expiry =
-            parse_ts(
-                effect_row
-                    .2
-                    .as_deref()
-                    .ok_or_else(|| ApprovalStoreError::Integrity {
-                        message: "claimed effect is missing its lease expiry".to_owned(),
-                    })?,
-            )?;
-        if existing_expiry <= now
-            || checkpoint.status != CheckpointStatus::Leased
+        let existing_expiry = existing_expiry.ok_or_else(|| ApprovalStoreError::Integrity {
+            message: "claimed effect is missing its lease expiry".to_owned(),
+        })?;
+        if checkpoint.status != CheckpointStatus::Leased
             || checkpoint.lease_owner != Some(request.worker_id)
             || checkpoint.lease_expires_at != Some(existing_expiry)
         {
@@ -710,6 +860,86 @@ fn claim_approved_tx(
             run_id: request.run_id,
             worker_id: request.worker_id,
             lease_expires_at: existing_expiry,
+            effect_payload: deserialize(&effect_row.3, "effect payload")?,
+            retry_class: parse_retry_class(&effect_row.4)?,
+            checkpoint_version: checkpoint.checkpoint.version,
+        });
+    }
+
+    let reclaiming_pre_io_claim = effect_row.0 == "claimed"
+        && existing_expiry.is_some_and(|expiry| expiry <= now)
+        && effect_row.5 == 0;
+    if reclaiming_pre_io_claim {
+        let checkpoint_reclaimable = checkpoint.status == CheckpointStatus::Leased
+            && (checkpoint
+                .lease_expires_at
+                .is_some_and(|expiry| expiry <= now)
+                || (checkpoint.lease_owner == Some(request.worker_id)
+                    && checkpoint
+                        .lease_expires_at
+                        .is_some_and(|expiry| expiry > now)));
+        if !checkpoint_reclaimable {
+            return Err(invalid(
+                "Checkpoint",
+                request.run_id,
+                "expired lease or active lease by this recovery worker",
+                checkpoint_status_str(checkpoint.status),
+            ));
+        }
+        let effect_updated = connection
+            .execute(
+                "UPDATE effect_intents
+                 SET claimed_by = ?1, claimed_until = ?2
+                 WHERE id = ?3 AND approval_id = ?4 AND state = 'claimed'
+                   AND claimed_until <= ?5 AND NOT EXISTS (
+                       SELECT 1 FROM effect_attempts attempt
+                       WHERE attempt.intent_id = effect_intents.id
+                   )",
+                rusqlite::params![
+                    worker_id,
+                    lease_expires_at.to_rfc3339(),
+                    request.effect_id.to_string(),
+                    request.approval_id.to_string(),
+                    now.to_rfc3339(),
+                ],
+            )
+            .map_err(map_sqlite)?;
+        require_changed(
+            effect_updated,
+            "Effect",
+            request.effect_id,
+            "expired pre-I/O claim",
+            "changed",
+        )?;
+        let checkpoint_updated = connection
+            .execute(
+                "UPDATE execution_checkpoints
+                 SET lease_owner = ?1, lease_expires_at = ?2, updated_at = ?3
+                 WHERE run_id = ?4 AND version = ?5 AND status = 'leased'
+                   AND (lease_expires_at <= ?3
+                        OR (lease_owner = ?1 AND lease_expires_at > ?3))",
+                rusqlite::params![
+                    worker_id,
+                    lease_expires_at.to_rfc3339(),
+                    now.to_rfc3339(),
+                    request.run_id.to_string(),
+                    request.expected_checkpoint_version,
+                ],
+            )
+            .map_err(map_sqlite)?;
+        require_changed(
+            checkpoint_updated,
+            "Checkpoint",
+            request.run_id,
+            "reclaimable lease",
+            "changed",
+        )?;
+        return Ok(ClaimedEffect {
+            approval_id: request.approval_id,
+            effect_id: request.effect_id,
+            run_id: request.run_id,
+            worker_id: request.worker_id,
+            lease_expires_at,
             effect_payload: deserialize(&effect_row.3, "effect payload")?,
             retry_class: parse_retry_class(&effect_row.4)?,
             checkpoint_version: checkpoint.checkpoint.version,
@@ -928,7 +1158,8 @@ fn load_approval(
                     deadline_at, requested_at,
                     decided_by, principal_type, decision_surface, rationale,
                     conditions_json, decision, decided_at, requested_event_id,
-                    decision_event_id, effect_id, run_id, turn_id, conversation_id,
+                    decision_run_state_version, decision_event_id,
+                    effect_id, run_id, turn_id, conversation_id,
                     agent_id, subject_digest, policy_snapshot_digest
              FROM approval_requests WHERE id = ?1",
             [approval_id.to_string()],
@@ -952,14 +1183,15 @@ fn load_approval(
                     decision: row.get(15)?,
                     decided_at: row.get(16)?,
                     requested_event_id: row.get(17)?,
-                    decision_event_id: row.get(18)?,
-                    effect_id: row.get(19)?,
-                    run_id: row.get(20)?,
-                    turn_id: row.get(21)?,
-                    conversation_id: row.get(22)?,
-                    agent_id: row.get(23)?,
-                    subject_digest: row.get(24)?,
-                    policy_snapshot_digest: row.get(25)?,
+                    decision_run_state_version: row.get(18)?,
+                    decision_event_id: row.get(19)?,
+                    effect_id: row.get(20)?,
+                    run_id: row.get(21)?,
+                    turn_id: row.get(22)?,
+                    conversation_id: row.get(23)?,
+                    agent_id: row.get(24)?,
+                    subject_digest: row.get(25)?,
+                    policy_snapshot_digest: row.get(26)?,
                 })
             },
         )
@@ -1007,6 +1239,7 @@ fn load_approval(
         rationale: raw.rationale,
         conditions: deserialize(&raw.conditions_json, "approval conditions")?,
         decision: raw.decision.as_deref().map(parse_decision).transpose()?,
+        decision_run_state_version: raw.decision_run_state_version,
         decided_at: raw.decided_at.as_deref().map(parse_ts).transpose()?,
         requested_event_id: raw.requested_event_id,
         decision_event_id: raw.decision_event_id,
@@ -1103,6 +1336,7 @@ struct RawApproval {
     decision: Option<String>,
     decided_at: Option<String>,
     requested_event_id: String,
+    decision_run_state_version: Option<u64>,
     decision_event_id: Option<String>,
     effect_id: String,
     run_id: String,
@@ -1117,11 +1351,11 @@ fn insert_approval_event(
     connection: &Connection,
     event_id: &str,
     run_id: RunId,
-    kind: &str,
     approval_id: ApprovalId,
-    payload: &serde_json::Value,
+    event_kind: &EventKind,
     timestamp: Timestamp,
 ) -> Result<(), ApprovalStoreError> {
+    let event_type = approval_event_type(event_kind)?;
     let sequence: u64 = connection
         .query_row(
             "SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id = ?1",
@@ -1139,8 +1373,8 @@ fn insert_approval_event(
                 event_id,
                 run_id.to_string(),
                 sequence,
-                kind,
-                serialize(&payload, "approval event")?,
+                event_type,
+                serialize(event_kind, "approval event")?,
                 timestamp.to_rfc3339(),
                 approval_id.to_string(),
             ],
@@ -1149,11 +1383,24 @@ fn insert_approval_event(
     Ok(())
 }
 
+fn approval_event_type(event_kind: &EventKind) -> Result<&'static str, ApprovalStoreError> {
+    match event_kind {
+        EventKind::ApprovalRequested { .. } => Ok("approval_requested"),
+        EventKind::ApprovalGranted { .. } => Ok("approval_granted"),
+        EventKind::ApprovalDenied { .. } => Ok("approval_denied"),
+        EventKind::RunTimedOut => Ok("run_timed_out"),
+        EventKind::RunCancelled { .. } => Ok("run_cancelled"),
+        _ => Err(ApprovalStoreError::Integrity {
+            message: "unsupported approval coordinator event kind".to_owned(),
+        }),
+    }
+}
+
 fn ensure_resolution_lineage(
     approval: &StoredApproval,
     request: &ResolveApproval,
 ) -> Result<(), ApprovalStoreError> {
-    ensure_scope(approval, &request.scope)?;
+    ensure_scope_lineage(approval, &request.scope)?;
     if approval.subject.effect_id != request.effect_id
         || approval.subject.run_id != request.run_id
         || approval.subject.turn_id != request.turn_id
@@ -1161,7 +1408,11 @@ fn ensure_resolution_lineage(
     {
         return Err(ApprovalStoreError::ScopeMismatch);
     }
-    if request.principal_id != request.scope.principal_id {
+    if request.principal_id != request.scope.principal_id
+        || !principal_can_resolve(request.principal_type, request.decision)
+        || (!matches!(request.principal_type, ApprovalPrincipalType::Service)
+            && approval.metadata.authorized_principal_id != request.principal_id)
+    {
         return Err(ApprovalStoreError::ScopeMismatch);
     }
     if approval.subject.subject_digest != request.subject_digest {
@@ -1174,9 +1425,19 @@ fn ensure_scope(
     approval: &StoredApproval,
     scope: &ApprovalScope,
 ) -> Result<(), ApprovalStoreError> {
+    ensure_scope_lineage(approval, scope)?;
+    if approval.metadata.authorized_principal_id != scope.principal_id {
+        return Err(ApprovalStoreError::ScopeMismatch);
+    }
+    Ok(())
+}
+
+fn ensure_scope_lineage(
+    approval: &StoredApproval,
+    scope: &ApprovalScope,
+) -> Result<(), ApprovalStoreError> {
     if approval.metadata.tenant_id != scope.tenant_id
         || approval.metadata.workspace_id != scope.workspace_id
-        || approval.metadata.authorized_principal_id != scope.principal_id
         || scope
             .conversation_id
             .is_some_and(|id| id != approval.subject.conversation_id)
@@ -1193,6 +1454,7 @@ fn resolution_matches(approval: &StoredApproval, request: &ResolveApproval) -> b
         && approval.decision_surface.as_deref() == Some(request.surface.as_str())
         && approval.rationale == request.rationale
         && approval.conditions == request.conditions
+        && approval.decision_run_state_version == Some(request.expected_run_state_version)
 }
 
 fn validate_pause(request: &PauseForApproval) -> Result<(), ApprovalStoreError> {
@@ -1280,6 +1542,9 @@ fn validate_checkpoint(checkpoint: &ExecutionCheckpoint) -> Result<(), ApprovalS
 
 fn validate_resolution(request: &ResolveApproval) -> Result<(), ApprovalStoreError> {
     validate_scope(&request.scope)?;
+    if !principal_can_resolve(request.principal_type, request.decision) {
+        return Err(ApprovalStoreError::ScopeMismatch);
+    }
     validate_nonempty("subject digest", &request.subject_digest, MAX_LABEL_BYTES)?;
     validate_nonempty("surface", &request.surface, MAX_LABEL_BYTES)?;
     if let Some(rationale) = &request.rationale {
@@ -1294,6 +1559,22 @@ fn validate_resolution(request: &ResolveApproval) -> Result<(), ApprovalStoreErr
         validate_text("condition", condition, MAX_CONDITION_BYTES)?;
     }
     Ok(())
+}
+
+const fn principal_can_resolve(
+    principal_type: ApprovalPrincipalType,
+    decision: ApprovalDecision,
+) -> bool {
+    matches!(
+        (principal_type, decision),
+        (
+            ApprovalPrincipalType::Human | ApprovalPrincipalType::Quorum,
+            ApprovalDecision::AllowOnce | ApprovalDecision::RejectOnce
+        ) | (
+            ApprovalPrincipalType::Service,
+            ApprovalDecision::Expire | ApprovalDecision::Cancel
+        )
+    )
 }
 
 fn validate_scope(scope: &ApprovalScope) -> Result<(), ApprovalStoreError> {

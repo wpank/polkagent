@@ -356,6 +356,14 @@ pub async fn test_effect_store_crud(store: &dyn EffectStore, run_id: RunId, step
         .record_attempt_start(attempt_id, intent_id, worker, serde_json::json!({}))
         .await
         .expect("record_attempt_start() must not fail");
+    let executing = store
+        .get_intent(intent_id)
+        .await
+        .expect("get_intent() after durable attempt start");
+    assert_eq!(
+        executing.state, "executing",
+        "attempt start must durably advance claimed to executing before I/O"
+    );
 
     // 5. Record outcome.
     let outcome = make_outcome(intent_id, attempt_id, run_id);
@@ -884,19 +892,33 @@ pub async fn test_artifact_store_list_for_run(store: &dyn ArtifactStore) {
 ///
 /// **Precondition:** `run_id` exists in the `running` state.
 pub async fn test_run_store_compare_and_swap(store: &dyn RunStore, run_id: RunId) {
-    store
+    let initial_version = store
+        .state_version(run_id)
+        .await
+        .expect("read initial run state revision");
+    let next_version = store
         .compare_and_swap_state(
             run_id,
             RunStatus::new("running"),
+            initial_version,
             RunStatus::new("awaiting_approval:test"),
         )
         .await
         .expect("first expected-state run CAS must win");
+    assert_eq!(next_version, initial_version + 1);
+    assert_eq!(
+        store
+            .state_version(run_id)
+            .await
+            .expect("read advanced run state revision"),
+        next_version
+    );
 
     let stale = store
         .compare_and_swap_state(
             run_id,
-            RunStatus::new("running"),
+            RunStatus::new("awaiting_approval:test"),
+            initial_version,
             RunStatus::new("cancelled:stale"),
         )
         .await

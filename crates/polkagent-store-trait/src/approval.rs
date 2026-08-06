@@ -275,6 +275,8 @@ pub struct ApprovalRequestMetadata {
 pub struct PauseForApproval {
     /// Stable caller-supplied approval identity.
     pub approval_id: ApprovalId,
+    /// Exact run-state revision expected before the pause transaction.
+    pub expected_run_state_version: u64,
     /// Canonical authorization subject.
     pub subject: ApprovalSubject,
     /// Full effect payload used by the effect executor after approval.
@@ -318,6 +320,8 @@ pub struct StoredApproval {
     pub conditions: Vec<String>,
     /// Terminal decision, after resolution.
     pub decision: Option<ApprovalDecision>,
+    /// Exact run-state revision from which the terminal decision committed.
+    pub decision_run_state_version: Option<u64>,
     /// Decision time.
     pub decided_at: Option<Timestamp>,
     /// Stable durable request-event identifier.
@@ -353,6 +357,8 @@ pub struct ApprovalPage {
 pub struct ResolveApproval {
     /// Stable approval identity.
     pub approval_id: ApprovalId,
+    /// Exact run-state revision expected before the decision transaction.
+    pub expected_run_state_version: u64,
     /// Exact effect identity.
     pub effect_id: EffectId,
     /// Exact run identity.
@@ -611,6 +617,7 @@ mod tests {
         let effect_id = id(5);
         PauseForApproval {
             approval_id: id(1),
+            expected_run_state_version: 0,
             subject: ApprovalSubject {
                 schema_version: APPROVAL_SUBJECT_SCHEMA_VERSION,
                 conversation_id: id(2),
@@ -677,6 +684,7 @@ mod tests {
         assert_eq!(value["subject"]["schema_version"], 1);
         assert_eq!(value["checkpoint"]["schema_version"], 1);
         assert_eq!(value["checkpoint"]["version"], 1);
+        assert_eq!(value["expected_run_state_version"], 0);
         assert_eq!(
             value["checkpoint"]["next_effect_sequence"],
             u64::from(u32::MAX) + 17

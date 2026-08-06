@@ -57,6 +57,7 @@ polkagent-store-trait = { path = "../polkagent-store-trait", features = ["test-c
 polkagent-payment = { path = "../polkagent-payment" }
 polkagent-conversation = { path = "../polkagent-conversation" }
 polkagent-core = { path = "../polkagent-core" }
+polkagent-event = { path = "../polkagent-event" }
 blake3 = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }

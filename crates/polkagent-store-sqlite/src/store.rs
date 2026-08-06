@@ -786,7 +786,7 @@ impl SqliteEffectStore {
         let n = writer.execute(
             "UPDATE effect_intents
              SET state = 'claimed', claimed_by = ?1, claimed_until = ?2
-             WHERE id = ?3
+             WHERE id = ?3 AND approval_id IS NULL
                AND ((state = 'pending' AND claimed_by IS NULL)
                     OR (state = 'claimed' AND claimed_until < ?4))",
             rusqlite::params![worker_id, lease_str, intent_id, now_str],
@@ -809,7 +809,8 @@ impl SqliteEffectStore {
         writer.execute(
             "UPDATE effect_intents
              SET state = 'pending', claimed_by = NULL, claimed_until = NULL
-             WHERE id = ?1 AND state = 'claimed' AND claimed_by = ?2",
+             WHERE id = ?1 AND approval_id IS NULL
+               AND state = 'claimed' AND claimed_by = ?2",
             rusqlite::params![intent_id, worker_id],
         )?;
         Ok(())
@@ -822,7 +823,8 @@ impl SqliteEffectStore {
             "SELECT id, run_id, turn_id, step_id, kind, params_json, idempotency_key,
                     created_at, claimed_by, claimed_until
              FROM effect_intents
-             WHERE run_id = ?1 AND state = 'pending' AND claimed_by IS NULL
+             WHERE run_id = ?1 AND approval_id IS NULL
+               AND state = 'pending' AND claimed_by IS NULL
              ORDER BY created_at ASC",
         )?;
         let rows = stmt
@@ -852,7 +854,8 @@ impl SqliteEffectStore {
             "SELECT id, run_id, turn_id, step_id, kind, params_json, idempotency_key,
                     created_at, claimed_by, claimed_until
              FROM effect_intents
-             WHERE state = 'claimed' AND claimed_by IS NOT NULL AND claimed_until < ?1
+             WHERE approval_id IS NULL AND state = 'claimed'
+               AND claimed_by IS NOT NULL AND claimed_until < ?1
              ORDER BY claimed_until ASC",
         )?;
         let rows = stmt
@@ -1641,7 +1644,8 @@ impl EffectStore for SqlitePool {
                 let maybe_id: Option<String> = writer
                     .query_row(
                         "SELECT id FROM effect_intents \
-                         WHERE state = 'pending' AND claimed_by IS NULL \
+                         WHERE approval_id IS NULL \
+                           AND state = 'pending' AND claimed_by IS NULL \
                          ORDER BY priority DESC, created_at ASC LIMIT 1",
                         [],
                         |r| r.get(0),
@@ -1664,7 +1668,8 @@ impl EffectStore for SqlitePool {
                     .execute(
                         "UPDATE effect_intents \
                          SET state = 'claimed', claimed_by = ?1, claimed_until = ?2 \
-                         WHERE id = ?3 AND state = 'pending' AND claimed_by IS NULL",
+                         WHERE id = ?3 AND approval_id IS NULL \
+                           AND state = 'pending' AND claimed_by IS NULL",
                         rusqlite::params![worker_str, lease_until, intent_id],
                     )
                     .map_err(map_sqlite_err)?;
@@ -1727,7 +1732,7 @@ impl EffectStore for SqlitePool {
                     .execute(
                         "UPDATE effect_intents \
                          SET state = 'claimed', claimed_by = ?1, claimed_until = ?2 \
-                         WHERE id = ?3 \
+                         WHERE id = ?3 AND approval_id IS NULL \
                            AND ((state = 'pending' AND claimed_by IS NULL) \
                                 OR (state = 'claimed' AND claimed_until < ?4))",
                         rusqlite::params![worker_str, lease_until, id_str, now_str],
@@ -1800,7 +1805,8 @@ impl EffectStore for SqlitePool {
                 .execute(
                     "UPDATE effect_intents \
                      SET state = 'pending', claimed_by = NULL, claimed_until = NULL \
-                     WHERE id = ?1 AND state = 'claimed' AND claimed_by = ?2",
+                     WHERE id = ?1 AND approval_id IS NULL \
+                       AND state = 'claimed' AND claimed_by = ?2",
                     rusqlite::params![id_str, worker_str],
                 )
                 .map_err(map_sqlite_err)?;
@@ -1920,7 +1926,7 @@ impl EffectStore for SqlitePool {
 
             let mut stmt = writer
                 .prepare(&format!(
-                    "{INTENT_SELECT} WHERE state = 'claimed' \
+                    "{INTENT_SELECT} WHERE approval_id IS NULL AND state = 'claimed' \
                      AND claimed_by IS NOT NULL AND claimed_until < ?1 \
                      ORDER BY claimed_until ASC"
                 ))
@@ -1967,43 +1973,90 @@ impl EffectStore for SqlitePool {
             let now = now_rfc3339();
 
             let writer = pool.writer();
-
-            // Determine the next attempt_number for this intent.
-            let attempt_number: i64 = writer
-                .query_row(
-                    "SELECT COALESCE(MAX(attempt_number), 0) + 1 \
-                     FROM effect_attempts WHERE intent_id = ?1",
-                    [&intent_str],
-                    |r| r.get(0),
-                )
-                .map_err(map_sqlite_err)?;
-
             writer
-                .execute(
-                    "INSERT INTO effect_attempts \
-                     (id, intent_id, attempt_number, started_at, worker_id, payload_json) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![
-                        attempt_str,
-                        intent_str,
-                        attempt_number,
-                        now,
-                        worker_str,
-                        payload_json,
-                    ],
-                )
-                .map_err(|e| {
-                    if StoreError::is_unique_violation(&e) {
-                        TraitStoreError::Conflict {
-                            resource_type: "EffectAttempt",
-                            id: attempt_str.clone(),
-                        }
-                    } else {
-                        map_sqlite_err(e)
-                    }
-                })?;
+                .execute_batch("BEGIN IMMEDIATE")
+                .map_err(map_sqlite_err)?;
+            let result = (|| -> Result<(), TraitStoreError> {
+                let changed = writer
+                    .execute(
+                        "UPDATE effect_intents
+                         SET state = 'executing'
+                         WHERE id = ?1 AND state = 'claimed' AND claimed_by = ?2
+                           AND claimed_until > ?3",
+                        rusqlite::params![intent_str, worker_str, now],
+                    )
+                    .map_err(map_sqlite_err)?;
+                if changed != 1 {
+                    let actual = writer
+                        .query_row(
+                            "SELECT state, claimed_by, claimed_until
+                             FROM effect_intents WHERE id = ?1",
+                            [&intent_str],
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, Option<String>>(1)?,
+                                    row.get::<_, Option<String>>(2)?,
+                                ))
+                            },
+                        )
+                        .map_err(|error| match error {
+                            rusqlite::Error::QueryReturnedNoRows => TraitStoreError::NotFound {
+                                resource_type: "EffectIntent",
+                                id: intent_str.clone(),
+                            },
+                            other => map_sqlite_err(other),
+                        })?;
+                    return Err(TraitStoreError::InvalidTransition {
+                        message: format!(
+                            "effect intent {intent_str} requires an active claim by {worker_str}; \
+                             found state {} owner {:?} expiry {:?}",
+                            actual.0, actual.1, actual.2
+                        ),
+                    });
+                }
 
-            Ok(())
+                let attempt_number: i64 = writer
+                    .query_row(
+                        "SELECT COALESCE(MAX(attempt_number), 0) + 1
+                         FROM effect_attempts WHERE intent_id = ?1",
+                        [&intent_str],
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_err)?;
+                writer
+                    .execute(
+                        "INSERT INTO effect_attempts
+                         (id, intent_id, attempt_number, started_at, worker_id, payload_json)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![
+                            attempt_str,
+                            intent_str,
+                            attempt_number,
+                            now,
+                            worker_str,
+                            payload_json,
+                        ],
+                    )
+                    .map_err(|error| {
+                        if StoreError::is_unique_violation(&error) {
+                            TraitStoreError::Conflict {
+                                resource_type: "EffectAttempt",
+                                id: attempt_str.clone(),
+                            }
+                        } else {
+                            map_sqlite_err(error)
+                        }
+                    })?;
+                Ok(())
+            })();
+            match &result {
+                Ok(()) => writer.execute_batch("COMMIT").map_err(map_sqlite_err)?,
+                Err(_) => {
+                    let _ = writer.execute_batch("ROLLBACK");
+                }
+            }
+            result
         })
         .await
         .map_err(|e| TraitStoreError::Internal {
@@ -2094,8 +2147,13 @@ impl EffectStore for SqlitePool {
                     .execute(
                         "UPDATE effect_intents \
                          SET state = 'resolved', claimed_by = NULL, claimed_until = NULL \
-                         WHERE id = ?1 AND state IN ('pending', 'claimed', 'executing')",
-                        [&intent_str],
+                         WHERE id = ?1 AND state = 'executing'
+                           AND EXISTS (
+                               SELECT 1 FROM effect_attempts attempt
+                               WHERE attempt.id = ?2 AND attempt.intent_id = effect_intents.id
+                                 AND attempt.worker_id = effect_intents.claimed_by
+                           )",
+                        rusqlite::params![intent_str, attempt_str],
                     )
                     .map_err(map_sqlite_err)?;
                 if changed != 1 {
@@ -2270,7 +2328,7 @@ impl EffectStore for SqlitePool {
                 .execute(
                     "UPDATE effect_intents
                      SET state = ?1, claimed_by = NULL, claimed_until = NULL
-                     WHERE id = ?2
+                     WHERE id = ?2 AND approval_id IS NULL
                        AND state NOT IN ('awaiting_approval', 'resolved', 'expired', 'cancelled')",
                     rusqlite::params![new_state, id_str],
                 )
@@ -2406,6 +2464,12 @@ mod effect_store_tests {
             idempotency_key: format!("key-{}", uuid::Uuid::now_v7()),
             created_at: chrono::Utc::now(),
         }
+    }
+
+    async fn claim_for_attempt(pool: &SqlitePool, intent_id: EffectId, worker_id: WorkerId) {
+        EffectStore::claim_intent_by_id(pool, intent_id, worker_id, Duration::from_secs(60))
+            .await
+            .expect("claim intent before durable attempt start");
     }
 
     // ------------------------------------------------------------------
@@ -2759,9 +2823,18 @@ mod effect_store_tests {
         let worker = WorkerId::new();
         let payload = serde_json::json!({"strategy": "direct"});
 
+        claim_for_attempt(&pool, intent_id, worker).await;
         EffectStore::record_attempt_start(&pool, attempt_id, intent_id, worker, payload)
             .await
             .expect("record_attempt_start");
+
+        assert_eq!(
+            EffectStore::get_intent(&pool, intent_id)
+                .await
+                .expect("load executing intent")
+                .state,
+            "executing"
+        );
 
         // Verify the attempt is in the database.
         let writer = pool.writer();
@@ -2773,6 +2846,81 @@ mod effect_store_tests {
             )
             .expect("count");
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn attempt_start_requires_exact_active_lease_and_outcome_requires_attempt() {
+        let pool = test_pool();
+        let run_id = RunId::new();
+        let scaffold = insert_run_scaffold(&pool, run_id);
+        let intent = make_intent(&scaffold);
+        let intent_id = intent.id;
+        EffectStore::propose_intent(&pool, intent)
+            .await
+            .expect("propose");
+        let worker = WorkerId::new();
+        let attempt_id = EffectAttemptId::new();
+
+        assert!(matches!(
+            EffectStore::record_attempt_start(
+                &pool,
+                attempt_id,
+                intent_id,
+                worker,
+                serde_json::json!({}),
+            )
+            .await,
+            Err(TraitStoreError::InvalidTransition { .. })
+        ));
+        claim_for_attempt(&pool, intent_id, worker).await;
+        assert!(matches!(
+            EffectStore::record_attempt_start(
+                &pool,
+                attempt_id,
+                intent_id,
+                WorkerId::new(),
+                serde_json::json!({}),
+            )
+            .await,
+            Err(TraitStoreError::InvalidTransition { .. })
+        ));
+        assert!(matches!(
+            EffectStore::record_outcome(
+                &pool,
+                StoredOutcome {
+                    id: EffectOutcomeId::new(),
+                    intent_id,
+                    attempt_id,
+                    run_id,
+                    consumed: false,
+                    payload: serde_json::json!({"status":"success"}),
+                    observed_at: chrono::Utc::now(),
+                },
+            )
+            .await,
+            Err(TraitStoreError::InvalidTransition { .. })
+        ));
+
+        let expired = make_intent(&scaffold);
+        let expired_id = expired.id;
+        EffectStore::propose_intent(&pool, expired)
+            .await
+            .expect("propose expiring intent");
+        EffectStore::claim_intent_by_id(&pool, expired_id, worker, Duration::from_millis(1))
+            .await
+            .expect("short claim");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(matches!(
+            EffectStore::record_attempt_start(
+                &pool,
+                EffectAttemptId::new(),
+                expired_id,
+                worker,
+                serde_json::json!({}),
+            )
+            .await,
+            Err(TraitStoreError::InvalidTransition { .. })
+        ));
     }
 
     // ------------------------------------------------------------------
@@ -2793,6 +2941,7 @@ mod effect_store_tests {
 
         let attempt_id = EffectAttemptId::new();
         let worker = WorkerId::new();
+        claim_for_attempt(&pool, intent_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,
@@ -2838,6 +2987,7 @@ mod effect_store_tests {
 
         let attempt_id = EffectAttemptId::new();
         let worker = WorkerId::new();
+        claim_for_attempt(&pool, intent_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,
@@ -2895,6 +3045,7 @@ mod effect_store_tests {
 
         let attempt_id = EffectAttemptId::new();
         let worker = WorkerId::new();
+        claim_for_attempt(&pool, intent_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,
@@ -2963,11 +3114,13 @@ mod effect_store_tests {
             .expect("propose tool intent");
 
         let attempt_id = EffectAttemptId::new();
+        let worker = WorkerId::new();
+        claim_for_attempt(&pool, intent_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,
             intent_id,
-            WorkerId::new(),
+            worker,
             serde_json::json!({"secret": "attempt-payload"}),
         )
         .await
@@ -3032,11 +3185,13 @@ mod effect_store_tests {
             .await
             .expect("propose second intent");
         let attempt_id = EffectAttemptId::new();
+        let worker = WorkerId::new();
+        claim_for_attempt(&pool, first_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,
             first_id,
-            WorkerId::new(),
+            worker,
             serde_json::json!({}),
         )
         .await

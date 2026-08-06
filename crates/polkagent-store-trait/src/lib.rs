@@ -254,6 +254,10 @@ pub struct ArtifactSummary {
 ///   and calling this method.
 /// - `claim_intent` is atomic: exactly one caller succeeds for any given
 ///   intent when multiple callers race (EFF-INV-2 / CONC-5).
+/// - `record_attempt_start` requires the exact active lease owner and commits
+///   `Claimed -> Executing` before the caller may begin external I/O.
+/// - `record_outcome` requires the exact durable attempt/worker lineage and an
+///   `Executing` intent before committing `Resolved`.
 /// - `record_outcome` is idempotent with respect to uniqueness: calling it
 ///   twice with the same `outcome_id` must return `StoreError::Conflict` on
 ///   the second call rather than silently overwriting the outcome (EFF-INV-3).
@@ -337,8 +341,8 @@ pub trait EffectStore: Send + Sync {
 
     /// Atomically update the state of an existing intent.
     ///
-    /// Used by the approval subsystem to transition an intent between states
-    /// (e.g. `"pending"` → `"approved"` or `"pending"` → `"denied"`).
+    /// This generic path cannot mutate approval-linked intents or mint
+    /// approval-owned states. Approval transitions use the atomic coordinator.
     ///
     /// Returns `StoreError::NotFound` if no intent with `intent_id` exists.
     /// Returns `StoreError::InvalidTransition` if the requested transition is
@@ -356,7 +360,8 @@ pub trait EffectStore: Send + Sync {
     /// Record that an attempt is starting for the given intent.
     ///
     /// The attempt is linked to the intent and the worker that holds the
-    /// current lease.
+    /// current unexpired lease. The same transaction advances the intent from
+    /// `claimed` to `executing`; external I/O is forbidden before it returns.
     async fn record_attempt_start(
         &self,
         attempt_id: EffectAttemptId,
@@ -371,7 +376,8 @@ pub trait EffectStore: Send + Sync {
 
     /// Record an immutable outcome for an attempt.
     ///
-    /// Transitions the corresponding intent to `Resolved`. Returns
+    /// Requires the matching durable attempt and `executing` intent, then
+    /// transitions the corresponding intent to `Resolved`. Returns
     /// `StoreError::Conflict` if an outcome for this `attempt_id` already
     /// exists.
     async fn record_outcome(&self, outcome: StoredOutcome) -> Result<(), StoreError>;
@@ -462,13 +468,25 @@ pub trait RunStore: Send + Sync + 'static {
         &self,
         _run_id: RunId,
         expected: RunStatus,
+        expected_version: u64,
         _new_status: RunStatus,
-    ) -> Result<(), StoreError> {
+    ) -> Result<u64, StoreError> {
         Err(StoreError::InvalidTransition {
             message: format!(
-                "expected-state run updates are unavailable for state {}",
-                expected.as_str()
+                "expected-state run updates are unavailable for state {} at version {}",
+                expected.as_str(),
+                expected_version,
             ),
+        })
+    }
+
+    /// Read the monotonic state revision used by [`Self::compare_and_swap_state`].
+    ///
+    /// The default fails closed because returning a fabricated revision would
+    /// make an adapter unsafe for approval coordination.
+    async fn state_version(&self, _run_id: RunId) -> Result<u64, StoreError> {
+        Err(StoreError::InvalidTransition {
+            message: "run state revisions are unavailable".to_owned(),
         })
     }
 

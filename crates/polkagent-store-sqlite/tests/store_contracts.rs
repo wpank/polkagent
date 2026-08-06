@@ -149,6 +149,12 @@ fn make_intent(run_id: RunId, step_id: StepId, idempotency_key: &str) -> StoredI
     }
 }
 
+async fn claim_for_attempt(pool: &SqlitePool, intent_id: EffectId, worker_id: WorkerId) {
+    EffectStore::claim_intent_by_id(pool, intent_id, worker_id, Duration::from_secs(60))
+        .await
+        .expect("claim intent before durable attempt start");
+}
+
 /// Build a minimal `StoredOutcome` linked to a given intent.
 fn make_outcome(intent_id: EffectId, run_id: RunId) -> StoredOutcome {
     StoredOutcome {
@@ -608,6 +614,7 @@ mod effect_store {
         // Record an attempt start first.
         let attempt_id = EffectAttemptId::new();
         let worker = WorkerId::new();
+        claim_for_attempt(&pool, intent_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,
@@ -649,6 +656,7 @@ mod effect_store {
         // Record an attempt first (FK on effect_outcomes.attempt_id).
         let attempt_id = EffectAttemptId::new();
         let worker = WorkerId::new();
+        claim_for_attempt(&pool, intent_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,
@@ -736,6 +744,7 @@ mod effect_store {
 
         let attempt1_id = EffectAttemptId::new();
         let worker = WorkerId::new();
+        claim_for_attempt(&pool, intent1_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt1_id,
@@ -753,6 +762,7 @@ mod effect_store {
             .expect("propose 2");
 
         let attempt2_id = EffectAttemptId::new();
+        claim_for_attempt(&pool, intent2_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt2_id,
@@ -802,6 +812,7 @@ mod effect_store {
         // Record an attempt first (FK on effect_outcomes.attempt_id).
         let attempt_id = EffectAttemptId::new();
         let worker = WorkerId::new();
+        claim_for_attempt(&pool, intent_id, worker).await;
         EffectStore::record_attempt_start(
             &pool,
             attempt_id,

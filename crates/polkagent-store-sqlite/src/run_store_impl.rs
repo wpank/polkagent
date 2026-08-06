@@ -328,8 +328,15 @@ impl RunStore for SqlitePool {
         &self,
         run_id: RunId,
         expected: RunStatus,
+        expected_version: u64,
         new_status: RunStatus,
-    ) -> Result<(), StoreError> {
+    ) -> Result<u64, StoreError> {
+        let next_version =
+            expected_version
+                .checked_add(1)
+                .ok_or_else(|| StoreError::InvalidTransition {
+                    message: format!("run {run_id} state version is exhausted"),
+                })?;
         let pool = self.clone();
         let expected_status = expected.0;
         let next_status = new_status.0;
@@ -351,7 +358,7 @@ impl RunStore for SqlitePool {
                          updated_at = ?2,
                          started_at = COALESCE(started_at, ?3),
                          completed_at = COALESCE(?4, completed_at)
-                     WHERE id = ?5 AND state = ?6",
+                     WHERE id = ?5 AND state = ?6 AND state_version = ?7",
                     rusqlite::params![
                         next_status,
                         now,
@@ -359,17 +366,20 @@ impl RunStore for SqlitePool {
                         completed_at,
                         id,
                         expected_status,
+                        expected_version,
                     ],
                 )
                 .map_err(map_sqlite_err)?;
             if changed == 1 {
-                return Ok(());
+                return Ok(next_version);
             }
 
-            let actual = writer
-                .query_row("SELECT state FROM runs WHERE id = ?1", [&id], |row| {
-                    row.get::<_, String>(0)
-                })
+            let (actual, actual_version) = writer
+                .query_row(
+                    "SELECT state, state_version FROM runs WHERE id = ?1",
+                    [&id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+                )
                 .map_err(|error| match error {
                     rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound {
                         resource_type: "Run",
@@ -379,9 +389,35 @@ impl RunStore for SqlitePool {
                 })?;
             Err(StoreError::InvalidTransition {
                 message: format!(
-                    "run {id} expected state {expected_status}, current state is {actual}"
+                    "run {id} expected state {expected_status} at version {expected_version}, \
+                     current state is {actual} at version {actual_version}"
                 ),
             })
+        })
+        .await
+        .map_err(|error| StoreError::Internal {
+            message: format!("blocking task panicked: {error}"),
+        })?
+    }
+
+    async fn state_version(&self, run_id: RunId) -> Result<u64, StoreError> {
+        let pool = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let id = run_id.to_string();
+            let writer = pool.writer();
+            writer
+                .query_row(
+                    "SELECT state_version FROM runs WHERE id = ?1",
+                    [&id],
+                    |row| row.get::<_, u64>(0),
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::QueryReturnedNoRows => StoreError::NotFound {
+                        resource_type: "Run",
+                        id,
+                    },
+                    other => map_sqlite_err(other),
+                })
         })
         .await
         .map_err(|error| StoreError::Internal {
