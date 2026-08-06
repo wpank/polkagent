@@ -1,6 +1,6 @@
 # ADR-003: Durable Group Execution Plan Contract
 
-**Status:** proposed
+**Status:** accepted for the canonical v1 codec; ledger and group-revision design proposed
 
 **Date:** 2026-08-06
 
@@ -39,14 +39,19 @@ evidence, not a storage format.
 
 ## Decision
 
-Do not add group-execution tables or a `GroupExecutionStore` implementation
-until a canonical v1 plan contract is accepted and implemented. The proposed
-shape is recorded in
-[`group_execution_plan_v1_proposed.json`](../../crates/polkagent-group/tests/fixtures/group_execution_plan_v1_proposed.json).
+The canonical v1 plan contract is accepted and implemented independently of
+storage. Do not add group-execution tables or a `GroupExecutionStore` until the
+separate group-definition revision prerequisite below is implemented. The
+earlier design shape remains in
+[`group_execution_plan_v1_proposed.json`](../../crates/polkagent-group/tests/fixtures/group_execution_plan_v1_proposed.json);
+the accepted exact bytes and digest are
+[`group_execution_plan_v1.canonical.json`](../../crates/polkagent-group/tests/fixtures/group_execution_plan_v1.canonical.json)
+and
+[`group_execution_plan_v1.blake3`](../../crates/polkagent-group/tests/fixtures/group_execution_plan_v1.blake3).
 
 ### Stable identities
 
-The v1 domain must introduce:
+The later execution ledger, not the plan codec, must introduce:
 
 - `GroupExecutionId`: globally unique UUID v7 for one prepared plan;
 - `TaskId`: scoped to one `GroupExecutionId`, retaining the current full `u64`
@@ -60,8 +65,9 @@ tuples cannot be reused by another task or replaced after attachment.
 
 ### Canonical v1 plan
 
-The accepted codec must be a separate durable DTO, not the derived serde output
-of `ExecutionPlan`:
+[`execution_plan_codec`](../../crates/polkagent-group/src/execution_plan_codec.rs)
+implements a separate durable DTO rather than persisting the derived serde
+output of `ExecutionPlan`:
 
 ```text
 contract = "polkagent.group-execution-plan"
@@ -71,11 +77,26 @@ tasks = declaration-ordered task records with explicit ordinal
 dependency_edges = numerically sorted [{ blocked_by, task_id }]
 ```
 
-Normalization and validation happen before storage:
+The v1 limits are protocol constants, not deployment configuration:
+
+- at most 1,024 tasks;
+- at most 16,384 dependency edges;
+- at most 262,144 canonical UTF-8 bytes in one task input;
+- at most 64 task-input JSON container levels, where a scalar has depth zero;
+  and
+- at most 1,048,576 canonical UTF-8 bytes in the complete plan.
+
+The encoder determines canonical lengths and rejects over-limit input before
+allocating canonical output. The decoder rejects an over-limit complete byte
+slice before JSON parsing. Normalization and structural validation happen
+before storage:
 
 1. Require at least one task and unique task IDs and ordinals.
-2. Require every task agent to be a current member of the exact group loaded
-   through `GroupService`; the owner/leader invariants therefore remain shared.
+2. At the later prepare-service boundary, require every task agent to be a
+   current member of the exact group loaded through `GroupService`; the
+   owner/leader invariants therefore remain shared. This membership check is
+   deliberately not part of the group-agnostic plan codec and must bind the
+   group revision described below.
 3. Require every dependency endpoint to exist; reject duplicate and self edges.
 4. Prove the graph is acyclic. Preserve declaration order independently of edge
    order.
@@ -85,20 +106,20 @@ Normalization and validation happen before storage:
    insignificant whitespace, or trailing newline. Strings emit Unicode as raw
    UTF-8 and escape only quotation mark, reverse solidus, and required control
    characters using lowercase `\u00xx` where a short JSON escape is unavailable.
-   Task
-   input numbers are accepted only when exactly representable as `i64` or
+   Task input numbers are accepted only when exactly representable as `i64` or
    `u64`, then emitted as the shortest base-10 integer (`0`, never `-0`, and no
    leading zero). Fractional/exponent input numbers are rejected until Polkagent
-   adopts an explicit decimal type. Reject inputs above the accepted byte/depth
-   limits before canonicalization.
+   adopts an explicit decimal type. The byte limit measures the exact canonical
+   input representation; depth is rejected before canonical writing.
 7. Normalize capability and pallet sets as sorted unique non-empty strings.
-8. Reject non-finite or negative grant budgets and encode the exact accepted
-   IEEE-754 value using Rust/Ryū shortest round-trip decimal text inside a JSON
-   string. Terminal and group spend use unsigned smallest-unit integers encoded
-   as canonical decimal strings; they never reuse `TaskResult.budget_spent:
-   f64`. This preserves the current grant value without treating binary float as
-   money. The policy gate must still narrow it against the hard `u64` group
-   budget, and a later money-type migration requires a new contract version.
+8. Reject non-finite or negative grant budgets, normalize both `0.0` and `-0.0`
+   to `"0"`, and encode every other accepted IEEE-754 value using direct Ryū
+   shortest round-trip decimal text inside a JSON string. Terminal and group
+   spend use unsigned smallest-unit integers encoded as canonical decimal
+   strings; they never reuse `TaskResult.budget_spent: f64`. This preserves the
+   normalized grant value without treating binary float as money. The policy
+   gate must still narrow it against the hard `u64` group budget, and a later
+   money-type migration requires a new contract version.
 9. Compute `blake3-v1:<64 lowercase hex>` over the exact byte concatenation
    `b"polkagent.group-execution-plan.v1" || [0x00] || canonical_v1_json_utf8`.
    The JSON bytes contain no BOM or trailing newline. Prepare idempotency
@@ -114,8 +135,11 @@ durable rows.
 Every durable plan row retains its original `schema_version`, canonical bytes,
 and digest. Decoding dispatches on the exact version:
 
-- version 1 decodes into the v1 DTO, revalidates its invariants, verifies its
-  digest, and then losslessly upcasts into the current in-memory launch model;
+- version 1 verifies its digest before JSON decoding, rejects duplicate keys
+  before constructing `serde_json::Value`, decodes into the v1 DTO, revalidates
+  its invariants, requires byte-for-byte canonical re-encoding, and then
+  upcasts into the current in-memory launch model without losing accepted v1
+  data;
 - an unknown future version fails closed rather than being partially decoded;
 - the unversioned current-serde diagnostic fixture is never auto-imported or
   guessed as v1;
@@ -123,10 +147,18 @@ and digest. Decoding dispatches on the exact version:
   digest during an ordinary read or retry; and
 - new writes use the active accepted version. There is no implicit downcast.
 
+Public decode errors classify duplicate keys, invalid structure, invalid task
+IDs, unsupported contracts, and syntax location without echoing
+attacker-controlled key names or values into logs or surfaces.
+
 Any intentional rewrite is a separate forward migration that records old/new
 version and digest evidence. Idempotency always compares the originally stored
 version and digest, so a software upgrade cannot turn a conflicting retry into
 an identical one.
+
+The upcast is lossless after accepted normalization. It does not reconstruct
+duplicate capability/pallet entries or the sign bit of `-0.0`, because those
+details are intentionally absent from the v1 DTO.
 
 ### Proposed ledger records and states
 
@@ -213,10 +245,10 @@ ledger adapter to execute or cancel children itself.
 
 ## Consequences
 
-- This packet deliberately adds no schema, store port, launcher, runtime
-  execution, or cancellation implementation.
-- A subsequent codec/revision packet can turn the proposed fixture into an
-  accepted byte contract, then add the dedicated SQLite ledger and real
+- The accepted codec packet deliberately adds no schema, store port, group
+  revision, launcher, runtime execution, or cancellation implementation.
+- A subsequent revision/ledger packet can add the dedicated SQLite ledger only
+  after the durable group-definition revision exists, with real
   restart/concurrency/CAS tests.
 - TUI, ACP, CLI, HTTP, central migration registration, and `RuntimeFactory`
   composition remain out of scope until the headless ledger and launcher path

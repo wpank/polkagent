@@ -847,18 +847,18 @@ concurrency, rollback, exact IDs, policy/quorum/budget/grant serialization, and
 owner protection through the public service. This is durable group-definition
 CRUD only: no child run, runtime orchestration, or surface support is claimed.
 
-**2026-08-06 execution-ledger serialization gate:** the existing derived serde
-shape for `ExecutionPlan` is not safe to freeze as a durable contract. Its
-dependency graph is an unversioned `HashMap`, task IDs are full-range `u64`
-values encoded as JSON numbers, raw input/grant budgets lack a canonical number
-policy, and serialization accepts duplicate/dangling edges without validating a
-DAG. [ADR-003](../docs/adr/ADR-003-Durable-Group-Execution-Plan-Contract.md)
-therefore stops schema work and proposes a versioned canonical DTO, normalized
-edge list, exact digest bytes, compatibility/upcast rules, group-definition
-revision prerequisite, ledger states/CAS operations, and pre-attributed
-launcher/canceller handoffs. Diagnostic and proposed fixtures are executable
-evidence only; no `GroupExecutionStore`, child launch, or cancellation is
-implemented or claimed.
+**2026-08-06 canonical execution-plan v1 checkpoint:** the unsafe derived serde
+shape remains diagnostic only. `polkagent-group` now exposes a separate
+validated durable DTO and canonical codec accepted by
+[ADR-003](../docs/adr/ADR-003-Durable-Group-Execution-Plan-Contract.md). It pins
+exact JSON and a domain-separated BLAKE3 digest, preserves full-range `u64` task
+IDs as decimal strings, applies stable task/edge/input/plan limits, normalizes
+grant sets and Ryū budget strings, validates the DAG and mode constraints, and
+fails closed on duplicate keys, noncanonical bytes, digest tampering, and
+unknown versions. Golden and adversarial tests prove exact bytes, digest,
+decode, and normalized upcast. Schema work remains stopped: no monotonic group
+revision, `GroupExecutionStore`, child launch, or cancellation is implemented
+or claimed.
 
 **Checklist:**
 
@@ -872,8 +872,10 @@ implemented or claimed.
   exposing any shared or remote surface.
 - [x] Audit the existing execution-plan serialization and record diagnostic plus
   proposed-v1 fixtures and the pre-schema durability decision in ADR-003.
-- [ ] Accept and implement the canonical v1 plan codec/digest plus a monotonic
-  group-definition revision, then add the dedicated SQLite
+- [x] Accept and implement the canonical v1 plan codec/digest with exact golden
+  bytes, full-range task IDs, fail-closed decode, fixed limits, DAG/mode
+  validation, and normalized upcast evidence.
+- [ ] Add a monotonic group-definition revision, then the dedicated SQLite
   `GroupExecutionStore` with atomic prepare/attribution/terminal/cancellation
   CAS and restart/concurrency evidence.
 - [ ] Add child-run creation with policy-gate grant/budget intersection,

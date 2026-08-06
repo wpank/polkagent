@@ -3863,19 +3863,22 @@ from the acceptance criteria tables in section 13.
 > child-run attribution/cancellation, quorum/synthesis, and CLI/API/TUI/ACP
 > adapters remain integration-owner work.
 
-> **Execution-ledger freeze evidence (2026-08-06):**
-> [`execution_plan_serialization_audit.rs`](../crates/polkagent-group/tests/execution_plan_serialization_audit.rs)
-> and its fixtures prove the current `ExecutionPlan` serde shape is unversioned,
-> represents dependencies as an unordered JSON object, and serializes duplicate
-> dangling edges without graph validation. Per
-> [ADR-003](../docs/adr/ADR-003-Durable-Group-Execution-Plan-Contract.md), no
-> execution-ledger schema was added. The proposed v1 boundary requires
-> canonical JSON key/number rules, canonical decimal task/budget encodings,
-> duplicate/dangling/self/cycle rejection, domain-separated BLAKE3 bytes,
-> explicit compatibility/upcasting, a group-definition revision, normalized
-> ledger states/CAS, and exact pre-attributed launcher/canceller identities.
-> `GroupExecutionStore`, migration registration, child execution, and runtime
-> cancellation remain open.
+> **Canonical execution-plan v1 evidence (2026-08-06):**
+> [`execution_plan_codec`](../crates/polkagent-group/src/execution_plan_codec.rs)
+> and its
+> [contract tests](../crates/polkagent-group/tests/execution_plan_codec.rs) now
+> prove the accepted separate durable DTO and codec from
+> [ADR-003](../docs/adr/ADR-003-Durable-Group-Execution-Plan-Contract.md). Exact
+> [canonical JSON](../crates/polkagent-group/tests/fixtures/group_execution_plan_v1.canonical.json)
+> and its [BLAKE3 digest](../crates/polkagent-group/tests/fixtures/group_execution_plan_v1.blake3)
+> pin full-range task IDs, raw UTF-8 key ordering/escaping, normalized grant
+> sets and Ryū budget strings, and the version envelope. Adversarial coverage
+> rejects fractional/exponent inputs, duplicate JSON keys/tasks/ordinals/edges,
+> dangling/self/cyclic graphs, over-limit size/depth/counts, noncanonical bytes,
+> digest tampering, and unknown versions, then proves normalized lossless
+> upcast. The old serde audit remains diagnostic only. No execution-ledger
+> schema was added: group-definition revision, `GroupExecutionStore`, migration
+> registration, child execution, and runtime cancellation remain open.
 
 - [ ] **GRP-IMPL-01** Implement `ResolvedGrant::intersect`
       _Acceptance: G3-01, GRP-01, GRP-02 (property tests pass)_
